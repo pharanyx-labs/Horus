@@ -23,7 +23,9 @@ typedef uint64_t vaddr_t;
 #define KERNEL_RESERVED_CAPS    4
 #define MAX_REV_SETS            8
 
-#define MAX_LINEAGES            1024
+/* Number of lineage slots. Mirrors LINEAGE_SLOTS in rust/src/capability.rs,
+ * which is the authoritative table; keep these two in sync. */
+#define MAX_LINEAGES            4096
 #define USER_VIRT_BASE          0x0000000000400000ULL
 #define USER_MAX_VADDR          0x0000000000800000ULL
 #define USER_AREA_BASE          0x400000ULL
@@ -264,15 +266,11 @@ typedef struct tcb {
 extern tcb_t tasks[MAX_TASKS];
 
 
-typedef struct lineage_entry {
-    uint64_t object_id;
-    uint32_t generation;
-    uint32_t refcount;
-    int      valid;
-} lineage_entry_t;
-
-extern lineage_entry_t lineages[MAX_LINEAGES];
-extern uint32_t next_lineage_id;
+/* Lineage/generation tracking is owned by the safe-Rust authority
+ * (rust/src/capability.rs). The legacy C `lineages[]` table and its helpers
+ * (lineage_register/lineage_revoke/next_lineage_id) have been removed to avoid a
+ * C/Rust desync that allowed use-after-revoke; use rust_lineage_check /
+ * rust_lineage_bump instead. */
 
 
 typedef struct block_device {
@@ -504,10 +502,36 @@ int  sys_ipc_send(uint32_t ep_slot, const void *msg, size_t len);
 int  sys_ipc_recv(uint32_t ep_slot, void *msg, size_t max_len);
 
 
-uint32_t lineage_register(uint64_t object_id);
-void     lineage_revoke(uint32_t lineage_id);
 bool     capability_validate_generation(const capability_t *cap);
 uint32_t rust_lineage_bump(uint64_t obj);
+bool     rust_lineage_check(uint64_t obj, uint32_t gen);
+
+/* ---- Cryptography & entropy (audited primitives implemented in Rust) ---- */
+/* SHA-256 suite */
+int  rust_password_hash(const uint8_t *password, size_t password_len,
+                        const uint8_t *salt, size_t salt_len,
+                        uint32_t iterations, uint8_t *out, size_t out_len);
+int  rust_hmac_sha256(const uint8_t *key, size_t key_len,
+                      const uint8_t *data, size_t data_len, uint8_t *out32);
+int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
+                      const uint8_t *salt, size_t salt_len,
+                      const uint8_t *info, size_t info_len,
+                      uint8_t *out, size_t out_len);
+/* ChaCha20 CSPRNG */
+void     rust_rng_add_entropy(const uint8_t *data, size_t len);
+void     rust_rng_fill(uint8_t *out, size_t len);
+uint64_t rust_rng_u64(void);
+bool     rust_rng_is_seeded(void);
+bool     rust_rdrand_u64(uint64_t *out);
+
+/* C-side entropy helpers (crypto.c) */
+int  cpu_has_rdrand(void);
+void entropy_init(void);            /* gather hardware/timing entropy, seed CSPRNG */
+void entropy_add_sample(uint64_t s);/* mix an opportunistic entropy sample */
+void secure_random_bytes(void *out, size_t n);
+
+/* Password KDF cost (PBKDF2-HMAC-SHA256 iterations). */
+#define PASSWORD_KDF_ITERATIONS 120000U
 
 
 #define CAP_DIR                 12
@@ -542,5 +566,6 @@ void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);
 void aslr_mix_entropy(uint64_t val);
 uint32_t aslr_random_offset(uint32_t max);
+addr_t aslr_random_stack_top(addr_t top);
 
 #endif

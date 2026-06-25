@@ -122,53 +122,33 @@ static uint32_t next_uid = 1000;
 uint8_t kernel_pepper[16];
 
 static void generate_salt(uint8_t *salt, size_t len) {
-    static uint32_t salt_counter = 0xC0DE1234;
-    for (size_t i = 0; i < len; i++) {
-        uint32_t t = get_system_ticks();
-        salt_counter = (salt_counter * 1103515245U + 12345U) ^ (t + i);
-        salt[i] = (uint8_t)(salt_counter ^ (t >> (i & 3)));
-    }
+    /* Per-password random salt drawn from the central CSPRNG (RDRAND/TSC-jitter
+     * seeded), replacing the old predictable LCG-over-ticks generator. */
+    secure_random_bytes(salt, len);
 }
 
+/* Password hash = PBKDF2-HMAC-SHA256(password, salt || pepper, iterations).
+ *
+ * - PBKDF2-HMAC-SHA256 is the audited primitive (RFC 8018), implemented in
+ *   safe Rust; the previous 4096-round XOR-rotate construction was unaudited,
+ *   fast to brute-force, and folded its output into only a-z characters.
+ * - The 16-byte per-boot kernel pepper is concatenated into the salt so an
+ *   attacker who exfiltrates the user database alone still lacks a secret
+ *   needed to mount an offline dictionary attack.
+ * - The raw 32-byte derived key is stored (PASS_HASH_LEN == 32), not an
+ *   alphabetic projection, preserving full entropy.
+ */
 static void strong_password_hash(const char *password, const uint8_t *salt,
                                  const uint8_t *pepper, uint8_t *out_hash) {
-    uint8_t state[32];
-    size_t pwlen = kstrlen(password);
-    size_t slen = PASS_SALT_LEN;
+    uint8_t combined_salt[PASS_SALT_LEN + 16];
+    for (int i = 0; i < PASS_SALT_LEN; i++) combined_salt[i] = salt[i];
+    for (int i = 0; i < 16; i++) combined_salt[PASS_SALT_LEN + i] = pepper[i];
 
-    for (int i = 0; i < 32; i++) {
-        state[i] = (uint8_t)(i * 17);
-    }
+    rust_password_hash((const uint8_t *)password, kstrlen(password),
+                       combined_salt, sizeof(combined_salt),
+                       PASSWORD_KDF_ITERATIONS, out_hash, PASS_HASH_LEN);
 
-    for (size_t i = 0; i < pwlen; i++) {
-        state[i % 32] ^= (uint8_t)password[i];
-    }
-    for (size_t i = 0; i < slen; i++) {
-        state[(i + 7) % 32] ^= (uint8_t)salt[i];
-    }
-    for (int i = 0; i < 16; i++) {
-        state[(i + 13) % 32] ^= pepper[i];
-    }
-
-    const int iterations = 4096;
-    for (int iter = 0; iter < iterations; iter++) {
-        uint8_t prev = state[31];
-        for (int i = 0; i < 32; i++) {
-            uint8_t next = state[i] + prev + (uint8_t)(iter & 0xFF);
-            next = (next << 3) | (next >> 5);
-            next ^= (uint8_t)(i * 0x5A);
-            state[i] = next;
-            prev = next;
-        }
-        if (pwlen > 0) {
-            state[iter % 32] ^= (uint8_t)password[iter % pwlen];
-        }
-    }
-
-    for (int i = 0; i < PASS_HASH_LEN - 1; i++) {
-        out_hash[i] = 'a' + (state[i % 32] % 26);
-    }
-    out_hash[PASS_HASH_LEN - 1] = 0;
+    secure_zero(combined_salt, sizeof(combined_salt));
 }
 
 static int constant_time_compare(const uint8_t *a, const uint8_t *b, size_t len) {
@@ -216,34 +196,22 @@ static int verify_user_password(const char *name, const char *password) {
 #define USERDB_MAGIC 0x55534442
 #define USERDB_TAG_LEN 32
 
+/* Integrity tag over the user database = HMAC-SHA256(kernel_pepper, records).
+ * Replaces the previous custom ARX construction. Valid records are serialized
+ * in slot order into a fixed scratch buffer (matching the on-disk layout) and
+ * authenticated as a single message. */
 static void compute_userdb_tag(uint8_t *tag_out) {
-    uint8_t state[32];
-    for (int i = 0; i < 32; i++) {
-        state[i] = kernel_pepper[i % 16] ^ (uint8_t)(i * 0xA5) ^ 0x3C;
-    }
-
+    static uint8_t scratch[MAX_USERS * sizeof(struct user_account)];
+    size_t off = 0;
     for (int i = 0; i < MAX_USERS; i++) {
         if (!users[i].valid) continue;
-        uint8_t *rec = (uint8_t *)&users[i];
+        const uint8_t *rec = (const uint8_t *)&users[i];
         for (size_t j = 0; j < sizeof(struct user_account); j++) {
-            state[j % 32] ^= rec[j];
-            state[(j + 13) % 32] = (state[(j + 13) % 32] * 41) + rec[j] + (uint8_t)j;
+            scratch[off + j] = rec[j];
         }
+        off += sizeof(struct user_account);
     }
-
-    for (int pass = 0; pass < 2; pass++) {
-        for (int round = 0; round < 48; round++) {
-            uint8_t prev = state[31];
-            for (int i = 0; i < 32; i++) {
-                uint8_t next = state[i] + prev + (uint8_t)round + kernel_pepper[(i + pass) % 16];
-                next = (next << 4) | (next >> 4);
-                next ^= (uint8_t)(i * 0x5A);
-                state[i] = next;
-                prev = next;
-            }
-        }
-    }
-    for (int i = 0; i < USERDB_TAG_LEN; i++) tag_out[i] = state[i % 32];
+    rust_hmac_sha256(kernel_pepper, sizeof(kernel_pepper), scratch, off, tag_out);
 }
 
 static int userdb_tag_valid(const uint8_t *tag_on_disk) {
@@ -334,11 +302,9 @@ void users_init(void) {
     user_count = 0;
     next_uid = 1000;
 
-    uint32_t pepper_state = get_system_ticks() ^ 0xDEADBEEF;
-    for (int i = 0; i < 16; i++) {
-        pepper_state = pepper_state * 1103515245U + 12345U;
-        kernel_pepper[i] = (uint8_t)(pepper_state ^ (get_system_ticks() << (i & 3)));
-    }
+    /* Per-boot secret pepper from the central CSPRNG (RDRAND/TSC-jitter seeded),
+     * replacing the predictable LCG-over-ticks generator. */
+    secure_random_bytes(kernel_pepper, sizeof(kernel_pepper));
 
     users[0].uid = 0;
     users[0].gid = 0;
@@ -802,15 +768,17 @@ static int do_spawn(void) {
     spawn_entropy ^= (uint64_t)get_system_ticks() << 11;
     spawn_entropy ^= (uint64_t)get_current_task();
     spawn_entropy ^= read_tsc();
+    spawn_entropy ^= rust_rng_u64();
 
     aslr_mix_entropy(spawn_entropy);
 
 
+    /* Load base is fixed: userspace binaries are non-PIE (linked at
+     * USER_AREA_BASE), so they cannot be relocated. Stack base IS randomized
+     * within the mapped low-stack window. */
     uint32_t load_base = USER_AREA_BASE;
 
-    
-    
-    uint32_t stack_top = 0x007ff000;
+    uint32_t stack_top = (uint32_t)aslr_random_stack_top(0x007ff000u);
 
     create_task(new_id, load_base + armed_hdr.entry, stack_top);
 

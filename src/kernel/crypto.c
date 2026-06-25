@@ -228,7 +228,76 @@ void crypto_aes128_ctr_encrypt(void *buf, size_t len, const uint8_t *key, const 
 void secure_zero(void *p, size_t n) {
     volatile uint8_t *vp = (volatile uint8_t *)p;
     while (n--) *vp++ = 0;
-    
+
     __asm__ volatile ("" : : "r"(p) : "memory");
-    
+
+}
+
+/* ------------------------------------------------------------------------- */
+/* Entropy collection and the central CSPRNG bridge.                          */
+/*                                                                            */
+/* The CSPRNG itself (ChaCha20, fast-key-erasure) lives in safe Rust          */
+/* (rust/src/rng.rs). This file is only responsible for gathering raw         */
+/* entropy from the hardware and feeding it in. Sources, best-effort:         */
+/*   * RDRAND  — true hardware RNG, used when CPUID advertises it;            */
+/*   * TSC jitter — repeated rdtsc reads separated by tiny busy loops capture */
+/*                  non-deterministic interrupt/microarchitectural timing;    */
+/*   * boot counters and a stack address as weak additional whitening.        */
+/* Note: raw TSC alone is predictable from ring 3, so it is NEVER used        */
+/* directly as randomness — it only feeds the CSPRNG, whose output userspace  */
+/* cannot reconstruct without the (secret, reseeded) pool state.              */
+/* ------------------------------------------------------------------------- */
+
+int cpu_has_rdrand(void) {
+    return (cpu_features_ecx & (1 << 30)) != 0;
+}
+
+static void entropy_gather_and_seed(void) {
+    uint8_t buf[96];
+    size_t n = 0;
+
+    /* 1) Hardware RNG, if present (8 draws => 64 bytes). */
+    if (cpu_has_rdrand()) {
+        for (int i = 0; i < 8 && n + 8 <= sizeof(buf); i++) {
+            uint64_t v = 0;
+            if (rust_rdrand_u64(&v)) {
+                for (int b = 0; b < 8; b++) buf[n++] = (uint8_t)(v >> (b * 8));
+            }
+        }
+    }
+
+    /* 2) TSC jitter: sample rdtsc separated by short, variable busy loops so
+     *    interrupt timing perturbs the low bits. */
+    for (int i = 0; i < 4 && n + 8 <= sizeof(buf); i++) {
+        uint64_t t = read_tsc();
+        for (int b = 0; b < 8; b++) buf[n++] = (uint8_t)(t >> (b * 8));
+        volatile uint32_t spin = (uint32_t)(t & 0x7F) + 17u;
+        while (spin--) { __asm__ volatile ("pause" ::: "memory"); }
+    }
+
+    /* 3) Weak whitening: boot tick count and a live stack address. */
+    if (n + 8 <= sizeof(buf)) {
+        uint32_t ticks = get_system_ticks();
+        uintptr_t sp = (uintptr_t)&buf;
+        uint64_t mix = ((uint64_t)ticks << 32) ^ (uint64_t)sp;
+        for (int b = 0; b < 8; b++) buf[n++] = (uint8_t)(mix >> (b * 8));
+    }
+
+    rust_rng_add_entropy(buf, n);
+    secure_zero(buf, sizeof(buf));
+}
+
+void entropy_init(void) {
+    entropy_gather_and_seed();
+}
+
+void entropy_add_sample(uint64_t s) {
+    uint8_t b[8];
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(s >> (i * 8));
+    rust_rng_add_entropy(b, sizeof(b));
+}
+
+void secure_random_bytes(void *out, size_t n) {
+    if (!out || n == 0) return;
+    rust_rng_fill((uint8_t *)out, n);
 }

@@ -23,62 +23,18 @@ uint32_t cap_alloc_fresh_serial(void) {
     return s;
 }
 
-lineage_entry_t lineages[MAX_LINEAGES];
-uint32_t next_lineage_id = 1; 
-
-
-static uint32_t lineage_hash(uint64_t obj){
-    uint64_t x = obj;
-    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return (uint32_t)(x & (MAX_LINEAGES - 1));
-}
-
-
-static int lineage_find(uint64_t obj){
-    uint32_t h = lineage_hash(obj);
-    for(uint32_t i=0;i<MAX_LINEAGES;i++){
-        uint32_t s=(h+i)&(MAX_LINEAGES-1);
-        if(!lineages[s].valid) return -1;
-        if(lineages[s].object_id==obj) return (int)s;
-    }
-    return -1;
-}
-
-
-uint32_t lineage_register(uint64_t object_id){
-    if(object_id==0) return MAX_LINEAGES;
-    uint32_t h=lineage_hash(object_id);
-    for(uint32_t i=0;i<MAX_LINEAGES;i++){
-        uint32_t s=(h+i)&(MAX_LINEAGES-1);
-        if(lineages[s].valid && lineages[s].object_id==object_id) return s;
-        if(!lineages[s].valid){
-            lineages[s].object_id=object_id;
-            lineages[s].generation=0;
-            lineages[s].refcount=1;
-            lineages[s].valid=1;
-            return s;
-        }
-    }
-    return MAX_LINEAGES; 
-}
-
-void lineage_revoke(uint32_t lineage_id){
-    if(lineage_id<MAX_LINEAGES && lineages[lineage_id].valid){
-        lineages[lineage_id].generation++;
-        lineages[lineage_id].refcount=0;
-    }
-}
-
+/*
+ * Lineage / generation tracking is owned entirely by the safe-Rust authority
+ * (rust/src/capability.rs, LINEAGE_GEN). The kernel previously kept a second,
+ * independently-hashed `lineages[]` table here; the two could desync, letting a
+ * stale derived capability pass one generation check while the other lineage had
+ * already been bumped (use-after-revoke). The C table has been removed: every
+ * bump goes through rust_lineage_bump (inside rust_cap_revoke / *_by_values) and
+ * every check goes through rust_lineage_check via the thin wrapper below.
+ */
 bool capability_validate_generation(const capability_t *cap){
     if(!cap||cap->type==CAP_NULL) return false;
-    uint64_t oid=cap->object;
-    if(oid==0) return true;            
-    int s=lineage_find(oid);
-    if(s<0) return true;               
-
-    return cap->generation == lineages[s].generation;
+    return rust_lineage_check(cap->object, cap->generation);
 }
 
 static struct {
@@ -156,8 +112,8 @@ void cap_init(void) {
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;
-    for(int i=0;i<MAX_LINEAGES;i++){lineages[i].valid=0;lineages[i].generation=0;lineages[i].refcount=0;lineages[i].object_id=0;}
-    next_lineage_id=1;
+    /* Lineage generations live in the Rust authority (LINEAGE_GEN); nothing to
+     * initialize here — it is zeroed in the static and bumped lazily. */
 }
 
 struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
@@ -214,9 +170,9 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
         tasks[get_current_task()].caps_in_use++;
     }
 
-    if (ok && dest_array[dest_slot].object != 0) {
-        (void)lineage_register(dest_array[dest_slot].object);
-    }
+    /* No separate C lineage registration: rust_cap_mint already records the
+     * minted capability's generation as the floor in the Rust LINEAGE_GEN
+     * authority, so the C side has nothing to track. */
 
     spin_unlock(&cap_lock);
     return ok;
@@ -282,7 +238,10 @@ bool cap_revoke(uint32_t slot) {
     uint32_t target_badge = cspace[slot].badge;
     uint32_t target_obj = cspace[slot].object;
     uint32_t orig_type = cspace[slot].type;
-    lineage_revoke(lineage_register(target_obj ? (uint64_t)target_obj : (uint64_t)target_serial));
+    /* Generation bump is performed exactly once, inside rust_cap_revoke (and
+     * rust_cap_revoke_by_values for cross-task slots), against the Rust authority.
+     * The previous duplicate C-side lineage_revoke() has been removed to keep a
+     * single, consistent source of truth. */
     if (orig_type == CAP_REVOCATION && target_obj < CNODE_SIZE) {
         uint32_t real_target = target_obj;
         rust_cap_revoke(cspace, cspace_sz, slot, &cap_next_serial);

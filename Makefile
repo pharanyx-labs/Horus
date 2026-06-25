@@ -128,14 +128,14 @@ endif
 run: kernel.elf
 ifeq ($(BITS),64)
 	@$(MAKE) --no-print-directory boot.iso
-	qemu-system-x86_64 -m 512M -cpu qemu64,+aes -display sdl -vga std \
+	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand -display sdl -vga std \
 		-chardev socket,id=char0,port=4445,host=localhost,server=on,wait=off \
 		-serial chardev:char0 \
 		-serial tcp:localhost:4444,server,nowait,nodelay \
 		-monitor none -device isa-debug-exit,iobase=0x604,iosize=0x04 \
 		-net none -no-reboot -no-shutdown -cdrom boot.iso
 else
-	qemu-system-i386 -kernel kernel.elf -m 512M -cpu qemu64,+aes -nographic \
+	qemu-system-i386 -kernel kernel.elf -m 512M -cpu qemu64,+aes,+rdrand -nographic \
 		-chardev stdio,id=char0,signal=off \
 		-serial chardev:char0 \
 		-serial tcp:localhost:4444,server,nowait,nodelay \

@@ -86,84 +86,54 @@ static void intent_append(uint32_t kind, uint64_t a0, uint64_t a1, uint32_t gen)
     intent_head = (intent_head + 1) % INTENT_LOG_SLOTS;
 }
 
+/* Per-block key derivation = HKDF-SHA256.
+ *   IKM  = volume key
+ *   salt = kernel pepper
+ *   info = "horus-block-key-v1" || ino || block || gen
+ *   OKM  = enc_key(16) || mac_key(16)
+ * Replaces the previous unaudited 1024-round ARX construction. Binding ino,
+ * block and gen into `info` makes every (block, generation) pair derive a
+ * unique enc/mac key pair, which is what authorises a fixed (deterministic)
+ * nonce in CTR mode below. */
 int storage_derive_block_keys(uint64_t ino, uint64_t block, uint32_t gen,
                               const uint8_t *volume_key,
                               uint8_t *enc_key_out, uint8_t *mac_key_out)
 {
-    uint8_t state[32];
-    int i, r;
-
-    
-    for (i = 0; i < 16; i++) state[i] = volume_key[i];
-    for (i = 0; i < 8; i++) {
-        state[16 + i] = (uint8_t)((ino >> (i*8)) ^ (block >> (i*8)));
-    }
-    state[24] = (uint8_t)gen; state[25] = (uint8_t)(gen >> 8);
-    state[26] = (uint8_t)(gen >> 16); state[27] = (uint8_t)(gen >> 24);
     extern uint8_t kernel_pepper[16];
-    for (i = 0; i < 4; i++) state[28 + i] = kernel_pepper[i];
+    uint8_t info[18 + 8 + 8 + 4];
+    const char *label = "horus-block-key-v1";
+    size_t p = 0;
+    for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
+    for (int i = 0; i < 8; i++) info[p++] = (uint8_t)(ino >> (i * 8));
+    for (int i = 0; i < 8; i++) info[p++] = (uint8_t)(block >> (i * 8));
+    for (int i = 0; i < 4; i++) info[p++] = (uint8_t)(gen >> (i * 8));
 
-    
-    for (r = 0; r < 1024; r++) {
-        
-        uint32_t *w = (uint32_t *)state;
-        for (int q = 0; q < 8; q += 2) {
-            w[q] += w[q+1] + (uint32_t)r;
-            w[q+1] = (w[q+1] << ((r & 7) + 3)) | (w[q+1] >> (32 - ((r & 7) + 3)));
-            w[q+1] ^= w[q];
-        }
-        
-        if ((r & 63) == 0) {
-            for (i = 0; i < 16; i++) state[i] ^= kernel_pepper[i & 15];
-        }
-        
-        uint32_t t = w[0]; for (i = 0; i < 7; i++) w[i] = w[i+1]; w[7] = t;
+    uint8_t okm[32];
+    if (rust_hkdf_sha256(volume_key, 16, kernel_pepper, 16, info, p, okm, sizeof(okm)) != 0) {
+        return -1;
     }
-
-    for (i = 0; i < 16; i++) {
-        enc_key_out[i] = state[i];
-        mac_key_out[i] = state[16 + i];
+    for (int i = 0; i < 16; i++) {
+        enc_key_out[i] = okm[i];
+        mac_key_out[i] = okm[16 + i];
     }
-    
-    secure_zero(state, sizeof(state));
+    secure_zero(okm, sizeof(okm));
     return 0;
 }
 
+/* Authentication tag = first 16 bytes of HMAC-SHA256(mac_key, data).
+ * The per-block mac_key is already unique per (ino, block, gen) via the HKDF
+ * above, so it cryptographically binds the ciphertext to its context; the
+ * nonce argument is retained for ABI compatibility but no longer needed. */
 int storage_compute_mac(const uint8_t *nonce, const uint8_t *data, size_t data_len,
                         const uint8_t *mac_key, uint8_t *tag_out)
 {
-    uint8_t state[32];
-    size_t i;
-
-    for (i = 0; i < 16; i++) state[i] = nonce[i];
-    for (i = 0; i < 16; i++) state[16 + i] = mac_key[i];
-
-    
-    for (size_t pos = 0; pos < data_len; pos++) {
-        state[pos & 31] ^= data[pos];
-        if ((pos & 31) == 31) {
-            uint32_t *w = (uint32_t *)state;
-            for (int q = 0; q < 8; q += 2) {
-                w[q] += w[q+1];
-                w[q+1] = (w[q+1] << 11) | (w[q+1] >> 21);
-                w[q+1] ^= w[q];
-            }
-        }
+    (void)nonce;
+    uint8_t full[32];
+    if (rust_hmac_sha256(mac_key, 16, data, data_len, full) != 0) {
+        return -1;
     }
-
-    
-    for (int r = 0; r < 8; r++) {
-        uint32_t *w = (uint32_t *)state;
-        for (int q = 0; q < 8; q += 2) {
-            w[q] += w[q+1] + (uint32_t)r;
-            w[q+1] = (w[q+1] << 13) | (w[q+1] >> 19);
-            w[q+1] ^= w[q];
-        }
-        uint32_t t = w[0]; for (int j = 0; j < 7; j++) w[j] = w[j+1]; w[7] = t;
-    }
-
-    for (i = 0; i < 16; i++) tag_out[i] = state[i] ^ state[16 + i];
-    secure_zero(state, sizeof(state));
+    for (int i = 0; i < 16; i++) tag_out[i] = full[i];
+    secure_zero(full, sizeof(full));
     return 0;
 }
 
@@ -175,18 +145,20 @@ int storage_encrypt_block(uint64_t ino, uint64_t block, void *buf, uint32_t gen)
     uint8_t enc_key[16];
     uint8_t mac_key[16];
     uint8_t tag[16];
-    uint64_t tsc = read_tsc();
 
     struct mounted_fs *mfs = storage_get_mounted_fs();
     const uint8_t *vol = (mfs && mfs->mounted) ? mfs->volume_key : (const uint8_t*)"";
 
-    
+    /* Deterministic nonce = f(ino, block, gen, volume salt). It MUST be
+     * reproducible at decrypt time, so it cannot mix a freshly-read TSC (the
+     * old code did, which both leaked timing into the nonce and made the
+     * keystream unreproducible). CTR-mode (key, nonce) uniqueness is guaranteed
+     * because the key itself is derived per (ino, block, gen). */
     for (int i = 0; i < 8; i++) {
         nonce[i]   = (uint8_t)(ino   >> (i*8));
         nonce[8+i] = (uint8_t)(block >> (i*8));
     }
-    uint32_t diff = gen ^ (uint32_t)(tsc & 0xFFFFFFFFu);
-    for (int i = 0; i < 4; i++) nonce[12 + i] ^= (uint8_t)(diff >> (i*8));
+    for (int i = 0; i < 4; i++) nonce[12 + i] ^= (uint8_t)(gen >> (i*8));
     if (mfs && mfs->mounted) {
         
         for (int i = 0; i < 4; i++) {
@@ -226,18 +198,17 @@ int storage_decrypt_block(uint64_t ino, uint64_t block, void *buf, uint32_t gen)
     uint8_t mac_key[16];
     uint8_t tag[16];
     uint8_t want[16];
-    uint64_t tsc = read_tsc();
 
     struct mounted_fs *mfs_dec = storage_get_mounted_fs();
     const uint8_t *vol_dec = (mfs_dec && mfs_dec->mounted && mfs_dec->volume_key[0]) ?
                               mfs_dec->volume_key : (const uint8_t*)"";
 
+    /* Must reproduce the exact nonce used at encrypt time (see note there). */
     for (int i = 0; i < 8; i++) {
         nonce[i]   = (uint8_t)(ino   >> (i*8));
         nonce[8+i] = (uint8_t)(block >> (i*8));
     }
-    uint32_t diff = gen ^ (uint32_t)(tsc & 0xFFFFFFFFu);
-    for (int i = 0; i < 4; i++) nonce[12 + i] ^= (uint8_t)(diff >> (i*8));
+    for (int i = 0; i < 4; i++) nonce[12 + i] ^= (uint8_t)(gen >> (i*8));
     if (mfs_dec && mfs_dec->mounted) {
         for (int i = 0; i < 4; i++) {
             nonce[i] ^= mfs_dec->sb.volume_key_salt[i];
@@ -520,15 +491,8 @@ int storage_format(struct block_device *bd) {
     sb.data_start = 3 + (16384 / INODES_PER_BLOCK) + 1;
     sb.inode_count = 16384;
 
-    
-    uint64_t tsc = read_tsc();
-    extern uint8_t kernel_pepper[16];
-    for (int i = 0; i < 8; i++) {
-        sb.volume_key_salt[i] = (uint8_t)(tsc >> (i*8));
-    }
-    for (int i = 0; i < 8; i++) {
-        sb.volume_key_salt[8 + i] = kernel_pepper[i] ^ (uint8_t)(tsc >> (i*3));
-    }
+    /* Random per-volume salt from the central CSPRNG (was raw-TSC derived). */
+    secure_random_bytes(sb.volume_key_salt, sizeof(sb.volume_key_salt));
 
     bd->write_block(bd, 0, &sb);
 
@@ -609,19 +573,24 @@ int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t ma
         return -3;
     }
 
+    /* Per-user file master key = HKDF-SHA256(password material, salt=pepper,
+     * info="horus-user-file-key-v1" || uid). Replaces the previous custom
+     * 8-round XOR/add mixing, which had no diffusion guarantees. */
     uint8_t *mk = tasks[get_current_task()].user_file_master_key;
-    for (int i = 0; i < 32; i++) {
-        uint8_t m = (material && material_len > 0) ? (uint8_t)material[i % material_len] : 0;
-        mk[i] = m ^ kernel_pepper[i % 16] ^ (uint8_t)(uid + i);
-    }
-    
-    for (int r = 0; r < 8; r++) {
-        for (int i = 0; i < 32; i++) {
-            mk[i] = (mk[i] + mk[(i + 7) % 32] + kernel_pepper[i % 16]) ^ (uint8_t)r;
-        }
+    const uint8_t zero = 0;
+    const uint8_t *ikm = (material && material_len > 0) ? (const uint8_t *)material : &zero;
+    size_t ikm_len = (material && material_len > 0) ? material_len : 1;
+
+    uint8_t info[23 + 4];
+    const char *label = "horus-user-file-key-v1";
+    size_t p = 0;
+    for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
+    for (int i = 0; i < 4; i++) info[p++] = (uint8_t)(uid >> (i * 8));
+
+    if (rust_hkdf_sha256(ikm, ikm_len, kernel_pepper, 16, info, p, mk, 32) != 0) {
+        return -1;
     }
     tasks[get_current_task()].has_file_key = 1;
-    (void)uid;
     return 0;
 }
 
@@ -660,8 +629,10 @@ int do_rotate_keys(void)
     for (int i = 0; i < MAX_FS_OBJECTS; i++) {
         struct fs_object *o = fs_objects[i];
         if (o && o->in_use && o->owner_uid == uid && o->is_encrypted) {
-            
-            o->integrity_tag ^= 0xA5A50000U ^ (uint32_t)read_tsc();
+            /* Refresh the integrity tag with CSPRNG output (was raw TSC). */
+            uint32_t fresh = 0;
+            secure_random_bytes(&fresh, sizeof(fresh));
+            o->integrity_tag ^= fresh;
         }
     }
 
@@ -689,18 +660,11 @@ int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
     inode.mode = 0100644;
     inode.links = 1;
 
-    
-    {
-        extern uint8_t kernel_pepper[16];
-        uint64_t tsc = read_tsc();
-        for (int i = 0; i < 32; i++) {
-            inode.file_key[i] = (uint8_t)(ino + uid + i) ^ kernel_pepper[i % 16] ^
-                                (uint8_t)(tsc >> (i & 7));
-        }
-        for (int i = 0; i < 16; i++) {
-            inode.file_iv[i] = (uint8_t)(ino ^ (tsc >> i)) ^ kernel_pepper[i % 16];
-        }
-    }
+    /* Per-file key and IV from the central CSPRNG. The old code derived these
+     * from a raw TSC read (predictable from ring 3) and additionally ran its
+     * key loop to index 32 on a 16-byte array (out-of-bounds write). */
+    secure_random_bytes(inode.file_key, sizeof(inode.file_key));
+    secure_random_bytes(inode.file_iv, sizeof(inode.file_iv));
 
     storage_write_inode(mfs->bd, &mfs->sb, ino, &inode);
     storage_dir_add(mfs, dir_ino, name, ino, 1);

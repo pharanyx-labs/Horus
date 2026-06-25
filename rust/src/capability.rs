@@ -1,4 +1,5 @@
 use core::ptr;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -23,8 +24,21 @@ const MIN_DERIVED_SERIAL: u32 = 0x00010000;
 
 
 
+// Single source of truth for per-object lineage generations.
+//
+// This table is the *authority* for revocation/use-after-revoke detection.
+// The C side no longer keeps its own `lineages[]` table; it delegates every
+// generation check and bump through the `rust_lineage_check` / `rust_lineage_bump`
+// FFI below. Keeping a single table eliminates the C/Rust desync that allowed a
+// stale derived capability to pass one check while the other had been bumped.
+//
+// Each slot is an independent atomic so accesses are sound under future
+// preemption / SMP. On the current single-core cooperative kernel the atomics
+// compile down to plain loads/stores plus a `lock`-prefixed add.
 const LINEAGE_SLOTS: usize = 4096;
-static mut LINEAGE_GEN: [u32; LINEAGE_SLOTS] = [0u32; LINEAGE_SLOTS];
+#[allow(clippy::declare_interior_mutable_const)]
+const LINEAGE_ZERO: AtomicU32 = AtomicU32::new(0);
+static LINEAGE_GEN: [AtomicU32; LINEAGE_SLOTS] = [LINEAGE_ZERO; LINEAGE_SLOTS];
 
 
 
@@ -39,13 +53,32 @@ fn lineage_idx(obj: u64) -> usize {
     (x as usize) & (LINEAGE_SLOTS - 1)
 }
 
+/// Bump the generation for `obj`, invalidating every capability minted against
+/// the previous generation. Returns the new generation. Generation 0 is reserved
+/// to mean "untracked", so we skip it on wrap-around.
 #[inline]
-unsafe fn bump_lineage(obj: u64) -> u32 {
+fn bump_lineage(obj: u64) -> u32 {
     if obj == 0 { return 0; }
     let idx = lineage_idx(obj);
-    let g = LINEAGE_GEN[idx].wrapping_add(1);
-    LINEAGE_GEN[idx] = if g == 0 { 1 } else { g };
-    LINEAGE_GEN[idx]
+    let prev = LINEAGE_GEN[idx].fetch_add(1, Ordering::SeqCst);
+    let g = prev.wrapping_add(1);
+    if g == 0 {
+        // Wrapped back onto the reserved "untracked" value; force to 1.
+        LINEAGE_GEN[idx].store(1, Ordering::SeqCst);
+        1
+    } else {
+        g
+    }
+}
+
+/// Authoritative validity check: is a capability that recorded `gen` for `obj`
+/// still live? A cap is stale only when the lineage is tracked (`cg != 0`), the
+/// cap carries a concrete generation (`gen != 0`), and they disagree.
+#[inline]
+fn lineage_check(obj: u64, gen: u32) -> bool {
+    if obj == 0 { return true; }
+    let cg = LINEAGE_GEN[lineage_idx(obj)].load(Ordering::SeqCst);
+    !(cg != 0 && gen != 0 && gen != cg)
 }
 
 #[no_mangle]
@@ -78,11 +111,8 @@ pub unsafe extern "C" fn rust_cap_lookup(
     if cap.serial == 0 {
         return ptr::null_mut();
     }
-    if cap.object != 0 {
-        let cg = LINEAGE_GEN[lineage_idx(cap.object)];
-        if cg != 0 && cap.generation != 0 && cap.generation != cg {
-            return ptr::null_mut();
-        }
+    if cap.object != 0 && !lineage_check(cap.object, cap.generation) {
+        return ptr::null_mut();
     }
     cap
 }
@@ -156,8 +186,9 @@ pub unsafe extern "C" fn rust_cap_mint(
         generation: src.generation,
     };
     if src.object != 0 {
-        let idx = lineage_idx(src.object);
-        if LINEAGE_GEN[idx] < src.generation { LINEAGE_GEN[idx] = src.generation; }
+        // Adopt the parent's generation as the floor for this lineage so the
+        // authority never lags behind a legitimately-minted capability.
+        LINEAGE_GEN[lineage_idx(src.object)].fetch_max(src.generation, Ordering::SeqCst);
     }
     true
 }
@@ -325,8 +356,14 @@ pub unsafe extern "C" fn rust_cap_revoke_by_values(cspace:*mut Capability,cspace
  true
 }
 
+/// FFI: bump the lineage generation for `obj`. Sole way for C to invalidate a lineage.
 #[no_mangle]
-pub unsafe extern "C" fn rust_lineage_bump(obj: u64) -> u32 { bump_lineage(obj) }
+pub extern "C" fn rust_lineage_bump(obj: u64) -> u32 { bump_lineage(obj) }
+
+/// FFI: check whether a capability recording `gen` for `obj` is still valid.
+/// C's `capability_validate_generation` delegates here so both sides agree.
+#[no_mangle]
+pub extern "C" fn rust_lineage_check(obj: u64, gen: u32) -> bool { lineage_check(obj, gen) }
 
 #[cfg(test)]
 mod tests {

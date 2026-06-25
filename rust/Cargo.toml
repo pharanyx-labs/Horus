@@ -1,0 +1,18 @@
+[package]
+name = "horus_shell"
+version = "0.1.0"
+edition = "2021"
+description = "Security-critical components for the Horus microkernel (no_std staticlib)"
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

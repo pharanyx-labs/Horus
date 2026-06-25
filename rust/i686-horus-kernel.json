@@ -1,0 +1,22 @@
+{
+  "arch": "x86",
+  "cpu": "i686",
+  "data-layout": "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-f64:32:64-f80:32-n8:16:32-S128",
+  "disable-redzone": true,
+  "env": "unknown",
+  "executables": true,
+  "features": "-mmx,-sse,+soft-float",
+  "is-builtin": false,
+  "linker": "ld",
+  "linker-flavor": "ld",
+  "llvm-target": "i686-unknown-none",
+  "max-atomic-width": 32,
+  "os": "none",
+  "panic-strategy": "abort",
+  "relocation-model": "static",
+  "target-pointer-width": "32",
+  "vendor": "unknown",
+  "pre-link-args": {
+    "ld": ["-m", "elf_i386", "-nostdlib"]
+  }
+}

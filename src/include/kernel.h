@@ -437,9 +437,25 @@ bool rust_cap_mint(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,
 bool rust_cap_transfer(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,
                        uint32_t src_slot, uint32_t *next_serial);
 bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t *next_serial);
-bool rust_cap_revoke_by_values(capability_t *cspace,uint32_t sz,uint32_t ts,uint32_t tb,uint64_t to);
-bool rust_validate_page_fault(uint32_t t, uint32_t a, uint32_t e);
 bool rust_cap_revoke_by_values(capability_t *cspace, uint32_t sz, uint32_t target_serial, uint32_t target_badge, uint64_t target_obj);
+
+/* One capability space, for the system-wide revocation sweep. Layout MUST match
+ * `struct CSpaceDesc` in rust/src/capability.rs. */
+typedef struct cspace_desc {
+    capability_t *caps;
+    uint32_t      size;
+    uint32_t     *caps_in_use; /* owning task's counter; NULL to skip accounting */
+} cspace_desc_t;
+
+/* Authoritative, system-wide revocation: revokes target_slot in target_cspace
+ * and sweeps every cspace in `spaces` for derived copies of the same lineage.
+ * Must be called under cap_lock so the snapshot is stable. */
+bool rust_cap_revoke_global(capability_t *target_cspace, uint32_t target_cspace_size,
+                            uint32_t target_slot, uint32_t *target_caps_in_use,
+                            const cspace_desc_t *spaces, uint32_t space_count,
+                            uint32_t *next_serial);
+
+bool rust_validate_page_fault(uint32_t t, uint32_t a, uint32_t e);
 int  rust_handle_command(const uint8_t *cmd, size_t len);
 
 

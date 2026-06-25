@@ -97,11 +97,13 @@ All capability operations live in `rust/src/capability.rs` (safe Rust) and are c
 | **Mint** | Creates a derived capability with a subset of the parent's rights. The new capability records the parent's serial as its badge. |
 | **Transfer** | Copies a capability into another task's CNode with the same rights. |
 | **Move** | Transfer, then immediately nullify the source slot. |
-| **Revoke** | Nullifies the target capability, scans every task's CNode for capabilities whose badge matches the revoked serial, nullifies those too, and bumps the lineage generation counter. |
+| **Revoke** | System-wide. A single Rust entry point (`rust_cap_revoke_global`) nullifies the target capability and then sweeps **every live task's CNode plus the kernel root cnode**, nullifying any capability whose serial, badge, or object matches the revoked lineage, and bumps the lineage generation counter exactly once. |
 
 ### Revocation and lineage
 
-The system prevents use-after-revoke via a **lineage table** with 1,024 entries. Each entry is a generation counter. When a capability is minted, it records the current generation number for its lineage slot. At use time the kernel checks whether the stored generation still matches; a revocation bumps the counter, making all previously minted copies invalid immediately.
+Revocation is **complete, not caller-local**: the C wrapper `cap_revoke` (under `cap_lock`) builds the list of all live cspaces and passes it to `rust_cap_revoke_global`, which performs the entire sweep inside one Rust call. A derived capability copied into another task's CNode is therefore revoked together with its parent — there is no window in which another task retains access after revocation.
+
+The system additionally prevents use-after-revoke via a **lineage table** (`LINEAGE_SLOTS` = 4,096 entries, mirrored by `MAX_LINEAGES` in the C header). Each entry is a generation counter, and the Rust table is the single source of truth. When a capability is minted it records the current generation for its lineage slot; at use time `rust_cap_lookup` checks whether the stored generation still matches. A revocation bumps the counter, so even a stale bit pattern that somehow escaped the structural sweep fails the generation check immediately. The structural sweep and the generation bump are defence-in-depth for the same invariant.
 
 **Primordial capabilities** — root capabilities assigned at boot, identified by the `0xC0DE` serial prefix — cannot be revoked. A serial-range check in the Rust revocation path enforces this.
 

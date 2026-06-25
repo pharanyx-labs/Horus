@@ -1,0 +1,876 @@
+#include "kernel.h"
+
+extern uint8_t stack_top[];
+extern tcb_t tasks[MAX_TASKS];
+
+#define PAGE_PRESENT   (1 << 0)
+#define PAGE_WRITE     (1 << 1)
+#define PAGE_USER      (1 << 2)
+#define PAGE_WT        (1 << 3)
+#define PAGE_CD        (1 << 4)
+#define PAGE_ACCESSED  (1 << 5)
+#define PAGE_DIRTY     (1 << 6)
+#define PAGE_4MB       (1 << 7)
+#define PAGE_GLOBAL    (1 << 8)
+#define PAGE_COW       (1 << 9)
+
+#define RECURSIVE_PD_VADDR  0xFFFFF000
+#define RECURSIVE_PT_VADDR  0xFFC00000
+
+#define RECURSIVE_PML4_VADDR  0xFFFFFFFFFFFFF000ULL
+#define RECURSIVE_PDPT_VADDR  0xFFFFFFFFFFE00000ULL
+#define RECURSIVE_PD_VADDR64  0xFFFFFFFFC0000000ULL
+#define RECURSIVE_PT_VADDR64  0xFFFFFF8000000000ULL
+
+
+
+typedef uint32_t pte_t;
+typedef uint32_t pde_t;
+
+static uint32_t free_page_stack[USER_PHYS_PAGES];
+static int free_page_count = 0;
+static uint16_t page_refcounts[USER_PHYS_PAGES];
+
+uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
+
+static void init_user_page_allocator(void) {
+    
+    free_page_count = 0;
+    for (int i = 0; i < USER_PHYS_PAGES; i++) {
+        page_refcounts[i] = 0;
+    }
+    for (int i = USER_PHYS_PAGES - 1; i >= 0; i--) {
+        free_page_stack[free_page_count++] = USER_PHYS_BASE + (i * PAGE_SIZE);
+    }
+}
+
+uint32_t alloc_user_physical_page(void) {
+    
+    if (free_page_count == 0) {
+        return 0;
+    }
+    uint32_t phys = free_page_stack[--free_page_count];
+    int idx = (phys - USER_PHYS_BASE) / PAGE_SIZE;
+    if (idx >= 0 && idx < USER_PHYS_PAGES) {
+        page_refcounts[idx] = 1;
+    }
+    return phys;
+}
+
+void free_user_physical_page(uint32_t phys_addr) {
+    int idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
+    if (idx >= 0 && idx < USER_PHYS_PAGES) {
+        page_refcounts[idx] = 0;
+    }
+    if (free_page_count < USER_PHYS_PAGES) {
+        free_page_stack[free_page_count++] = phys_addr;
+    }
+}
+
+void page_ref_inc(uint32_t phys_addr) {
+    int idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
+    if (idx >= 0 && idx < USER_PHYS_PAGES) {
+        page_refcounts[idx]++;
+    }
+}
+
+int page_ref_dec(uint32_t phys_addr) {
+    int idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
+    if (idx >= 0 && idx < USER_PHYS_PAGES && page_refcounts[idx] > 0) {
+        page_refcounts[idx]--;
+        return page_refcounts[idx];
+    }
+    return 0;
+}
+
+static pde_t kernel_page_dir[1024] __attribute__((used, aligned(4096)));
+
+#if !defined(__x86_64__)
+static const uint8_t user_shell_code[] = {
+    0x3e, 0x20, 0x00,
+    0xb8, 0x01, 0x00, 0x00, 0x00,
+    0xbb, 0x00, 0x00, 0x40, 0x00,
+    0xcd, 0x80,
+    0xb8, 0x03, 0x00, 0x00, 0x00,
+    0xbb, 0x00, 0x10, 0x40, 0x00,
+    0xcd, 0x80,
+    0xb8, 0x07, 0x00, 0x00, 0x00,
+    0xbb, 0x00, 0x10, 0x40, 0x00,
+    0xcd, 0x80,
+    0xeb, 0xda,
+    0x00
+};
+#endif
+
+void ensure_lapic_mapped(uint64_t *root);
+
+void paging_init(void) {
+#if defined(__x86_64__)
+    init_user_page_allocator();
+    set_tss_kernel_stack(KERNEL_TSS_STACK);
+    extern platform_info_t platform;
+    if (platform.has_smap) {
+        uint64_t cr4;
+        asm volatile("mov %%cr4, %0" : "=r"(cr4));
+        cr4 |= (1ULL << 21);
+        asm volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
+    }
+    extern uint64_t pml4[512];
+    if ((pml4[510] & 0x1) == 0) {
+        pml4[510] = ((uint64_t)pml4) | 0x3;
+    }
+    ensure_lapic_mapped(NULL);
+    return;
+#else
+    for (int i = 0; i < 1024; i++) {
+        kernel_page_dir[i] = 0;
+    }
+
+    static pte_t low_mem_pt[16384] __attribute__((aligned(4096)));
+    for (int i = 0; i < 16384; i++) {
+        low_mem_pt[i] = (i * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE | PAGE_GLOBAL;
+    }
+    for (int pd_idx = 0; pd_idx < 16; pd_idx++) {
+        kernel_page_dir[pd_idx] = ((addr_t)&low_mem_pt[pd_idx * 1024]) | PAGE_PRESENT | PAGE_WRITE;
+    }
+
+    kernel_page_dir[1023] = ((addr_t)kernel_page_dir) | PAGE_PRESENT | PAGE_WRITE;
+
+    init_user_page_allocator();
+
+    static pte_t user_pt[1024] __attribute__((aligned(4096)));
+    for (int i = 0; i < 1024; i++) {
+        user_pt[i] = (0x400000 + i * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+    }
+    kernel_page_dir[1] = ((addr_t)user_pt) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+
+    asm volatile("mov %0, %%cr3" :: "r"((addr_t)kernel_page_dir));
+
+    uint32_t cr0;
+    asm volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= (1 << 31) | (1 << 16);
+    asm volatile("mov %0, %%cr0" :: "r"(cr0));
+
+    uint8_t* dest = (uint8_t*)USER_VIRT_BASE;
+    for (size_t i = 0; i < sizeof(user_shell_code); i++) {
+        dest[i] = user_shell_code[i];
+    }
+
+    set_tss_kernel_stack(KERNEL_TSS_STACK);
+#endif
+}
+
+void create_user_pagedir(uint32_t task_id) {
+    if (task_id >= MAX_TASKS) return;
+    if (task_id == 0) {
+        tasks[task_id].cr3 = 0;
+        return;
+    }
+
+    spin_lock(&page_lock);
+#if defined(__x86_64__)
+    
+    uint64_t pml4_phys = alloc_user_physical_page();
+    if (pml4_phys == 0) { println("pagedir: no pml4 phys"); spin_unlock(&page_lock); return; }
+    uint64_t *pml4_tab = (uint64_t *)(uintptr_t)pml4_phys;
+    for (int i = 0; i < 512; i++) pml4_tab[i] = 0;
+
+    
+    pml4_tab[510] = pml4_phys | PAGE_PRESENT | PAGE_WRITE;
+
+    extern uint64_t pml4[512];
+
+    
+    for (int i = 0; i < 256; i++) {
+        pml4_tab[i] = 0;
+    }
+    
+    for (int i = 256; i < 512; i++) {
+        pml4_tab[i] = pml4[i] & ~((uint64_t)PAGE_USER);
+        pml4_tab[i] &= ~(1ULL << 2);
+    }
+
+    
+    uint64_t pdpt_phys = alloc_user_physical_page();
+    if (pdpt_phys == 0) { println("pagedir: no pdpt phys"); spin_unlock(&page_lock); return; }
+    uint64_t *my_pdpt = (uint64_t *)(uintptr_t)pdpt_phys;
+    for (int j = 0; j < 512; j++) my_pdpt[j] = 0;
+
+    uint64_t pd_phys = alloc_user_physical_page();
+    if (pd_phys == 0) { println("pagedir: no pd phys"); spin_unlock(&page_lock); return; }
+    uint64_t *my_pd = (uint64_t *)(uintptr_t)pd_phys;
+    for (int j = 0; j < 512; j++) my_pd[j] = 0;
+
+    
+    uint64_t my_pd_phys = pd_phys;
+    my_pdpt[0] = my_pd_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+
+    for (int kp = 0; kp < 8; kp++) {
+        if (my_pd[kp] == 0) {
+            uint64_t base = (uint64_t)kp * 0x200000ULL;
+            my_pd[kp] = base | PAGE_PRESENT | PAGE_WRITE | (1 << 7);
+        }
+    }
+
+    
+    
+    
+    
+    
+
+    int pages_to_map = (int)USER_ASPACE_PREMAP_PAGES;
+    uint64_t vbase = USER_AREA_BASE;
+    int pdi = (int)((vbase >> 21) & 511);
+
+    for (int p = 0; p < pages_to_map && pdi < 512; p++) {
+        int pt_idx = p & 511;
+        if (pt_idx == 0) {
+
+            uint64_t pt_phys = alloc_user_physical_page();
+            if (pt_phys == 0) break;
+            uint64_t *pt = (uint64_t *)pt_phys;
+
+            uint64_t region_base = (uint64_t)pdi * 0x200000ULL;
+            for (int k = 0; k < 512; k++)
+                pt[k] = (region_base + (uint64_t)k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
+            my_pd[pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+        }
+
+        uint64_t *cur_pt = (uint64_t *)(my_pd[pdi] & ~0xFFFULL);
+        if (!cur_pt) break;
+
+        uint64_t phys = alloc_user_physical_page();
+        if (phys == 0) break;
+
+        
+        uint8_t *pg = (uint8_t *)phys;
+        for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
+
+        uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(vbase + (uint64_t)p * PAGE_SIZE));
+        uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+        cur_pt[pt_idx] = phys | flags;
+
+        if (((p + 1) & 511) == 0) pdi++;
+    }
+
+    
+    uint64_t hs_base = (ASLR_HIGH_STACK_BASE - (32 * PAGE_SIZE)) & ~0xFFFULL;
+    int hs_pdi = (int)((hs_base >> 21) & 511);
+    if (hs_pdi < 512 && my_pd[hs_pdi] == 0) {
+        uint64_t pt_phys = alloc_user_physical_page();
+        if (pt_phys) {
+            uint64_t *pt = (uint64_t *)pt_phys;
+            for (int k = 0; k < 512; k++) pt[k] = 0;
+            my_pd[hs_pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+
+            
+            for (int s = 0; s < 64; s++) {
+                uint64_t phys = alloc_user_physical_page();
+                if (phys == 0) break;
+                uint8_t *pg = (uint8_t *)phys; for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
+                int spti = ((hs_base + (uint64_t)s * PAGE_SIZE) >> 12) & 511;
+                uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(hs_base + (uint64_t)s * PAGE_SIZE));
+                uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+                pt[spti] = phys | flags;
+            }
+        }
+    }
+
+    
+    {
+        uint64_t low_stack_top = 0x007ff000ULL;
+        uint64_t low_stack_base = low_stack_top - (32ULL * PAGE_SIZE);
+        int ls_pdi = (int)((low_stack_base >> 21) & 511);
+        if (ls_pdi < 512) {
+            uint64_t pt_phys = alloc_user_physical_page();
+            if (pt_phys) {
+                uint64_t *pt = (uint64_t *)pt_phys;
+
+                uint64_t ls_region_base = (uint64_t)ls_pdi * 0x200000ULL;
+                for (int k = 0; k < 512; k++)
+                    pt[k] = (ls_region_base + (uint64_t)k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
+                my_pd[ls_pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+                for (int s = 0; s < 32; s++) {
+                    uint64_t phys = alloc_user_physical_page();
+                    if (phys == 0) break;
+                    uint8_t *pg = (uint8_t *)(uintptr_t)phys;
+                    for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
+                    uint64_t va = low_stack_base + (uint64_t)s * PAGE_SIZE;
+                    int spti = (int)((va >> 12) & 511);
+                    pt[spti] = phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+                }
+            }
+        }
+    }
+
+    uint64_t my_pdpt_phys = pdpt_phys;
+    
+    pml4_tab[0] = my_pdpt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+
+    
+    pml4_tab[510] = pml4_phys | PAGE_PRESENT | PAGE_WRITE;
+
+    ensure_lapic_mapped(pml4_tab);
+
+    tasks[task_id].cr3 = pml4_phys;
+
+    
+    static uint8_t per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2] __attribute__((aligned(4096)));
+    uint8_t *stack_area = per_task_kstacks[task_id];
+    uint64_t guard_vaddr = (uint64_t)stack_area;
+    uint64_t stack_base = guard_vaddr + PAGE_SIZE;
+    tasks[task_id].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
+#else
+    static pde_t pd_pool[MAX_TASKS][1024] __attribute__((aligned(4096)));
+    static int next_pd = 0;
+
+    if (next_pd >= MAX_TASKS) {
+        spin_unlock(&page_lock);
+        return;
+    }
+
+    pde_t *pd = pd_pool[next_pd++];
+    for (int i = 0; i < 1024; i++) {
+        pd[i] = 0;
+    }
+
+    pd[0] = kernel_page_dir[0];
+    pd[1023] = kernel_page_dir[1023];
+
+    static pte_t user_pts[16][1024] __attribute__((aligned(4096)));
+    pte_t *upt = user_pts[task_id];
+    for (int i = 0; i < 1024; i++) {
+        upt[i] = 0;
+    }
+
+    const int INITIAL_PREMAP_PAGES = 64;
+    for (int i = 0; i < USER_MAP_PAGES; i++) {
+        uint32_t vaddr = USER_AREA_BASE + i * PAGE_SIZE;
+        uint32_t prot = rust_get_user_page_protection(task_id, vaddr);
+        if (i < INITIAL_PREMAP_PAGES) {
+            upt[i] = vaddr | prot | PAGE_PRESENT;
+        } else {
+            upt[i] = vaddr | prot;
+        }
+    }
+
+    uint32_t guard_page = 0x7FB000;
+    upt[(guard_page - USER_AREA_BASE) >> 12] = 0;
+
+    for (int i = 0; i < 4; i++) {
+        uint32_t vaddr = 0x7FF000 - (3 - i) * PAGE_SIZE;
+        uint32_t prot = rust_get_user_page_protection(task_id, vaddr);
+        upt[(vaddr - USER_AREA_BASE) >> 12] = vaddr | prot;
+    }
+
+    pd[1] = ((addr_t)upt) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+
+    uint32_t phys_pd = (addr_t)pd;
+    tasks[task_id].cr3 = phys_pd;
+
+    static uint8_t per_task_kstacks[MAX_TASKS][2 * PAGE_SIZE] __attribute__((aligned(4096)));
+    uint8_t *stack_area = per_task_kstacks[task_id];
+    uint32_t guard_vaddr = (addr_t)stack_area;
+    uint32_t stack_base  = guard_vaddr + PAGE_SIZE;
+
+    tasks[task_id].kernel_stack_top = stack_base + PAGE_SIZE - 16;
+#endif
+    spin_unlock(&page_lock);
+}
+
+void switch_cr3(addr_t cr3) {
+#if defined(__x86_64__)
+    
+    if (cr3 == 0) {
+        
+        for(;;) { asm volatile("cli; hlt"); }
+    }
+    
+    if ((cr3 & 0xFFFULL) != 0) {
+        for(;;) { asm volatile("cli; hlt"); }
+    }
+    asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+    
+    smp_maybe_shootdown(0); 
+#else
+    if (cr3 == 0) return;
+    asm volatile("mov %0, %%cr3" :: "r"(cr3));
+#endif
+}
+
+#define PAGE_COW   (1 << 9)
+
+int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
+#if defined(__x86_64__)
+    
+    uint64_t cr3_phys = tasks[get_current_task()].cr3;
+    if (cr3_phys == 0) {
+        
+        int tid = get_current_task();
+        tasks[tid].state = 0;
+        spin_unlock(&page_lock);
+        return -1;
+    }
+
+    spin_lock(&page_lock);
+
+    uint64_t *pml4v = (uint64_t *)cr3_phys;
+
+    uint64_t v = fault_addr;
+    uint64_t pml4_i = (v >> 39) & 0x1FF;
+    uint64_t pdpt_i = (v >> 30) & 0x1FF;
+    uint64_t pd_i   = (v >> 21) & 0x1FF;
+    uint64_t pt_i   = (v >> 12) & 0x1FF;
+
+    uint64_t pml4e = pml4v[pml4_i];
+    if ((pml4e & PAGE_PRESENT) == 0) { spin_unlock(&page_lock); return -1; }
+    uint64_t *pdptv = (uint64_t *)(pml4e & ~0xFFFULL);
+
+    uint64_t pdpte = pdptv[pdpt_i];
+    if ((pdpte & PAGE_PRESENT) == 0) {
+        
+        uint64_t new_pd_phys = alloc_user_physical_page();
+        if (new_pd_phys == 0) { spin_unlock(&page_lock); return -3; }
+        uint64_t *new_pd = (uint64_t *)new_pd_phys;
+        for (int i = 0; i < 512; i++) new_pd[i] = 0;
+        pdptv[pdpt_i] = new_pd_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+        pdpte = pdptv[pdpt_i];
+        asm volatile("invlpg (%0)" :: "r"(v) : "memory");
+    }
+    uint64_t *pdv = (uint64_t *)(pdpte & ~0xFFFULL);
+
+    uint64_t pde = pdv[pd_i];
+    if ((pde & PAGE_PRESENT) == 0) {
+        
+        uint64_t new_pt_phys = alloc_user_physical_page();
+        if (new_pt_phys == 0) { spin_unlock(&page_lock); return -3; }
+        uint64_t *new_pt = (uint64_t *)new_pt_phys;
+        for (int i = 0; i < 512; i++) new_pt[i] = 0;
+        pdv[pd_i] = new_pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+        pde = pdv[pd_i];
+        asm volatile("invlpg (%0)" :: "r"(v) : "memory");
+    }
+    uint64_t *ptv = (uint64_t *)(pde & ~0xFFFULL);
+
+    uint64_t pte = ptv[pt_i];
+
+    int is_write = (err_code & 2) != 0;
+
+    if (is_write && (pte & PAGE_COW) != 0) {
+        uint64_t old_phys = pte & ~0xFFFULL;
+
+        
+        int refs = rust_page_ref_dec((uint32_t)old_phys,
+                                     page_refcounts,
+                                     (uint32_t)USER_PHYS_PAGES);
+
+        
+        int is_write_f = 1;
+        if (!rust_cow_copy_required(true, is_write_f != 0, (uint16_t)((refs > 0 ? refs : 0) + 1))) {
+            if (refs >= 0) {
+                (void)rust_page_ref_inc((uint32_t)old_phys,
+                                        page_refcounts,
+                                        (uint32_t)USER_PHYS_PAGES);
+            }
+            spin_unlock(&page_lock);
+            return 0;
+        }
+
+        uint64_t new_phys = alloc_user_physical_page();
+        if (new_phys == 0) {
+            if (refs >= 0) {
+                (void)rust_page_ref_inc((uint32_t)old_phys,
+                                        page_refcounts,
+                                        (uint32_t)USER_PHYS_PAGES);
+            }
+            spin_unlock(&page_lock);
+            return -3;
+        }
+
+        uint8_t *src = (uint8_t *)(addr_t)old_phys;
+        uint8_t *dst = (uint8_t *)(addr_t)new_phys;
+        for (int i = 0; i < PAGE_SIZE; i++) dst[i] = src[i];
+
+        (void)rust_page_ref_inc((uint32_t)new_phys,
+                                page_refcounts,
+                                (uint32_t)USER_PHYS_PAGES);
+
+        uint64_t new_flags = (pte & 0xFFFULL) | PAGE_PRESENT | PAGE_WRITE;
+        new_flags &= ~((uint64_t)PAGE_COW);
+        ptv[pt_i] = new_phys | new_flags;
+
+        asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
+        spin_unlock(&page_lock);
+        return 0;
+    }
+
+    if ((pte & PAGE_PRESENT) != 0) {
+        
+        spin_unlock(&page_lock);
+        return -2;
+    }
+
+    
+    uint64_t phys = alloc_user_physical_page();
+    if (phys == 0) {
+        spin_unlock(&page_lock);
+        return -3;
+    }
+
+    uint8_t *page = (uint8_t *)(addr_t)phys;
+    for (int i = 0; i < PAGE_SIZE; i++) page[i] = 0;
+
+    uint32_t prot = rust_get_user_page_protection(get_current_task(), fault_addr);
+    uint64_t flags = prot ? (prot & 0x7ULL) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    ptv[pt_i] = phys | flags | PAGE_PRESENT;
+
+    asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
+    spin_unlock(&page_lock);
+    return 0;
+#else
+    uint32_t pd_index = fault_addr >> 22;
+    uint32_t pt_index = (fault_addr >> 12) & 0x3FF;
+
+    pde_t *pd = (pde_t *)RECURSIVE_PD_VADDR;
+    if ((pd[pd_index] & PAGE_PRESENT) == 0) {
+        return -1;
+    }
+
+    pte_t *pt = (pte_t *)((addr_t)RECURSIVE_PT_VADDR + (pd_index * PAGE_SIZE));
+    pte_t entry = pt[pt_index];
+
+    if ((err_code & 2) != 0 && (entry & PAGE_COW) != 0) {
+        uint32_t old_phys = entry & ~0xFFF;
+        int refs = page_ref_dec(old_phys);
+
+        uint32_t new_phys = alloc_user_physical_page();
+        if (new_phys == 0) {
+            if (refs >= 0) page_ref_inc(old_phys);
+            return -3;
+        }
+
+        uint8_t *src = (uint8_t *)(addr_t)old_phys;
+        uint8_t *dst = (uint8_t *)(addr_t)new_phys;
+        for (int i = 0; i < PAGE_SIZE; i++) dst[i] = src[i];
+
+        page_ref_inc(new_phys);
+
+        uint32_t new_prot = (entry & 0xFFF) | PAGE_PRESENT | PAGE_WRITE;
+        new_prot &= ~PAGE_COW;
+        pt[pt_index] = new_phys | new_prot;
+
+        asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
+        return 0;
+    }
+
+    if ((entry & PAGE_PRESENT) != 0) {
+        return -2;
+    }
+
+    uint32_t phys = alloc_user_physical_page();
+    if (phys == 0) {
+        return -3;
+    }
+
+    uint8_t *page = (uint8_t *)(addr_t)phys;
+    for (int i = 0; i < PAGE_SIZE; i++) page[i] = 0;
+
+    uint32_t prot = entry & 0xFFF;
+    pt[pt_index] = phys | prot | PAGE_PRESENT;
+
+    asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
+
+    return 0;
+#endif
+}
+
+void drop_to_ring3(addr_t entry, addr_t stack) {
+#if defined(__x86_64__)
+    __asm__ volatile ("movw $0x3f8,%%dx; movb $'E',%%al; outb %%al,%%dx; movb $'N',%%al; outb %%al,%%dx; movb $'T',%%al; outb %%al,%%dx" ::: "rax","rdx","memory");
+    asm volatile (
+        "cli\n"
+        "mov $0x33, %%ax\n"
+        "mov %%ax, %%ds\n"
+        "mov %%ax, %%es\n"
+        "mov %%ax, %%fs\n"
+        "mov %%ax, %%gs\n"
+        "push $0x33\n"
+        "push %[user_rsp]\n"
+        "push $0x202\n"
+        "push $0x2b\n"
+        "push %[user_rip]\n"
+        "iretq\n"
+        :
+        : [user_rsp] "r" (stack),
+          [user_rip] "r" (entry)
+        : "memory", "rax"
+    );
+#else
+    uint32_t eflags = 0x200;
+
+    asm volatile (
+        "cli\n"
+        "push $0x23\n"
+        "push %[user_esp]\n"
+        "push %[eflags]\n"
+        "push $0x1B\n"
+        "push %[user_eip]\n"
+        "mov $0x23, %%dx\n"
+        "mov %%dx, %%ds\n"
+        "mov %%dx, %%es\n"
+        "mov %%dx, %%fs\n"
+        "mov %%dx, %%gs\n"
+        "xor %%ecx, %%ecx\n"
+        "mov %%ecx, %%dr0\n"
+        "mov %%ecx, %%dr1\n"
+        "mov %%ecx, %%dr2\n"
+        "mov %%ecx, %%dr3\n"
+        "mov %%ecx, %%dr6\n"
+        "mov %%ecx, %%dr7\n"
+        "iret\n"
+        : 
+        : [user_esp] "m" (stack),
+          [user_eip] "m" (entry),
+          [eflags]   "m" (eflags)
+        : "ecx", "edx", "memory"
+    );
+#endif
+}
+
+static bool is_canonical_address(uint64_t addr) {
+    uint64_t high_bits = addr >> 48;
+    return (high_bits == 0) || (high_bits == 0xFFFF);
+}
+
+static bool __attribute__((unused)) is_user_address_valid(uint64_t vaddr) {
+#if defined(__x86_64__)
+    if (!is_canonical_address(vaddr)) return false;
+    if (vaddr >= 0x0000800000000000ULL) return false; 
+
+    
+    if (vaddr >= USER_AREA_BASE && vaddr < USER_MAX_VADDR) return true;
+
+    
+    if (vaddr >= (ASLR_HIGH_STACK_BASE - USER_HIGH_STACK_WINDOW) &&
+        vaddr < (ASLR_HIGH_STACK_BASE + 0x1000)) return true;
+
+    return false;
+#else
+    uint32_t pd_index = (uint32_t)vaddr >> 22;
+    uint32_t pt_index = ((uint32_t)vaddr >> 12) & 0x3FF;
+
+    pde_t *pd = (pde_t *)RECURSIVE_PD_VADDR;
+    if ((pd[pd_index] & PAGE_PRESENT) == 0) return false;
+
+    pte_t *pt = (pte_t *)((addr_t)RECURSIVE_PT_VADDR + (pd_index * PAGE_SIZE));
+    if ((pt[pt_index] & PAGE_PRESENT) == 0) return false;
+
+    if ((pt[pt_index] & PAGE_USER) == 0) return false;
+
+    return true;
+#endif
+}
+
+#if defined(__x86_64__)
+#define PT_PHYS_MASK 0x000FFFFFFFFFF000ULL
+
+
+static uint64_t pt_walk(uint64_t cr3, uint64_t v) {
+    uint64_t *t = (uint64_t *)(uintptr_t)(cr3 & PT_PHYS_MASK);
+    uint64_t e = t[(v >> 39) & 0x1FF];
+    if (!(e & PAGE_PRESENT)) return 0;
+    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    e = t[(v >> 30) & 0x1FF];
+    if (!(e & PAGE_PRESENT)) return 0;
+    if (e & PAGE_4MB) return e;                 
+    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    e = t[(v >> 21) & 0x1FF];
+    if (!(e & PAGE_PRESENT)) return 0;
+    if (e & PAGE_4MB) return e;                 
+    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    e = t[(v >> 12) & 0x1FF];
+    if (!(e & PAGE_PRESENT)) return 0;
+    return e;
+}
+
+
+static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int need_write) {
+    if (n == 0) return 0;
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) return -1;
+    uint64_t ucr3 = tasks[cur].cr3;
+    if (ucr3 == 0) return -1;
+    if (!is_canonical_address(uaddr) || (uaddr + n) < uaddr) return -1;
+
+    extern uint64_t pml4[512];
+    uint64_t kcr3_phys = (uint64_t)(uintptr_t)pml4;
+
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
+    uint64_t prev_cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3_phys) : "memory");
+
+    int rc = 0;
+    size_t done = 0;
+    uint64_t need = PAGE_PRESENT | PAGE_USER | (need_write ? (uint64_t)PAGE_WRITE : 0);
+    while (done < n) {
+        uint64_t v = uaddr + done;
+        uint64_t e = pt_walk(ucr3, v);
+        if ((e & need) != need) { rc = -1; break; }
+
+        uint64_t phys, chunk;
+        if (e & PAGE_4MB) {
+            phys  = (e & 0x000FFFFFFFE00000ULL) + (v & 0x1FFFFF);
+            chunk = 0x200000 - (v & 0x1FFFFF);
+        } else {
+            phys  = (e & PT_PHYS_MASK) + (v & 0xFFF);
+            chunk = 0x1000 - (v & 0xFFF);
+        }
+        if (chunk > n - done) chunk = n - done;
+
+        uint8_t *p = (uint8_t *)(uintptr_t)phys;
+        if (to_user) {
+            for (uint64_t i = 0; i < chunk; i++) p[i] = kbuf[done + i];
+        } else {
+            for (uint64_t i = 0; i < chunk; i++) kbuf[done + i] = p[i];
+        }
+        done += chunk;
+    }
+
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(prev_cr3) : "memory");
+    if (fl & 0x200) __asm__ volatile ("sti" ::: "memory");
+    return rc;
+}
+
+int copy_from_user(void *dst, const void *src, size_t n) {
+    if (n == 0) return 0;
+    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
+    return user_copy((uint64_t)(uintptr_t)src, (uint8_t *)dst, n, 0, 0);
+}
+
+int copy_to_user(void *dst, const void *src, size_t n) {
+    if (n == 0) return 0;
+    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
+    return user_copy((uint64_t)(uintptr_t)dst, (uint8_t *)(void *)src, n, 1, 1);
+}
+#else
+int copy_from_user(void *dst, const void *src, size_t n) {
+
+    if (n == 0) return 0;
+    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
+
+    uint64_t saddr = (uint64_t)src;
+    uintptr_t daddr = (uintptr_t)dst;
+
+    if (!is_canonical_address(saddr) ||
+        !is_user_address_valid(saddr) ||
+        !is_user_address_valid(saddr + n - 1) ||
+        daddr + n < daddr) {
+        return -1;
+    }
+
+    uint8_t *d = dst; const uint8_t *s = src;
+    for (size_t i = 0; i < n; i++) d[i] = s[i];
+    return 0;
+}
+
+int copy_to_user(void *dst, const void *src, size_t n) {
+
+    if (n == 0) return 0;
+    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
+
+    uint64_t daddr = (uint64_t)dst;
+
+    if (!is_canonical_address(daddr) ||
+        !is_user_address_valid(daddr) ||
+        !is_user_address_valid(daddr + n - 1) ||
+        daddr + n < daddr) {
+        return -1;
+    }
+
+    uint8_t *d = dst; const uint8_t *s = src;
+    for (size_t i = 0; i < n; i++) d[i] = s[i];
+    return 0;
+}
+#endif
+
+void ensure_lapic_mapped(uint64_t *root_pml4) {
+#if defined(__x86_64__)
+    extern uint64_t pml4[512];
+    if (root_pml4 == NULL) root_pml4 = pml4;
+    const uint64_t vaddr = 0xFEE00000ULL;
+    const uint64_t paddr = 0xFEE00000ULL;
+    const int pml4i = (int)((vaddr >> 39) & 511);
+    const int pdpti = (int)((vaddr >> 30) & 511);
+    const int pdi   = (int)((vaddr >> 21) & 511);
+    const int pti   = (int)((vaddr >> 12) & 511);
+    const uint64_t PS_BIT = (1ULL << 7); 
+
+    uint64_t ent = root_pml4[pml4i];
+    uint64_t *pdpt = (uint64_t *)(ent & ~0xFFFULL);
+    if ((ent & PAGE_PRESENT) == 0 || !pdpt) {
+        uint64_t np = alloc_user_physical_page();
+        if (np == 0) return;
+        pdpt = (uint64_t *)(uintptr_t)np;
+        for (int k = 0; k < 512; k++) pdpt[k] = 0;
+        root_pml4[pml4i] = np | PAGE_PRESENT | PAGE_WRITE;
+    }
+
+    
+    ent = pdpt[pdpti];
+    if (ent & PS_BIT) {
+        uint64_t huge_base = ent & ~0xFFFULL & ~((1ULL<<30)-1); 
+        uint64_t npd_phys = alloc_user_physical_page();
+        if (npd_phys == 0) return;
+        uint64_t *npd = (uint64_t *)(uintptr_t)npd_phys;
+        for (int j = 0; j < 512; j++) {
+            
+            uint64_t base2m = huge_base + ((uint64_t)j << 21);
+            npd[j] = base2m | PAGE_PRESENT | PAGE_WRITE | PS_BIT | PAGE_GLOBAL;
+        }
+        pdpt[pdpti] = npd_phys | PAGE_PRESENT | PAGE_WRITE; 
+        ent = pdpt[pdpti];
+    }
+
+    uint64_t *pd = (uint64_t *)(ent & ~0xFFFULL);
+    if ((ent & PAGE_PRESENT) == 0 || !pd) {
+        uint64_t np = alloc_user_physical_page();
+        if (np == 0) return;
+        pd = (uint64_t *)(uintptr_t)np;
+        for (int k = 0; k < 512; k++) pd[k] = 0;
+        pdpt[pdpti] = np | PAGE_PRESENT | PAGE_WRITE;
+    }
+
+    
+    ent = pd[pdi];
+    if (ent & PS_BIT) {
+        uint64_t huge_base = ent & ~0xFFFULL & ~((1ULL<<21)-1);
+        uint64_t npt_phys = alloc_user_physical_page();
+        if (npt_phys == 0) return;
+        uint64_t *npt = (uint64_t *)(uintptr_t)npt_phys;
+        for (int j = 0; j < 512; j++) {
+            uint64_t base4k = huge_base + ((uint64_t)j << 12);
+            uint64_t flags = PAGE_PRESENT | PAGE_WRITE | PAGE_GLOBAL;
+            if (base4k == paddr) flags |= PAGE_CD; 
+            npt[j] = base4k | flags;
+        }
+        pd[pdi] = npt_phys | PAGE_PRESENT | PAGE_WRITE; 
+        ent = pd[pdi];
+    }
+
+    uint64_t *pt = (uint64_t *)(ent & ~0xFFFULL);
+    if ((ent & PAGE_PRESENT) == 0 || !pt) {
+        uint64_t np = alloc_user_physical_page();
+        if (np == 0) return;
+        pt = (uint64_t *)(uintptr_t)np;
+        for (int k = 0; k < 512; k++) pt[k] = 0;
+        pd[pdi] = np | PAGE_PRESENT | PAGE_WRITE;
+    }
+
+    
+    pt[pti] = paddr | PAGE_PRESENT | PAGE_WRITE | PAGE_CD;
+
+    asm volatile("invlpg (%0)" :: "r"(vaddr) : "memory");
+#endif
+}

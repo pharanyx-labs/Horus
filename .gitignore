@@ -1,0 +1,88 @@
+# Build artifacts
+*.o
+*.a
+*.bin
+*.elf
+*.raw
+*.iso
+*.img
+kernel.elf
+boot.iso
+horus.iso
+
+# Rust build output
+rust/target/
+
+# rust/Cargo.lock is intentionally tracked for reproducible builds
+
+# Build tools
+tools/mkheadered
+
+# Userspace build artifacts
+userspace/*.bin
+userspace/*.elf
+userspace/*.o
+userspace/*.raw
+
+# Log and trace files
+*.log
+qemu.log
+*.trace
+*.dump
+serial.log
+debug.log
+
+# Editor temporaries
+*~
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Secrets — never commit these
+*.pem
+*.key
+*.crt
+*.p12
+id_rsa*
+id_ed25519*
+*.token
+*.secret
+.env
+.env.local
+.env.*.local
+secrets/
+credentials/
+passwords.txt
+
+# Personal notes
+NOTES.md
+TODO-personal.md
+private/
+personal/
+
+# ISO staging directories
+isofiles/
+iso/
+build/
+dist/
+
+# Windows artifacts
+*.exe
+*.dll
+*.pdb
+
+# AI editor artifacts
+.aider*

@@ -1,0 +1,304 @@
+.section .multiboot, "a"
+.align 8
+
+multiboot_header_start:
+    .long 0xe85250d6
+    .long 0
+    .long multiboot_header_end - multiboot_header_start
+    .long -(0xe85250d6 + 0 + (multiboot_header_end - multiboot_header_start))
+    .word 0
+    .word 0
+    .long 8
+multiboot_header_end:
+
+.section .text
+.code32
+.global _start
+.extern kernel_main
+
+_start:
+    movl $stack_top, %esp
+
+    movl %cr4, %eax
+    orl  $(1 << 5), %eax
+    movl %eax, %cr4
+
+    movl $pml4, %edi
+    movl %edi, %cr3
+
+    xorl %eax, %eax
+    movl $pml4, %edi
+    movl $12288, %ecx
+    rep stosl
+
+    movl $pdpt, %eax
+    orl  $0x3, %eax
+    movl %eax, pml4
+
+    movl $pd, %eax
+    orl  $0x3, %eax
+    movl %eax, pdpt
+
+    movl $pd, %edi
+    movl $0x00000000, %ebx
+    movl $512, %ecx
+
+1:
+    movl %ebx, %eax
+    andl $0xFFE00000, %eax
+    orl  $0x00000083, %eax
+    movl $0x00000000, %edx
+    movl %eax, 0(%edi)
+    movl %edx, 4(%edi)
+    addl $0x200000, %ebx
+    addl $8, %edi
+    loop 1b
+
+    movl $high_pdpt, %eax
+    orl  $0x3, %eax
+    movl %eax, pml4 + (511 * 8)
+
+    movl $pd, %eax
+    orl  $0x3, %eax
+    movl %eax, high_pdpt + (2 * 8)
+
+    movl $0xC0000080, %ecx
+    rdmsr
+    orl  $(1 << 8), %eax
+    wrmsr
+
+    movl %cr0, %eax
+    orl  $(1 << 31), %eax
+    movl %eax, %cr0
+
+    lgdt gdt64_ptr32
+    ljmp $0x08, $long_mode_entry
+
+.section .text
+.code64
+long_mode_entry:
+    lgdt (gdt64_ptr)
+
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+    movw %ax, %ss
+
+    movabs $stack_top, %rsp
+
+    movq %cr4, %rax
+    orq  $(1 << 9), %rax
+    movq %rax, %cr4
+
+    movq %cr0, %rax
+    andq $~(1 << 2), %rax
+    orq  $(1 << 1), %rax
+    movq %rax, %cr0
+
+    fninit
+
+    /* Load a valid 64-bit TSS so ring3->ring0 transitions (int $0x80,
+     * faults via IST) can fetch RSP0/IST stacks. Without this the first
+     * userspace syscall triple-faults. */
+    call setup_tss64
+
+    cli
+    call kernel_main
+
+    cli
+    hlt
+
+/* Build the 64-bit TSS descriptor in the GDT (selector 0x38), populate the
+ * TSS RSP0 + IST stack pointers, and load it with ltr. */
+.code64
+.global setup_tss64
+setup_tss64:
+    /* IST1/2/3 stack tops (used by #DF/#GP/#PF/#SS/NMI gates). */
+    lea ist1_stack_top(%rip), %rax
+    movq %rax, tss64 + 36
+    lea ist2_stack_top(%rip), %rax
+    movq %rax, tss64 + 44
+    lea ist3_stack_top(%rip), %rax
+    movq %rax, tss64 + 52
+
+    /* Initial RSP0 (overwritten per-task by set_tss_kernel_stack later). */
+    lea stack_top(%rip), %rax
+    movq %rax, tss64 + 4
+
+    /* Encode the 16-byte TSS descriptor at gdt64 offset 56 (selector 0x38). */
+    lea gdt64_start(%rip), %rdi
+    lea tss64(%rip), %rax
+    movw $103, 56(%rdi)        /* limit[15:0] = sizeof(TSS)-1 */
+    movw %ax, 58(%rdi)         /* base[15:0] */
+    movb $0x89, 61(%rdi)       /* access: present, type=9 (avail 64-bit TSS) */
+    movb $0x00, 62(%rdi)       /* limit[19:16]=0, flags=0 */
+    shrq $16, %rax
+    movb %al, 60(%rdi)         /* base[23:16] */
+    movb %ah, 63(%rdi)         /* base[31:24] */
+    shrq $16, %rax
+    movl %eax, 64(%rdi)        /* base[63:32] */
+    movl $0, 68(%rdi)          /* reserved */
+
+    movw $0x38, %ax
+    ltr %ax
+    ret
+
+.section .text
+.code64
+.global setup_full_early_64bit_env
+setup_full_early_64bit_env:
+
+    lea ist1_stack_top(%rip), %rax
+    movq %rax, tss64 + 36
+    lea ist2_stack_top(%rip), %rax
+    movq %rax, tss64 + 44
+    lea ist3_stack_top(%rip), %rax
+    movq %rax, tss64 + 52
+
+    lea gdt64_start(%rip), %rdi
+    lea tss64(%rip), %rax
+    movw %ax, 24(%rdi)
+    shrq $16, %rax
+    movb %al, 28(%rdi)
+    movb %ah, 29(%rdi)
+    shrq $32, %rax
+    movl %eax, 32(%rdi)
+    movw $103, 26(%rdi)
+    movb $0x89, 30(%rdi)
+    movb $0x00, 31(%rdi)
+
+    movw $0x18, %ax
+    ltr %ax
+
+    lea early_idt64_table(%rip), %rdi
+    lea early_page_fault64(%rip), %rax
+    lea early_generic_halt64(%rip), %rbx
+
+    mov $0, %rcx
+1:
+    cmp $32, %rcx
+    jge 2f
+
+    movq %rbx, %rdx
+    movb $1, %r8b
+
+    cmp $14, %rcx
+    jne 3f
+    movq %rax, %rdx
+3:
+    movw %dx, 0(%rdi)
+    movw $0x08, 2(%rdi)
+    movb %r8b, 4(%rdi)
+    movb $0x8E, 5(%rdi)
+    shrq $16, %rdx
+    movw %dx, 6(%rdi)
+    shrq $16, %rdx
+    movl %edx, 8(%rdi)
+    movl $0, 12(%rdi)
+
+    add $16, %rdi
+    inc %rcx
+    jmp 1b
+2:
+    lea early_idt64_ptr(%rip), %rax
+    lidt (%rax)
+    ret
+
+.section .data
+.align 16
+early_idt64_table:
+    .skip 32 * 16
+
+early_idt64_ptr:
+    .word (32 * 16) - 1
+    .quad early_idt64_table
+
+.global early_generic_halt64
+early_generic_halt64:
+    cli
+    hlt
+    jmp .
+
+.section .data
+.global gdt64_start
+.align 16
+gdt64_start:
+    .quad 0x0000000000000000
+    .quad 0x00209A0000000000
+    .quad 0x0000920000000000
+    .quad 0x0000F20000000000
+    .quad 0x0020FB0000000000
+    .quad 0x00CFFB000000FFFF
+    .quad 0x00CFF3000000FFFF
+    .quad 0x0000000000000000   /* 0x38: 64-bit TSS descriptor (low),  filled at runtime */
+    .quad 0x0000000000000000   /* 0x40: 64-bit TSS descriptor (high), filled at runtime */
+gdt64_end:
+
+gdt64_ptr:
+    .word gdt64_end - gdt64_start - 1
+    .quad gdt64_start
+
+gdt64_ptr32:
+    .word gdt64_end - gdt64_start - 1
+    .long gdt64_start
+
+.global tss64
+.align 16
+tss64:
+    .long 0, 0
+    .quad 0
+    .quad 0, 0, 0
+    .quad 0, 0, 0, 0, 0, 0, 0
+    .quad 0
+    .word 0
+    .word 0
+
+.align 16
+ist1_stack_bottom:
+    .space 4096
+ist1_stack_top:
+
+.align 16
+ist2_stack_bottom:
+    .space 4096
+ist2_stack_top:
+
+.align 16
+ist3_stack_bottom:
+    .space 4096
+ist3_stack_top:
+
+.section .bss
+.align 16
+stack_bottom:
+    .space 16384
+stack_top:
+
+    .align 16
+early_handler_stack_bottom:
+    .space 4096
+.global early_handler_stack_top
+early_handler_stack_top:
+
+.align 4096
+.global pml4
+pml4:
+    .space 4096
+pdpt:
+    .space 4096
+pd:
+    .space 4096
+
+.align 4096
+high_pdpt:
+    .space 4096
+
+.section .rodata
+.align 16
+.global embedded_shell_bin_start
+embedded_shell_bin_start:
+.incbin "userspace/shell.bin"
+.global embedded_shell_bin_end
+embedded_shell_bin_end:

@@ -86,3 +86,6 @@ dist/
 
 # AI editor artifacts
 .aider*
+
+# System Prompt
+system_prompt.txt

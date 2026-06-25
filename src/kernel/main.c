@@ -79,6 +79,7 @@ void kernel_main(uint32_t mb_info) {
     paging_init();
     cap_init();
     cpu_detect_features();
+    entropy_init();
     init_syscall_instruction_path();
 #ifndef MINIMAL_SECURE
     ramfs_init();
@@ -102,6 +103,7 @@ void kernel_main(uint32_t mb_info) {
     paging_init();
     cap_init();
     cpu_detect_features();
+    entropy_init();
 #ifndef MINIMAL_SECURE
     ramfs_init();
     ata_init();

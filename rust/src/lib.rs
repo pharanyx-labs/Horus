@@ -3,6 +3,8 @@
 mod capability;
 mod crypto;
 mod memory;
+mod rng;
+mod sha256;
 
 #[cfg(not(test))]
 #[panic_handler]

@@ -185,10 +185,26 @@ uint32_t get_system_ticks(void) {
 }
 
 void aslr_init_seed(void) {
+    /* Seed the ASLR PRNG from the central CSPRNG (RDRAND / TSC-jitter seeded)
+     * rather than a bare TSC read, which is observable from ring 3 and would
+     * let userspace predict layout offsets. */
+    secure_random_bytes(aslr_rng_state, sizeof(aslr_rng_state));
+    /* Avoid the degenerate all-zero xorshift state. */
+    if (aslr_rng_state[0] == 0 && aslr_rng_state[1] == 0) {
+        aslr_rng_state[0] = 0x9E3779B97F4A7C15ULL;
+        aslr_rng_state[1] = 0xC2B2AE3D27D4EB4FULL ^ read_tsc();
+    }
+}
 
-    uint64_t t = read_tsc();
-    aslr_rng_state[0] = t ^ 0xdeadbeef;
-    aslr_rng_state[1] = (uint64_t)(addr_t)&aslr_rng_state ^ system_ticks;
+/* Randomize an initial user stack pointer downward from `top`, staying within
+ * the mapped stack window (the low-stack region maps 32 pages below the top, so
+ * a few pages + sub-page of jitter is always backed). Result is 16-byte aligned
+ * for ABI compliance. */
+addr_t aslr_random_stack_top(addr_t top) {
+    uint32_t page_off = aslr_random_offset(ASLR_MAX_STACK_RANDOM_PAGES);
+    uint32_t sub_off = (uint32_t)(rust_rng_u64() & 0xFF0u); /* up to ~4080, 16-aligned */
+    addr_t t = top - (addr_t)(page_off + sub_off);
+    return t & ~((addr_t)0xF);
 }
 
 void print_boot_timestamp(void) {

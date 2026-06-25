@@ -218,6 +218,73 @@ pub unsafe extern "C" fn rust_cap_move(
     false
 }
 
+/// Clear a capability slot to the null capability.
+#[inline]
+unsafe fn nullify(c: &mut Capability) {
+    c.typ = CAP_NULL;
+    c.rights = 0;
+    c.object = 0;
+    c.badge = 0;
+    c.serial = 0;
+    c.generation = 0;
+}
+
+/// Lineage match predicate: does capability `c` belong to the revoked lineage
+/// identified by (serial, badge, object)? A derived capability records its
+/// parent's serial in its `badge`, so matching either field on serial/badge —
+/// or matching the underlying object — catches every descendant copy.
+#[inline]
+fn lineage_matches(c: &Capability, ts: u32, tb: u32, to: u64) -> bool {
+    (ts != 0 && (c.serial == ts || c.badge == ts))
+        || (tb != 0 && (c.serial == tb || c.badge == tb))
+        || (to != 0 && c.object == to)
+}
+
+/// Null every capability in one cspace that matches the target lineage,
+/// skipping `skip_slot` (pass `u32::MAX` to skip none). Decrements
+/// `*caps_in_use` once per nulled cap when the pointer is non-null.
+///
+/// INVARIANT: this is the single mechanism by which a cspace is swept for a
+/// revoked lineage; `rust_cap_revoke` and `rust_cap_revoke_global` both go
+/// through it so their matching semantics can never drift apart.
+unsafe fn revoke_matching_in(
+    cspace: *mut Capability,
+    size: u32,
+    skip_slot: u32,
+    ts: u32,
+    tb: u32,
+    to: u64,
+    caps_in_use: *mut u32,
+) {
+    if cspace.is_null() {
+        return;
+    }
+    let limit = if size > CNODE_SIZE { CNODE_SIZE } else { size };
+    for i in 0..limit {
+        if i == skip_slot {
+            continue;
+        }
+        let c = &mut *cspace.add(i as usize);
+        if c.typ == CAP_NULL {
+            continue;
+        }
+        if lineage_matches(c, ts, tb, to) {
+            nullify(c);
+            if !caps_in_use.is_null() && *caps_in_use > 0 {
+                *caps_in_use -= 1;
+            }
+        }
+    }
+}
+
+#[inline]
+unsafe fn is_primordial_root(cspace: *mut Capability, slot: u32) -> bool {
+    let s = (*cspace.add(slot as usize)).serial;
+    slot < KERNEL_RESERVED_CAPS && s != 0 && (s & 0xFFFF0000) == 0xC0DE0000
+}
+
+/// Single-cspace revoke. Used for moves and for revoking a CAP_REVOCATION
+/// helper slot. For system-wide revocation use `rust_cap_revoke_global`.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_revoke(
     cspace: *mut Capability,
@@ -231,129 +298,136 @@ pub unsafe extern "C" fn rust_cap_revoke(
     if slot >= cspace_size || slot >= CNODE_SIZE {
         return false;
     }
-
-    
-    
-    
-    
-    
-    let is_primordial_root = slot < KERNEL_RESERVED_CAPS &&
-        (*cspace.add(slot as usize)).serial != 0 &&
-        ((*cspace.add(slot as usize)).serial & 0xFFFF0000) == 0xC0DE0000;
-
-    if is_primordial_root {
+    if is_primordial_root(cspace, slot) {
         return false;
     }
 
     let target = &mut *cspace.add(slot as usize);
     if target.typ == CAP_NULL {
-        return true; 
+        return true;
     }
 
-    let target_serial = target.serial;
-    let target_badge = target.badge;
-    let target_obj = target.object;
+    let ts = target.serial;
+    let tb = target.badge;
+    let to = target.object;
 
-    
-    target.typ = CAP_NULL;
-    target.rights = 0;
-    target.object = 0;
-    target.badge = 0;
-    target.serial = 0;
-    target.generation = 0;
+    nullify(target);
 
-    if target_obj != 0 { let _ = bump_lineage(target_obj); }
-
-    
-    
-    
-    let limit = if cspace_size > CNODE_SIZE { CNODE_SIZE } else { cspace_size };
-    for i in 0..limit {
-        if i == slot {
-            continue;
-        }
-        let c = &mut *cspace.add(i as usize);
-        if c.typ == CAP_NULL {
-            continue;
-        }
-
-        let matches_lineage =
-            (target_serial != 0 && (c.serial == target_serial || c.badge == target_serial)) ||
-            (target_badge != 0 && (c.serial == target_badge || c.badge == target_badge)) ||
-            (target_obj != 0 && c.object == target_obj);
-
-        if matches_lineage {
-            c.typ = CAP_NULL;
-            c.rights = 0;
-            c.object = 0;
-            c.badge = 0;
-            c.serial = 0;
-            c.generation = 0;
-        }
+    // Single source of truth: bump the object's lineage generation once.
+    if to != 0 {
+        let _ = bump_lineage(to);
     }
 
+    revoke_matching_in(cspace, cspace_size, slot, ts, tb, to, core::ptr::null_mut());
     true
 }
 
+/// Descriptor for one capability space, passed across the FFI so the entire
+/// system-wide revocation sweep happens inside one Rust call.
+#[repr(C)]
+pub struct CSpaceDesc {
+    pub caps: *mut Capability,
+    pub size: u32,
+    /// Optional pointer to the owning task's `caps_in_use` counter; null to skip
+    /// accounting (e.g. the kernel root cnode).
+    pub caps_in_use: *mut u32,
+}
+
+/// SYSTEM-WIDE capability revocation — the authoritative revocation entry point.
+///
+/// Revokes the capability at `target_slot` of `target_cspace` and then sweeps
+/// EVERY cspace in `spaces` (which the caller populates with all live tasks'
+/// cspaces plus the kernel root cnode) for derived copies of the same lineage,
+/// nulling them. The lineage generation is bumped exactly once, so any stale
+/// copy that somehow escapes the structural sweep still fails the generation
+/// check in `rust_cap_lookup`.
+///
+/// INVARIANT (see ARCHITECTURE.md): after this returns true, no live cspace
+/// retains a capability whose serial/badge/object matches the revoked lineage.
+/// This is what makes revocation complete rather than caller-local — closing
+/// the use-after-revoke / privilege-retention hole where a derived capability
+/// in another task's CNode could survive its parent's revocation.
+///
+/// Must be called by C under `cap_lock` so the `spaces` snapshot is stable.
 #[no_mangle]
-pub unsafe extern "C" fn rust_cap_cross_task_revoke(
-    all_task_cspaces: *mut Capability,
-    max_tasks: i32,
-    cspace_elems: i32,
+pub unsafe extern "C" fn rust_cap_revoke_global(
+    target_cspace: *mut Capability,
+    target_cspace_size: u32,
+    target_slot: u32,
+    target_caps_in_use: *mut u32,
+    spaces: *const CSpaceDesc,
+    space_count: u32,
+    _next_serial: *mut u32,
+) -> bool {
+    if target_cspace.is_null() {
+        return false;
+    }
+    if target_slot >= target_cspace_size || target_slot >= CNODE_SIZE {
+        return false;
+    }
+    if is_primordial_root(target_cspace, target_slot) {
+        return false;
+    }
+
+    let target = &mut *target_cspace.add(target_slot as usize);
+    if target.typ == CAP_NULL {
+        return true;
+    }
+
+    let ts = target.serial;
+    let tb = target.badge;
+    let to = target.object;
+
+    // Null the target itself and account for it. The system-wide sweep below
+    // will skip it (already null), so it is never double-counted.
+    nullify(target);
+    if !target_caps_in_use.is_null() && *target_caps_in_use > 0 {
+        *target_caps_in_use -= 1;
+    }
+
+    // Single source of truth: bump the object's lineage generation once.
+    if to != 0 {
+        let _ = bump_lineage(to);
+    }
+
+    // Sweep every supplied cspace, including the target's own (target slot is
+    // already null, so it cannot re-match).
+    if !spaces.is_null() {
+        for s in 0..space_count {
+            let d = &*spaces.add(s as usize);
+            revoke_matching_in(d.caps, d.size, u32::MAX, ts, tb, to, d.caps_in_use);
+        }
+    }
+    true
+}
+
+/// Single-cspace revoke by explicit values. Retained for compatibility; the
+/// system-wide path is `rust_cap_revoke_global`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_revoke_by_values(
+    cspace: *mut Capability,
+    cspace_size: u32,
     target_serial: u32,
     target_badge: u32,
     target_obj: u64,
-    caps_in_use_array: *mut i32,
-) {
-    if all_task_cspaces.is_null() || max_tasks <= 0 || cspace_elems <= 0 {
-        return;
+) -> bool {
+    if cspace.is_null() {
+        return false;
     }
-
-    let total = (max_tasks as usize) * (cspace_elems as usize);
-    for i in 0..total {
-        let cap = unsafe { &mut *all_task_cspaces.add(i) };
-        if cap.typ == CAP_NULL {
-            continue;
-        }
-        let matches =
-            (target_serial != 0 && (cap.serial == target_serial || cap.badge == target_serial)) ||
-            (target_badge != 0 && (cap.serial == target_badge || cap.badge == target_badge)) ||
-            (target_obj != 0 && cap.object == target_obj);
-
-        if matches {
-            if !caps_in_use_array.is_null() {
-                let tid = i / (cspace_elems as usize);
-                unsafe {
-                    if *caps_in_use_array.add(tid) > 0 {
-                        *caps_in_use_array.add(tid) -= 1;
-                    }
-                }
-            }
-            if cap.object != 0 { let _ = bump_lineage(cap.object); }
-            cap.typ = CAP_NULL;
-            cap.rights = 0;
-            cap.object = 0;
-            cap.badge = 0;
-            cap.serial = 0;
-            cap.generation = 0;
-        }
+    // Bump lineage once for the object so generation checks also invalidate.
+    if target_obj != 0 {
+        let _ = bump_lineage(target_obj);
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rust_cap_revoke_by_values(cspace:*mut Capability,cspace_size:u32,target_serial:u32,target_badge:u32,target_obj:u64)->bool{
- if cspace.is_null(){return false;}
- let limit=if cspace_size>CNODE_SIZE{CNODE_SIZE}else{cspace_size};
- for i in 0..limit{
-  let c=&mut *cspace.add(i as usize);
-  if c.typ==CAP_NULL{continue;}
-  let m=(target_serial!=0&&(c.serial==target_serial||c.badge==target_serial))||(target_badge!=0&&(c.serial==target_badge||c.badge==target_badge))||(target_obj!=0&&c.object==target_obj);
-  if m{
-   if c.object != 0 { let _ = bump_lineage(c.object); }
-   c.typ=CAP_NULL;c.rights=0;c.object=0;c.badge=0;c.serial=0;c.generation=0;
-  }
- }
- true
+    revoke_matching_in(
+        cspace,
+        cspace_size,
+        u32::MAX,
+        target_serial,
+        target_badge,
+        target_obj,
+        core::ptr::null_mut(),
+    );
+    true
 }
 
 /// FFI: bump the lineage generation for `obj`. Sole way for C to invalidate a lineage.
@@ -368,6 +442,100 @@ pub extern "C" fn rust_lineage_check(obj: u64, gen: u32) -> bool { lineage_check
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::ptr::addr_of_mut;
+
+    fn cap(typ: u32, rights: u32, object: u64, badge: u32, serial: u32, generation: u32) -> Capability {
+        Capability { typ, rights, object, badge, serial, generation }
+    }
+
+    /// Regression: a derived capability minted into a *second* task's cspace
+    /// must be revoked (and its lineage invalidated) when the parent is revoked
+    /// in the first task — the system-wide revocation invariant.
+    #[test]
+    fn test_global_revoke_reaches_other_task_cspace() {
+        let mut a = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0, 0); 16];
+
+        // Task A holds the parent CAP_FRAME (object 0x5000, serial 0x4000, gen 1).
+        a[4] = cap(1, 0x3f, 0x5000, 0, 0x4000, 1);
+        // Task B holds a derived copy: badge == parent serial, same object,
+        // reduced rights, its own fresh serial — exactly what cap_mint produces.
+        b[7] = cap(1, 0x03, 0x5000, 0x4000, 0x9001, 1);
+
+        let mut ciu_a = 1u32;
+        let mut ciu_b = 1u32;
+
+        unsafe {
+            // Mirror reality: minting raises the lineage floor to the parent's
+            // generation, so the table holds gen==1 for this object before the
+            // revoke (which then bumps it to 2).
+            while lineage_check(0x5000, 2) {
+                let _ = bump_lineage(0x5000);
+            }
+            // Now cg == 1, matching the caps' recorded generation.
+
+            // Precondition: B's derived cap is currently usable.
+            assert!(!rust_cap_lookup(b.as_mut_ptr(), 16, 7, 0x1).is_null());
+
+            let spaces = [
+                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_b) },
+            ];
+
+            let ok = rust_cap_revoke_global(
+                a.as_mut_ptr(),
+                16,
+                4,
+                addr_of_mut!(ciu_a),
+                spaces.as_ptr(),
+                2,
+                core::ptr::null_mut(),
+            );
+            assert!(ok);
+
+            // Parent revoked in task A.
+            assert_eq!(a[4].typ, CAP_NULL);
+            assert!(rust_cap_lookup(a.as_mut_ptr(), 16, 4, 0x1).is_null());
+
+            // Derived copy in the OTHER task's cspace is gone — the core fix.
+            assert_eq!(b[7].typ, CAP_NULL,
+                "derived capability in another task must be revoked system-wide");
+            assert!(rust_cap_lookup(b.as_mut_ptr(), 16, 7, 0x1).is_null());
+
+            // Lineage generation bumped: a stale copy carrying the old gen fails
+            // the generation check even if it had escaped the structural sweep.
+            assert!(!lineage_check(0x5000, 1));
+
+            // Accounting: both tasks' caps_in_use were decremented exactly once.
+            assert_eq!(ciu_a, 0);
+            assert_eq!(ciu_b, 0);
+        }
+    }
+
+    /// A capability for a *different* object/lineage in another cspace must
+    /// survive an unrelated revocation (no over-broad nulling).
+    #[test]
+    fn test_global_revoke_does_not_touch_unrelated() {
+        let mut a = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0, 0); 16];
+        a[4] = cap(1, 0x3f, 0x7000, 0, 0x7700, 1);
+        b[7] = cap(1, 0x3f, 0x8000, 0, 0x8800, 1); // unrelated lineage
+
+        let mut ciu_a = 1u32;
+        let mut ciu_b = 1u32;
+        unsafe {
+            let spaces = [
+                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_b) },
+            ];
+            let ok = rust_cap_revoke_global(
+                a.as_mut_ptr(), 16, 4, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut());
+            assert!(ok);
+            assert!(!rust_cap_lookup(b.as_mut_ptr(), 16, 7, 0x1).is_null(),
+                "unrelated capability must not be revoked");
+            assert_eq!(ciu_b, 1);
+        }
+    }
 
     #[test]
     fn test_lookup_and_mint_basic() {

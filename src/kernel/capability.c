@@ -234,37 +234,58 @@ bool cap_revoke(uint32_t slot) {
         spin_unlock(&cap_lock);
         return false;
     }
-    uint32_t target_serial = cspace[slot].serial;
-    uint32_t target_badge = cspace[slot].badge;
-    uint32_t target_obj = cspace[slot].object;
     uint32_t orig_type = cspace[slot].type;
-    /* Generation bump is performed exactly once, inside rust_cap_revoke (and
-     * rust_cap_revoke_by_values for cross-task slots), against the Rust authority.
-     * The previous duplicate C-side lineage_revoke() has been removed to keep a
-     * single, consistent source of truth. */
-    if (orig_type == CAP_REVOCATION && target_obj < CNODE_SIZE) {
-        uint32_t real_target = target_obj;
+
+    /* Revocation-set indirection: a CAP_REVOCATION capability names a target
+     * slot in `object`. Revoke the helper slot itself (single cspace), then
+     * redirect to the real target before the system-wide sweep. */
+    if (orig_type == CAP_REVOCATION && cspace[slot].object < CNODE_SIZE) {
+        uint32_t real_target = (uint32_t)cspace[slot].object;
         rust_cap_revoke(cspace, cspace_sz, slot, &cap_next_serial);
         slot = real_target;
         if (slot >= CNODE_SIZE) {
             spin_unlock(&cap_lock);
             return true;
         }
-        target_serial = cspace[slot].serial;
-        target_badge = cspace[slot].badge;
-        target_obj = cspace[slot].object;
     }
-    if (cspace[slot].type != CAP_NULL) {
-        if (tasks[get_current_task()].caps_in_use > 0) {
-            tasks[get_current_task()].caps_in_use--;
-        }
-    }
-    (void)rust_cap_revoke(cspace, cspace_sz, slot, &cap_next_serial);
+
+    /* Snapshot serial/badge for the rev_sets cleanup below, before the slot is
+     * nulled by the revocation. */
+    uint32_t target_serial = cspace[slot].serial;
+    uint32_t target_badge = cspace[slot].badge;
+
+    /*
+     * INVARIANT (ARCHITECTURE.md): revocation is system-wide. We hand the Rust
+     * authority every live task's cspace plus the kernel root cnode, and it
+     * nulls the target plus every derived copy of the same lineage in ANY of
+     * them, bumping the lineage generation exactly once. This closes the
+     * use-after-revoke / privilege-retention hole where a derived capability in
+     * another task's CNode could outlive its parent. The whole sweep runs under
+     * cap_lock so the snapshot of tasks[] is stable.
+     */
+    cspace_desc_t spaces[MAX_TASKS + 1];
+    uint32_t nspaces = 0;
     for (int t = 0; t < MAX_TASKS; t++) {
         if (tasks[t].state == 0 || !tasks[t].cspace) continue;
-        struct capability *tcspace = tasks[t].cspace;
-        (void)rust_cap_revoke_by_values(tcspace, CNODE_SIZE, target_serial, target_badge, target_obj);
+        spaces[nspaces].caps = tasks[t].cspace;
+        spaces[nspaces].size = tasks[t].cspace_size ? tasks[t].cspace_size : CNODE_SIZE;
+        spaces[nspaces].caps_in_use = &tasks[t].caps_in_use;
+        nspaces++;
     }
+    /* The kernel root cnode is not any task's cspace; include it so kernel-held
+     * derived copies are swept too. (No task uses root_cnode as its cspace, so
+     * this cannot double-count.) */
+    spaces[nspaces].caps = root_cnode;
+    spaces[nspaces].size = CNODE_SIZE;
+    spaces[nspaces].caps_in_use = NULL;
+    nspaces++;
+
+    /* The target's own caps_in_use counter (NULL when revoking in root_cnode). */
+    uint32_t *target_ciu = (cspace == root_cnode) ? NULL : &tasks[get_current_task()].caps_in_use;
+
+    bool ok = rust_cap_revoke_global(cspace, cspace_sz, slot, target_ciu,
+                                     spaces, nspaces, &cap_next_serial);
+
     for (int r = 0; r < MAX_REV_SETS; r++) {
         if (rev_sets[r].valid &&
             (rev_sets[r].badge == target_badge || rev_sets[r].badge == slot ||
@@ -273,7 +294,7 @@ bool cap_revoke(uint32_t slot) {
         }
     }
     spin_unlock(&cap_lock);
-    return true;
+    return ok;
 }
 
 bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {

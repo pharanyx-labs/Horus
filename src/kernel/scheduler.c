@@ -242,7 +242,7 @@ void context_switch(int next) {
 
     set_current_task(next);
 
-    uint32_t kstack_top = tasks[next].kernel_stack_top;
+    uintptr_t kstack_top = tasks[next].kernel_stack_top;
     if (kstack_top == 0) {
         kstack_top = (addr_t)&kernel_stacks[next][KERNEL_STACK_SIZE - 16];
     }
@@ -276,7 +276,7 @@ void schedule(void) {
     }
 
     if (next != cur && tasks[next].cr3 != 0 && next != 0) {
-        uint32_t kstack_top = tasks[next].kernel_stack_top;
+        uintptr_t kstack_top = tasks[next].kernel_stack_top;
         if (kstack_top == 0) {
             kstack_top = (addr_t)&kernel_stacks[next][KERNEL_STACK_SIZE - 16];
         }
@@ -340,7 +340,7 @@ void schedule(void) {
         if (tasks[next].cr3 != 0 && next != 0) {
             
             switch_cr3(tasks[next].cr3);
-            uint32_t kstack_top = tasks[next].kernel_stack_top;
+            uintptr_t kstack_top = tasks[next].kernel_stack_top;
             if (kstack_top == 0) {
                 kstack_top = (addr_t)&kernel_stacks[next][KERNEL_STACK_SIZE - 16];
             }

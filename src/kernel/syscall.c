@@ -527,8 +527,18 @@ int sys_fs_delete(uint32_t dir_slot, const char *name) {
 int sys_fs_readdir(uint32_t dir_slot, char *buf, uint32_t bufsize) {
     struct capability *dir_cap = cap_lookup(dir_slot, CAP_RIGHT_FS_LOOKUP);
     if (!dir_cap) return -1;
+    if (!buf) return -1;
 
-    int rc = capfs_readdir(dir_cap, buf, bufsize);
+    /* Bounce through a kernel buffer instead of letting capfs_readdir write the
+     * user pointer directly from ring 0 (that bypasses copy_to_user validation
+     * and would #PF under SMAP). capfs_readdir guarantees pos+1 <= bufsize, so
+     * copying rc+1 bytes carries the NUL terminator it writes at buf[pos]. */
+    char kbuf[512];
+    uint32_t to = bufsize > sizeof(kbuf) ? (uint32_t)sizeof(kbuf) : bufsize;
+    int rc = capfs_readdir(dir_cap, kbuf, to);
+    if (rc >= 0) {
+        if (copy_to_user(buf, kbuf, (size_t)rc + 1) != 0) return -3;
+    }
     return rc;
 }
 
@@ -904,12 +914,20 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
     if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
     struct endpoint *e = &endpoints[ep];
 
+    /* Snapshot the authorizing write capability (slot 3) so we can confirm it
+     * still holds the same identity after the yield loop below. Strictly
+     * additive: if the caller has no such cap at entry we don't newly reject
+     * (preserves the in-kernel shell caller); we only abort a send whose
+     * authorizing cap was revoked/replaced mid-spin (lookup/use TOCTOU). */
+    cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_RIGHT_WRITE));
 
     long spins = 0;
     while (e->has_message) {
-        if (++spins > IPC_SPIN_LIMIT) return -2; 
+        if (++spins > IPC_SPIN_LIMIT) return -2;
         yield();
     }
+
+    if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) return -1;
 
     if (len > 0 && copy_from_user(e->msg, msg, len) != 0) return -1;
     e->msg_len = (int)len;
@@ -923,11 +941,17 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
     if (ep >= MAX_ENDPOINTS) return -1;
     struct endpoint *e = &endpoints[ep];
 
+    /* See sys_ipc_send: snapshot the authorizing read capability and revalidate
+     * it after the yield loop so a revoke mid-spin aborts the receive. */
+    cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_RIGHT_READ));
+
     long spins = 0;
     while (!e->has_message) {
-        if (++spins > IPC_SPIN_LIMIT) return -2; 
+        if (++spins > IPC_SPIN_LIMIT) return -2;
         yield();
     }
+
+    if (auth.valid && !cap_revalidate(3, CAP_RIGHT_READ, &auth)) return -1;
 
     int len = e->msg_len;
     if (len > (int)max_len) len = (int)max_len;
@@ -944,13 +968,17 @@ int sys_ipc_reply(uint32_t ep, const void *msg, size_t len) {
 
     return sys_ipc_send(ep, msg, len);
 }
+/* Notifications are not implemented yet. The SYS_NOTIFY / SYS_WAIT_NOTIFY
+ * handlers still gate these on a capability (slot 3) before calling in; the
+ * distinct SYS_ERR_NOSYS return makes "not implemented" unambiguous to callers
+ * rather than colliding with -1 (denied/bad-arg). */
 int sys_notify(uint32_t notif_slot, uint32_t badge) {
     (void)notif_slot; (void)badge;
-    return -1;
+    return SYS_ERR_NOSYS;
 }
 int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
     (void)notif_slot; (void)out_badge;
-    return -1;
+    return SYS_ERR_NOSYS;
 }
 
 void syscall_handler64(void)

@@ -103,6 +103,10 @@ void users_init(void);
 
 #define SYS_NOTIFY          25
 #define SYS_WAIT_NOTIFY     26
+
+/* Distinct return code for syscalls whose capability check passed but whose
+ * backing operation is not implemented (vs. -1 = denied/bad-arg). */
+#define SYS_ERR_NOSYS       (-38)
 #define SYS_RECEIVE_PROGRAM 27
 #define SYS_SPAWN           28
 

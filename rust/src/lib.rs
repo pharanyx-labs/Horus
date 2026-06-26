@@ -37,12 +37,15 @@ pub struct SafeCapability {
     pub raw: u32,
 }
 
+/// # Safety
+/// `cap` must be null or a valid, aligned pointer to a `SafeCapability` that
+/// stays live for the call. Null is handled; any other invalid pointer is UB.
 #[no_mangle]
-pub extern "C" fn rust_cap_has_rights(cap: *const SafeCapability, required: u32) -> bool {
+pub unsafe extern "C" fn rust_cap_has_rights(cap: *const SafeCapability, required: u32) -> bool {
     if cap.is_null() {
         return false;
     }
-    unsafe { ((*cap).raw & required) == required }
+    ((*cap).raw & required) == required
 }
 
 #[no_mangle]
@@ -56,13 +59,16 @@ pub extern "C" fn rust_get_user_page_protection(_task_id: u32, vaddr: u32) -> u3
     0
 }
 
+/// # Safety
+/// `cmd` must be null or point to at least `len` initialized bytes that stay
+/// live for the call. Null is handled; any other invalid (pointer, len) is UB.
 #[no_mangle]
-pub extern "C" fn rust_handle_command(cmd: *const u8, len: usize) -> i32 {
+pub unsafe extern "C" fn rust_handle_command(cmd: *const u8, len: usize) -> i32 {
     if cmd.is_null() {
         return 0;
     }
 
-    let cmd_slice = unsafe { core::slice::from_raw_parts(cmd, len) };
+    let cmd_slice = core::slice::from_raw_parts(cmd, len);
     let cmd_str = match core::str::from_utf8(cmd_slice) {
         Ok(s) => s.trim(),
         Err(_) => return -1,

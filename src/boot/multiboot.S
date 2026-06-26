@@ -64,7 +64,7 @@ _start:
 
     movl $0xC0000080, %ecx
     rdmsr
-    orl  $(1 << 8), %eax
+    orl  $((1 << 8) | (1 << 11)), %eax   /* EFER.LME | EFER.NXE (honor NX bit) */
     wrmsr
 
     movl %cr0, %eax

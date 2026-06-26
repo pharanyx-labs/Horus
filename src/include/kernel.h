@@ -66,6 +66,7 @@ typedef struct platform_info {
     int has_long_mode;
     char vendor[13];
     int has_smap;
+    int has_smep;
     int has_aesni;
     int has_tsc;
     int has_sse;
@@ -229,6 +230,16 @@ typedef struct capability {
     uint32_t serial;
     uint32_t generation;
 } capability_t;
+
+/* Immutable identity snapshot of a capability, taken at lookup time and
+ * reconfirmed at use time via cap_revalidate() to defend against lookup/use
+ * TOCTOU. `object` is uint64_t to match capability_t.object exactly. */
+typedef struct cap_snapshot {
+    uint32_t serial;
+    uint32_t generation;
+    uint64_t object;
+    int      valid;
+} cap_snapshot_t;
 
 
 typedef struct tcb {
@@ -395,9 +406,16 @@ void print_hex64(uint64_t v);
 void timer_handler(void);
 void smp_maybe_shootdown(uint64_t v);
 int smp_get_online_count(void);
-int rust_page_ref_dec(uint32_t a, uint16_t *r, int n);
-int rust_page_ref_inc(uint32_t a, uint16_t *r, int n);
-int rust_cow_copy_required(int a, int b, uint16_t c);
+/* Signatures MUST match rust/src/memory.rs exactly (return types and the u32
+ * n_pages width — they previously drifted to `int`). */
+int32_t  rust_page_ref_dec(uint32_t phys, uint16_t *refcounts, uint32_t n_pages);
+uint16_t rust_page_ref_inc(uint32_t phys, uint16_t *refcounts, uint32_t n_pages);
+bool     rust_page_is_valid_user_phys(uint32_t phys, uint32_t n_pages);
+bool     rust_page_refcounts_register(const uint16_t *refcounts, uint32_t n_pages);
+bool     rust_cow_copy_required(bool is_cow, bool is_write, uint16_t ref_count);
+
+/* Centralized capability serial allocation (wrap logic lives in Rust). */
+uint32_t rust_cap_alloc_serial(uint32_t *next_serial);
 
 void terminal_init(void);
 void clear_screen(void);
@@ -416,6 +434,7 @@ void smp_bringup(void);
 void aslr_init_seed(void);
 void spawn_initial_userspace_shell(void);
 int cpu_has_aesni(void);
+void cpu_enable_protections(void);
 void paging_init(void);
 
 void cap_init(void);
@@ -429,6 +448,13 @@ bool has_encrypted_storage_cap(void);
 
 
 uint32_t cap_alloc_fresh_serial(void);
+
+/* Lookup/use TOCTOU defense: snapshot a capability's identity, then
+ * revalidate the slot still holds that exact identity (with the required
+ * rights) at the point of use. Returns NULL on revoke/re-mint/generation bump. */
+cap_snapshot_t cap_snapshot(const capability_t *c);
+capability_t *cap_revalidate(uint32_t slot, uint32_t required_rights,
+                             const cap_snapshot_t *snap);
 
 
 capability_t *rust_cap_lookup(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t rights);

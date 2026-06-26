@@ -41,6 +41,27 @@ void cpu_detect_features(void) {
 
     cpuid(7, &eax, &ebx, &ecx, &edx);
     platform.has_smap = (ebx & (1 << 20)) != 0;
+    platform.has_smep = (ebx & (1 << 7))  != 0;
+}
+
+/*
+ * Enable supervisor-mode execution/access prevention in CR4. MUST be called
+ * after cpu_detect_features() (which fills platform.has_smep/has_smap). The
+ * SMAP enable block in paging_init() runs before feature detection, so this is
+ * the authoritative place that actually turns the protections on:
+ *   SMEP (CR4.20) — ring 0 cannot execute ring-3 (user) pages, blocking a large
+ *                   class of privilege-escalation exploits that redirect kernel
+ *                   execution into attacker-controlled userspace code.
+ *   SMAP (CR4.21) — ring 0 cannot read/write user pages except inside an
+ *                   explicit stac/clac window (the kernel already brackets user
+ *                   copies with clac/stac).
+ */
+void cpu_enable_protections(void) {
+    unsigned long cr4;
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+    if (platform.has_smep) cr4 |= (1UL << 20);
+    if (platform.has_smap) cr4 |= (1UL << 21);
+    __asm__ volatile ("mov %0, %%cr4" :: "r"(cr4) : "memory");
 }
 
 int cpu_has_aesni(void) {

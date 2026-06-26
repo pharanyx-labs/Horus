@@ -1,5 +1,20 @@
 #include "kernel.h"
 
+/*
+ * FFI layout contract — mirror of the compile-time assertions in
+ * rust/src/capability.rs. capability_t and the Rust `Capability` struct are the
+ * same memory passed across the FFI; if a field is reordered/retyped in either
+ * language, one of these assertions fails to compile. Offsets are identical on
+ * 32- and 64-bit; only trailing padding differs, so we assert offsets.
+ */
+_Static_assert(__builtin_offsetof(capability_t, type)       == 0,  "cap.type offset");
+_Static_assert(__builtin_offsetof(capability_t, rights)     == 4,  "cap.rights offset");
+_Static_assert(__builtin_offsetof(capability_t, object)     == 8,  "cap.object offset");
+_Static_assert(__builtin_offsetof(capability_t, badge)      == 16, "cap.badge offset");
+_Static_assert(__builtin_offsetof(capability_t, serial)     == 20, "cap.serial offset");
+_Static_assert(__builtin_offsetof(capability_t, generation) == 24, "cap.generation offset");
+_Static_assert(CAP_NULL == 0, "CAP_NULL must be 0 (matches Rust)");
+
 extern tcb_t tasks[MAX_TASKS];
 
 #define CNODE_SIZE 256
@@ -13,12 +28,10 @@ static uint32_t cap_next_serial = 0x00010000U;
 
 
 uint32_t cap_alloc_fresh_serial(void) {
+    /* Wrap logic lives once, in Rust (assign_fresh_serial); we only own the lock
+     * and the counter here. Keeps C and Rust serial generation from drifting. */
     spin_lock(&cap_lock);
-    uint32_t cur = cap_next_serial;
-    if (cur < 0x00010000U) cur = 0x00010000U;
-    uint32_t s = cur + 1;
-    if (s < 0x00010000U || s == 0) s = 0x00010000U;
-    cap_next_serial = s;
+    uint32_t s = rust_cap_alloc_serial(&cap_next_serial);
     spin_unlock(&cap_lock);
     return s;
 }
@@ -132,6 +145,48 @@ struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
 
 void kassert_cap(struct capability *c){if(!c){for(;;){}}}
 struct capability *kcap_lookup(uint32_t slot,uint32_t r){struct capability *c=cap_lookup(slot,r);kassert_cap(c);return c;}
+
+/*
+ * Capability snapshot + revalidation (defense-in-depth against lookup/use
+ * TOCTOU). A looked-up `struct capability *` can become stale if any operation
+ * between lookup and use yields, drops cap_lock, or (under future preemption)
+ * is interrupted by another task that revokes or re-mints the slot. The pattern
+ * is: snapshot at lookup, then `cap_revalidate(slot, rights, &snap)` at the
+ * point of use — it re-looks-up the slot and confirms it STILL holds the same
+ * capability identity (serial, generation, object) with the required rights.
+ * A mismatch (revoked, replaced, or generation-bumped) returns NULL.
+ *
+ * "Validate at use" beats "look up once": the returned pointer is only trusted
+ * for the instant it is reconfirmed under the same invariants cap_lookup
+ * enforces (rights mask + Rust lineage/generation check).
+ */
+cap_snapshot_t cap_snapshot(const struct capability *c) {
+    cap_snapshot_t s;
+    if (c) {
+        s.serial = c->serial;
+        s.generation = c->generation;
+        s.object = c->object;
+        s.valid = (c->type != CAP_NULL);
+    } else {
+        s.serial = 0; s.generation = 0; s.object = 0; s.valid = 0;
+    }
+    return s;
+}
+
+struct capability *cap_revalidate(uint32_t slot, uint32_t required_rights,
+                                  const cap_snapshot_t *snap) {
+    if (!snap || !snap->valid) return NULL;
+    struct capability *p = cap_lookup(slot, required_rights);
+    if (!p) return NULL;
+    /* Identity must be unchanged: a revoke nulls these, a re-mint changes the
+     * serial, and a lineage revocation bumps the generation. */
+    if (p->serial != snap->serial ||
+        p->generation != snap->generation ||
+        p->object != snap->object) {
+        return NULL;
+    }
+    return p;
+}
 
 bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
     spin_lock(&cap_lock);

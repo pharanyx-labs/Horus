@@ -34,13 +34,18 @@ static uint16_t page_refcounts[USER_PHYS_PAGES];
 uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
 
 static void init_user_page_allocator(void) {
-    
+
     free_page_count = 0;
     for (int i = 0; i < USER_PHYS_PAGES; i++) {
         page_refcounts[i] = 0;
     }
     for (int i = USER_PHYS_PAGES - 1; i >= 0; i--) {
         free_page_stack[free_page_count++] = USER_PHYS_BASE + (i * PAGE_SIZE);
+    }
+    /* Register the one true refcount table with the Rust trust boundary so any
+     * later inc/dec passing a wrong pointer/size is refused rather than trusted. */
+    if (!rust_page_refcounts_register(page_refcounts, (uint32_t)USER_PHYS_PAGES)) {
+        for (;;) { __asm__ volatile("cli; hlt"); }  /* misconfiguration: refuse to run */
     }
 }
 

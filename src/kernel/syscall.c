@@ -1122,20 +1122,30 @@ void syscall_handler(struct regs *r) {
             break;
         }
         case 4: {
-            if (cap_mint(r->ebx, r->ecx, r->edx)) r->eax = 0; else r->eax = -1;
+            bool ok = cap_mint(r->ebx, r->ecx, r->edx);
+            r->eax = ok ? 0 : -1;
+            audit_log(AUDIT_CAP_MINT, r->ebx, ok ? 0 : -1, ok ? "cap mint" : "cap mint denied");
             break;
         }
         case 8: {
-            if (cap_transfer(r->ebx, r->ecx)) r->eax = 0; else r->eax = -1;
+            bool ok = cap_transfer(r->ebx, r->ecx);
+            r->eax = ok ? 0 : -1;
+            audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap transfer" : "cap transfer denied");
             break;
         }
         case 9: {
-            if (cap_move(r->ebx, r->ecx)) r->eax = 0; else r->eax = -1;
+            bool ok = cap_move(r->ebx, r->ecx);
+            r->eax = ok ? 0 : -1;
+            audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap move" : "cap move denied");
             break;
         }
         case SYS_CAP_REVOKE: {
-
-            if (cap_revoke(r->ebx)) r->eax = 0; else r->eax = -1;
+            /* The authoritative rights check (CAP_RIGHT_REVOKE on the target,
+             * kernel exempt) and the no-ambient-authority guard live in
+             * cap_revoke(); record the outcome here for the audit trail. */
+            bool ok = cap_revoke(r->ebx);
+            r->eax = ok ? 0 : -1;
+            audit_log(AUDIT_CAP_REVOKE, r->ebx, ok ? 0 : -1, ok ? "cap revoke" : "cap revoke denied");
             break;
         }
         case 5: {

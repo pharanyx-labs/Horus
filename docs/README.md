@@ -16,4 +16,12 @@ Formal specifications:
 | [cap_algebra.tla](cap_algebra.tla) | TLA+ specification of the capability algebra (mint, transfer, revoke) |
 | [paging_isolation.tla](paging_isolation.tla) | TLA+ specification of paging isolation properties |
 
-For project-level information — build quick start, status table, contributing — see the [top-level README](../README.md).
+Project-level documents (at the repository root):
+
+| Document | Contents |
+|---|---|
+| [README.md](../README.md) | Build quick start, status-at-a-glance table, project overview |
+| [SECURITY.md](../SECURITY.md) | Security policy, current posture, hardening in place, reporting |
+| [TESTS.md](../TESTS.md) | Test coverage today and what is still needed |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | How to set up and submit work |
+| [CHANGES.md](../CHANGES.md) | Changelog (`main` branch state) |

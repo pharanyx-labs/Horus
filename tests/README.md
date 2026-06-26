@@ -6,7 +6,7 @@ This directory contains test code for Horus.
 
 | File | Description |
 |---|---|
-| `test_capability.c` | C-language test skeleton exercising the capability syscall interface |
+| `test_capability.c` | Standalone host illustration. It reimplements a simplified `cap_lookup` and is **not** linked against the kernel's `capability.c`, nor built by the Makefile — treat it as a reference, not coverage. |
 
 ## Running
 

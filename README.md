@@ -67,6 +67,8 @@ Horus boots, runs userspace, and enforces capability-based access control. A num
 | Audit logging | Working |
 | Keyboard input (PS/2) | Working |
 | Round-robin task scheduling | Working |
+| SMEP / SMAP / NX hardening (when CPU advertises) | Working |
+| Rust security-core unit tests + GitHub Actions CI | Working |
 | Reproducible builds | Working |
 | Userspace shell and commands | Partial |
 | Endpoint-based IPC | Partial |

@@ -6,6 +6,20 @@ If you want to work on something listed here, open an issue or start a discussio
 
 ---
 
+## Recently completed
+
+Several items from the phases below have since landed on `main`. They are kept in their phases for context, but are done:
+
+- **`SYS_SPAWN`** — userspace can spawn ELF tasks, with paging/heap/ASLR set up and the syscall gated on a capability.
+- **Standard password hashing** — PBKDF2-HMAC-SHA256 replaced the custom XOR-rotate scheme.
+- **Hardware entropy** — a ChaCha20 CSPRNG seeded from RDRAND and timing jitter; raw TSC is no longer used as secret randomness.
+- **Per-spawn stack/heap ASLR** — seeded from the CSPRNG (load-base / PIE randomisation still pending).
+- **`crypto.rs`** — resolved by moving to audited-standard primitives in `sha256.rs` / `rng.rs`; `crypto.rs` is now intentionally empty. The remaining bulk-cipher work is a correct AES-128 (or a ChaCha20 stream) for CTR encryption.
+- **Kernel hardening** — SMEP/SMAP/NX enabled; capability "no ambient authority" guard; IPC use/revoke TOCTOU revalidation; C/Rust FFI layout assertions; audit logging of capability mutations.
+- **CI** — GitHub Actions runs the unit tests, `clippy -D warnings`, a kernel/ISO build, and a reproducible-build check on every push/PR. (Phase 6 integration tests and fuzzing are still pending.)
+
+---
+
 ## Phase 1 — Stabilise the foundation
 
 These items address the roughest edges in what already exists. They are good starting points for new contributors because they are self-contained and do not require deep kernel knowledge.

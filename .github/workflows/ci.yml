@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+# Newer pushes to the same ref cancel older in-flight runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Zero-trust posture: only first-party actions are used (checkout,
+# upload-artifact); the Rust toolchain comes from the runner's preinstalled
+# rustup. Every check is a hard gate — nothing is trusted without being built,
+# tested, or verified in this pipeline.
+
+jobs:
+  rust:
+    name: Rust unit tests + clippy (deny-warnings gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clippy component
+        run: rustup component add clippy
+      - name: Unit tests (release)
+        run: cargo test --manifest-path rust/Cargo.toml --release
+      - name: Clippy — all targets, deny every warning
+        run: cargo clippy --manifest-path rust/Cargo.toml --release --all-targets -- -D warnings
+
+  kernel:
+    name: Build kernel.elf + bootable ISO (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Build kernel.elf
+        run: make
+      - name: Build bootable ISO
+        run: make boot.iso
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: horus-kernel-x86_64
+          path: |
+            kernel.elf
+            boot.iso
+          if-no-files-found: error
+
+  reproducible:
+    name: Verify reproducible kernel build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential binutils make
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Build twice and compare kernel.elf hashes
+        run: |
+          make reproducible-build
+          sha256sum kernel.elf | tee first.sha
+          make reproducible-build
+          sha256sum kernel.elf | tee second.sha
+          if ! diff -u first.sha second.sha; then
+            echo "::error::kernel.elf is not byte-for-byte reproducible"
+            exit 1
+          fi
+          echo "kernel.elf is byte-for-byte reproducible across clean builds"

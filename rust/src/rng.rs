@@ -307,8 +307,8 @@ mod tests {
     fn chacha20_rfc8439_block() {
         // RFC 8439 Section 2.3.2 test vector.
         let mut key = [0u8; 32];
-        for i in 0..32 {
-            key[i] = i as u8;
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
         }
         let nonce = [0u8, 0, 0, 0x09, 0, 0, 0, 0x4a, 0, 0, 0, 0];
         let block = chacha20_block(&key, 1, &nonce);

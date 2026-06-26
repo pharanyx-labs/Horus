@@ -664,4 +664,29 @@ mod tests {
             assert!(rust_cap_lookup(cspace.as_mut_ptr(), 16, 4, 0b0100).is_null());
         }
     }
+
+    /// Serial allocation (the C kernel routes cap_alloc_fresh_serial through this
+    /// FFI) must advance monotonically and never hand back a serial in the
+    /// reserved primordial range or 0 — including at the u32 wrap boundary. Uses
+    /// only a local counter, so it is fully deterministic under parallel tests.
+    #[test]
+    fn test_alloc_serial_stays_above_reserved_and_nonzero() {
+        unsafe {
+            // Starting below the floor snaps up to the first derived serial.
+            let mut s: u32 = 0;
+            let a = rust_cap_alloc_serial(&mut s);
+            assert!(a >= MIN_DERIVED_SERIAL);
+            assert_eq!(s, a, "counter is advanced in place");
+            let b = rust_cap_alloc_serial(&mut s);
+            assert!(b > a && b >= MIN_DERIVED_SERIAL);
+
+            // At the wrap boundary it must not yield 0 or dip below the floor.
+            let mut w: u32 = u32::MAX;
+            let f = rust_cap_alloc_serial(&mut w);
+            assert!(f >= MIN_DERIVED_SERIAL && f != 0);
+
+            // A null counter returns the sentinel rather than dereferencing null.
+            assert_eq!(rust_cap_alloc_serial(core::ptr::null_mut()), 0xC0DEFFFF);
+        }
+    }
 }

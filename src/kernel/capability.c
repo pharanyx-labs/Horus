@@ -188,8 +188,24 @@ struct capability *cap_revalidate(uint32_t slot, uint32_t required_rights,
     return p;
 }
 
+/*
+ * No ambient authority. Every non-kernel task must act within its OWN cspace.
+ * Only the kernel boot task (id 0) legitimately operates on root_cnode — user
+ * task ids are always >= 1 (allocated from 1 in do_spawn) and are given a real
+ * cspace at create_task time. Any other task that reaches the root_cnode
+ * fallback is missing its cspace, so refuse it rather than grant it kernel
+ * trust. This makes the "cspace == root_cnode" rights-check exemption in the
+ * mutating ops below provably mean "kernel only", closing the escalation path
+ * where a cspace-less task could mint/transfer/revoke without holding the right.
+ */
+static bool caller_has_authority(void) {
+    int cur = get_current_task();
+    return cur == 0 || tasks[cur].cspace != NULL;
+}
+
 bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
     spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
     struct capability *src = kcap_lookup(src_slot, CAP_RIGHT_MINT);
     if (!src || dest_slot >= CNODE_SIZE) {
         spin_unlock(&cap_lock);
@@ -235,6 +251,7 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
 
 bool cap_transfer(uint32_t dest_slot, uint32_t src_slot) {
     spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
     struct capability *src = kcap_lookup(src_slot, CAP_RIGHT_MINT);
     if (!src || dest_slot >= CNODE_SIZE) {
         spin_unlock(&cap_lock);
@@ -276,6 +293,10 @@ bool cap_move(uint32_t dest_slot, uint32_t src_slot) {
 bool cap_revoke(uint32_t slot) {
     spin_lock(&cap_lock);
     if (slot >= CNODE_SIZE) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    if (!caller_has_authority()) {
         spin_unlock(&cap_lock);
         return false;
     }

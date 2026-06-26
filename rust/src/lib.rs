@@ -1,4 +1,10 @@
 #![no_std]
+// The page-fault / protection / demand-paging policy below is written as
+// explicit `addr >= LO && addr < HI` window comparisons on purpose: the bounds
+// are security-sensitive and read more auditably side-by-side than as range
+// `.contains()` calls. Allow the lint crate-wide so a `-D warnings` CI gate
+// stays meaningful (catches new issues) without mechanically rewriting them.
+#![allow(clippy::manual_range_contains)]
 
 mod capability;
 mod crypto;
@@ -178,6 +184,127 @@ pub extern "C" fn rust_validate_fs_operation(
     }
 
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // err_code bit layout used throughout: present=1, write=2, user=4.
+    const PRESENT: u32 = 1;
+    const WRITE: u32 = 2;
+    const USER: u32 = 4;
+
+    #[test]
+    fn page_fault_validation_guard_and_windows() {
+        // The stack guard page is never a valid fault target.
+        assert!(!rust_validate_page_fault(1, 0x7FB000, 0));
+        assert!(!rust_validate_page_fault(1, 0x7FBFFF, 0));
+        // The two mapped user windows are valid.
+        assert!(rust_validate_page_fault(1, 0x400000, 0));
+        assert!(rust_validate_page_fault(1, 0x7FFFFF, 0));
+        assert!(rust_validate_page_fault(1, 0xA00000, 0));
+        // NULL page, kernel space, and gaps are rejected (no ambient validity).
+        assert!(!rust_validate_page_fault(1, 0, 0));
+        assert!(!rust_validate_page_fault(1, 0x100000, 0));
+        assert!(!rust_validate_page_fault(1, 0xC0000000, 0));
+    }
+
+    #[test]
+    fn cap_rights_are_subset_checked() {
+        let held = SafeCapability { raw: 0b1011 };
+        unsafe {
+            // A null capability grants nothing.
+            assert!(!rust_cap_has_rights(core::ptr::null(), 0b0001));
+            // Holding a superset of the required bits passes.
+            assert!(rust_cap_has_rights(&held, 0b0001));
+            assert!(rust_cap_has_rights(&held, 0b1010));
+            assert!(rust_cap_has_rights(&held, 0b1011));
+            // Requiring any bit not held fails — no rights escalation.
+            assert!(!rust_cap_has_rights(&held, 0b0100));
+            assert!(!rust_cap_has_rights(&held, 0b1111));
+        }
+        assert!(SafeCap { raw: 0b110 }.has_rights(0b100));
+        assert!(!SafeCap { raw: 0b110 }.has_rights(0b001));
+    }
+
+    #[test]
+    fn user_page_protection_windows() {
+        assert_eq!(rust_get_user_page_protection(0, 0x400000), 0x7);
+        assert_eq!(rust_get_user_page_protection(0, 0xA00000), 0x7);
+        assert_eq!(rust_get_user_page_protection(0, 0xff000000), 0x7);
+        assert_eq!(rust_get_user_page_protection(0, 0), 0);
+        assert_eq!(rust_get_user_page_protection(0, 0x300000), 0);
+    }
+
+    #[test]
+    fn demand_fault_cow_and_zero_policy() {
+        // COW write from user on a shared page -> copy.
+        assert_eq!(
+            rust_handle_demand_page_fault(0x400000, WRITE | USER, true, 2),
+            DemandAction::CowCopyNeeded
+        );
+        // COW write but sole owner -> just map writable, no copy.
+        assert_eq!(
+            rust_handle_demand_page_fault(0x400000, WRITE | USER, true, 1),
+            DemandAction::NoAction
+        );
+        // Not-present user read -> demand zero.
+        assert_eq!(
+            rust_handle_demand_page_fault(0x400000, USER, false, 0),
+            DemandAction::DemandZero
+        );
+        // Guard page and out-of-window addresses are always invalid.
+        assert_eq!(
+            rust_handle_demand_page_fault(0x7FB000, USER, false, 0),
+            DemandAction::Invalid
+        );
+        assert_eq!(
+            rust_handle_demand_page_fault(0x100000, USER, false, 0),
+            DemandAction::Invalid
+        );
+    }
+
+    #[test]
+    fn cow_required_truth_table() {
+        assert!(rust_cow_copy_required(true, true, 2));
+        assert!(!rust_cow_copy_required(true, true, 1)); // sole owner -> no copy
+        assert!(!rust_cow_copy_required(false, true, 2)); // not a COW page
+        assert!(!rust_cow_copy_required(true, false, 2)); // not a write
+    }
+
+    #[test]
+    fn should_demand_zero_bits() {
+        assert!(rust_should_demand_zero(USER)); // not-present + user
+        assert!(!rust_should_demand_zero(USER | PRESENT)); // already present
+        assert!(!rust_should_demand_zero(0)); // not a user fault
+    }
+
+    #[test]
+    fn fs_operation_requires_some_right() {
+        let name = b"file";
+        // No rights held -> denied.
+        assert_eq!(rust_validate_fs_operation(1, FsOp::Read as u32, 0, name.as_ptr(), name.len()), -1);
+        // Any right held -> allowed (per-op masking is enforced in C capfs).
+        assert_eq!(rust_validate_fs_operation(1, FsOp::Read as u32, 0x1, name.as_ptr(), name.len()), 0);
+    }
+
+    #[test]
+    fn handle_command_dispatch() {
+        unsafe {
+            // A null command is a no-op, not a crash.
+            assert_eq!(rust_handle_command(core::ptr::null(), 0), 0);
+            let help = b"help";
+            assert_eq!(rust_handle_command(help.as_ptr(), help.len()), 42);
+            let echo = b"echo hi";
+            assert_eq!(rust_handle_command(echo.as_ptr(), echo.len()), 44);
+            let unknown = b"frobnicate";
+            assert_eq!(rust_handle_command(unknown.as_ptr(), unknown.len()), -1);
+            // Invalid UTF-8 is rejected rather than mis-parsed.
+            let bad = [0xffu8, 0xfe];
+            assert_eq!(rust_handle_command(bad.as_ptr(), bad.len()), -1);
+        }
+    }
 }
 
 

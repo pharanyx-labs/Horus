@@ -136,4 +136,101 @@ pub unsafe extern "C" fn rust_free_user_physical_page(
     true
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const N: u32 = USER_PHYS_PAGES;
+    fn phys_of(page: u32) -> u32 {
+        USER_PHYS_BASE + page * PAGE_SIZE
+    }
+
+    // The refcount table is guarded by process-global registered (ptr, len).
+    // Keep every assertion that depends on that global in ONE test so parallel
+    // tests can never clobber the registration between register and use. This
+    // is the only test in the crate that calls rust_page_refcounts_register.
+    #[test]
+    fn refcount_trust_boundary() {
+        let mut table = [0u16; USER_PHYS_PAGES as usize];
+        let ptr = table.as_mut_ptr();
+        let other = [0u16; 4];
+
+        unsafe {
+            // Registration accepts only the one true fixed-size table.
+            assert!(!rust_page_refcounts_register(core::ptr::null(), N));
+            assert!(!rust_page_refcounts_register(ptr, N - 1));
+            assert!(!rust_page_refcounts_register(ptr, N + 1));
+            assert!(rust_page_refcounts_register(ptr, N));
+
+            // Zero-trust: inc/dec touch memory only when (ptr, len) is the exact
+            // registered table — a wrong pointer or length is refused, never
+            // dereferenced.
+            assert_eq!(rust_page_ref_inc(phys_of(0), other.as_ptr() as *mut u16, N), 0);
+            assert_eq!(rust_page_ref_inc(phys_of(0), ptr, N - 1), 0);
+            assert_eq!(rust_page_ref_dec(phys_of(0), other.as_ptr() as *mut u16, N), -1);
+
+            // Below the user base and one-past-the-end pages are refused.
+            assert_eq!(rust_page_ref_inc(USER_PHYS_BASE - 1, ptr, N), 0);
+            assert_eq!(rust_page_ref_inc(phys_of(N), ptr, N), 0);
+
+            // Normal inc/dec round-trips on a valid page.
+            assert_eq!(rust_page_ref_inc(phys_of(5), ptr, N), 1);
+            assert_eq!(rust_page_ref_inc(phys_of(5), ptr, N), 2);
+            assert_eq!(rust_page_ref_dec(phys_of(5), ptr, N), 1);
+            assert_eq!(rust_page_ref_dec(phys_of(5), ptr, N), 0);
+            // Decrementing a zero refcount is reported (-2), never underflowed.
+            assert_eq!(rust_page_ref_dec(phys_of(5), ptr, N), -2);
+            assert_eq!(table[5], 0);
+
+            // inc saturates at u16::MAX rather than wrapping to a bogus 0.
+            table[6] = u16::MAX;
+            assert_eq!(rust_page_ref_inc(phys_of(6), ptr, N), u16::MAX);
+            assert_eq!(table[6], u16::MAX, "saturated count persists in the table");
+        }
+    }
+
+    #[test]
+    fn valid_user_phys_bounds() {
+        unsafe {
+            assert!(!rust_page_is_valid_user_phys(USER_PHYS_BASE - 1, N));
+            assert!(rust_page_is_valid_user_phys(USER_PHYS_BASE, N));
+            assert!(rust_page_is_valid_user_phys(phys_of(N - 1), N));
+            assert!(!rust_page_is_valid_user_phys(phys_of(N), N));
+            // Only the exact compile-time page count is trusted.
+            assert!(!rust_page_is_valid_user_phys(USER_PHYS_BASE, N - 1));
+            assert!(!rust_page_is_valid_user_phys(USER_PHYS_BASE, 0));
+        }
+    }
+
+    #[test]
+    fn alloc_free_physical_page() {
+        let mut stack = [0u32; 64];
+        stack[0] = phys_of(10);
+        stack[1] = phys_of(11);
+        stack[2] = phys_of(12);
+        let mut count: i32 = 3;
+
+        unsafe {
+            // Null pointers / wrong page count are refused and must not mutate
+            // the counter.
+            assert_eq!(rust_alloc_user_physical_page(core::ptr::null_mut(), &mut count, N), 0);
+            assert_eq!(rust_alloc_user_physical_page(stack.as_mut_ptr(), &mut count, N - 1), 0);
+            assert_eq!(count, 3);
+
+            // LIFO pop.
+            assert_eq!(rust_alloc_user_physical_page(stack.as_mut_ptr(), &mut count, N), phys_of(12));
+            assert_eq!(count, 2);
+
+            // Free rejects an out-of-range phys but accepts a valid one.
+            assert!(!rust_free_user_physical_page(USER_PHYS_BASE - 1, stack.as_mut_ptr(), &mut count, N));
+            assert!(rust_free_user_physical_page(phys_of(12), stack.as_mut_ptr(), &mut count, N));
+            assert_eq!(count, 3);
+
+            // Exhaustion returns 0 rather than reading past the stack.
+            let mut empty: i32 = 0;
+            assert_eq!(rust_alloc_user_physical_page(stack.as_mut_ptr(), &mut empty, N), 0);
+        }
+    }
+}
+
 

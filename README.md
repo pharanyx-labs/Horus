@@ -1,5 +1,7 @@
 # Horus
 
+[![CI](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml/badge.svg)](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml)
+
 A capability-based microkernel for x86 and x86-64, written in C and Rust.
 
 ---

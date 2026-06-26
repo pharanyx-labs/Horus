@@ -79,6 +79,7 @@ void kernel_main(uint32_t mb_info) {
     paging_init();
     cap_init();
     cpu_detect_features();
+    cpu_enable_protections();   /* SMEP/SMAP — must follow feature detection */
     entropy_init();
     init_syscall_instruction_path();
 #ifndef MINIMAL_SECURE
@@ -103,6 +104,7 @@ void kernel_main(uint32_t mb_info) {
     paging_init();
     cap_init();
     cpu_detect_features();
+    cpu_enable_protections();   /* SMEP/SMAP — must follow feature detection */
     entropy_init();
 #ifndef MINIMAL_SECURE
     ramfs_init();

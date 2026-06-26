@@ -14,6 +14,28 @@ pub struct Capability {
 
 pub const CAP_NULL: u32 = 0;
 
+// ---------------------------------------------------------------------------
+// FFI layout contract.
+//
+// `Capability` (Rust) and `capability_t` (src/include/kernel.h) MUST have the
+// identical layout — the kernel passes raw `*mut Capability` across the FFI and
+// both sides index the same memory. These compile-time assertions pin the field
+// offsets so reordering or retyping a field in either language fails to build.
+// The mirror image of these checks lives in src/kernel/capability.c as
+// `_Static_assert`s. Field offsets are identical on the 32- and 64-bit targets;
+// only the trailing padding (and thus size_of) differs, so we assert offsets,
+// not size.
+// ---------------------------------------------------------------------------
+const _: () = {
+    assert!(core::mem::offset_of!(Capability, typ) == 0);
+    assert!(core::mem::offset_of!(Capability, rights) == 4);
+    assert!(core::mem::offset_of!(Capability, object) == 8);
+    assert!(core::mem::offset_of!(Capability, badge) == 16);
+    assert!(core::mem::offset_of!(Capability, serial) == 20);
+    assert!(core::mem::offset_of!(Capability, generation) == 24);
+    assert!(CAP_NULL == 0);
+};
+
 const CNODE_SIZE: u32 = 256;
 const KERNEL_RESERVED_CAPS: u32 = 4;
 
@@ -117,20 +139,31 @@ pub unsafe extern "C" fn rust_cap_lookup(
     cap
 }
 
+/// Allocate a fresh derived serial, advancing `*next_serial`. This is the SINGLE
+/// implementation of the serial wrap logic: serials never collide with the
+/// reserved primordial range and never wrap to 0. Both `rust_cap_mint` and the C
+/// `cap_alloc_fresh_serial` go through it so the two cannot drift.
 #[inline]
 unsafe fn assign_fresh_serial(next_serial: *mut u32) -> u32 {
     if next_serial.is_null() {
-        
+
         return 0xC0DEFFFFu32;
     }
     let cur = *next_serial;
-    
-    
+
+
     let base = if cur < MIN_DERIVED_SERIAL { MIN_DERIVED_SERIAL } else { cur };
     let fresh = base.wrapping_add(1);
     let fresh = if fresh < MIN_DERIVED_SERIAL || fresh == 0 { MIN_DERIVED_SERIAL } else { fresh };
     *next_serial = fresh;
     fresh
+}
+
+/// FFI: centralized fresh-serial allocation for the C kernel. The caller holds
+/// `cap_lock`; `next_serial` points at the kernel's monotonic serial counter.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_alloc_serial(next_serial: *mut u32) -> u32 {
+    assign_fresh_serial(next_serial)
 }
 
 #[no_mangle]

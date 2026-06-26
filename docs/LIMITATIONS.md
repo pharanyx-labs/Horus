@@ -2,7 +2,7 @@
 
 This document is an honest account of what Horus does and does not do. The goal is to prevent anyone from drawing incorrect conclusions about its readiness or security properties.
 
-Horus is a research and learning project. It is not a production operating system and makes no claim to be one.
+Horus is a research and learning project. It is not a production operating system and makes no claim to be one. Where this document and the code disagree, the code is the source of truth — please open an issue.
 
 ---
 
@@ -10,15 +10,18 @@ Horus is a research and learning project. It is not a production operating syste
 
 These subsystems are functional in the current codebase:
 
-- **Boot sequence** — Multiboot2 boot via GRUB2, 32-bit and 64-bit
-- **VGA terminal** — 80×50 text mode, colour output, kernel log buffer, serial mirror
-- **Hardware isolation** — Ring 0/Ring 3 separation, per-task page tables, user/kernel memory split
-- **Capability mint, transfer, and revoke** — the core capability operations work correctly, including transitive revocation across all tasks
-- **Lineage tracking** — use-after-revoke is prevented via generation counters
+- **Boot sequence** — Multiboot boot via GRUB2, 32-bit and 64-bit
+- **VGA terminal** — text mode, colour output, kernel log buffer, serial mirror
+- **Hardware isolation** — Ring 0/Ring 3 separation, per-task page tables, user/kernel memory split. SMEP and SMAP are enabled when the CPU advertises them (ring 0 cannot execute or casually read user pages; user copies go through a kernel mapping rather than the user mapping), the NX bit is honoured (`EFER.NXE`), and the boot CPU brings these up after feature detection.
+- **Capability mint, transfer, and revoke** — the core capability operations work, including transitive revocation across every task's cspace and the kernel root cnode. Revocation requires `CAP_RIGHT_REVOKE` on the target (mint/transfer require `CAP_RIGHT_MINT`); a "no ambient authority" guard refuses cap operations from any non-kernel task that lacks its own cspace.
+- **Lineage tracking** — use-after-revoke is prevented via per-lineage generation counters; a looked-up capability can be snapshotted and re-validated at point of use (wired into the IPC send/recv paths to close a lookup/use TOCTOU window across the cooperative yield).
+- **Capability/FFI integrity** — the C `capability_t` and Rust `Capability` layouts are pinned by mirrored compile-time assertions; the refcount table is registered once and every later inc/dec must present the exact (pointer, length) or is refused.
 - **User authentication** — login, lockout after failed attempts, per-user UID assignment
-- **Audit log** — kernel-side circular buffer of security events
+- **Audit log** — kernel-side circular buffer of security events; capability mint/transfer/move/revoke and the FS/auth paths record outcomes
 - **Keyboard input** — PS/2 scancode translation, key buffer
-- **Round-robin scheduling** — basic task switching
+- **Round-robin scheduling** — cooperative task switching
+- **Reproducible builds** — `make reproducible-build` yields a byte-for-byte identical `kernel.elf` across clean builds (verified in CI)
+- **Userspace task spawning** — `SYS_SPAWN` loads an ELF image, sets up paging/heap/ASLR and a capability space, and is gated on a capability (`CAP_RIGHT_WRITE | CAP_RIGHT_EXEC` on slot 3)
 
 ---
 
@@ -28,105 +31,103 @@ These subsystems compile and run but are incomplete:
 
 ### Userspace shell
 
-The shell accepts input and dispatches commands. Several commands are implemented end-to-end (`whoami`, `uname`, `login`, `logout`, `help`). Others (`ls`, `cat`, `mkdir`, `spawn`, `cap_grant`) are stubs that parse their arguments but return errors or do nothing.
+The shell accepts input and dispatches commands. Several are implemented end-to-end; others parse their arguments but return errors or do little. Coverage is uneven and should not be assumed complete for any given command.
 
 ### IPC
 
-The basic `send`/`recv` cycle works. The `call`/`reply` path (`SYS_IPC_CALL`) is not fully implemented. Blocking semantics exist in the data structures but are inconsistently enforced.
+The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated, with the TOCTOU revalidation noted above). It is a busy-spin-with-`yield()` rendezvous rather than a true blocking/queueing endpoint, so semantics under contention are simplistic. `SYS_IPC_CALL`/`SYS_IPC_REPLY` are thin wrappers over send. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and then return a distinct `SYS_ERR_NOSYS` (-38).
 
-### RAM filesystem
+### Filesystem (capfs / ramfs)
 
-A filesystem exists in memory with up to 8 pre-allocated files. File read and write work at the syscall level. Directory traversal, permissions, and symbolic links are not implemented. There is only one level of naming; no subdirectory support.
+An in-memory capability-addressed filesystem works: lookup, create, delete, read, write, and readdir each enforce the relevant `CAP_RIGHT_FS_*` right, with per-file encryption support. It is a single in-memory tree; persistence and richer POSIX semantics are absent (see below).
 
 ### Copy-on-write paging
 
-The `PAGE_COW` flag and the reference counting infrastructure are in place. The page fault handler calls into Rust to handle demand-page and COW faults. The mechanism works for the common case but has not been stress-tested and likely has edge cases.
+The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault handler calls into Rust to decide demand-zero vs. COW-copy. The common cases work and the Rust decision logic is unit-tested, but the end-to-end paths have not been stress-tested and likely have edge cases.
+
+### Disk-backed storage
+
+`storage.c` implements encrypted block storage (HKDF-SHA256 per-block keys, HMAC-SHA256 authentication, encrypt-then-MAC) and key rotation over a virtual disk, and `ata.c` is a working 28-bit-LBA PIO driver. However the live filesystem is the in-memory tree above; the encrypted-storage path and mounting are partial and not wired in as the default backing store.
 
 ---
 
-## What does not work
+## What does not work / is not yet present
 
-### Disk I/O
+### Persistent storage as the default
 
-The ATA driver (`ata.c`) implements 28-bit LBA read/write over the standard port-I/O interface. Under QEMU it targets the virtual disk. However, all filesystem operations currently use an in-memory structure — no kernel code writes to or reads from the ATA device as part of normal operation. **There is no persistent storage.** All filesystem contents are lost on reboot.
+All filesystem contents live in memory and are lost on reboot. The encrypted-storage and ATA code exist but are not the active backing store for the filesystem.
 
 ### Userspace filesystem server
 
-`userspace/fs_server.c` registers as a filesystem server and waits for IPC messages. The message dispatch skeleton is in place but no operations are implemented. The shell's IPC connection to the fs_server is not established reliably.
-
-### Task spawning from userspace
-
-`SYS_SPAWN` is a stub. Userspace cannot create new tasks.
+`userspace/fs_server.c` is a skeleton; its IPC dispatch is not implemented end-to-end.
 
 ### SMP / multicore
 
-The LAPIC is detected and the AP bringup code exists in `lowlevel64.S`. No AP has successfully started. The `MAX_CPUS=4` constant and the per-CPU current-task array are in the data structures but the scheduler and IPC paths assume a single CPU. Running on a real multi-core machine will not cause a crash, but no additional cores will be used.
+LAPIC detection and AP-bringup scaffolding exist, but no AP is brought up and the scheduler/IPC paths assume a single core. Running on real multi-core hardware will not crash but will use one core.
 
 ### Preemptive scheduling
 
-There is no preemption. The timer interrupt is handled but does not forcibly switch tasks. Tasks run until they yield, make a blocking syscall, or exit. A long-running computation will starve all other tasks.
+There is no preemption. The timer interrupt is handled but does not forcibly switch tasks; a task runs until it yields, blocks, or exits. A long-running computation starves others.
 
 ### Signal handling
 
-There is no signal mechanism. Page faults and other exceptions in userspace are currently fatal to the faulting task (or fall through to the kernel debug shell if `DEBUG_SHELL=1`).
+There is no signal mechanism. A userspace fault is fatal to the faulting task (or drops into the kernel debug shell when `DEBUG_SHELL=1`).
+
+### Full ASLR (PIE userspace)
+
+Per-spawn stack top and heap gap are randomised from the CSPRNG, but userspace binaries are linked non-PIE at a fixed load address (`0x400000`), so load-base randomisation is not applied. See the security note below.
 
 ---
 
 ## Security limitations
 
-These limitations matter specifically for anyone evaluating Horus as a security system:
+These matter specifically for anyone evaluating Horus as a security system:
 
-### Custom cryptography
+### Bulk block cipher
 
-The password hashing scheme is a custom 4,096-round XOR-rotate mixing function — not PBKDF2, bcrypt, scrypt, or Argon2. It has not been reviewed by a cryptographer and should not be considered strong. The `crypto.rs` Rust module is a placeholder with no implemented primitives.
+Key derivation (HKDF-SHA256) and authentication (HMAC-SHA256) around stored blocks are sound, but the AES-128 block routine used for CTR-mode bulk encryption has a **known-incorrect AES-NI key schedule**. Confidentiality of stored block data should not be relied upon until it is replaced with a correct AES-128 or a ChaCha20 stream. (See `SECURITY.md` → "Remaining crypto work".)
 
-The kernel pepper is derived from runtime state that an attacker with code execution in the kernel can potentially reconstruct.
+### No load-base ASLR
 
-### No ASLR enforcement
-
-ASLR data structures and entropy seeding are present, but load-address randomisation is not enforced on every task spawn. A determined attacker can likely infer or brute-force addresses.
+Stack and heap are randomised per spawn; the load address is fixed (non-PIE), so code/GOT layout is predictable to an attacker who knows the binary.
 
 ### Audit log is not tamper-resistant
 
-The audit log is a circular buffer in kernel memory. There is no integrity protection. Kernel code (or a kernel-mode exploit) can overwrite or clear it.
+The audit log is a plain circular buffer in kernel memory with no integrity protection. Kernel code — or a kernel-mode exploit — can overwrite or clear it.
 
-### No covert channel mitigation
+### No covert / cache side-channel mitigation
 
-There is no mitigation for timing side-channels (e.g., cache-timing attacks between tasks). Shared page tables, shared TLB entries, and shared hardware counters are all potential leakage channels that are unaddressed.
+Single-core and cooperative today, so cross-core/SMT channels do not yet apply, but there is no flush-on-switch or cache partitioning for when preemption/SMP land. Tracked in `SECURITY.md`.
 
 ### No privilege separation within the kernel
 
-All kernel code runs at the same privilege level with access to all kernel data. A bug in the terminal driver has the same impact as a bug in the capability system.
-
-### TSC-only entropy
-
-All randomness (ASLR, salts) is seeded exclusively from the TSC (`rdtsc`). The TSC is readable from userspace and is low-entropy early in boot. Proper entropy gathering (hardware RNG, interrupt timing jitter) is not implemented.
+All kernel code runs at the same privilege level with access to all kernel data; a bug in the terminal driver has the same blast radius as one in the capability system.
 
 ---
 
 ## Code quality notes
 
-- Several subsystems have stub implementations that compile cleanly but return errors or do nothing at runtime. Compilation success is not evidence of correct operation.
-- Error codes are bare integers (`-1`, `-2`, `-3`) without a consistent enumeration.
-- The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its actual role.
-- `src/kernel/minimal_secure_stubs.c` exists as a compatibility shim and contains no security logic despite the filename.
-- There is one unit test in the Rust crate and no integration test suite.
+- Compilation success is not evidence of correct runtime behaviour; some paths are partial.
+- Error codes are mostly bare integers; only a few (e.g. `SYS_ERR_NOSYS`) are named.
+- The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its current role (it is the security core: capabilities, memory refcounting, SHA-2/HMAC/HKDF/PBKDF2, ChaCha20 RNG, FFI validation).
+- `src/kernel/minimal_secure_stubs.c` supplies the stub implementations used by the `MINIMAL_SECURE=1` build (which strips the filesystem/storage stack); it is build configuration, not security logic.
+- Tests: 26 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, and the FFI validation/policy functions. There is a CI pipeline (build + `cargo test` + `clippy -D warnings` + reproducible-build check) but no booted-kernel integration/fuzz harness yet, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
 ## Estimated completeness
 
+Rough orientation only, not guarantees. The capability system is the most complete and most carefully reviewed part of the project.
+
 | Area | Estimate |
 |---|---|
-| Capability model (design and core implementation) | ~80% |
+| Capability model (design and core implementation) | ~85% |
 | Boot and hardware initialisation | ~85% |
-| Memory management | ~50% |
-| Task scheduling | ~40% (round-robin only, no preemption) |
-| IPC | ~35% |
-| Filesystem | ~20% |
-| Storage / disk I/O | ~10% |
-| Cryptography | ~5% (scaffolding only) |
-| SMP | ~5% (detection only) |
-| Testing | ~5% |
-
-These are rough estimates for orientation, not guarantees. The capability system is the most complete part of the project.
+| Memory management | ~55% |
+| Task scheduling | ~40% (round-robin, no preemption) |
+| IPC | ~35% (send/recv; no notifications, no real blocking) |
+| Filesystem | ~35% (in-memory, capability-gated; no persistence) |
+| Cryptography (KDF/MAC/RNG sound; bulk AES broken) | ~60% |
+| Storage / disk I/O | ~25% (driver + encrypted-block code, not wired as default) |
+| SMP | ~5% (detection/scaffolding only) |
+| Testing | ~30% (unit tests + CI; no integration/fuzz) |

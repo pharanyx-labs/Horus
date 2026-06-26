@@ -14,6 +14,19 @@ Known weaknesses include:
 
 These are not undisclosed vulnerabilities — they are documented, known limitations of an incomplete system.
 
+## Hardening currently in place
+
+For balance, the following are implemented and enforced today (single-core, cooperative build):
+
+- **Hardware isolation:** Ring 0/3 separation with per-task page tables; **SMEP** and **SMAP** enabled when advertised (ring 0 cannot execute, and cannot casually read/write, user pages — user copies resolve the physical address under the kernel mapping rather than dereferencing a user virtual address); **NX** honoured via `EFER.NXE`.
+- **No ambient authority:** capability revoke requires `CAP_RIGHT_REVOKE` on the target and mint/transfer require `CAP_RIGHT_MINT`; a non-kernel task with no cspace is refused rather than defaulting to the kernel root cnode. Revocation is system-wide (every task's cspace plus the kernel root) and bumps the lineage generation, so derived copies in other tasks cannot outlive their parent.
+- **Use-after-revoke / TOCTOU:** per-lineage generation counters invalidate stale capabilities; a snapshot + revalidate-at-use guard is wired into the IPC send/recv paths so a revoke during the cooperative yield aborts the operation.
+- **FFI integrity:** the C and Rust capability layouts are pinned by mirrored compile-time assertions; the page refcount table is registered once and any later inc/dec presenting a different (pointer, length) is refused, not trusted.
+- **Audit trail:** capability mint/transfer/move/revoke (and the FS/auth paths) record their outcome to the audit log.
+- **Supply chain / CI:** every change is gated by a CI pipeline — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, and a byte-for-byte reproducible-build check — using only first-party GitHub actions.
+
+The security-critical primitives (capabilities, memory refcounting, hashing, RNG, FFI validation) live in safe `no_std` Rust and carry unit tests; the rest of the kernel is C and has **not** undergone systematic fuzzing or third-party review.
+
 ---
 
 ## Cryptography & entropy (current implementation)

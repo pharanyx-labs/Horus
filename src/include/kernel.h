@@ -29,7 +29,15 @@ typedef uint64_t vaddr_t;
 #define USER_VIRT_BASE          0x0000000000400000ULL
 #define USER_MAX_VADDR          0x0000000000800000ULL
 #define USER_AREA_BASE          0x400000ULL
-#define KERNEL_TSS_STACK        0xFFFF8000FFFFF000ULL
+/* Fallback/initial kernel stack for the TSS RSP0/ESP0: the real boot stack,
+ * which the boot code installs as the initial RSP/ESP and which is therefore
+ * always mapped. Using the linker symbol instead of a magic high address keeps
+ * the value valid (and mapped) on both 32- and 64-bit, and avoids truncating a
+ * 64-bit address into the 32-bit legacy TSS esp0 field. The former value,
+ * 0xFFFF8000FFFFF000, both overflowed uint32_t and pointed at unmapped memory,
+ * so any path that fell back to it would have triple-faulted. */
+extern uint8_t stack_top[];
+#define KERNEL_TSS_STACK        ((uintptr_t)stack_top)
 #define USER_ASPACE_PREMAP_PAGES 32
 #define KERNEL_STACK_SIZE 8192
 #define MAX_USERS               32

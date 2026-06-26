@@ -2188,7 +2188,7 @@ void spawn_initial_userspace_shell(void) {
             uint64_t rip = (uint64_t)tasks[pid].eip;
             uint64_t rspv = tasks[pid].esp ? (uint64_t)tasks[pid].esp : 0x007ff000ULL;
             uint64_t ucr3 = tasks[pid].cr3;
-            uint32_t kst = tasks[pid].kernel_stack_top ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
+            uintptr_t kst = tasks[pid].kernel_stack_top ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
             set_tss_kernel_stack(kst);
             set_current_task(pid);
             __asm__ volatile (

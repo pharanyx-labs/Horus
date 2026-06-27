@@ -6,15 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read          # checkout + upload needs this minimally
-  actions: read
-  # explicitly no issues, pull-requests, etc. unless required
-
 # Newer pushes to the same ref cancel older in-flight runs.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# Least-privilege GITHUB_TOKEN permissions (defense-in-depth for CI)
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  # No write permissions by default. upload-artifact is specially granted by GitHub for this workflow.
 
 env:
   CARGO_TERM_COLOR: always
@@ -82,23 +84,63 @@ jobs:
           echo "kernel.elf is byte-for-byte reproducible across clean builds"
 
   security:
-    name: Security scans (Semgrep, Trivy, gitleaks, etc.)
+    name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
-    # Does not block the build while you triage findings
-    continue-on-error: true
+    # IMPORTANT: Review findings even if job continues.
+    # High-severity issues should block merges via CODEOWNERS + branch protection.
+    # Future improvement: upload SARIF and fail on critical severity.
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # needed for gitleaks full history scan
 
-      - name: Install security tools
+      - name: Install security tools (pinned where practical)
         run: |
           sudo apt-get update
           sudo apt-get install -y cppcheck flawfinder
           pipx install semgrep || pip install semgrep
+          # Trivy - use official install script (consider pinning release in future)
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          go install github.com/gitleaks/gitleaks@latest || true
+          # gitleaks - pin to a known stable version instead of @latest
+          go install github.com/gitleaks/gitleaks@v8.21.0 || true
           cargo install cargo-audit || true
 
       - name: Run security checks
         run: make security
+
+      - name: Generate SBOM (CycloneDX via Trivy)
+        run: |
+          trivy fs --format cyclonedx --output sbom.cyclonedx.json \
+            --scanners vuln,secret,misconfig .
+          echo "SBOM generated: sbom.cyclonedx.json"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: horus-sbom-cyclonedx
+          path: sbom.cyclonedx.json
+          if-no-files-found: warn
+
+      # Future: Add CodeQL or Semgrep SARIF upload step here for PR annotations
+      # Example:
+      # - uses: github/codeql-action/init@v3
+      #   with:
+      #     languages: c-cpp, rust
+      # Then analyze and upload-sarif.
+
+  # Medium-term addition example (commented for now):
+  # codeql:
+  #   name: CodeQL Analysis
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     actions: read
+  #     contents: read
+  #     security-events: write
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: github/codeql-action/init@v3
+  #       with:
+  #         languages: c-cpp, rust
+  #     - uses: github/codeql-action/analyze@v3
+  #       with:
+  #         category: "/language:c-cpp"

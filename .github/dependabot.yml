@@ -1,0 +1,37 @@
+# Dependabot configuration for Horus
+# Even with zero external Rust dependencies today, this protects GitHub Actions
+# and any future dependencies (cargo, docker, etc.).
+# Schedule weekly to balance noise vs. security.
+
+version: 2
+updates:
+  # GitHub Actions (highest priority for CI supply chain)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    # Reviewers can be added once team grows
+
+  # Future: Rust / Cargo (uncomment when dependencies are added)
+  # - package-ecosystem: "cargo"
+  #   directory: "/rust"
+  #   schedule:
+  #     interval: "weekly"
+  #   open-pull-requests-limit: 3
+  #   labels:
+  #     - "dependencies"
+  #     - "rust"
+
+  # Future: Docker (if containerized builds are adopted)
+  # - package-ecosystem: "docker"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"

@@ -1,0 +1,42 @@
+# CODEOWNERS - High-assurance security-critical paths for Horus microkernel
+# Changes to these files require review by the listed owners (enforce via branch protection)
+# See CONTRIBUTING.md for invariant explanation requirements on security changes.
+
+# Core capability system (highest priority - revocation, lineage, mint/transfer)
+rust/src/capability.rs          @yossicohenmcr-ctrl
+rust/src/memory.rs              @yossicohenmcr-ctrl
+src/kernel/capability.c         @yossicohenmcr-ctrl
+src/kernel/capability.h         @yossicohenmcr-ctrl
+
+# Memory management, paging, COW, refcount FFI boundary
+src/kernel/paging.c             @yossicohenmcr-ctrl
+src/kernel/paging.h             @yossicohenmcr-ctrl
+
+# Syscall dispatch, IPC, scheduler (isolation enforcement)
+src/kernel/syscall.c            @yossicohenmcr-ctrl
+src/kernel/syscall.h            @yossicohenmcr-ctrl
+src/kernel/scheduler.c          @yossicohenmcr-ctrl
+src/kernel/scheduler.h          @yossicohenmcr-ctrl
+
+# Crypto, audit, auth (security primitives)
+src/kernel/crypto.c             @yossicohenmcr-ctrl
+src/kernel/crypto.h             @yossicohenmcr-ctrl
+rust/src/crypto.rs              @yossicohenmcr-ctrl
+
+# CI/CD, workflows, and SSDLC configuration (automation is part of trusted base)
+.github/workflows/              @yossicohenmcr-ctrl
+.github/CODEOWNERS              @yossicohenmcr-ctrl
+.github/dependabot.yml          @yossicohenmcr-ctrl
+SECURITY.md                     @yossicohenmcr-ctrl
+CONTRIBUTING.md                 @yossicohenmcr-ctrl
+docs/ARCHITECTURE.md            @yossicohenmcr-ctrl
+docs/LIMITATIONS.md             @yossicohenmcr-ctrl
+docs/SECURITY.md                @yossicohenmcr-ctrl
+
+# Build system and reproducibility
+Makefile                        @yossicohenmcr-ctrl
+linker.ld                       @yossicohenmcr-ctrl
+linker64.ld                     @yossicohenmcr-ctrl
+
+# Default fallback for everything else (owner review)
+*                               @yossicohenmcr-ctrl

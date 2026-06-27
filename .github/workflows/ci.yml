@@ -83,7 +83,7 @@ jobs:
           fi
           echo "kernel.elf is byte-for-byte reproducible across clean builds"
 
-security:
+  security:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
     steps:
@@ -100,7 +100,7 @@ security:
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
           # gitleaks pinned
           go install github.com/gitleaks/gitleaks@v8.21.0 || true
-          # === FIX: Install Rust bare-metal target for cargo-audit and Makefile steps ===
+          # Rust bare-metal target for cargo-audit and Makefile
           rustup target add x86_64-unknown-none
           cargo install cargo-audit || true
 

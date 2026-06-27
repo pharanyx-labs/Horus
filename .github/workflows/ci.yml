@@ -52,7 +52,7 @@ jobs:
       - name: Build bootable ISO
         run: make boot.iso
       - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: horus-kernel-x86_64
           path: |
@@ -115,7 +115,7 @@ jobs:
           echo "SBOM generated: sbom.cyclonedx.json"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: horus-sbom-cyclonedx
           path: sbom.cyclonedx.json

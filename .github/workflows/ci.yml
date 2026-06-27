@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read          # checkout + upload needs this minimally
+  actions: read
+  # explicitly no issues, pull-requests, etc. unless required
+
 # Newer pushes to the same ref cancel older in-flight runs.
 concurrency:
   group: ci-${{ github.ref }}

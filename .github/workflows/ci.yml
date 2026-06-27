@@ -83,26 +83,25 @@ jobs:
           fi
           echo "kernel.elf is byte-for-byte reproducible across clean builds"
 
-  security:
+security:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
-    # IMPORTANT: Review findings even if job continues.
-    # High-severity issues should block merges via CODEOWNERS + branch protection.
-    # Future improvement: upload SARIF and fail on critical severity.
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # needed for gitleaks full history scan
 
-      - name: Install security tools (pinned where practical)
+      - name: Install security tools + Rust target (pinned where practical)
         run: |
           sudo apt-get update
           sudo apt-get install -y cppcheck flawfinder
           pipx install semgrep || pip install semgrep
-          # Trivy - use official install script (consider pinning release in future)
+          # Trivy
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          # gitleaks - pin to a known stable version instead of @latest
+          # gitleaks pinned
           go install github.com/gitleaks/gitleaks@v8.21.0 || true
+          # Rust target required for cargo-audit and any Makefile Rust steps
+          rustup target add x86_64-unknown-none
           cargo install cargo-audit || true
 
       - name: Run security checks
@@ -120,27 +119,3 @@ jobs:
           name: horus-sbom-cyclonedx
           path: sbom.cyclonedx.json
           if-no-files-found: warn
-
-      # Future: Add CodeQL or Semgrep SARIF upload step here for PR annotations
-      # Example:
-      # - uses: github/codeql-action/init@v3
-      #   with:
-      #     languages: c-cpp, rust
-      # Then analyze and upload-sarif.
-
-  # Medium-term addition example (commented for now):
-  # codeql:
-  #   name: CodeQL Analysis
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     actions: read
-  #     contents: read
-  #     security-events: write
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: github/codeql-action/init@v3
-  #       with:
-  #         languages: c-cpp, rust
-  #     - uses: github/codeql-action/analyze@v3
-  #       with:
-  #         category: "/language:c-cpp"

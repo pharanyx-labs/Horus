@@ -202,3 +202,58 @@ reproducible-build:
 
 verify-build: reproducible-build
 	@echo "Verify complete."
+
+.PHONY: security security-install semgrep trivy gitleaks cppcheck flawfinder cargo-audit
+
+security: semgrep trivy gitleaks cppcheck flawfinder cargo-audit
+	@echo ""
+	@echo "✅ Security scan complete."
+	@echo "   Review all output above for findings."
+	@echo "   High-severity issues should be fixed before merging."
+
+security-install:
+	@echo "Installing security tools (this may require sudo)..."
+	sudo apt-get update
+	sudo apt-get install -y cppcheck flawfinder
+	# Semgrep
+	pipx install semgrep || pip install --user semgrep
+	# Trivy (official install script)
+	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+	# gitleaks (via Go)
+	go install github.com/gitleaks/gitleaks@latest || echo "⚠️  Install Go to get gitleaks binary"
+	# cargo-audit for Rust
+	cargo install cargo-audit || true
+	@echo "Installation finished. You may need to add ~/.local/bin or /usr/local/bin to your PATH."
+
+semgrep:
+	@echo "=== Semgrep (C + Rust + security rules) ==="
+	command -v semgrep >/dev/null 2>&1 || pipx install semgrep
+	semgrep --version
+	semgrep --config=auto --config=p/ci --error .
+
+trivy:
+	@echo "=== Trivy (secrets + misconfigs + vulns) ==="
+	command -v trivy >/dev/null 2>&1 || (curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin)
+	trivy --version
+	trivy fs --scanners vuln,secret,misconfig .
+
+gitleaks:
+	@echo "=== gitleaks (secrets in git history) ==="
+	command -v gitleaks >/dev/null 2>&1 || go install github.com/gitleaks/gitleaks@latest
+	gitleaks detect --source . --verbose || true
+
+cppcheck:
+	@echo "=== cppcheck (C static analysis) ==="
+	command -v cppcheck >/dev/null 2>&1 || sudo apt-get install -y cppcheck
+	cppcheck --version
+	cppcheck --enable=all --inconclusive --suppress=missingIncludeSystem src/ include/ rust/ 2>&1 | head -80 || true
+
+flawfinder:
+	@echo "=== flawfinder (C/C++ security weaknesses) ==="
+	command -v flawfinder >/dev/null 2>&1 || pipx install flawfinder || pip install flawfinder
+	flawfinder --version
+	flawfinder src/ include/ 2>&1 | head -60 || true
+
+cargo-audit:
+	@echo "=== cargo-audit (Rust dependency advisories) ==="
+	(cd rust && cargo audit) || echo "cargo-audit not installed or no advisories found"

@@ -14,11 +14,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# Zero-trust posture: only first-party actions are used (checkout,
-# upload-artifact); the Rust toolchain comes from the runner's preinstalled
-# rustup. Every check is a hard gate — nothing is trusted without being built,
-# tested, or verified in this pipeline.
-
 jobs:
   rust:
     name: Rust unit tests + clippy (deny-warnings gate)
@@ -80,3 +75,25 @@ jobs:
             exit 1
           fi
           echo "kernel.elf is byte-for-byte reproducible across clean builds"
+
+  security:
+    name: Security scans (Semgrep, Trivy, gitleaks, etc.)
+    runs-on: ubuntu-latest
+    # Does not block the build while you triage findings
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for gitleaks full history scan
+
+      - name: Install security tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck flawfinder
+          pipx install semgrep || pip install semgrep
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          go install github.com/gitleaks/gitleaks@latest || true
+          cargo install cargo-audit || true
+
+      - name: Run security checks
+        run: make security

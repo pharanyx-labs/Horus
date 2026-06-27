@@ -239,7 +239,7 @@ trivy:
 
 gitleaks:
 	@echo "=== gitleaks (secrets in git history) ==="
-	command -v gitleaks >/dev/null 2>&1 || go install github.com/gitleaks/gitleaks@latest
+	command -v gitleaks >/dev/null 2>&1 || go install github.com/gitleaks/gitleaks@v8.21.0
 	gitleaks detect --source . --verbose || true
 
 cppcheck:

@@ -185,12 +185,19 @@ static int verify_user_password(const char *name, const char *password) {
             }
         }
     }
-    if (!u) return 0;
-
+    /* Run the same work whether or not the account exists, to deny an attacker
+     * a timing oracle for username enumeration: always derive the (deliberately
+     * expensive) PBKDF2 hash and run a constant-time compare. When the user is
+     * absent we hash against a zero salt and compare the result against itself,
+     * then discard the (necessarily "equal") outcome and fail. */
+    static const uint8_t dummy_salt[PASS_SALT_LEN]; /* zero-initialized */
     uint8_t computed[PASS_HASH_LEN];
-    strong_password_hash(password, u->salt, kernel_pepper, computed);
+    const uint8_t *salt   = u ? u->salt      : dummy_salt;
+    const uint8_t *expect = u ? u->pass_hash : computed;
 
-    return constant_time_compare(computed, u->pass_hash, PASS_HASH_LEN);
+    strong_password_hash(password, salt, kernel_pepper, computed);
+    int eq = constant_time_compare(computed, expect, PASS_HASH_LEN);
+    return (u && eq) ? 1 : 0;
 }
 
 #define USERDB_MAGIC 0x55534442
@@ -1291,9 +1298,15 @@ void syscall_handler(struct regs *r) {
             if (!c) { r->eax = -1; break; }
             void *user_buf = (void*)(addr_t)r->ebx;
             size_t max_len = r->ecx;
-            (void)max_len;
             char kbuf[256];
-            int n = ramfs_list(kbuf, sizeof(kbuf));
+            /* Honour the caller-supplied buffer size: format the listing into at
+             * most max_len bytes (capped by the kernel scratch buffer) so the
+             * subsequent copy_to_user never writes past the caller's buffer.
+             * ramfs_list guarantees a NUL within the size it is given, so
+             * n+1 <= cap holds. */
+            size_t cap = max_len < sizeof(kbuf) ? max_len : sizeof(kbuf);
+            if (cap == 0) { r->eax = 0; break; }
+            int n = ramfs_list(kbuf, cap);
             if (n < 0) { r->eax = -1; break; }
             if (copy_to_user(user_buf, kbuf, n+1) == 0) r->eax = n;
             else r->eax = -1;
@@ -1575,6 +1588,7 @@ void syscall_handler(struct regs *r) {
 
             char upass[32];
             if (copy_from_user(upass, (void*)(addr_t)r->ebx, 31) != 0) {
+                secure_zero(upass, sizeof(upass));
                 r->eax = -1;
                 break;
             }
@@ -1591,6 +1605,7 @@ void syscall_handler(struct regs *r) {
                 }
             }
             if (!cur) {
+                secure_zero(upass, sizeof(upass));
                 r->eax = -1;
                 break;
             }
@@ -1603,6 +1618,7 @@ void syscall_handler(struct regs *r) {
                         cur_user->auth_fail_count = 0;
                     }
                 }
+                secure_zero(upass, sizeof(upass));
                 r->eax = -2;
                 break;
             }
@@ -1616,8 +1632,11 @@ void syscall_handler(struct regs *r) {
                 char *mat = upass;
                 size_t mlen = kstrlen(upass);
                 derive_and_store_user_file_key(cur->uid, mat, mlen);
-                
+
             }
+            /* Password material is no longer needed past key derivation; clear it
+             * from the kernel stack frame on every remaining exit path. */
+            secure_zero(upass, sizeof(upass));
             audit_log(AUDIT_SUDO, 0, 0, "sudo success");
 
             if (!program_armed) {

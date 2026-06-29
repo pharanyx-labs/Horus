@@ -1526,13 +1526,26 @@ void syscall_handler(struct regs *r) {
             uname[31] = 0;
             upass[31] = 0;
 
+            /* Global anti-spray cooldown: refuse all auth attempts kernel-wide
+             * while it is active, so cycling usernames cannot dodge per-account
+             * lockout. Policy + arithmetic live in rust/src/auth.rs. */
+            if (rust_auth_global_locked(now)) {
+                secure_zero(uname, sizeof(uname));
+                secure_zero(upass, sizeof(upass));
+                r->eax = -4;
+                break;
+            }
+
             struct user_account *u = find_user_by_name(uname);
-            if (u && u->auth_lockout_until > now) {
+            if (u && rust_auth_is_locked(u->auth_lockout_until, now)) {
+                secure_zero(uname, sizeof(uname));
+                secure_zero(upass, sizeof(upass));
                 r->eax = -4;
                 break;
             }
 
             if (verify_password(uname, upass)) {
+                rust_auth_global_on_success();
                 if (u) {
                     u->auth_fail_count = 0;
                     u->auth_lockout_until = 0;
@@ -1556,12 +1569,13 @@ void syscall_handler(struct regs *r) {
                 }
                 r->eax = 0;
             } else {
+                rust_auth_global_on_failure(now);
                 if (u) {
-                    u->auth_fail_count++;
-                    if (u->auth_fail_count >= 5) {
-                        u->auth_lockout_until = now + 8000;
-                        u->auth_fail_count = 0;
-                    }
+                    uint32_t new_count = u->auth_fail_count;
+                    uint64_t new_lockout = 0;
+                    rust_auth_on_failure(u->auth_fail_count, now, &new_count, &new_lockout);
+                    u->auth_fail_count = new_count;
+                    if (new_lockout) u->auth_lockout_until = (uint32_t)new_lockout;
                 }
                 audit_log(AUDIT_AUTH, 0, -1, "login failure");
                 r->eax = -1;
@@ -1583,7 +1597,11 @@ void syscall_handler(struct regs *r) {
                     break;
                 }
             }
-            if (cur_user && cur_user->auth_lockout_until > now) {
+            if (rust_auth_global_locked(now)) {
+                r->eax = -4;
+                break;
+            }
+            if (cur_user && rust_auth_is_locked(cur_user->auth_lockout_until, now)) {
                 r->eax = -4;
                 break;
             }
@@ -1613,17 +1631,19 @@ void syscall_handler(struct regs *r) {
             }
 
             if (!verify_password(cur->name, upass)) {
+                rust_auth_global_on_failure(now);
                 if (cur_user) {
-                    cur_user->auth_fail_count++;
-                    if (cur_user->auth_fail_count >= 5) {
-                        cur_user->auth_lockout_until = get_system_ticks() + 8000;
-                        cur_user->auth_fail_count = 0;
-                    }
+                    uint32_t new_count = cur_user->auth_fail_count;
+                    uint64_t new_lockout = 0;
+                    rust_auth_on_failure(cur_user->auth_fail_count, now, &new_count, &new_lockout);
+                    cur_user->auth_fail_count = new_count;
+                    if (new_lockout) cur_user->auth_lockout_until = (uint32_t)new_lockout;
                 }
                 secure_zero(upass, sizeof(upass));
                 r->eax = -2;
                 break;
             }
+            rust_auth_global_on_success();
             if (cur_user) {
                 cur_user->auth_fail_count = 0;
                 cur_user->auth_lockout_until = 0;
@@ -1653,7 +1673,10 @@ void syscall_handler(struct regs *r) {
 
                 spin_lock(&cap_lock);
                 tasks[pid].cspace[3].type   = CAP_FRAME;
-                tasks[pid].cspace[3].rights = CAP_RIGHT_ALL;
+                /* Least privilege: a memory frame needs only read/write/execute,
+                 * not the mint/revoke/grant/audit bits CAP_RIGHT_ALL carried.
+                 * Mask comes from rust/src/auth.rs (single source of truth). */
+                tasks[pid].cspace[3].rights = rust_sudo_frame_rights();
                 tasks[pid].cspace[3].object = USER_VIRT_BASE;
                 tasks[pid].cspace[3].badge  = 0;
                 tasks[pid].cspace[3].serial = cap_alloc_fresh_serial();

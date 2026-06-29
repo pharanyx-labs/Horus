@@ -590,6 +590,14 @@ int  rust_aead_seal(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_
 int  rust_aead_open(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t *nonce,
                     const uint8_t *aad, size_t aad_len,
                     uint8_t *buf, size_t len, const uint8_t *tag);
+/* Authentication / sudo throttling + privilege policy (rust/src/auth.rs) */
+uint32_t rust_sudo_frame_rights(void);
+bool     rust_auth_is_locked(uint64_t lockout_until, uint64_t now);
+void     rust_auth_on_failure(uint32_t fail_count, uint64_t now,
+                              uint32_t *out_count, uint64_t *out_lockout_until);
+bool     rust_auth_global_locked(uint64_t now);
+void     rust_auth_global_on_failure(uint64_t now);
+void     rust_auth_global_on_success(void);
 /* ChaCha20 CSPRNG */
 void     rust_rng_add_entropy(const uint8_t *data, size_t len);
 void     rust_rng_fill(uint8_t *out, size_t len);

@@ -7,6 +7,7 @@
 #![allow(clippy::manual_range_contains)]
 
 mod aead;
+mod auth;
 mod capability;
 mod crypto;
 mod memory;

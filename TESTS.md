@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **26 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). There is still **no booted-kernel integration test or fuzz harness** — that is the highest-value remaining contribution.
+The Rust security core has **31 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). There is still **no booted-kernel integration test or fuzz harness** — that is the highest-value remaining contribution.
 
 ---
 
@@ -21,6 +21,7 @@ This runs the unit tests across the security core:
 - `lib.rs` — page-fault validation, capability-rights subset checks, demand-paging (COW / demand-zero) policy, FS-operation right enforcement, and command dispatch
 - `rng.rs` — ChaCha20 against the RFC 8439 vector, reseed behaviour
 - `sha256.rs` — SHA-256 / HMAC / HKDF / PBKDF2 against published known-answer vectors
+- `aead.rs` — the ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD: seal/open round-trip, tampered-ciphertext and tampered-tag rejection (fail-closed), wrong-AAD rejection, and nonce separation
 
 ### Full build test
 

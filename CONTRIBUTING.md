@@ -49,8 +49,8 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### Rust work
 
-- **`crypto.rs`**: Implement AES-128-CTR and SHA-256 in safe, `no_std` Rust. This unlocks the encrypted storage path.
-- **Argon2id**: Port or write a `no_std`-compatible Argon2id implementation to replace the custom password hashing scheme.
+- **Audit-log integrity**: Add a rolling MAC over audit-log entries so tampering is detectable. The primitives already exist in safe `no_std` Rust — SHA-256/HMAC/HKDF/PBKDF2 (`sha256.rs`), a ChaCha20 CSPRNG (`rng.rs`), and a ChaCha20+HMAC-SHA256 AEAD (`aead.rs`) — so this is composition, not new cryptography.
+- **Argon2id**: Port or write a `no_std`-compatible Argon2id implementation to replace the current PBKDF2-HMAC-SHA256 password hashing (a stronger memory-hard KDF).
 - **Kani / Verus verification**: Apply a Rust verification tool to `capability.rs` to formally verify the revocation properties.
 
 ### Testing

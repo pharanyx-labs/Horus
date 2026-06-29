@@ -8,9 +8,8 @@ Known weaknesses include:
 
 - The audit log has no integrity protection
 - SMP and preemptive scheduling are not yet implemented
-- Bulk block encryption still uses an AES-CTR implementation whose AES-NI key
-  schedule is not a correct AES-128 expansion (see "Remaining crypto work")
 - Load-base ASLR is not applied (userspace binaries are non-PIE)
+- Disk-backed persistent storage is not the live backing store (the filesystem is in-memory); the encrypted-block path, though now cryptographically sound, is not yet wired in as the default
 
 These are not undisclosed vulnerabilities — they are documented, known limitations of an incomplete system.
 
@@ -22,6 +21,8 @@ For balance, the following are implemented and enforced today (single-core, coop
 - **No ambient authority:** capability revoke requires `CAP_RIGHT_REVOKE` on the target and mint/transfer require `CAP_RIGHT_MINT`; a non-kernel task with no cspace is refused rather than defaulting to the kernel root cnode. Revocation is system-wide (every task's cspace plus the kernel root) and bumps the lineage generation, so derived copies in other tasks cannot outlive their parent.
 - **Use-after-revoke / TOCTOU:** per-lineage generation counters invalidate stale capabilities; a snapshot + revalidate-at-use guard is wired into the IPC send/recv paths so a revoke during the cooperative yield aborts the operation.
 - **FFI integrity:** the C and Rust capability layouts are pinned by mirrored compile-time assertions; the page refcount table is registered once and any later inc/dec presenting a different (pointer, length) is refused, not trusted.
+- **Encryption-at-rest:** block encryption is a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD in safe Rust, with per-block HKDF subkeys, a fresh random per-write nonce, `(ino, block)` bound as AAD, and constant-time fail-closed verification. (Replaced a hand-rolled non-AES "AES-128".)
+- **No ring-3 code in ring 0:** `SYS_REGISTER_STORAGE_BACKEND` — which used to register userspace function pointers the kernel called from ring 0 — fails closed; any userspace storage/FS provider must run as a ring-3 IPC server.
 - **Audit trail:** capability mint/transfer/move/revoke (and the FS/auth paths) record their outcome to the audit log.
 - **Supply chain / CI:** every change is gated by a CI pipeline — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, and a byte-for-byte reproducible-build check — using only first-party GitHub actions.
 
@@ -41,22 +42,22 @@ audited-standard algorithms implemented in safe Rust (`rust/src/sha256.rs`,
   XOR-rotate scheme.)
 - **User database integrity:** HMAC-SHA256 over the serialized records, keyed by
   the per-boot pepper.
-- **Key derivation** (per-file keys, per-block keys, user file master keys):
-  HKDF-SHA256 (RFC 5869) with context binding.
-- **Block authentication:** HMAC-SHA256 (truncated to 128 bits), encrypt-then-MAC.
+- **Key derivation** (per-file keys, per-block keys, user file master keys,
+  volume key): HKDF-SHA256 (RFC 5869) with context binding.
+- **Encryption-at-rest:** a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD
+  (`rust/src/aead.rs`), composed from the crate's RFC-tested ChaCha20 and HMAC
+  primitives (no new primitive cryptography). Each block write draws a fresh
+  random 96-bit nonce (so a rewrite never reuses a keystream), uses independent
+  per-block HKDF enc/mac subkeys, binds `(ino, block)` as AAD, verifies the
+  128-bit tag in constant time, and fails closed (the buffer is zeroed) on any
+  authentication failure. This replaced a hand-rolled "AES-128" that was not in
+  fact AES (broken AES-NI key schedule + an unaudited ARX software fallback).
 - **Randomness:** a single ChaCha20 fast-key-erasure CSPRNG, reseeded at boot
   from RDRAND (with retry + health check, when CPUID advertises it), TSC jitter,
   and boot counters. All salts, peppers, nonces, per-file keys, and the ASLR
   PRNG seed are drawn from this pool. Raw TSC is never used directly as
-  randomness (it is readable from ring 3 and therefore predictable).
-
-### Remaining crypto work
-
-- The AES-128 block routine used for CTR-mode bulk encryption
-  (`crypto_aes128_block_encrypt`) has an incorrect key schedule on the AES-NI
-  path; confidentiality of stored block data should not be relied upon until it
-  is replaced with a correct AES-128 (or a ChaCha20 stream). The KDF and MAC
-  around it are now sound.
+  randomness (it is readable from ring 3 and therefore predictable). The pool is
+  asserted seeded at boot before any key material is derived.
 
 ---
 
@@ -120,7 +121,6 @@ The following are out of scope for now, because they are known and documented:
 
 - Missing load-base ASLR (userspace is non-PIE; stack and heap are randomized)
 - Absence of covert-channel / cache side-channel mitigations (single-core today)
-- The known-incorrect AES-128 key schedule on the bulk-encryption path
 - Missing preemption or SMP support
 - Stub implementations that return errors
 

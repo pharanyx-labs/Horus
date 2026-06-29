@@ -47,7 +47,7 @@ The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault
 
 ### Disk-backed storage
 
-`storage.c` implements encrypted block storage (HKDF-SHA256 per-block keys, HMAC-SHA256 authentication, encrypt-then-MAC) and key rotation over a virtual disk, and `ata.c` is a working 28-bit-LBA PIO driver. However the live filesystem is the in-memory tree above; the encrypted-storage path and mounting are partial and not wired in as the default backing store.
+`storage.c` implements encrypted block storage — a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`) with per-block HKDF-SHA256 keys, a fresh random per-write nonce, and `(ino, block)` bound as AAD — plus key rotation over a virtual disk, and `ata.c` is a working 28-bit-LBA PIO driver. However the live filesystem is the in-memory tree above; the encrypted-storage path and mounting are partial and not wired in as the default backing store.
 
 ---
 
@@ -83,9 +83,9 @@ Per-spawn stack top and heap gap are randomised from the CSPRNG, but userspace b
 
 These matter specifically for anyone evaluating Horus as a security system:
 
-### Bulk block cipher
+### Encrypted storage is not the live backing store
 
-Key derivation (HKDF-SHA256) and authentication (HMAC-SHA256) around stored blocks are sound, but the AES-128 block routine used for CTR-mode bulk encryption has a **known-incorrect AES-NI key schedule**. Confidentiality of stored block data should not be relied upon until it is replaced with a correct AES-128 or a ChaCha20 stream. (See `SECURITY.md` → "Remaining crypto work".)
+The block cipher itself is now sound: a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD with independent per-block HKDF subkeys and a fresh random per-write nonce, which replaced an earlier hand-rolled routine that was not actually AES. The remaining limitation is *integration, not cryptography* — the live filesystem is the in-memory tree, so this encrypted-block path is not yet the default backing store and has not been exercised end-to-end at runtime.
 
 ### No load-base ASLR
 
@@ -111,7 +111,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are mostly bare integers; only a few (e.g. `SYS_ERR_NOSYS`) are named.
 - The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its current role (it is the security core: capabilities, memory refcounting, SHA-2/HMAC/HKDF/PBKDF2, ChaCha20 RNG, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stub implementations used by the `MINIMAL_SECURE=1` build (which strips the filesystem/storage stack); it is build configuration, not security logic.
-- Tests: 26 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, and the FFI validation/policy functions. There is a CI pipeline (build + `cargo test` + `clippy -D warnings` + reproducible-build check) but no booted-kernel integration/fuzz harness yet, and no automatic checking of the TLA+ specs in `docs/`.
+- Tests: 31 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), and the FFI validation/policy functions. There is a CI pipeline (build + `cargo test` + `clippy -D warnings` + reproducible-build check) but no booted-kernel integration/fuzz harness yet, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -127,7 +127,7 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Task scheduling | ~40% (round-robin, no preemption) |
 | IPC | ~35% (send/recv; no notifications, no real blocking) |
 | Filesystem | ~35% (in-memory, capability-gated; no persistence) |
-| Cryptography (KDF/MAC/RNG sound; bulk AES broken) | ~60% |
-| Storage / disk I/O | ~25% (driver + encrypted-block code, not wired as default) |
+| Cryptography (KDF/MAC/RNG + ChaCha20/HMAC AEAD; all standard primitives) | ~75% |
+| Storage / disk I/O | ~25% (driver + sound encrypted-block code, not wired as default) |
 | SMP | ~5% (detection/scaffolding only) |
 | Testing | ~30% (unit tests + CI; no integration/fuzz) |

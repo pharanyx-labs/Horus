@@ -163,7 +163,7 @@ Selected syscalls by category:
 
 **Block devices / storage (stubs)**
 - `SYS_BLOCK_READ` (60), `SYS_BLOCK_WRITE` (61)
-- `SYS_REGISTER_STORAGE_BACKEND` (62), `SYS_REGISTER_FS_SERVER` (70), `SYS_CONNECT_FS_SERVER` (71)
+- `SYS_REGISTER_STORAGE_BACKEND` (removed — fails closed; see SECURITY.md), `SYS_REGISTER_FS_SERVER` (70), `SYS_CONNECT_FS_SERVER` (71)
 
 ---
 

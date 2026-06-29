@@ -14,8 +14,9 @@ Several items from the phases below have since landed on `main`. They are kept i
 - **Standard password hashing** — PBKDF2-HMAC-SHA256 replaced the custom XOR-rotate scheme.
 - **Hardware entropy** — a ChaCha20 CSPRNG seeded from RDRAND and timing jitter; raw TSC is no longer used as secret randomness.
 - **Per-spawn stack/heap ASLR** — seeded from the CSPRNG (load-base / PIE randomisation still pending).
-- **`crypto.rs`** — resolved by moving to audited-standard primitives in `sha256.rs` / `rng.rs`; `crypto.rs` is now intentionally empty. The remaining bulk-cipher work is a correct AES-128 (or a ChaCha20 stream) for CTR encryption.
+- **Audited-standard cryptography** — primitives moved to `sha256.rs` / `rng.rs`, and bulk encryption-at-rest is now a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`) with per-write random nonces and per-block HKDF subkeys, replacing a hand-rolled routine that was not actually AES. (`crypto.rs` remains intentionally empty.)
 - **Kernel hardening** — SMEP/SMAP/NX enabled; capability "no ambient authority" guard; IPC use/revoke TOCTOU revalidation; C/Rust FFI layout assertions; audit logging of capability mutations.
+- **Attack-surface reduction** — removed the ring-3 storage-backend callback that the kernel invoked from ring 0 (`SYS_REGISTER_STORAGE_BACKEND` now fails closed); closed several information-leak, timing, and buffer-handling issues in the syscall and authentication paths.
 - **CI** — GitHub Actions runs the unit tests, `clippy -D warnings`, a kernel/ISO build, and a reproducible-build check on every push/PR. (Phase 6 integration tests and fuzzing are still pending.)
 
 ---
@@ -49,8 +50,8 @@ These items address the roughest edges in what already exists. They are good sta
 - **Hardware entropy**: Seed the kernel's PRNG from RDRAND (already detected at boot but not used) and from interrupt timing jitter, not solely from TSC.
 - **ASLR enforcement**: Apply address space layout randomisation on every task spawn using the existing entropy infrastructure.
 - **Audit log integrity**: Add a rolling MAC over audit log entries so that tampering is detectable.
-- **Encrypted storage**: Complete the per-file encryption that `storage.c` sketches, using the Rust crypto module as the implementation layer.
-- **`crypto.rs` implementation**: Replace the placeholder with real primitives — at minimum AES-128-CTR and a SHA-256 implementation, both in safe Rust.
+- **Encrypted storage** *(crypto done; integration pending)*: the block-level AEAD, per-block keys, and key rotation exist and are sound; what remains is wiring the encrypted store in as the default backing store (tracked under Phase 2).
+- **`crypto.rs` implementation** *(done)*: real primitives now live in safe Rust — SHA-256/HMAC/HKDF/PBKDF2 (`sha256.rs`), a ChaCha20 CSPRNG (`rng.rs`), and a ChaCha20+HMAC-SHA256 AEAD (`aead.rs`). `crypto.rs` itself is intentionally empty.
 
 ---
 

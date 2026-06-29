@@ -523,7 +523,6 @@ int  storage_derive_block_keys(uint64_t ino, uint64_t block, uint32_t gen,
                                const uint8_t *vol_key, uint8_t *enc_key, uint8_t *mac_key);
 int  storage_compute_mac(const uint8_t *nonce, const uint8_t *data, size_t data_len,
                          const uint8_t *mac_key, uint8_t *tag_out);
-void storage_register_userspace_block_backend(int (*r)(uint64_t, void*), int (*w)(uint64_t, const void*));
 void crypto_aes128_ctr_encrypt(void *b, size_t l, const uint8_t *k, const uint8_t *n);
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);

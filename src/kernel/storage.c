@@ -263,29 +263,18 @@ void storage_set_default_device(struct block_device *bd) {
     if (bd) current_bd = bd;
 }
 
-static int (*userspace_block_read)(uint64_t block, void *buf) = NULL;
-static int (*userspace_block_write)(uint64_t block, const void *buf) = NULL;
-
-void storage_register_userspace_block_backend(
-        int (*read_fn)(uint64_t, void *),
-        int (*write_fn)(uint64_t, const void *))
-{
-    userspace_block_read  = read_fn;
-    userspace_block_write = write_fn;
-    println("Storage: Userspace block backend registered (TCB reduction active; ETM policy remains kernel-mediated via CAP_ENCRYPTED_STORAGE)");
-}
-
+/* Raw block transport. This deliberately goes straight to the in-kernel block
+ * device. A previous "userspace block backend" let ring 3 register function
+ * pointers that the kernel then called from ring 0 — an SMEP violation and a
+ * TCB escape. It has been removed (SYS_REGISTER_STORAGE_BACKEND now fails
+ * closed). The ETM crypto/MAC layer above this is kernel-mediated, so the
+ * transport only ever moves ciphertext; a userspace disk driver, if ever
+ * wanted, belongs behind an IPC server, not an in-kernel callback. */
 static int do_block_read(uint64_t block, void *buf) {
-    if (userspace_block_read) {
-        return userspace_block_read(block, buf);
-    }
     return current_bd->read_block(current_bd, block, buf);
 }
 
 static int do_block_write(uint64_t block, const void *buf) {
-    if (userspace_block_write) {
-        return userspace_block_write(block, buf);
-    }
     return current_bd->write_block(current_bd, block, buf);
 }
 

@@ -39,10 +39,12 @@ static void show_topic_help(const char *topic) {
 }
 #endif
 
+#ifdef DEBUG_SHELL
 static bool has_console_cap(void) {
     struct capability *c = cap_lookup(8, 0);
     return (c && c->type == CAP_CONSOLE);
 }
+#endif
 
 extern tcb_t tasks[MAX_TASKS];
 
@@ -1831,23 +1833,16 @@ void syscall_handler(struct regs *r) {
         }
 
         case SYS_REGISTER_STORAGE_BACKEND: {
-            
-            struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
-            if (!admin || admin->type != CAP_USER) {
-                r->eax = -1;
-                break;
-            }
-            if (get_current_task() != 0 && !has_encrypted_storage_cap() && !has_console_cap()) {
-                r->eax = -1;
-                break;
-            }
-            void *read_fn = (void*)(addr_t)r->ebx;
-            void *write_fn = (void*)(addr_t)r->ecx;
-            storage_register_userspace_block_backend(
-                (int (*)(uint64_t, void *))read_fn,
-                (int (*)(uint64_t, const void *))write_fn
-            );
-            r->eax = 0;
+            /* Removed: this used to register ring-3 function pointers as the
+             * raw block-transport, which the kernel then CALLED from ring 0.
+             * That executes user-mapped code at CPL0 (a #PF under the SMEP we
+             * enable) and, worse, places arbitrary user code inside the kernel
+             * TCB. The ETM crypto layer is kernel-mediated and runs over the
+             * in-kernel block device, so no userspace backend is needed. The
+             * ABI slot (46) is kept reserved and fails closed; a real userspace
+             * disk driver, if ever wanted, must be an IPC server (see the
+             * fs_server pattern), not an in-kernel callback. */
+            r->eax = SYS_ERR_NOSYS;
             break;
         }
 

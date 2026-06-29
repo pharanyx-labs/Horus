@@ -140,30 +140,33 @@ Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C 
 
 Selected syscalls by category:
 
-**Core**
-- `SYS_PRINT` (1), `SYS_EXIT` (2), `SYS_YIELD` (3), `SYS_SBRK` (4), `SYS_GETPID` (5)
+Numbers are the authoritative values from `include/syscall.h`. (Numbers 1/`SYS_PRINT`, 2/`SYS_EXIT`, 20/`SYS_GETPID` are defined but not dispatched by the current handler.)
+
+**Core / process**
+- `SYS_YIELD` (0), `SYS_GET_LINE` (3), `SYS_SBRK` (10), `SYS_WRITE` (11), `SYS_READ` (12), `SYS_OPEN` (13)
+- `SYS_WAIT` (17), `SYS_GET_TASK_INFO` (18), `SYS_EXEC` (19)
 
 **IPC**
-- `SYS_IPC_SEND` (10), `SYS_IPC_RECV` (11), `SYS_IPC_CALL` (12), `SYS_IPC_REPLY` (13)
-- `SYS_NOTIFY` (14), `SYS_WAIT_NOTIFY` (15)
+- `SYS_IPC_SEND` (21), `SYS_IPC_RECV` (22), `SYS_IPC_CALL` (23), `SYS_IPC_REPLY` (24)
+- `SYS_NOTIFY` (25), `SYS_WAIT_NOTIFY` (26) — both return `SYS_ERR_NOSYS` (not implemented)
 
-**Task management**
-- `SYS_SPAWN` (20) — stub
+**Task / program loading**
+- `SYS_RECEIVE_PROGRAM` (27), `SYS_SPAWN` (28)
 
 **Authentication**
-- `SYS_AUTH` (30), `SYS_SUDO` (31), `SYS_USERADD` (32), `SYS_USERDEL` (33), `SYS_PASSWD` (34)
-- `SYS_GETUID` (35), `SYS_READ_AUDIT` (36)
+- `SYS_GETUID` (29), `SYS_AUTH` (30), `SYS_SUDO` (31), `SYS_GET_PASS` (32)
+- `SYS_USERADD` (33), `SYS_USERDEL` (34), `SYS_PASSWD` (35), `SYS_ROTATE_KEYS` (36), `SYS_READ_AUDIT` (37)
 
 **Capabilities**
-- `SYS_CAP_REVOKE` (40)
+- mint (4), transfer (8), move (9) — raw-numbered, no public macro; `SYS_CAP_REVOKE` (51)
 
 **Filesystem**
-- `SYS_FS_LOOKUP` (50), `SYS_FS_READ` (51), `SYS_FS_WRITE` (52), `SYS_FS_CREATE` (53)
-- `SYS_FS_DELETE` (54), `SYS_FS_READDIR` (55), `SYS_FS_GET_ROOT` (56), `SYS_FS_MINT_FILE` (57)
+- `SYS_FS_MINT_FILE` (38), `SYS_FS_LOOKUP` (39), `SYS_FS_CREATE` (40), `SYS_FS_DELETE` (41)
+- `SYS_FS_READDIR` (42), `SYS_FS_GET_ROOT` (43), `SYS_FS_READ` (44), `SYS_FS_WRITE` (45)
 
-**Block devices / storage (stubs)**
-- `SYS_BLOCK_READ` (60), `SYS_BLOCK_WRITE` (61)
-- `SYS_REGISTER_STORAGE_BACKEND` (removed — fails closed; see SECURITY.md), `SYS_REGISTER_FS_SERVER` (70), `SYS_CONNECT_FS_SERVER` (71)
+**Block devices / storage**
+- `SYS_REGISTER_STORAGE_BACKEND` (46 — removed, fails closed; see SECURITY.md)
+- `SYS_BLOCK_READ` (47), `SYS_BLOCK_WRITE` (48), `SYS_REGISTER_FS_SERVER` (49), `SYS_CONNECT_FS_SERVER` (50)
 
 ---
 

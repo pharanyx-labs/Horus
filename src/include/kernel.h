@@ -519,11 +519,12 @@ int64_t storage_alloc_inode(block_device_t *bd, fs_superblock_t *sb);
 void storage_free_inode(block_device_t *bd, fs_superblock_t *sb, uint64_t ino);
 int  storage_read_inode(block_device_t *bd, fs_superblock_t *sb, uint64_t ino, on_disk_inode_t *inode_out);
 int  storage_write_inode(block_device_t *bd, fs_superblock_t *sb, uint64_t ino, const on_disk_inode_t *inode);
-int  storage_derive_block_keys(uint64_t ino, uint64_t block, uint32_t gen,
-                               const uint8_t *vol_key, uint8_t *enc_key, uint8_t *mac_key);
-int  storage_compute_mac(const uint8_t *nonce, const uint8_t *data, size_t data_len,
-                         const uint8_t *mac_key, uint8_t *tag_out);
-void crypto_aes128_ctr_encrypt(void *b, size_t l, const uint8_t *k, const uint8_t *n);
+/* Derives 64 bytes of per-block subkeys (enc_key32 ‖ mac_key32) from the volume
+ * key via HKDF-SHA256, binding (ino, block) into the info string so every block
+ * gets independent keys. */
+int  storage_derive_block_keys(uint64_t ino, uint64_t block,
+                               const uint8_t *vol_key, size_t vol_key_len,
+                               uint8_t *enc_key32, uint8_t *mac_key32);
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);
 int  do_rotate_keys(void);
@@ -570,6 +571,18 @@ int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
                       const uint8_t *salt, size_t salt_len,
                       const uint8_t *info, size_t info_len,
                       uint8_t *out, size_t out_len);
+/* ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (12-byte nonce, 16-byte tag).
+ * seal encrypts buf[0..len] in place and writes a 16-byte tag; open verifies
+ * the tag in constant time and decrypts in place only if authentic (returning
+ * 0), else zeroes buf and returns -1. */
+#define AEAD_NONCE_LEN 12
+#define AEAD_TAG_LEN   16
+int  rust_aead_seal(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t *nonce,
+                    const uint8_t *aad, size_t aad_len,
+                    uint8_t *buf, size_t len, uint8_t *tag_out);
+int  rust_aead_open(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t *nonce,
+                    const uint8_t *aad, size_t aad_len,
+                    uint8_t *buf, size_t len, const uint8_t *tag);
 /* ChaCha20 CSPRNG */
 void     rust_rng_add_entropy(const uint8_t *data, size_t len);
 void     rust_rng_fill(uint8_t *out, size_t len);

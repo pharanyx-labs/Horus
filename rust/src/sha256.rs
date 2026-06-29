@@ -243,14 +243,15 @@ pub fn hkdf_sha256(ikm: &[u8], salt: &[u8], info: &[u8], out: &mut [u8]) {
 }
 
 /// Streaming HMAC, used internally by PBKDF2/HKDF to avoid reconstructing the
-/// keyed pads on every call.
-struct Sha256Hmac {
+/// keyed pads on every call, and by `crate::aead` to MAC a multi-part message
+/// (nonce ‖ aad ‖ ciphertext) without allocating a contiguous buffer.
+pub(crate) struct Sha256Hmac {
     inner: Sha256,
     opad: [u8; SHA256_BLOCK],
 }
 
 impl Sha256Hmac {
-    fn new(key: &[u8]) -> Self {
+    pub(crate) fn new(key: &[u8]) -> Self {
         let mut k0 = [0u8; SHA256_BLOCK];
         if key.len() > SHA256_BLOCK {
             let kh = sha256(key);
@@ -269,11 +270,11 @@ impl Sha256Hmac {
         Sha256Hmac { inner, opad }
     }
 
-    fn update(&mut self, data: &[u8]) {
+    pub(crate) fn update(&mut self, data: &[u8]) {
         self.inner.update(data);
     }
 
-    fn finalize(self) -> [u8; SHA256_OUT] {
+    pub(crate) fn finalize(self) -> [u8; SHA256_OUT] {
         let inner_hash = self.inner.finalize();
         let mut outer = Sha256::new();
         outer.update(&self.opad);

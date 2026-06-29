@@ -6,6 +6,7 @@
 // stays meaningful (catches new issues) without mechanically rewriting them.
 #![allow(clippy::manual_range_contains)]
 
+mod aead;
 mod capability;
 mod crypto;
 mod memory;

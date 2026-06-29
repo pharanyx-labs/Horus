@@ -86,173 +86,138 @@ static void intent_append(uint32_t kind, uint64_t a0, uint64_t a1, uint32_t gen)
     intent_head = (intent_head + 1) % INTENT_LOG_SLOTS;
 }
 
-/* Per-block key derivation = HKDF-SHA256.
- *   IKM  = volume key
- *   salt = kernel pepper
- *   info = "horus-block-key-v1" || ino || block || gen
- *   OKM  = enc_key(16) || mac_key(16)
- * Replaces the previous unaudited 1024-round ARX construction. Binding ino,
- * block and gen into `info` makes every (block, generation) pair derive a
- * unique enc/mac key pair, which is what authorises a fixed (deterministic)
- * nonce in CTR mode below. */
-int storage_derive_block_keys(uint64_t ino, uint64_t block, uint32_t gen,
-                              const uint8_t *volume_key,
-                              uint8_t *enc_key_out, uint8_t *mac_key_out)
+/* Per-physical-block AEAD metadata: the 12-byte nonce and 16-byte tag for each
+ * encrypted block. Held in kernel RAM rather than stealing 28 bytes from the
+ * 512-byte data block, so encryption stays length-preserving and the file/dir
+ * layer keeps a full BLOCK_SIZE payload. The backing disk is itself an
+ * ephemeral RAM buffer, so this table shares its lifetime; a reformat
+ * re-randomises the volume key, so any stale (nonce,tag) simply fails to
+ * authenticate (fail-closed) rather than ever decrypting wrongly. */
+struct block_crypto_meta {
+    uint8_t nonce[AEAD_NONCE_LEN];
+    uint8_t tag[AEAD_TAG_LEN];
+    uint8_t present;
+};
+static struct block_crypto_meta g_block_meta[BLOCKS_PER_DISK];
+
+/* Per-block subkeys = HKDF-SHA256(ikm = volume key, salt = kernel pepper,
+ * info = "horus-block-aead-v2" || ino || block) -> enc_key(32) || mac_key(32).
+ * Binding (ino, block) into `info` gives every block independent keys, and the
+ * split into two 32-byte subkeys keeps the AEAD's encryption and MAC keys
+ * independent (required for the Encrypt-then-MAC composition to be sound). */
+int storage_derive_block_keys(uint64_t ino, uint64_t block,
+                              const uint8_t *vol_key, size_t vol_key_len,
+                              uint8_t *enc_key32, uint8_t *mac_key32)
 {
     extern uint8_t kernel_pepper[16];
-    uint8_t info[18 + 8 + 8 + 4];
-    const char *label = "horus-block-key-v1";
+    uint8_t info[19 + 8 + 8];
+    const char *label = "horus-block-aead-v2";
     size_t p = 0;
     for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
     for (int i = 0; i < 8; i++) info[p++] = (uint8_t)(ino >> (i * 8));
     for (int i = 0; i < 8; i++) info[p++] = (uint8_t)(block >> (i * 8));
-    for (int i = 0; i < 4; i++) info[p++] = (uint8_t)(gen >> (i * 8));
 
-    uint8_t okm[32];
-    if (rust_hkdf_sha256(volume_key, 16, kernel_pepper, 16, info, p, okm, sizeof(okm)) != 0) {
+    uint8_t okm[64];
+    if (rust_hkdf_sha256(vol_key, vol_key_len, kernel_pepper, 16, info, p, okm, sizeof(okm)) != 0) {
         return -1;
     }
-    for (int i = 0; i < 16; i++) {
-        enc_key_out[i] = okm[i];
-        mac_key_out[i] = okm[16 + i];
+    for (int i = 0; i < 32; i++) {
+        enc_key32[i] = okm[i];
+        mac_key32[i] = okm[32 + i];
     }
     secure_zero(okm, sizeof(okm));
     return 0;
 }
 
-/* Authentication tag = first 16 bytes of HMAC-SHA256(mac_key, data).
- * The per-block mac_key is already unique per (ino, block, gen) via the HKDF
- * above, so it cryptographically binds the ciphertext to its context; the
- * nonce argument is retained for ABI compatibility but no longer needed. */
-int storage_compute_mac(const uint8_t *nonce, const uint8_t *data, size_t data_len,
-                        const uint8_t *mac_key, uint8_t *tag_out)
+/* AAD = ino(8 LE) || block(8 LE): authenticates each block's logical location
+ * so an authentic block cannot be replayed at a different (ino, block). */
+static size_t storage_block_aad(uint64_t ino, uint64_t block, uint8_t *aad16)
 {
-    (void)nonce;
-    uint8_t full[32];
-    if (rust_hmac_sha256(mac_key, 16, data, data_len, full) != 0) {
-        return -1;
-    }
-    for (int i = 0; i < 16; i++) tag_out[i] = full[i];
-    secure_zero(full, sizeof(full));
-    return 0;
+    for (int i = 0; i < 8; i++) aad16[i]     = (uint8_t)(ino   >> (i * 8));
+    for (int i = 0; i < 8; i++) aad16[8 + i] = (uint8_t)(block >> (i * 8));
+    return 16;
 }
 
-int storage_encrypt_block(uint64_t ino, uint64_t block, void *buf, uint32_t gen)
+/* Encrypt `buf` (full BLOCK_SIZE) in place with the ChaCha20 + HMAC-SHA256
+ * AEAD, drawing a FRESH random nonce per write (so rewriting a block can never
+ * reuse a keystream -- the two-time-pad flaw the old deterministic-nonce CTR
+ * mode had), and recording (nonce,tag) in the metadata table keyed by physical
+ * block. */
+int storage_encrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf)
 {
-    
-    uint8_t *b = (uint8_t *)buf;
-    uint8_t nonce[16];
-    uint8_t enc_key[16];
-    uint8_t mac_key[16];
-    uint8_t tag[16];
-
+    if (phys >= BLOCKS_PER_DISK) return -1;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    const uint8_t *vol = (mfs && mfs->mounted) ? mfs->volume_key : (const uint8_t*)"";
+    if (!mfs || !mfs->mounted) return -1;
 
-    /* Deterministic nonce = f(ino, block, gen, volume salt). It MUST be
-     * reproducible at decrypt time, so it cannot mix a freshly-read TSC (the
-     * old code did, which both leaked timing into the nonce and made the
-     * keystream unreproducible). CTR-mode (key, nonce) uniqueness is guaranteed
-     * because the key itself is derived per (ino, block, gen). */
-    for (int i = 0; i < 8; i++) {
-        nonce[i]   = (uint8_t)(ino   >> (i*8));
-        nonce[8+i] = (uint8_t)(block >> (i*8));
-    }
-    for (int i = 0; i < 4; i++) nonce[12 + i] ^= (uint8_t)(gen >> (i*8));
-    if (mfs && mfs->mounted) {
-        
-        for (int i = 0; i < 4; i++) {
-            nonce[i] ^= mfs->sb.volume_key_salt[i];
-            nonce[8+i] ^= mfs->sb.volume_key_salt[8 + (i & 3)];
-        }
-    }
+    uint8_t enc_key[32], mac_key[32];
+    uint8_t nonce[AEAD_NONCE_LEN], tag[AEAD_TAG_LEN], aad[16];
 
     spin_lock(&storage_lock);
-    int rc = storage_derive_block_keys(ino, block, gen, vol, enc_key, mac_key);
+    int rc = storage_derive_block_keys(ino, block, mfs->volume_key,
+                                       sizeof(mfs->volume_key), enc_key, mac_key);
     if (rc != 0) {
-        secure_zero(nonce, 16);
         spin_unlock(&storage_lock);
         return rc;
     }
 
-    
-    crypto_aes128_ctr_encrypt(b, 4080, enc_key, nonce);
+    secure_random_bytes(nonce, sizeof(nonce));
+    size_t aad_len = storage_block_aad(ino, block, aad);
 
-    
-    storage_compute_mac(nonce, b, 4080, mac_key, tag);
-    for (int i = 0; i < 16; i++) b[4080 + i] = tag[i];
-
-    secure_zero(enc_key, 16);
-    secure_zero(mac_key, 16);
-    secure_zero(nonce, 16);
-    spin_unlock(&storage_lock);
-    return 0;
-}
-
-int storage_decrypt_block(uint64_t ino, uint64_t block, void *buf, uint32_t gen)
-{
-    
-    uint8_t *b = (uint8_t *)buf;
-    uint8_t nonce[16];
-    uint8_t enc_key[16];
-    uint8_t mac_key[16];
-    uint8_t tag[16];
-    uint8_t want[16];
-
-    struct mounted_fs *mfs_dec = storage_get_mounted_fs();
-    const uint8_t *vol_dec = (mfs_dec && mfs_dec->mounted && mfs_dec->volume_key[0]) ?
-                              mfs_dec->volume_key : (const uint8_t*)"";
-
-    /* Must reproduce the exact nonce used at encrypt time (see note there). */
-    for (int i = 0; i < 8; i++) {
-        nonce[i]   = (uint8_t)(ino   >> (i*8));
-        nonce[8+i] = (uint8_t)(block >> (i*8));
-    }
-    for (int i = 0; i < 4; i++) nonce[12 + i] ^= (uint8_t)(gen >> (i*8));
-    if (mfs_dec && mfs_dec->mounted) {
-        for (int i = 0; i < 4; i++) {
-            nonce[i] ^= mfs_dec->sb.volume_key_salt[i];
-            nonce[8+i] ^= mfs_dec->sb.volume_key_salt[8 + (i & 3)];
-        }
-    }
-
-    
-    for (int i = 0; i < 16; i++) want[i] = b[4080 + i];
-
-    spin_lock(&storage_lock);
-    int rc = storage_derive_block_keys(ino, block, gen, vol_dec, enc_key, mac_key);
+    rc = rust_aead_seal(enc_key, mac_key, nonce, aad, aad_len,
+                        (uint8_t *)buf, BLOCK_SIZE, tag);
+    secure_zero(enc_key, sizeof(enc_key));
+    secure_zero(mac_key, sizeof(mac_key));
     if (rc != 0) {
-        secure_zero(b, BLOCK_SIZE);
-        secure_zero(nonce, 16);
-        spin_unlock(&storage_lock);
-        return rc;
-    }
-
-    
-    storage_compute_mac(nonce, b, 4080, mac_key, tag);
-
-    
-    int bad = 0;
-    for (int i = 0; i < 16; i++) if (tag[i] != want[i]) bad = 1;
-
-    if (bad) {
-        
-        secure_zero(b, BLOCK_SIZE);
-        secure_zero(enc_key, 16);
-        secure_zero(mac_key, 16);
-        secure_zero(nonce, 16);
         spin_unlock(&storage_lock);
         return -1;
     }
 
-    
-    crypto_aes128_ctr_encrypt(b, 4080, enc_key, nonce);
-
-    secure_zero(enc_key, 16);
-    secure_zero(mac_key, 16);
-    secure_zero(nonce, 16);
+    for (int i = 0; i < AEAD_NONCE_LEN; i++) g_block_meta[phys].nonce[i] = nonce[i];
+    for (int i = 0; i < AEAD_TAG_LEN; i++)   g_block_meta[phys].tag[i]   = tag[i];
+    g_block_meta[phys].present = 1;
     spin_unlock(&storage_lock);
     return 0;
+}
+
+/* Verify + decrypt `buf` (full BLOCK_SIZE) in place. Loads the per-block
+ * (nonce,tag) recorded at encrypt time; a block never written through the AEAD,
+ * or one whose tag/AAD/key no longer matches, fails closed (buf zeroed). */
+int storage_decrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf)
+{
+    if (phys >= BLOCKS_PER_DISK) { secure_zero(buf, BLOCK_SIZE); return -1; }
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { secure_zero(buf, BLOCK_SIZE); return -1; }
+
+    uint8_t enc_key[32], mac_key[32];
+    uint8_t nonce[AEAD_NONCE_LEN], tag[AEAD_TAG_LEN], aad[16];
+
+    spin_lock(&storage_lock);
+    if (!g_block_meta[phys].present) {
+        spin_unlock(&storage_lock);
+        secure_zero(buf, BLOCK_SIZE);
+        return -1;
+    }
+    for (int i = 0; i < AEAD_NONCE_LEN; i++) nonce[i] = g_block_meta[phys].nonce[i];
+    for (int i = 0; i < AEAD_TAG_LEN; i++)   tag[i]   = g_block_meta[phys].tag[i];
+
+    int rc = storage_derive_block_keys(ino, block, mfs->volume_key,
+                                       sizeof(mfs->volume_key), enc_key, mac_key);
+    if (rc != 0) {
+        secure_zero(enc_key, sizeof(enc_key));
+        secure_zero(mac_key, sizeof(mac_key));
+        spin_unlock(&storage_lock);
+        secure_zero(buf, BLOCK_SIZE);
+        return rc;
+    }
+
+    size_t aad_len = storage_block_aad(ino, block, aad);
+    rc = rust_aead_open(enc_key, mac_key, nonce, aad, aad_len,
+                        (uint8_t *)buf, BLOCK_SIZE, tag);
+    secure_zero(enc_key, sizeof(enc_key));
+    secure_zero(mac_key, sizeof(mac_key));
+    spin_unlock(&storage_lock);
+    /* rust_aead_open zeroes buf itself on authentication failure. */
+    return (rc == 0) ? 0 : -1;
 }
 
 struct block_device *storage_get_default_device(void) {
@@ -520,25 +485,23 @@ int storage_mount(struct block_device *bd) {
     g_mounted_fs.sb = *sb;
     g_mounted_fs.mounted = 1;
 
-    
+    /* Volume key = HKDF-SHA256(ikm = kernel pepper, salt = on-disk per-volume
+     * salt, info = "horus-volume-key-v1"). Replaces the previous homebrew ARX
+     * mixing (which also wrote 32 bytes into this 16-byte field). The pepper is
+     * the secret input, so the volume key is unpredictable without it; binding
+     * the per-volume salt domain-separates distinct volumes. */
     {
-        uint8_t *vk = g_mounted_fs.volume_key;
-        const uint8_t *salt = sb->volume_key_salt;
         extern uint8_t kernel_pepper[16];
-        for (int i = 0; i < 32; i++) {
-            vk[i] = salt[i % 16] ^ kernel_pepper[i % 16] ^ (uint8_t)i;
-        }
-        
-        for (int r = 0; r < 32; r++) {
-            uint32_t *w = (uint32_t *)vk;
-            for (int q = 0; q < 8; q += 2) {
-                w[q] += w[q + 1] + (uint32_t)r;
-                w[q + 1] = (w[q + 1] << 7) | (w[q + 1] >> 25);
-                w[q + 1] ^= w[q];
-            }
-            if ((r & 3) == 0) {
-                for (int i = 0; i < 16; i++) vk[i] ^= kernel_pepper[i];
-            }
+        const char *label = "horus-volume-key-v1";
+        uint8_t info[19];
+        size_t p = 0;
+        for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
+        if (rust_hkdf_sha256(kernel_pepper, 16,
+                             sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                             info, p,
+                             g_mounted_fs.volume_key, sizeof(g_mounted_fs.volume_key)) != 0) {
+            g_mounted_fs.mounted = 0;
+            return -3;
         }
     }
 
@@ -731,15 +694,12 @@ int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block
     uint8_t temp[BLOCK_SIZE];
     if (do_block_read(phys, temp) != 0) return -1;
 
-    uint32_t gen = (uint32_t)ino;  
-    if (storage_decrypt_block(ino, block, temp, gen) != 0) {
-        
+    if (storage_decrypt_block(phys, ino, block, temp) != 0) {
         my_memset(buf, 0, BLOCK_SIZE);
         return -1;
     }
 
-    my_memcpy(buf, temp, 4080);
-    my_memset((uint8_t *)buf + 4080, 0, BLOCK_SIZE - 4080);
+    my_memcpy(buf, temp, BLOCK_SIZE);
     return 0;
 }
 
@@ -756,13 +716,9 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
     storage_write_inode(mfs->bd, &mfs->sb, ino, &inode);
 
     uint8_t temp[BLOCK_SIZE];
-    my_memset(temp, 0, BLOCK_SIZE);
+    my_memcpy(temp, buf, BLOCK_SIZE);
 
-    my_memcpy(temp, buf, 4080);
-
-    uint32_t gen = (uint32_t)ino;
-    
-    if (storage_encrypt_block(ino, block, temp, gen) != 0) {
+    if (storage_encrypt_block(phys, ino, block, temp) != 0) {
         return -1;
     }
 

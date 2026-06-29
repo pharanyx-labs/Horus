@@ -400,6 +400,13 @@ void console_putc(char c);
 void console_puts(const char *s);
 void println(const char *s);
 void print(const char *s);
+void print_char(char c);
+#ifdef DEBUG_SHELL
+/* Defined in syscall.c under DEBUG_SHELL; declared here so the in-kernel debug
+ * shell (main.c) and the SYS_EXEC_CMD path (syscall.c) can call it without an
+ * implicit declaration (a hard error under modern GCC). */
+int process_user_command(const char *cmd);
+#endif
 void print_hex(uint64_t v);
 void print_decimal(uint64_t v);
 void print_hrule(uint8_t color);

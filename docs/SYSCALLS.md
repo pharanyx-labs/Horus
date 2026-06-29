@@ -1,7 +1,7 @@
 # Horus Syscall Reference
 
 **Document Status**: Early development (as of June 2026)  
-**Interface**: Software interrupt `int 0x80`. Syscall number passed in `eax`; arguments follow the C calling convention (primarily on stack).  
+**Interface**: Syscall number in `eax`/`rax`; arguments in `ebx, ecx, edx, esi, edi`. The kernel services syscalls through its `int 0x80` handler (`syscall_handler`).  
 **Security Model**: All operations are capability-gated. No ambient authority.
 
 ---
@@ -18,73 +18,89 @@ For full details on the capability system, revocation semantics, and memory mode
 
 ## Syscall Categories
 
-### Core Syscalls
+Numbers below are the authoritative values from [`include/syscall.h`](../include/syscall.h); capability requirements reflect the current handler in `src/kernel/syscall.c`. "Required capability" refers to a typed capability the caller must hold in the named cspace slot.
 
-| Number | Name              | Description                          | Required Capabilities          | Return Value / Notes |
-|--------|-------------------|--------------------------------------|--------------------------------|----------------------|
-| 1      | `SYS_PRINT`       | Write string to kernel console (VGA + serial) | None (debug)                  | Length written |
-| 2      | `SYS_EXIT`        | Terminate the current task           | None                           | Does not return |
-| 3      | `SYS_YIELD`       | Voluntarily yield the CPU            | None                           | - |
-| 4      | `SYS_SBRK`        | Change user heap break point         | Implicit via task memory cap   | New break address |
-| 5      | `SYS_GETPID`      | Get current task ID                  | None                           | PID |
+### Core / process
 
-### IPC Syscalls
+| Number | Name              | Description                                                  | Required Capability                          | Notes |
+|--------|-------------------|--------------------------------------------------------------|----------------------------------------------|-------|
+| 0      | `SYS_YIELD`       | Yield the CPU to the scheduler                               | None                                         | — |
+| 3      | `SYS_GET_LINE`    | Read a line from the console                                 | `CAP_CONSOLE` (slot 8) or endpoint READ (slot 3) | Returns length read |
+| 10     | `SYS_SBRK`        | Move the user heap break                                     | None (caller's own heap, within fixed bounds)| Returns previous break, or 0 on failure |
+| 11     | `SYS_WRITE`       | Write to a descriptor (fd 1 → console)                       | None for console; ramfs paths need slot-3 caps | Bytes written |
+| 12     | `SYS_READ`        | Read from a descriptor (fd 0 → console, fd ≥ 3 → ramfs)      | endpoint READ (slot 3) for ramfs             | Bytes read |
+| 13     | `SYS_OPEN`        | Open a ramfs file by name                                    | endpoint READ (slot 3)                       | Returns fd |
+| 17     | `SYS_WAIT`        | Block until another task exits                               | None                                         | — |
+| 18     | `SYS_GET_TASK_INFO` | Read task metadata                                         | Self always; other tasks need `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7) | — |
+| 19     | `SYS_EXEC`        | Enter ring 3 at load-base + entry                            | endpoint WRITE\|EXEC (slot 3)                | — |
 
-| Number | Name              | Description                                      | Required Capabilities              | Notes |
-|--------|-------------------|--------------------------------------------------|------------------------------------|-------|
-| 10     | `SYS_IPC_SEND`    | Send message to an endpoint                      | `CAP_ENDPOINT` (WRITE)             | Non-blocking option available |
-| 11     | `SYS_IPC_RECV`    | Receive message from an endpoint                 | `CAP_ENDPOINT` (READ)              | Blocking |
-| 12     | `SYS_IPC_CALL`    | RPC-style send + block for reply                 | `CAP_ENDPOINT` (CALL)              | Partially implemented |
-| 13     | `SYS_IPC_REPLY`   | Send reply to pending call                       | `CAP_ENDPOINT` (REPLY)             | - |
-| 14     | `SYS_NOTIFY`      | Post a notification to a notifier object         | `CAP_NOTIFY` (WRITE)               | Lightweight signal |
-| 15     | `SYS_WAIT_NOTIFY` | Block waiting for notification                   | `CAP_NOTIFY` (READ)                | - |
+> Numbers **1** (`SYS_PRINT`), **2** (`SYS_EXIT`) and **20** (`SYS_GETPID`) are defined in `syscall.h` but **not dispatched** by the current handler — console output goes through `SYS_WRITE` (fd 1) and the current UID through `SYS_GETUID`.
 
-### Task Management
+### IPC
 
-| Number | Name           | Description               | Required Capabilities     | Notes |
-|--------|----------------|---------------------------|---------------------------|-------|
-| 20     | `SYS_SPAWN`    | Create and start new task | `CAP_TCB` (MINT/GRANT)    | Currently stubbed |
+| Number | Name              | Description                                  | Required Capability        | Notes |
+|--------|-------------------|----------------------------------------------|----------------------------|-------|
+| 21     | `SYS_IPC_SEND`    | Send a message to an endpoint                | endpoint WRITE (slot 3)    | Busy-spin + `yield()` rendezvous; revalidates the cap after the spin |
+| 22     | `SYS_IPC_RECV`    | Receive a message from an endpoint           | endpoint READ (slot 3)     | Returns length |
+| 23     | `SYS_IPC_CALL`    | RPC-style send (thin wrapper over send)      | endpoint WRITE (slot 3)    | No atomic reply-block yet |
+| 24     | `SYS_IPC_REPLY`   | Reply (thin wrapper over send)               | endpoint WRITE (slot 3)    | — |
+| 25     | `SYS_NOTIFY`      | Post a notification                          | endpoint WRITE (slot 3)    | **Not implemented** — returns `SYS_ERR_NOSYS` (-38) after the cap check |
+| 26     | `SYS_WAIT_NOTIFY` | Wait for a notification                      | endpoint READ (slot 3)     | **Not implemented** — returns `SYS_ERR_NOSYS` (-38) |
 
-### Authentication and Audit
+### Task / program loading
 
-| Number | Name               | Description                        | Required Capabilities          | Notes |
-|--------|--------------------|------------------------------------|--------------------------------|-------|
-| 30     | `SYS_AUTH`         | Authenticate as a user             | None (kernel password check)   | Updates audit log |
-| 31     | `SYS_SUDO`         | Temporary privilege escalation     | Special primordial capability  | Restricted use |
-| 32     | `SYS_USERADD`      | Add new user account               | Administrative capability      | - |
-| 33     | `SYS_USERDEL`      | Remove user account                | Administrative capability      | - |
-| 34     | `SYS_PASSWD`       | Change user password               | User self-capability           | - |
-| 35     | `SYS_GETUID`       | Retrieve current UID/GID           | None                           | - |
-| 36     | `SYS_READ_AUDIT`   | Read from kernel audit log         | `CAP_AUDIT_READ`               | Circular buffer (256 entries) |
+| Number | Name                  | Description                                  | Required Capability          | Notes |
+|--------|-----------------------|----------------------------------------------|------------------------------|-------|
+| 27     | `SYS_RECEIVE_PROGRAM` | Receive a program image via the loader       | endpoint WRITE\|EXEC (slot 3)| Arms the staged image |
+| 28     | `SYS_SPAWN`           | Spawn the armed program as a new task        | endpoint WRITE\|EXEC (slot 3)| Implemented: ELF load + paging/heap/ASLR setup |
 
-### Capability Management
+### Authentication & audit
 
-| Number | Name                | Description                                      | Required Capabilities     | Notes |
-|--------|---------------------|--------------------------------------------------|---------------------------|-------|
-| 40     | `SYS_CAP_REVOKE`    | Revoke a capability and **all** derived copies   | `CAP_REVOKE`              | Global sweep + lineage generation counter |
+| Number | Name               | Description                                  | Required Capability                 | Notes |
+|--------|--------------------|----------------------------------------------|-------------------------------------|-------|
+| 29     | `SYS_GETUID`       | Get the current UID                          | None                                | — |
+| 30     | `SYS_AUTH`         | Authenticate as a user                       | None (verifies a password)          | Lockout after repeated failures; updates audit log |
+| 31     | `SYS_SUDO`         | Re-authenticate and spawn the armed program as root | None (verifies the caller's password) | Returns new pid |
+| 32     | `SYS_GET_PASS`     | Read a password from the console (masked)    | None                                | Returns length |
+| 33     | `SYS_USERADD`      | Add a user account                           | Admin: `CAP_USER` (slot 6) or uid 0 | — |
+| 34     | `SYS_USERDEL`      | Remove a user account                        | Admin: `CAP_USER` (slot 6) or uid 0 | — |
+| 35     | `SYS_PASSWD`       | Change a password                            | Self, or admin for another user     | — |
+| 36     | `SYS_ROTATE_KEYS`  | Rotate stored-block keys                     | `CAP_CONSOLE` (slot 8)              | Returns blocks rotated |
+| 37     | `SYS_READ_AUDIT`   | Read the kernel audit log                    | `CAP_AUDIT` READ (slot 7)           | Circular buffer |
 
-### Filesystem Syscalls
+### Capabilities
 
-| Number | Name                  | Description                          | Required Capabilities              | Notes |
-|--------|-----------------------|--------------------------------------|------------------------------------|-------|
-| 50     | `SYS_FS_LOOKUP`       | Resolve path to file capability      | `CAP_FS_LOOKUP` on parent          | - |
-| 51     | `SYS_FS_READ`         | Read data from file                  | `CAP_FILE` (READ)                  | - |
-| 52     | `SYS_FS_WRITE`        | Write data to file                   | `CAP_FILE` (WRITE)                 | - |
-| 53     | `SYS_FS_CREATE`       | Create file or directory             | `CAP_FILE` (GRANT/MINT) on parent | - |
-| 54     | `SYS_FS_DELETE`       | Remove file or directory             | `CAP_FILE` (WRITE) on parent       | - |
-| 55     | `SYS_FS_READDIR`      | Read directory contents              | `CAP_FILE` (READ)                  | - |
-| 56     | `SYS_FS_GET_ROOT`     | Obtain root filesystem capability    | Appropriate root cap               | - |
-| 57     | `SYS_FS_MINT_FILE`    | Create reduced-rights file capability| `CAP_FILE` (MINT)                  | - |
+| Number | Name             | Description                                          | Required Capability               | Notes |
+|--------|------------------|------------------------------------------------------|-----------------------------------|-------|
+| 4      | *(mint)*         | Mint a capability into a slot with reduced rights    | `CAP_RIGHT_MINT` on the source    | No public `SYS_` macro (raw number) |
+| 8      | *(transfer)*     | Copy a capability to another slot                    | `CAP_RIGHT_MINT` on the source    | No public macro |
+| 9      | *(move)*         | Move a capability (transfer, then revoke the source) | `CAP_RIGHT_MINT` on the source    | No public macro |
+| 51     | `SYS_CAP_REVOKE` | Revoke a capability and **all** derived copies       | `CAP_RIGHT_REVOKE` on the target  | System-wide sweep + lineage generation bump |
 
-### Block Storage & Server Registration (Stubs)
+### Filesystem (capability-addressed)
 
-| Number | Name                            | Description                              | Required Capabilities       | Notes |
-|--------|---------------------------------|------------------------------------------|-----------------------------|-------|
-| 60     | `SYS_BLOCK_READ`                | Read sectors from block device           | `CAP_BLOCK` (READ)          | Stub |
-| 61     | `SYS_BLOCK_WRITE`               | Write sectors to block device            | `CAP_BLOCK` (WRITE)         | Stub |
-| 62     | `SYS_REGISTER_STORAGE_BACKEND`  | (Removed) formerly registered a block storage provider | —                | **Removed** — fails closed (`SYS_ERR_NOSYS`). Used to register a ring-3 callback the kernel invoked from ring 0 (SMEP violation / TCB escape); a userspace provider must be an IPC server. |
-| 70     | `SYS_REGISTER_FS_SERVER`        | Register userspace filesystem server     | Privileged                  | Stub |
-| 71     | `SYS_CONNECT_FS_SERVER`         | Connect to registered FS server          | Appropriate caps            | Stub |
+| Number | Name               | Description                               | Required Capability            | Notes |
+|--------|--------------------|-------------------------------------------|--------------------------------|-------|
+| 38     | `SYS_FS_MINT_FILE` | Mint a reduced-rights file/dir capability | dir cap `FS_LOOKUP`\|`MINT`     | — |
+| 39     | `SYS_FS_LOOKUP`    | Resolve a name in a directory capability  | dir cap `FS_LOOKUP`            | — |
+| 40     | `SYS_FS_CREATE`    | Create a file or directory                | dir cap `FS_CREATE`            | — |
+| 41     | `SYS_FS_DELETE`    | Delete a name                             | dir cap `FS_DELETE`            | — |
+| 42     | `SYS_FS_READDIR`   | List a directory                          | dir cap `FS_LOOKUP`            | Bounced through a kernel buffer + `copy_to_user` |
+| 43     | `SYS_FS_GET_ROOT`  | Obtain the root directory capability      | `CAP_USER` admin (slot 6) or uid 0 | — |
+| 44     | `SYS_FS_READ`      | Read from a file capability               | file cap `FS_READ`            | Returns bytes |
+| 45     | `SYS_FS_WRITE`     | Write to a file capability                | file cap `FS_WRITE`           | Returns bytes |
+
+### Block storage & server registration
+
+| Number | Name                            | Description                                  | Required Capability              | Notes |
+|--------|---------------------------------|----------------------------------------------|----------------------------------|-------|
+| 46     | `SYS_REGISTER_STORAGE_BACKEND`  | *(Removed)*                                  | —                                | **Fails closed** (`SYS_ERR_NOSYS`). Formerly registered a ring-3 callback the kernel invoked from ring 0 (SMEP violation / TCB escape); a userspace provider must be an IPC server |
+| 47     | `SYS_BLOCK_READ`                | Read a 512-byte block                        | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Over the in-kernel virtual disk |
+| 48     | `SYS_BLOCK_WRITE`               | Write a 512-byte block                       | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Over the in-kernel virtual disk |
+| 49     | `SYS_REGISTER_FS_SERVER`        | Register the caller as the FS server         | `CAP_USER` admin + endpoint cap  | — |
+| 50     | `SYS_CONNECT_FS_SERVER`         | Obtain an endpoint capability to the FS server | dest slot in 4..255            | — |
+
+> The handler also services a few **raw-numbered** operations that have no public macro: **5** (clear screen, slot-3 WRITE), **6** (kernel version string), **14** (legacy in-place task create, slot-3 WRITE\|EXEC), **15** (ramfs create, slot-3 WRITE), **16** (ramfs list, slot-3 READ), and **7** (`DEBUG_SHELL` builds only: run an in-kernel shell command).
 
 ---
 
@@ -110,5 +126,4 @@ For the most up-to-date status, consult [`TESTS.md`](../TESTS.md), [`CHANGES.md`
 
 **Contribution Note**: This reference should be kept in sync with `include/syscall.h` and the syscall handler table in the kernel.
 
-*Generated with Horus Doc Generator skill*  
-*Last updated: June 27, 2026*
+*Last updated: 2026-06-29 — numbers synced against `include/syscall.h` and the `syscall_handler` dispatch table.*

@@ -82,7 +82,7 @@ For full details on the capability system, revocation semantics, and memory mode
 |--------|---------------------------------|------------------------------------------|-----------------------------|-------|
 | 60     | `SYS_BLOCK_READ`                | Read sectors from block device           | `CAP_BLOCK` (READ)          | Stub |
 | 61     | `SYS_BLOCK_WRITE`               | Write sectors to block device            | `CAP_BLOCK` (WRITE)         | Stub |
-| 62     | `SYS_REGISTER_STORAGE_BACKEND`  | Register block storage provider          | Privileged                  | Stub |
+| 62     | `SYS_REGISTER_STORAGE_BACKEND`  | (Removed) formerly registered a block storage provider | —                | **Removed** — fails closed (`SYS_ERR_NOSYS`). Used to register a ring-3 callback the kernel invoked from ring 0 (SMEP violation / TCB escape); a userspace provider must be an IPC server. |
 | 70     | `SYS_REGISTER_FS_SERVER`        | Register userspace filesystem server     | Privileged                  | Stub |
 | 71     | `SYS_CONNECT_FS_SERVER`         | Connect to registered FS server          | Appropriate caps            | Stub |
 

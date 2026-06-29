@@ -1160,7 +1160,14 @@ void syscall_handler(struct regs *r) {
         }
         case 6: {
             const char *info = "Horus v0.4 | per-task paging + cspaces | Rust validators";
-            if (copy_to_user((void*)(addr_t)r->ebx, info, 64) == 0) {
+            /* Copy a zero-padded fixed-size buffer rather than 64 bytes straight
+             * off the string literal: the literal is shorter than 64 bytes, so
+             * the old copy leaked ~7 bytes of adjacent .rodata to userspace. */
+            char infobuf[64];
+            size_t ii = 0;
+            for (; ii < sizeof(infobuf) - 1 && info[ii]; ii++) infobuf[ii] = info[ii];
+            for (; ii < sizeof(infobuf); ii++) infobuf[ii] = 0;
+            if (copy_to_user((void*)(addr_t)r->ebx, infobuf, sizeof(infobuf)) == 0) {
                 r->eax = 0;
             } else {
                 r->eax = -1;
@@ -1544,6 +1551,10 @@ void syscall_handler(struct regs *r) {
                 audit_log(AUDIT_AUTH, 0, -1, "login failure");
                 r->eax = -1;
             }
+            /* Don't leave the cleartext password (and username) sitting in the
+             * kernel stack frame after authentication completes. */
+            secure_zero(uname, sizeof(uname));
+            secure_zero(upass, sizeof(upass));
             break;
         }
 

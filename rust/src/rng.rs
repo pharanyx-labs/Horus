@@ -32,7 +32,7 @@ fn quarter_round(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
 }
 
 /// Produce one 64-byte ChaCha20 keystream block.
-fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
+pub(crate) fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
     const CONST: [u32; 4] = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574];
     let mut state = [0u32; 16];
     state[0..4].copy_from_slice(&CONST);

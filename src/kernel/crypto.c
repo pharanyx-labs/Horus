@@ -146,105 +146,16 @@ void platform_print_summary(void) {
     println("");
 }
 
-static inline void aes128_key_schedule_round(uint8_t *rk, int round) {
-    
-    static const uint8_t rcon[11] = {0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36};
-    uint8_t t = rk[0] ^ rcon[round];
-
-    rk[0] = rk[4] ^ t;
-    rk[1] = rk[5] ^ rk[1];
-    rk[2] = rk[6] ^ rk[2];
-    rk[3] = rk[7] ^ rk[3];
-}
-
-void crypto_aes128_block_encrypt(uint8_t *block, const uint8_t *key) {
-
-    uint8_t state[16];
-    uint8_t rk[16];
-    int i;
-
-    for (i = 0; i < 16; i++) {
-        state[i] = block[i];
-        rk[i] = key[i];
-    }
-
-    if (cpu_has_aesni()) {
-
-        uint8_t st[16], rkk[16];
-        for (i = 0; i < 16; i++) { st[i] = state[i]; rkk[i] = rk[i]; }
-        __asm__ volatile (
-            "movdqu (%0), %%xmm0\n"
-            "movdqu (%1), %%xmm1\n"
-            "pxor %%xmm1, %%xmm0\n"
-            "movdqu %%xmm0, (%0)\n"
-            : : "r"(st), "r"(rkk) : "xmm0","xmm1","memory"
-        );
-        for (int r = 1; r < 10; r++) {
-            aes128_key_schedule_round(rkk, r);
-            __asm__ volatile (
-                "movdqu (%0), %%xmm0\n"
-                "movdqu (%1), %%xmm1\n"
-                "aesenc %%xmm1, %%xmm0\n"
-                "movdqu %%xmm0, (%0)\n"
-                : : "r"(st), "r"(rkk) : "xmm0","xmm1","memory"
-            );
-        }
-        aes128_key_schedule_round(rkk, 10);
-        __asm__ volatile (
-            "movdqu (%0), %%xmm0\n"
-            "movdqu (%1), %%xmm1\n"
-            "aesenclast %%xmm1, %%xmm0\n"
-            "movdqu %%xmm0, (%0)\n"
-            : : "r"(st), "r"(rkk) : "xmm0","xmm1","memory"
-        );
-        for (i = 0; i < 16; i++) block[i] = st[i];
-        return;
-    }
-
-    
-    uint32_t s[8];
-    for (i = 0; i < 8; i++) {
-        s[i] = ((uint32_t)key[(i*2)%16] << 16) | ((uint32_t)key[(i*2+1)%16] << 8) |
-               ((uint32_t)block[i%16] ^ key[(i+3)%16]);
-    }
-    for (int round = 0; round < 32; round++) {
-        
-        s[0] += s[1]; s[1] = (s[1] << 7) | (s[1] >> 25); s[1] ^= s[0];
-        s[2] += s[3]; s[3] = (s[3] << 9) | (s[3] >> 23); s[3] ^= s[2];
-        s[4] += s[5]; s[5] = (s[5] << 13) | (s[5] >> 19); s[5] ^= s[4];
-        s[6] += s[7]; s[7] = (s[7] << 18) | (s[7] >> 14); s[7] ^= s[6];
-        
-        uint32_t t = s[0]; s[0] = s[4]; s[4] = t;
-        if ((round & 3) == 0) {
-            s[1] ^= s[6]; s[3] ^= s[7];
-        }
-    }
-    for (i = 0; i < 16; i++) {
-        block[i] = (uint8_t)((s[i/2] >> ((i&1)*16)) & 0xFF) ^ key[i];
-    }
-}
-
-void crypto_aes128_ctr_encrypt(void *buf, size_t len, const uint8_t *key, const uint8_t *nonce) {
-    uint8_t *p = (uint8_t *)buf;
-    uint8_t counter[16];
-    uint8_t keystream[16];
-    size_t i;
-
-    for (i = 0; i < 16; i++) counter[i] = nonce[i & 15];
-
-    for (size_t off = 0; off < len; off += 16) {
-        for (i = 0; i < 16; i++) keystream[i] = counter[i];
-        crypto_aes128_block_encrypt(keystream, key);
-        size_t chunk = (len - off > 16) ? 16 : (len - off);
-        for (i = 0; i < chunk; i++) {
-            p[off + i] ^= keystream[i];
-        }
-        
-        for (i = 15; i >= 8; i--) {
-            if (++counter[i]) break;
-        }
-    }
-}
+/*
+ * The kernel's bulk symmetric cipher used to live here as a hand-rolled
+ * "AES-128" — but neither path was AES: the AES-NI path fed `aesenc` a bogus
+ * key schedule (no SubWord/Rcon expansion), and the software fallback was an
+ * unaudited ARX permutation. Both have been removed. Encryption-at-rest now
+ * uses the ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD implemented in safe
+ * Rust (rust/src/aead.rs, exposed as rust_aead_seal/rust_aead_open), composing
+ * primitives that are validated against their RFC known-answer vectors. AES-NI
+ * detection (cpu_has_aesni / platform.has_aesni) is retained for reporting.
+ */
 
 void secure_zero(void *p, size_t n) {
     volatile uint8_t *vp = (volatile uint8_t *)p;
@@ -310,6 +221,14 @@ static void entropy_gather_and_seed(void) {
 
 void entropy_init(void) {
     entropy_gather_and_seed();
+    /* Fail closed rather than ever hand out keys from the hardcoded startup
+     * state. TSC jitter always contributes entropy, so this should be
+     * unreachable; if the CSPRNG is somehow still unseeded, halt instead of
+     * letting predictable "randomness" flow into pepper/salt/nonce derivation. */
+    if (!rust_rng_is_seeded()) {
+        print("PANIC: CSPRNG failed to seed; halting to avoid weak key material\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
 }
 
 void entropy_add_sample(uint64_t s) {

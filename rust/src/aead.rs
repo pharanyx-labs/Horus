@@ -1,0 +1,261 @@
+//! Authenticated encryption for the kernel's encryption-at-rest (storage) layer.
+//!
+//! Construction: **Encrypt-then-MAC** composing two primitives that already
+//! live in this crate and are validated against their RFC known-answer vectors:
+//!   * confidentiality — ChaCha20 (RFC 8439), from `crate::rng`,
+//!   * integrity       — HMAC-SHA256 (RFC 2104), from `crate::sha256`.
+//!
+//! This deliberately introduces **no new primitive cryptography**: it is the
+//! standard, provably-secure generic composition (Encrypt-then-MAC with
+//! independent keys) over building blocks the kernel already trusts. It
+//! replaces the previous in-kernel "AES" (a non-AES homebrew permutation with a
+//! broken key schedule) and the deterministic-nonce CTR mode that reused
+//! keystream across rewrites.
+//!
+//! Usage contract:
+//!   * `enc_key` (32B) and `mac_key` (32B) MUST be independent — derive them
+//!     from one secret via HKDF with distinct output ranges, never reuse one as
+//!     both.
+//!   * `nonce` (12B) MUST be unique per (enc_key) encryption. The storage layer
+//!     draws a fresh CSPRNG nonce on every write and stores it beside the tag,
+//!     so (key, nonce) never repeats even when a block is overwritten.
+//!   * `aad` binds context (e.g. inode/block numbers) into the tag without
+//!     encrypting it; the same `aad` must be supplied to `open`.
+//!
+//! Tag: the 16-byte (128-bit) prefix of HMAC-SHA256 — the same strength class
+//! as AES-GCM / ChaCha20-Poly1305 tags.
+
+use crate::rng::chacha20_block;
+use crate::sha256::Sha256Hmac;
+
+pub const AEAD_NONCE_LEN: usize = 12;
+pub const AEAD_TAG_LEN: usize = 16;
+
+/// XOR `buf` in place with the ChaCha20 keystream for (key, nonce), block
+/// counter starting at 0. Encryption and decryption are the same operation.
+fn chacha20_xor(key: &[u8; 32], nonce: &[u8; 12], buf: &mut [u8]) {
+    let mut counter: u32 = 0;
+    let mut off = 0usize;
+    while off < buf.len() {
+        let ks = chacha20_block(key, counter, nonce);
+        counter = counter.wrapping_add(1);
+        let take = core::cmp::min(64, buf.len() - off);
+        for i in 0..take {
+            buf[off + i] ^= ks[i];
+        }
+        off += take;
+    }
+}
+
+/// Tag = HMAC-SHA256(mac_key, nonce ‖ aad ‖ ciphertext)[..16].
+/// Streamed so no contiguous nonce+aad+ct buffer is ever allocated.
+fn compute_tag(mac_key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], ct: &[u8]) -> [u8; AEAD_TAG_LEN] {
+    let mut mac = Sha256Hmac::new(mac_key);
+    mac.update(nonce);
+    mac.update(aad);
+    mac.update(ct);
+    let full = mac.finalize();
+    let mut tag = [0u8; AEAD_TAG_LEN];
+    tag.copy_from_slice(&full[..AEAD_TAG_LEN]);
+    tag
+}
+
+/// Constant-time tag comparison: no secret-dependent early exit.
+fn tags_equal(a: &[u8; AEAD_TAG_LEN], b: &[u8; AEAD_TAG_LEN]) -> bool {
+    let mut diff = 0u8;
+    for i in 0..AEAD_TAG_LEN {
+        diff |= a[i] ^ b[i];
+    }
+    // Keep the accumulator opaque so the compiler can't reintroduce a branch.
+    core::hint::black_box(diff) == 0
+}
+
+/// Encrypt `buf` in place (Encrypt-then-MAC) and produce the tag.
+fn seal(enc_key: &[u8; 32], mac_key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], buf: &mut [u8]) -> [u8; AEAD_TAG_LEN] {
+    chacha20_xor(enc_key, nonce, buf);
+    compute_tag(mac_key, nonce, aad, buf)
+}
+
+/// Verify the tag (constant-time) and, only on success, decrypt `buf` in place.
+/// Returns true if authentic. On failure `buf` is zeroed and left undecrypted.
+fn open(enc_key: &[u8; 32], mac_key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], buf: &mut [u8], tag: &[u8; AEAD_TAG_LEN]) -> bool {
+    let expect = compute_tag(mac_key, nonce, aad, buf);
+    if !tags_equal(&expect, tag) {
+        for b in buf.iter_mut() {
+            *b = 0;
+        }
+        return false;
+    }
+    chacha20_xor(enc_key, nonce, buf);
+    true
+}
+
+// ---------------------------------------------------------------------------
+// FFI surface used by the C storage layer.
+// ---------------------------------------------------------------------------
+
+/// Seal `buf` (len bytes) in place: ChaCha20 encrypt then HMAC.
+/// `enc_key`/`mac_key` are 32 bytes each, `nonce` 12 bytes, `tag_out` 16 bytes.
+/// Returns 0 on success, -1 on bad arguments.
+///
+/// # Safety
+/// All pointers must be valid for their stated lengths and non-overlapping with
+/// each other (except that `buf` is read and written). `enc_key`/`mac_key` are
+/// 32 bytes, `nonce` 12 bytes, `tag_out` 16 bytes, `aad` is `aad_len` bytes
+/// (may be null iff `aad_len == 0`), and `buf` is `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rust_aead_seal(
+    enc_key: *const u8,
+    mac_key: *const u8,
+    nonce: *const u8,
+    aad: *const u8,
+    aad_len: usize,
+    buf: *mut u8,
+    len: usize,
+    tag_out: *mut u8,
+) -> i32 {
+    if enc_key.is_null() || mac_key.is_null() || nonce.is_null() || tag_out.is_null() {
+        return -1;
+    }
+    if buf.is_null() && len != 0 {
+        return -1;
+    }
+    if aad.is_null() && aad_len != 0 {
+        return -1;
+    }
+    let mut ek = [0u8; 32];
+    let mut mk = [0u8; 32];
+    let mut nc = [0u8; AEAD_NONCE_LEN];
+    ek.copy_from_slice(core::slice::from_raw_parts(enc_key, 32));
+    mk.copy_from_slice(core::slice::from_raw_parts(mac_key, 32));
+    nc.copy_from_slice(core::slice::from_raw_parts(nonce, AEAD_NONCE_LEN));
+    let aad_s = if aad_len == 0 { &[][..] } else { core::slice::from_raw_parts(aad, aad_len) };
+    let buf_s = if len == 0 { &mut [][..] } else { core::slice::from_raw_parts_mut(buf, len) };
+
+    let tag = seal(&ek, &mk, &nc, aad_s, buf_s);
+    core::ptr::copy_nonoverlapping(tag.as_ptr(), tag_out, AEAD_TAG_LEN);
+    0
+}
+
+/// Open `buf` (len bytes of ciphertext) in place: verify HMAC (constant-time),
+/// then decrypt only if authentic. Returns 0 on success; -1 on auth failure or
+/// bad arguments (and on auth failure `buf` is zeroed).
+///
+/// # Safety
+/// Same pointer/length contract as [`rust_aead_seal`]; `tag` is 16 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rust_aead_open(
+    enc_key: *const u8,
+    mac_key: *const u8,
+    nonce: *const u8,
+    aad: *const u8,
+    aad_len: usize,
+    buf: *mut u8,
+    len: usize,
+    tag: *const u8,
+) -> i32 {
+    if enc_key.is_null() || mac_key.is_null() || nonce.is_null() || tag.is_null() {
+        return -1;
+    }
+    if buf.is_null() && len != 0 {
+        return -1;
+    }
+    if aad.is_null() && aad_len != 0 {
+        return -1;
+    }
+    let mut ek = [0u8; 32];
+    let mut mk = [0u8; 32];
+    let mut nc = [0u8; AEAD_NONCE_LEN];
+    let mut tg = [0u8; AEAD_TAG_LEN];
+    ek.copy_from_slice(core::slice::from_raw_parts(enc_key, 32));
+    mk.copy_from_slice(core::slice::from_raw_parts(mac_key, 32));
+    nc.copy_from_slice(core::slice::from_raw_parts(nonce, AEAD_NONCE_LEN));
+    tg.copy_from_slice(core::slice::from_raw_parts(tag, AEAD_TAG_LEN));
+    let aad_s = if aad_len == 0 { &[][..] } else { core::slice::from_raw_parts(aad, aad_len) };
+    let buf_s = if len == 0 { &mut [][..] } else { core::slice::from_raw_parts_mut(buf, len) };
+
+    if open(&ek, &mk, &nc, aad_s, buf_s, &tg) {
+        0
+    } else {
+        -1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys() -> ([u8; 32], [u8; 32], [u8; 12]) {
+        let mut ek = [0u8; 32];
+        let mut mk = [0u8; 32];
+        let mut nc = [0u8; AEAD_NONCE_LEN];
+        for (i, b) in ek.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        for (i, b) in mk.iter_mut().enumerate() {
+            *b = (0xA0 + i) as u8;
+        }
+        for (i, b) in nc.iter_mut().enumerate() {
+            *b = (0x10 + i) as u8;
+        }
+        (ek, mk, nc)
+    }
+
+    #[test]
+    fn seal_then_open_roundtrip() {
+        let (ek, mk, nc) = keys();
+        let aad = b"inode=7,block=3";
+        let plain = *b"the quick brown fox jumps over the lazy dog!!";
+        let mut buf = plain;
+        let tag = seal(&ek, &mk, &nc, aad, &mut buf);
+        // Ciphertext must differ from plaintext.
+        assert_ne!(buf, plain);
+        // Authentic open restores the plaintext.
+        assert!(open(&ek, &mk, &nc, aad, &mut buf, &tag));
+        assert_eq!(buf, plain);
+    }
+
+    #[test]
+    fn tampered_ciphertext_is_rejected() {
+        let (ek, mk, nc) = keys();
+        let aad = b"ctx";
+        let mut buf = *b"sensitive block contents here..";
+        let tag = seal(&ek, &mk, &nc, aad, &mut buf);
+        buf[0] ^= 0x01; // flip one ciphertext bit
+        assert!(!open(&ek, &mk, &nc, aad, &mut buf, &tag));
+        // Rejected plaintext must not leak: buffer is zeroed on failure.
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn tampered_tag_is_rejected() {
+        let (ek, mk, nc) = keys();
+        let aad = b"ctx";
+        let mut buf = *b"another block of plaintext bytes";
+        let mut tag = seal(&ek, &mk, &nc, aad, &mut buf);
+        tag[AEAD_TAG_LEN - 1] ^= 0x80;
+        assert!(!open(&ek, &mk, &nc, aad, &mut buf, &tag));
+    }
+
+    #[test]
+    fn wrong_aad_is_rejected() {
+        let (ek, mk, nc) = keys();
+        let mut buf = *b"bound-to-context payload bytes!!";
+        let tag = seal(&ek, &mk, &nc, b"inode=1", &mut buf);
+        // Same key/nonce/ciphertext but different AAD must fail authentication.
+        assert!(!open(&ek, &mk, &nc, b"inode=2", &mut buf, &tag));
+    }
+
+    #[test]
+    fn nonce_separation_changes_keystream() {
+        let (ek, mk, mut nc) = keys();
+        let plain = *b"0123456789abcdef0123456789abcdef";
+        let mut a = plain;
+        let _ = seal(&ek, &mk, &nc, b"", &mut a);
+        nc[0] ^= 0xFF;
+        let mut b = plain;
+        let _ = seal(&ek, &mk, &nc, b"", &mut b);
+        // Different nonce => different keystream => different ciphertext.
+        assert_ne!(a, b);
+    }
+}

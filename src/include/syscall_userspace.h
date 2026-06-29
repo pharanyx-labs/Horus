@@ -278,9 +278,10 @@ static inline int sys_fs_write(uint32_t file_slot, const char *buf, uint32_t len
     return syscall(SYS_FS_WRITE, file_slot, (uint32_t)buf, len);
 }
 
-static inline int sys_register_storage_backend(void *read_fn, void *write_fn) {
-    return syscall(SYS_REGISTER_STORAGE_BACKEND, (uint32_t)read_fn, (uint32_t)write_fn, 0);
-}
+/* sys_register_storage_backend() was removed: registering a userspace block
+ * backend meant the kernel called ring-3 function pointers from ring 0 (an SMEP
+ * violation and TCB escape). Syscall 46 now fails closed (SYS_ERR_NOSYS). The
+ * #define is kept so the ABI slot stays reserved. */
 
 static inline int sys_block_read(uint64_t block, void *buf, uint32_t len) {
     return (int)syscall6(SYS_BLOCK_READ, (uint32_t)(block >> 32), (uint32_t)block, (uint32_t)buf, len, 0, 0);

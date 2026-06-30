@@ -125,9 +125,14 @@ static void show_general_help_us(void) {
     println("=== Horus Userspace Shell - Command Reference ===");
     println("");
     println("Core:");
-    print_cmd("help, man",        "Show this list or 'help <cmd>' for details");
+    print_cmd("help, man, ?",     "Show this list or 'help <cmd>' for details");
     print_cmd("exit, logout",     "End session / return to login prompt");
     print_cmd("yield",            "Voluntarily yield the CPU");
+    println("");
+    println("Files & Text:");
+    print_cmd("ls",               "List files (simple in-memory listing)");
+    print_cmd("cat <file>",       "Print a file's contents");
+    print_cmd("echo <text>",      "Print text back to the console");
     println("");
     println("User & Security:");
     print_cmd("whoami, id",       "Show current uid (and gid)");
@@ -182,9 +187,22 @@ static void show_topic_help_us(const char *topic) {
     }
 
     if (strcmp(t, "ps") == 0) {
-        println("Description: List visible processes with state, heap and caps.");
+        println("Description: List visible processes with uid, state, heap and caps.");
         println("Usage:       ps");
-        println("Notes:       Non-root tasks see limited data. K=kernel, B=blocked, N=notify wait.");
+        println("Notes:       Non-root tasks see only themselves. Columns: PID UID NAME");
+        println("             STATE HEAP CAPS FLAGS. * marks your task; STATE is run/blkd;");
+        println("             FLAGS: K=in kernel, B<n>=blocked on task n, N=notify wait.");
+    } else if (strcmp(t, "ls") == 0) {
+        println("Description: List files in the simple in-memory listing.");
+        println("Usage:       ls");
+        println("Notes:       For capability-mediated directories use 'cap_ls <slot>'.");
+    } else if (strcmp(t, "cat") == 0) {
+        println("Description: Print the contents of a file by name.");
+        println("Usage:       cat <file>");
+        println("Notes:       For capability-mediated files use 'cap_cat <slot>'.");
+    } else if (strcmp(t, "echo") == 0) {
+        println("Description: Echo the remaining text back to the console.");
+        println("Usage:       echo <text>");
     } else if (strcmp(t, "load") == 0) {
         println("Description: Receive a binary image then spawn it as a new task.");
         println("Usage:       load");

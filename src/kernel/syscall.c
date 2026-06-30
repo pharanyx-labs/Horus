@@ -27,14 +27,77 @@ static int kstrncmp(const char *a, const char *b, size_t n) {
 #endif
 
 #ifdef DEBUG_SHELL
+static void help_line(const char *name, const char *desc) {
+    print("  ");
+    print(name);
+    int len = 0; while (name[len]) len++;
+    for (int i = len; i < 22; i++) print(" ");
+    print("- ");
+    println(desc);
+}
+
+/* Accurate list of what the in-kernel debug shell actually dispatches (see the
+ * action handlers in process_user_command). Kept in sync with that switch; the
+ * old one-liner advertised `fs`/`spawn` (never handled here) and omitted half
+ * the real commands. "(cap)" marks ops gated on a capability. */
 static void show_general_help(void) {
-    println("commands: help ps caps mint load spawn yield kill dmesg fs clear exit");
+    set_text_colour(0x0B);
+    println("Horus kernel debug shell - commands");
+    set_text_colour(0x0F);
+    println("Info:");
+    help_line("help [cmd], man, ?",  "This list, or details for one command");
+    help_line("version",            "Kernel version banner");
+    help_line("uptime",             "System uptime in timer ticks");
+    help_line("ps",                 "List tasks (full view needs CAP_CONSOLE)");
+    help_line("caps",               "List this task's capability slots");
+    help_line("dmesg, log",         "Dump the kernel log (cap: CAP_CONSOLE)");
+    println("Session:");
+    help_line("echo <text>",        "Print text back");
+    help_line("clear",              "Clear the screen (cap: slot-3 WRITE)");
+    help_line("yield",              "Yield the CPU to the scheduler");
+    help_line("exit",               "Power off the machine (cap: CAP_CONSOLE)");
+    println("Capabilities & tasks:");
+    help_line("mint <d> <s> <r>",   "Mint cap: dest<-src slot with rights mask r");
+    help_line("kill <pid>",         "Terminate a task (cap: CAP_CONSOLE)");
+    help_line("load",               "Receive a binary on :4444 then spawn it");
+    println("Storage:");
+    help_line("rotate_keys",        "Re-encrypt your blocks (cap: CONSOLE+ENC_STORAGE)");
+    set_text_colour(0x08);
+    println("Numbers are decimal. 'rights' is a decimal bitmask (see ARCHITECTURE.md).");
+    set_text_colour(0x0F);
 }
 #endif
 
 #ifdef DEBUG_SHELL
 static void show_topic_help(const char *topic) {
-    (void)topic;
+    while (*topic == ' ') topic++;
+    if (kstrcmp(topic, "mint") == 0) {
+        println("mint <dest> <src> <rights>");
+        println("  Derive a new capability into slot <dest> from the cap in slot");
+        println("  <src>, keeping at most <rights> (a decimal bitmask). The source");
+        println("  must carry CAP_RIGHT_MINT; dest must be >= 4 (slots 0-3 reserved).");
+        return;
+    }
+    if (kstrcmp(topic, "kill") == 0) {
+        println("kill <pid>");
+        println("  Terminate task <pid>. Requires CAP_CONSOLE (slot 8). You cannot");
+        println("  kill pid 0 (the kernel/init task).");
+        return;
+    }
+    if (kstrcmp(topic, "load") == 0) {
+        println("load");
+        println("  Wait on serial port 4444 for a headered program image, then spawn");
+        println("  it as a new ring-3 task. Requires a FRAME cap (slot 3, WRITE|EXEC)");
+        println("  and CAP_CONSOLE. Pipe a .bin built by tools/mkheadered to :4444.");
+        return;
+    }
+    if (kstrcmp(topic, "rotate_keys") == 0) {
+        println("rotate_keys");
+        println("  Re-encrypt the storage blocks you own under a freshly derived key");
+        println("  (ChaCha20+HMAC AEAD). Requires CAP_CONSOLE and CAP_ENCRYPTED_STORAGE.");
+        return;
+    }
+    println("No per-topic help for that command. Showing the full list:");
     show_general_help();
 }
 #endif

@@ -4,17 +4,21 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* MUST stay byte-identical to the copies in src/include/kernel.h and
+ * src/include/syscall_userspace.h (SYS_GET_TASK_INFO ABI). */
 struct task_info {
     uint32_t id;
     uint32_t state;
+    uint32_t uid;
+    uint32_t gid;
     uint32_t cr3;
-    uint32_t heap_used;
-    char     name[32];
     uint32_t eip;
+    uint32_t heap_used;
+    uint32_t caps_in_use;
+    int      in_kernel;
     int      blocked_on;
     int      blocked_on_notif;
-    int      in_kernel;
-    uint32_t caps_in_use;
+    char     name[32];
 };
 
 struct program_header {

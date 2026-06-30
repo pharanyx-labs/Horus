@@ -276,11 +276,8 @@ static void handle_command(char *cmd) {
             println("sbrk failed");
         }
     } else if (strcmp(cmd, "ps") == 0) {
-        println("PID  NAME            STATE  HEAP     CAPS  FLAGS");
+        println("PID  UID    NAME            STATE  HEAP      CAPS  FLAGS");
         int mypid = sys_getpid();
-        print("My pid: ");
-        print_decimal(mypid);
-        println("");
         int saw_any = 0;
         for (int i = 0; i < 16; i++) {
             struct task_info info;
@@ -289,16 +286,26 @@ static void handle_command(char *cmd) {
                 saw_any = 1;
                 if (info.id < 10) print(" ");
                 print_decimal(info.id);
-                print("  ");
+                if ((int)info.id == mypid) print("* "); else print("  ");
+                /* UID column (root for 0), padded to 7 cols. */
+                if (info.uid == 0) { print("root   "); }
+                else {
+                    print_decimal(info.uid);
+                    int ulen = info.uid < 10 ? 1 : (info.uid < 100 ? 2 : (info.uid < 1000 ? 3 : 4));
+                    for (int sp = ulen; sp < 7; sp++) print(" ");
+                }
                 print(info.name);
                 int nlen = 0; while (info.name[nlen]) nlen++;
-                for (int sp = nlen; sp < 14; sp++) print(" ");
-                print_decimal(info.state);
-                print("     ");
+                for (int sp = nlen; sp < 16; sp++) print(" ");
+                /* Named state (mirrors rust/src/ps.rs state_cstr). */
+                const char *sn = info.state == 1 ? "run" : (info.state == 2 ? "blkd" : "?");
+                print(sn);
+                int snlen = 0; while (sn[snlen]) snlen++;
+                for (int sp = snlen; sp < 7; sp++) print(" ");
                 print_decimal(info.heap_used);
-                print("  ");
+                print("      ");
                 print_decimal(info.caps_in_use);
-                print("   ");
+                print("    ");
                 if (info.in_kernel) print("K ");
                 if (info.blocked_on >= 0) { print("B"); print_decimal(info.blocked_on); }
                 else if (info.blocked_on_notif >= 0) print("N");

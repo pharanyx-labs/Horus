@@ -1394,8 +1394,11 @@ void syscall_handler(struct regs *r) {
             }
 
             struct task_info info;
+            for (size_t z = 0; z < sizeof(info); z++) ((uint8_t*)&info)[z] = 0;
             info.id = tid;
             info.state = tasks[tid].state;
+            info.uid = tasks[tid].uid;
+            info.gid = tasks[tid].gid;
             info.cr3 = tasks[tid].cr3;
             info.heap_used = tasks[tid].heap_current - tasks[tid].heap_start;
             for (int k = 0; k < 31 && tasks[tid].name[k]; k++)
@@ -2008,7 +2011,7 @@ int process_user_command(const char *cmd) {
         
         bool can_see_all = has_console_cap();
         set_text_colour(0x0B);
-        println("PID  NAME            STATE  HEAP     FLAGS");
+        println("PID  UID    NAME            STATE  HEAP      CAPS  FLAGS");
         set_text_colour(0x0F);
         int cur = get_current_task();
         for (int i = 0; i < MAX_TASKS; i++) {
@@ -2016,18 +2019,27 @@ int process_user_command(const char *cmd) {
                 if (!can_see_all && i != cur) continue;
                 if (i < 10) print(" ");
                 print_decimal(i);
-                print("  ");
+                print("   ");
+                /* UID, right-padded to a 7-col field (0 shown as root). */
+                if (tasks[i].uid == 0) { print("root  "); }
+                else { print_decimal(tasks[i].uid); for (int sp = (tasks[i].uid < 10 ? 1 : (tasks[i].uid < 100 ? 2 : (tasks[i].uid < 1000 ? 3 : 4))); sp < 6; sp++) print(" "); }
+                print(" ");
                 print(tasks[i].name);
                 int nlen = 0; while (tasks[i].name[nlen]) nlen++;
-                for (int sp = nlen; sp < 14; sp++) print(" ");
-                print_decimal(tasks[i].state);
-                print("     ");
+                for (int sp = nlen; sp < 16; sp++) print(" ");
+                /* Named state from the Rust ps policy (run/blkd/dead/?). */
+                const char *sn = rust_task_state_name(tasks[i].state);
+                print(sn);
+                for (int sp = 0; sn[sp]; sp++) { /* pad name col */ }
+                int snlen = 0; while (sn[snlen]) snlen++;
+                for (int sp = snlen; sp < 7; sp++) print(" ");
                 print_decimal(tasks[i].heap_current - tasks[i].heap_start);
-                print("  ");
+                print("      ");
+                print_decimal(tasks[i].caps_in_use);
+                print("    ");
                 if (tasks[i].in_kernel) print("K ");
                 if (tasks[i].blocked_on >= 0) { print("B"); print_decimal(tasks[i].blocked_on); }
                 else if (tasks[i].blocked_on_notif >= 0) print("N");
-                else if (tasks[i].state == 2) print("blk");
                 println("");
             }
         }

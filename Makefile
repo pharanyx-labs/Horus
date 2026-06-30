@@ -193,6 +193,14 @@ test:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory all
 
+# Headless QEMU smoke-boot test: boot the kernel and confirm it reaches the
+# ring-3 shell banner with no fault/panic on serial. SMOKE_TIMEOUT overrides
+# the wait (seconds).
+SMOKE_TIMEOUT ?= 40
+.PHONY: smoke
+smoke: boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso
+
 .PHONY: reproducible-build verify-build
 reproducible-build:
 	@rm -f kernel.elf boot.iso

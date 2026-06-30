@@ -577,6 +577,10 @@ int sys_fs_write(uint32_t file_slot, const char *buf, uint32_t len);
 int  copy_from_user(void *kdst, const void *usrc, size_t len);
 int  copy_to_user(void *udst, const void *ksrc, size_t len);
 int  user_protect_page(uint64_t vaddr, int writable, int executable);
+uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr);
+#ifdef ELF_SELFTEST
+void elf_loader_selftest(void);
+#endif
 
 
 int  sys_ipc_send(uint32_t ep_slot, const void *msg, size_t len);

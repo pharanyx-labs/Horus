@@ -717,6 +717,15 @@ static uint64_t pt_walk(uint64_t cr3, uint64_t v) {
     return e;
 }
 
+/* Return the leaf page-table entry mapping `vaddr` in the address space rooted
+ * at `cr3` (raw PTE including flag bits), or 0 if not present. Read-only walk
+ * by physical address; used by the ELF-loader self-test to inspect the W^X
+ * bits try_elf_load produced. */
+uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr) {
+    if (cr3 == 0) return 0;
+    return pt_walk(cr3, vaddr);
+}
+
 /* Apply final W^X protection to an already-mapped 4 KiB user page in the
  * CURRENT task's address space: clear PAGE_WRITE unless `writable`, and set the
  * NX bit (63) unless `executable`. The ELF loader maps segments writable, copies

@@ -303,3 +303,14 @@ embedded_shell_bin_start:
 .incbin "userspace/shell.bin"
 .global embedded_shell_bin_end
 embedded_shell_bin_end:
+
+#ifdef ELF_SELFTEST
+/* Real multi-segment ELF used by the in-kernel ELF-loader self-test
+ * (elf_loader_selftest). Only embedded in the ELF_SELFTEST build. */
+.align 16
+.global embedded_elftest_start
+embedded_elftest_start:
+.incbin "userspace/elftest.elf"
+.global embedded_elftest_end
+embedded_elftest_end:
+#endif

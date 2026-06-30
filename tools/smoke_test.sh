@@ -12,12 +12,18 @@
 # is a failure.
 #
 # Usage: tools/smoke_test.sh [boot.iso]
-# Env:   SMOKE_TIMEOUT (seconds, default 40)
+# Env:   SMOKE_TIMEOUT  (seconds, default 40)
+#        REQUIRE_MARKER (optional: an extra string that must also appear on
+#                        serial for the run to pass — e.g. "ELF_SELFTEST: PASS")
+#        FAIL_MARKER    (optional: a string whose appearance is an immediate
+#                        failure — e.g. "ELF_SELFTEST: FAIL")
 #
 set -u
 
 ISO="${1:-boot.iso}"
 TIMEOUT="${SMOKE_TIMEOUT:-40}"
+REQUIRE_MARKER="${REQUIRE_MARKER:-}"
+FAIL_MARKER="${FAIL_MARKER:-}"
 
 PASS_MARKER="Horus Secure Microkernel"   # printed by userspace/shell.c _start()
 LOGIN_MARKER="horus login"               # reached the login prompt (do_login)
@@ -57,7 +63,14 @@ status="timeout"
 deadline=$(( SECONDS + TIMEOUT ))
 while [ "$SECONDS" -lt "$deadline" ]; do
     if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then status="fault"; break; fi
-    if grep -q "$PASS_MARKER" "$LOG" 2>/dev/null; then status="ok"; break; fi
+    if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then status="marker_fail"; break; fi
+    # The banner is the primary success signal; if an extra marker is required,
+    # wait until both have appeared.
+    if grep -q "$PASS_MARKER" "$LOG" 2>/dev/null; then
+        if [ -z "$REQUIRE_MARKER" ] || grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then
+            status="ok"; break
+        fi
+    fi
     if ! kill -0 "$QEMU_PID" 2>/dev/null; then status="exited"; break; fi
     sleep 0.5
 done
@@ -69,19 +82,32 @@ echo "--------------------------------------------------"
 
 case "$status" in
     ok)
-        # A fault printed in the same instant as the banner still fails.
+        # A fault (or an explicit fail marker) alongside the banner still fails.
         if grep -qE "$FAULT_RE" "$LOG"; then
             echo "SMOKE FAIL: kernel fault/panic on serial"
             exit 1
         fi
+        if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG"; then
+            echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER'"
+            exit 1
+        fi
+        extra=""
+        [ -n "$REQUIRE_MARKER" ] && extra=" + required marker '$REQUIRE_MARKER'"
         if grep -q "$LOGIN_MARKER" "$LOG"; then
-            echo "SMOKE PASS: reached ring-3 shell banner and login prompt"
+            echo "SMOKE PASS: reached ring-3 shell banner and login prompt$extra"
         else
-            echo "SMOKE PASS: reached ring-3 shell banner"
+            echo "SMOKE PASS: reached ring-3 shell banner$extra"
         fi
         exit 0
         ;;
+    marker_fail) echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER' on serial"; exit 1 ;;
     fault)   echo "SMOKE FAIL: kernel fault/panic on serial"; exit 1 ;;
     exited)  echo "SMOKE FAIL: QEMU exited before the banner (triple fault?)"; exit 1 ;;
-    timeout) echo "SMOKE FAIL: timed out after ${TIMEOUT}s before the shell banner"; exit 1 ;;
+    timeout)
+        if [ -n "$REQUIRE_MARKER" ] && ! grep -qF "$REQUIRE_MARKER" "$LOG"; then
+            echo "SMOKE FAIL: timed out after ${TIMEOUT}s without required marker '$REQUIRE_MARKER'"
+        else
+            echo "SMOKE FAIL: timed out after ${TIMEOUT}s before the shell banner"
+        fi
+        exit 1 ;;
 esac

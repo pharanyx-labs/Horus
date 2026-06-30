@@ -47,6 +47,17 @@ ifeq ($(DEBUG_SHELL),1)
 CFLAGS += -DDEBUG_SHELL
 endif
 
+# ELF_SELFTEST=1 embeds a real multi-segment ELF and runs an in-kernel
+# self-test of try_elf_load + W^X at boot (prints ELF_SELFTEST: PASS/FAIL to
+# serial). Gated so the default/ship kernel is unaffected. ASFLAGS also gets
+# the define so the gated .incbin in multiboot.S is included.
+ELF_SELFTEST ?= 0
+ifeq ($(ELF_SELFTEST),1)
+CFLAGS  += -DELF_SELFTEST
+ASFLAGS += -DELF_SELFTEST
+ELF_SELFTEST_DEP = userspace/elftest.elf
+endif
+
 ifeq ($(BITS),64)
     OBJS += src/boot/entry64.o
     OBJS += src/kernel/lowlevel64.o
@@ -99,7 +110,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin
+src/boot/multiboot.o: userspace/shell.bin $(ELF_SELFTEST_DEP)
 
 src/kernel/rust_shims.o: src/kernel/rust_shims.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -173,6 +184,12 @@ userspace/%.o: userspace/%.c
 userspace/%.elf: userspace/%.o
 	$(LD) -m elf_i386 -Ttext=0x400000 -o $@ $<
 
+# The ELF-loader self-test image is linked with a custom script that produces
+# distinct page-aligned R+X / R+W / R PT_LOAD segments (explicit rule wins over
+# the pattern rule above). It is kept as a real ELF, never objcopy-flattened.
+userspace/elftest.elf: userspace/elftest.o userspace/elftest.ld
+	$(LD) -m elf_i386 -T userspace/elftest.ld -o $@ $<
+
 userspace/%.raw: userspace/%.elf
 	objcopy -O binary $< $@
 
@@ -186,6 +203,17 @@ userspace: userspace/shell.bin userspace/hello.bin userspace/fs_server.bin users
 
 userspace-clean:
 	rm -f userspace/*.o userspace/*.elf userspace/*.raw userspace/*.bin tools/mkheadered
+
+# Build the kernel with the gated ELF-loader self-test, boot it headless, and
+# require the in-kernel self-test to report PASS on serial (in addition to the
+# normal boot reaching userspace). Runtime-verifies the try_elf_load + W^X path.
+.PHONY: smoke-elf
+smoke-elf:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ELF_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ELF_SELFTEST: PASS' \
+		FAIL_MARKER='ELF_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

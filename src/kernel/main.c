@@ -91,6 +91,9 @@ void kernel_main(uint32_t mb_info) {
     __asm__ volatile ("sti" ::: "memory");
     aslr_init_seed();
     set_current_task(0);
+    /* Note: the 64-bit boot reaches userspace via smp_bringup() above, which
+     * spawns the shell and never returns; the ELF_SELFTEST hook lives there.
+     * This branch is the fallback path. */
 #ifdef DEBUG_SHELL
     shell_prompt_loop();
 #else

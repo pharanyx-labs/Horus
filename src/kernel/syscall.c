@@ -1041,6 +1041,735 @@ void syscall_handler64(void)
     }
 }
 
+/* ------------------------------------------------------------------------- *
+ *  Per-syscall handlers.
+ *
+ *  Each handler is the extracted body of one dispatch case, so the switch in
+ *  syscall_handler() is a thin table of one-liners and every syscall can be
+ *  audited in isolation. This is a behaviour-preserving move: switch-level
+ *  `break` became `return` (inner loop break/continue are unchanged), and the
+ *  shared in_kernel bookkeeping still brackets the dispatch in syscall_handler.
+ * ------------------------------------------------------------------------- */
+
+/* SYS_GET_LINE (3): read a line from the console into the caller's buffer. */
+static void h_get_line(struct regs *r) {
+    struct capability *c = cap_lookup(8, CAP_RIGHT_READ);
+    if (!c) c = cap_lookup(3, CAP_RIGHT_READ);
+    if (!c) { r->eax = -1; return; }
+
+    void *user_dest = (void *)(addr_t)r->ebx;
+    uint32_t max_len = 127;
+    char line[128];
+    uint32_t len = 0;
+    char ch;
+
+    while (len < max_len) {
+        ch = console_getc();
+
+        if (ch == '\r' || ch == '\n') {
+            print("\n");
+            break;
+        }
+
+#ifdef DEBUG_SHELL
+        if (ch == 0x1B) {
+            while ((inb(0x3FD) & 1) == 0) { yield(); }
+            char seq1 = inb(0x3F8);
+            while ((inb(0x3FD) & 1) == 0) { yield(); }
+            char seq2 = inb(0x3F8);
+
+            if (seq1 == '[') {
+                if (seq2 == 'A') {
+                    if (history_count > 0) {
+                        if (history_pos < 0) history_pos = history_count - 1;
+                        else if (history_pos > 0) history_pos--;
+
+                        for (uint32_t i = 0; i < len; i++) {
+                            print("\b \b");
+                        }
+                        len = 0;
+                        while (cmd_history[history_pos][len] && len < max_len - 1) {
+                            line[len] = cmd_history[history_pos][len];
+                            char echo[2] = {line[len], 0};
+                            print(echo);
+                            len++;
+                        }
+                        line[len] = 0;
+                    }
+                } else if (seq2 == 'B') {
+                    if (history_pos >= 0) {
+                        history_pos++;
+                        if (history_pos >= history_count) {
+                            history_pos = -1;
+                            for (uint32_t i = 0; i < len; i++) print("\b \b");
+                            len = 0;
+                            line[0] = 0;
+                        } else {
+                            for (uint32_t i = 0; i < len; i++) print("\b \b");
+                            len = 0;
+                            while (cmd_history[history_pos][len] && len < max_len - 1) {
+                                line[len] = cmd_history[history_pos][len];
+                                char echo[2] = {line[len], 0};
+                                print(echo);
+                                len++;
+                            }
+                            line[len] = 0;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+#endif
+        if ((unsigned char)ch < 32 && ch != '\b' && ch != 0x7F) {
+            continue;
+        }
+
+        if (ch == '\b' || ch == 0x7F) {
+            if (len > 0) {
+                len--;
+                print("\b \b");
+            }
+            continue;
+        }
+
+        char echo[2] = {ch, 0};
+        print(echo);
+        line[len++] = ch;
+    }
+
+    line[len] = 0;
+
+#ifdef DEBUG_SHELL
+    if (len > 0) {
+        if (history_count == HISTORY_SIZE) {
+            for (int i = 0; i < HISTORY_SIZE - 1; i++) {
+                for (int j = 0; j < CMD_MAX; j++) {
+                    cmd_history[i][j] = cmd_history[i+1][j];
+                }
+            }
+            history_count--;
+        }
+        for (uint32_t j = 0; j < CMD_MAX && j <= len; j++) {
+            cmd_history[history_count][j] = line[j];
+        }
+        history_count++;
+    }
+    history_pos = -1;
+#endif
+
+    if (copy_to_user(user_dest, line, len + 1) != 0) {
+        r->eax = -1;
+    } else {
+        r->eax = len;
+    }
+}
+
+/* SYS_GET_SYSINFO (6): copy a zero-padded version string to the caller. */
+static void h_sysinfo(struct regs *r) {
+    const char *info = "Horus v0.4 | per-task paging + cspaces | Rust validators";
+    /* Copy a zero-padded fixed-size buffer rather than 64 bytes straight
+     * off the string literal: the literal is shorter than 64 bytes, so
+     * the old copy leaked ~7 bytes of adjacent .rodata to userspace. */
+    char infobuf[64];
+    size_t ii = 0;
+    for (; ii < sizeof(infobuf) - 1 && info[ii]; ii++) infobuf[ii] = info[ii];
+    for (; ii < sizeof(infobuf); ii++) infobuf[ii] = 0;
+    if (copy_to_user((void*)(addr_t)r->ebx, infobuf, sizeof(infobuf)) == 0) {
+        r->eax = 0;
+    } else {
+        r->eax = -1;
+    }
+}
+
+/* SYS_SBRK (10): grow/shrink the caller's heap within its fixed bounds. */
+static void h_sbrk(struct regs *r) {
+    int32_t increment = (int32_t)r->ebx;
+    if (increment == 0) {
+        r->eax = tasks[get_current_task()].heap_current;
+        return;
+    }
+
+    uint32_t new_current = tasks[get_current_task()].heap_current + increment;
+    if (new_current > tasks[get_current_task()].heap_end || new_current < tasks[get_current_task()].heap_start) {
+        r->eax = 0;
+    } else {
+        uint32_t old = tasks[get_current_task()].heap_current;
+        tasks[get_current_task()].heap_current = new_current;
+        r->eax = old;
+    }
+}
+
+/* SYS_WRITE (11): write to fd 1 (console). Length clamped to the scratch buf. */
+static void h_write(struct regs *r) {
+    int fd = r->ebx;
+    void *buf = (void*)(addr_t)r->ecx;
+    size_t len = r->edx;
+
+    if (fd != 1) { r->eax = -1; return; }
+
+    char kbuf[256];
+    size_t to_copy = len > 255 ? 255 : len;
+    if (copy_from_user(kbuf, buf, to_copy) != 0) {
+        r->eax = -1;
+        return;
+    }
+    kbuf[to_copy] = 0;
+    print(kbuf);
+    r->eax = to_copy;
+}
+
+/* SYS_READ (12): read from fd 0 (console line) or fd>=3 (ramfs, needs slot-3 read). */
+static void h_read(struct regs *r) {
+    int fd = r->ebx;
+    void *buf = (void*)(addr_t)r->ecx;
+    size_t len = r->edx;
+
+    if (fd == 0) {
+        char line[128];
+        uint32_t got = 0;
+        while (got < len && got < 127) {
+            char ch = console_getc();
+            if (ch == '\r' || ch == '\n') { print("\n"); break; }
+            if (ch == '\b' || ch == 0x7F) { if (got > 0) { got--; print("\b \b"); } continue; }
+            char echo[2] = {ch, 0}; print(echo);
+            line[got++] = ch;
+        }
+        line[got] = 0;
+        if (copy_to_user(buf, line, got + 1) != 0) r->eax = -1;
+        else r->eax = got;
+    } else if (fd >= 3) {
+        struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
+        if (!c) { r->eax = -1; return; }
+        char kbuf[256];
+        size_t to_read = len > 255 ? 255 : len;
+        int n = ramfs_read(fd, kbuf, to_read);
+        if (n > 0) {
+            if (copy_to_user(buf, kbuf, n) == 0) r->eax = n;
+            else r->eax = -1;
+        } else {
+            r->eax = n;
+        }
+    } else {
+        r->eax = -1;
+    }
+}
+
+/* SYS_EXEC (14): create a task at an already-loaded image (slot-3 write+exec). */
+static void h_exec(struct regs *r) {
+    struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
+    if (!c) {
+        r->eax = -1;
+        return;
+    }
+
+    uint32_t load_base = r->ebx;
+    uint32_t entry_offset = r->ecx;
+    (void)(r->edx);
+
+    int new_id = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state == 0) {
+            new_id = i;
+            break;
+        }
+    }
+    if (new_id < 0) {
+        r->eax = -1;
+        return;
+    }
+
+    create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP);
+
+    tasks[new_id].heap_start = USER_HEAP_BASE + new_id * 0x10000;
+    tasks[new_id].heap_current = tasks[new_id].heap_start;
+    tasks[new_id].heap_end = tasks[new_id].heap_start + 0x10000;
+
+    tasks[new_id].name[0] = 's'; tasks[new_id].name[1] = 'p';
+    tasks[new_id].name[2] = 'a'; tasks[new_id].name[3] = 'w';
+    tasks[new_id].name[4] = 'n'; tasks[new_id].name[5] = '0' + new_id;
+    tasks[new_id].name[6] = 0;
+
+    r->eax = new_id;
+}
+
+/* SYS_FS_LIST (16): list ramfs entries, honouring the caller's buffer size. */
+static void h_fs_list(struct regs *r) {
+    struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
+    if (!c) { r->eax = -1; return; }
+    void *user_buf = (void*)(addr_t)r->ebx;
+    size_t max_len = r->ecx;
+    char kbuf[256];
+    /* Honour the caller-supplied buffer size: format the listing into at
+     * most max_len bytes (capped by the kernel scratch buffer) so the
+     * subsequent copy_to_user never writes past the caller's buffer.
+     * ramfs_list guarantees a NUL within the size it is given, so
+     * n+1 <= cap holds. */
+    size_t cap = max_len < sizeof(kbuf) ? max_len : sizeof(kbuf);
+    if (cap == 0) { r->eax = 0; return; }
+    int n = ramfs_list(kbuf, cap);
+    if (n < 0) { r->eax = -1; return; }
+    if (copy_to_user(user_buf, kbuf, n+1) == 0) r->eax = n;
+    else r->eax = -1;
+}
+
+/* SYS_WAIT (17): block until task `tid` exits. */
+static void h_wait(struct regs *r) {
+    int tid = r->ebx;
+    if (tid < 0 || tid >= MAX_TASKS || tid == get_current_task() || tasks[tid].state == 0) {
+        r->eax = -1;
+        return;
+    }
+
+    tasks[tid].waiter = get_current_task();
+    tasks[get_current_task()].state = 0;
+
+    while (tasks[get_current_task()].state == 0) {
+        yield();
+    }
+
+    r->eax = 0;
+}
+
+/* SYS_GET_TASK_INFO (18): report task_info for `tid` (self, or any with admin/audit). */
+static void h_task_info(struct regs *r) {
+    int tid = r->ebx;
+    struct task_info *out = (struct task_info*)(addr_t)r->ecx;
+
+    if (tid < 0 || tid >= MAX_TASKS) {
+        r->eax = -1;
+        return;
+    }
+
+    int is_privileged = 0;
+    struct capability *c = cap_lookup(6, CAP_RIGHT_ALL);
+    if (c && c->type == CAP_USER) is_privileged = 1;
+    if (!is_privileged) {
+        c = cap_lookup(7, CAP_RIGHT_READ);
+        if (c && c->type == CAP_AUDIT) is_privileged = 1;
+    }
+
+    if (!is_privileged && tid != get_current_task()) {
+        r->eax = -3;
+        return;
+    }
+
+    struct task_info info;
+    for (size_t z = 0; z < sizeof(info); z++) ((uint8_t*)&info)[z] = 0;
+    info.id = tid;
+    info.state = tasks[tid].state;
+    info.uid = tasks[tid].uid;
+    info.gid = tasks[tid].gid;
+    /* Do NOT leak the page-table physical base to ring-3: it reveals
+     * the physical memory layout and aids exploitation. Field is kept
+     * for ABI stability but always reported as 0; no consumer uses it. */
+    info.cr3 = 0;
+    info.heap_used = tasks[tid].heap_current - tasks[tid].heap_start;
+    for (int k = 0; k < 31 && tasks[tid].name[k]; k++)
+        info.name[k] = tasks[tid].name[k];
+    info.name[31] = 0;
+    info.eip = tasks[tid].eip;
+    info.blocked_on = tasks[tid].blocked_on;
+    info.blocked_on_notif = tasks[tid].blocked_on_notif;
+    info.in_kernel = tasks[tid].in_kernel;
+    info.caps_in_use = tasks[tid].caps_in_use;
+
+    if (copy_to_user(out, &info, sizeof(info)) == 0) r->eax = 0;
+    else r->eax = -1;
+}
+
+/* SYS_RUN (19): drop the current task to ring 3 at an already-loaded image. */
+static void h_run(struct regs *r) {
+    struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
+    if (!c) { r->eax = -1; return; }
+
+    uint32_t load_base = r->ebx;
+    uint32_t entry = r->ecx;
+
+    tasks[get_current_task()].heap_current = tasks[get_current_task()].heap_start;
+
+    if (get_current_task() == 0) {
+        r->eax = -1;
+        return;
+    }
+    drop_to_ring3(load_base + entry, tasks[get_current_task()].esp);
+    r->eax = 0;
+}
+
+/* SYS_RECEIVE_PROGRAM: stage a program image and return its header. */
+static void h_receive_program(struct regs *r) {
+    struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
+    if (!c) { r->eax = -1; return; }
+
+    void *user_hdr = (void *)(addr_t)r->ebx;
+    struct program_header k_hdr;
+
+    int rc = do_receive_program(&k_hdr);
+    if (rc != 0) {
+        r->eax = rc;
+        return;
+    }
+
+    if (user_hdr) {
+        if (copy_to_user(user_hdr, &k_hdr, sizeof(k_hdr)) != 0) {
+            r->eax = -3;
+            return;
+        }
+    }
+
+    r->eax = 0;
+}
+
+/* SYS_AUTH: authenticate the calling task as a user (sets uid/gid on success). */
+static void h_auth(struct regs *r) {
+    uint32_t now = get_system_ticks();
+
+    char uname[32];
+    char upass[32];
+    if (copy_from_user(uname, (void*)(addr_t)r->ebx, 31) != 0 ||
+        copy_from_user(upass, (void*)(addr_t)r->ecx, 31) != 0) {
+        r->eax = -1;
+        return;
+    }
+    uname[31] = 0;
+    upass[31] = 0;
+
+    /* Global anti-spray cooldown: refuse all auth attempts kernel-wide
+     * while it is active, so cycling usernames cannot dodge per-account
+     * lockout. Policy + arithmetic live in rust/src/auth.rs. */
+    if (rust_auth_global_locked(now)) {
+        secure_zero(uname, sizeof(uname));
+        secure_zero(upass, sizeof(upass));
+        r->eax = -4;
+        return;
+    }
+
+    struct user_account *u = find_user_by_name(uname);
+    if (u && rust_auth_is_locked(u->auth_lockout_until, now)) {
+        secure_zero(uname, sizeof(uname));
+        secure_zero(upass, sizeof(upass));
+        r->eax = -4;
+        return;
+    }
+
+    if (verify_password(uname, upass)) {
+        rust_auth_global_on_success();
+        if (u) {
+            u->auth_fail_count = 0;
+            u->auth_lockout_until = 0;
+
+
+            tasks[get_current_task()].uid = u->uid;
+            tasks[get_current_task()].gid = u->gid;
+
+
+            {
+                char *mat = upass;
+                size_t mlen = kstrlen(upass);
+                derive_and_store_user_file_key(u->uid, mat, mlen);
+            }
+
+            if (r->edx) {
+                uint32_t uid = u->uid;
+                copy_to_user((void*)(addr_t)r->edx, &uid, sizeof(uid));
+            }
+            audit_log(AUDIT_AUTH, 0, 0, "login success");
+        }
+        r->eax = 0;
+    } else {
+        rust_auth_global_on_failure(now);
+        if (u) {
+            uint32_t new_count = u->auth_fail_count;
+            uint64_t new_lockout = 0;
+            rust_auth_on_failure(u->auth_fail_count, now, &new_count, &new_lockout);
+            u->auth_fail_count = new_count;
+            if (new_lockout) u->auth_lockout_until = (uint32_t)new_lockout;
+        }
+        audit_log(AUDIT_AUTH, 0, -1, "login failure");
+        r->eax = -1;
+    }
+    /* Don't leave the cleartext password (and username) sitting in the
+     * kernel stack frame after authentication completes. */
+    secure_zero(uname, sizeof(uname));
+    secure_zero(upass, sizeof(upass));
+}
+
+/* SYS_SUDO: re-auth the current user, then spawn an armed program as uid 0. */
+static void h_sudo(struct regs *r) {
+    uint32_t now = get_system_ticks();
+    struct user_account *cur_user = NULL;
+    uint32_t cur_uid = tasks[get_current_task()].uid;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (users[i].valid && users[i].uid == cur_uid) {
+            cur_user = &users[i];
+            break;
+        }
+    }
+    if (rust_auth_global_locked(now)) {
+        r->eax = -4;
+        return;
+    }
+    if (cur_user && rust_auth_is_locked(cur_user->auth_lockout_until, now)) {
+        r->eax = -4;
+        return;
+    }
+
+    char upass[32];
+    if (copy_from_user(upass, (void*)(addr_t)r->ebx, 31) != 0) {
+        secure_zero(upass, sizeof(upass));
+        r->eax = -1;
+        return;
+    }
+    upass[31] = 0;
+
+    struct user_account *cur = cur_user;
+    if (!cur) {
+        uint32_t cur_uid2 = tasks[get_current_task()].uid;
+        for (int i = 0; i < MAX_USERS; i++) {
+            if (users[i].valid && users[i].uid == cur_uid2) {
+                cur = &users[i];
+                break;
+            }
+        }
+    }
+    if (!cur) {
+        secure_zero(upass, sizeof(upass));
+        r->eax = -1;
+        return;
+    }
+
+    if (!verify_password(cur->name, upass)) {
+        rust_auth_global_on_failure(now);
+        if (cur_user) {
+            uint32_t new_count = cur_user->auth_fail_count;
+            uint64_t new_lockout = 0;
+            rust_auth_on_failure(cur_user->auth_fail_count, now, &new_count, &new_lockout);
+            cur_user->auth_fail_count = new_count;
+            if (new_lockout) cur_user->auth_lockout_until = (uint32_t)new_lockout;
+        }
+        secure_zero(upass, sizeof(upass));
+        r->eax = -2;
+        return;
+    }
+    rust_auth_global_on_success();
+    if (cur_user) {
+        cur_user->auth_fail_count = 0;
+        cur_user->auth_lockout_until = 0;
+    }
+
+
+    {
+        char *mat = upass;
+        size_t mlen = kstrlen(upass);
+        derive_and_store_user_file_key(cur->uid, mat, mlen);
+
+    }
+    /* Password material is no longer needed past key derivation; clear it
+     * from the kernel stack frame on every remaining exit path. */
+    secure_zero(upass, sizeof(upass));
+    audit_log(AUDIT_SUDO, 0, 0, "sudo success");
+
+    if (!program_armed) {
+        r->eax = -3;
+        return;
+    }
+
+    int pid = do_spawn();
+    if (pid > 0) {
+        tasks[pid].uid = 0;
+        tasks[pid].gid = 0;
+
+        /* Allocate the three fresh serials BEFORE taking cap_lock:
+         * cap_alloc_fresh_serial() grabs cap_lock itself and the lock
+         * is not recursive, so calling it inside the locked region
+         * (as this path previously did) deadlocks the kernel on the
+         * first sudo. Same ordering do_spawn uses. */
+        uint32_t s3 = cap_alloc_fresh_serial();
+        uint32_t s6 = cap_alloc_fresh_serial();
+        uint32_t s7 = cap_alloc_fresh_serial();
+
+        spin_lock(&cap_lock);
+        tasks[pid].cspace[3].type   = CAP_FRAME;
+        /* Least privilege: a memory frame needs only read/write/execute,
+         * not the mint/revoke/grant/audit bits CAP_RIGHT_ALL carried.
+         * Mask comes from rust/src/auth.rs (single source of truth). */
+        tasks[pid].cspace[3].rights = rust_sudo_frame_rights();
+        tasks[pid].cspace[3].object = USER_VIRT_BASE;
+        tasks[pid].cspace[3].badge  = 0;
+        tasks[pid].cspace[3].serial = s3;
+        tasks[pid].cspace[3].generation = 0;
+
+        tasks[pid].cspace[6].type   = CAP_USER;
+        tasks[pid].cspace[6].rights = CAP_RIGHT_ALL;
+        tasks[pid].cspace[6].object = 0;
+        tasks[pid].cspace[6].badge  = 0xC0DE0006U;
+        tasks[pid].cspace[6].serial = s6;
+        tasks[pid].cspace[6].generation = 0;
+
+        tasks[pid].cspace[7].type   = CAP_TCB;
+        tasks[pid].cspace[7].rights = CAP_RIGHT_ALL;
+        tasks[pid].cspace[7].object = pid;
+        tasks[pid].cspace[7].badge  = 0;
+        tasks[pid].cspace[7].serial = s7;
+        tasks[pid].cspace[7].generation = 0;
+        spin_unlock(&cap_lock);
+    }
+    r->eax = pid;
+}
+
+/* SYS_GET_PASS: read a line with masked echo; scrubs the scratch buffer. */
+static void h_get_pass(struct regs *r) {
+    void *user_buf = (void *)(addr_t)r->ebx;
+    uint32_t max_len = r->ecx;
+    if (max_len > 127) max_len = 127;
+
+    char line[128];
+    uint32_t len = 0;
+    char ch;
+
+    while (len < max_len) {
+        ch = console_getc();
+
+        if (ch == '\r' || ch == '\n') {
+            print("\n");
+            break;
+        }
+        if (ch == '\b' || ch == 0x7F) {
+            if (len > 0) { len--; print("\b \b"); }
+            continue;
+        }
+        if ((unsigned char)ch < 32) continue;
+
+        print("*");
+        line[len++] = ch;
+    }
+    line[len] = 0;
+
+    if (copy_to_user(user_buf, line, len + 1) != 0) {
+        for (uint32_t i = 0; i < 128; i++) line[i] = 0;
+        r->eax = -1;
+        return;
+    }
+
+    for (uint32_t i = 0; i < 128; i++) line[i] = 0;
+
+    r->eax = len;
+}
+
+/* SYS_READ_AUDIT: copy the audit ring buffer to userspace (needs slot-7 audit cap). */
+static void h_read_audit(struct regs *r) {
+    struct capability *c = cap_lookup(7, CAP_RIGHT_READ);
+    if (!c || c->type != CAP_AUDIT) {
+        r->eax = -1;
+        return;
+    }
+
+    struct audit_event *user_events = (struct audit_event *)(addr_t)r->ebx;
+    uint32_t max = r->ecx;
+    if (max > AUDIT_LOG_SIZE) max = AUDIT_LOG_SIZE;
+
+    uint32_t out = 0;
+    uint32_t start = (audit_head + AUDIT_LOG_SIZE - audit_count) % AUDIT_LOG_SIZE;
+
+    for (uint32_t i = 0; i < audit_count && out < max; i++) {
+        uint32_t idx = (start + i) % AUDIT_LOG_SIZE;
+        if (copy_to_user(&user_events[out], &audit_log_buffer[idx], sizeof(struct audit_event)) == 0) {
+            out++;
+        }
+    }
+    r->eax = out;
+}
+
+/* SYS_BLOCK_READ: raw block read (needs slot-7 CAP_BLOCK_DEV + uid 0). */
+static void h_block_read(struct regs *r) {
+    struct capability *blk = cap_lookup(7, CAP_BLOCK_DEV);
+    if (!blk) {
+        r->eax = -1;
+        return;
+    }
+    uint64_t block = ((uint64_t)r->ebx << 32) | r->ecx;
+    void *buf = (void*)(addr_t)r->edx;
+    uint32_t len = r->esi;
+    if (tasks[get_current_task()].uid != 0) {
+        r->eax = -2;
+        return;
+    }
+    uint8_t kbuf[BLOCK_SIZE];
+    uint32_t to = len > BLOCK_SIZE ? BLOCK_SIZE : len;
+    int rc = storage_block_read(block, kbuf);
+    if (rc == 0) {
+        if (copy_to_user(buf, kbuf, to) == 0) {
+            r->eax = to;
+        } else {
+            r->eax = -3;
+        }
+    } else {
+        r->eax = rc;
+    }
+}
+
+/* SYS_BLOCK_WRITE: raw block write (needs slot-7 CAP_BLOCK_DEV + uid 0). */
+static void h_block_write(struct regs *r) {
+    struct capability *blk = cap_lookup(7, CAP_BLOCK_DEV);
+    if (!blk) {
+        r->eax = -1;
+        return;
+    }
+    if (tasks[get_current_task()].uid != 0) {
+        r->eax = -2;
+        return;
+    }
+    uint64_t block = ((uint64_t)r->ebx << 32) | r->ecx;
+    const void *buf = (const void*)(addr_t)r->edx;
+    uint32_t len = r->esi;
+    uint8_t kbuf[BLOCK_SIZE];
+    uint32_t to = len > BLOCK_SIZE ? BLOCK_SIZE : len;
+    if (copy_from_user(kbuf, buf, to) != 0) {
+        r->eax = -3;
+        return;
+    }
+    int rc = storage_block_write(block, kbuf);
+    r->eax = (rc == 0) ? (int)to : rc;
+}
+
+/* SYS_REGISTER_FS_SERVER: register the caller as the fs server (needs admin cap). */
+static void h_register_fs_server(struct regs *r) {
+    struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
+    if (!admin || admin->type != CAP_USER) {
+        r->eax = -1;
+        return;
+    }
+    uint32_t ep_slot = r->ebx;
+    struct capability *ep = cap_lookup(ep_slot, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
+    if (!ep || ep->type != CAP_ENDPOINT) {
+        r->eax = -2;
+        return;
+    }
+    fs_server_task_id = get_current_task();
+    fs_server_listen_ep_idx = ep->object;
+    r->eax = 0;
+}
+
+/* SYS_CONNECT_FS_SERVER: mint an endpoint cap to the registered fs server. */
+static void h_connect_fs_server(struct regs *r) {
+    uint32_t dest_slot = r->ebx;
+    uint32_t rights = r->ecx;
+    if (fs_server_task_id < 0 || fs_server_listen_ep_idx < 0) {
+        r->eax = -1;
+        return;
+    }
+    if (dest_slot < 4 || dest_slot >= 256) {
+        r->eax = -2;
+        return;
+    }
+    struct capability *dest = &tasks[get_current_task()].cspace[dest_slot];
+    dest->type   = CAP_ENDPOINT;
+    dest->rights = rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT);
+    dest->object = fs_server_listen_ep_idx;
+    dest->badge  = 0xF51A0000U;
+    r->eax = 0;
+}
+
 void syscall_handler(struct regs *r) {
     if (get_current_task() < MAX_TASKS) {
         tasks[get_current_task()].in_kernel = 1;
@@ -1051,120 +1780,9 @@ void syscall_handler(struct regs *r) {
         case 0:
             yield();
             break;
-        case 3: {
-
-            struct capability *c = cap_lookup(8, CAP_RIGHT_READ);
-            if (!c) c = cap_lookup(3, CAP_RIGHT_READ);
-            if (!c) { r->eax = -1; break; }
-
-            void *user_dest = (void *)(addr_t)r->ebx;
-            uint32_t max_len = 127;
-            char line[128];
-            uint32_t len = 0;
-            char ch;
-
-            while (len < max_len) {
-                ch = console_getc();
-
-                if (ch == '\r' || ch == '\n') {
-                    print("\n");
-                    break;
-                }
-
-#ifdef DEBUG_SHELL
-                if (ch == 0x1B) {
-                    while ((inb(0x3FD) & 1) == 0) { yield(); }
-                    char seq1 = inb(0x3F8);
-                    while ((inb(0x3FD) & 1) == 0) { yield(); }
-                    char seq2 = inb(0x3F8);
-
-                    if (seq1 == '[') {
-                        if (seq2 == 'A') {
-                            if (history_count > 0) {
-                                if (history_pos < 0) history_pos = history_count - 1;
-                                else if (history_pos > 0) history_pos--;
-
-                                for (uint32_t i = 0; i < len; i++) {
-                                    print("\b \b");
-                                }
-                                len = 0;
-                                while (cmd_history[history_pos][len] && len < max_len - 1) {
-                                    line[len] = cmd_history[history_pos][len];
-                                    char echo[2] = {line[len], 0};
-                                    print(echo);
-                                    len++;
-                                }
-                                line[len] = 0;
-                            }
-                        } else if (seq2 == 'B') {
-                            if (history_pos >= 0) {
-                                history_pos++;
-                                if (history_pos >= history_count) {
-                                    history_pos = -1;
-                                    for (uint32_t i = 0; i < len; i++) print("\b \b");
-                                    len = 0;
-                                    line[0] = 0;
-                                } else {
-                                    for (uint32_t i = 0; i < len; i++) print("\b \b");
-                                    len = 0;
-                                    while (cmd_history[history_pos][len] && len < max_len - 1) {
-                                        line[len] = cmd_history[history_pos][len];
-                                        char echo[2] = {line[len], 0};
-                                        print(echo);
-                                        len++;
-                                    }
-                                    line[len] = 0;
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                }
-#endif
-                if ((unsigned char)ch < 32 && ch != '\b' && ch != 0x7F) {
-                    continue;
-                }
-
-                if (ch == '\b' || ch == 0x7F) {
-                    if (len > 0) {
-                        len--;
-                        print("\b \b");
-                    }
-                    continue;
-                }
-
-                char echo[2] = {ch, 0};
-                print(echo);
-                line[len++] = ch;
-            }
-
-            line[len] = 0;
-
-#ifdef DEBUG_SHELL
-            if (len > 0) {
-                if (history_count == HISTORY_SIZE) {
-                    for (int i = 0; i < HISTORY_SIZE - 1; i++) {
-                        for (int j = 0; j < CMD_MAX; j++) {
-                            cmd_history[i][j] = cmd_history[i+1][j];
-                        }
-                    }
-                    history_count--;
-                }
-                for (uint32_t j = 0; j < CMD_MAX && j <= len; j++) {
-                    cmd_history[history_count][j] = line[j];
-                }
-                history_count++;
-            }
-            history_pos = -1;
-#endif
-
-            if (copy_to_user(user_dest, line, len + 1) != 0) {
-                r->eax = -1;
-            } else {
-                r->eax = len;
-            }
+        case 3:
+            h_get_line(r);
             break;
-        }
         case 4: {
             bool ok = cap_mint(r->ebx, r->ecx, r->edx);
             r->eax = ok ? 0 : -1;
@@ -1202,22 +1820,9 @@ void syscall_handler(struct regs *r) {
             r->eax = 0;
             break;
         }
-        case 6: {
-            const char *info = "Horus v0.4 | per-task paging + cspaces | Rust validators";
-            /* Copy a zero-padded fixed-size buffer rather than 64 bytes straight
-             * off the string literal: the literal is shorter than 64 bytes, so
-             * the old copy leaked ~7 bytes of adjacent .rodata to userspace. */
-            char infobuf[64];
-            size_t ii = 0;
-            for (; ii < sizeof(infobuf) - 1 && info[ii]; ii++) infobuf[ii] = info[ii];
-            for (; ii < sizeof(infobuf); ii++) infobuf[ii] = 0;
-            if (copy_to_user((void*)(addr_t)r->ebx, infobuf, sizeof(infobuf)) == 0) {
-                r->eax = 0;
-            } else {
-                r->eax = -1;
-            }
+        case 6:
+            h_sysinfo(r);
             break;
-        }
         case 7: {
             char cmd[128];
             if (copy_from_user(cmd, (void*)(addr_t)r->ebx, 127) != 0) {
@@ -1232,78 +1837,17 @@ void syscall_handler(struct regs *r) {
 #endif
             break;
         }
-        case 10: {
-            int32_t increment = (int32_t)r->ebx;
-            if (increment == 0) {
-                r->eax = tasks[get_current_task()].heap_current;
-                break;
-            }
-
-            uint32_t new_current = tasks[get_current_task()].heap_current + increment;
-            if (new_current > tasks[get_current_task()].heap_end || new_current < tasks[get_current_task()].heap_start) {
-                r->eax = 0;
-            } else {
-                uint32_t old = tasks[get_current_task()].heap_current;
-                tasks[get_current_task()].heap_current = new_current;
-                r->eax = old;
-            }
+        case 10:
+            h_sbrk(r);
             break;
-        }
 
-        case 11: {
-            int fd = r->ebx;
-            void *buf = (void*)(addr_t)r->ecx;
-            size_t len = r->edx;
-
-                if (fd != 1) { r->eax = -1; break; }
-
-            char kbuf[256];
-            size_t to_copy = len > 255 ? 255 : len;
-            if (copy_from_user(kbuf, buf, to_copy) != 0) {
-                r->eax = -1;
-                break;
-            }
-            kbuf[to_copy] = 0;
-            print(kbuf);
-            r->eax = to_copy;
+        case 11:
+            h_write(r);
             break;
-        }
 
-        case 12: {
-            int fd = r->ebx;
-            void *buf = (void*)(addr_t)r->ecx;
-            size_t len = r->edx;
-
-            if (fd == 0) {
-                char line[128];
-                uint32_t got = 0;
-                while (got < len && got < 127) {
-                    char ch = console_getc();
-                    if (ch == '\r' || ch == '\n') { print("\n"); break; }
-                    if (ch == '\b' || ch == 0x7F) { if (got > 0) { got--; print("\b \b"); } continue; }
-                    char echo[2] = {ch, 0}; print(echo);
-                    line[got++] = ch;
-                }
-                line[got] = 0;
-                if (copy_to_user(buf, line, got + 1) != 0) r->eax = -1;
-                else r->eax = got;
-            } else if (fd >= 3) {
-                struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
-                if (!c) { r->eax = -1; break; }
-                char kbuf[256];
-                size_t to_read = len > 255 ? 255 : len;
-                int n = ramfs_read(fd, kbuf, to_read);
-                if (n > 0) {
-                    if (copy_to_user(buf, kbuf, n) == 0) r->eax = n;
-                    else r->eax = -1;
-                } else {
-                    r->eax = n;
-                }
-            } else {
-                r->eax = -1;
-            }
+        case 12:
+            h_read(r);
             break;
-        }
 
         case 13: {
             struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
@@ -1330,147 +1874,25 @@ void syscall_handler(struct regs *r) {
             break;
         }
 
-        case 16: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
-            if (!c) { r->eax = -1; break; }
-            void *user_buf = (void*)(addr_t)r->ebx;
-            size_t max_len = r->ecx;
-            char kbuf[256];
-            /* Honour the caller-supplied buffer size: format the listing into at
-             * most max_len bytes (capped by the kernel scratch buffer) so the
-             * subsequent copy_to_user never writes past the caller's buffer.
-             * ramfs_list guarantees a NUL within the size it is given, so
-             * n+1 <= cap holds. */
-            size_t cap = max_len < sizeof(kbuf) ? max_len : sizeof(kbuf);
-            if (cap == 0) { r->eax = 0; break; }
-            int n = ramfs_list(kbuf, cap);
-            if (n < 0) { r->eax = -1; break; }
-            if (copy_to_user(user_buf, kbuf, n+1) == 0) r->eax = n;
-            else r->eax = -1;
+        case 16:
+            h_fs_list(r);
             break;
-        }
 
-        case 14: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-            if (!c) {
-                r->eax = -1;
-                break;
-            }
-
-            uint32_t load_base = r->ebx;
-            uint32_t entry_offset = r->ecx;
-            (void)(r->edx);
-
-            int new_id = -1;
-            for (int i = 1; i < MAX_TASKS; i++) {
-                if (tasks[i].state == 0) {
-                    new_id = i;
-                    break;
-                }
-            }
-            if (new_id < 0) {
-                r->eax = -1;
-                break;
-            }
-
-            create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP);
-
-            tasks[new_id].heap_start = USER_HEAP_BASE + new_id * 0x10000;
-            tasks[new_id].heap_current = tasks[new_id].heap_start;
-            tasks[new_id].heap_end = tasks[new_id].heap_start + 0x10000;
-
-            tasks[new_id].name[0] = 's'; tasks[new_id].name[1] = 'p';
-            tasks[new_id].name[2] = 'a'; tasks[new_id].name[3] = 'w';
-            tasks[new_id].name[4] = 'n'; tasks[new_id].name[5] = '0' + new_id;
-            tasks[new_id].name[6] = 0;
-
-            r->eax = new_id;
+        case 14:
+            h_exec(r);
             break;
-        }
 
-        case 17: {
-            int tid = r->ebx;
-            if (tid < 0 || tid >= MAX_TASKS || tid == get_current_task() || tasks[tid].state == 0) {
-                r->eax = -1;
-                break;
-            }
-
-            tasks[tid].waiter = get_current_task();
-            tasks[get_current_task()].state = 0;
-
-            while (tasks[get_current_task()].state == 0) {
-                yield();
-            }
-
-            r->eax = 0;
+        case 17:
+            h_wait(r);
             break;
-        }
 
-        case 18: {
-            int tid = r->ebx;
-            struct task_info *out = (struct task_info*)(addr_t)r->ecx;
-
-            if (tid < 0 || tid >= MAX_TASKS) {
-                r->eax = -1;
-                break;
-            }
-
-            int is_privileged = 0;
-            struct capability *c = cap_lookup(6, CAP_RIGHT_ALL);
-            if (c && c->type == CAP_USER) is_privileged = 1;
-            if (!is_privileged) {
-                c = cap_lookup(7, CAP_RIGHT_READ);
-                if (c && c->type == CAP_AUDIT) is_privileged = 1;
-            }
-
-            if (!is_privileged && tid != get_current_task()) {
-                r->eax = -3;
-                break;
-            }
-
-            struct task_info info;
-            for (size_t z = 0; z < sizeof(info); z++) ((uint8_t*)&info)[z] = 0;
-            info.id = tid;
-            info.state = tasks[tid].state;
-            info.uid = tasks[tid].uid;
-            info.gid = tasks[tid].gid;
-            /* Do NOT leak the page-table physical base to ring-3: it reveals
-             * the physical memory layout and aids exploitation. Field is kept
-             * for ABI stability but always reported as 0; no consumer uses it. */
-            info.cr3 = 0;
-            info.heap_used = tasks[tid].heap_current - tasks[tid].heap_start;
-            for (int k = 0; k < 31 && tasks[tid].name[k]; k++)
-                info.name[k] = tasks[tid].name[k];
-            info.name[31] = 0;
-            info.eip = tasks[tid].eip;
-            info.blocked_on = tasks[tid].blocked_on;
-            info.blocked_on_notif = tasks[tid].blocked_on_notif;
-            info.in_kernel = tasks[tid].in_kernel;
-            info.caps_in_use = tasks[tid].caps_in_use;
-
-            if (copy_to_user(out, &info, sizeof(info)) == 0) r->eax = 0;
-            else r->eax = -1;
+        case 18:
+            h_task_info(r);
             break;
-        }
 
-        case 19: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-            if (!c) { r->eax = -1; break; }
-
-            uint32_t load_base = r->ebx;
-            uint32_t entry = r->ecx;
-
-            tasks[get_current_task()].heap_current = tasks[get_current_task()].heap_start;
-
-            
-            if (get_current_task() == 0) {
-                r->eax = -1;
-                break;
-            }
-            drop_to_ring3(load_base + entry, tasks[get_current_task()].esp);
-            r->eax = 0;
+        case 19:
+            h_run(r);
             break;
-        }
 
         case SYS_IPC_SEND: {
             struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
@@ -1512,29 +1934,9 @@ void syscall_handler(struct regs *r) {
             break;
         }
 
-        case SYS_RECEIVE_PROGRAM: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-            if (!c) { r->eax = -1; break; }
-
-            void *user_hdr = (void *)(addr_t)r->ebx;
-            struct program_header k_hdr;
-
-            int rc = do_receive_program(&k_hdr);
-            if (rc != 0) {
-                r->eax = rc;
-                break;
-            }
-
-            if (user_hdr) {
-                if (copy_to_user(user_hdr, &k_hdr, sizeof(k_hdr)) != 0) {
-                    r->eax = -3;
-                    break;
-                }
-            }
-
-            r->eax = 0;
+        case SYS_RECEIVE_PROGRAM:
+            h_receive_program(r);
             break;
-        }
 
         case SYS_SPAWN: {
             struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
@@ -1554,241 +1956,17 @@ void syscall_handler(struct regs *r) {
             break;
         }
 
-        case SYS_AUTH: {
-            uint32_t now = get_system_ticks();
-
-            char uname[32];
-            char upass[32];
-            if (copy_from_user(uname, (void*)(addr_t)r->ebx, 31) != 0 ||
-                copy_from_user(upass, (void*)(addr_t)r->ecx, 31) != 0) {
-                r->eax = -1;
-                break;
-            }
-            uname[31] = 0;
-            upass[31] = 0;
-
-            /* Global anti-spray cooldown: refuse all auth attempts kernel-wide
-             * while it is active, so cycling usernames cannot dodge per-account
-             * lockout. Policy + arithmetic live in rust/src/auth.rs. */
-            if (rust_auth_global_locked(now)) {
-                secure_zero(uname, sizeof(uname));
-                secure_zero(upass, sizeof(upass));
-                r->eax = -4;
-                break;
-            }
-
-            struct user_account *u = find_user_by_name(uname);
-            if (u && rust_auth_is_locked(u->auth_lockout_until, now)) {
-                secure_zero(uname, sizeof(uname));
-                secure_zero(upass, sizeof(upass));
-                r->eax = -4;
-                break;
-            }
-
-            if (verify_password(uname, upass)) {
-                rust_auth_global_on_success();
-                if (u) {
-                    u->auth_fail_count = 0;
-                    u->auth_lockout_until = 0;
-
-
-                    tasks[get_current_task()].uid = u->uid;
-                    tasks[get_current_task()].gid = u->gid;
-
-
-                    {
-                        char *mat = upass; 
-                        size_t mlen = kstrlen(upass);
-                        derive_and_store_user_file_key(u->uid, mat, mlen);
-                    }
-
-                    if (r->edx) {
-                        uint32_t uid = u->uid;
-                        copy_to_user((void*)(addr_t)r->edx, &uid, sizeof(uid));
-                    }
-                    audit_log(AUDIT_AUTH, 0, 0, "login success");
-                }
-                r->eax = 0;
-            } else {
-                rust_auth_global_on_failure(now);
-                if (u) {
-                    uint32_t new_count = u->auth_fail_count;
-                    uint64_t new_lockout = 0;
-                    rust_auth_on_failure(u->auth_fail_count, now, &new_count, &new_lockout);
-                    u->auth_fail_count = new_count;
-                    if (new_lockout) u->auth_lockout_until = (uint32_t)new_lockout;
-                }
-                audit_log(AUDIT_AUTH, 0, -1, "login failure");
-                r->eax = -1;
-            }
-            /* Don't leave the cleartext password (and username) sitting in the
-             * kernel stack frame after authentication completes. */
-            secure_zero(uname, sizeof(uname));
-            secure_zero(upass, sizeof(upass));
+        case SYS_AUTH:
+            h_auth(r);
             break;
-        }
 
-        case SYS_SUDO: {
-            uint32_t now = get_system_ticks();
-            struct user_account *cur_user = NULL;
-            uint32_t cur_uid = tasks[get_current_task()].uid;
-            for (int i = 0; i < MAX_USERS; i++) {
-                if (users[i].valid && users[i].uid == cur_uid) {
-                    cur_user = &users[i];
-                    break;
-                }
-            }
-            if (rust_auth_global_locked(now)) {
-                r->eax = -4;
-                break;
-            }
-            if (cur_user && rust_auth_is_locked(cur_user->auth_lockout_until, now)) {
-                r->eax = -4;
-                break;
-            }
-
-            char upass[32];
-            if (copy_from_user(upass, (void*)(addr_t)r->ebx, 31) != 0) {
-                secure_zero(upass, sizeof(upass));
-                r->eax = -1;
-                break;
-            }
-            upass[31] = 0;
-
-            struct user_account *cur = cur_user;
-            if (!cur) {
-                uint32_t cur_uid2 = tasks[get_current_task()].uid;
-                for (int i = 0; i < MAX_USERS; i++) {
-                    if (users[i].valid && users[i].uid == cur_uid2) {
-                        cur = &users[i];
-                        break;
-                    }
-                }
-            }
-            if (!cur) {
-                secure_zero(upass, sizeof(upass));
-                r->eax = -1;
-                break;
-            }
-
-            if (!verify_password(cur->name, upass)) {
-                rust_auth_global_on_failure(now);
-                if (cur_user) {
-                    uint32_t new_count = cur_user->auth_fail_count;
-                    uint64_t new_lockout = 0;
-                    rust_auth_on_failure(cur_user->auth_fail_count, now, &new_count, &new_lockout);
-                    cur_user->auth_fail_count = new_count;
-                    if (new_lockout) cur_user->auth_lockout_until = (uint32_t)new_lockout;
-                }
-                secure_zero(upass, sizeof(upass));
-                r->eax = -2;
-                break;
-            }
-            rust_auth_global_on_success();
-            if (cur_user) {
-                cur_user->auth_fail_count = 0;
-                cur_user->auth_lockout_until = 0;
-            }
-
-            
-            {
-                char *mat = upass;
-                size_t mlen = kstrlen(upass);
-                derive_and_store_user_file_key(cur->uid, mat, mlen);
-
-            }
-            /* Password material is no longer needed past key derivation; clear it
-             * from the kernel stack frame on every remaining exit path. */
-            secure_zero(upass, sizeof(upass));
-            audit_log(AUDIT_SUDO, 0, 0, "sudo success");
-
-            if (!program_armed) {
-                r->eax = -3;
-                break;
-            }
-
-            int pid = do_spawn();
-            if (pid > 0) {
-                tasks[pid].uid = 0;
-                tasks[pid].gid = 0;
-
-                /* Allocate the three fresh serials BEFORE taking cap_lock:
-                 * cap_alloc_fresh_serial() grabs cap_lock itself and the lock
-                 * is not recursive, so calling it inside the locked region
-                 * (as this path previously did) deadlocks the kernel on the
-                 * first sudo. Same ordering do_spawn uses. */
-                uint32_t s3 = cap_alloc_fresh_serial();
-                uint32_t s6 = cap_alloc_fresh_serial();
-                uint32_t s7 = cap_alloc_fresh_serial();
-
-                spin_lock(&cap_lock);
-                tasks[pid].cspace[3].type   = CAP_FRAME;
-                /* Least privilege: a memory frame needs only read/write/execute,
-                 * not the mint/revoke/grant/audit bits CAP_RIGHT_ALL carried.
-                 * Mask comes from rust/src/auth.rs (single source of truth). */
-                tasks[pid].cspace[3].rights = rust_sudo_frame_rights();
-                tasks[pid].cspace[3].object = USER_VIRT_BASE;
-                tasks[pid].cspace[3].badge  = 0;
-                tasks[pid].cspace[3].serial = s3;
-                tasks[pid].cspace[3].generation = 0;
-
-                tasks[pid].cspace[6].type   = CAP_USER;
-                tasks[pid].cspace[6].rights = CAP_RIGHT_ALL;
-                tasks[pid].cspace[6].object = 0;
-                tasks[pid].cspace[6].badge  = 0xC0DE0006U;
-                tasks[pid].cspace[6].serial = s6;
-                tasks[pid].cspace[6].generation = 0;
-
-                tasks[pid].cspace[7].type   = CAP_TCB;
-                tasks[pid].cspace[7].rights = CAP_RIGHT_ALL;
-                tasks[pid].cspace[7].object = pid;
-                tasks[pid].cspace[7].badge  = 0;
-                tasks[pid].cspace[7].serial = s7;
-                tasks[pid].cspace[7].generation = 0;
-                spin_unlock(&cap_lock);
-            }
-            r->eax = pid;
+        case SYS_SUDO:
+            h_sudo(r);
             break;
-        }
 
-        case SYS_GET_PASS: {
-            void *user_buf = (void *)(addr_t)r->ebx;
-            uint32_t max_len = r->ecx;
-            if (max_len > 127) max_len = 127;
-
-            char line[128];
-            uint32_t len = 0;
-            char ch;
-
-            while (len < max_len) {
-                ch = console_getc();
-
-                if (ch == '\r' || ch == '\n') {
-                    print("\n");
-                    break;
-                }
-                if (ch == '\b' || ch == 0x7F) {
-                    if (len > 0) { len--; print("\b \b"); }  
-                    continue;
-                }
-                if ((unsigned char)ch < 32) continue;
-
-                print("*");                                  
-                line[len++] = ch;
-            }
-            line[len] = 0;
-
-            if (copy_to_user(user_buf, line, len + 1) != 0) {
-                for (uint32_t i = 0; i < 128; i++) line[i] = 0;
-                r->eax = -1;
-                break;
-            }
-
-            for (uint32_t i = 0; i < 128; i++) line[i] = 0;
-
-            r->eax = len;
+        case SYS_GET_PASS:
+            h_get_pass(r);
             break;
-        }
 
         case SYS_USERADD: {
             uint32_t uid = r->ebx;
@@ -1830,29 +2008,9 @@ void syscall_handler(struct regs *r) {
             break;
         }
 
-        case SYS_READ_AUDIT: {
-            struct capability *c = cap_lookup(7, CAP_RIGHT_READ);
-            if (!c || c->type != CAP_AUDIT) {
-                r->eax = -1;
-                break;
-            }
-
-            struct audit_event *user_events = (struct audit_event *)(addr_t)r->ebx;
-            uint32_t max = r->ecx;
-            if (max > AUDIT_LOG_SIZE) max = AUDIT_LOG_SIZE;
-
-            uint32_t out = 0;
-            uint32_t start = (audit_head + AUDIT_LOG_SIZE - audit_count) % AUDIT_LOG_SIZE;
-
-            for (uint32_t i = 0; i < audit_count && out < max; i++) {
-                uint32_t idx = (start + i) % AUDIT_LOG_SIZE;
-                if (copy_to_user(&user_events[out], &audit_log_buffer[idx], sizeof(struct audit_event)) == 0) {
-                    out++;
-                }
-            }
-            r->eax = out;
+        case SYS_READ_AUDIT:
+            h_read_audit(r);
             break;
-        }
 
         case SYS_FS_MINT_FILE: {
             r->eax = sys_fs_mint_file(r->ebx, r->ecx, r->edx);
@@ -1919,95 +2077,21 @@ void syscall_handler(struct regs *r) {
             break;
         }
 
-        case SYS_BLOCK_READ: {
-            struct capability *blk = cap_lookup(7, CAP_BLOCK_DEV);
-            if (!blk) {
-                r->eax = -1;
-                break;
-            }
-            uint64_t block = ((uint64_t)r->ebx << 32) | r->ecx;
-            void *buf = (void*)(addr_t)r->edx;
-            uint32_t len = r->esi;
-            if (tasks[get_current_task()].uid != 0) {
-                r->eax = -2;
-                break;
-            }
-            uint8_t kbuf[BLOCK_SIZE];
-            uint32_t to = len > BLOCK_SIZE ? BLOCK_SIZE : len;
-            int rc = storage_block_read(block, kbuf);
-            if (rc == 0) {
-                if (copy_to_user(buf, kbuf, to) == 0) {
-                    r->eax = to;
-                } else {
-                    r->eax = -3;
-                }
-            } else {
-                r->eax = rc;
-            }
+        case SYS_BLOCK_READ:
+            h_block_read(r);
             break;
-        }
 
-        case SYS_BLOCK_WRITE: {
-            struct capability *blk = cap_lookup(7, CAP_BLOCK_DEV);
-            if (!blk) {
-                r->eax = -1;
-                break;
-            }
-            if (tasks[get_current_task()].uid != 0) {
-                r->eax = -2;
-                break;
-            }
-            uint64_t block = ((uint64_t)r->ebx << 32) | r->ecx;
-            const void *buf = (const void*)(addr_t)r->edx;
-            uint32_t len = r->esi;
-            uint8_t kbuf[BLOCK_SIZE];
-            uint32_t to = len > BLOCK_SIZE ? BLOCK_SIZE : len;
-            if (copy_from_user(kbuf, buf, to) != 0) {
-                r->eax = -3;
-                break;
-            }
-            int rc = storage_block_write(block, kbuf);
-            r->eax = (rc == 0) ? (int)to : rc;
+        case SYS_BLOCK_WRITE:
+            h_block_write(r);
             break;
-        }
 
-        case SYS_REGISTER_FS_SERVER: {
-            struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
-            if (!admin || admin->type != CAP_USER) {
-                r->eax = -1;
-                break;
-            }
-            uint32_t ep_slot = r->ebx;
-            struct capability *ep = cap_lookup(ep_slot, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
-            if (!ep || ep->type != CAP_ENDPOINT) {
-                r->eax = -2;
-                break;
-            }
-            fs_server_task_id = get_current_task();
-            fs_server_listen_ep_idx = ep->object;
-            r->eax = 0;
+        case SYS_REGISTER_FS_SERVER:
+            h_register_fs_server(r);
             break;
-        }
 
-        case SYS_CONNECT_FS_SERVER: {
-            uint32_t dest_slot = r->ebx;
-            uint32_t rights = r->ecx;
-            if (fs_server_task_id < 0 || fs_server_listen_ep_idx < 0) {
-                r->eax = -1;
-                break;
-            }
-            if (dest_slot < 4 || dest_slot >= 256) {
-                r->eax = -2;
-                break;
-            }
-            struct capability *dest = &tasks[get_current_task()].cspace[dest_slot];
-            dest->type   = CAP_ENDPOINT;
-            dest->rights = rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT);
-            dest->object = fs_server_listen_ep_idx;
-            dest->badge  = 0xF51A0000U;
-            r->eax = 0;
+        case SYS_CONNECT_FS_SERVER:
+            h_connect_fs_server(r);
             break;
-        }
 
         default:
             r->eax = -1;

@@ -8,14 +8,14 @@ export SOURCE_DATE_EPOCH ?= 1609459200
 
 ifeq ($(BITS),32)
     CFLAGS = -m32 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
-             -Wall -Wextra -Wformat -Wformat-security -O2 -pipe \
+             -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
              -I src/include -std=gnu99 -fno-builtin -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
     ASFLAGS = -m32 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c
     LDFLAGS = -T linker.ld -m elf_i386 -nostdlib -static --build-id=none
     RUST_TARGET ?= i686-unknown-linux-gnu
 else
     CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
-             -Wall -Wextra -Wformat -Wformat-security -O2 -pipe \
+             -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
              -I src/include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
     ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c
     LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none

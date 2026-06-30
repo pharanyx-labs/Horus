@@ -106,10 +106,18 @@ make clean
 
 ### `make test`
 
-Runs the Rust unit tests (currently minimal — see [TESTS.md](../TESTS.md)), then does a clean full build to verify compilation.
+Runs the Rust unit tests (41 across the security core — see [TESTS.md](../TESTS.md)), then does a clean full build to verify compilation.
 
 ```bash
 make test
+```
+
+### `make smoke`
+
+Boots the kernel headless under QEMU and asserts it reaches the ring-3 shell banner with no fault/panic — the runtime boot check. Builds `boot.iso` first; needs `qemu-system-x86_64`. `SMOKE_TIMEOUT=<seconds>` overrides the default 40 s wait.
+
+```bash
+make smoke
 ```
 
 ### `make reproducible-build`

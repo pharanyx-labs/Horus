@@ -35,7 +35,8 @@ Horus boots, runs userspace, and enforces capability-based access control. A num
  │                                                          │
  │  ┌────────────────────────────────────────────────────┐  │
  │  │        Rust Security Core  (no_std, safe Rust)     │  │
- │  │    capability.rs     memory.rs     crypto.rs       │  │
+ │  │  capability.rs  memory.rs  sha256.rs  rng.rs       │  │
+ │  │  aead.rs  auth.rs  ps.rs  lib.rs (page/W^X policy) │  │
  │  └────────────────────────────────────────────────────┘  │
  │                                                          │
  │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
@@ -67,8 +68,11 @@ Horus boots, runs userspace, and enforces capability-based access control. A num
 | Audit logging | Working |
 | Keyboard input (PS/2) | Working |
 | Round-robin task scheduling | Working |
-| SMEP / SMAP / NX hardening (when CPU advertises) | Working |
-| Rust security-core unit tests + GitHub Actions CI | Working |
+| SMEP / SMAP hardening (when CPU advertises) | Working |
+| W^X — non-executable stacks + ELF `p_flags` honoured | Working |
+| Table-driven syscall dispatch (central capability gate) | Working |
+| Rust security-core unit tests (41) + GitHub Actions CI | Working |
+| Headless QEMU smoke-boot test (`make smoke`) | Working |
 | Reproducible builds | Working |
 | Userspace shell and commands | Partial |
 | Endpoint-based IPC | Partial |

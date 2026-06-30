@@ -15,9 +15,11 @@ Several items from the phases below have since landed on `main`. They are kept i
 - **Hardware entropy** — a ChaCha20 CSPRNG seeded from RDRAND and timing jitter; raw TSC is no longer used as secret randomness.
 - **Per-spawn stack/heap ASLR** — seeded from the CSPRNG (load-base / PIE randomisation still pending).
 - **Audited-standard cryptography** — primitives moved to `sha256.rs` / `rng.rs`, and bulk encryption-at-rest is now a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`) with per-write random nonces and per-block HKDF subkeys, replacing a hand-rolled routine that was not actually AES. (`crypto.rs` remains intentionally empty.)
-- **Kernel hardening** — SMEP/SMAP/NX enabled; capability "no ambient authority" guard; IPC use/revoke TOCTOU revalidation; C/Rust FFI layout assertions; audit logging of capability mutations.
+- **Kernel hardening** — SMEP/SMAP enabled; capability "no ambient authority" guard; IPC use/revoke TOCTOU revalidation; C/Rust FFI layout assertions; audit logging of capability mutations.
+- **W^X for user memory** — non-executable user stacks, and the ELF loader honours `PT_LOAD` `p_flags` (code R+X, data/rodata R[+W]+NX) via the PTE NX bit. Policy lives in Rust and is unit-tested.
+- **Table-driven syscall dispatch** — one descriptor table enforces each syscall's required capability centrally; unlisted numbers fail closed; a compile-time assertion pins the table to the syscall number space. Fixed a ring-0 wild-write in the ELF loader and a `sudo` lock-ordering deadlock along the way.
 - **Attack-surface reduction** — removed the ring-3 storage-backend callback that the kernel invoked from ring 0 (`SYS_REGISTER_STORAGE_BACKEND` now fails closed); closed several information-leak, timing, and buffer-handling issues in the syscall and authentication paths.
-- **CI** — GitHub Actions runs the unit tests, `clippy -D warnings`, a kernel/ISO build, and a reproducible-build check on every push/PR. (Phase 6 integration tests and fuzzing are still pending.)
+- **CI + smoke-boot** — GitHub Actions runs the unit tests, `clippy -D warnings`, a kernel/ISO build, a **headless QEMU smoke-boot** (boots to the shell banner with no fault), a reproducible-build check, and a security-scan/SBOM job on every push/PR. (Deeper scripted integration tests and fuzzing are still pending.)
 
 ---
 
@@ -75,7 +77,7 @@ These items address the roughest edges in what already exists. They are good sta
 
 ## Phase 6 — Testing and verification
 
-- **Integration test suite**: Automated tests that boot Horus under QEMU, execute a sequence of operations, and verify the output. Should run in CI on every pull request.
+- **Integration test suite**: A headless smoke-boot test (`make smoke`) now runs in CI and asserts the kernel boots to userspace with no fault. The remaining work is a harness that *drives* scripted sessions (login, capability denials, ELF-under-W^X) and asserts on the responses.
 - **Fuzzing**: Apply coverage-guided fuzzing (libFuzzer or AFL++) to the syscall interface.
 - **TLA+ model coverage**: Extend the existing formal specifications (`docs/cap_algebra.tla`, `docs/paging_isolation.tla`) to cover IPC, the scheduler, and SMP interactions.
 - **Formal verification of the Rust core**: Explore using a verification tool (Verus, Kani) on the capability operations in `rust/src/capability.rs`.

@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **31 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). There is still **no booted-kernel integration test or fuzz harness** — that is the highest-value remaining contribution.
+The Rust security core has **41 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). A **headless QEMU smoke-boot test** (`make smoke`) now boots the kernel and asserts it reaches userspace with no fault — the first runtime test. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
 
 ---
 
@@ -22,6 +22,16 @@ This runs the unit tests across the security core:
 - `rng.rs` — ChaCha20 against the RFC 8439 vector, reseed behaviour
 - `sha256.rs` — SHA-256 / HMAC / HKDF / PBKDF2 against published known-answer vectors
 - `aead.rs` — the ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD: seal/open round-trip, tampered-ciphertext and tampered-tag rejection (fail-closed), wrong-AAD rejection, and nonce separation
+- `lib.rs` (W^X) — `rust_user_page_is_noexec`: stack windows are non-executable, image/heap/code stay executable
+- `ps.rs` — task state-name labels
+
+### Headless smoke-boot test
+
+```bash
+make smoke          # SMOKE_TIMEOUT=<seconds> to override the default 40
+```
+
+Boots the kernel under QEMU with no display (`tools/smoke_test.sh`, software TCG so it needs no host KVM), captures the serial port, and asserts the ring-3 shell banner appears with no `PAGE FAULT` / CPU exception / `PANIC` and no triple-fault. Reaching the banner proves the whole boot path end to end: kernel init, the loader, per-task paging including the W^X stack, dropping to ring 3 and executing there, the syscall dispatch table servicing `SYS_WRITE`, and console output.
 
 ### Full build test
 
@@ -49,11 +59,15 @@ help
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs three jobs, all hard gates, using only first-party actions:
+`.github/workflows/ci.yml` runs five jobs, all hard gates:
 
 1. **rust** — `cargo test --release` and `cargo clippy --all-targets -- -D warnings`
 2. **kernel** — builds `kernel.elf` and a bootable ISO (x86_64) and uploads them as artifacts
-3. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
+3. **smoke** — installs QEMU and runs `make smoke` (headless boot to the shell banner)
+4. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
+5. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM
+
+The first four use only first-party / pinned actions; the security job additionally installs third-party scanners.
 
 ---
 
@@ -61,14 +75,13 @@ help
 
 Already covered by the unit tests above: rights-subset minting, cross-task / system-wide revocation, stale-generation rejection, the refcount trust boundary, and the demand-paging policy. The gaps that remain:
 
-### Booted-kernel integration tests
+### Deeper booted-kernel integration tests
 
-A harness that boots Horus under QEMU `-nographic`, drives the serial port, and asserts on output. A Python `pexpect` script is a natural fit. Suggested cases:
+The `make smoke` test already covers "boot completes and userspace runs with no fault." The remaining gap is a harness that *drives* the serial port through scripted sessions and asserts on the responses (a Python `pexpect` script is a natural fit). Suggested cases:
 
-- Boot completes and the shell prompt appears
 - `whoami` returns `root` after a successful root login; a wrong password is rejected
 - Accessing a resource without the required capability returns an error
-- A userspace page fault does not take down the kernel
+- An ELF loaded through `SYS_RECEIVE_PROGRAM` runs under W^X (code executes; a write to a code page faults)
 
 ### Build-matrix coverage
 

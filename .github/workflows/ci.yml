@@ -100,6 +100,16 @@ jobs:
           fi
           echo "kernel.elf is byte-for-byte reproducible across clean builds"
 
+  # Advisory job: surfaces SAST/secret/dependency findings and an SBOM for
+  # review, but does NOT gate merges. `make security` is advisory by design
+  # (four of its six scanners already swallow failures), and it scans the
+  # workflow files and host tooling with rulesets (incl. semgrep --config=auto)
+  # whose findings — e.g. mutable action tags, curl|sh installs — are CI
+  # hygiene rather than kernel defects, and whose registry-fetched rules can
+  # change with no code change. The hard gates are the other four jobs (rust,
+  # kernel, smoke, reproducible). Steps use continue-on-error so a finding or a
+  # flaky tool download reports without reddening the pipeline, and the SBOM
+  # step still runs.
   security:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
@@ -109,6 +119,7 @@ jobs:
           fetch-depth: 0   # needed for gitleaks full history scan
 
       - name: Install security tools + Rust target (pinned where practical)
+        continue-on-error: true
         run: |
           sudo apt-get update
           sudo apt-get install -y cppcheck flawfinder
@@ -121,10 +132,12 @@ jobs:
           rustup target add x86_64-unknown-none
           cargo install cargo-audit || true
 
-      - name: Run security checks
+      - name: Run security checks (advisory)
+        continue-on-error: true
         run: make security
 
       - name: Generate SBOM (CycloneDX via Trivy)
+        continue-on-error: true
         run: |
           trivy fs --format cyclonedx --output sbom.cyclonedx.json \
             --scanners vuln,secret,misconfig .

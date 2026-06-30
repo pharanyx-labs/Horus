@@ -51,9 +51,11 @@ Both targets are supported in the same codebase via `BITS=32` / `BITS=64` build 
 
 The kernel uses **recursive page table mapping**: PML4 entry 510 (64-bit) or PDE entry 1023 (32-bit) points back at the page table root. This gives the kernel a fixed virtual window to read and write any page table entry without a separate mapping.
 
-**Copy-on-write** is implemented at the page level. Pages shared after a fork are marked `PAGE_COW`. On the first write fault, `rust_handle_demand_page_fault()` allocates a fresh physical page, copies the content, and remaps the faulting address. Physical pages carry reference counts maintained in Rust (`rust_page_ref_inc`, `rust_page_ref_dec`).
+**Copy-on-write** is implemented at the page level. Shared pages are marked `PAGE_COW`. On the first write fault, `rust_handle_demand_page_fault()` allocates a fresh physical page, copies the content, and remaps the faulting address (preserving the page's NX bit). Physical pages carry reference counts maintained in Rust (`rust_page_ref_inc`, `rust_page_ref_dec`). The COW-copy-vs-demand-zero decision logic is unit-tested.
 
-**ASLR**: load address randomisation is seeded from TSC entropy at boot. The infrastructure is in place; full enforcement is an open work item.
+**W^X**: `EFER.NXE` is enabled at boot and the kernel uses the PTE NX bit (63) to keep writable pages non-executable. User stacks (low and high ASLR) are mapped no-execute. The ELF loader honours each `PT_LOAD` segment's `p_flags`, mapping code read+execute and data/rodata read[+write]+NX; the policy decision (`rust_user_page_is_noexec`) lives in Rust and is unit-tested. The flat-binary fallback path (used by the shipped userspace binaries, which are not ELF) keeps its image executable.
+
+**ASLR**: per-spawn stack top and heap gap are randomised from the CSPRNG. Load-base randomisation (PIE userspace) is still an open work item.
 
 ---
 
@@ -138,6 +140,8 @@ The basic send/receive/call/reply cycle is implemented. The call/reply path (`SY
 
 Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C calling convention on the stack or in registers. There are approximately 51 defined syscall numbers.
 
+Dispatch is **table-driven**: `syscall_handler` indexes a `syscall_table[]` of descriptors `{ handler, slot, rights, type }`, validates the number, and — for syscalls whose authority is a single fixed capability — enforces that capability in one central place before calling the handler. A number with no entry (including the reserved/gap numbers below) fails closed. A `_Static_assert` pins the table size to the highest syscall number, so a syscall cannot be added without a table slot. Syscalls with dynamic or self-authorising policy (the capability ops, the FS ops, auth/sudo, user management) carry no fixed slot and authorise inside their handler or the helper they call.
+
 Selected syscalls by category:
 
 Numbers are the authoritative values from `include/syscall.h`. (Numbers 1/`SYS_PRINT`, 2/`SYS_EXIT`, 20/`SYS_GETPID` are defined but not dispatched by the current handler.)
@@ -174,9 +178,9 @@ Numbers are the authoritative values from `include/syscall.h`. (Numbers 1/`SYS_P
 
 ### User database
 
-Up to 32 users are stored in a kernel-managed table, serialised to the RAM filesystem as a `passwd` file. Each entry holds: username, UID, GID, home directory path, shell path, a random per-user salt, a password hash, and an authentication failure counter.
+Up to 32 users are stored in a kernel-managed table, serialised to the RAM filesystem as a `passwd` file. Each entry holds: username, UID, GID, home directory path, shell path, a random per-user salt, a password hash, and an authentication failure counter. The serialised table is authenticated with an HMAC-SHA256 tag keyed by the per-boot pepper.
 
-Password hashing uses a custom 4,096-round XOR-rotate mixing function over the password concatenated with the salt and a kernel pepper. This is not a standard algorithm. See [LIMITATIONS.md](LIMITATIONS.md) for the security implications.
+Password hashing is **PBKDF2-HMAC-SHA256** (RFC 8018, 120,000 iterations), implemented in safe Rust (`rust/src/sha256.rs`), over the password with the per-user random salt and a per-boot secret pepper folded in; the raw 32-byte derived key is stored. Verification runs in constant time and is equalised so a missing username cannot be distinguished by timing. (This replaced an earlier custom XOR-rotate scheme.) Lockout arithmetic and a global anti-spray throttle live in `rust/src/auth.rs`.
 
 ### Audit log
 
@@ -192,10 +196,15 @@ The Rust crate at `rust/` compiles to a static library (`libhorus_shell.a`) that
 |---|---|
 | `capability.rs` | Capability mint, transfer, move, revoke, and lineage management |
 | `memory.rs` | Physical page reference counting and validation |
-| `lib.rs` | Page fault validation, demand-paging decisions, command token parsing |
-| `crypto.rs` | Placeholder for future cryptographic primitives |
+| `lib.rs` | Page-fault validation, demand-paging decisions, W^X page policy (`rust_user_page_is_noexec`), command token parsing |
+| `sha256.rs` | SHA-256, HMAC-SHA256, HKDF-SHA256, PBKDF2-HMAC-SHA256 |
+| `rng.rs` | ChaCha20 fast-key-erasure CSPRNG; RDRAND + timing-jitter seeding |
+| `aead.rs` | ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (encryption-at-rest) |
+| `auth.rs` | Auth/sudo lockout + anti-spray throttle; least-privilege sudo frame rights |
+| `ps.rs` | Task state-name labels for the `ps` renderers |
+| `crypto.rs` | Intentionally empty — the primitives live in the modules above |
 
-The Rust code is safe Rust throughout. The FFI boundary is the only place `unsafe` appears, and it is confined to the C-side shim files.
+The Rust code is safe Rust throughout, with one deliberate exception: two FFI entry points that dereference C-supplied raw pointers (`rust_cap_has_rights`, `rust_handle_command`) are marked `unsafe extern "C"` with documented `# Safety` contracts. All other `unsafe` is confined to the C-side shim files.
 
 ---
 
@@ -215,7 +224,9 @@ Reference checksums of a known-good build are stored in `.build1.sha` and `.buil
 - **Transitive revocation** — revoking a capability immediately invalidates all capabilities derived from it, across all tasks
 - **Use-after-revoke prevention** — lineage generations make a revoked capability slot invalid even if its bit pattern is retained
 - **Primordial capability protection** — system-critical root capabilities cannot be revoked by any userspace path
-- **Hardware user/kernel isolation** — Ring 0 / Ring 3 boundary enforced by the CPU
+- **Hardware user/kernel isolation** — Ring 0 / Ring 3 boundary enforced by the CPU; SMEP/SMAP enabled when advertised
+- **W^X for user memory** — stacks are non-executable and ELF segments honour their `p_flags`, so a writable page is never executable
+- **Centralised syscall authorisation** — one table-driven choke point enforces the required capability; an unlisted syscall number fails closed
 
 ### What the design does not yet provide
 

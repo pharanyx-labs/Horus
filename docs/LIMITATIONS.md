@@ -12,7 +12,8 @@ These subsystems are functional in the current codebase:
 
 - **Boot sequence** — Multiboot boot via GRUB2, 32-bit and 64-bit
 - **VGA terminal** — text mode, colour output, kernel log buffer, serial mirror
-- **Hardware isolation** — Ring 0/Ring 3 separation, per-task page tables, user/kernel memory split. SMEP and SMAP are enabled when the CPU advertises them (ring 0 cannot execute or casually read user pages; user copies go through a kernel mapping rather than the user mapping), the NX bit is honoured (`EFER.NXE`), and the boot CPU brings these up after feature detection.
+- **Hardware isolation** — Ring 0/Ring 3 separation, per-task page tables, user/kernel memory split. SMEP and SMAP are enabled when the CPU advertises them (ring 0 cannot execute or casually read user pages; user copies go through a kernel mapping rather than the user mapping), and the boot CPU brings these up after feature detection.
+- **W^X for user memory** — `EFER.NXE` is on and the kernel sets the PTE NX bit so writable pages are never executable: user stacks are mapped non-executable, and the ELF loader honours each `PT_LOAD` segment's `p_flags` (code read+execute, data/rodata read[+write]+no-execute). The W^X policy decision lives in Rust and is unit-tested; the live shell boot (which runs through the flat-binary fallback) is covered by the smoke-boot test.
 - **Capability mint, transfer, and revoke** — the core capability operations work, including transitive revocation across every task's cspace and the kernel root cnode. Revocation requires `CAP_RIGHT_REVOKE` on the target (mint/transfer require `CAP_RIGHT_MINT`); a "no ambient authority" guard refuses cap operations from any non-kernel task that lacks its own cspace.
 - **Lineage tracking** — use-after-revoke is prevented via per-lineage generation counters; a looked-up capability can be snapshotted and re-validated at point of use (wired into the IPC send/recv paths to close a lookup/use TOCTOU window across the cooperative yield).
 - **Capability/FFI integrity** — the C `capability_t` and Rust `Capability` layouts are pinned by mirrored compile-time assertions; the refcount table is registered once and every later inc/dec must present the exact (pointer, length) or is refused.
@@ -111,7 +112,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are mostly bare integers; only a few (e.g. `SYS_ERR_NOSYS`) are named.
 - The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its current role (it is the security core: capabilities, memory refcounting, SHA-2/HMAC/HKDF/PBKDF2, ChaCha20 RNG, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stub implementations used by the `MINIMAL_SECURE=1` build (which strips the filesystem/storage stack); it is build configuration, not security logic.
-- Tests: 31 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), and the FFI validation/policy functions. There is a CI pipeline (build + `cargo test` + `clippy -D warnings` + reproducible-build check) but no booted-kernel integration/fuzz harness yet, and no automatic checking of the TLA+ specs in `docs/`.
+- Tests: 41 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the W^X page policy, and the FFI validation/policy functions. CI runs five gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, a headless QEMU smoke-boot, reproducible-build check, and security scans + SBOM). The smoke-boot test confirms the kernel boots to userspace with no fault, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -130,4 +131,4 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Cryptography (KDF/MAC/RNG + ChaCha20/HMAC AEAD; all standard primitives) | ~75% |
 | Storage / disk I/O | ~25% (driver + sound encrypted-block code, not wired as default) |
 | SMP | ~5% (detection/scaffolding only) |
-| Testing | ~30% (unit tests + CI; no integration/fuzz) |
+| Testing | ~35% (41 unit tests + CI + smoke-boot; no deeper integration/fuzz) |

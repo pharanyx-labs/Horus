@@ -42,8 +42,8 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 ### C kernel work
 
 - **Preemptive scheduler** (`src/kernel/scheduler.c`): Hook the timer ISR to force a task switch. The round-robin logic already exists; it just needs to be called from the interrupt path.
-- **`SYS_SPAWN` syscall** (`src/kernel/syscall.c`): Implement task creation from userspace — allocate a TCB, load the ELF, and set up the initial capability space.
-- **IPC call/reply** (`src/kernel/syscall.c`): Complete `SYS_IPC_CALL` so a caller blocks until a server replies.
+- **IPC call/reply** (`src/kernel/syscall.c`): Complete `SYS_IPC_CALL` so a caller blocks until a server replies atomically (it is currently a thin wrapper over send).
+- **Blocking IPC endpoints** (`src/kernel/syscall.c`): replace the busy-spin-with-`yield()` rendezvous with real blocking/queueing semantics.
 - **ATA + storage integration** (`src/kernel/ata.c`, `src/kernel/storage.c`): Wire the working ATA driver to the on-disk inode format sketched in `storage.c`.
 - **Shell command stubs** (`userspace/shell.c`): Fill in `ls`, `cat`, `mkdir`, `rm`, and `spawn` to call the correct syscalls.
 
@@ -55,9 +55,9 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### Testing
 
-- **Integration test suite**: Scripts that boot Horus under QEMU via `-nographic`, drive the shell with expected input, and check output. Should run headlessly in CI.
+- **Integration test suite**: A headless smoke-boot test (`make smoke`) already runs in CI and asserts the kernel boots to userspace with no fault. Extend it into a harness that drives scripted shell sessions (login, capability denials, ELF-under-W^X) and checks the output.
 - **Syscall fuzzer**: Apply coverage-guided fuzzing to the syscall interface. The kernel runs in QEMU under a controlled environment; `syzkaller` or a custom harness could work.
-- **Unit tests in the Rust crate**: `rust/src/capability.rs` has one test. It needs more: revocation, lineage bumping, mint-rights subsetting, and cross-task revocation.
+- **More Rust unit tests**: the crate has 41 tests today (capability revocation/lineage/mint-subsetting, the refcount trust boundary, the crypto vectors, the AEAD, the W^X policy). Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
 
 ### Documentation
 

@@ -5,6 +5,7 @@ This folder contains technical documentation for the Horus microkernel.
 | Document | Contents |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Design philosophy, subsystem internals, capability model, memory layout, Rust integration |
+| [SYSCALLS.md](SYSCALLS.md) | Per-syscall reference: numbers, capability requirements, and notes |
 | [BUILDING.md](BUILDING.md) | Toolchain requirements, build targets, QEMU setup, troubleshooting |
 | [LIMITATIONS.md](LIMITATIONS.md) | Honest account of what works, what is stubbed, and known security gaps |
 | [ROADMAP.md](ROADMAP.md) | Planned milestones and open contribution areas |

@@ -1,7 +1,7 @@
 # Horus Syscall Reference
 
 **Document Status**: Early development (as of June 2026)  
-**Interface**: Syscall number in `eax`/`rax`; arguments in `ebx, ecx, edx, esi, edi`. The kernel services syscalls through its `int 0x80` handler (`syscall_handler`).  
+**Interface**: Syscall number in `eax`/`rax`; arguments in `ebx, ecx, edx, esi, edi`. The kernel services syscalls through its `int 0x80` handler (`syscall_handler`), which dispatches via a descriptor table: for syscalls with a single fixed authorising capability it is enforced centrally before the handler runs, and any syscall number with no table entry fails closed.  
 **Security Model**: All operations are capability-gated. No ambient authority.
 
 ---
@@ -126,4 +126,4 @@ For the most up-to-date status, consult [`TESTS.md`](../TESTS.md), [`CHANGES.md`
 
 **Contribution Note**: This reference should be kept in sync with `include/syscall.h` and the syscall handler table in the kernel.
 
-*Last updated: 2026-06-29 — numbers synced against `include/syscall.h` and the `syscall_handler` dispatch table.*
+*Last updated: 2026-06-30 — numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*

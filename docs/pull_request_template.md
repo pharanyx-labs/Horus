@@ -22,7 +22,7 @@
 - [ ] `make` builds cleanly (no new warnings)
 - [ ] `make test` / `cargo test --release` passes
 - [ ] `make reproducible-build` still produces identical artifacts
-- [ ] Booted under QEMU and basic smoke tests pass (if userspace or boot changed)
+- [ ] `make smoke` passes (headless QEMU boot to the shell banner; required if userspace, the loader, paging, or boot changed)
 - [ ] New or updated unit/property tests added for security-critical logic
 - [ ] Security scans (`make security`) reviewed; no new high-severity findings
 

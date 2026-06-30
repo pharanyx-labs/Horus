@@ -642,6 +642,13 @@ void smp_bringup(void) {
     }
 
     println("[ok] kernel ready, starting init...");
+#ifdef ELF_SELFTEST
+    /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the
+     * (never-returning) drop to the userspace shell. This is the actual
+     * pre-userspace point — smp_bringup() spawns the shell and lretq's to
+     * ring 3, so it never returns to kernel_main. */
+    elf_loader_selftest();
+#endif
     spawn_initial_userspace_shell();
 }
 

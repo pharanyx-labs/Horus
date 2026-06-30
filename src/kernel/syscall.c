@@ -968,6 +968,88 @@ static int do_spawn(void) {
     return new_id;
 }
 
+#ifdef ELF_SELFTEST
+/* In-kernel self-test of the ELF loader's W^X enforcement (gated; never in the
+ * ship build). Loads a real multi-segment ELF (userspace/elftest.elf, embedded
+ * in multiboot.S) through the production do_spawn -> try_elf_load path, then
+ * inspects the resulting page-table entries to prove try_elf_load honoured each
+ * PT_LOAD's p_flags: .text R+X (executable), .data R+W+NX, .rodata R(O)+NX.
+ * Because EFER.NXE is asserted enabled at boot, correct NX/WRITE bits mean the
+ * CPU will enforce W^X. Prints ELF_SELFTEST: PASS / FAIL <reason> to serial;
+ * the headless smoke test (make smoke-elf) asserts on PASS. */
+#define SELFTEST_PTE_PRESENT  (1ULL << 0)
+#define SELFTEST_PTE_WRITE    (1ULL << 1)
+#define SELFTEST_PTE_USER     (1ULL << 2)
+#define SELFTEST_PTE_NX       (1ULL << 63)
+#define SELFTEST_PTE_PHYS     0x000FFFFFFFFFF000ULL
+
+static int selftest_read_byte(uint64_t cr3, uint64_t vaddr, uint8_t *out) {
+    uint64_t pte = user_lookup_pte(cr3, vaddr);
+    if (!(pte & SELFTEST_PTE_PRESENT)) return -1;
+    uint64_t phys = (pte & SELFTEST_PTE_PHYS) | (vaddr & 0xFFF);
+    *out = *(volatile uint8_t *)(uintptr_t)phys;   /* user phys is identity-mapped under the kernel pml4 */
+    return 0;
+}
+
+void elf_loader_selftest(void) {
+    extern uint8_t embedded_elftest_start[];
+    extern uint8_t embedded_elftest_end[];
+    uint32_t sz = (uint32_t)(embedded_elftest_end - embedded_elftest_start);
+
+    print("ELF_SELFTEST: begin\n");
+    if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ELF_SELFTEST: FAIL embed-size\n"); return; }
+
+    /* Stage the raw ELF and arm it; try_elf_load recomputes the real entry. */
+    for (uint32_t i = 0; i < sz; i++) loader_staging[i] = embedded_elftest_start[i];
+    armed_hdr.entry = 0;
+    armed_hdr.size  = sz;
+    armed_hdr.name[0] = 'e'; armed_hdr.name[1] = 'l'; armed_hdr.name[2] = 'f';
+    armed_hdr.name[3] = 't'; armed_hdr.name[4] = 0;
+    program_armed = 1;
+
+    int saved = get_current_task();
+    int pid = do_spawn();                 /* runs the real try_elf_load + W^X pass */
+    if (pid <= 0) { print("ELF_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
+
+    uint64_t cr3 = tasks[pid].cr3;
+
+    /* elftest.ld pins these vaddrs; slide is 0 (min_vaddr == load_base). */
+    uint64_t pte_text = user_lookup_pte(cr3, 0x400000);   /* .text   R+X */
+    uint64_t pte_data = user_lookup_pte(cr3, 0x401000);   /* .data   R+W */
+    uint64_t pte_ro   = user_lookup_pte(cr3, 0x402000);   /* .rodata R   */
+
+    int ok = 1;
+    const char *why = "";
+    if      (!((pte_text & SELFTEST_PTE_PRESENT) && (pte_text & SELFTEST_PTE_USER))) { ok = 0; why = "text-absent"; }
+    else if (!((pte_data & SELFTEST_PTE_PRESENT) && (pte_data & SELFTEST_PTE_USER))) { ok = 0; why = "data-absent"; }
+    else if (!((pte_ro   & SELFTEST_PTE_PRESENT) && (pte_ro   & SELFTEST_PTE_USER))) { ok = 0; why = "rodata-absent"; }
+    /* W^X execute bits: code executable (NX clear), data/rodata non-exec. */
+    else if (pte_text & SELFTEST_PTE_NX)    { ok = 0; why = "text-noexec"; }
+    else if (!(pte_data & SELFTEST_PTE_NX)) { ok = 0; why = "data-executable"; }
+    else if (!(pte_ro   & SELFTEST_PTE_NX)) { ok = 0; why = "rodata-executable"; }
+    /* write bits: data writable, rodata read-only. */
+    else if (!(pte_data & SELFTEST_PTE_WRITE)) { ok = 0; why = "data-readonly"; }
+    else if (pte_ro & SELFTEST_PTE_WRITE)      { ok = 0; why = "rodata-writable"; }
+
+    /* Content spot-check: segment bytes copied to the correct vaddrs. */
+    if (ok) {
+        uint8_t b;
+        if (selftest_read_byte(cr3, 0x401000, &b) != 0 || b != 0xD2)      { ok = 0; why = "data-marker"; }
+        else if (selftest_read_byte(cr3, 0x402000, &b) != 0 || b != 'E')  { ok = 0; why = "rodata-marker"; }
+    }
+
+    if (ok) {
+        print("ELF_SELFTEST: PASS\n");
+    } else {
+        print("ELF_SELFTEST: FAIL "); print(why); print("\n");
+    }
+
+    /* Free the throwaway task slot so the scheduler never runs it. */
+    tasks[pid].state = 0;
+    set_current_task(saved);
+}
+#endif /* ELF_SELFTEST */
+
 static struct user_account *find_user_by_name(const char *name) {
     for (int i = 0; i < MAX_USERS; i++) {
         if (users[i].valid && kstrlen(users[i].name) == kstrlen(name)) {

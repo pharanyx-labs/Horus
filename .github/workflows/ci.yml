@@ -60,6 +60,23 @@ jobs:
             boot.iso
           if-no-files-found: error
 
+  smoke:
+    name: QEMU smoke-boot (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot the kernel under QEMU and assert it reaches the shell
+        run: make smoke
+
   reproducible:
     name: Verify reproducible kernel build
     runs-on: ubuntu-latest

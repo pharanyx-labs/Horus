@@ -60,6 +60,32 @@ jobs:
             boot.iso
           if-no-files-found: error
 
+  # Keep the non-default build configurations compiling. The default config is
+  # covered by the `kernel` job above; these flags (DEBUG_SHELL, MINIMAL_SECURE)
+  # toggle whole regions of the kernel via #ifdef and have broken silently
+  # before when only the default build was checked. A bare `make` (no ISO) is
+  # enough to catch that; -Werror=vla in CFLAGS also gates here.
+  altconfigs:
+    name: Build alternate configs (${{ matrix.config }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - DEBUG_SHELL=1
+          - MINIMAL_SECURE=1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Build kernel.elf (${{ matrix.config }})
+        run: make ${{ matrix.config }}
+
   smoke:
     name: QEMU smoke-boot (headless)
     runs-on: ubuntu-latest

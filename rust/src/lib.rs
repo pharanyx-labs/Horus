@@ -11,6 +11,7 @@ mod auth;
 mod capability;
 mod crypto;
 mod memory;
+mod ps;
 mod rng;
 mod sha256;
 

@@ -67,7 +67,25 @@ struct endpoint {
     uint8_t  msg[IPC_MSG_MAX];
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
-struct task_info { uint32_t id; uint32_t state; char name[32]; uint32_t caps_in_use; uint32_t uid; uint32_t gid; int in_kernel; uint64_t tsc_base; int blocked_on_notif; int blocked_on; uint64_t heap_start; uint32_t eip; uint32_t esp; uint64_t heap_used; uint32_t cr3; };
+/* Canonical task_info ABI. MUST stay byte-identical to the copies in
+ * include/syscall.h and src/include/syscall_userspace.h — the kernel fills this
+ * layout and ring-3 reads it across copy_to_user (SYS_GET_TASK_INFO). A prior
+ * mismatch (kernel and userspace had different field orders) made `ps` read
+ * garbage; keep all three in sync. */
+struct task_info {
+    uint32_t id;
+    uint32_t state;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t cr3;
+    uint32_t eip;
+    uint32_t heap_used;
+    uint32_t caps_in_use;
+    int      in_kernel;
+    int      blocked_on;
+    int      blocked_on_notif;
+    char     name[32];
+};
 struct dir_entry { char name[32]; uint32_t ino; uint32_t type; uint32_t name_len; uint32_t inode; };
 typedef struct platform_info {
     int family, model, stepping;
@@ -590,6 +608,8 @@ int  rust_aead_seal(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_
 int  rust_aead_open(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t *nonce,
                     const uint8_t *aad, size_t aad_len,
                     uint8_t *buf, size_t len, const uint8_t *tag);
+/* ps presentation (rust/src/ps.rs): NUL-terminated static state label. */
+const char *rust_task_state_name(uint32_t state);
 /* Authentication / sudo throttling + privilege policy (rust/src/auth.rs) */
 uint32_t rust_sudo_frame_rights(void);
 bool     rust_auth_is_locked(uint64_t lockout_until, uint64_t now);

@@ -68,6 +68,31 @@ pub extern "C" fn rust_get_user_page_protection(_task_id: u32, vaddr: u32) -> u3
     0
 }
 
+/// W^X policy: is the user page at `vaddr` non-executable?
+///
+/// User stacks must never be executable -- mapping them no-execute (the PTE NX
+/// bit, honoured because EFER.NXE is enabled) defeats classic shellcode on the
+/// stack. The kernel ORs `PAGE_NX` into a stack page's PTE when this returns
+/// true. The image/heap region (from `USER_AREA_BASE` upward) stays executable:
+/// the flat-binary loader cannot distinguish code from data within it, so it
+/// must remain runnable. Takes a full 64-bit vaddr so the high ASLR stack is
+/// expressible (unlike `rust_get_user_page_protection`, which is u32).
+#[no_mangle]
+pub extern "C" fn rust_user_page_is_noexec(vaddr: u64) -> bool {
+    // Low user stack: top of the 4-8 MB user area. The loaded image starts at
+    // 0x400000 and is at most 1 MB tall, and the heap tops out well under
+    // 0x520000, so nothing executable lives at or above 0x7d0000.
+    if (0x0000_0000_007d_0000..0x0000_0000_0080_0000).contains(&vaddr) {
+        return true;
+    }
+    // High ASLR stack window around 0x7ff0_0000_0000.
+    const HIGH_STACK_BASE: u64 = 0x0000_7ff0_0000_0000;
+    if (HIGH_STACK_BASE - 0x10_0000..HIGH_STACK_BASE + 0x10_0000).contains(&vaddr) {
+        return true;
+    }
+    false
+}
+
 /// # Safety
 /// `cmd` must be null or point to at least `len` initialized bytes that stay
 /// live for the call. Null is handled; any other invalid (pointer, len) is UB.
@@ -238,6 +263,26 @@ mod tests {
         assert_eq!(rust_get_user_page_protection(0, 0xff000000), 0x7);
         assert_eq!(rust_get_user_page_protection(0, 0), 0);
         assert_eq!(rust_get_user_page_protection(0, 0x300000), 0);
+    }
+
+    #[test]
+    fn wx_stack_noexec_image_executable() {
+        // Image / code region must stay executable (flat binaries run here).
+        assert!(!rust_user_page_is_noexec(0x400000)); // load base
+        assert!(!rust_user_page_is_noexec(0x500000)); // top of a max-size image
+        assert!(!rust_user_page_is_noexec(0x519000)); // top of the heap window
+        assert!(!rust_user_page_is_noexec(0x7cf000)); // just below the stack floor
+        // Low user stack must be non-executable.
+        assert!(rust_user_page_is_noexec(0x7d0000));  // window floor (inclusive)
+        assert!(rust_user_page_is_noexec(0x7df000));  // low-stack base
+        assert!(rust_user_page_is_noexec(0x7ff000 - 0x1000)); // near stack top
+        // 0x800000 is one past the user area -> not stack.
+        assert!(!rust_user_page_is_noexec(0x800000));
+        // High ASLR stack window is non-executable.
+        assert!(rust_user_page_is_noexec(0x0000_7ff0_0000_0000 - 0x1000));
+        // Other mapped windows and the null page stay executable.
+        assert!(!rust_user_page_is_noexec(0xA00000));
+        assert!(!rust_user_page_is_noexec(0));
     }
 
     #[test]

@@ -13,6 +13,16 @@ extern tcb_t tasks[MAX_TASKS];
 #define PAGE_4MB       (1 << 7)
 #define PAGE_GLOBAL    (1 << 8)
 #define PAGE_COW       (1 << 9)
+/* No-execute (bit 63). EFER.NXE is enabled in multiboot.S, so the CPU honours
+ * it on 64-bit page-table entries. Used to map user stacks non-executable
+ * (W^X): data pages must never be executable, defeating classic shellcode on
+ * the stack. The image/heap region stays executable because the flat-binary
+ * loader cannot tell code from data within it. */
+#define PAGE_NX        (1ULL << 63)
+
+/* The W^X "is this user page non-executable?" policy lives in Rust
+ * (rust_user_page_is_noexec); the kernel ORs PAGE_NX into the PTE when it
+ * returns true. See rust/src/lib.rs. */
 
 #define RECURSIVE_PD_VADDR  0xFFFFF000
 #define RECURSIVE_PT_VADDR  0xFFC00000
@@ -276,7 +286,8 @@ void create_user_pagedir(uint32_t task_id) {
                 int spti = ((hs_base + (uint64_t)s * PAGE_SIZE) >> 12) & 511;
                 uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(hs_base + (uint64_t)s * PAGE_SIZE));
                 uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-                pt[spti] = phys | flags;
+                /* High ASLR stack: non-executable (W^X). */
+                pt[spti] = phys | flags | PAGE_NX;
             }
         }
     }
@@ -302,7 +313,8 @@ void create_user_pagedir(uint32_t task_id) {
                     for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
                     uint64_t va = low_stack_base + (uint64_t)s * PAGE_SIZE;
                     int spti = (int)((va >> 12) & 511);
-                    pt[spti] = phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+                    /* Low user stack: non-executable (W^X). */
+                    pt[spti] = phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER | PAGE_NX;
                 }
             }
         }
@@ -504,6 +516,9 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
 
         uint64_t new_flags = (pte & 0xFFFULL) | PAGE_PRESENT | PAGE_WRITE;
         new_flags &= ~((uint64_t)PAGE_COW);
+        /* Preserve W^X across copy-on-write: the low-12-bit mask above drops
+         * the NX bit (63), so re-derive it from the faulting address. */
+        if (rust_user_page_is_noexec(fault_addr)) new_flags |= PAGE_NX;
         ptv[pt_i] = new_phys | new_flags;
 
         asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
@@ -529,6 +544,8 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
 
     uint32_t prot = rust_get_user_page_protection(get_current_task(), fault_addr);
     uint64_t flags = prot ? (prot & 0x7ULL) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    /* Demand-paged stack pages are non-executable (W^X). */
+    if (rust_user_page_is_noexec(fault_addr)) flags |= PAGE_NX;
     ptv[pt_i] = phys | flags | PAGE_PRESENT;
 
     asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");

@@ -374,21 +374,41 @@ bool cap_revoke(uint32_t slot) {
 }
 
 bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {
-    
+    /* Mutates the caller's cspace, so it must observe the same discipline as
+     * cap_mint/cap_transfer/cap_revoke: hold cap_lock for the read-modify-write
+     * and require authority (so the root_cnode fallback is provably kernel-only
+     * for any cspace-less task). Currently has no callers, but is exported in
+     * kernel.h -- harden it now so wiring it to a syscall later is not a hole. */
+    /* Allocate the serial before taking cap_lock: cap_alloc_fresh_serial()
+     * grabs cap_lock itself and the lock is not recursive (same ordering
+     * do_spawn uses). A serial burned on a later validation failure is
+     * harmless -- the counter is monotonic. */
+    uint32_t fresh_serial = cap_alloc_fresh_serial();
+
+    spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
+
     struct capability *cspace = tasks[get_current_task()].cspace ? tasks[get_current_task()].cspace : root_cnode;
 
-    if (target_slot >= CNODE_SIZE || rev_slot >= CNODE_SIZE || target_slot < 4) return false;
+    if (target_slot >= CNODE_SIZE || rev_slot >= CNODE_SIZE || target_slot < 4) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
 
     struct capability *target = &cspace[target_slot];
-    if (target->type == CAP_NULL) return false;
+    if (target->type == CAP_NULL) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
 
     cspace[rev_slot].type   = CAP_REVOCATION;
     cspace[rev_slot].rights = CAP_RIGHT_REVOKE;
     cspace[rev_slot].object = target_slot;
     cspace[rev_slot].badge  = 0xDEAD0000U;
-    cspace[rev_slot].serial = cap_alloc_fresh_serial();
+    cspace[rev_slot].serial = fresh_serial;
     cspace[rev_slot].generation = 0;
 
+    spin_unlock(&cap_lock);
     return true;
 }
 

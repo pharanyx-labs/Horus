@@ -410,10 +410,12 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
     
     uint64_t cr3_phys = tasks[get_current_task()].cr3;
     if (cr3_phys == 0) {
-        
+        /* page_lock is NOT held yet (we lock below), so must not unlock here:
+         * a stray spin_unlock releases a lock we never took and decrements the
+         * IRQ-nesting depth, corrupting interrupt state if ever reached under a
+         * held lock. */
         int tid = get_current_task();
         tasks[tid].state = 0;
-        spin_unlock(&page_lock);
         return -1;
     }
 

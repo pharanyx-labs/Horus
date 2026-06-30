@@ -767,59 +767,31 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
         if (dest_va < USER_AREA_BASE || dest_va >= USER_MAX_VADDR) return -12;
         if (dest_va + p_memsz < dest_va) return -13; 
 
+        /* Copy the segment's file bytes, then zero-fill the BSS tail, into
+         * the target task's address space (current task == new_id here).
+         * copy_to_user walks the page tables with present/user/write checks,
+         * handles huge pages, switches to the kernel CR3 (SMAP-safe), and
+         * fails closed on any unmapped page -- unlike the previous
+         * hand-rolled walk, which masked each level without a present-bit
+         * check and would dereference and write a garbage ring-0 physical
+         * address for any non-present or huge-page mapping. */
+        static const uint8_t elf_zero_fill[4096] = {0};
         const uint8_t *s = st + p_offset;
-        extern platform_info_t platform;
-        uint64_t tcr3 = tasks[get_current_task()].cr3;
-        if (platform.has_smap) { asm volatile("clac" ::: "memory"); }
         for (uint32_t off = 0; off < p_filesz; ) {
-            uint32_t va = dest_va + off;
-            uint64_t dphys = (uint64_t)va;
-            if (tcr3) {
-                uint64_t *p4 = (uint64_t *)tcr3;
-                uint64_t ii4 = ((uint64_t)va >> 39) & 0x1ff;
-                uint64_t ee4 = p4[ii4];
-                uint64_t *pp3 = (uint64_t *)(ee4 & ~0xfffULL);
-                uint64_t ii3 = ((uint64_t)va >> 30) & 0x1ff;
-                uint64_t ee3 = pp3[ii3];
-                uint64_t *pp2 = (uint64_t *)(ee3 & ~0xfffULL);
-                uint64_t ii2 = ((uint64_t)va >> 21) & 0x1ff;
-                uint64_t ee2 = pp2[ii2];
-                uint64_t *pp1 = (uint64_t *)(ee2 & ~0xfffULL);
-                uint64_t ii1 = ((uint64_t)va >> 12) & 0x1ff;
-                uint64_t ee1 = pp1[ii1];
-                dphys = ee1 & ~0xfffULL;
-            }
-            uint8_t *d = (uint8_t *)dphys;
-            uint32_t poff = va & 0xfff;
-            uint32_t chunk = 4096 - poff;
-            if (chunk > p_filesz - off) chunk = p_filesz - off;
-            for (uint32_t b = 0; b < chunk; b++) d[b] = s[off + b];
+            uint32_t chunk = p_filesz - off;
+            if (chunk > USER_MEM_MAX_COPY) chunk = USER_MEM_MAX_COPY;
+            if (copy_to_user((void *)(uintptr_t)(dest_va + off), s + off, chunk) != 0)
+                return -15;
             off += chunk;
         }
-        print("TRY1\n");
-        for (uint32_t b = p_filesz; b < p_memsz; b++) {
-            uint32_t va = dest_va + b;
-            uint64_t dphys = (uint64_t)va;
-            if (tcr3) {
-                uint64_t *p4 = (uint64_t *)tcr3;
-                uint64_t ii4 = ((uint64_t)va >> 39) & 0x1ff;
-                uint64_t ee4 = p4[ii4];
-                uint64_t *pp3 = (uint64_t *)(ee4 & ~0xfffULL);
-                uint64_t ii3 = ((uint64_t)va >> 30) & 0x1ff;
-                uint64_t ee3 = pp3[ii3];
-                uint64_t *pp2 = (uint64_t *)(ee3 & ~0xfffULL);
-                uint64_t ii2 = ((uint64_t)va >> 21) & 0x1ff;
-                uint64_t ee2 = pp2[ii2];
-                uint64_t *pp1 = (uint64_t *)(ee2 & ~0xfffULL);
-                uint64_t ii1 = ((uint64_t)va >> 12) & 0x1ff;
-                uint64_t ee1 = pp1[ii1];
-                dphys = ee1 & ~0xfffULL;
-            }
-            ((uint8_t *)dphys)[va & 0xfff] = 0;
+        for (uint32_t off = p_filesz; off < p_memsz; ) {
+            uint32_t chunk = p_memsz - off;
+            if (chunk > sizeof(elf_zero_fill)) chunk = sizeof(elf_zero_fill);
+            if (copy_to_user((void *)(uintptr_t)(dest_va + off), elf_zero_fill, chunk) != 0)
+                return -15;
+            off += chunk;
         }
-        if (platform.has_smap) { asm volatile("stac" ::: "memory"); }
-        print("TRY1\n");
-        (void)p_flags; 
+        (void)p_flags;
     }
 
     uint64_t final_entry = (ei_class == 1) ? ((uint64_t)e_entry32 + slide) : (e_entry64 + slide);
@@ -1462,7 +1434,10 @@ void syscall_handler(struct regs *r) {
             info.state = tasks[tid].state;
             info.uid = tasks[tid].uid;
             info.gid = tasks[tid].gid;
-            info.cr3 = tasks[tid].cr3;
+            /* Do NOT leak the page-table physical base to ring-3: it reveals
+             * the physical memory layout and aids exploitation. Field is kept
+             * for ABI stability but always reported as 0; no consumer uses it. */
+            info.cr3 = 0;
             info.heap_used = tasks[tid].heap_current - tasks[tid].heap_start;
             for (int k = 0; k < 31 && tasks[tid].name[k]; k++)
                 info.name[k] = tasks[tid].name[k];
@@ -1737,6 +1712,15 @@ void syscall_handler(struct regs *r) {
                 tasks[pid].uid = 0;
                 tasks[pid].gid = 0;
 
+                /* Allocate the three fresh serials BEFORE taking cap_lock:
+                 * cap_alloc_fresh_serial() grabs cap_lock itself and the lock
+                 * is not recursive, so calling it inside the locked region
+                 * (as this path previously did) deadlocks the kernel on the
+                 * first sudo. Same ordering do_spawn uses. */
+                uint32_t s3 = cap_alloc_fresh_serial();
+                uint32_t s6 = cap_alloc_fresh_serial();
+                uint32_t s7 = cap_alloc_fresh_serial();
+
                 spin_lock(&cap_lock);
                 tasks[pid].cspace[3].type   = CAP_FRAME;
                 /* Least privilege: a memory frame needs only read/write/execute,
@@ -1745,21 +1729,21 @@ void syscall_handler(struct regs *r) {
                 tasks[pid].cspace[3].rights = rust_sudo_frame_rights();
                 tasks[pid].cspace[3].object = USER_VIRT_BASE;
                 tasks[pid].cspace[3].badge  = 0;
-                tasks[pid].cspace[3].serial = cap_alloc_fresh_serial();
+                tasks[pid].cspace[3].serial = s3;
                 tasks[pid].cspace[3].generation = 0;
 
                 tasks[pid].cspace[6].type   = CAP_USER;
                 tasks[pid].cspace[6].rights = CAP_RIGHT_ALL;
                 tasks[pid].cspace[6].object = 0;
                 tasks[pid].cspace[6].badge  = 0xC0DE0006U;
-                tasks[pid].cspace[6].serial = cap_alloc_fresh_serial();
+                tasks[pid].cspace[6].serial = s6;
                 tasks[pid].cspace[6].generation = 0;
 
                 tasks[pid].cspace[7].type   = CAP_TCB;
                 tasks[pid].cspace[7].rights = CAP_RIGHT_ALL;
                 tasks[pid].cspace[7].object = pid;
                 tasks[pid].cspace[7].badge  = 0;
-                tasks[pid].cspace[7].serial = cap_alloc_fresh_serial();
+                tasks[pid].cspace[7].serial = s7;
                 tasks[pid].cspace[7].generation = 0;
                 spin_unlock(&cap_lock);
             }

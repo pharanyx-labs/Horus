@@ -738,9 +738,15 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
     }
     if (!have_load) return -9;
 
-    uint32_t slide = load_base - (min_vaddr & ~0xFFFU); 
+    uint32_t slide = load_base - (min_vaddr & ~0xFFFU);
 
-    
+    /* Record each loaded segment's mapped range and ELF p_flags so that, after
+     * the bytes are copied in (which needs the pages writable), we can apply
+     * W^X per page: code becomes read+execute, data/rodata read[+write]+NX.
+     * e_phnum is capped at 8 above, so PT_LOAD segments fit in these arrays. */
+    uint32_t seg_va[8], seg_memsz[8], seg_flags[8];
+    int nseg = 0;
+
     for (uint16_t i = 0; i < e_phnum; i++) {
         const uint8_t *p = ph + (uint32_t)i * phentsize;
         uint32_t p_type = p[0] | (p[1]<<8) | (p[2]<<16) | (p[3]<<24);
@@ -791,7 +797,36 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
                 return -15;
             off += chunk;
         }
-        (void)p_flags;
+
+        if (nseg < 8) {
+            seg_va[nseg]    = dest_va;
+            seg_memsz[nseg] = p_memsz;
+            seg_flags[nseg] = p_flags;
+            nseg++;
+        }
+    }
+
+    /* W^X protection pass. Every page touched by a PT_LOAD segment is set to
+     * the union of the permissions of the segments covering it (so a page
+     * shared between, say, the end of .text and the start of .rodata keeps
+     * whatever each needs). PF_W (0x2) -> writable, PF_X (0x1) -> executable;
+     * absence of PF_X sets NX. The pages were just written via copy_to_user so
+     * they are present; user_protect_page only downgrades permission bits. */
+    for (int s = 0; s < nseg; s++) {
+        uint32_t pstart = seg_va[s] & ~0xFFFu;
+        uint32_t pend   = seg_va[s] + seg_memsz[s];
+        for (uint32_t va = pstart; va < pend; va += 0x1000) {
+            int writable = 0, executable = 0;
+            for (int k = 0; k < nseg; k++) {
+                uint32_t kstart = seg_va[k] & ~0xFFFu;
+                uint32_t kend   = seg_va[k] + seg_memsz[k];
+                if (va < kend && va + 0x1000u > kstart) {   /* page overlaps seg k */
+                    if (seg_flags[k] & 0x2u) writable = 1;  /* PF_W */
+                    if (seg_flags[k] & 0x1u) executable = 1;/* PF_X */
+                }
+            }
+            user_protect_page((uint64_t)va, writable, executable);
+        }
     }
 
     uint64_t final_entry = (ei_class == 1) ? ((uint64_t)e_entry32 + slide) : (e_entry64 + slide);

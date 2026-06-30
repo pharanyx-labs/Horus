@@ -717,6 +717,46 @@ static uint64_t pt_walk(uint64_t cr3, uint64_t v) {
     return e;
 }
 
+/* Apply final W^X protection to an already-mapped 4 KiB user page in the
+ * CURRENT task's address space: clear PAGE_WRITE unless `writable`, and set the
+ * NX bit (63) unless `executable`. The ELF loader maps segments writable, copies
+ * the bytes in, then calls this per page to honour the segment's p_flags so code
+ * ends up read+execute and data ends up read+write+no-execute.
+ *
+ * Walks the page tables by physical address with a present-bit check at every
+ * level (low memory is identity-mapped in the active address space during spawn,
+ * exactly as create_user_pagedir relies on). No TLB shootdown is needed: the
+ * target task is not yet scheduled, so its CR3 is loaded fresh when it first
+ * runs. Returns 0 on success, -1 if the page is absent or not a 4 KiB leaf. */
+int user_protect_page(uint64_t vaddr, int writable, int executable) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) return -1;
+    uint64_t cr3 = tasks[cur].cr3;
+    if (cr3 == 0) return -1;
+
+    uint64_t *t = (uint64_t *)(uintptr_t)(cr3 & PT_PHYS_MASK);
+    uint64_t e = t[(vaddr >> 39) & 0x1FF];
+    if (!(e & PAGE_PRESENT)) return -1;
+    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    e = t[(vaddr >> 30) & 0x1FF];
+    if (!(e & PAGE_PRESENT) || (e & PAGE_4MB)) return -1;
+    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    e = t[(vaddr >> 21) & 0x1FF];
+    if (!(e & PAGE_PRESENT) || (e & PAGE_4MB)) return -1;
+    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    int i = (int)((vaddr >> 12) & 0x1FF);
+    uint64_t pte = t[i];
+    if (!(pte & PAGE_PRESENT)) return -1;
+
+    if (writable)   pte |= PAGE_WRITE;
+    else            pte &= ~(uint64_t)PAGE_WRITE;
+    if (executable) pte &= ~PAGE_NX;
+    else            pte |= PAGE_NX;
+
+    t[i] = pte;
+    return 0;
+}
+
 
 static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int need_write) {
     if (n == 0) return 0;
@@ -816,6 +856,13 @@ int copy_to_user(void *dst, const void *src, size_t n) {
     uint8_t *d = dst; const uint8_t *s = src;
     for (size_t i = 0; i < n; i++) d[i] = s[i];
     return 0;
+}
+
+/* 32-bit (non-PAE) PTEs have no NX bit, so W^X cannot be enforced here; the
+ * ELF loader's protection pass is a no-op on this path. */
+int user_protect_page(uint64_t vaddr, int writable, int executable) {
+    (void)vaddr; (void)writable; (void)executable;
+    return -1;
 }
 #endif
 

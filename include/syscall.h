@@ -85,6 +85,7 @@ struct audit_event {
 #define SYS_REGISTER_FS_SERVER 49
 #define SYS_CONNECT_FS_SERVER  50
 #define SYS_CAP_REVOKE         51
+#define SYS_AUDIT_DIGEST       52
 
 #define AUDIT_AUTH          1
 #define AUDIT_SUDO          2
@@ -307,6 +308,14 @@ static inline int sys_connect_fs_server(uint32_t dest_slot, uint32_t rights) {
 
 static inline int sys_cap_revoke(uint32_t slot) {
     return syscall(SYS_CAP_REVOKE, slot, 0, 0);
+}
+
+/* Audit-log integrity digest. Writes 40 bytes to `out` (8-byte little-endian
+ * total event count, then the 32-byte chain head MAC) and returns the verify
+ * status: 0 = retained window intact, >0 = (first tampered index + 1),
+ * -1 = chain uninitialized, -3 = copy failed. Requires a CAP_AUDIT read cap. */
+static inline int sys_audit_digest(void *out) {
+    return syscall(SYS_AUDIT_DIGEST, (uint32_t)(unsigned long)out, 0, 0);
 }
 
 #endif

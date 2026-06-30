@@ -161,6 +161,7 @@ void users_init(void);
 #define SYS_REGISTER_FS_SERVER 49
 #define SYS_CONNECT_FS_SERVER  50
 #define SYS_CAP_REVOKE         51
+#define SYS_AUDIT_DIGEST       52
 
 #define CAP_NULL                0
 #define CAP_TCB                 1
@@ -598,6 +599,14 @@ int  rust_password_hash(const uint8_t *password, size_t password_len,
                         uint32_t iterations, uint8_t *out, size_t out_len);
 int  rust_hmac_sha256(const uint8_t *key, size_t key_len,
                       const uint8_t *data, size_t data_len, uint8_t *out32);
+/* Tamper-evident audit log (rust/src/audit.rs). */
+int  rust_audit_chain_init(const uint8_t *key, size_t key_len, uint8_t *out_head32);
+int  rust_audit_chain_record(const uint8_t *key, size_t key_len, uint64_t seq,
+                             const uint8_t *event, size_t event_len,
+                             uint8_t *head32, uint8_t *out_mac32);
+int  rust_audit_entry_mac(const uint8_t *key, size_t key_len, uint64_t seq,
+                          const uint8_t *event, size_t event_len, uint8_t *out_mac32);
+int  rust_audit_mac_eq(const uint8_t *a32, const uint8_t *b32);
 int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
                       const uint8_t *salt, size_t salt_len,
                       const uint8_t *info, size_t info_len,

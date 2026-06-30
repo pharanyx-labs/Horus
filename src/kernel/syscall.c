@@ -2008,6 +2008,19 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_CAP_REVOKE]               = { h_cap_revoke,              SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_revoke */
 };
 
+/* Compile-time guard: the table must have a slot for every syscall number, so
+ * no defined syscall can index past it and fall through the
+ * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
+ * SYS_CAP_REVOKE is currently the highest syscall number. Adding a higher one
+ * (or shrinking the table) breaks the build here and forces you to grow
+ * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
+ * fill in. (C cannot check the function pointer itself in a static assert; a
+ * still-missing entry stays NULL and fails closed at runtime, and adding an
+ * entry past the array bound is already a hard compiler error.) */
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_CAP_REVOKE + 1,
+               "syscall_table size must equal (highest syscall number + 1): "
+               "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
+
 void syscall_handler(struct regs *r) {
     if (get_current_task() < MAX_TASKS) {
         tasks[get_current_task()].in_kernel = 1;

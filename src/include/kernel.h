@@ -55,6 +55,7 @@ extern uint8_t stack_top[];
 #define MAX_FS_OBJECTS          64
 #define INODES_PER_BLOCK        (BLOCK_SIZE / 128)
 uint32_t rust_get_user_page_protection(uint32_t t,uint32_t v);
+bool rust_user_page_is_noexec(uint64_t vaddr);
 int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, const uint8_t *name, size_t nlen);
 #define MAX_ENDPOINTS 64
 #define IPC_MSG_MAX   256

@@ -1255,14 +1255,9 @@ static void h_read(struct regs *r) {
     }
 }
 
-/* SYS_EXEC (14): create a task at an already-loaded image (slot-3 write+exec). */
+/* SYS_EXEC (14): create a task at an already-loaded image.
+ * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
 static void h_exec(struct regs *r) {
-    struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-    if (!c) {
-        r->eax = -1;
-        return;
-    }
-
     uint32_t load_base = r->ebx;
     uint32_t entry_offset = r->ecx;
     (void)(r->edx);
@@ -1293,10 +1288,9 @@ static void h_exec(struct regs *r) {
     r->eax = new_id;
 }
 
-/* SYS_FS_LIST (16): list ramfs entries, honouring the caller's buffer size. */
+/* SYS_FS_LIST (16): list ramfs entries, honouring the caller's buffer size.
+ * Capability (slot 3, READ) is enforced centrally by the dispatch table. */
 static void h_fs_list(struct regs *r) {
-    struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
-    if (!c) { r->eax = -1; return; }
     void *user_buf = (void*)(addr_t)r->ebx;
     size_t max_len = r->ecx;
     char kbuf[256];
@@ -1378,11 +1372,9 @@ static void h_task_info(struct regs *r) {
     else r->eax = -1;
 }
 
-/* SYS_RUN (19): drop the current task to ring 3 at an already-loaded image. */
+/* SYS_RUN (19): drop the current task to ring 3 at an already-loaded image.
+ * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
 static void h_run(struct regs *r) {
-    struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-    if (!c) { r->eax = -1; return; }
-
     uint32_t load_base = r->ebx;
     uint32_t entry = r->ecx;
 
@@ -1396,11 +1388,9 @@ static void h_run(struct regs *r) {
     r->eax = 0;
 }
 
-/* SYS_RECEIVE_PROGRAM: stage a program image and return its header. */
+/* SYS_RECEIVE_PROGRAM: stage a program image and return its header.
+ * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
 static void h_receive_program(struct regs *r) {
-    struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-    if (!c) { r->eax = -1; return; }
-
     void *user_hdr = (void *)(addr_t)r->ebx;
     struct program_header k_hdr;
 
@@ -1656,14 +1646,9 @@ static void h_get_pass(struct regs *r) {
     r->eax = len;
 }
 
-/* SYS_READ_AUDIT: copy the audit ring buffer to userspace (needs slot-7 audit cap). */
+/* SYS_READ_AUDIT: copy the audit ring buffer to userspace.
+ * Capability (slot 7, READ, type CAP_AUDIT) is enforced centrally by the table. */
 static void h_read_audit(struct regs *r) {
-    struct capability *c = cap_lookup(7, CAP_RIGHT_READ);
-    if (!c || c->type != CAP_AUDIT) {
-        r->eax = -1;
-        return;
-    }
-
     struct audit_event *user_events = (struct audit_event *)(addr_t)r->ebx;
     uint32_t max = r->ecx;
     if (max > AUDIT_LOG_SIZE) max = AUDIT_LOG_SIZE;
@@ -1680,13 +1665,10 @@ static void h_read_audit(struct regs *r) {
     r->eax = out;
 }
 
-/* SYS_BLOCK_READ: raw block read (needs slot-7 CAP_BLOCK_DEV + uid 0). */
+/* SYS_BLOCK_READ: raw block read. The slot-7 CAP_BLOCK_DEV capability is
+ * enforced centrally by the dispatch table; the uid==0 gate stays here (its
+ * distinct -2 return is part of the ABI). */
 static void h_block_read(struct regs *r) {
-    struct capability *blk = cap_lookup(7, CAP_BLOCK_DEV);
-    if (!blk) {
-        r->eax = -1;
-        return;
-    }
     uint64_t block = ((uint64_t)r->ebx << 32) | r->ecx;
     void *buf = (void*)(addr_t)r->edx;
     uint32_t len = r->esi;
@@ -1708,13 +1690,10 @@ static void h_block_read(struct regs *r) {
     }
 }
 
-/* SYS_BLOCK_WRITE: raw block write (needs slot-7 CAP_BLOCK_DEV + uid 0). */
+/* SYS_BLOCK_WRITE: raw block write. The slot-7 CAP_BLOCK_DEV capability is
+ * enforced centrally by the dispatch table; the uid==0 gate stays here (its
+ * distinct -2 return is part of the ABI). */
 static void h_block_write(struct regs *r) {
-    struct capability *blk = cap_lookup(7, CAP_BLOCK_DEV);
-    if (!blk) {
-        r->eax = -1;
-        return;
-    }
     if (tasks[get_current_task()].uid != 0) {
         r->eax = -2;
         return;
@@ -1732,13 +1711,10 @@ static void h_block_write(struct regs *r) {
     r->eax = (rc == 0) ? (int)to : rc;
 }
 
-/* SYS_REGISTER_FS_SERVER: register the caller as the fs server (needs admin cap). */
+/* SYS_REGISTER_FS_SERVER: register the caller as the fs server. The admin
+ * capability (slot 6, ALL, type CAP_USER) is enforced centrally by the table;
+ * the per-call endpoint-slot lookup stays here. */
 static void h_register_fs_server(struct regs *r) {
-    struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
-    if (!admin || admin->type != CAP_USER) {
-        r->eax = -1;
-        return;
-    }
     uint32_t ep_slot = r->ebx;
     struct capability *ep = cap_lookup(ep_slot, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
     if (!ep || ep->type != CAP_ENDPOINT) {
@@ -1770,332 +1746,290 @@ static void h_connect_fs_server(struct regs *r) {
     r->eax = 0;
 }
 
+/* ---- Handlers for the remaining syscalls -------------------------------- *
+ * Fixed (slot, rights[, type]) capability requirements are declared in
+ * syscall_table[] below and enforced centrally before the handler runs, so
+ * these bodies no longer repeat that check. Handlers whose authority is
+ * dynamic (FS dir-slot from args; cap_mint/transfer/move/revoke target slot)
+ * or self-authorizing (auth/sudo) carry SC_NONE and do their own checks. */
+
+/* SYS_YIELD (0). */
+static void h_yield(struct regs *r) { (void)r; yield(); }
+
+/* cap mint/transfer/move/revoke (4/8/9/51): authority enforced inside the
+ * cap_* primitives (caller_has_authority + per-right checks). */
+static void h_cap_mint(struct regs *r) {
+    bool ok = cap_mint(r->ebx, r->ecx, r->edx);
+    r->eax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_MINT, r->ebx, ok ? 0 : -1, ok ? "cap mint" : "cap mint denied");
+}
+static void h_cap_transfer(struct regs *r) {
+    bool ok = cap_transfer(r->ebx, r->ecx);
+    r->eax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap transfer" : "cap transfer denied");
+}
+static void h_cap_move(struct regs *r) {
+    bool ok = cap_move(r->ebx, r->ecx);
+    r->eax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap move" : "cap move denied");
+}
+static void h_cap_revoke(struct regs *r) {
+    /* The authoritative rights check (CAP_RIGHT_REVOKE on the target, kernel
+     * exempt) and the no-ambient-authority guard live in cap_revoke(). */
+    bool ok = cap_revoke(r->ebx);
+    r->eax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_REVOKE, r->ebx, ok ? 0 : -1, ok ? "cap revoke" : "cap revoke denied");
+}
+
+/* clear screen (5): slot-3 WRITE enforced by the table. */
+static void h_clear(struct regs *r) {
+    clear_screen();
+    r->eax = 0;
+}
+
+/* debug command exec (7): only meaningful under DEBUG_SHELL. */
+static void h_debug_exec(struct regs *r) {
+    char cmd[128];
+    if (copy_from_user(cmd, (void*)(addr_t)r->ebx, 127) != 0) {
+        r->eax = -1;
+        return;
+    }
+    cmd[127] = 0;
+#ifdef DEBUG_SHELL
+    r->eax = process_user_command(cmd);
+#else
+    r->eax = -1;
+#endif
+}
+
+/* ramfs open (13): slot-3 READ enforced by the table. */
+static void h_open(struct regs *r) {
+    char path[64];
+    if (copy_from_user(path, (void*)(addr_t)r->ebx, 63) != 0) {
+        r->eax = -1; return;
+    }
+    path[63] = 0;
+    r->eax = ramfs_open(path, 0);
+}
+
+/* ramfs create (15): slot-3 WRITE enforced by the table. */
+static void h_ramfs_create(struct regs *r) {
+    char name[32];
+    if (copy_from_user(name, (void*)(addr_t)r->ebx, 31) != 0) {
+        r->eax = -1; return;
+    }
+    name[31] = 0;
+    r->eax = ramfs_create(name, 0);
+}
+
+/* SYS_SPAWN (28): slot-3 WRITE|EXEC enforced by the table. */
+static void h_spawn(struct regs *r) {
+    int pid = do_spawn();
+    if (pid > 0) {
+        schedule();
+    }
+    r->eax = pid;
+}
+
+/* SYS_GETUID (29). */
+static void h_getuid(struct regs *r) {
+    r->eax = tasks[get_current_task()].uid;
+}
+
+/* SYS_IPC_SEND (21) / SYS_IPC_CALL (23): slot-3 WRITE enforced by the table. */
+static void h_ipc_send(struct regs *r) {
+    r->eax = sys_ipc_send(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
+}
+/* SYS_IPC_RECV (22): slot-3 READ enforced by the table. */
+static void h_ipc_recv(struct regs *r) {
+    r->eax = sys_ipc_recv(r->ebx, (void*)(addr_t)r->ecx, r->edx);
+}
+/* SYS_IPC_REPLY (24): slot-3 WRITE enforced by the table. */
+static void h_ipc_reply(struct regs *r) {
+    r->eax = sys_ipc_reply(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
+}
+/* SYS_NOTIFY (25): slot-3 WRITE enforced by the table. */
+static void h_notify(struct regs *r) {
+    r->eax = sys_notify(r->ebx, r->ecx);
+}
+/* SYS_WAIT_NOTIFY (26): slot-3 READ enforced by the table. */
+static void h_wait_notify(struct regs *r) {
+    uint32_t badge = 0;
+    r->eax = sys_wait_notify(r->ebx, &badge);
+    r->ebx = badge;
+}
+
+/* user management (33/34/35): admin/self check lives in do_useradd/userdel/passwd. */
+static void h_useradd(struct regs *r) {
+    uint32_t uid = r->ebx;
+    uint32_t gid = r->ecx;
+    char name[32];
+    if (copy_from_user(name, (void*)(addr_t)r->edx, 31) != 0) {
+        r->eax = -1; return;
+    }
+    name[31] = 0;
+    r->eax = do_useradd(uid, gid, name, "");
+}
+static void h_userdel(struct regs *r) {
+    r->eax = do_userdel(r->ebx);
+}
+static void h_passwd(struct regs *r) {
+    uint32_t target = r->ebx;
+    char newpass[32];
+    if (copy_from_user(newpass, (void*)(addr_t)r->ecx, 31) != 0) {
+        r->eax = -1; return;
+    }
+    newpass[31] = 0;
+    r->eax = do_passwd(target, newpass);
+}
+
+/* SYS_ROTATE_KEYS (36): slot-8 READ, type CAP_CONSOLE enforced by the table. */
+static void h_rotate_keys(struct regs *r) {
+    r->eax = (uint32_t)do_rotate_keys();
+}
+
+/* FS ops (38-45): authority is the per-call dir/file capability, checked inside
+ * the sys_fs_* helpers (slot is an argument, so not table-expressible). */
+static void h_fs_mint_file(struct regs *r) {
+    r->eax = sys_fs_mint_file(r->ebx, r->ecx, r->edx);
+}
+static void h_fs_lookup(struct regs *r) {
+    char name[32];
+    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; return; }
+    name[31] = 0;
+    r->eax = sys_fs_lookup(r->ebx, name, r->edx, (addr_t)r->esi);
+}
+static void h_fs_create(struct regs *r) {
+    char name[32];
+    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; return; }
+    name[31] = 0;
+    r->eax = sys_fs_create(r->ebx, name, (int)r->edx, (addr_t)r->esi, (addr_t)r->edi);
+}
+static void h_fs_delete(struct regs *r) {
+    char name[32];
+    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; return; }
+    name[31] = 0;
+    r->eax = sys_fs_delete(r->ebx, name);
+}
+static void h_fs_readdir(struct regs *r) {
+    r->eax = sys_fs_readdir(r->ebx, (char *)(addr_t)r->ecx, r->edx);
+}
+static void h_fs_get_root(struct regs *r) {
+    r->eax = sys_fs_get_root(r->ebx, r->ecx);
+}
+static void h_fs_read(struct regs *r) {
+    r->eax = sys_fs_read(r->ebx, (char *)(addr_t)r->ecx, r->edx);
+}
+static void h_fs_write(struct regs *r) {
+    r->eax = sys_fs_write(r->ebx, (const char *)(addr_t)r->ecx, r->edx);
+}
+
+/* SYS_REGISTER_STORAGE_BACKEND (46): removed; ABI slot reserved, fails closed.
+ * (Used to register a ring-3 fn-ptr the kernel called at CPL0 -- SMEP/TCB hole;
+ * a userspace disk driver must be an IPC server, not an in-kernel callback.) */
+static void h_register_storage_backend(struct regs *r) {
+    r->eax = SYS_ERR_NOSYS;
+}
+
+/* ------------------------------------------------------------------------- *
+ *  Capability-checked dispatch table.
+ *
+ *  Every syscall has exactly one entry. syscall_handler() validates the
+ *  number, enforces the declared capability in ONE place, then calls the
+ *  handler -- so a syscall physically cannot be reached without its check, and
+ *  an unknown / reserved number (or a gap such as 1, 2, 20) fails closed.
+ *
+ *  slot == SC_NONE means there is no single fixed authorizing capability: the
+ *  handler (or the helper it calls) performs its own authorization, noted per
+ *  entry. A few entries declare the fixed part here and keep an extra,
+ *  argument-dependent check in the handler (block uid==0, register-fs ep slot).
+ * ------------------------------------------------------------------------- */
+#define SC_NONE     0xFFFFu
+#define SC_ANYTYPE  (-1)
+
+typedef struct {
+    void   (*fn)(struct regs *r);
+    uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
+    uint32_t rights;   /* rights required at `slot` */
+    int      ctype;    /* required capability type, or SC_ANYTYPE */
+} syscall_desc_t;
+
+#define SYSCALL_TABLE_SIZE 52
+
+static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
+    [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
+    [SYS_GET_LINE]                 = { h_get_line,                SC_NONE, 0, SC_ANYTYPE }, /* slot 8 or 3 READ (fallback in handler) */
+    [4]                            = { h_cap_mint,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_mint */
+    [5]                            = { h_clear,                   3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [6]                            = { h_sysinfo,                 SC_NONE, 0, SC_ANYTYPE }, /* ambient version string */
+    [7]                            = { h_debug_exec,              SC_NONE, 0, SC_ANYTYPE }, /* DEBUG_SHELL only */
+    [8]                            = { h_cap_transfer,            SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_transfer */
+    [9]                            = { h_cap_move,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_move */
+    [SYS_SBRK]                     = { h_sbrk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, bounds-checked */
+    [SYS_WRITE]                    = { h_write,                   SC_NONE, 0, SC_ANYTYPE }, /* ambient console (fd 1) */
+    [SYS_READ]                     = { h_read,                    SC_NONE, 0, SC_ANYTYPE }, /* fd 0 ambient; fd>=3 slot-3 READ in handler */
+    [SYS_OPEN]                     = { h_open,                    3, CAP_RIGHT_READ, SC_ANYTYPE },
+    [14]                           = { h_exec,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [15]                           = { h_ramfs_create,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [16]                           = { h_fs_list,                 3, CAP_RIGHT_READ, SC_ANYTYPE },
+    [SYS_WAIT]                     = { h_wait,                    SC_NONE, 0, SC_ANYTYPE },
+    [SYS_GET_TASK_INFO]            = { h_task_info,               SC_NONE, 0, SC_ANYTYPE }, /* self, or admin/audit in handler */
+    [SYS_EXEC]                     = { h_run,                     3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_IPC_SEND]                 = { h_ipc_send,                3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_IPC_RECV]                 = { h_ipc_recv,                3, CAP_RIGHT_READ,  SC_ANYTYPE },
+    [SYS_IPC_CALL]                 = { h_ipc_send,                3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_IPC_REPLY]                = { h_ipc_reply,               3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_NOTIFY]                   = { h_notify,                  3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_WAIT_NOTIFY]              = { h_wait_notify,             3, CAP_RIGHT_READ,  SC_ANYTYPE },
+    [SYS_RECEIVE_PROGRAM]          = { h_receive_program,         3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_SPAWN]                    = { h_spawn,                   3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
+    [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
+    [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
+    [SYS_GET_PASS]                 = { h_get_pass,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_USERADD]                  = { h_useradd,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_useradd */
+    [SYS_USERDEL]                  = { h_userdel,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userdel */
+    [SYS_PASSWD]                   = { h_passwd,                  SC_NONE, 0, SC_ANYTYPE }, /* admin/self in do_passwd */
+    [SYS_ROTATE_KEYS]              = { h_rotate_keys,             8, CAP_RIGHT_READ, CAP_CONSOLE },
+    [SYS_READ_AUDIT]               = { h_read_audit,              7, CAP_RIGHT_READ, CAP_AUDIT },
+    [SYS_FS_MINT_FILE]             = { h_fs_mint_file,            SC_NONE, 0, SC_ANYTYPE }, /* dir cap in sys_fs_* */
+    [SYS_FS_LOOKUP]                = { h_fs_lookup,               SC_NONE, 0, SC_ANYTYPE },
+    [SYS_FS_CREATE]                = { h_fs_create,               SC_NONE, 0, SC_ANYTYPE },
+    [SYS_FS_DELETE]                = { h_fs_delete,               SC_NONE, 0, SC_ANYTYPE },
+    [SYS_FS_READDIR]               = { h_fs_readdir,              SC_NONE, 0, SC_ANYTYPE },
+    [SYS_FS_GET_ROOT]              = { h_fs_get_root,             SC_NONE, 0, SC_ANYTYPE },
+    [SYS_FS_READ]                  = { h_fs_read,                 SC_NONE, 0, SC_ANYTYPE },
+    [SYS_FS_WRITE]                 = { h_fs_write,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_REGISTER_STORAGE_BACKEND] = { h_register_storage_backend, SC_NONE, 0, SC_ANYTYPE },
+    [SYS_BLOCK_READ]               = { h_block_read,              7, CAP_BLOCK_DEV, SC_ANYTYPE }, /* + uid 0 in handler */
+    [SYS_BLOCK_WRITE]              = { h_block_write,             7, CAP_BLOCK_DEV, SC_ANYTYPE }, /* + uid 0 in handler */
+    [SYS_REGISTER_FS_SERVER]       = { h_register_fs_server,      6, CAP_RIGHT_ALL, CAP_USER }, /* + ep lookup in handler */
+    [SYS_CONNECT_FS_SERVER]        = { h_connect_fs_server,       SC_NONE, 0, SC_ANYTYPE },
+    [SYS_CAP_REVOKE]               = { h_cap_revoke,              SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_revoke */
+};
+
 void syscall_handler(struct regs *r) {
     if (get_current_task() < MAX_TASKS) {
         tasks[get_current_task()].in_kernel = 1;
     }
 
     uint32_t num = r->eax;
-    switch (num) {
-        case 0:
-            yield();
-            break;
-        case 3:
-            h_get_line(r);
-            break;
-        case 4: {
-            bool ok = cap_mint(r->ebx, r->ecx, r->edx);
-            r->eax = ok ? 0 : -1;
-            audit_log(AUDIT_CAP_MINT, r->ebx, ok ? 0 : -1, ok ? "cap mint" : "cap mint denied");
-            break;
-        }
-        case 8: {
-            bool ok = cap_transfer(r->ebx, r->ecx);
-            r->eax = ok ? 0 : -1;
-            audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap transfer" : "cap transfer denied");
-            break;
-        }
-        case 9: {
-            bool ok = cap_move(r->ebx, r->ecx);
-            r->eax = ok ? 0 : -1;
-            audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap move" : "cap move denied");
-            break;
-        }
-        case SYS_CAP_REVOKE: {
-            /* The authoritative rights check (CAP_RIGHT_REVOKE on the target,
-             * kernel exempt) and the no-ambient-authority guard live in
-             * cap_revoke(); record the outcome here for the audit trail. */
-            bool ok = cap_revoke(r->ebx);
-            r->eax = ok ? 0 : -1;
-            audit_log(AUDIT_CAP_REVOKE, r->ebx, ok ? 0 : -1, ok ? "cap revoke" : "cap revoke denied");
-            break;
-        }
-        case 5: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
-            if (!c) {
-                r->eax = -1;
-                break;
-            }
-            clear_screen();
-            r->eax = 0;
-            break;
-        }
-        case 6:
-            h_sysinfo(r);
-            break;
-        case 7: {
-            char cmd[128];
-            if (copy_from_user(cmd, (void*)(addr_t)r->ebx, 127) != 0) {
-                r->eax = -1;
-                break;
-            }
-            cmd[127] = 0;
-#ifdef DEBUG_SHELL
-            r->eax = process_user_command(cmd);
-#else
+    const syscall_desc_t *d = (num < SYSCALL_TABLE_SIZE) ? &syscall_table[num] : (const syscall_desc_t *)0;
+
+    if (!d || !d->fn) {
+        /* Unknown, reserved, or unimplemented syscall number: fail closed. */
+        r->eax = -1;
+    } else if (d->slot != SC_NONE) {
+        /* Central capability gate: a syscall cannot run without its declared
+         * capability. Handlers no longer repeat this check. */
+        struct capability *c = cap_lookup(d->slot, d->rights);
+        if (!c || (d->ctype != SC_ANYTYPE && (int)c->type != d->ctype)) {
             r->eax = -1;
-#endif
-            break;
+        } else {
+            d->fn(r);
         }
-        case 10:
-            h_sbrk(r);
-            break;
-
-        case 11:
-            h_write(r);
-            break;
-
-        case 12:
-            h_read(r);
-            break;
-
-        case 13: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
-            if (!c) { r->eax = -1; break; }
-            char path[64];
-            if (copy_from_user(path, (void*)(addr_t)r->ebx, 63) != 0) {
-                r->eax = -1; break;
-            }
-            path[63] = 0;
-            int fd = ramfs_open(path,0);
-            r->eax = fd;
-            break;
-        }
-
-        case 15: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
-            if (!c) { r->eax = -1; break; }
-            char name[32];
-            if (copy_from_user(name, (void*)(addr_t)r->ebx, 31) != 0) {
-                r->eax = -1; break;
-            }
-            name[31] = 0;
-            r->eax = ramfs_create(name, 0);
-            break;
-        }
-
-        case 16:
-            h_fs_list(r);
-            break;
-
-        case 14:
-            h_exec(r);
-            break;
-
-        case 17:
-            h_wait(r);
-            break;
-
-        case 18:
-            h_task_info(r);
-            break;
-
-        case 19:
-            h_run(r);
-            break;
-
-        case SYS_IPC_SEND: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
-            if (!c) { r->eax = -1; break; }
-            r->eax = sys_ipc_send(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
-            break;
-        }
-        case SYS_IPC_RECV: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
-            if (!c) { r->eax = -1; break; }
-            r->eax = sys_ipc_recv(r->ebx, (void*)(addr_t)r->ecx, r->edx);
-            break;
-        }
-        case SYS_IPC_CALL: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
-            if (!c) { r->eax = -1; break; }
-            r->eax = sys_ipc_send(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
-            break;
-        }
-        case SYS_IPC_REPLY: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
-            if (!c) { r->eax = -1; break; }
-            r->eax = sys_ipc_reply(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
-            break;
-        }
-
-        case SYS_NOTIFY: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
-            if (!c) { r->eax = -1; break; }
-            r->eax = sys_notify(r->ebx, r->ecx);
-            break;
-        }
-        case SYS_WAIT_NOTIFY: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
-            if (!c) { r->eax = -1; break; }
-            uint32_t badge = 0;
-            r->eax = sys_wait_notify(r->ebx, &badge);
-            r->ebx = badge;
-            break;
-        }
-
-        case SYS_RECEIVE_PROGRAM:
-            h_receive_program(r);
-            break;
-
-        case SYS_SPAWN: {
-            struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-            if (!c) { r->eax = -1; break; }
-
-            int pid = do_spawn();
-            if (pid > 0) {
-                
-                schedule();
-            }
-            r->eax = pid;
-            break;
-        }
-
-        case SYS_GETUID: {
-            r->eax = tasks[get_current_task()].uid;
-            break;
-        }
-
-        case SYS_AUTH:
-            h_auth(r);
-            break;
-
-        case SYS_SUDO:
-            h_sudo(r);
-            break;
-
-        case SYS_GET_PASS:
-            h_get_pass(r);
-            break;
-
-        case SYS_USERADD: {
-            uint32_t uid = r->ebx;
-            uint32_t gid = r->ecx;
-            char name[32];
-            if (copy_from_user(name, (void*)(addr_t)r->edx, 31) != 0) {
-                r->eax = -1; break;
-            }
-            name[31] = 0;
-            r->eax = do_useradd(uid, gid, name, "");
-            break;
-        }
-
-        case SYS_USERDEL: {
-            uint32_t uid = r->ebx;
-            r->eax = do_userdel(uid);
-            break;
-        }
-
-        case SYS_PASSWD: {
-            uint32_t target = r->ebx;
-            char newpass[32];
-            if (copy_from_user(newpass, (void*)(addr_t)r->ecx, 31) != 0) {
-                r->eax = -1; break;
-            }
-            newpass[31] = 0;
-            r->eax = do_passwd(target, newpass);
-            break;
-        }
-
-        case SYS_ROTATE_KEYS: {
-            
-            struct capability *c = cap_lookup(8, CAP_RIGHT_READ);
-            if (!c || c->type != CAP_CONSOLE) {
-                r->eax = -1;
-                break;
-            }
-            r->eax = (uint32_t)do_rotate_keys();
-            break;
-        }
-
-        case SYS_READ_AUDIT:
-            h_read_audit(r);
-            break;
-
-        case SYS_FS_MINT_FILE: {
-            r->eax = sys_fs_mint_file(r->ebx, r->ecx, r->edx);
-            break;
-        }
-
-        case SYS_FS_LOOKUP: {
-            char name[32];
-            if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; break; }
-            name[31] = 0;
-            r->eax = sys_fs_lookup(r->ebx, name, r->edx, (addr_t)r->esi);
-            break;
-        }
-
-        case SYS_FS_CREATE: {
-            char name[32];
-            if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; break; }
-            name[31] = 0;
-            r->eax = sys_fs_create(r->ebx, name, (int)r->edx, (addr_t)r->esi, (addr_t)r->edi);
-            break;
-        }
-
-        case SYS_FS_DELETE: {
-            char name[32];
-            if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; break; }
-            name[31] = 0;
-            r->eax = sys_fs_delete(r->ebx, name);
-            break;
-        }
-
-        case SYS_FS_READDIR: {
-            char *buf = (char *)(addr_t)r->ecx;
-            uint32_t sz = r->edx;
-            r->eax = sys_fs_readdir(r->ebx, buf, sz);
-            break;
-        }
-
-        case SYS_FS_GET_ROOT: {
-            r->eax = sys_fs_get_root(r->ebx, r->ecx);
-            break;
-        }
-
-        case SYS_FS_READ: {
-            r->eax = sys_fs_read(r->ebx, (char *)(addr_t)r->ecx, r->edx);
-            break;
-        }
-
-        case SYS_FS_WRITE: {
-            r->eax = sys_fs_write(r->ebx, (const char *)(addr_t)r->ecx, r->edx);
-            break;
-        }
-
-        case SYS_REGISTER_STORAGE_BACKEND: {
-            /* Removed: this used to register ring-3 function pointers as the
-             * raw block-transport, which the kernel then CALLED from ring 0.
-             * That executes user-mapped code at CPL0 (a #PF under the SMEP we
-             * enable) and, worse, places arbitrary user code inside the kernel
-             * TCB. The ETM crypto layer is kernel-mediated and runs over the
-             * in-kernel block device, so no userspace backend is needed. The
-             * ABI slot (46) is kept reserved and fails closed; a real userspace
-             * disk driver, if ever wanted, must be an IPC server (see the
-             * fs_server pattern), not an in-kernel callback. */
-            r->eax = SYS_ERR_NOSYS;
-            break;
-        }
-
-        case SYS_BLOCK_READ:
-            h_block_read(r);
-            break;
-
-        case SYS_BLOCK_WRITE:
-            h_block_write(r);
-            break;
-
-        case SYS_REGISTER_FS_SERVER:
-            h_register_fs_server(r);
-            break;
-
-        case SYS_CONNECT_FS_SERVER:
-            h_connect_fs_server(r);
-            break;
-
-        default:
-            r->eax = -1;
-            break;
+    } else {
+        d->fn(r);
     }
 
     if (get_current_task() < MAX_TASKS) {

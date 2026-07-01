@@ -49,7 +49,7 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### Rust work
 
-- **Argon2 tuning / parallelism** *(base done)*: Argon2id password hashing now lives in `rust/src/argon2.rs` (single lane). Worthwhile follow-ons: a multi-lane (`p > 1`) fill for throughput, and making the `m_cost`/`t_cost` profile boot-time configurable.
+- **Argon2 tuning** *(multi-lane + configurable cost done)*: `rust/src/argon2.rs` now supports `p ≥ 1` lanes and the `m`/`t`/`p` cost is set by three `kernel.h` defines. Remaining nice-to-haves: a true intra-request threaded fill (the lanes are currently filled sequentially, so `p > 1` changes the hash but not wall-clock time on one core), and exposing the cost profile to an admin at runtime.
 - **Property-based tests for the capability core**: add a `proptest`/`quickcheck`-style harness (or hand-rolled generators, since the crate is `no_std`) over mint/transfer/revoke to fuzz the lineage and revocation invariants beyond the current example-based tests.
 - **Kani / Verus verification**: Apply a Rust verification tool to `capability.rs` to formally verify the revocation properties.
 
@@ -57,7 +57,7 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 - **Integration test suite**: A headless smoke-boot test (`make smoke`) already runs in CI and asserts the kernel boots to userspace with no fault. Extend it into a harness that drives scripted shell sessions (login, capability denials, ELF-under-W^X) and checks the output.
 - **Syscall fuzzer**: Apply coverage-guided fuzzing to the syscall interface. The kernel runs in QEMU under a controlled environment; `syzkaller` or a custom harness could work.
-- **More Rust unit tests**: the crate has 53 tests today (capability revocation/lineage/mint-subsetting, the refcount trust boundary, the crypto vectors, the AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id against reference vectors, the W^X policy, the signal-handler-address window). Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
+- **More Rust unit tests**: the crate has 54 tests today (capability revocation/lineage/mint-subsetting, the refcount trust boundary, the crypto vectors, the AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id against reference vectors, the W^X policy, the signal-handler-address window). Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
 
 ### Documentation
 

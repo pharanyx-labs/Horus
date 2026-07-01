@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **48 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Three **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X, and `make smoke-preempt` spawns two non-yielding ring-3 tasks and asserts the timer preempts and time-slices them. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
+The Rust security core has **49 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Four **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X, `make smoke-preempt` spawns two non-yielding ring-3 tasks and asserts the timer preempts and time-slices them, and `make smoke-signal` faults a task on purpose and asserts its registered handler runs instead of the task being killed. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
 
 ---
 
@@ -24,6 +24,7 @@ This runs the unit tests across the security core:
 - `aead.rs` — the ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD: seal/open round-trip, tampered-ciphertext and tampered-tag rejection (fail-closed), wrong-AAD rejection, and nonce separation
 - `audit.rs` — the tamper-evident audit MACs: per-entry MAC determinism, sequence/content/key binding (defeats slot swap, replay, in-place edit), domain-separated chain IV, order-sensitivity of the chain head, a full record-then-verify cycle with tamper detection, the constant-time MAC compare, and FFI null rejection
 - `lib.rs` (W^X) — `rust_user_page_is_noexec`: stack windows are non-executable, image/heap/code stay executable
+- `lib.rs` (signals) — `rust_signal_handler_addr_ok`: a fault-handler address is accepted only inside the user code window (null, stack, kernel image, and out-of-window addresses are rejected)
 - `ps.rs` — task state-name labels
 
 ### Headless smoke-boot test
@@ -60,7 +61,7 @@ help
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs eight jobs, all hard gates:
+`.github/workflows/ci.yml` runs nine jobs, all hard gates:
 
 1. **rust** — `cargo test --release` and `cargo clippy --all-targets -- -D warnings`
 2. **kernel** — builds `kernel.elf` and a bootable ISO (x86-64) and uploads them as artifacts
@@ -68,8 +69,9 @@ help
 4. **smoke** — installs QEMU and runs `make smoke` (headless boot to the shell banner, no fault)
 5. **smoke-elf** — runs `make smoke-elf`: boots a real multi-segment ELF and requires `ELF_SELFTEST: PASS` (the loader mapped each `PT_LOAD` under the correct W^X permissions)
 6. **smoke-preempt** — runs `make smoke-preempt`: spawns two non-yielding ring-3 tracers and requires `PREEMPT_SELFTEST: PASS` (the timer time-sliced them, proven by interleaved traces)
-7. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
-8. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM
+7. **smoke-signal** — runs `make smoke-signal`: a task registers a fault handler then faults on purpose, and requires `SIGNAL_SELFTEST: PASS` (the handler ran instead of the task being killed)
+8. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
+9. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM
 
 All but the security job use only first-party / pinned actions; the security job additionally installs third-party scanners and is advisory (non-blocking).
 

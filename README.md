@@ -53,7 +53,7 @@ Horus is engineered as if it were destined for production even though it is not 
  │                   Userspace  (Ring 3)                    │
  │     shell          hello       fs_server      captest    │
  └──────────────────────┬───────────────────────────────────┘
-                        │  syscalls (52 defined, table-dispatched)
+                        │  syscalls (0-55, table-dispatched)
  ┌──────────────────────▼───────────────────────────────────┐
  │                  Horus Kernel  (Ring 0)                  │
  │                                                          │
@@ -117,8 +117,9 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256) | ✅ Working |
 | PS/2 keyboard input | ✅ Working |
 | Preemptive round-robin scheduling (timer-driven, ring-3) | ✅ Working |
-| Rust security-core unit tests (48) + GitHub Actions CI (8 gated jobs) | ✅ Working |
-| Headless QEMU self-tests: smoke-boot, ELF/W^X, preemption (`make smoke`/`smoke-elf`/`smoke-preempt`) | ✅ Working |
+| Fault signals (ring-3 handler on fault instead of kill) | ✅ Working |
+| Rust security-core unit tests (49) + GitHub Actions CI (9 gated jobs) | ✅ Working |
+| Headless QEMU self-tests: smoke-boot, ELF/W^X, preemption, signals (`make smoke`/`smoke-elf`/`smoke-preempt`/`smoke-signal`) | ✅ Working |
 | Reproducible builds | ✅ Working |
 | Userspace shell and commands | 🟡 Partial |
 | Endpoint-based IPC | 🟡 Partial |

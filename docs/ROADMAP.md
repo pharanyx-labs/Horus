@@ -20,9 +20,10 @@ Several items from the phases below have since landed on `main`. They are kept i
 - **Table-driven syscall dispatch** — one descriptor table enforces each syscall's required capability centrally; unlisted numbers fail closed; a compile-time assertion pins the table to the syscall number space. Fixed a ring-0 wild-write in the ELF loader and a `sudo` lock-ordering deadlock along the way.
 - **Attack-surface reduction** — removed the ring-3 storage-backend callback that the kernel invoked from ring 0 (`SYS_REGISTER_STORAGE_BACKEND` now fails closed); closed several information-leak, timing, and buffer-handling issues in the syscall and authentication paths.
 - **Preemptive scheduling** — the PIT (100 Hz) preempts ring-3 tasks via a full-context kernel-stack switch, so CPU-bound tasks time-share without cooperating; ring-0 ticks never switch (kernel stays effectively non-preemptible). Runtime-proven by a gated 2-task self-test (`make smoke-preempt`).
+- **Fault signals** — a ring-3 fault is delivered to the task's registered handler (`SYS_SIGACTION`; signal # in `ebx`, fault addr in `ecx`) instead of killing it, with `SYS_SIGRETURN` to resume; the handler address is validated in safe Rust and faults inside a handler are not re-delivered. Runtime-proven by `make smoke-signal`. (Synchronous fault signals only; async cross-task signalling is future work.)
 - **Tamper-evident audit log** — each audit entry is HMAC'd (binding its sequence number) and a running hash-chain head commits to the entire ordered history, keyed by the per-boot pepper (`rust/src/audit.rs`); `SYS_AUDIT_DIGEST` exposes the digest + verify status for an external monitor. A detector, honestly scoped (not tamper-proof against a key-reading kernel compromise).
 - **x86-64 only** — the dead 32-bit kernel build target (`BITS=32`, `linker.ld`, `lowlevel.S`, the legacy 32-bit GDT/TSS/IDT, and all `#if defined(__x86_64__)` branches) was removed. The kernel is now unconditionally long-mode; ring-3 userspace remains 32-bit compatibility-mode binaries.
-- **CI + smoke-boot** — GitHub Actions runs eight gated jobs: the unit tests + `clippy -D warnings`, a kernel/ISO build, an alt-config build matrix (`DEBUG_SHELL`/`MINIMAL_SECURE`), a **headless QEMU smoke-boot** (boots to the shell banner with no fault), an **ELF-loader + W^X boot self-test**, a **preemptive-scheduling self-test**, a reproducible-build check, and a security-scan/SBOM job on every push/PR. (Deeper scripted integration tests and fuzzing are still pending.)
+- **CI + smoke-boot** — GitHub Actions runs nine gated jobs: the unit tests + `clippy -D warnings`, a kernel/ISO build, an alt-config build matrix (`DEBUG_SHELL`/`MINIMAL_SECURE`), a **headless QEMU smoke-boot** (boots to the shell banner with no fault), an **ELF-loader + W^X boot self-test**, a **preemptive-scheduling self-test**, a **signal-handling self-test**, a reproducible-build check, and a security-scan/SBOM job on every push/PR. (Deeper scripted integration tests and fuzzing are still pending.)
 
 ---
 
@@ -35,7 +36,7 @@ These items address the roughest edges in what already exists. They are good sta
 - **IPC call/reply semantics**: Complete `SYS_IPC_CALL` so that a client can send a message and block until the server replies atomically.
 - **Consistent error codes**: Replace the bare `-1`, `-2`, `-3` pattern with a named enumeration visible to both kernel and userspace.
 - **Shell command completion**: Fill in the stubbed shell commands (`ls`, `cat`, `mkdir`, `rm`, `spawn`, `kill`) so they invoke the correct syscalls end-to-end.
-- **Page fault recovery**: Deliver a signal-like notification to a faulting task instead of killing it unconditionally.
+- **Page fault recovery** *(done)*: a task registers its own ring-3 fault handler (`SYS_SIGACTION`) and a fault is delivered to it instead of the task being killed; `SYS_SIGRETURN` resumes. See "Recently completed". Remaining: asynchronous task-to-task signalling (capability-gated on the target TCB), alternate signal stacks, masking.
 
 ---
 

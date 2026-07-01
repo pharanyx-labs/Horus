@@ -123,6 +123,8 @@ Horus supports up to 64 concurrent tasks. Each task has:
 
 The scheduler is preemptive round-robin. Tasks can be runnable, blocked on IPC or a notification, or dead. The PIT fires at 100 Hz; on a tick that interrupted **ring 3**, the timer ISR switches to the next runnable task by swapping the per-task kernel stack that holds its full interrupt trap frame (`preempt_on_tick` in `scheduler.c` returns the kernel `%rsp` to resume on, and `isr_common_stub64` loads it before the `iretq` epilogue). A freshly spawned task gets a fabricated initial frame (`sched_prepare_user_context`) so the timer can `iretq` into it at its entry point. A tick that lands in **ring 0** (mid syscall or handler) never switches — the kernel is effectively non-preemptible, which sidesteps lock/reentrancy hazards (spinlocks disable interrupts, so a tick can't even fire inside a critical section). This is single-core with no priorities. Tasks may still yield cooperatively; that older `yield()`/IPC switch is a separate path and is not hardened to the full-context mechanism.
 
+**Fault signals.** A task may register its own fault handler with `SYS_SIGACTION`. When it faults in ring 3 (a page fault or a CPU exception such as `#UD`), `try_deliver_fault_signal` (`idt.c`) — instead of killing it — saves the full trap frame in the TCB and rewrites the live frame to enter the handler at ring 3, passing the signal number in `ebx` and the faulting address in `ecx`. `SYS_SIGRETURN` (serviced directly in `interrupt_handler64`, since it must rewrite the live frame) restores the saved context for an exact resume. The handler entry is validated to the user code window in safe Rust (`rust_signal_handler_addr_ok`), a fault *inside* a handler is not re-delivered (the `in_signal` guard prevents loops), and the handler runs at ring 3 with unchanged privileges — so this adds recovery from otherwise-fatal faults without granting any new authority. Asynchronous task-to-task signalling (which would need a capability on the target's TCB) is not implemented.
+
 ---
 
 ## IPC
@@ -137,7 +139,7 @@ The basic send/receive/call/reply cycle is implemented. The call/reply path (`SY
 
 ## Syscall interface
 
-Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C calling convention on the stack or in registers. There are 52 defined syscall numbers (`SYS_YIELD` = 0 through `SYS_AUDIT_DIGEST` = 52).
+Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C calling convention on the stack or in registers. Syscall numbers run `SYS_YIELD` = 0 through `SYS_SIGRETURN` = 55 (53 is the test-only `SYS_PREEMPT_TRACE`, present only in `PREEMPT_SELFTEST` builds).
 
 Dispatch is **table-driven**: `syscall_handler` indexes a `syscall_table[]` of descriptors `{ handler, slot, rights, type }`, validates the number, and — for syscalls whose authority is a single fixed capability — enforces that capability in one central place before calling the handler. A number with no entry (including the reserved/gap numbers below) fails closed. A `_Static_assert` pins the table size to the highest syscall number, so a syscall cannot be added without a table slot. Syscalls with dynamic or self-authorising policy (the capability ops, the FS ops, auth/sudo, user management) carry no fixed slot and authorise inside their handler or the helper they call.
 
@@ -160,6 +162,10 @@ Numbers are the authoritative values from `include/syscall.h`. (Numbers 1/`SYS_P
 - `SYS_GETUID` (29), `SYS_AUTH` (30), `SYS_SUDO` (31), `SYS_GET_PASS` (32)
 - `SYS_USERADD` (33), `SYS_USERDEL` (34), `SYS_PASSWD` (35), `SYS_ROTATE_KEYS` (36), `SYS_READ_AUDIT` (37)
 - `SYS_AUDIT_DIGEST` (52) — return the audit-log integrity digest (event count + chain-head MAC) and verify status; `CAP_AUDIT` READ (slot 7)
+
+**Signals**
+- `SYS_SIGACTION` (54) — register/clear this task's own ring-3 fault handler (self authority; handler validated to the user code window)
+- `SYS_SIGRETURN` (55) — resume the pre-signal context from within a handler
 
 **Capabilities**
 - mint (4), transfer (8), move (9) — raw-numbered, no public macro; `SYS_CAP_REVOKE` (51)

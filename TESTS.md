@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **48 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Two **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, and `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
+The Rust security core has **48 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Three **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X, and `make smoke-preempt` spawns two non-yielding ring-3 tasks and asserts the timer preempts and time-slices them. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
 
 ---
 
@@ -60,15 +60,16 @@ help
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs seven jobs, all hard gates:
+`.github/workflows/ci.yml` runs eight jobs, all hard gates:
 
 1. **rust** — `cargo test --release` and `cargo clippy --all-targets -- -D warnings`
 2. **kernel** — builds `kernel.elf` and a bootable ISO (x86-64) and uploads them as artifacts
 3. **altconfigs** — a build matrix over `DEBUG_SHELL=1` and `MINIMAL_SECURE=1` (the `#ifdef`-toggled configurations, which have broken silently before)
 4. **smoke** — installs QEMU and runs `make smoke` (headless boot to the shell banner, no fault)
 5. **smoke-elf** — runs `make smoke-elf`: boots a real multi-segment ELF and requires `ELF_SELFTEST: PASS` (the loader mapped each `PT_LOAD` under the correct W^X permissions)
-6. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
-7. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM
+6. **smoke-preempt** — runs `make smoke-preempt`: spawns two non-yielding ring-3 tracers and requires `PREEMPT_SELFTEST: PASS` (the timer time-sliced them, proven by interleaved traces)
+7. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
+8. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM
 
 All but the security job use only first-party / pinned actions; the security job additionally installs third-party scanners and is advisory (non-blocking).
 

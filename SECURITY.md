@@ -6,7 +6,7 @@ Horus is a **research microkernel** in early development. It is not suitable for
 
 Known weaknesses include:
 
-- SMP and preemptive scheduling are not yet implemented
+- SMP is not yet implemented (single-core); preemptive scheduling is now implemented but the legacy cooperative `yield()`/IPC switch between multiple tasks is a separate, un-hardened path
 - Load-base ASLR is not applied (userspace binaries are non-PIE)
 - Disk-backed persistent storage is not the live backing store (the filesystem is in-memory); the encrypted-block path, though now cryptographically sound, is not yet wired in as the default
 - The audit log is tamper-*evident* (an HMAC chain detects modification), not tamper-*proof* — an attacker who can read the per-boot key can recompute a consistent chain (see the audit-log note below)
@@ -15,7 +15,7 @@ These are not undisclosed vulnerabilities — they are documented, known limitat
 
 ## Hardening currently in place
 
-For balance, the following are implemented and enforced today (single-core, cooperative build):
+For balance, the following are implemented and enforced today (single-core, preemptive build):
 
 - **Hardware isolation:** Ring 0/3 separation with per-task page tables; **SMEP** and **SMAP** enabled when advertised (ring 0 cannot execute, and cannot casually read/write, user pages — user copies resolve the physical address under the kernel mapping rather than dereferencing a user virtual address).
 - **W^X for user memory:** `EFER.NXE` is enabled and the kernel sets the PTE NX bit so a writable page is never executable. User stacks are mapped non-executable, and the ELF loader honours each `PT_LOAD` segment's `p_flags` (code read+execute, data/rodata no-execute). The flat-binary fallback (the shipped, non-ELF userspace) keeps its image executable; its boot is covered by the smoke-boot test.
@@ -27,7 +27,7 @@ For balance, the following are implemented and enforced today (single-core, coop
 - **No ring-3 code in ring 0:** `SYS_REGISTER_STORAGE_BACKEND` — which used to register userspace function pointers the kernel called from ring 0 — fails closed; any userspace storage/FS provider must run as a ring-3 IPC server.
 - **Audit trail:** capability mint/transfer/move/revoke (and the FS/auth paths) record their outcome to the audit log.
 - **Tamper-evident audit log:** every audit entry is bound by an HMAC keyed to the per-boot secret pepper (the MAC binds the entry's absolute sequence number, so an in-place edit, a ring-slot swap, or a replay no longer verifies), and a running hash-chain head commits to the *entire* ordered history — including entries already overwritten in the ring. `SYS_AUDIT_DIGEST` (a `CAP_AUDIT`-gated read) returns the event count, the chain-head MAC, and a constant-time verify status, so an external monitor can detect dropped, rewritten, or rolled-back events over time. The keyed-hash logic lives in safe Rust (`rust/src/audit.rs`).
-- **Supply chain / CI:** every change is gated by a CI pipeline of seven jobs — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
+- **Supply chain / CI:** every change is gated by a CI pipeline of eight jobs — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
 
 The security-critical primitives (capabilities, memory refcounting, hashing, RNG, FFI validation) live in safe `no_std` Rust and carry unit tests; the rest of the kernel is C and has **not** undergone systematic fuzzing or third-party review.
 
@@ -74,9 +74,9 @@ audited-standard algorithms implemented in safe Rust (`rust/src/sha256.rs`,
 
 ## Side-channel threat model
 
-Horus runs single-core and cooperatively today, so classic cross-core cache and
-SMT side channels do not yet apply. The following are tracked for when
-preemption / SMP land:
+Horus runs single-core today (now with timer preemption of ring-3 tasks), so
+classic cross-core cache and SMT side channels do not yet apply. The following
+are tracked for when SMP lands:
 
 - **Timestamp counter (TSC):** `rdtsc` is readable from ring 3. The kernel
   therefore treats it as *public* and never uses it as a source of secret
@@ -88,11 +88,13 @@ preemption / SMP land:
   early-exit timing oracles.
 - **Secret zeroization:** derived keys and intermediate key material are wiped
   with `secure_zero` (volatile, non-elidable) after use.
-- **Cache partitioning / flush-on-context-switch:** not implemented. On a future
-  preemptive or SMP build, a context switch between mutually distrusting tasks
-  should flush or partition shared microarchitectural state (L1D, BTB) to limit
-  Spectre/Meltdown-class leakage. This is deferred and explicitly out of scope
-  for the current single-core build.
+- **Cache partitioning / flush-on-context-switch:** not implemented. Now that
+  the timer preempts and switches between mutually distrusting ring-3 tasks on a
+  single core, a context switch should ideally flush or partition shared
+  microarchitectural state (L1D, BTB) to limit Spectre/Meltdown-class leakage
+  across the switch. This is not yet done and is tracked as future hardening;
+  the current threat model does not claim resistance to microarchitectural
+  side channels between time-sliced tasks.
 - **RNG health:** RDRAND draws are retried and rejected on the degenerate
   all-zeros / all-ones outputs a stuck hardware RNG would emit; the CSPRNG mixes
   hardware output with timing entropy so a single failed source cannot zero the

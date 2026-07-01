@@ -116,9 +116,9 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
 | Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256) | ✅ Working |
 | PS/2 keyboard input | ✅ Working |
-| Round-robin (cooperative) scheduling | ✅ Working |
-| Rust security-core unit tests (48) + GitHub Actions CI (7 gated jobs) | ✅ Working |
-| Headless QEMU smoke-boot (`make smoke`) + ELF/W^X self-test (`make smoke-elf`) | ✅ Working |
+| Preemptive round-robin scheduling (timer-driven, ring-3) | ✅ Working |
+| Rust security-core unit tests (48) + GitHub Actions CI (8 gated jobs) | ✅ Working |
+| Headless QEMU self-tests: smoke-boot, ELF/W^X, preemption (`make smoke`/`smoke-elf`/`smoke-preempt`) | ✅ Working |
 | Reproducible builds | ✅ Working |
 | Userspace shell and commands | 🟡 Partial |
 | Endpoint-based IPC | 🟡 Partial |
@@ -128,7 +128,6 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Userspace filesystem server | 🟡 Stub |
 | Disk-backed persistent storage (as default) | ⬜ Not yet |
 | Symmetric multiprocessing | ⬜ Not yet |
-| Preemptive scheduling | ⬜ Not yet |
 
 ---
 

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "errno.h"   /* shared, descriptive syscall error codes (SYS_ERR_*) */
 
 /* MUST stay byte-identical to the copies in src/include/kernel.h and
  * src/include/syscall_userspace.h (SYS_GET_TASK_INFO ABI). */

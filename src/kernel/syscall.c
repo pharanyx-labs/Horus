@@ -286,7 +286,7 @@ static void strong_password_hash(const char *password, const uint8_t *salt,
 
     rust_argon2id_hash((const uint8_t *)password, kstrlen(password),
                        combined_salt, sizeof(combined_salt),
-                       ARGON2_T_COST, ARGON2_M_COST_KIB,
+                       ARGON2_T_COST, ARGON2_M_COST_KIB, ARGON2_P_COST,
                        argon2_scratch, sizeof(argon2_scratch) / sizeof(argon2_scratch[0]),
                        out_hash, PASS_HASH_LEN);
 
@@ -1584,7 +1584,7 @@ static void h_read(struct regs *r) {
             line[got++] = ch;
         }
         line[got] = 0;
-        if (copy_to_user(buf, line, got + 1) != 0) r->eax = -1;
+        if (copy_to_user(buf, line, got + 1) != 0) r->eax = (uint32_t)SYS_ERR_FAULT;
         else r->eax = got;
     } else if (fd >= 3) {
         struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
@@ -1717,7 +1717,7 @@ static void h_task_info(struct regs *r) {
     info.caps_in_use = tasks[tid].caps_in_use;
 
     if (copy_to_user(out, &info, sizeof(info)) == 0) r->eax = 0;
-    else r->eax = -1;
+    else r->eax = (uint32_t)SYS_ERR_FAULT;
 }
 
 /* SYS_RUN (19): drop the current task to ring 3 at an already-loaded image.
@@ -1766,7 +1766,7 @@ static void h_auth(struct regs *r) {
     char upass[32];
     if (copy_from_user(uname, (void*)(addr_t)r->ebx, 31) != 0 ||
         copy_from_user(upass, (void*)(addr_t)r->ecx, 31) != 0) {
-        r->eax = -1;
+        r->eax = (uint32_t)SYS_ERR_FAULT;
         return;
     }
     uname[31] = 0;
@@ -1778,7 +1778,7 @@ static void h_auth(struct regs *r) {
     if (rust_auth_global_locked(now)) {
         secure_zero(uname, sizeof(uname));
         secure_zero(upass, sizeof(upass));
-        r->eax = -4;
+        r->eax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
 
@@ -1786,7 +1786,7 @@ static void h_auth(struct regs *r) {
     if (u && rust_auth_is_locked(u->auth_lockout_until, now)) {
         secure_zero(uname, sizeof(uname));
         secure_zero(upass, sizeof(upass));
-        r->eax = -4;
+        r->eax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
 
@@ -1824,7 +1824,7 @@ static void h_auth(struct regs *r) {
             if (new_lockout) u->auth_lockout_until = (uint32_t)new_lockout;
         }
         audit_log(AUDIT_AUTH, 0, -1, "login failure");
-        r->eax = -1;
+        r->eax = (uint32_t)SYS_ERR_AUTH;
     }
     /* Don't leave the cleartext password (and username) sitting in the
      * kernel stack frame after authentication completes. */
@@ -1844,18 +1844,18 @@ static void h_sudo(struct regs *r) {
         }
     }
     if (rust_auth_global_locked(now)) {
-        r->eax = -4;
+        r->eax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
     if (cur_user && rust_auth_is_locked(cur_user->auth_lockout_until, now)) {
-        r->eax = -4;
+        r->eax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
 
     char upass[32];
     if (copy_from_user(upass, (void*)(addr_t)r->ebx, 31) != 0) {
         secure_zero(upass, sizeof(upass));
-        r->eax = -1;
+        r->eax = (uint32_t)SYS_ERR_FAULT;
         return;
     }
     upass[31] = 0;
@@ -1872,7 +1872,7 @@ static void h_sudo(struct regs *r) {
     }
     if (!cur) {
         secure_zero(upass, sizeof(upass));
-        r->eax = -1;
+        r->eax = (uint32_t)SYS_ERR_NOENT;
         return;
     }
 
@@ -1886,7 +1886,7 @@ static void h_sudo(struct regs *r) {
             if (new_lockout) cur_user->auth_lockout_until = (uint32_t)new_lockout;
         }
         secure_zero(upass, sizeof(upass));
-        r->eax = -2;
+        r->eax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
     rust_auth_global_on_success();
@@ -1908,7 +1908,7 @@ static void h_sudo(struct regs *r) {
     audit_log(AUDIT_SUDO, 0, 0, "sudo success");
 
     if (!program_armed) {
-        r->eax = -3;
+        r->eax = (uint32_t)SYS_ERR_INVAL;
         return;
     }
 
@@ -2024,7 +2024,7 @@ static void h_audit_digest(struct regs *r) {
     for (int b = 0; b < 8; b++) blob[b] = (uint8_t)(audit_seq >> (b * 8));
     for (int i = 0; i < AUDIT_MAC_LEN; i++) blob[8 + i] = audit_chain_head[i];
 
-    if (copy_to_user(out, blob, sizeof(blob)) != 0) { r->eax = -3; return; }
+    if (copy_to_user(out, blob, sizeof(blob)) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
     r->eax = vstatus;
 }
 
@@ -2258,19 +2258,19 @@ static void h_fs_mint_file(struct regs *r) {
 }
 static void h_fs_lookup(struct regs *r) {
     char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; return; }
+    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
     name[31] = 0;
     r->eax = sys_fs_lookup(r->ebx, name, r->edx, (addr_t)r->esi);
 }
 static void h_fs_create(struct regs *r) {
     char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; return; }
+    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
     name[31] = 0;
     r->eax = sys_fs_create(r->ebx, name, (int)r->edx, (addr_t)r->esi, (addr_t)r->edi);
 }
 static void h_fs_delete(struct regs *r) {
     char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = -1; return; }
+    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
     name[31] = 0;
     r->eax = sys_fs_delete(r->ebx, name);
 }
@@ -2319,21 +2319,21 @@ static void h_register_storage_backend(struct regs *r) {
 static void h_sigaction(struct regs *r) {
     uint32_t handler = r->ebx;
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)-1; return; }
+    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
     if (handler != 0 && !rust_signal_handler_addr_ok(handler)) {
-        r->eax = (uint32_t)-1;
+        r->eax = (uint32_t)SYS_ERR_INVAL;   /* handler not in the user code window */
         return;
     }
     tasks[cur].sig_handler = handler;
     tasks[cur].in_signal   = 0;
-    r->eax = 0;
+    r->eax = SYS_OK;
 }
 
 /* SYS_SIGRETURN is serviced directly in interrupt_handler64 (it must rewrite the
  * live trap frame). This table stub only runs if sigreturn is called outside a
  * handler -- in which case there is nothing to resume, so it fails. */
 static void h_sigreturn_stub(struct regs *r) {
-    r->eax = (uint32_t)-1;
+    r->eax = (uint32_t)SYS_ERR_INVAL;   /* sigreturn called outside a handler */
 }
 
 typedef struct {
@@ -2427,13 +2427,13 @@ void syscall_handler(struct regs *r) {
 
     if (!d || !d->fn) {
         /* Unknown, reserved, or unimplemented syscall number: fail closed. */
-        r->eax = -1;
+        r->eax = (uint32_t)SYS_ERR_NOSYS;
     } else if (d->slot != SC_NONE) {
         /* Central capability gate: a syscall cannot run without its declared
          * capability. Handlers no longer repeat this check. */
         struct capability *c = cap_lookup(d->slot, d->rights);
         if (!c || (d->ctype != SC_ANYTYPE && (int)c->type != d->ctype)) {
-            r->eax = -1;
+            r->eax = (uint32_t)SYS_ERR_PERM;
         } else {
             d->fn(r);
         }

@@ -262,26 +262,33 @@ static void generate_salt(uint8_t *salt, size_t len) {
     secure_random_bytes(salt, len);
 }
 
-/* Password hash = PBKDF2-HMAC-SHA256(password, salt || pepper, iterations).
+/* Password hash = Argon2id(password, salt || pepper), memory-hard.
  *
- * - PBKDF2-HMAC-SHA256 is the audited primitive (RFC 8018), implemented in
- *   safe Rust; the previous 4096-round XOR-rotate construction was unaudited,
- *   fast to brute-force, and folded its output into only a-z characters.
+ * - Argon2id (RFC 9106) is the reviewed, memory-hard KDF, implemented in safe
+ *   Rust (rust/src/argon2.rs) on the crate's own BLAKE2b and validated against
+ *   the argon2-cffi reference vectors. It replaces PBKDF2-HMAC-SHA256: unlike
+ *   PBKDF2, it forces an attacker to spend memory as well as time, defeating
+ *   the cheap GPU/ASIC parallel brute force PBKDF2 is vulnerable to.
  * - The 16-byte per-boot kernel pepper is concatenated into the salt so an
  *   attacker who exfiltrates the user database alone still lacks a secret
  *   needed to mount an offline dictionary attack.
- * - The raw 32-byte derived key is stored (PASS_HASH_LEN == 32), not an
- *   alphabetic projection, preserving full entropy.
+ * - The raw 32-byte tag is stored (PASS_HASH_LEN == 32), preserving full
+ *   entropy. The 4 MiB scratch buffer is a kernel static; hashing runs
+ *   non-preemptibly inside the syscall, so the single shared buffer is safe.
  */
+static uint64_t argon2_scratch[ARGON2_M_COST_KIB * 128];
+
 static void strong_password_hash(const char *password, const uint8_t *salt,
                                  const uint8_t *pepper, uint8_t *out_hash) {
     uint8_t combined_salt[PASS_SALT_LEN + 16];
     for (int i = 0; i < PASS_SALT_LEN; i++) combined_salt[i] = salt[i];
     for (int i = 0; i < 16; i++) combined_salt[PASS_SALT_LEN + i] = pepper[i];
 
-    rust_password_hash((const uint8_t *)password, kstrlen(password),
+    rust_argon2id_hash((const uint8_t *)password, kstrlen(password),
                        combined_salt, sizeof(combined_salt),
-                       PASSWORD_KDF_ITERATIONS, out_hash, PASS_HASH_LEN);
+                       ARGON2_T_COST, ARGON2_M_COST_KIB,
+                       argon2_scratch, sizeof(argon2_scratch) / sizeof(argon2_scratch[0]),
+                       out_hash, PASS_HASH_LEN);
 
     secure_zero(combined_salt, sizeof(combined_salt));
 }
@@ -322,7 +329,7 @@ static int verify_user_password(const char *name, const char *password) {
     }
     /* Run the same work whether or not the account exists, to deny an attacker
      * a timing oracle for username enumeration: always derive the (deliberately
-     * expensive) PBKDF2 hash and run a constant-time compare. When the user is
+     * expensive) Argon2id hash and run a constant-time compare. When the user is
      * absent we hash against a zero salt and compare the result against itself,
      * then discard the (necessarily "equal") outcome and fail. */
     static const uint8_t dummy_salt[PASS_SALT_LEN]; /* zero-initialized */

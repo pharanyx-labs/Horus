@@ -40,10 +40,14 @@ As of the crypto/entropy hardening pass, the security-sensitive primitives are
 audited-standard algorithms implemented in safe Rust (`rust/src/sha256.rs`,
 `rust/src/rng.rs`) and validated against published known-answer vectors:
 
-- **Password hashing:** PBKDF2-HMAC-SHA256 (RFC 8018), 120 000 iterations, with a
-  per-user random salt and a per-boot secret pepper folded into the salt. The
-  raw 32-byte derived key is stored. (Replaces the previous custom 4096-round
-  XOR-rotate scheme.)
+- **Password hashing:** Argon2id (RFC 9106), the memory-hard KDF — 4 MiB of
+  memory, 3 passes, single lane — implemented from scratch in safe Rust on the
+  crate's own BLAKE2b (`rust/src/argon2.rs`, `blake2b.rs`) and validated against
+  the `argon2-cffi` reference vectors, with a per-user random salt and a per-boot
+  secret pepper folded into the salt; the raw 32-byte tag is stored. Being
+  memory-hard, it forces an attacker to spend memory as well as time, defeating
+  the cheap GPU/ASIC parallel brute force that the previous PBKDF2-HMAC-SHA256
+  (and, before it, a custom XOR-rotate scheme) was vulnerable to.
 - **User database integrity:** HMAC-SHA256 over the serialized records, keyed by
   the per-boot pepper.
 - **Audit-log integrity:** each entry carries `HMAC(pepper, LE64(seq) || event)`

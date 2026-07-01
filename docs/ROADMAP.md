@@ -11,7 +11,7 @@ If you want to work on something listed here, open an issue or start a discussio
 Several items from the phases below have since landed on `main`. They are kept in their phases for context, but are done:
 
 - **`SYS_SPAWN`** — userspace can spawn ELF tasks, with paging/heap/ASLR set up and the syscall gated on a capability.
-- **Standard password hashing** — PBKDF2-HMAC-SHA256 replaced the custom XOR-rotate scheme.
+- **Argon2id password hashing** — the memory-hard KDF (RFC 9106; 4 MiB / 3 passes / single lane) implemented from scratch in safe Rust on an in-house BLAKE2b (`argon2.rs`, `blake2b.rs`), validated against the `argon2-cffi` reference vectors, replacing PBKDF2-HMAC-SHA256 (which had itself replaced a custom XOR-rotate scheme). Memory-hardness defeats the cheap GPU/ASIC brute force PBKDF2 is vulnerable to.
 - **Hardware entropy** — a ChaCha20 CSPRNG seeded from RDRAND and timing jitter; raw TSC is no longer used as secret randomness.
 - **Per-spawn stack/heap ASLR** — seeded from the CSPRNG (load-base / PIE randomisation still pending).
 - **Audited-standard cryptography** — primitives moved to `sha256.rs` / `rng.rs`, and bulk encryption-at-rest is now a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`) with per-write random nonces and per-block HKDF subkeys, replacing a hand-rolled routine that was not actually AES. (`crypto.rs` remains intentionally empty.)
@@ -52,9 +52,9 @@ These items address the roughest edges in what already exists. They are good sta
 
 ## Phase 3 — Cryptography and security hardening
 
-- **Replace custom password hashing**: Use a standard, reviewed algorithm. Argon2id is the preferred target. This requires either porting a `no_std` implementation or compiling a small C library into the kernel.
-- **Hardware entropy**: Seed the kernel's PRNG from RDRAND (already detected at boot but not used) and from interrupt timing jitter, not solely from TSC.
-- **ASLR enforcement**: Apply address space layout randomisation on every task spawn using the existing entropy infrastructure.
+- **Replace custom password hashing** *(done)*: Argon2id (RFC 9106) — memory-hard, implemented from scratch in safe `no_std` Rust (`argon2.rs` on `blake2b.rs`), validated against the `argon2-cffi` reference vectors and wired into the auth path (see "Recently completed").
+- **Hardware entropy** *(done)*: the kernel PRNG is a ChaCha20 fast-key-erasure CSPRNG seeded from RDRAND (with retry + health check), TSC jitter, and boot counters (`rng.rs`); raw TSC is never used as secret randomness.
+- **ASLR enforcement** *(done for stack/heap)*: per-spawn stack top and heap gap are randomised from the CSPRNG on every task spawn. Load-base (PIE userspace) randomisation remains an open multi-day epic — userspace is linked non-PIE at a fixed address.
 - **Audit log integrity** *(done)*: a per-entry HMAC (sequence-bound) plus a running hash-chain head over the whole history make tampering detectable, keyed by the per-boot pepper (`rust/src/audit.rs`, exposed via `SYS_AUDIT_DIGEST`).
 - **Encrypted storage** *(crypto done; integration pending)*: the block-level AEAD, per-block keys, and key rotation exist and are sound; what remains is wiring the encrypted store in as the default backing store (tracked under Phase 2).
 - **`crypto.rs` implementation** *(done)*: real primitives now live in safe Rust — SHA-256/HMAC/HKDF/PBKDF2 (`sha256.rs`), a ChaCha20 CSPRNG (`rng.rs`), and a ChaCha20+HMAC-SHA256 AEAD (`aead.rs`). `crypto.rs` itself is intentionally empty.

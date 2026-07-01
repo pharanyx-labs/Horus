@@ -105,7 +105,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are mostly bare integers; only a few (e.g. `SYS_ERR_NOSYS`) are named.
 - The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its current role (it is the security core: capabilities, memory refcounting, SHA-2/HMAC/HKDF/PBKDF2, ChaCha20 RNG, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stub implementations used by the `MINIMAL_SECURE=1` build (which strips the filesystem/storage stack); it is build configuration, not security logic.
-- Tests: 49 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the tamper-evident audit MAC/chain (`audit.rs`), the W^X page policy, the signal-handler-address window, and the FFI validation/policy functions. CI runs nine gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, an alt-config build matrix, a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a signal-handling self-test, a reproducible-build check, and security scans + SBOM). The smoke-boot tests confirm the kernel boots to userspace with no fault, that the ELF loader enforces W^X, that the timer preempts and time-slices two ring-3 tasks, and that a ring-3 fault is delivered to a registered handler, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
+- Tests: 53 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the tamper-evident audit MAC/chain (`audit.rs`), BLAKE2b + Argon2id against RFC 7693 / `argon2-cffi` reference vectors, the W^X page policy, the signal-handler-address window, and the FFI validation/policy functions. CI runs nine gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, an alt-config build matrix, a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a signal-handling self-test, a reproducible-build check, and security scans + SBOM). The smoke-boot tests confirm the kernel boots to userspace with no fault, that the ELF loader enforces W^X, that the timer preempts and time-slices two ring-3 tasks, and that a ring-3 fault is delivered to a registered handler, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -121,7 +121,7 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Task scheduling | ~55% (preemptive round-robin; single-core, no priorities) |
 | IPC | ~35% (send/recv; no notifications, no real blocking) |
 | Filesystem | ~35% (in-memory, capability-gated; no persistence) |
-| Cryptography (KDF/MAC/RNG + ChaCha20/HMAC AEAD; all standard primitives) | ~75% |
+| Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD; all standard primitives) | ~80% |
 | Storage / disk I/O | ~25% (driver + sound encrypted-block code, not wired as default) |
 | SMP | ~5% (detection/scaffolding only) |
-| Testing | ~40% (49 unit tests + CI + smoke-boot + ELF/W^X + preemption + signal self-tests; no deeper integration/fuzz) |
+| Testing | ~40% (53 unit tests + CI + smoke-boot + ELF/W^X + preemption + signal self-tests; no deeper integration/fuzz) |

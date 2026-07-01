@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **49 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Four **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X, `make smoke-preempt` spawns two non-yielding ring-3 tasks and asserts the timer preempts and time-slices them, and `make smoke-signal` faults a task on purpose and asserts its registered handler runs instead of the task being killed. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
+The Rust security core has **53 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Four **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X, `make smoke-preempt` spawns two non-yielding ring-3 tasks and asserts the timer preempts and time-slices them, and `make smoke-signal` faults a task on purpose and asserts its registered handler runs instead of the task being killed. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
 
 ---
 
@@ -21,6 +21,8 @@ This runs the unit tests across the security core:
 - `lib.rs` — page-fault validation, capability-rights subset checks, demand-paging (COW / demand-zero) policy, FS-operation right enforcement, and command dispatch
 - `rng.rs` — ChaCha20 against the RFC 8439 vector, reseed behaviour
 - `sha256.rs` — SHA-256 / HMAC / HKDF / PBKDF2 against published known-answer vectors
+- `blake2b.rs` — BLAKE2b-512 against the RFC 7693 known-answer vector, plus multi-block/empty inputs
+- `argon2.rs` — Argon2id against `argon2-cffi` reference tags (several `m`/`t` profiles incl. the kernel's exact 4 MiB / 3-pass config)
 - `aead.rs` — the ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD: seal/open round-trip, tampered-ciphertext and tampered-tag rejection (fail-closed), wrong-AAD rejection, and nonce separation
 - `audit.rs` — the tamper-evident audit MACs: per-entry MAC determinism, sequence/content/key binding (defeats slot swap, replay, in-place edit), domain-separated chain IV, order-sensitivity of the chain head, a full record-then-verify cycle with tamper detection, the constant-time MAC compare, and FFI null rejection
 - `lib.rs` (W^X) — `rust_user_page_is_noexec`: stack windows are non-executable, image/heap/code stay executable

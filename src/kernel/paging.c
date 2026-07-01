@@ -100,27 +100,10 @@ int page_ref_dec(uint32_t phys_addr) {
 
 static pde_t kernel_page_dir[1024] __attribute__((used, aligned(4096)));
 
-#if !defined(__x86_64__)
-static const uint8_t user_shell_code[] = {
-    0x3e, 0x20, 0x00,
-    0xb8, 0x01, 0x00, 0x00, 0x00,
-    0xbb, 0x00, 0x00, 0x40, 0x00,
-    0xcd, 0x80,
-    0xb8, 0x03, 0x00, 0x00, 0x00,
-    0xbb, 0x00, 0x10, 0x40, 0x00,
-    0xcd, 0x80,
-    0xb8, 0x07, 0x00, 0x00, 0x00,
-    0xbb, 0x00, 0x10, 0x40, 0x00,
-    0xcd, 0x80,
-    0xeb, 0xda,
-    0x00
-};
-#endif
 
 void ensure_lapic_mapped(uint64_t *root);
 
 void paging_init(void) {
-#if defined(__x86_64__)
     init_user_page_allocator();
     set_tss_kernel_stack(KERNEL_TSS_STACK);
     extern platform_info_t platform;
@@ -136,43 +119,6 @@ void paging_init(void) {
     }
     ensure_lapic_mapped(NULL);
     return;
-#else
-    for (int i = 0; i < 1024; i++) {
-        kernel_page_dir[i] = 0;
-    }
-
-    static pte_t low_mem_pt[16384] __attribute__((aligned(4096)));
-    for (int i = 0; i < 16384; i++) {
-        low_mem_pt[i] = (i * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE | PAGE_GLOBAL;
-    }
-    for (int pd_idx = 0; pd_idx < 16; pd_idx++) {
-        kernel_page_dir[pd_idx] = ((addr_t)&low_mem_pt[pd_idx * 1024]) | PAGE_PRESENT | PAGE_WRITE;
-    }
-
-    kernel_page_dir[1023] = ((addr_t)kernel_page_dir) | PAGE_PRESENT | PAGE_WRITE;
-
-    init_user_page_allocator();
-
-    static pte_t user_pt[1024] __attribute__((aligned(4096)));
-    for (int i = 0; i < 1024; i++) {
-        user_pt[i] = (0x400000 + i * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-    }
-    kernel_page_dir[1] = ((addr_t)user_pt) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-
-    asm volatile("mov %0, %%cr3" :: "r"((addr_t)kernel_page_dir));
-
-    uint32_t cr0;
-    asm volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= (1 << 31) | (1 << 16);
-    asm volatile("mov %0, %%cr0" :: "r"(cr0));
-
-    uint8_t* dest = (uint8_t*)USER_VIRT_BASE;
-    for (size_t i = 0; i < sizeof(user_shell_code); i++) {
-        dest[i] = user_shell_code[i];
-    }
-
-    set_tss_kernel_stack(KERNEL_TSS_STACK);
-#endif
 }
 
 void create_user_pagedir(uint32_t task_id) {
@@ -183,7 +129,6 @@ void create_user_pagedir(uint32_t task_id) {
     }
 
     spin_lock(&page_lock);
-#if defined(__x86_64__)
     
     uint64_t pml4_phys = alloc_user_physical_page();
     if (pml4_phys == 0) { println("pagedir: no pml4 phys"); spin_unlock(&page_lock); return; }
@@ -337,66 +282,10 @@ void create_user_pagedir(uint32_t task_id) {
     uint64_t guard_vaddr = (uint64_t)stack_area;
     uint64_t stack_base = guard_vaddr + PAGE_SIZE;
     tasks[task_id].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
-#else
-    static pde_t pd_pool[MAX_TASKS][1024] __attribute__((aligned(4096)));
-    static int next_pd = 0;
-
-    if (next_pd >= MAX_TASKS) {
-        spin_unlock(&page_lock);
-        return;
-    }
-
-    pde_t *pd = pd_pool[next_pd++];
-    for (int i = 0; i < 1024; i++) {
-        pd[i] = 0;
-    }
-
-    pd[0] = kernel_page_dir[0];
-    pd[1023] = kernel_page_dir[1023];
-
-    static pte_t user_pts[16][1024] __attribute__((aligned(4096)));
-    pte_t *upt = user_pts[task_id];
-    for (int i = 0; i < 1024; i++) {
-        upt[i] = 0;
-    }
-
-    const int INITIAL_PREMAP_PAGES = 64;
-    for (int i = 0; i < USER_MAP_PAGES; i++) {
-        uint32_t vaddr = USER_AREA_BASE + i * PAGE_SIZE;
-        uint32_t prot = rust_get_user_page_protection(task_id, vaddr);
-        if (i < INITIAL_PREMAP_PAGES) {
-            upt[i] = vaddr | prot | PAGE_PRESENT;
-        } else {
-            upt[i] = vaddr | prot;
-        }
-    }
-
-    uint32_t guard_page = 0x7FB000;
-    upt[(guard_page - USER_AREA_BASE) >> 12] = 0;
-
-    for (int i = 0; i < 4; i++) {
-        uint32_t vaddr = 0x7FF000 - (3 - i) * PAGE_SIZE;
-        uint32_t prot = rust_get_user_page_protection(task_id, vaddr);
-        upt[(vaddr - USER_AREA_BASE) >> 12] = vaddr | prot;
-    }
-
-    pd[1] = ((addr_t)upt) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-
-    uint32_t phys_pd = (addr_t)pd;
-    tasks[task_id].cr3 = phys_pd;
-
-    static uint8_t per_task_kstacks[MAX_TASKS][2 * PAGE_SIZE] __attribute__((aligned(4096)));
-    uint8_t *stack_area = per_task_kstacks[task_id];
-    uint32_t guard_vaddr = (addr_t)stack_area;
-    uint32_t stack_base  = guard_vaddr + PAGE_SIZE;
-
-    tasks[task_id].kernel_stack_top = stack_base + PAGE_SIZE - 16;
-#endif
     spin_unlock(&page_lock);
 }
 
 void switch_cr3(addr_t cr3) {
-#if defined(__x86_64__)
     
     if (cr3 == 0) {
         
@@ -409,16 +298,11 @@ void switch_cr3(addr_t cr3) {
     asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
     
     smp_maybe_shootdown(0); 
-#else
-    if (cr3 == 0) return;
-    asm volatile("mov %0, %%cr3" :: "r"(cr3));
-#endif
 }
 
 #define PAGE_COW   (1 << 9)
 
 int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
-#if defined(__x86_64__)
     
     uint64_t cr3_phys = tasks[get_current_task()].cr3;
     if (cr3_phys == 0) {
@@ -551,65 +435,9 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
     asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
     spin_unlock(&page_lock);
     return 0;
-#else
-    uint32_t pd_index = fault_addr >> 22;
-    uint32_t pt_index = (fault_addr >> 12) & 0x3FF;
-
-    pde_t *pd = (pde_t *)RECURSIVE_PD_VADDR;
-    if ((pd[pd_index] & PAGE_PRESENT) == 0) {
-        return -1;
-    }
-
-    pte_t *pt = (pte_t *)((addr_t)RECURSIVE_PT_VADDR + (pd_index * PAGE_SIZE));
-    pte_t entry = pt[pt_index];
-
-    if ((err_code & 2) != 0 && (entry & PAGE_COW) != 0) {
-        uint32_t old_phys = entry & ~0xFFF;
-        int refs = page_ref_dec(old_phys);
-
-        uint32_t new_phys = alloc_user_physical_page();
-        if (new_phys == 0) {
-            if (refs >= 0) page_ref_inc(old_phys);
-            return -3;
-        }
-
-        uint8_t *src = (uint8_t *)(addr_t)old_phys;
-        uint8_t *dst = (uint8_t *)(addr_t)new_phys;
-        for (int i = 0; i < PAGE_SIZE; i++) dst[i] = src[i];
-
-        page_ref_inc(new_phys);
-
-        uint32_t new_prot = (entry & 0xFFF) | PAGE_PRESENT | PAGE_WRITE;
-        new_prot &= ~PAGE_COW;
-        pt[pt_index] = new_phys | new_prot;
-
-        asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
-        return 0;
-    }
-
-    if ((entry & PAGE_PRESENT) != 0) {
-        return -2;
-    }
-
-    uint32_t phys = alloc_user_physical_page();
-    if (phys == 0) {
-        return -3;
-    }
-
-    uint8_t *page = (uint8_t *)(addr_t)phys;
-    for (int i = 0; i < PAGE_SIZE; i++) page[i] = 0;
-
-    uint32_t prot = entry & 0xFFF;
-    pt[pt_index] = phys | prot | PAGE_PRESENT;
-
-    asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
-
-    return 0;
-#endif
 }
 
 void drop_to_ring3(addr_t entry, addr_t stack) {
-#if defined(__x86_64__)
     __asm__ volatile ("movw $0x3f8,%%dx; movb $'E',%%al; outb %%al,%%dx; movb $'N',%%al; outb %%al,%%dx; movb $'T',%%al; outb %%al,%%dx" ::: "rax","rdx","memory");
     asm volatile (
         "cli\n"
@@ -629,36 +457,6 @@ void drop_to_ring3(addr_t entry, addr_t stack) {
           [user_rip] "r" (entry)
         : "memory", "rax"
     );
-#else
-    uint32_t eflags = 0x200;
-
-    asm volatile (
-        "cli\n"
-        "push $0x23\n"
-        "push %[user_esp]\n"
-        "push %[eflags]\n"
-        "push $0x1B\n"
-        "push %[user_eip]\n"
-        "mov $0x23, %%dx\n"
-        "mov %%dx, %%ds\n"
-        "mov %%dx, %%es\n"
-        "mov %%dx, %%fs\n"
-        "mov %%dx, %%gs\n"
-        "xor %%ecx, %%ecx\n"
-        "mov %%ecx, %%dr0\n"
-        "mov %%ecx, %%dr1\n"
-        "mov %%ecx, %%dr2\n"
-        "mov %%ecx, %%dr3\n"
-        "mov %%ecx, %%dr6\n"
-        "mov %%ecx, %%dr7\n"
-        "iret\n"
-        : 
-        : [user_esp] "m" (stack),
-          [user_eip] "m" (entry),
-          [eflags]   "m" (eflags)
-        : "ecx", "edx", "memory"
-    );
-#endif
 }
 
 static bool is_canonical_address(uint64_t addr) {
@@ -667,7 +465,6 @@ static bool is_canonical_address(uint64_t addr) {
 }
 
 static bool __attribute__((unused)) is_user_address_valid(uint64_t vaddr) {
-#if defined(__x86_64__)
     if (!is_canonical_address(vaddr)) return false;
     if (vaddr >= 0x0000800000000000ULL) return false; 
 
@@ -679,23 +476,8 @@ static bool __attribute__((unused)) is_user_address_valid(uint64_t vaddr) {
         vaddr < (ASLR_HIGH_STACK_BASE + 0x1000)) return true;
 
     return false;
-#else
-    uint32_t pd_index = (uint32_t)vaddr >> 22;
-    uint32_t pt_index = ((uint32_t)vaddr >> 12) & 0x3FF;
-
-    pde_t *pd = (pde_t *)RECURSIVE_PD_VADDR;
-    if ((pd[pd_index] & PAGE_PRESENT) == 0) return false;
-
-    pte_t *pt = (pte_t *)((addr_t)RECURSIVE_PT_VADDR + (pd_index * PAGE_SIZE));
-    if ((pt[pt_index] & PAGE_PRESENT) == 0) return false;
-
-    if ((pt[pt_index] & PAGE_USER) == 0) return false;
-
-    return true;
-#endif
 }
 
-#if defined(__x86_64__)
 #define PT_PHYS_MASK 0x000FFFFFFFFFF000ULL
 
 
@@ -827,56 +609,8 @@ int copy_to_user(void *dst, const void *src, size_t n) {
     if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
     return user_copy((uint64_t)(uintptr_t)dst, (uint8_t *)(void *)src, n, 1, 1);
 }
-#else
-int copy_from_user(void *dst, const void *src, size_t n) {
-
-    if (n == 0) return 0;
-    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
-
-    uint64_t saddr = (uint64_t)src;
-    uintptr_t daddr = (uintptr_t)dst;
-
-    if (!is_canonical_address(saddr) ||
-        !is_user_address_valid(saddr) ||
-        !is_user_address_valid(saddr + n - 1) ||
-        daddr + n < daddr) {
-        return -1;
-    }
-
-    uint8_t *d = dst; const uint8_t *s = src;
-    for (size_t i = 0; i < n; i++) d[i] = s[i];
-    return 0;
-}
-
-int copy_to_user(void *dst, const void *src, size_t n) {
-
-    if (n == 0) return 0;
-    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
-
-    uint64_t daddr = (uint64_t)dst;
-
-    if (!is_canonical_address(daddr) ||
-        !is_user_address_valid(daddr) ||
-        !is_user_address_valid(daddr + n - 1) ||
-        daddr + n < daddr) {
-        return -1;
-    }
-
-    uint8_t *d = dst; const uint8_t *s = src;
-    for (size_t i = 0; i < n; i++) d[i] = s[i];
-    return 0;
-}
-
-/* 32-bit (non-PAE) PTEs have no NX bit, so W^X cannot be enforced here; the
- * ELF loader's protection pass is a no-op on this path. */
-int user_protect_page(uint64_t vaddr, int writable, int executable) {
-    (void)vaddr; (void)writable; (void)executable;
-    return -1;
-}
-#endif
 
 void ensure_lapic_mapped(uint64_t *root_pml4) {
-#if defined(__x86_64__)
     extern uint64_t pml4[512];
     if (root_pml4 == NULL) root_pml4 = pml4;
     const uint64_t vaddr = 0xFEE00000ULL;
@@ -952,5 +686,4 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
     pt[pti] = paddr | PAGE_PRESENT | PAGE_WRITE | PAGE_CD;
 
     asm volatile("invlpg (%0)" :: "r"(vaddr) : "memory");
-#endif
 }

@@ -17,21 +17,10 @@ int rust_handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code, bool i
     return handle_demand_page_fault(fault_addr, err_code);
 }
 
-struct idt_entry {
-    uint16_t base_low;
-    uint16_t sel;
-    uint8_t  always0;
-    uint8_t  flags;
-    uint16_t base_high;
-} __attribute__((packed));
-
 struct idt_ptr {
     uint16_t limit;
     addr_t   base;
 } __attribute__((packed));
-
-static struct idt_entry idt[256];
-static struct idt_ptr idt_ptr;
 
 struct idt_entry64 {
     uint16_t offset_low;
@@ -95,7 +84,6 @@ static char ps2_translate(uint8_t sc) {
     return 0;
 }
 
-extern void idt_load(addr_t);
 extern void isr0(void); extern void isr1(void); extern void isr2(void); extern void isr3(void);
 extern void isr4(void); extern void isr5(void); extern void isr6(void); extern void isr7(void);
 extern void isr8(void); extern void isr9(void); extern void isr10(void); extern void isr11(void);
@@ -284,14 +272,6 @@ static void serial_init(void) {
     outb(0x2FC, 0x0B);
 }
 
-static void idt_set_gate(uint8_t num, addr_t base, uint16_t sel, uint8_t flags) {
-    idt[num].base_low  = base & 0xFFFF;
-    idt[num].base_high = (base >> 16) & 0xFFFF;
-    idt[num].sel       = sel;
-    idt[num].always0   = 0;
-    idt[num].flags     = flags;
-}
-
 static void idt64_set_gate(uint8_t num, uint64_t handler, uint16_t sel, uint8_t ist, uint8_t type_attr)
 {
     idt64[num].offset_low  = handler & 0xFFFF;
@@ -373,70 +353,7 @@ void idt_init64(void)
     __asm__ volatile ("lidt %0" : : "m"(idt64_ptr));
 
     keyboard_init();
-}
-
-void idt_init(void) {
-    idt_ptr.limit = sizeof(struct idt_entry) * 256 - 1;
-    idt_ptr.base  = (addr_t)&idt[0];
-
-    idt_set_gate(0, (addr_t)isr0, 0x08, 0x8E);
-    idt_set_gate(1, (addr_t)isr1, 0x08, 0x8E);
-    idt_set_gate(2, (addr_t)isr2, 0x08, 0x8E);
-    idt_set_gate(3, (addr_t)isr3, 0x08, 0x8E);
-    idt_set_gate(4, (addr_t)isr4, 0x08, 0x8E);
-    idt_set_gate(5, (addr_t)isr5, 0x08, 0x8E);
-    idt_set_gate(6, (addr_t)isr6, 0x08, 0x8E);
-    idt_set_gate(7, (addr_t)isr7, 0x08, 0x8E);
-    idt_set_gate(8, (addr_t)isr8, 0x08, 0x8E);
-    idt_set_gate(9, (addr_t)isr9, 0x08, 0x8E);
-    idt_set_gate(10, (addr_t)isr10, 0x08, 0x8E);
-    idt_set_gate(11, (addr_t)isr11, 0x08, 0x8E);
-    idt_set_gate(12, (addr_t)isr12, 0x08, 0x8E);
-    idt_set_gate(13, (addr_t)isr13, 0x08, 0x8E);
-    idt_set_gate(14, (addr_t)isr14, 0x08, 0x8E);
-    idt_set_gate(15, (addr_t)isr15, 0x08, 0x8E);
-    idt_set_gate(16, (addr_t)isr16, 0x08, 0x8E);
-    idt_set_gate(17, (addr_t)isr17, 0x08, 0x8E);
-    idt_set_gate(18, (addr_t)isr18, 0x08, 0x8E);
-    idt_set_gate(19, (addr_t)isr19, 0x08, 0x8E);
-    idt_set_gate(20, (addr_t)isr20, 0x08, 0x8E);
-    idt_set_gate(21, (addr_t)isr21, 0x08, 0x8E);
-    idt_set_gate(22, (addr_t)isr22, 0x08, 0x8E);
-    idt_set_gate(23, (addr_t)isr23, 0x08, 0x8E);
-    idt_set_gate(24, (addr_t)isr24, 0x08, 0x8E);
-    idt_set_gate(25, (addr_t)isr25, 0x08, 0x8E);
-    idt_set_gate(26, (addr_t)isr26, 0x08, 0x8E);
-    idt_set_gate(27, (addr_t)isr27, 0x08, 0x8E);
-    idt_set_gate(28, (addr_t)isr28, 0x08, 0x8E);
-    idt_set_gate(29, (addr_t)isr29, 0x08, 0x8E);
-    idt_set_gate(30, (addr_t)isr30, 0x08, 0x8E);
-    idt_set_gate(31, (addr_t)isr31, 0x08, 0x8E);
-
-    idt_set_gate(32, (addr_t)isr32, 0x08, 0x8E);
-    idt_set_gate(33, (addr_t)isr33, 0x08, 0x8E);
-    idt_set_gate(34, (addr_t)isr34, 0x08, 0x8E);
-    idt_set_gate(35, (addr_t)isr35, 0x08, 0x8E);
-    idt_set_gate(36, (addr_t)isr36, 0x08, 0x8E);
-    idt_set_gate(37, (addr_t)isr37, 0x08, 0x8E);
-    idt_set_gate(38, (addr_t)isr38, 0x08, 0x8E);
-    idt_set_gate(39, (addr_t)isr39, 0x08, 0x8E);
-    idt_set_gate(40, (addr_t)isr40, 0x08, 0x8E);
-    idt_set_gate(41, (addr_t)isr41, 0x08, 0x8E);
-    idt_set_gate(42, (addr_t)isr42, 0x08, 0x8E);
-    idt_set_gate(43, (addr_t)isr43, 0x08, 0x8E);
-    idt_set_gate(44, (addr_t)isr44, 0x08, 0x8E);
-    idt_set_gate(45, (addr_t)isr45, 0x08, 0x8E);
-    idt_set_gate(46, (addr_t)isr46, 0x08, 0x8E);
-    idt_set_gate(47, (addr_t)isr47, 0x08, 0x8E);
-
-    idt_set_gate(0x80, (addr_t)isr128, 0x08, 0xEE);
-
-    pic_init();
-    keyboard_init();
-    serial_init();
-    idt_load((addr_t)&idt_ptr);
-
-    asm volatile("sti");
+    serial_init();   /* COM1/COM2 baud setup (the 64-bit boot's only caller) */
 }
 
 void page_fault_handler(struct regs *r) {
@@ -445,7 +362,6 @@ void page_fault_handler(struct regs *r) {
 
     uint32_t err = r->err_code;
     int cur = get_current_task();
-#if defined(__x86_64__)
     if (cur > 0 && (fault_addr >= USER_AREA_BASE || fault_addr >= 0xA00000)) {
         int action = rust_handle_demand_page_fault(fault_addr, err, 0, 1);
         if (action == 0 || action == 1) {
@@ -456,34 +372,6 @@ void page_fault_handler(struct regs *r) {
             return;
         }
     }
-#else
-    if ((err & 1) == 0 && cur > 0 && fault_addr >= USER_AREA_BASE) {
-        bool is_cow = false;
-        uint16_t ref_count = 1;
-
-        uint32_t pd_index = fault_addr >> 22;
-        uint32_t pt_index = (fault_addr >> 12) & 0x3FF;
-        pde_t *pd = (pde_t *)(addr_t)RECURSIVE_PD_VADDR;
-        if ((pd[pd_index] & PAGE_PRESENT) != 0) {
-            pte_t *pt = (pte_t *)((addr_t)RECURSIVE_PT_VADDR + (pd_index * PAGE_SIZE));
-            pte_t entry = pt[pt_index];
-            if ((entry & (1 << 9)) != 0) {
-                is_cow = true;
-            }
-            ref_count = 1;
-        }
-
-        int action = rust_handle_demand_page_fault(fault_addr, err, is_cow, ref_count);
-
-        if (action == 0 || action == 1) {
-            if (handle_demand_page_fault(fault_addr, err) == 0) {
-                return;
-            }
-        } else if (action == 2) {
-            return;
-        }
-    }
-#endif
     bool allowed = rust_validate_page_fault(cur, fault_addr, err);
 
     if (!allowed) {
@@ -503,7 +391,6 @@ void page_fault_handler(struct regs *r) {
         schedule();
         if (killed > 0) tasks[0].state = 1;
 
-#if defined(__x86_64__)
         struct interrupt_frame64 *f64 = (struct interrupt_frame64 *)r;
         if ((killed > 0) && (f64->cs & 3)) {
             f64->rip    = (uint64_t)resume_shell_after_fault;
@@ -512,7 +399,6 @@ void page_fault_handler(struct regs *r) {
             f64->rsp    = tasks[0].kernel_stack_top;
             f64->ss     = 0x10;
         }
-#endif
         if (killed == 0) {
             asm volatile("cli; hlt");
         }

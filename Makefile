@@ -2,25 +2,17 @@ CC     = gcc
 LD     = ld
 AS     = gcc
 
-BITS ?= 64
-
 export SOURCE_DATE_EPOCH ?= 1609459200
 
-ifeq ($(BITS),32)
-    CFLAGS = -m32 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
-             -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
-             -I src/include -std=gnu99 -fno-builtin -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
-    ASFLAGS = -m32 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c
-    LDFLAGS = -T linker.ld -m elf_i386 -nostdlib -static --build-id=none
-    RUST_TARGET ?= i686-unknown-linux-gnu
-else
-    CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
-             -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
-             -I src/include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
-    ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c
-    LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none
-    RUST_TARGET ?= x86_64-unknown-none
-endif
+# Horus is x86-64 only. The kernel runs in 64-bit long mode; the ring-3
+# userspace binaries are the sole 32-bit component (built in compatibility
+# mode further down, USERSPACE_CFLAGS).
+CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
+         -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
+         -I src/include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
+ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c
+LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none
+RUST_TARGET ?= x86_64-unknown-none
 
 
 OBJS = src/boot/multiboot.o \
@@ -58,12 +50,8 @@ ASFLAGS += -DELF_SELFTEST
 ELF_SELFTEST_DEP = userspace/elftest.elf
 endif
 
-ifeq ($(BITS),64)
-    OBJS += src/boot/entry64.o
-    OBJS += src/kernel/lowlevel64.o
-else
-    OBJS += src/kernel/lowlevel.o
-endif
+OBJS += src/boot/entry64.o
+OBJS += src/kernel/lowlevel64.o
 
 all: kernel.elf
 
@@ -137,7 +125,6 @@ $(RUST_LIB): rust/src/lib.rs rust/Cargo.toml rust/src/capability.rs rust/src/cry
 endif
 
 run: kernel.elf
-ifeq ($(BITS),64)
 	@$(MAKE) --no-print-directory boot.iso
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap -display sdl -vga std \
 		-chardev socket,id=char0,port=4445,host=localhost,server=on,wait=off \
@@ -145,14 +132,6 @@ ifeq ($(BITS),64)
 		-serial tcp:localhost:4444,server,nowait,nodelay \
 		-monitor none -device isa-debug-exit,iobase=0x604,iosize=0x04 \
 		-net none -no-reboot -no-shutdown -cdrom boot.iso
-else
-	qemu-system-i386 -kernel kernel.elf -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap -nographic \
-		-chardev stdio,id=char0,signal=off \
-		-serial chardev:char0 \
-		-serial tcp:localhost:4444,server,nowait,nodelay \
-		-monitor none -device isa-debug-exit,iobase=0x604,iosize=0x04 \
-		-no-reboot -net none
-endif
 
 
 boot.iso: kernel.elf grub.cfg
@@ -232,7 +211,7 @@ smoke: boot.iso
 .PHONY: reproducible-build verify-build
 reproducible-build:
 	@rm -f kernel.elf boot.iso
-	@SOURCE_DATE_EPOCH=1609459200 $(MAKE) --no-print-directory clean all BITS=64
+	@SOURCE_DATE_EPOCH=1609459200 $(MAKE) --no-print-directory clean all
 	@sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
 	@echo "Reproducible build recorded."
 

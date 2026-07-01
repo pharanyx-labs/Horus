@@ -59,21 +59,13 @@ void __attribute__((noreturn)) resume_shell_after_fault(void) {
 void kernel_main(uint32_t mb_info) {
     (void)mb_info;
 
-#if defined(__x86_64__)
     asm volatile(
         "xor %%rax,%%rax\n mov %%rax,%%dr0\n mov %%rax,%%dr1\n mov %%rax,%%dr2\n"
         "mov %%rax,%%dr3\n mov %%rax,%%dr6\n mov %%rax,%%dr7\n"
         "pushfq\n andq $~0x100,(%%rsp)\n popfq\n" ::: "rax","memory");
-#else
-    asm volatile(
-        "xor %%eax,%%eax\n mov %%eax,%%dr0\n mov %%eax,%%dr1\n mov %%eax,%%dr2\n"
-        "mov %%eax,%%dr3\n mov %%eax,%%dr6\n mov %%eax,%%dr7\n"
-        "pushf\n andl $~0x100,(%%esp)\n popf\n" ::: "eax","memory");
-#endif
 
     terminal_init();
 
-#if defined(__x86_64__)
     idt_init64();
     pic_init();
     paging_init();
@@ -98,24 +90,6 @@ void kernel_main(uint32_t mb_info) {
     shell_prompt_loop();
 #else
     spawn_initial_userspace_shell();
-    set_current_task(0);
-    for(;;) schedule();
-#endif
-#else
-    gdt_init();
-    idt_init();
-    paging_init();
-    cap_init();
-    cpu_detect_features();
-    cpu_enable_protections();   /* SMEP/SMAP — must follow feature detection */
-    entropy_init();
-#ifndef MINIMAL_SECURE
-    ramfs_init();
-    ata_init();
-#endif
-    scheduler_init();
-    aslr_init_seed();
-    __asm__ volatile("sti");
     set_current_task(0);
     for(;;) schedule();
 #endif

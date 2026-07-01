@@ -44,11 +44,7 @@ void scheduler_init(void) {
         tasks[i].auth_lockout_until = 0;
     }
 
-#if defined(__x86_64__)
     create_task(0, 0, 0);
-#else
-    create_task(0, USER_VIRT_BASE + 3, DEMO_TASK_STACK_TOP);
-#endif
 
     tasks[0].uid = 0;
     tasks[0].gid = 0;

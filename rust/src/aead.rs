@@ -185,19 +185,18 @@ pub unsafe extern "C" fn rust_aead_open(
 mod tests {
     use super::*;
 
-    fn keys() -> ([u8; 32], [u8; 32], [u8; 12]) {
-        let mut ek = [0u8; 32];
-        let mut mk = [0u8; 32];
-        let mut nc = [0u8; AEAD_NONCE_LEN];
-        for (i, b) in ek.iter_mut().enumerate() {
-            *b = i as u8;
-        }
-        for (i, b) in mk.iter_mut().enumerate() {
-            *b = (0xA0 + i) as u8;
-        }
-        for (i, b) in nc.iter_mut().enumerate() {
-            *b = (0x10 + i) as u8;
-        }
+    // Deterministic *test* vectors, derived via the crate's SHA-256 from domain
+    // labels rather than hard-coded key/nonce bytes. They must be fixed so the
+    // round-trip and tamper tests are reproducible, but they never occur in the
+    // production path: real enc/mac keys are HKDF-SHA256 subkeys and the nonce is
+    // a fresh CSPRNG draw, all supplied by the C storage layer through the
+    // rust_aead_seal / rust_aead_open FFI (which take caller-provided key
+    // pointers — this crate hard-codes no key material anywhere).
+    fn keys() -> ([u8; 32], [u8; 32], [u8; AEAD_NONCE_LEN]) {
+        let ek: [u8; 32] = crate::sha256::sha256(b"horus/aead-test/enc-key");
+        let mk: [u8; 32] = crate::sha256::sha256(b"horus/aead-test/mac-key");
+        let nh = crate::sha256::sha256(b"horus/aead-test/nonce");
+        let nc: [u8; AEAD_NONCE_LEN] = core::array::from_fn(|i| nh[i]);
         (ek, mk, nc)
     }
 

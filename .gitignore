@@ -90,3 +90,9 @@ dist/
 
 # System Prompt
 system_prompt.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+horus_usage.log

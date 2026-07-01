@@ -162,6 +162,7 @@ void users_init(void);
 #define SYS_CONNECT_FS_SERVER  50
 #define SYS_CAP_REVOKE         51
 #define SYS_AUDIT_DIGEST       52
+#define SYS_PREEMPT_TRACE      53   /* PREEMPT_SELFTEST builds only; NOSYS otherwise */
 
 #define CAP_NULL                0
 #define CAP_TCB                 1
@@ -299,11 +300,21 @@ typedef struct tcb {
     int      blocked_on_notif;
     int      waiter;
 
-    
+
     uint64_t kernel_stack_top;
 
-    
-    uint8_t  padding[248];
+    /* Preemptive scheduling: `saved_ksp` is the kernel-stack pointer at which
+     * this task's full interrupt trap frame sits while it is not running (set
+     * either by the timer ISR when the task is preempted, or fabricated at
+     * spawn for a task that has not run yet). `runnable_ctx` is 1 once such a
+     * resumable frame exists. The timer ISR resumes a task by loading
+     * `saved_ksp` into %rsp and running the interrupt epilogue (pop regs;
+     * iretq). See scheduler.c and src/kernel/lowlevel64.S. */
+    uint64_t saved_ksp;
+    uint32_t runnable_ctx;
+
+
+    uint8_t  padding[236];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];
@@ -443,8 +454,36 @@ void syscall_handler(struct regs *r);
 void resume_shell_after_fault(void);
 void print_hex64(uint64_t v);
 void timer_handler(void);
+void pit_init(void);
 void smp_maybe_shootdown(uint64_t v);
 int smp_get_online_count(void);
+
+/* Full interrupt trap frame pushed by isr_common_stub64 (src/kernel/lowlevel64.S):
+ * the 15 general-purpose registers, then the vector + error code, then the CPU's
+ * iret frame. A pointer to this is what interrupt_handler64 receives and what
+ * the preemptive scheduler saves/restores per task. */
+struct interrupt_frame64 {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t int_no;
+    uint64_t err_code;
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+    uint64_t rsp;
+    uint64_t ss;
+};
+
+/* Preemptive scheduling (scheduler.c). preempt_on_tick is called from the timer
+ * ISR with the current trap-frame pointer and the interrupted CS; it returns the
+ * kernel %rsp to resume on (unchanged for no-switch, or the next task's saved
+ * frame). sched_prepare_user_context fabricates an initial resumable frame for a
+ * freshly spawned user task. sched_enable_preemption arms the timer switch once
+ * boot is past its delicate single-threaded init. */
+uint64_t interrupt_handler64(struct interrupt_frame64 *frame);
+uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs);
+void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp);
+void sched_enable_preemption(void);
 /* Signatures MUST match rust/src/memory.rs exactly (return types and the u32
  * n_pages width — they previously drifted to `int`). */
 int32_t  rust_page_ref_dec(uint32_t phys, uint16_t *refcounts, uint32_t n_pages);
@@ -581,6 +620,9 @@ int  user_protect_page(uint64_t vaddr, int writable, int executable);
 uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr);
 #ifdef ELF_SELFTEST
 void elf_loader_selftest(void);
+#endif
+#ifdef PREEMPT_SELFTEST
+void preempt_selftest(void);
 #endif
 
 

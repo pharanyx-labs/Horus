@@ -1039,6 +1039,13 @@ static int do_spawn(void) {
     }
     spin_unlock(&cap_lock);
 
+    /* Fabricate an initial resumable trap frame so the preemptive scheduler can
+     * time-slice this task on the timer tick (entry/esp/cr3 are all final now).
+     * The initial shell is still launched explicitly via lretq below; for it
+     * this frame is simply overwritten on its first preemption. */
+    sched_prepare_user_context(new_id, tasks[new_id].eip,
+                               tasks[new_id].esp ? tasks[new_id].esp : 0x007ff000ULL);
+
     return new_id;
 }
 
@@ -1123,6 +1130,97 @@ void elf_loader_selftest(void) {
     set_current_task(saved);
 }
 #endif /* ELF_SELFTEST */
+
+#ifdef PREEMPT_SELFTEST
+/* ---- Preemptive-scheduling self-test (PREEMPT_SELFTEST builds only) --------
+ * Spawn two independent copies of the embedded preempttest payload. Each one
+ * busy-spins in ring 3 and periodically calls SYS_PREEMPT_TRACE *without ever
+ * yielding*. The only way control can pass from one to the other is the timer
+ * preempting it, so repeated alternation between the two task ids in the trace
+ * proves preemption is live. h_preempt_trace prints the PASS marker once it has
+ * seen enough back-and-forth. Without preemption only the first task would ever
+ * run and the marker would never appear (smoke then fails on timeout). */
+
+static volatile int pt_first_id     = -1;
+static volatile int pt_second_id    = -1;
+static volatile int pt_last_id      = -1;
+static volatile int pt_transitions  = 0;
+static volatile int pt_done         = 0;
+
+static void h_preempt_trace(struct regs *r) {
+    int id = get_current_task();
+    if (pt_first_id < 0) pt_first_id = id;
+    else if (pt_second_id < 0 && id != pt_first_id) pt_second_id = id;
+
+    if (pt_last_id >= 0 && id != pt_last_id) pt_transitions++;
+    pt_last_id = id;
+
+    if (!pt_done && pt_transitions >= 6 && pt_first_id >= 0 && pt_second_id >= 0) {
+        pt_done = 1;
+        print("PREEMPT_SELFTEST: PASS transitions=");
+        print_decimal(pt_transitions);
+        print(" tasks=");
+        print_decimal(pt_first_id);
+        print(",");
+        print_decimal(pt_second_id);
+        print("\n");
+    }
+    r->eax = 0;
+}
+
+/* Arm the embedded flat payload and spawn one instance; returns its pid. */
+static int preempt_spawn_one(uint32_t entry, uint32_t size, const uint8_t *payload) {
+    for (uint32_t i = 0; i < size; i++) loader_staging[i] = payload[i];
+    armed_hdr.entry = entry;
+    armed_hdr.size  = size;
+    armed_hdr.name[0] = 'p'; armed_hdr.name[1] = 't'; armed_hdr.name[2] = 0;
+    program_armed = 1;
+    return do_spawn();
+}
+
+void preempt_selftest(void) {
+    extern uint8_t embedded_preempttest_bin_start[];
+    extern uint8_t embedded_preempttest_bin_end[];
+    uint32_t full_sz = (uint32_t)(embedded_preempttest_bin_end - embedded_preempttest_bin_start);
+
+    print("PREEMPT_SELFTEST: begin\n");
+    if (full_sz < 44) { print("PREEMPT_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+
+    const uint8_t *bin = embedded_preempttest_bin_start;
+    uint32_t magic   = *(const uint32_t *)bin;
+    uint32_t h_entry = *(const uint32_t *)(bin + 4);
+    uint32_t h_size  = *(const uint32_t *)(bin + 8);
+    if (magic != 0x55524F48)                     { print("PREEMPT_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("PREEMPT_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
+    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    const uint8_t *payload = bin + 44;
+
+    int a = preempt_spawn_one(h_entry, h_size, payload);
+    int b = preempt_spawn_one(h_entry, h_size, payload);
+    if (a <= 0 || b <= 0) { print("PREEMPT_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    /* Launch task A into ring 3, then let the timer time-slice A and B (B first
+     * runs from its fabricated frame on the initial preemption). Arm preemption
+     * before the drop. This lretq does not return. */
+    sched_enable_preemption();
+    {
+        uint64_t rip  = (uint64_t)tasks[a].eip;
+        uint64_t rspv = tasks[a].esp ? (uint64_t)tasks[a].esp : 0x007ff000ULL;
+        uint64_t ucr3 = tasks[a].cr3;
+        uintptr_t kst = tasks[a].kernel_stack_top ? tasks[a].kernel_stack_top : KERNEL_TSS_STACK;
+        set_tss_kernel_stack(kst);
+        set_current_task(a);
+        __asm__ volatile (
+            "mov %2, %%cr3\n\t"
+            "mov $0x33, %%ax\n\t"
+            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
+            "mov %1, %%rsp\n\t"
+            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
+            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
+        );
+    }
+}
+#endif /* PREEMPT_SELFTEST */
 
 static struct user_account *find_user_by_name(const char *name) {
     for (int i = 0; i < MAX_USERS; i++) {
@@ -2160,7 +2258,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 53
+#define SYSCALL_TABLE_SIZE 54
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -2213,18 +2311,22 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_CONNECT_FS_SERVER]        = { h_connect_fs_server,       SC_NONE, 0, SC_ANYTYPE },
     [SYS_CAP_REVOKE]               = { h_cap_revoke,              SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_revoke */
     [SYS_AUDIT_DIGEST]             = { h_audit_digest,            7, CAP_RIGHT_READ, CAP_AUDIT },
+#ifdef PREEMPT_SELFTEST
+    /* Test-only trace hook; absent (fails closed) in the ship kernel. */
+    [SYS_PREEMPT_TRACE]            = { h_preempt_trace,           SC_NONE, 0, SC_ANYTYPE },
+#endif
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_AUDIT_DIGEST is currently the highest syscall number. Adding a higher one
+ * SYS_PREEMPT_TRACE is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_AUDIT_DIGEST + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_PREEMPT_TRACE + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 
@@ -2546,6 +2648,10 @@ void spawn_initial_userspace_shell(void) {
             uintptr_t kst = tasks[pid].kernel_stack_top ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
             set_tss_kernel_stack(kst);
             set_current_task(pid);
+            /* Boot's delicate single-threaded init is done; arm the timer to
+             * preempt ring-3 tasks from here on. (No-op while the shell is the
+             * only runnable task -- preempt_on_tick keeps it running.) */
+            sched_enable_preemption();
             __asm__ volatile (
                 "mov %2, %%cr3\n\t"
                 "mov $0x33, %%ax\n\t"

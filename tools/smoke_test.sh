@@ -17,6 +17,10 @@
 #                        serial for the run to pass — e.g. "ELF_SELFTEST: PASS")
 #        FAIL_MARKER    (optional: a string whose appearance is an immediate
 #                        failure — e.g. "ELF_SELFTEST: FAIL")
+#        MARKER_ONLY    (optional: if "1", REQUIRE_MARKER alone signals success
+#                        and the shell banner is NOT required — for self-tests
+#                        that intentionally never boot the shell, e.g. the
+#                        preemption test whose tasks run forever)
 #
 set -u
 
@@ -24,6 +28,7 @@ ISO="${1:-boot.iso}"
 TIMEOUT="${SMOKE_TIMEOUT:-40}"
 REQUIRE_MARKER="${REQUIRE_MARKER:-}"
 FAIL_MARKER="${FAIL_MARKER:-}"
+MARKER_ONLY="${MARKER_ONLY:-}"
 
 PASS_MARKER="Horus Secure Microkernel"   # printed by userspace/shell.c _start()
 LOGIN_MARKER="horus login"               # reached the login prompt (do_login)
@@ -64,9 +69,12 @@ deadline=$(( SECONDS + TIMEOUT ))
 while [ "$SECONDS" -lt "$deadline" ]; do
     if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then status="fault"; break; fi
     if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then status="marker_fail"; break; fi
-    # The banner is the primary success signal; if an extra marker is required,
-    # wait until both have appeared.
-    if grep -q "$PASS_MARKER" "$LOG" 2>/dev/null; then
+    # MARKER_ONLY: the required marker alone is success (no shell banner).
+    if [ "$MARKER_ONLY" = "1" ] && [ -n "$REQUIRE_MARKER" ]; then
+        if grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then status="ok"; break; fi
+    # Otherwise the banner is the primary success signal; if an extra marker is
+    # required, wait until both have appeared.
+    elif grep -q "$PASS_MARKER" "$LOG" 2>/dev/null; then
         if [ -z "$REQUIRE_MARKER" ] || grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then
             status="ok"; break
         fi
@@ -90,6 +98,10 @@ case "$status" in
         if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG"; then
             echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER'"
             exit 1
+        fi
+        if [ "$MARKER_ONLY" = "1" ]; then
+            echo "SMOKE PASS: required marker '$REQUIRE_MARKER' observed on serial"
+            exit 0
         fi
         extra=""
         [ -n "$REQUIRE_MARKER" ] && extra=" + required marker '$REQUIRE_MARKER'"

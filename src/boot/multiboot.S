@@ -314,3 +314,14 @@ embedded_elftest_start:
 .global embedded_elftest_end
 embedded_elftest_end:
 #endif
+
+#ifdef PREEMPT_SELFTEST
+/* Flat userspace tracer used by the preemptive-scheduling self-test
+ * (preempt_selftest). Two copies are spawned. Only in the PREEMPT_SELFTEST build. */
+.align 16
+.global embedded_preempttest_bin_start
+embedded_preempttest_bin_start:
+.incbin "userspace/preempttest.bin"
+.global embedded_preempttest_bin_end
+embedded_preempttest_bin_end:
+#endif

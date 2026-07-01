@@ -87,6 +87,8 @@ struct audit_event {
 #define SYS_CAP_REVOKE         51
 #define SYS_AUDIT_DIGEST       52
 #define SYS_PREEMPT_TRACE      53   /* PREEMPT_SELFTEST builds only; NOSYS otherwise */
+#define SYS_SIGACTION          54
+#define SYS_SIGRETURN          55
 
 #define AUDIT_AUTH          1
 #define AUDIT_SUDO          2
@@ -135,6 +137,20 @@ static inline uint32_t syscall6(uint32_t num, uint32_t a, uint32_t b, uint32_t c
 
 static inline void sys_yield(void) {
     syscall(SYS_YIELD, 0, 0, 0);
+}
+
+/* Register (handler != 0) or clear (handler == 0) this task's own fault-signal
+ * handler. On a ring-3 fault the kernel enters the handler at ring 3 with the
+ * signal number in ebx and the faulting address in ecx, instead of killing the
+ * task. Returns 0 on success, -1 if the handler is not in the user code window. */
+static inline int sys_signal(uint32_t handler) {
+    return syscall(SYS_SIGACTION, handler, 0, 0);
+}
+
+/* Called from a handler to resume the exact pre-signal context. Does not return
+ * to the handler on success (execution jumps back to the interrupted point). */
+static inline void sys_sigreturn(void) {
+    syscall(SYS_SIGRETURN, 0, 0, 0);
 }
 
 static inline int sys_print(const char *s) {

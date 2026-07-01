@@ -185,6 +185,19 @@ pub extern "C" fn rust_should_demand_zero(err_code: u32) -> bool {
     (err_code & 1) == 0 && (err_code & 4) != 0
 }
 
+/// Validate a would-be ring-3 signal-handler entry address. On a fault the
+/// kernel iretq's ring 3 to this address, so it must be a plausible user *code*
+/// location: inside the loader's user image window `[0x400000, 0x800000)`.
+/// Anything else (the stack, the heap, the kernel image, an unmapped address, or
+/// 0) is rejected so a task cannot register a handler that redirects control
+/// flow somewhere it should not run. Pure value predicate — no pointer deref.
+#[no_mangle]
+pub extern "C" fn rust_signal_handler_addr_ok(vaddr: u32) -> bool {
+    const USER_CODE_LO: u32 = 0x0040_0000;
+    const USER_CODE_HI: u32 = 0x0080_0000;
+    vaddr >= USER_CODE_LO && vaddr < USER_CODE_HI
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FsOp {
@@ -284,6 +297,20 @@ mod tests {
         // Other mapped windows and the null page stay executable.
         assert!(!rust_user_page_is_noexec(0xA00000));
         assert!(!rust_user_page_is_noexec(0));
+    }
+
+    #[test]
+    fn signal_handler_addr_window() {
+        // Inside the user code window [0x400000, 0x800000) -> accepted.
+        assert!(rust_signal_handler_addr_ok(0x400000)); // window base (inclusive)
+        assert!(rust_signal_handler_addr_ok(0x401234)); // a real handler entry
+        assert!(rust_signal_handler_addr_ok(0x7fffff)); // last byte in-window
+        // Outside the window -> rejected (fail closed).
+        assert!(!rust_signal_handler_addr_ok(0));        // null
+        assert!(!rust_signal_handler_addr_ok(0x3fffff)); // just below the base
+        assert!(!rust_signal_handler_addr_ok(0x800000)); // one past the top
+        assert!(!rust_signal_handler_addr_ok(0x7d0000 + 0x400000)); // ~stack, mapped high
+        assert!(!rust_signal_handler_addr_ok(0x100000)); // kernel image
     }
 
     #[test]

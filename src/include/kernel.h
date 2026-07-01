@@ -163,6 +163,12 @@ void users_init(void);
 #define SYS_CAP_REVOKE         51
 #define SYS_AUDIT_DIGEST       52
 #define SYS_PREEMPT_TRACE      53   /* PREEMPT_SELFTEST builds only; NOSYS otherwise */
+#define SYS_SIGACTION          54   /* register this task's own fault-signal handler */
+#define SYS_SIGRETURN          55   /* resume the pre-signal context (from a handler) */
+
+/* Signal numbers delivered to a registered handler on a ring-3 fault. */
+#define SIG_ILL                 4   /* illegal instruction (#UD) */
+#define SIG_SEGV               11   /* invalid memory access (page fault / #GP) */
 
 #define CAP_NULL                0
 #define CAP_TCB                 1
@@ -275,6 +281,22 @@ typedef struct cap_snapshot {
 } cap_snapshot_t;
 
 
+/* Full interrupt trap frame pushed by isr_common_stub64 (src/kernel/lowlevel64.S):
+ * the 15 general-purpose registers, then the vector + error code, then the CPU's
+ * iret frame. A pointer to this is what interrupt_handler64 receives and what
+ * the preemptive scheduler and the signal path save/restore per task. */
+struct interrupt_frame64 {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t int_no;
+    uint64_t err_code;
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+    uint64_t rsp;
+    uint64_t ss;
+};
+
 typedef struct tcb {
     uint32_t state;
     uint32_t caps_in_use;
@@ -313,8 +335,17 @@ typedef struct tcb {
     uint64_t saved_ksp;
     uint32_t runnable_ctx;
 
+    /* Signal handling: deliver a ring-3 fault to a user handler instead of the
+     * summary kill. `sig_handler` is the handler's ring-3 entry (0 = none; the
+     * task registers its own via SYS_SIGACTION). `in_signal` is set while a
+     * handler runs, so a fault *inside* the handler falls through to the kill
+     * path (no recursion). `sig_frame` is the full trap frame captured at
+     * delivery, restored by SYS_SIGRETURN. See idt.c / syscall.c. */
+    uint32_t sig_handler;
+    uint32_t in_signal;
+    struct interrupt_frame64 sig_frame;
 
-    uint8_t  padding[236];
+    uint8_t  padding[52];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];
@@ -458,22 +489,6 @@ void pit_init(void);
 void smp_maybe_shootdown(uint64_t v);
 int smp_get_online_count(void);
 
-/* Full interrupt trap frame pushed by isr_common_stub64 (src/kernel/lowlevel64.S):
- * the 15 general-purpose registers, then the vector + error code, then the CPU's
- * iret frame. A pointer to this is what interrupt_handler64 receives and what
- * the preemptive scheduler saves/restores per task. */
-struct interrupt_frame64 {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    uint64_t int_no;
-    uint64_t err_code;
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-};
-
 /* Preemptive scheduling (scheduler.c). preempt_on_tick is called from the timer
  * ISR with the current trap-frame pointer and the interrupted CS; it returns the
  * kernel %rsp to resume on (unchanged for no-switch, or the next task's saved
@@ -484,6 +499,13 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame);
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs);
 void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp);
 void sched_enable_preemption(void);
+
+/* Signal delivery (idt.c): on a ring-3 fault, redirect the trap frame into the
+ * task's registered handler instead of killing it. Returns 1 if a signal was
+ * delivered (caller returns into the handler), 0 to fall through to the kill
+ * path. See the fault sites in interrupt_handler64 / page_fault_handler. */
+int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
+                             uint32_t signum, uint64_t fault_addr);
 /* Signatures MUST match rust/src/memory.rs exactly (return types and the u32
  * n_pages width — they previously drifted to `int`). */
 int32_t  rust_page_ref_dec(uint32_t phys, uint16_t *refcounts, uint32_t n_pages);
@@ -491,6 +513,10 @@ uint16_t rust_page_ref_inc(uint32_t phys, uint16_t *refcounts, uint32_t n_pages)
 bool     rust_page_is_valid_user_phys(uint32_t phys, uint32_t n_pages);
 bool     rust_page_refcounts_register(const uint16_t *refcounts, uint32_t n_pages);
 bool     rust_cow_copy_required(bool is_cow, bool is_write, uint16_t ref_count);
+/* Validate a would-be ring-3 signal-handler entry: it must lie in the user code
+ * window so the kernel never iretq's ring 3 to the stack, the kernel image, or
+ * an unmapped address. Pure value predicate (no pointer deref); fails closed. */
+bool     rust_signal_handler_addr_ok(uint32_t vaddr);
 
 /* Centralized capability serial allocation (wrap logic lives in Rust). */
 uint32_t rust_cap_alloc_serial(uint32_t *next_serial);
@@ -623,6 +649,9 @@ void elf_loader_selftest(void);
 #endif
 #ifdef PREEMPT_SELFTEST
 void preempt_selftest(void);
+#endif
+#ifdef SIGNAL_SELFTEST
+void signal_selftest(void);
 #endif
 
 

@@ -186,7 +186,7 @@ Numbers are the authoritative values from `include/syscall.h`. (Numbers 1/`SYS_P
 
 Up to 32 users are stored in a kernel-managed table, serialised to the RAM filesystem as a `passwd` file. Each entry holds: username, UID, GID, home directory path, shell path, a random per-user salt, a password hash, and an authentication failure counter. The serialised table is authenticated with an HMAC-SHA256 tag keyed by the per-boot pepper.
 
-Password hashing is **PBKDF2-HMAC-SHA256** (RFC 8018, 120,000 iterations), implemented in safe Rust (`rust/src/sha256.rs`), over the password with the per-user random salt and a per-boot secret pepper folded in; the raw 32-byte derived key is stored. Verification runs in constant time and is equalised so a missing username cannot be distinguished by timing. (This replaced an earlier custom XOR-rotate scheme.) Lockout arithmetic and a global anti-spray throttle live in `rust/src/auth.rs`.
+Password hashing is **Argon2id** (RFC 9106) — the memory-hard KDF, run at 4 MiB / 3 passes / single lane — implemented from scratch in safe Rust (`rust/src/argon2.rs`) on the crate's own BLAKE2b (`rust/src/blake2b.rs`) and validated against the `argon2-cffi` reference vectors. It hashes the password with the per-user random salt and a per-boot secret pepper folded in; the raw 32-byte tag is stored. Being memory-hard, it resists the GPU/ASIC parallel brute force that the previous PBKDF2-HMAC-SHA256 was cheap to mount. The 4 MiB fill buffer is a kernel static (no allocator); hashing runs non-preemptibly inside the syscall, so one shared buffer is safe. Verification runs in constant time and is equalised so a missing username cannot be distinguished by timing. Lockout arithmetic and a global anti-spray throttle live in `rust/src/auth.rs`.
 
 ### Audit log
 
@@ -206,6 +206,8 @@ The Rust crate at `rust/` compiles to a static library (`libhorus_shell.a`) that
 | `memory.rs` | Physical page reference counting and validation |
 | `lib.rs` | Page-fault validation, demand-paging decisions, W^X page policy (`rust_user_page_is_noexec`), command token parsing |
 | `sha256.rs` | SHA-256, HMAC-SHA256, HKDF-SHA256, PBKDF2-HMAC-SHA256 |
+| `blake2b.rs` | BLAKE2b (RFC 7693) — the hash primitive under Argon2id |
+| `argon2.rs` | Argon2id (RFC 9106) memory-hard password hashing |
 | `rng.rs` | ChaCha20 fast-key-erasure CSPRNG; RDRAND + timing-jitter seeding |
 | `aead.rs` | ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (encryption-at-rest) |
 | `audit.rs` | Tamper-evident audit log: per-entry HMAC (sequence-bound) + running hash-chain head |

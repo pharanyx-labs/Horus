@@ -106,6 +106,36 @@ void page_fault_handler(struct regs *r);
 
 void segfault_park(void);
 
+/* Redirect a ring-3 fault into the task's registered signal handler instead of
+ * killing it. Returns 1 if delivered (the caller must return into the handler),
+ * 0 to fall through to the normal kill path. Preconditions enforced here:
+ *   - the fault came from ring 3 (cs & 3),
+ *   - the task is not already inside a handler (in_signal) -- a fault *in* the
+ *     handler is NOT redirected, so a faulting handler cannot loop,
+ *   - a handler is registered and its address is inside the user code window
+ *     (validated in safe Rust; fail closed).
+ * On delivery the full pre-signal trap frame is saved for SYS_SIGRETURN, and the
+ * live frame is rewritten to enter the handler in ring 3 with the signal number
+ * in ebx and the faulting address in ecx. cs/ss/rsp are unchanged: the handler
+ * runs at ring 3 on the current user stack -- no new privilege is granted. */
+int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
+                             uint32_t signum, uint64_t fault_addr) {
+    if (cur <= 0 || cur >= MAX_TASKS) return 0;
+    if ((frame->cs & 3) == 0)         return 0;   /* ring-0 fault: never */
+    if (tasks[cur].in_signal)         return 0;   /* fault inside handler -> kill */
+    uint32_t h = tasks[cur].sig_handler;
+    if (h == 0 || !rust_signal_handler_addr_ok(h)) return 0;
+
+    tasks[cur].sig_frame = *frame;     /* full context for SYS_SIGRETURN */
+    tasks[cur].in_signal = 1;
+
+    frame->rip     = (uint64_t)h;
+    frame->rbx     = (uint64_t)signum;     /* ebx = signal number */
+    frame->rcx     = fault_addr;           /* ecx = faulting address (0 if n/a) */
+    frame->rflags |= 0x200;                /* ensure IF set while the handler runs */
+    return 1;
+}
+
 uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
@@ -142,6 +172,17 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         }
         outb(0x20, 0x20);
     } else if (vector == 0x80 || vec2 == 0x80) {
+        int scur = get_current_task();
+        if ((uint32_t)frame->rax == SYS_SIGRETURN && scur > 0 && scur < MAX_TASKS
+            && tasks[scur].in_signal) {
+            /* Handled here (not via the syscall table) because restoring the
+             * pre-signal context means rewriting the live trap frame -- rip,
+             * rsp and every register -- which the struct-regs dispatch cannot
+             * reach. Exact resume of the interrupted instruction. */
+            *frame = tasks[scur].sig_frame;
+            tasks[scur].in_signal = 0;
+            return (uint64_t)frame;
+        }
         struct regs r;
         r.eax = (uint32_t)frame->rax;
         r.ebx = (uint32_t)frame->rbx;
@@ -163,15 +204,21 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
     } else if (vector < 32) {
         
         if ((frame->cs & 3) != 0 && get_current_task() > 0) {
-            int killed = get_current_task();
-            tasks[killed].state = 0;
-            schedule();
-            if (killed > 0) tasks[0].state = 1;
-            frame->rip    = (uint64_t)resume_shell_after_fault;
-            frame->cs     = 0x08;
-            frame->rflags = 0x202;
-            frame->rsp    = tasks[0].kernel_stack_top;
-            frame->ss     = 0x10;
+            int cur = get_current_task();
+            uint32_t signum = (vector == 6) ? SIG_ILL : SIG_SEGV; /* #UD vs other */
+            if (!try_deliver_fault_signal(frame, cur, signum, 0)) {
+                int killed = cur;
+                tasks[killed].state = 0;
+                schedule();
+                if (killed > 0) tasks[0].state = 1;
+                frame->rip    = (uint64_t)resume_shell_after_fault;
+                frame->cs     = 0x08;
+                frame->rflags = 0x202;
+                frame->rsp    = tasks[0].kernel_stack_top;
+                frame->ss     = 0x10;
+            }
+            /* else: signal delivered -> fall through to `return frame`, and the
+             * ISR epilogue iretq's into the handler at ring 3. */
         } else {
             println("64-bit EXCEPTION vector=");
             print_hex64(vector);
@@ -386,8 +433,16 @@ void page_fault_handler(struct regs *r) {
     bool allowed = rust_validate_page_fault(cur, fault_addr, err);
 
     if (!allowed) {
+        struct interrupt_frame64 *f64 = (struct interrupt_frame64 *)r;
+        int cur = get_current_task();
+        /* Deliver SIGSEGV to a registered ring-3 handler instead of killing the
+         * task (and without printing the fault banner). */
+        if (cur > 0 && (f64->cs & 3) &&
+            try_deliver_fault_signal(f64, cur, SIG_SEGV, fault_addr)) {
+            return;
+        }
         int killed = get_current_task();
-        if (killed == 0 || (((struct regs *)r)->cs & 3) == 0) {
+        if (killed == 0 || (f64->cs & 3) == 0) {
             println("PAGE FAULT at ");
             print_hex(fault_addr);
             println(" err=");
@@ -402,7 +457,6 @@ void page_fault_handler(struct regs *r) {
         schedule();
         if (killed > 0) tasks[0].state = 1;
 
-        struct interrupt_frame64 *f64 = (struct interrupt_frame64 *)r;
         if ((killed > 0) && (f64->cs & 3)) {
             f64->rip    = (uint64_t)resume_shell_after_fault;
             f64->cs     = 0x08;

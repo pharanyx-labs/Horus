@@ -85,6 +85,8 @@ void create_task(int id, addr_t entry, addr_t stack_top) {
     tasks[id].kernel_stack_top = (uint64_t)&kernel_stacks[id][KERNEL_STACK_SIZE - 16];
     tasks[id].saved_ksp = 0;
     tasks[id].runnable_ctx = 0;
+    tasks[id].sig_handler = 0;   /* no signal handler until the task registers one */
+    tasks[id].in_signal = 0;
 
 create_user_pagedir(id);
 
@@ -745,6 +747,10 @@ void smp_bringup(void) {
      * time-slices them (prints PREEMPT_SELFTEST: PASS). Does not return -- it
      * launches into ring 3 and the tasks run forever. */
     preempt_selftest();
+#elif defined(SIGNAL_SELFTEST)
+    /* Gated: spawn a task that faults on purpose and prove its registered
+     * handler runs instead of the task being killed (SIGNAL_SELFTEST: PASS). */
+    signal_selftest();
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the

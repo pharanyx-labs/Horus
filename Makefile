@@ -61,6 +61,17 @@ ASFLAGS += -DPREEMPT_SELFTEST
 PREEMPT_SELFTEST_DEP = userspace/preempttest.bin
 endif
 
+# SIGNAL_SELFTEST=1 embeds a flat userspace payload that registers a fault
+# handler then faults on purpose, and boots it to prove the handler runs
+# instead of the task being killed (prints SIGNAL_SELFTEST: PASS to serial).
+# Gated so the default/ship kernel is unaffected.
+SIGNAL_SELFTEST ?= 0
+ifeq ($(SIGNAL_SELFTEST),1)
+CFLAGS  += -DSIGNAL_SELFTEST
+ASFLAGS += -DSIGNAL_SELFTEST
+SIGNAL_SELFTEST_DEP = userspace/sigtest.bin
+endif
+
 OBJS += src/boot/entry64.o
 OBJS += src/kernel/lowlevel64.o
 
@@ -109,7 +120,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP)
 
 src/kernel/rust_shims.o: src/kernel/rust_shims.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -215,6 +226,17 @@ smoke-preempt:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PREEMPT_SELFTEST: PASS' \
 		FAIL_MARKER='PREEMPT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated signal self-test, boot headless, and require the handler
+# to run on a deliberate fault -- runtime proof that a ring-3 fault is delivered
+# to a registered handler instead of killing the task.
+.PHONY: smoke-signal
+smoke-signal:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SIGNAL_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='SIGNAL_SELFTEST: PASS' \
+		FAIL_MARKER='SIGNAL_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

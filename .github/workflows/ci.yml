@@ -137,6 +137,23 @@ jobs:
       - name: Boot PREEMPT_SELFTEST kernel and assert the timer time-slices two ring-3 tasks
         run: make smoke-preempt
 
+  smoke-signal:
+    name: QEMU signal-handling self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot SIGNAL_SELFTEST kernel and assert a ring-3 fault is delivered to its handler
+        run: make smoke-signal
+
   reproducible:
     name: Verify reproducible kernel build
     runs-on: ubuntu-latest

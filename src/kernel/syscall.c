@@ -1222,6 +1222,58 @@ void preempt_selftest(void) {
 }
 #endif /* PREEMPT_SELFTEST */
 
+#ifdef SIGNAL_SELFTEST
+/* ---- Signal-handling self-test (SIGNAL_SELFTEST builds only) ---------------
+ * Spawn the sigtest payload: it registers a ring-3 fault handler and then does
+ * a null-pointer write. Without signal handling that fault kills the task;
+ * with it, the kernel redirects the task into its handler, which prints
+ * "SIGNAL_SELFTEST: PASS". This lretq into ring 3 does not return. */
+void signal_selftest(void) {
+    extern uint8_t embedded_sigtest_bin_start[];
+    extern uint8_t embedded_sigtest_bin_end[];
+    uint32_t full_sz = (uint32_t)(embedded_sigtest_bin_end - embedded_sigtest_bin_start);
+
+    print("SIGNAL_SELFTEST: launch\n");
+    if (full_sz < 44) { print("SIGNAL_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+
+    const uint8_t *bin = embedded_sigtest_bin_start;
+    uint32_t magic   = *(const uint32_t *)bin;
+    uint32_t h_entry = *(const uint32_t *)(bin + 4);
+    uint32_t h_size  = *(const uint32_t *)(bin + 8);
+    if (magic != 0x55524F48)                     { print("SIGNAL_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("SIGNAL_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
+    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+
+    const uint8_t *payload = bin + 44;
+    for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
+    armed_hdr.entry = h_entry;
+    armed_hdr.size  = h_size;
+    armed_hdr.name[0] = 's'; armed_hdr.name[1] = 'i'; armed_hdr.name[2] = 'g'; armed_hdr.name[3] = 0;
+    program_armed = 1;
+
+    int a = do_spawn();
+    if (a <= 0) { print("SIGNAL_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    /* Launch into ring 3. Single task -> no preemption needed. */
+    {
+        uint64_t rip  = (uint64_t)tasks[a].eip;
+        uint64_t rspv = tasks[a].esp ? (uint64_t)tasks[a].esp : 0x007ff000ULL;
+        uint64_t ucr3 = tasks[a].cr3;
+        uintptr_t kst = tasks[a].kernel_stack_top ? tasks[a].kernel_stack_top : KERNEL_TSS_STACK;
+        set_tss_kernel_stack(kst);
+        set_current_task(a);
+        __asm__ volatile (
+            "mov %2, %%cr3\n\t"
+            "mov $0x33, %%ax\n\t"
+            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
+            "mov %1, %%rsp\n\t"
+            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
+            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
+        );
+    }
+}
+#endif /* SIGNAL_SELFTEST */
+
 static struct user_account *find_user_by_name(const char *name) {
     for (int i = 0; i < MAX_USERS; i++) {
         if (users[i].valid && kstrlen(users[i].name) == kstrlen(name)) {
@@ -2251,6 +2303,32 @@ static void h_register_storage_backend(struct regs *r) {
 #define SC_NONE     0xFFFFu
 #define SC_ANYTYPE  (-1)
 
+/* SYS_SIGACTION: register (handler != 0) or clear (handler == 0) THIS task's own
+ * fault-signal handler. Self-authority only -- a task sets a handler for itself,
+ * never for another (async cross-task signals would need a capability on the
+ * target's TCB, which this does not provide). The handler entry is validated
+ * against the user code window in safe Rust so a fault can only ever redirect
+ * ring-3 control flow to plausible user code. */
+static void h_sigaction(struct regs *r) {
+    uint32_t handler = r->ebx;
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)-1; return; }
+    if (handler != 0 && !rust_signal_handler_addr_ok(handler)) {
+        r->eax = (uint32_t)-1;
+        return;
+    }
+    tasks[cur].sig_handler = handler;
+    tasks[cur].in_signal   = 0;
+    r->eax = 0;
+}
+
+/* SYS_SIGRETURN is serviced directly in interrupt_handler64 (it must rewrite the
+ * live trap frame). This table stub only runs if sigreturn is called outside a
+ * handler -- in which case there is nothing to resume, so it fails. */
+static void h_sigreturn_stub(struct regs *r) {
+    r->eax = (uint32_t)-1;
+}
+
 typedef struct {
     void   (*fn)(struct regs *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
@@ -2258,7 +2336,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 54
+#define SYSCALL_TABLE_SIZE 56
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -2315,18 +2393,20 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     /* Test-only trace hook; absent (fails closed) in the ship kernel. */
     [SYS_PREEMPT_TRACE]            = { h_preempt_trace,           SC_NONE, 0, SC_ANYTYPE },
 #endif
+    [SYS_SIGACTION]                = { h_sigaction,               SC_NONE, 0, SC_ANYTYPE }, /* self: register own handler */
+    [SYS_SIGRETURN]                = { h_sigreturn_stub,          SC_NONE, 0, SC_ANYTYPE }, /* real work in interrupt_handler64 */
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_PREEMPT_TRACE is currently the highest syscall number. Adding a higher one
+ * SYS_SIGRETURN is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_PREEMPT_TRACE + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_SIGRETURN + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

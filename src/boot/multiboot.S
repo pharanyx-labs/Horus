@@ -325,3 +325,14 @@ embedded_preempttest_bin_start:
 .global embedded_preempttest_bin_end
 embedded_preempttest_bin_end:
 #endif
+
+#ifdef SIGNAL_SELFTEST
+/* Flat userspace payload for the signal-handling self-test (signal_selftest):
+ * registers a fault handler, then faults on purpose. Only in SIGNAL_SELFTEST. */
+.align 16
+.global embedded_sigtest_bin_start
+embedded_sigtest_bin_start:
+.incbin "userspace/sigtest.bin"
+.global embedded_sigtest_bin_end
+embedded_sigtest_bin_end:
+#endif

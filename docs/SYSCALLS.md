@@ -111,7 +111,7 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 
 ## Common Conventions
 
-- **Error Codes**: Negative values follow a standard convention (e.g. `-EINVAL`, `-ENOMEM`, `-EPERM`).
+- **Error Codes**: Errors are negative; success is 0 (or a non-negative result). They come from a shared, descriptive, errno-aligned set in [`include/errno.h`](../include/errno.h) — `SYS_ERR_PERM` (−1, missing capability), `SYS_ERR_NOENT` (−2), `SYS_ERR_AUTH` (−13, bad password/lockout), `SYS_ERR_FAULT` (−14, bad user pointer), `SYS_ERR_INVAL` (−22), `SYS_ERR_NOSYS` (−38, unknown/unimplemented syscall), `SYS_ERR_REVOKED`/`SYS_ERR_NORIGHT` (capability-specific), and more. `sys_strerror(code)` renders a human-readable reason. The header is shared verbatim by the kernel and userspace, so the same condition yields the same code everywhere.
 - **Capability Rights**: See full bitmask in `ARCHITECTURE.md`. Common rights include `READ`, `WRITE`, `EXEC`, `GRANT`, `MINT`, `REVOKE`.
 - **Revocation Semantics**: `SYS_CAP_REVOKE` performs a complete system-wide sweep. Lineage tracking prevents use-after-revoke even if a stale capability bit pattern remains.
 - **Message Format (IPC)**: Small fixed-size payload + sender badge.

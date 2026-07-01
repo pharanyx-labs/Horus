@@ -79,6 +79,13 @@ void create_task(int id, addr_t entry, addr_t stack_top) {
     tasks[id].eip = entry;
     tasks[id].cap_tcb = id;
 
+    /* Each task owns a distinct kernel stack (shared kernel mapping, present in
+     * every address space). Pin it now so the TSS RSP0 and the preemptive
+     * scheduler's saved/fabricated trap frame agree on one address. */
+    tasks[id].kernel_stack_top = (uint64_t)&kernel_stacks[id][KERNEL_STACK_SIZE - 16];
+    tasks[id].saved_ksp = 0;
+    tasks[id].runnable_ctx = 0;
+
 create_user_pagedir(id);
 
     static struct capability cspace_pool[MAX_TASKS][256];
@@ -178,6 +185,101 @@ void timer_handler(void) {
 
 uint32_t get_system_ticks(void) {
     return system_ticks;
+}
+
+/* ----------------------------------------------------------------------------
+ * Preemptive scheduling
+ *
+ * The timer ISR (idt.c, vector 32) calls preempt_on_tick() with the current
+ * task's full trap frame. We switch tasks *only* when the tick interrupted
+ * ring-3 code: at that instant the task holds no kernel spinlock (spin_lock
+ * disables interrupts, so the timer can't fire inside a critical section) and
+ * its entire state is captured by the trap frame the CPU + isr_common_stub64
+ * pushed onto its per-task kernel stack. A tick that lands in ring 0 (mid
+ * syscall / interrupt handler) is never a switch point -- we just tick and
+ * return -- which keeps the kernel effectively non-preemptible and avoids all
+ * reentrancy hazards. Switching is a pure kernel-%rsp swap: save the current
+ * frame pointer, load the next task's, and let the ISR epilogue pop+iretq into
+ * it. No spinlock is taken here (interrupts are already disabled in the gate).
+ * ------------------------------------------------------------------------- */
+
+static volatile int preempt_enabled = 0;
+
+/* Arm the timer switch. Called once the boot path is past its delicate
+ * single-threaded init and a user task is (about to be) running. Until then a
+ * tick only advances system_ticks. */
+void sched_enable_preemption(void) {
+    preempt_enabled = 1;
+}
+
+static inline uint64_t task_kstack_top(int id) {
+    if (tasks[id].kernel_stack_top) return tasks[id].kernel_stack_top;
+    return (uint64_t)&kernel_stacks[id][KERNEL_STACK_SIZE - 16];
+}
+
+/* Fabricate an initial, resumable interrupt trap frame at the top of task
+ * `id`'s kernel stack, so the timer switch can iretq into a freshly spawned
+ * user task exactly as if it had just been preempted at its entry point. cs/ss
+ * are the 32-bit user segments (userspace is compatibility-mode), IF is set so
+ * the task is itself preemptible, and all GP registers start zeroed. */
+void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
+    if (id < 0 || id >= MAX_TASKS) return;
+    uint64_t top = task_kstack_top(id) & ~0xFULL;
+    struct interrupt_frame64 *f =
+        (struct interrupt_frame64 *)(top - sizeof(struct interrupt_frame64));
+
+    f->r15 = f->r14 = f->r13 = f->r12 = f->r11 = f->r10 = f->r9 = f->r8 = 0;
+    f->rbp = f->rdi = f->rsi = f->rdx = f->rcx = f->rbx = f->rax = 0;
+    f->int_no   = 0;
+    f->err_code = 0;
+    f->rip      = entry;
+    f->cs       = 0x2b;          /* 32-bit user code (GDT 0x28 | RPL 3) */
+    f->rflags   = 0x202;         /* IF set, reserved bit 1 */
+    f->rsp      = user_rsp;
+    f->ss       = 0x33;          /* 32-bit user data (GDT 0x30 | RPL 3) */
+
+    tasks[id].saved_ksp     = (uint64_t)f;
+    tasks[id].runnable_ctx  = 1;
+}
+
+/* Called from the timer ISR. Returns the kernel %rsp the ISR epilogue should
+ * resume on: the same frame when we don't switch, or the next task's saved
+ * frame when we do. */
+uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
+    if (!preempt_enabled) return frame_rsp;
+    if ((interrupted_cs & 3) != 3) return frame_rsp;   /* only preempt ring 3 */
+
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) return frame_rsp;
+
+    /* Round-robin: the next runnable user task (id != 0) with a resumable
+     * context. */
+    int next = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        int cand = (cur + i) % MAX_TASKS;
+        if (cand == 0 || cand == cur) continue;
+        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx) {
+            next = cand;
+            break;
+        }
+    }
+    if (next < 0) return frame_rsp;   /* nobody else runnable -> keep running */
+
+    /* Save the outgoing task's frame, install the incoming task's address
+     * space + kernel stack, and hand its saved frame back to the ISR epilogue.
+     * Kernel stacks and the task array live in the shared kernel mapping that
+     * is present in every address space, so this stays valid across switch_cr3
+     * even though we are still executing on the outgoing task's kernel stack. */
+    tasks[cur].saved_ksp    = frame_rsp;
+    tasks[cur].runnable_ctx = 1;
+
+    switch_cr3(tasks[next].cr3);
+    uint64_t kstop = task_kstack_top(next);
+    set_tss_kernel_stack(kstop);
+    current_kernel_stack_top = kstop;
+    set_current_task(next);
+
+    return tasks[next].saved_ksp;
 }
 
 void aslr_init_seed(void) {
@@ -638,6 +740,12 @@ void smp_bringup(void) {
     }
 
     println("[ok] kernel ready, starting init...");
+#ifdef PREEMPT_SELFTEST
+    /* Gated: spawn two non-yielding ring-3 tracers and prove the timer
+     * time-slices them (prints PREEMPT_SELFTEST: PASS). Does not return -- it
+     * launches into ring 3 and the tasks run forever. */
+    preempt_selftest();
+#else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the
      * (never-returning) drop to the userspace shell. This is the actual
@@ -646,6 +754,7 @@ void smp_bringup(void) {
     elf_loader_selftest();
 #endif
     spawn_initial_userspace_shell();
+#endif
 }
 
 void tlb_shootdown(uint64_t vaddr) {

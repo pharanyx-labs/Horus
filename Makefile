@@ -50,6 +50,17 @@ ASFLAGS += -DELF_SELFTEST
 ELF_SELFTEST_DEP = userspace/elftest.elf
 endif
 
+# PREEMPT_SELFTEST=1 embeds a flat userspace tracer and, at boot, spawns two
+# copies of it and proves the timer preempts/time-slices them (prints
+# PREEMPT_SELFTEST: PASS to serial). Gated so the default/ship kernel is
+# unaffected. ASFLAGS also gets the define for the gated .incbin in multiboot.S.
+PREEMPT_SELFTEST ?= 0
+ifeq ($(PREEMPT_SELFTEST),1)
+CFLAGS  += -DPREEMPT_SELFTEST
+ASFLAGS += -DPREEMPT_SELFTEST
+PREEMPT_SELFTEST_DEP = userspace/preempttest.bin
+endif
+
 OBJS += src/boot/entry64.o
 OBJS += src/kernel/lowlevel64.o
 
@@ -98,7 +109,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin $(ELF_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP)
 
 src/kernel/rust_shims.o: src/kernel/rust_shims.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -193,6 +204,17 @@ smoke-elf:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ELF_SELFTEST: PASS' \
 		FAIL_MARKER='ELF_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated preemption self-test, boot headless, and require the
+# in-kernel test to report PASS -- runtime proof that the timer time-slices two
+# non-yielding ring-3 tasks.
+.PHONY: smoke-preempt
+smoke-preempt:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PREEMPT_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PREEMPT_SELFTEST: PASS' \
+		FAIL_MARKER='PREEMPT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

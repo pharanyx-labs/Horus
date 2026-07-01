@@ -26,6 +26,11 @@ isr_common_stub64:
 
     movq %rsp, %rdi
     call interrupt_handler64
+    /* interrupt_handler64 returns (in %rax) the kernel %rsp to resume on: the
+     * same frame pointer for the common no-switch case, or a preempted/fresh
+     * task's saved_ksp when the timer decided to switch tasks. Loading it here
+     * makes the epilogue below pop *that* task's registers and iretq into it. */
+    movq %rax, %rsp
 
     popq %r15
     popq %r14

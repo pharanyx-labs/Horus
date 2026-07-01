@@ -106,19 +106,7 @@ void page_fault_handler(struct regs *r);
 
 void segfault_park(void);
 
-struct interrupt_frame64 {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    uint64_t int_no;
-    uint64_t err_code;
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-};
-
-void interrupt_handler64(struct interrupt_frame64 *frame)
+uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
     uint64_t *g = (uint64_t *)frame;
@@ -133,8 +121,13 @@ void interrupt_handler64(struct interrupt_frame64 *frame)
     if (vector == 14) {
         page_fault_handler((struct regs *)frame);
     } else if (vector == 32) {
-        timer_handler();
+        /* Timer (IRQ0). EOI first so the PIC keeps delivering ticks even
+         * across a task switch, then let the preemptive scheduler decide
+         * whether to switch. preempt_on_tick returns the kernel %rsp to resume
+         * on: the current frame (no switch) or the next task's saved frame. */
         outb(0x20, 0x20);
+        timer_handler();
+        return preempt_on_tick((uint64_t)frame, frame->cs);
     } else if (vector == 33) {
         /* Only consume a scancode when the controller output buffer is full,
          * so a spurious IRQ never re-reads a stale byte. */
@@ -196,6 +189,10 @@ void interrupt_handler64(struct interrupt_frame64 *frame)
         if (vector >= 40) outb(0xA0, 0x20);
         outb(0x20, 0x20);
     }
+
+    /* Default (non-timer, non-switching) path: resume on the same trap frame,
+     * i.e. return exactly into the interrupted context. */
+    return (uint64_t)frame;
 }
 
 void segfault_park(void) {
@@ -270,6 +267,19 @@ static void serial_init(void) {
     outb(0x2FB, 0x03);
     outb(0x2FA, 0xC7);
     outb(0x2FC, 0x0B);
+}
+
+/* Program PIT channel 0 for a fixed periodic tick so the preemptive scheduler
+ * has a deterministic quantum instead of the undefined power-on reload value.
+ * 1193182 Hz / 11932 ~= 100 Hz => a 10 ms time slice. Mode 3 (square wave),
+ * lobyte/hibyte access. */
+#define PIT_TICK_HZ 100
+void pit_init(void) {
+    uint32_t divisor = 1193182u / PIT_TICK_HZ;
+    if (divisor > 0xFFFF) divisor = 0xFFFF;
+    outb(0x43, 0x36);                         /* ch0, lo/hi, mode 3, binary */
+    outb(0x40, (uint8_t)(divisor & 0xFF));
+    outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
 }
 
 static void idt64_set_gate(uint8_t num, uint64_t handler, uint16_t sel, uint8_t ist, uint8_t type_attr)
@@ -354,6 +364,7 @@ void idt_init64(void)
 
     keyboard_init();
     serial_init();   /* COM1/COM2 baud setup (the 64-bit boot's only caller) */
+    pit_init();      /* periodic timer tick for preemptive scheduling */
 }
 
 void page_fault_handler(struct regs *r) {

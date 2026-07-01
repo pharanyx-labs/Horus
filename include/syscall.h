@@ -86,6 +86,7 @@ struct audit_event {
 #define SYS_CONNECT_FS_SERVER  50
 #define SYS_CAP_REVOKE         51
 #define SYS_AUDIT_DIGEST       52
+#define SYS_PREEMPT_TRACE      53   /* PREEMPT_SELFTEST builds only; NOSYS otherwise */
 
 #define AUDIT_AUTH          1
 #define AUDIT_SUDO          2

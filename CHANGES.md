@@ -20,7 +20,7 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 - Multiboot2 boot via GRUB2
 - VGA terminal, kernel log buffer, serial mirror
 - Hardware user/kernel isolation: Ring 0/3, per-task page tables, SMEP/SMAP (when advertised) and NX enabled
-- Round-robin (cooperative) task scheduling
+- Preemptive round-robin scheduling: the PIT (100 Hz) preempts ring-3 tasks via a full-context kernel-stack switch; ring-0 ticks never switch (kernel stays effectively non-preemptible). Runtime-proven by a gated 2-task self-test (`make smoke-preempt`)
 - Endpoint-based IPC send/recv (capability-gated); `SYS_IPC_CALL`/`SYS_IPC_REPLY` wrap send
 - Userspace task spawning (`SYS_SPAWN`): ELF load, paging/heap/ASLR setup, capability-gated
 - Table-driven syscall dispatch: one descriptor table enforces each syscall's required capability at a single choke point; unlisted numbers fail closed; a compile-time assertion pins the table to the syscall number space
@@ -31,7 +31,7 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 - In-memory capability-addressed filesystem (capfs/ramfs); each operation enforces its `CAP_RIGHT_FS_*`
 - Rust security core: capabilities, memory reference counting, SHA-256/HMAC/HKDF/PBKDF2, a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (encryption-at-rest), ChaCha20 CSPRNG (RDRAND + timing-jitter seeded), FFI validation
 - Per-spawn stack and heap ASLR seeded from the CSPRNG
-- 48 Rust unit tests; headless QEMU smoke-boot tests (`make smoke`, and `make smoke-elf` for the ELF loader + W^X); GitHub Actions CI runs seven gated jobs (rust test + `clippy -D warnings`, kernel/ISO build, alt-config build matrix, smoke-boot, ELF/W^X boot self-test, reproducible-build check, security scans + SBOM)
+- 48 Rust unit tests; headless QEMU boot self-tests (`make smoke`; `make smoke-elf` for the ELF loader + W^X; `make smoke-preempt` for preemption); GitHub Actions CI runs eight gated jobs (rust test + `clippy -D warnings`, kernel/ISO build, alt-config build matrix, smoke-boot, ELF/W^X boot self-test, preemptive-scheduling self-test, reproducible-build check, security scans + SBOM)
 
 ### Security
 
@@ -51,11 +51,12 @@ Recent hardening pass (see git history for individual commits):
 
 ### Changed
 
+- **Preemptive scheduling added.** The scheduler was cooperative-only, and its context switch saved just `%esp` + a return address into 32-bit TCB fields, so it could never correctly switch two running tasks. Real preemption now works: the ISR already saves a full 64-bit trap frame per task, so `interrupt_handler64` returns the kernel `%rsp` to resume on and the timer (PIT, 100 Hz) switches ring-3 tasks by swapping between their per-task kernel stacks. Switching only happens when a tick interrupts ring 3 (no lock held, whole state captured by the frame); ring-0 ticks never switch. Freshly spawned tasks get a fabricated initial frame so the timer can `iretq` into them. Verified by a gated 2-task self-test.
 - **32-bit kernel build removed; x86-64 only.** The kernel has run exclusively in 64-bit long mode for a long time (`BITS=64` default, CI 64-bit only), so the dead 32-bit build path was removed: the `BITS=32` Makefile branch, the `i686` Rust target, `linker.ld`, `src/kernel/lowlevel.S`, the legacy 32-bit GDT table / TSS / IDT setup, and every `#if defined(__x86_64__)` guard (collapsed to the long-mode arm). Ring-3 userspace stays 32-bit (compatibility-mode binaries). Net −676 lines. As a side effect, `serial_init()` — previously reachable only from the dead 32-bit init — is now wired into the 64-bit boot, so serial is configured on real hardware rather than relying on the emulator's default 16550 state.
 
 ### Known incomplete
 
-- Preemptive scheduling (cooperative only)
+- Scheduler: preemption is single-core with no priorities/fairness; the legacy cooperative `yield()`/IPC switch between multiple tasks is a separate, un-hardened path
 - IPC notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY` return `SYS_ERR_NOSYS`); no true blocking endpoints
 - Disk-backed persistent storage as the default (encrypted-block and ATA code exist but are not the live backing store)
 - SMP / multicore

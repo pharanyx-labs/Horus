@@ -121,7 +121,7 @@ Horus supports up to 64 concurrent tasks. Each task has:
 - A **UID and GID** establishing its authentication context
 - A per-user **file master key** slot (infrastructure present, not yet active)
 
-The scheduler is round-robin. Tasks can be runnable, blocked on IPC or a notification, or dead. There is no preemption in the current implementation — tasks yield cooperatively or on syscall return.
+The scheduler is preemptive round-robin. Tasks can be runnable, blocked on IPC or a notification, or dead. The PIT fires at 100 Hz; on a tick that interrupted **ring 3**, the timer ISR switches to the next runnable task by swapping the per-task kernel stack that holds its full interrupt trap frame (`preempt_on_tick` in `scheduler.c` returns the kernel `%rsp` to resume on, and `isr_common_stub64` loads it before the `iretq` epilogue). A freshly spawned task gets a fabricated initial frame (`sched_prepare_user_context`) so the timer can `iretq` into it at its entry point. A tick that lands in **ring 0** (mid syscall or handler) never switches — the kernel is effectively non-preemptible, which sidesteps lock/reentrancy hazards (spinlocks disable interrupts, so a tick can't even fire inside a critical section). This is single-core with no priorities. Tasks may still yield cooperatively; that older `yield()`/IPC switch is a separate path and is not hardened to the full-context mechanism.
 
 ---
 
@@ -233,4 +233,4 @@ Reference checksums of a known-good build are stored in `.build1.sha` and `.buil
 
 ### What the design does not yet provide
 
-See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: SMP is non-functional, preemption is absent, the filesystem has no persistent backing (the encrypted-block AEAD exists but is not the live backing store), and userspace is non-PIE so load-base ASLR is not applied. (Cryptography is no longer a gap — the primitives are audited-standard algorithms implemented in safe Rust and validated against published vectors.)
+See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: SMP is non-functional, the filesystem has no persistent backing (the encrypted-block AEAD exists but is not the live backing store), and userspace is non-PIE so load-base ASLR is not applied. (Scheduling is now preemptive on a single core, but has no priorities and no microarchitectural flush-on-switch between time-sliced tasks.) (Cryptography is no longer a gap — the primitives are audited-standard algorithms implemented in safe Rust and validated against published vectors.)

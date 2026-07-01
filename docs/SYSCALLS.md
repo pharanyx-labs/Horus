@@ -101,6 +101,8 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 | 49     | `SYS_REGISTER_FS_SERVER`        | Register the caller as the FS server         | `CAP_USER` admin + endpoint cap  | — |
 | 50     | `SYS_CONNECT_FS_SERVER`         | Obtain an endpoint capability to the FS server | dest slot in 4..255            | — |
 
+> Number **53** (`SYS_PREEMPT_TRACE`) is a **test-only** hook, present in the dispatch table and wired to a trace handler *only* in `PREEMPT_SELFTEST=1` builds; in the default/ship kernel its table slot is absent and the number fails closed.
+
 > The handler also services a few **raw-numbered** operations that have no public macro: **5** (clear screen, slot-3 WRITE), **6** (kernel version string), **14** (legacy in-place task create, slot-3 WRITE\|EXEC), **15** (ramfs create, slot-3 WRITE), **16** (ramfs list, slot-3 READ), and **7** (`DEBUG_SHELL` builds only: run an in-kernel shell command).
 
 ---

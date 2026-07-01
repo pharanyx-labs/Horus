@@ -19,9 +19,10 @@ Several items from the phases below have since landed on `main`. They are kept i
 - **W^X for user memory** — non-executable user stacks, and the ELF loader honours `PT_LOAD` `p_flags` (code R+X, data/rodata R[+W]+NX) via the PTE NX bit. Policy lives in Rust and is unit-tested.
 - **Table-driven syscall dispatch** — one descriptor table enforces each syscall's required capability centrally; unlisted numbers fail closed; a compile-time assertion pins the table to the syscall number space. Fixed a ring-0 wild-write in the ELF loader and a `sudo` lock-ordering deadlock along the way.
 - **Attack-surface reduction** — removed the ring-3 storage-backend callback that the kernel invoked from ring 0 (`SYS_REGISTER_STORAGE_BACKEND` now fails closed); closed several information-leak, timing, and buffer-handling issues in the syscall and authentication paths.
+- **Preemptive scheduling** — the PIT (100 Hz) preempts ring-3 tasks via a full-context kernel-stack switch, so CPU-bound tasks time-share without cooperating; ring-0 ticks never switch (kernel stays effectively non-preemptible). Runtime-proven by a gated 2-task self-test (`make smoke-preempt`).
 - **Tamper-evident audit log** — each audit entry is HMAC'd (binding its sequence number) and a running hash-chain head commits to the entire ordered history, keyed by the per-boot pepper (`rust/src/audit.rs`); `SYS_AUDIT_DIGEST` exposes the digest + verify status for an external monitor. A detector, honestly scoped (not tamper-proof against a key-reading kernel compromise).
 - **x86-64 only** — the dead 32-bit kernel build target (`BITS=32`, `linker.ld`, `lowlevel.S`, the legacy 32-bit GDT/TSS/IDT, and all `#if defined(__x86_64__)` branches) was removed. The kernel is now unconditionally long-mode; ring-3 userspace remains 32-bit compatibility-mode binaries.
-- **CI + smoke-boot** — GitHub Actions runs seven gated jobs: the unit tests + `clippy -D warnings`, a kernel/ISO build, an alt-config build matrix (`DEBUG_SHELL`/`MINIMAL_SECURE`), a **headless QEMU smoke-boot** (boots to the shell banner with no fault), an **ELF-loader + W^X boot self-test**, a reproducible-build check, and a security-scan/SBOM job on every push/PR. (Deeper scripted integration tests and fuzzing are still pending.)
+- **CI + smoke-boot** — GitHub Actions runs eight gated jobs: the unit tests + `clippy -D warnings`, a kernel/ISO build, an alt-config build matrix (`DEBUG_SHELL`/`MINIMAL_SECURE`), a **headless QEMU smoke-boot** (boots to the shell banner with no fault), an **ELF-loader + W^X boot self-test**, a **preemptive-scheduling self-test**, a reproducible-build check, and a security-scan/SBOM job on every push/PR. (Deeper scripted integration tests and fuzzing are still pending.)
 
 ---
 
@@ -29,7 +30,7 @@ Several items from the phases below have since landed on `main`. They are kept i
 
 These items address the roughest edges in what already exists. They are good starting points for new contributors because they are self-contained and do not require deep kernel knowledge.
 
-- **Preemptive scheduling**: Hook the timer interrupt to force a task switch rather than just noting elapsed time. This unblocks all liveness guarantees.
+- **Preemptive scheduling** *(done)*: the timer forces a full-context switch of ring-3 tasks (see "Recently completed"). Remaining scheduler work: priorities/fairness, and hardening the cooperative `yield()`/IPC switch to the same full-context mechanism.
 - **`SYS_SPAWN` implementation**: Allow userspace to create new tasks from ELF binaries. The TCB infrastructure exists; what is missing is a proper ELF loader and the syscall plumbing.
 - **IPC call/reply semantics**: Complete `SYS_IPC_CALL` so that a client can send a message and block until the server replies atomically.
 - **Consistent error codes**: Replace the bare `-1`, `-2`, `-3` pattern with a named enumeration visible to both kernel and userspace.

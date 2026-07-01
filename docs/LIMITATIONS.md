@@ -21,6 +21,7 @@ These subsystems are functional in the current codebase:
 - **Audit log** — kernel-side circular buffer of security events; capability mint/transfer/move/revoke and the FS/auth paths record outcomes. The log is **tamper-evident**: each entry is HMAC'd (binding its sequence number) and a running hash-chain head commits to the whole ordered history, both keyed by the per-boot pepper (`rust/src/audit.rs`); `SYS_AUDIT_DIGEST` returns the digest + constant-time verify status. See the security note below for the scope (detector, not tamper-proof).
 - **Keyboard input** — PS/2 scancode translation, key buffer
 - **Preemptive round-robin scheduling** — the timer (PIT at 100 Hz) preempts ring-3 tasks via a full-context kernel-stack switch, so CPU-bound tasks time-share without cooperating. A tick that lands in ring 0 never switches (the kernel stays effectively non-preemptible, avoiding lock/reentrancy hazards). Proven at runtime by `make smoke-preempt`, which spawns two non-yielding tracers and asserts they interleave. (The legacy cooperative `yield()`/IPC switch between multiple tasks is a separate, older path and is not hardened.)
+- **Fault signals** — a task can register its own fault handler (`SYS_SIGACTION`); a ring-3 fault (page fault → `SIG_SEGV`, `#UD` → `SIG_ILL`) is then delivered to that handler in ring 3 — signal number in `ebx`, faulting address in `ecx` — instead of the task being summarily killed, and `SYS_SIGRETURN` resumes the exact pre-signal context. Attack-surface controls: the handler address is validated to the user code window in safe Rust (fail-closed); a fault *inside* a handler is not re-delivered (no loops); the handler runs at ring 3 with unchanged privileges. Proven at runtime by `make smoke-signal` (a task faults on purpose and its handler runs). **Scope:** synchronous fault signals only — there is no asynchronous *task-to-task* signalling yet (that would require a capability on the target's TCB), no alternate signal stack, and no per-signal masking.
 - **Reproducible builds** — `make reproducible-build` yields a byte-for-byte identical `kernel.elf` across clean builds (verified in CI)
 - **Userspace task spawning** — `SYS_SPAWN` loads an ELF image, sets up paging/heap/ASLR and a capability space, and is gated on a capability (`CAP_RIGHT_WRITE | CAP_RIGHT_EXEC` on slot 3)
 
@@ -66,10 +67,6 @@ All filesystem contents live in memory and are lost on reboot. The encrypted-sto
 
 LAPIC detection and AP-bringup scaffolding exist, but no AP is brought up and the scheduler/IPC paths assume a single core. Running on real multi-core hardware will not crash but will use one core.
 
-### Signal handling
-
-There is no signal mechanism. A userspace fault is fatal to the faulting task (or drops into the kernel debug shell when `DEBUG_SHELL=1`).
-
 ### Full ASLR (PIE userspace)
 
 Per-spawn stack top and heap gap are randomised from the CSPRNG, but userspace binaries are linked non-PIE at a fixed load address (`0x400000`), so load-base randomisation is not applied. See the security note below.
@@ -108,7 +105,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are mostly bare integers; only a few (e.g. `SYS_ERR_NOSYS`) are named.
 - The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its current role (it is the security core: capabilities, memory refcounting, SHA-2/HMAC/HKDF/PBKDF2, ChaCha20 RNG, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stub implementations used by the `MINIMAL_SECURE=1` build (which strips the filesystem/storage stack); it is build configuration, not security logic.
-- Tests: 48 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the tamper-evident audit MAC/chain (`audit.rs`), the W^X page policy, and the FFI validation/policy functions. CI runs eight gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, an alt-config build matrix, a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a reproducible-build check, and security scans + SBOM). The smoke-boot tests confirm the kernel boots to userspace with no fault, that the ELF loader enforces W^X, and that the timer preempts and time-slices two ring-3 tasks, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
+- Tests: 49 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the tamper-evident audit MAC/chain (`audit.rs`), the W^X page policy, the signal-handler-address window, and the FFI validation/policy functions. CI runs nine gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, an alt-config build matrix, a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a signal-handling self-test, a reproducible-build check, and security scans + SBOM). The smoke-boot tests confirm the kernel boots to userspace with no fault, that the ELF loader enforces W^X, that the timer preempts and time-slices two ring-3 tasks, and that a ring-3 fault is delivered to a registered handler, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -127,4 +124,4 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Cryptography (KDF/MAC/RNG + ChaCha20/HMAC AEAD; all standard primitives) | ~75% |
 | Storage / disk I/O | ~25% (driver + sound encrypted-block code, not wired as default) |
 | SMP | ~5% (detection/scaffolding only) |
-| Testing | ~40% (48 unit tests + CI + smoke-boot + ELF/W^X self-test; no deeper integration/fuzz) |
+| Testing | ~40% (49 unit tests + CI + smoke-boot + ELF/W^X + preemption + signal self-tests; no deeper integration/fuzz) |

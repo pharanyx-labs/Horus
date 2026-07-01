@@ -68,6 +68,8 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 | 36     | `SYS_ROTATE_KEYS`  | Rotate stored-block keys                     | `CAP_CONSOLE` (slot 8)              | Returns blocks rotated |
 | 37     | `SYS_READ_AUDIT`   | Read the kernel audit log                    | `CAP_AUDIT` READ (slot 7)           | Circular buffer |
 | 52     | `SYS_AUDIT_DIGEST` | Read the audit-log integrity digest          | `CAP_AUDIT` READ (slot 7)           | Writes 40 bytes (8-byte event count + 32-byte chain-head MAC); returns verify status (0 = intact, >0 = first tampered index + 1, -1 = uninitialised) |
+| 54     | `SYS_SIGACTION`    | Register/clear this task's own fault handler | None (self only)                    | Handler vaddr validated to the user code window (safe Rust); 0 clears. On a ring-3 fault the kernel enters the handler (signal # in `ebx`, fault addr in `ecx`) instead of killing the task |
+| 55     | `SYS_SIGRETURN`    | Resume the pre-signal context from a handler | None (self only)                    | Restores the exact interrupted trap frame; serviced in `interrupt_handler64`. Fails if called outside a handler |
 
 ### Capabilities
 

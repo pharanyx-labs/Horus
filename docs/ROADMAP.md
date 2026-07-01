@@ -19,7 +19,9 @@ Several items from the phases below have since landed on `main`. They are kept i
 - **W^X for user memory** — non-executable user stacks, and the ELF loader honours `PT_LOAD` `p_flags` (code R+X, data/rodata R[+W]+NX) via the PTE NX bit. Policy lives in Rust and is unit-tested.
 - **Table-driven syscall dispatch** — one descriptor table enforces each syscall's required capability centrally; unlisted numbers fail closed; a compile-time assertion pins the table to the syscall number space. Fixed a ring-0 wild-write in the ELF loader and a `sudo` lock-ordering deadlock along the way.
 - **Attack-surface reduction** — removed the ring-3 storage-backend callback that the kernel invoked from ring 0 (`SYS_REGISTER_STORAGE_BACKEND` now fails closed); closed several information-leak, timing, and buffer-handling issues in the syscall and authentication paths.
-- **CI + smoke-boot** — GitHub Actions runs the unit tests, `clippy -D warnings`, a kernel/ISO build, a **headless QEMU smoke-boot** (boots to the shell banner with no fault), a reproducible-build check, and a security-scan/SBOM job on every push/PR. (Deeper scripted integration tests and fuzzing are still pending.)
+- **Tamper-evident audit log** — each audit entry is HMAC'd (binding its sequence number) and a running hash-chain head commits to the entire ordered history, keyed by the per-boot pepper (`rust/src/audit.rs`); `SYS_AUDIT_DIGEST` exposes the digest + verify status for an external monitor. A detector, honestly scoped (not tamper-proof against a key-reading kernel compromise).
+- **x86-64 only** — the dead 32-bit kernel build target (`BITS=32`, `linker.ld`, `lowlevel.S`, the legacy 32-bit GDT/TSS/IDT, and all `#if defined(__x86_64__)` branches) was removed. The kernel is now unconditionally long-mode; ring-3 userspace remains 32-bit compatibility-mode binaries.
+- **CI + smoke-boot** — GitHub Actions runs seven gated jobs: the unit tests + `clippy -D warnings`, a kernel/ISO build, an alt-config build matrix (`DEBUG_SHELL`/`MINIMAL_SECURE`), a **headless QEMU smoke-boot** (boots to the shell banner with no fault), an **ELF-loader + W^X boot self-test**, a reproducible-build check, and a security-scan/SBOM job on every push/PR. (Deeper scripted integration tests and fuzzing are still pending.)
 
 ---
 
@@ -51,7 +53,7 @@ These items address the roughest edges in what already exists. They are good sta
 - **Replace custom password hashing**: Use a standard, reviewed algorithm. Argon2id is the preferred target. This requires either porting a `no_std` implementation or compiling a small C library into the kernel.
 - **Hardware entropy**: Seed the kernel's PRNG from RDRAND (already detected at boot but not used) and from interrupt timing jitter, not solely from TSC.
 - **ASLR enforcement**: Apply address space layout randomisation on every task spawn using the existing entropy infrastructure.
-- **Audit log integrity**: Add a rolling MAC over audit log entries so that tampering is detectable.
+- **Audit log integrity** *(done)*: a per-entry HMAC (sequence-bound) plus a running hash-chain head over the whole history make tampering detectable, keyed by the per-boot pepper (`rust/src/audit.rs`, exposed via `SYS_AUDIT_DIGEST`).
 - **Encrypted storage** *(crypto done; integration pending)*: the block-level AEAD, per-block keys, and key rotation exist and are sound; what remains is wiring the encrypted store in as the default backing store (tracked under Phase 2).
 - **`crypto.rs` implementation** *(done)*: real primitives now live in safe Rust — SHA-256/HMAC/HKDF/PBKDF2 (`sha256.rs`), a ChaCha20 CSPRNG (`rng.rs`), and a ChaCha20+HMAC-SHA256 AEAD (`aead.rs`). `crypto.rs` itself is intentionally empty.
 

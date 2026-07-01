@@ -16,14 +16,13 @@ Horus is a microkernel. The kernel handles only what must run in Ring 0: memory 
 
 ## Target hardware
 
-Horus targets **x86 and x86-64** exclusively.
+Horus targets **x86-64** exclusively.
 
-- Default build: `x86-64` (64-bit long mode, PML4 paging, 48-bit virtual addresses)
-- Secondary build: `IA-32` (32-bit protected mode, two-level paging)
-- Bootloader: **Multiboot2** compatible (GRUB2)
-- CPU features detected at runtime: SMAP, AES-NI, SSE2/SSE4.2, TSC, RDRAND
+- The kernel runs in 64-bit long mode: PML4 paging, 48-bit virtual addresses, `mcmodel=kernel`.
+- Bootloader: **Multiboot2** compatible (GRUB2).
+- CPU features detected at runtime: SMEP, SMAP, AES-NI, SSE2/SSE4.2, TSC, RDRAND.
 
-Both targets are supported in the same codebase via `BITS=32` / `BITS=64` build flags and `#if defined(__x86_64__)` guards.
+The ring-3 userspace binaries are the only 32-bit component: they are flat ELF32/EM_386 images run in a compatibility-mode code segment beneath the 64-bit kernel. (An earlier 32-bit kernel build target existed but was removed — the kernel has run exclusively in long mode for a long time.)
 
 ---
 
@@ -49,7 +48,7 @@ Both targets are supported in the same codebase via `BITS=32` / `BITS=64` build 
 
 ### Paging
 
-The kernel uses **recursive page table mapping**: PML4 entry 510 (64-bit) or PDE entry 1023 (32-bit) points back at the page table root. This gives the kernel a fixed virtual window to read and write any page table entry without a separate mapping.
+The kernel uses **recursive page table mapping**: PML4 entry 510 points back at the page table root. This gives the kernel a fixed virtual window to read and write any page table entry without a separate mapping.
 
 **Copy-on-write** is implemented at the page level. Shared pages are marked `PAGE_COW`. On the first write fault, `rust_handle_demand_page_fault()` allocates a fresh physical page, copies the content, and remaps the faulting address (preserving the page's NX bit). Physical pages carry reference counts maintained in Rust (`rust_page_ref_inc`, `rust_page_ref_dec`). The COW-copy-vs-demand-zero decision logic is unit-tested.
 
@@ -138,7 +137,7 @@ The basic send/receive/call/reply cycle is implemented. The call/reply path (`SY
 
 ## Syscall interface
 
-Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C calling convention on the stack or in registers. There are approximately 51 defined syscall numbers.
+Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C calling convention on the stack or in registers. There are 52 defined syscall numbers (`SYS_YIELD` = 0 through `SYS_AUDIT_DIGEST` = 52).
 
 Dispatch is **table-driven**: `syscall_handler` indexes a `syscall_table[]` of descriptors `{ handler, slot, rights, type }`, validates the number, and — for syscalls whose authority is a single fixed capability — enforces that capability in one central place before calling the handler. A number with no entry (including the reserved/gap numbers below) fails closed. A `_Static_assert` pins the table size to the highest syscall number, so a syscall cannot be added without a table slot. Syscalls with dynamic or self-authorising policy (the capability ops, the FS ops, auth/sudo, user management) carry no fixed slot and authorise inside their handler or the helper they call.
 
@@ -160,6 +159,7 @@ Numbers are the authoritative values from `include/syscall.h`. (Numbers 1/`SYS_P
 **Authentication**
 - `SYS_GETUID` (29), `SYS_AUTH` (30), `SYS_SUDO` (31), `SYS_GET_PASS` (32)
 - `SYS_USERADD` (33), `SYS_USERDEL` (34), `SYS_PASSWD` (35), `SYS_ROTATE_KEYS` (36), `SYS_READ_AUDIT` (37)
+- `SYS_AUDIT_DIGEST` (52) — return the audit-log integrity digest (event count + chain-head MAC) and verify status; `CAP_AUDIT` READ (slot 7)
 
 **Capabilities**
 - mint (4), transfer (8), move (9) — raw-numbered, no public macro; `SYS_CAP_REVOKE` (51)
@@ -186,6 +186,8 @@ Password hashing is **PBKDF2-HMAC-SHA256** (RFC 8018, 120,000 iterations), imple
 
 The kernel maintains a 256-entry circular buffer. Each event records: event type, TSC timestamp, subject UID, object identifier, and result code. Types include authentication, sudo, user management, capability operations, file access, IPC, and filesystem events. The log is readable via `SYS_READ_AUDIT`.
 
+The log is **tamper-evident**. When it is written, each entry is bound by `mac = HMAC(pepper, LE64(seq) || event)` (the sequence number defeats slot swaps and replays) and a running chain head is advanced as `head = HMAC(pepper, head || mac)`, committing to the whole ordered history — including entries the ring has already overwritten. The keyed-hash logic lives in safe Rust (`rust/src/audit.rs`); the C side (`syscall.c`) owns the ring storage, the per-slot MAC/sequence arrays, and the sequence counter, and seeds the chain in `users_init` as soon as the pepper exists. `SYS_AUDIT_DIGEST` returns the total event count, the current chain-head MAC, and a constant-time verify status of the retained window, so an external monitor can detect drops, rewrites, and rollbacks over time. This is an integrity detector keyed to a secret the log's readers do not hold — not a guarantee against an attacker who has already compromised the kernel and can read the pepper.
+
 ---
 
 ## Rust integration
@@ -200,6 +202,7 @@ The Rust crate at `rust/` compiles to a static library (`libhorus_shell.a`) that
 | `sha256.rs` | SHA-256, HMAC-SHA256, HKDF-SHA256, PBKDF2-HMAC-SHA256 |
 | `rng.rs` | ChaCha20 fast-key-erasure CSPRNG; RDRAND + timing-jitter seeding |
 | `aead.rs` | ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (encryption-at-rest) |
+| `audit.rs` | Tamper-evident audit log: per-entry HMAC (sequence-bound) + running hash-chain head |
 | `auth.rs` | Auth/sudo lockout + anti-spray throttle; least-privilege sudo frame rights |
 | `ps.rs` | Task state-name labels for the `ps` renderers |
 | `crypto.rs` | Intentionally empty — the primitives live in the modules above |
@@ -230,4 +233,4 @@ Reference checksums of a known-good build are stored in `.build1.sha` and `.buil
 
 ### What the design does not yet provide
 
-See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: cryptography is custom and not to production standard, SMP is non-functional, preemption is absent, and the filesystem has no persistent backing.
+See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: SMP is non-functional, preemption is absent, the filesystem has no persistent backing (the encrypted-block AEAD exists but is not the live backing store), and userspace is non-PIE so load-base ASLR is not applied. (Cryptography is no longer a gap — the primitives are audited-standard algorithms implemented in safe Rust and validated against published vectors.)

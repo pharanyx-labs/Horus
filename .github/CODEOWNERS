@@ -35,7 +35,6 @@ docs/SECURITY.md                @yossicohenmcr-ctrl
 
 # Build system and reproducibility
 Makefile                        @yossicohenmcr-ctrl
-linker.ld                       @yossicohenmcr-ctrl
 linker64.ld                     @yossicohenmcr-ctrl
 
 # Default fallback for everything else (owner review)

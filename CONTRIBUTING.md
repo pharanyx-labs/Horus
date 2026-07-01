@@ -15,8 +15,8 @@ If you are planning something non-trivial, open an issue first to discuss the ap
 ## Setting up
 
 ```bash
-git clone https://github.com/your-org/horus
-cd horus
+git clone https://github.com/yossicohenmcr-ctrl/Horus
+cd Horus
 
 # Install build tools (Debian/Ubuntu)
 sudo apt-get install build-essential gcc binutils make xorriso grub-pc-bin qemu-system-x86
@@ -49,15 +49,15 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### Rust work
 
-- **Audit-log integrity**: Add a rolling MAC over audit-log entries so tampering is detectable. The primitives already exist in safe `no_std` Rust — SHA-256/HMAC/HKDF/PBKDF2 (`sha256.rs`), a ChaCha20 CSPRNG (`rng.rs`), and a ChaCha20+HMAC-SHA256 AEAD (`aead.rs`) — so this is composition, not new cryptography.
 - **Argon2id**: Port or write a `no_std`-compatible Argon2id implementation to replace the current PBKDF2-HMAC-SHA256 password hashing (a stronger memory-hard KDF).
+- **Property-based tests for the capability core**: add a `proptest`/`quickcheck`-style harness (or hand-rolled generators, since the crate is `no_std`) over mint/transfer/revoke to fuzz the lineage and revocation invariants beyond the current example-based tests.
 - **Kani / Verus verification**: Apply a Rust verification tool to `capability.rs` to formally verify the revocation properties.
 
 ### Testing
 
 - **Integration test suite**: A headless smoke-boot test (`make smoke`) already runs in CI and asserts the kernel boots to userspace with no fault. Extend it into a harness that drives scripted shell sessions (login, capability denials, ELF-under-W^X) and checks the output.
 - **Syscall fuzzer**: Apply coverage-guided fuzzing to the syscall interface. The kernel runs in QEMU under a controlled environment; `syzkaller` or a custom harness could work.
-- **More Rust unit tests**: the crate has 41 tests today (capability revocation/lineage/mint-subsetting, the refcount trust boundary, the crypto vectors, the AEAD, the W^X policy). Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
+- **More Rust unit tests**: the crate has 48 tests today (capability revocation/lineage/mint-subsetting, the refcount trust boundary, the crypto vectors, the AEAD, the tamper-evident audit MAC/chain, the W^X policy). Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
 
 ### Documentation
 

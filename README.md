@@ -1,15 +1,48 @@
+<div align="center">
+
 # Horus
 
-[![CI](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml/badge.svg)](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml)
+**A capability-based microkernel with a safe-Rust security core.**
 
-A capability-based microkernel for x86 and x86-64, written in C and Rust.
+[![CI](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml/badge.svg)](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
+[![Platform: x86-64](https://img.shields.io/badge/platform-x86--64-blue.svg)](docs/ARCHITECTURE.md)
+[![Language: C + Rust](https://img.shields.io/badge/language-C%20%2B%20Rust-orange.svg)](docs/ARCHITECTURE.md)
+[![Reproducible build](https://img.shields.io/badge/build-reproducible-success.svg)](docs/BUILDING.md)
+
+[Architecture](docs/ARCHITECTURE.md) ·
+[Security](SECURITY.md) ·
+[Syscalls](docs/SYSCALLS.md) ·
+[Building](docs/BUILDING.md) ·
+[Limitations](docs/LIMITATIONS.md) ·
+[Roadmap](docs/ROADMAP.md)
+
+</div>
 
 ---
 
-Horus is a research microkernel that treats **capability tokens** as the single foundational security primitive. Every operation — file access, IPC, task creation, device I/O — requires an explicit capability. Capabilities can be minted with reduced rights, transferred between tasks, and revoked instantly across the entire system. The kernel is written in C; the capability engine, memory reference counting, and security-sensitive validation are implemented in safe, no_std Rust.
+## Overview
 
-**Current status: early development.**
-Horus boots, runs userspace, and enforces capability-based access control. A number of subsystems — disk I/O, the filesystem server, SMP — are scaffolded but not yet complete. This is a research and learning project, not a production kernel. See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for an honest account of where things stand.
+Horus is an x86-64 microkernel that treats the **capability token** as its single, foundational security primitive. Every privileged operation — file access, IPC, task creation, device I/O — requires an explicit, unforgeable capability. Capabilities can be minted with reduced rights, delegated between tasks, and revoked instantly and transitively across the entire system.
+
+The kernel is written in C. The security-critical core — the capability engine, physical-memory reference counting, the cryptographic primitives, the W^X page policy, and every FFI validation boundary — is implemented in **safe, `no_std` Rust**, where the type system statically rules out entire classes of memory-safety defects.
+
+Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, a **headless QEMU boot test**, and a supply-chain security scan with an SBOM.
+
+> ### Project status — research / early development
+> Horus boots, runs ring-3 userspace, and enforces capability-based access control end to end. Several subsystems (persistent storage, the userspace filesystem server, SMP, preemption) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
+
+---
+
+## Why Horus
+
+| Principle | How Horus applies it |
+|---|---|
+| **No ambient authority** | Access derives solely from held capabilities — never from UID, task identity, or global state. A task with no capability for an object cannot name it. |
+| **Least privilege by construction** | Capabilities are minted with a *subset* of rights; a spawned task receives only the TCB, frame, and endpoints it needs — never the admin, block-device, or console capabilities. |
+| **Verifiable core** | Security-sensitive logic lives in safe Rust with unit tests and known-answer cryptographic vectors; the C/Rust ABI is pinned by mirrored compile-time assertions. |
+| **Defence in depth** | Hardware isolation (SMEP/SMAP, W^X/NX), a single centralized syscall-authorization choke point, transitive revocation, and a tamper-evident audit log reinforce one another. |
+| **Provenance you can trust** | Reproducible builds and a first-party-only CI supply chain mean a released `kernel.elf` can be independently reproduced bit-for-bit. |
 
 ---
 
@@ -20,35 +53,49 @@ Horus boots, runs userspace, and enforces capability-based access control. A num
  │                   Userspace  (Ring 3)                    │
  │     shell          hello       fs_server      captest    │
  └──────────────────────┬───────────────────────────────────┘
-                        │  syscalls (~51 defined)
+                        │  syscalls (52 defined, table-dispatched)
  ┌──────────────────────▼───────────────────────────────────┐
  │                  Horus Kernel  (Ring 0)                  │
  │                                                          │
  │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
  │  │ Capability │  │  Paging /  │  │  Scheduler /    │     │
- │  │  System    │  │  Memory    │  │  Task Mgmt      │     │
+ │  │  Engine    │  │  Memory    │  │  Task Mgmt      │     │
  │  └────────────┘  └────────────┘  └─────────────────┘     │
  │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
  │  │  Syscall   │  │  IPC /     │  │  Auth / Audit   │     │
- │  │  Handler   │  │  Notifs    │  │  Logging        │     │
+ │  │  Dispatch  │  │  Endpoints │  │  (tamper-evid.) │     │
  │  └────────────┘  └────────────┘  └─────────────────┘     │
  │                                                          │
  │  ┌────────────────────────────────────────────────────┐  │
  │  │        Rust Security Core  (no_std, safe Rust)     │  │
  │  │  capability.rs  memory.rs  sha256.rs  rng.rs       │  │
- │  │  aead.rs  auth.rs  ps.rs  lib.rs (page/W^X policy) │  │
+ │  │  aead.rs  auth.rs  audit.rs  ps.rs  lib.rs (W^X)   │  │
  │  └────────────────────────────────────────────────────┘  │
  │                                                          │
  │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
  │  │  Terminal  │  │  GDT / IDT │  │  ATA / RAM      │     │
- │  │  / VGA     │  │  / TSS     │  │  Filesystem     │     │
+ │  │  / Serial  │  │  / TSS     │  │  Filesystem     │     │
  │  └────────────┘  └────────────┘  └─────────────────┘     │
  └──────────────────────┬───────────────────────────────────┘
                         │
  ┌──────────────────────▼───────────────────────────────────┐
- │              Hardware  (x86 / x86-64)                    │
+ │                    Hardware  (x86-64)                    │
  └──────────────────────────────────────────────────────────┘
 ```
+
+The kernel runs in 64-bit long mode. Ring-3 userspace binaries are the sole 32-bit component (loaded in compatibility mode). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+
+---
+
+## Capabilities & security at a glance
+
+- **Transitive, system-wide revocation.** Revoking a capability nullifies it and every derived copy across every task's cspace *and* the kernel root cnode in a single atomic Rust sweep, then bumps a lineage generation counter — so a stale bit pattern that escaped the structural sweep still fails at point of use.
+- **Centralized authorization.** Syscall dispatch is a descriptor table that enforces each call's required capability at one choke point; an unlisted syscall number fails closed, and a compile-time assertion forbids adding a syscall without a table slot.
+- **Hardware isolation.** Ring 0/3 separation with per-task page tables; **SMEP** and **SMAP** engaged when advertised; **W^X** enforced via `EFER.NXE` and the PTE NX bit (non-executable stacks; ELF `PT_LOAD` segments honour their `p_flags`).
+- **Modern cryptography, safe Rust.** PBKDF2-HMAC-SHA256 password hashing, HKDF-SHA256 key derivation, a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD for storage, and a ChaCha20 fast-key-erasure CSPRNG seeded from RDRAND and timing jitter — all validated against published vectors.
+- **Tamper-evident audit log.** Each event is bound by an HMAC keyed to a per-boot secret, and a running hash-chain head commits to the entire ordered history; `SYS_AUDIT_DIGEST` exposes the digest and verify status for an external monitor.
+
+Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 
 ---
 
@@ -56,33 +103,32 @@ Horus boots, runs userspace, and enforces capability-based access control. A num
 
 | Subsystem | State |
 |---|---|
-| Multiboot boot (32-bit and 64-bit) | Working |
-| VGA terminal and serial output | Working |
-| GDT / IDT / TSS | Working |
-| Hardware-enforced user/kernel isolation | Working |
-| Paging, memory isolation, per-task address spaces | Working |
-| Capability mint, transfer, and revoke | Working |
-| Cross-task capability revocation | Working |
-| Lineage tracking (use-after-revoke prevention) | Working |
-| User authentication and lockout | Working |
-| Audit logging | Working |
-| Keyboard input (PS/2) | Working |
-| Round-robin task scheduling | Working |
-| SMEP / SMAP hardening (when CPU advertises) | Working |
-| W^X — non-executable stacks + ELF `p_flags` honoured | Working |
-| Table-driven syscall dispatch (central capability gate) | Working |
-| Rust security-core unit tests (41) + GitHub Actions CI | Working |
-| Headless QEMU smoke-boot test (`make smoke`) | Working |
-| Reproducible builds | Working |
-| Userspace shell and commands | Partial |
-| Endpoint-based IPC | Partial |
-| RAM-backed filesystem | Partial |
-| Copy-on-write paging | Partial |
-| ATA disk driver | Stub |
-| Userspace filesystem server | Stub |
-| Disk-backed persistent storage | Not yet |
-| Symmetric multiprocessing | Not yet |
-| Preemptive scheduling | Not yet |
+| Multiboot2 boot (x86-64 long mode) | ✅ Working |
+| VGA terminal + serial output | ✅ Working |
+| GDT / IDT / TSS, hardware user/kernel isolation | ✅ Working |
+| Paging, per-task address spaces, memory isolation | ✅ Working |
+| Capability mint / transfer / move / revoke | ✅ Working |
+| Transitive cross-task revocation + lineage (use-after-revoke prevention) | ✅ Working |
+| SMEP / SMAP hardening (when CPU advertises) | ✅ Working |
+| W^X — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
+| Table-driven syscall dispatch (central capability gate) | ✅ Working |
+| User authentication + lockout (PBKDF2-HMAC-SHA256) | ✅ Working |
+| Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
+| Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256) | ✅ Working |
+| PS/2 keyboard input | ✅ Working |
+| Round-robin (cooperative) scheduling | ✅ Working |
+| Rust security-core unit tests (48) + GitHub Actions CI (7 gated jobs) | ✅ Working |
+| Headless QEMU smoke-boot (`make smoke`) + ELF/W^X self-test (`make smoke-elf`) | ✅ Working |
+| Reproducible builds | ✅ Working |
+| Userspace shell and commands | 🟡 Partial |
+| Endpoint-based IPC | 🟡 Partial |
+| RAM-backed filesystem | 🟡 Partial |
+| Copy-on-write paging | 🟡 Partial |
+| ATA disk driver | 🟡 Stub |
+| Userspace filesystem server | 🟡 Stub |
+| Disk-backed persistent storage (as default) | ⬜ Not yet |
+| Symmetric multiprocessing | ⬜ Not yet |
+| Preemptive scheduling | ⬜ Not yet |
 
 ---
 
@@ -99,37 +145,32 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup target add x86_64-unknown-none
 ```
 
-### Build and run (64-bit, default)
+### Build and run
 
 ```bash
 make          # produces kernel.elf
-make run      # builds boot.iso, launches QEMU
+make run      # builds boot.iso and launches QEMU
 ```
 
-### Build (32-bit)
+### Verify it
 
 ```bash
-make BITS=32
-rustup target add i686-unknown-linux-gnu
-make BITS=32
+make test               # Rust unit tests (48) + a clean full build
+make smoke              # headless QEMU boot to the ring-3 shell, no fault
+make smoke-elf          # boots a real multi-segment ELF; asserts W^X enforcement
+make reproducible-build # byte-for-byte deterministic kernel.elf
 ```
-
-### Reproducible build
-
-```bash
-make reproducible-build
-```
-
-The kernel binary is built with a fixed `SOURCE_DATE_EPOCH` and a seeded compiler random, producing a byte-for-byte identical binary across clean builds on the same toolchain version.
 
 ### Build flags
 
 | Flag | Default | Effect |
 |---|---|---|
-| `BITS` | `64` | Target architecture (`32` or `64`) |
-| `DEBUG_SHELL` | `0` | Enable in-kernel debug shell |
-| `MINIMAL_SECURE` | `0` | Strip non-essential kernel features |
-| `RUST_ENABLED` | `1` | Link the Rust security core |
+| `DEBUG_SHELL` | `0` | Enable the in-kernel debug shell |
+| `MINIMAL_SECURE` | `0` | Strip non-essential kernel features (smaller attack surface) |
+| `RUST_ENABLED` | `1` | Link the Rust security core (`0` uses C stub shims) |
+| `ELF_SELFTEST` | `0` | Embed a real ELF and self-test the loader + W^X at boot |
+
+Horus is x86-64 only. See [docs/BUILDING.md](docs/BUILDING.md) for the full toolchain reference and troubleshooting.
 
 ---
 
@@ -137,17 +178,24 @@ The kernel binary is built with a fixed `SOURCE_DATE_EPOCH` and a seeded compile
 
 | Document | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, subsystem internals, capability model |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, subsystem internals, capability model, memory layout |
+| [docs/SYSCALLS.md](docs/SYSCALLS.md) | Per-syscall reference: numbers, capability requirements, notes |
 | [docs/BUILDING.md](docs/BUILDING.md) | Toolchain setup, build targets, QEMU configuration |
+| [SECURITY.md](SECURITY.md) | Security posture, hardening in place, threat model, disclosure |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Honest breakdown of what works and what does not |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Planned milestones and open contribution areas |
+| [TESTS.md](TESTS.md) | Test coverage today and what is still needed |
 
 ---
 
 ## Contributing
 
-Horus is at an early stage and there is meaningful work available across kernel C, safe Rust, and tooling. Contributions of all sizes are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
+Horus is at an early stage, and there is meaningful work across kernel C, safe Rust, and tooling. Contributions of all sizes are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and [docs/ROADMAP.md](docs/ROADMAP.md) for prioritized areas.
+
+## Security
+
+Please report vulnerabilities responsibly via a GitHub Security Advisory rather than a public issue. Details and scope are in [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 Horus Project
+[MIT](LICENSE) — Copyright © 2026 The Horus Project.

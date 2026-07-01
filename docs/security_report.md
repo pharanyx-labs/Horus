@@ -31,7 +31,7 @@ assignees: yossicohenmcr-ctrl
 
 ## Environment
 - Horus commit / version:
-- Build configuration (BITS=64, DEBUG_SHELL, MINIMAL_SECURE, RUST_ENABLED):
+- Build configuration (DEBUG_SHELL, MINIMAL_SECURE, RUST_ENABLED, ELF_SELFTEST):
 - Host / QEMU version:
 - CPU features (if relevant, e.g. SMEP/SMAP, RDRAND, AES-NI):
 

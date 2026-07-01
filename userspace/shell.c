@@ -416,10 +416,12 @@ static void handle_command(char *cmd) {
             println("sudo: elevated spawn successful (pid ");
             print_decimal(r);
             println(")");
-        } else if (r == -2) {
-            println("sudo: incorrect password");
+        } else if (r == SYS_ERR_AUTH) {
+            println("sudo: incorrect password or locked out");
         } else {
-            println("sudo: failed (no armed image or auth error)");
+            print("sudo: failed (");
+            print(sys_strerror(r));
+            println(")");
         }
     } else if (strncmp(cmd, "useradd ", 8) == 0) {
         const char *p = cmd + 8;

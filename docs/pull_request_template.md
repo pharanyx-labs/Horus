@@ -23,6 +23,7 @@
 - [ ] `make test` / `cargo test --release` passes
 - [ ] `make reproducible-build` still produces identical artifacts
 - [ ] `make smoke` passes (headless QEMU boot to the shell banner; required if userspace, the loader, paging, or boot changed)
+- [ ] `make smoke-elf` passes (ELF loader + W^X boot self-test; required if the ELF loader, paging, or W^X policy changed)
 - [ ] New or updated unit/property tests added for security-critical logic
 - [ ] Security scans (`make security`) reviewed; no new high-severity findings
 

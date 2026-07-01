@@ -1,6 +1,6 @@
 # Horus Syscall Reference
 
-**Document Status**: Early development (as of June 2026)  
+**Document Status**: Early development (as of July 2026)  
 **Interface**: Syscall number in `eax`/`rax`; arguments in `ebx, ecx, edx, esi, edi`. The kernel services syscalls through its `int 0x80` handler (`syscall_handler`), which dispatches via a descriptor table: for syscalls with a single fixed authorising capability it is enforced centrally before the handler runs, and any syscall number with no table entry fails closed.  
 **Security Model**: All operations are capability-gated. No ambient authority.
 
@@ -67,6 +67,7 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 | 35     | `SYS_PASSWD`       | Change a password                            | Self, or admin for another user     | — |
 | 36     | `SYS_ROTATE_KEYS`  | Rotate stored-block keys                     | `CAP_CONSOLE` (slot 8)              | Returns blocks rotated |
 | 37     | `SYS_READ_AUDIT`   | Read the kernel audit log                    | `CAP_AUDIT` READ (slot 7)           | Circular buffer |
+| 52     | `SYS_AUDIT_DIGEST` | Read the audit-log integrity digest          | `CAP_AUDIT` READ (slot 7)           | Writes 40 bytes (8-byte event count + 32-byte chain-head MAC); returns verify status (0 = intact, >0 = first tampered index + 1, -1 = uninitialised) |
 
 ### Capabilities
 
@@ -126,4 +127,4 @@ For the most up-to-date status, consult [`TESTS.md`](../TESTS.md), [`CHANGES.md`
 
 **Contribution Note**: This reference should be kept in sync with `include/syscall.h` and the syscall handler table in the kernel.
 
-*Last updated: 2026-06-30 — numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*
+*Last updated: 2026-07-01 — added `SYS_AUDIT_DIGEST` (52); numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*

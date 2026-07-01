@@ -6,10 +6,10 @@ Horus is a **research microkernel** in early development. It is not suitable for
 
 Known weaknesses include:
 
-- The audit log has no integrity protection
 - SMP and preemptive scheduling are not yet implemented
 - Load-base ASLR is not applied (userspace binaries are non-PIE)
 - Disk-backed persistent storage is not the live backing store (the filesystem is in-memory); the encrypted-block path, though now cryptographically sound, is not yet wired in as the default
+- The audit log is tamper-*evident* (an HMAC chain detects modification), not tamper-*proof* — an attacker who can read the per-boot key can recompute a consistent chain (see the audit-log note below)
 
 These are not undisclosed vulnerabilities — they are documented, known limitations of an incomplete system.
 
@@ -26,7 +26,8 @@ For balance, the following are implemented and enforced today (single-core, coop
 - **Encryption-at-rest:** block encryption is a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD in safe Rust, with per-block HKDF subkeys, a fresh random per-write nonce, `(ino, block)` bound as AAD, and constant-time fail-closed verification. (Replaced a hand-rolled non-AES "AES-128".)
 - **No ring-3 code in ring 0:** `SYS_REGISTER_STORAGE_BACKEND` — which used to register userspace function pointers the kernel called from ring 0 — fails closed; any userspace storage/FS provider must run as a ring-3 IPC server.
 - **Audit trail:** capability mint/transfer/move/revoke (and the FS/auth paths) record their outcome to the audit log.
-- **Supply chain / CI:** every change is gated by a CI pipeline — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, a headless QEMU smoke-boot, a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
+- **Tamper-evident audit log:** every audit entry is bound by an HMAC keyed to the per-boot secret pepper (the MAC binds the entry's absolute sequence number, so an in-place edit, a ring-slot swap, or a replay no longer verifies), and a running hash-chain head commits to the *entire* ordered history — including entries already overwritten in the ring. `SYS_AUDIT_DIGEST` (a `CAP_AUDIT`-gated read) returns the event count, the chain-head MAC, and a constant-time verify status, so an external monitor can detect dropped, rewritten, or rolled-back events over time. The keyed-hash logic lives in safe Rust (`rust/src/audit.rs`).
+- **Supply chain / CI:** every change is gated by a CI pipeline of seven jobs — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
 
 The security-critical primitives (capabilities, memory refcounting, hashing, RNG, FFI validation) live in safe `no_std` Rust and carry unit tests; the rest of the kernel is C and has **not** undergone systematic fuzzing or third-party review.
 
@@ -44,6 +45,14 @@ audited-standard algorithms implemented in safe Rust (`rust/src/sha256.rs`,
   XOR-rotate scheme.)
 - **User database integrity:** HMAC-SHA256 over the serialized records, keyed by
   the per-boot pepper.
+- **Audit-log integrity:** each entry carries `HMAC(pepper, LE64(seq) || event)`
+  and the log keeps a running chain head `HMAC(pepper, head || mac)` over every
+  event ever appended (`rust/src/audit.rs`). This is an integrity *detector* and
+  defence-in-depth: it defeats tampering by code that cannot read the pepper
+  (stray writes, logic bugs, a confined task reading the log), and lets an
+  external monitor that records the chain head detect drops, rewrites, and
+  rollbacks. It is **not** a guarantee against a full kernel compromise that can
+  read the pepper — the same accepted limit as the user-database tag above.
 - **Key derivation** (per-file keys, per-block keys, user file master keys,
   volume key): HKDF-SHA256 (RFC 5869) with context binding.
 - **Encryption-at-rest:** a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD

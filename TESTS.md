@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **41 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). A **headless QEMU smoke-boot test** (`make smoke`) now boots the kernel and asserts it reaches userspace with no fault — the first runtime test. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
+The Rust security core has **48 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Two **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, and `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
 
 ---
 
@@ -22,6 +22,7 @@ This runs the unit tests across the security core:
 - `rng.rs` — ChaCha20 against the RFC 8439 vector, reseed behaviour
 - `sha256.rs` — SHA-256 / HMAC / HKDF / PBKDF2 against published known-answer vectors
 - `aead.rs` — the ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD: seal/open round-trip, tampered-ciphertext and tampered-tag rejection (fail-closed), wrong-AAD rejection, and nonce separation
+- `audit.rs` — the tamper-evident audit MACs: per-entry MAC determinism, sequence/content/key binding (defeats slot swap, replay, in-place edit), domain-separated chain IV, order-sensitivity of the chain head, a full record-then-verify cycle with tamper detection, the constant-time MAC compare, and FFI null rejection
 - `lib.rs` (W^X) — `rust_user_page_is_noexec`: stack windows are non-executable, image/heap/code stay executable
 - `ps.rs` — task state-name labels
 
@@ -59,15 +60,17 @@ help
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs five jobs, all hard gates:
+`.github/workflows/ci.yml` runs seven jobs, all hard gates:
 
 1. **rust** — `cargo test --release` and `cargo clippy --all-targets -- -D warnings`
-2. **kernel** — builds `kernel.elf` and a bootable ISO (x86_64) and uploads them as artifacts
-3. **smoke** — installs QEMU and runs `make smoke` (headless boot to the shell banner)
-4. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
-5. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM
+2. **kernel** — builds `kernel.elf` and a bootable ISO (x86-64) and uploads them as artifacts
+3. **altconfigs** — a build matrix over `DEBUG_SHELL=1` and `MINIMAL_SECURE=1` (the `#ifdef`-toggled configurations, which have broken silently before)
+4. **smoke** — installs QEMU and runs `make smoke` (headless boot to the shell banner, no fault)
+5. **smoke-elf** — runs `make smoke-elf`: boots a real multi-segment ELF and requires `ELF_SELFTEST: PASS` (the loader mapped each `PT_LOAD` under the correct W^X permissions)
+6. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical
+7. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM
 
-The first four use only first-party / pinned actions; the security job additionally installs third-party scanners.
+All but the security job use only first-party / pinned actions; the security job additionally installs third-party scanners and is advisory (non-blocking).
 
 ---
 
@@ -85,7 +88,7 @@ The `make smoke` test already covers "boot completes and userspace runs with no 
 
 ### Build-matrix coverage
 
-CI currently builds the default 64-bit configuration. It should also cover `BITS=32` (needs the `i686-unknown-linux-gnu` Rust target), `DEBUG_SHELL=1`, and `MINIMAL_SECURE=1`.
+CI builds the default configuration plus a matrix over `DEBUG_SHELL=1` and `MINIMAL_SECURE=1` (the `altconfigs` job) and the `ELF_SELFTEST=1` configuration (the `smoke-elf` job). Horus is x86-64 only, so there is no longer a 32-bit build variant to cover.
 
 ### TLA+ specs
 

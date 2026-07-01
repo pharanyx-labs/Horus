@@ -22,8 +22,7 @@ This document covers toolchain requirements, build targets, build flags, and how
 | `xorriso` | ISO image creation |
 | `grub-pc-bin` | GRUB2 Multiboot2 bootloader modules |
 | `grub-mkrescue` | ISO assembly |
-| `qemu-system-x86_64` | 64-bit emulation |
-| `qemu-system-i386` | 32-bit emulation |
+| `qemu-system-x86_64` | Emulation / boot tests |
 
 ### Installing on Debian / Ubuntu
 
@@ -45,11 +44,7 @@ source "$HOME/.cargo/env"
 Then add the required target:
 
 ```bash
-# 64-bit (default)
 rustup target add x86_64-unknown-none
-
-# 32-bit (if building with BITS=32)
-rustup target add i686-unknown-linux-gnu
 ```
 
 ---
@@ -58,7 +53,7 @@ rustup target add i686-unknown-linux-gnu
 
 ### `make` / `make all`
 
-Builds `kernel.elf` (64-bit by default). This is the main build target. It will:
+Builds `kernel.elf` (x86-64). This is the main build target. It will:
 
 1. Compile the Rust crate to `rust/target/x86_64-unknown-none/release/libhorus_shell.a`
 2. Compile all C and assembly source files
@@ -106,10 +101,18 @@ make clean
 
 ### `make test`
 
-Runs the Rust unit tests (41 across the security core — see [TESTS.md](../TESTS.md)), then does a clean full build to verify compilation.
+Runs the Rust unit tests (48 across the security core — see [TESTS.md](../TESTS.md)), then does a clean full build to verify compilation.
 
 ```bash
 make test
+```
+
+### `make smoke-elf`
+
+Builds the kernel with `ELF_SELFTEST=1` (which embeds a real multi-segment ELF), boots it headless, and requires the in-kernel self-test to report `ELF_SELFTEST: PASS` on serial — a runtime check that the ELF loader maps each `PT_LOAD` with the correct W^X permissions. Does not affect the default (ship) kernel.
+
+```bash
+make smoke-elf
 ```
 
 ### `make smoke`
@@ -136,42 +139,25 @@ Pass flags as `make FLAG=VALUE`.
 
 | Flag | Default | Values | Effect |
 |---|---|---|---|
-| `BITS` | `64` | `32`, `64` | Target architecture |
 | `DEBUG_SHELL` | `0` | `0`, `1` | Enables in-kernel debug shell (`#ifdef DEBUG_SHELL` code) |
 | `MINIMAL_SECURE` | `0` | `0`, `1` | Strips optional kernel features for a smaller attack surface |
 | `RUST_ENABLED` | `1` | `0`, `1` | If `0`, links C stub shims instead of the Rust library |
+| `ELF_SELFTEST` | `0` | `0`, `1` | Embeds a real ELF and runs an in-kernel loader + W^X self-test at boot |
 
 Examples:
 
 ```bash
-make BITS=32
 make DEBUG_SHELL=1
-make BITS=64 MINIMAL_SECURE=1
+make MINIMAL_SECURE=1
 ```
 
----
-
-## 32-bit build
-
-The 32-bit build uses `linker.ld`, the `i686` Rust target, and 32-bit GCC flags. The Rust target is `i686-unknown-linux-gnu` (a hosted target used for the 32-bit cross-compilation; the `-unknown-none` bare-metal target is used for 64-bit).
-
-```bash
-rustup target add i686-unknown-linux-gnu
-make BITS=32
-```
-
-QEMU run for 32-bit uses `-kernel kernel.elf` directly (no ISO needed):
-
-```bash
-qemu-system-i386 -kernel kernel.elf -m 512M -cpu qemu64,+aes -nographic \
-    -serial stdio -no-reboot -net none
-```
+> **Architecture:** Horus is x86-64 only. The kernel runs in 64-bit long mode; there is no 32-bit kernel build. (The `DEBUG_SHELL=1` and `MINIMAL_SECURE=1` configurations are covered by a CI build matrix.)
 
 ---
 
 ## Userspace programs
 
-Userspace programs (`shell`, `hello`, `fs_server`, `captest`) are compiled as flat 32-bit ELF binaries loaded at virtual address `0x400000`. The `mkheadered` tool adds a custom program header that the kernel's loader uses to map them into a task's address space.
+Userspace programs (`shell`, `hello`, `fs_server`, `captest`) are compiled as flat 32-bit ELF binaries (EM_386) loaded at virtual address `0x400000` and run in a compatibility-mode segment beneath the 64-bit kernel. The `mkheadered` tool adds a custom program header that the kernel's loader uses to map them into a task's address space.
 
 Build all userspace programs:
 

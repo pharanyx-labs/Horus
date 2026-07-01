@@ -35,7 +35,6 @@ docs/SECURITY.md                @pharanyx-labs
 
 # Build system and reproducibility
 Makefile                        @pharanyx-labs
-linker.ld                       @pharanyx-labs
 linker64.ld                     @pharanyx-labs
 
 # Default fallback for everything else (owner review)

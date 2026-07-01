@@ -10,7 +10,7 @@ Horus is a research and learning project. It is not a production operating syste
 
 These subsystems are functional in the current codebase:
 
-- **Boot sequence** — Multiboot boot via GRUB2, 32-bit and 64-bit
+- **Boot sequence** — Multiboot2 boot via GRUB2 into x86-64 long mode
 - **VGA terminal** — text mode, colour output, kernel log buffer, serial mirror
 - **Hardware isolation** — Ring 0/Ring 3 separation, per-task page tables, user/kernel memory split. SMEP and SMAP are enabled when the CPU advertises them (ring 0 cannot execute or casually read user pages; user copies go through a kernel mapping rather than the user mapping), and the boot CPU brings these up after feature detection.
 - **W^X for user memory** — `EFER.NXE` is on and the kernel sets the PTE NX bit so writable pages are never executable: user stacks are mapped non-executable, and the ELF loader honours each `PT_LOAD` segment's `p_flags` (code read+execute, data/rodata read[+write]+no-execute). The W^X policy decision lives in Rust and is unit-tested; the live shell boot (which runs through the flat-binary fallback) is covered by the smoke-boot test.
@@ -18,7 +18,7 @@ These subsystems are functional in the current codebase:
 - **Lineage tracking** — use-after-revoke is prevented via per-lineage generation counters; a looked-up capability can be snapshotted and re-validated at point of use (wired into the IPC send/recv paths to close a lookup/use TOCTOU window across the cooperative yield).
 - **Capability/FFI integrity** — the C `capability_t` and Rust `Capability` layouts are pinned by mirrored compile-time assertions; the refcount table is registered once and every later inc/dec must present the exact (pointer, length) or is refused.
 - **User authentication** — login, lockout after failed attempts, per-user UID assignment
-- **Audit log** — kernel-side circular buffer of security events; capability mint/transfer/move/revoke and the FS/auth paths record outcomes
+- **Audit log** — kernel-side circular buffer of security events; capability mint/transfer/move/revoke and the FS/auth paths record outcomes. The log is **tamper-evident**: each entry is HMAC'd (binding its sequence number) and a running hash-chain head commits to the whole ordered history, both keyed by the per-boot pepper (`rust/src/audit.rs`); `SYS_AUDIT_DIGEST` returns the digest + constant-time verify status. See the security note below for the scope (detector, not tamper-proof).
 - **Keyboard input** — PS/2 scancode translation, key buffer
 - **Round-robin scheduling** — cooperative task switching
 - **Reproducible builds** — `make reproducible-build` yields a byte-for-byte identical `kernel.elf` across clean builds (verified in CI)
@@ -92,9 +92,9 @@ The block cipher itself is now sound: a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC 
 
 Stack and heap are randomised per spawn; the load address is fixed (non-PIE), so code/GOT layout is predictable to an attacker who knows the binary.
 
-### Audit log is not tamper-resistant
+### Audit log is tamper-evident, not tamper-proof
 
-The audit log is a plain circular buffer in kernel memory with no integrity protection. Kernel code — or a kernel-mode exploit — can overwrite or clear it.
+The audit log is now integrity-protected: every entry carries an HMAC that binds its absolute sequence number, and a running chain head (`HMAC(pepper, head || mac)`) commits to the entire ordered history, so edits, ring-slot swaps, replays, drops, and sequence rollbacks are all *detectable* — including by an external monitor that periodically records the chain head via `SYS_AUDIT_DIGEST`. The residual limitation is that this is a **detector**, not a guarantee: an attacker who fully compromises the kernel and reads the per-boot pepper can recompute a self-consistent chain. That is the same accepted trust boundary as the user-database integrity tag.
 
 ### No covert / cache side-channel mitigation
 
@@ -112,7 +112,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are mostly bare integers; only a few (e.g. `SYS_ERR_NOSYS`) are named.
 - The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its current role (it is the security core: capabilities, memory refcounting, SHA-2/HMAC/HKDF/PBKDF2, ChaCha20 RNG, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stub implementations used by the `MINIMAL_SECURE=1` build (which strips the filesystem/storage stack); it is build configuration, not security logic.
-- Tests: 41 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the W^X page policy, and the FFI validation/policy functions. CI runs five gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, a headless QEMU smoke-boot, reproducible-build check, and security scans + SBOM). The smoke-boot test confirms the kernel boots to userspace with no fault, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
+- Tests: 48 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the tamper-evident audit MAC/chain (`audit.rs`), the W^X page policy, and the FFI validation/policy functions. CI runs seven gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, an alt-config build matrix, a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a reproducible-build check, and security scans + SBOM). The smoke-boot tests confirm the kernel boots to userspace with no fault and that the ELF loader enforces W^X, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -131,4 +131,4 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Cryptography (KDF/MAC/RNG + ChaCha20/HMAC AEAD; all standard primitives) | ~75% |
 | Storage / disk I/O | ~25% (driver + sound encrypted-block code, not wired as default) |
 | SMP | ~5% (detection/scaffolding only) |
-| Testing | ~35% (41 unit tests + CI + smoke-boot; no deeper integration/fuzz) |
+| Testing | ~40% (48 unit tests + CI + smoke-boot + ELF/W^X self-test; no deeper integration/fuzz) |

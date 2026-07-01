@@ -6,7 +6,14 @@
 // stays meaningful (catches new issues) without mechanically rewriting them.
 #![allow(clippy::manual_range_contains)]
 
+// `alloc` is only pulled in for host tests (the Argon2 memory buffer is large);
+// the kernel build stays strictly `no_std`, no allocator.
+#[cfg(test)]
+extern crate alloc;
+
 mod aead;
+mod argon2;
+mod blake2b;
 mod audit;
 mod auth;
 mod capability;

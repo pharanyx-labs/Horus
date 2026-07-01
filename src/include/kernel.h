@@ -668,6 +668,13 @@ bool     rust_lineage_check(uint64_t obj, uint32_t gen);
 int  rust_password_hash(const uint8_t *password, size_t password_len,
                         const uint8_t *salt, size_t salt_len,
                         uint32_t iterations, uint8_t *out, size_t out_len);
+/* Argon2id password hash (rust/src/argon2.rs). memory-hard; `mem` is a caller-
+ * owned scratch buffer of `mem_words` u64 (>= 128 * blocks). Returns 0/-1. */
+int  rust_argon2id_hash(const uint8_t *pwd, size_t pwd_len,
+                        const uint8_t *salt, size_t salt_len,
+                        uint32_t t_cost, uint32_t m_cost,
+                        uint64_t *mem, size_t mem_words,
+                        uint8_t *out, size_t out_len);
 int  rust_hmac_sha256(const uint8_t *key, size_t key_len,
                       const uint8_t *data, size_t data_len, uint8_t *out32);
 /* Tamper-evident audit log (rust/src/audit.rs). */
@@ -718,7 +725,15 @@ void entropy_add_sample(uint64_t s);/* mix an opportunistic entropy sample */
 void secure_random_bytes(void *out, size_t n);
 
 /* Password KDF cost (PBKDF2-HMAC-SHA256 iterations). */
-#define PASSWORD_KDF_ITERATIONS 120000U
+#define PASSWORD_KDF_ITERATIONS 120000U   /* legacy PBKDF2 cost (no longer used) */
+
+/* Argon2id password-hashing cost (memory-hard, unlike the former PBKDF2):
+ * m_cost KiB of scratch (== 1 KiB blocks) filled t_cost times, single lane.
+ * 4 MiB / 3 passes is a strong, boot-feasible profile. The scratch buffer is a
+ * kernel static (no allocator); password hashing runs non-preemptibly under a
+ * syscall, so one shared buffer is safe. */
+#define ARGON2_M_COST_KIB   4096U
+#define ARGON2_T_COST       3U
 
 
 #define CAP_DIR                 12

@@ -757,6 +757,12 @@ void smp_bringup(void) {
     /* Gated: spawn a task that faults on purpose and prove its registered
      * handler runs instead of the task being killed (SIGNAL_SELFTEST: PASS). */
     signal_selftest();
+#elif defined(FS_SELFTEST)
+    /* Gated: spawn the userspace fs_server plus a client that drives it over
+     * IPC (mkdir/create/write/read/readdir/lookup/delete) against the kernel's
+     * encrypted object store, proving the Phase 2 stack end-to-end
+     * (prints FS_SELFTEST: PASS). */
+    fs_selftest();
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the

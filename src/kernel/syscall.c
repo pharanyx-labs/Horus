@@ -1,4 +1,7 @@
 #include "kernel.h"
+#ifdef FS_SELFTEST
+#include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the gated FS self-test harness */
+#endif
 
 static size_t kstrlen(const char *s) {
     size_t len = 0;
@@ -1447,6 +1450,84 @@ void signal_selftest(void) {
 }
 #endif /* SIGNAL_SELFTEST */
 
+#ifdef FS_SELFTEST
+/* ---- Filesystem self-test (FS_SELFTEST builds only) ------------------------
+ * Spawn the userspace fs_server plus a client that drives it over IPC against
+ * the kernel's encrypted object store, proving the whole Phase 2 path (inode
+ * alloc, encrypted (ino,block) I/O, directories, and the IPC protocol) end to
+ * end. The client prints "FS_SELFTEST: PASS"; `make smoke-fs` asserts on it. */
+
+/* Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
+    uint32_t full = (uint32_t)(end - start);
+    if (full < 44) return -1;
+    uint32_t magic   = *(const uint32_t *)start;
+    uint32_t h_entry = *(const uint32_t *)(start + 4);
+    uint32_t h_size  = *(const uint32_t *)(start + 8);
+    if (magic != 0x55524F48) return -1;
+    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -1;
+    if (full < 44 + h_size) h_size = full - 44;
+
+    const uint8_t *payload = start + 44;
+    for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
+    armed_hdr.entry = h_entry;           /* recomputed by try_elf_load for the PIE ELF */
+    armed_hdr.size  = h_size;
+    int k = 0;
+    while (k < 31 && nm[k]) { armed_hdr.name[k] = nm[k]; k++; }
+    armed_hdr.name[k] = 0;
+    program_armed = 1;
+    return do_spawn();
+}
+
+void fs_selftest(void) {
+    extern uint8_t embedded_fsserver_bin_start[], embedded_fsserver_bin_end[];
+    extern uint8_t embedded_fsclient_bin_start[], embedded_fsclient_bin_end[];
+
+    print("FS_SELFTEST: begin\n");
+
+    int srv = fs_spawn_embedded(embedded_fsserver_bin_start, embedded_fsserver_bin_end, "fsserver");
+    if (srv <= 0) { print("FS_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
+    tasks[srv].uid = 0;
+    /* Provision the server: an endpoint cap for the IPC gate (slot 3) and for
+     * registration (slot 4, bound to FS_EP_REQ), a CAP_USER admin cap (slot 6)
+     * for SYS_REGISTER_FS_SERVER, and an all-rights cap (slot 7) to satisfy the
+     * object-store gate. */
+    cap_install_from_root(srv, 3, 2, 0);          /* root_cnode[2] = CAP_ENDPOINT   */
+    cap_install_from_root(srv, 4, 2, FS_EP_REQ);
+    cap_install_from_root(srv, 6, 6, 0);          /* root_cnode[6] = CAP_USER (ALL) */
+    cap_install_from_root(srv, 7, 8, 0);          /* root_cnode[8] = ALL rights     */
+
+    int cli = fs_spawn_embedded(embedded_fsclient_bin_start, embedded_fsclient_bin_end, "fsclient");
+    if (cli <= 0) { print("FS_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+    tasks[cli].uid = 0;
+    /* Delegate an endpoint cap into the client's slot 3 so its IPC calls pass
+     * the capability gate. (This is the spawner delegating authority — the
+     * capability model in practice. sys_connect_fs_server can't target slot 3,
+     * which slots 0-3 reserve; reconciling that with the slot-3 IPC gate is a
+     * follow-up.) */
+    cap_install_from_root(cli, 3, 2, 0);
+
+    /* Launch the server; when it blocks in recv it yields and (with preemption
+     * armed) the scheduler runs the client, which connects and drives the test.
+     * This lretq does not return. */
+    sched_enable_preemption();
+    uint64_t rip  = (uint64_t)tasks[srv].eip;
+    uint64_t rspv = tasks[srv].esp ? (uint64_t)tasks[srv].esp : 0x007ff000ULL;
+    uint64_t ucr3 = tasks[srv].cr3;
+    uintptr_t kst = tasks[srv].kernel_stack_top ? tasks[srv].kernel_stack_top : KERNEL_TSS_STACK;
+    set_tss_kernel_stack(kst);
+    set_current_task(srv);
+    __asm__ volatile (
+        "mov %2, %%cr3\n\t"
+        "mov $0x33, %%ax\n\t"
+        "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
+        "mov %1, %%rsp\n\t"
+        "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
+        :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
+    );
+}
+#endif /* FS_SELFTEST */
+
 static struct user_account *find_user_by_name(const char *name) {
     for (int i = 0; i < MAX_USERS; i++) {
         if (users[i].valid && kstrlen(users[i].name) == kstrlen(name)) {
@@ -1479,11 +1560,11 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * authorizing cap was revoked/replaced mid-spin (lookup/use TOCTOU). */
     cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_RIGHT_WRITE));
 
-    long spins = 0;
-    while (e->has_message) {
-        if (++spins > IPC_SPIN_LIMIT) return -2;
-        yield();
-    }
+    /* Non-blocking: if the single mailbox slot is still full, tell the caller to
+     * retry. The old form spun in-kernel calling yield(), but the cooperative
+     * scheduler cannot correctly switch two ring-3 tasks (only timer preemption
+     * can); a caller that polls from ring 3 gets preempted and makes progress. */
+    if (e->has_message) return -2;
 
     if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) return -1;
 
@@ -1503,11 +1584,10 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
      * it after the yield loop so a revoke mid-spin aborts the receive. */
     cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_RIGHT_READ));
 
-    long spins = 0;
-    while (!e->has_message) {
-        if (++spins > IPC_SPIN_LIMIT) return -2;
-        yield();
-    }
+    /* Non-blocking (see sys_ipc_send): no message yet -> caller polls from ring
+     * 3 and is timer-preempted, rather than spinning on the broken cooperative
+     * yield in-kernel. */
+    if (!e->has_message) return -2;
 
     if (auth.valid && !cap_revalidate(3, CAP_RIGHT_READ, &auth)) return -1;
 
@@ -2269,11 +2349,125 @@ static void h_connect_fs_server(struct regs *r) {
         r->eax = -2;
         return;
     }
+    /* A fresh serial + generation is required or cap_lookup rejects the cap
+     * (a serial-0 slot is treated as empty), which previously left the client
+     * unable to pass the IPC capability gate. */
+    uint32_t serial = cap_alloc_fresh_serial();
     struct capability *dest = &tasks[get_current_task()].cspace[dest_slot];
     dest->type   = CAP_ENDPOINT;
     dest->rights = rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT);
     dest->object = fs_server_listen_ep_idx;
     dest->badge  = 0xF51A0000U;
+    dest->serial = serial;
+    dest->generation = 0;
+    r->eax = 0;
+}
+
+/* ---- Encrypted object-store API for the userspace FS server -------------- *
+ * These expose the kernel's persistent, encrypted inode/block store to a ring-3
+ * filesystem server WITHOUT ever handing it key material: the AEAD (volume key,
+ * per-(ino,block) subkeys, nonces, tags) stays entirely in the kernel. The
+ * server addresses storage by (inode, logical block) and implements all
+ * filesystem semantics (names, directories, permissions) on top. Gated exactly
+ * like the raw block syscalls — CAP_BLOCK_DEV in slot 7 (dispatch table) plus
+ * the uid==0 check below — so only a privileged storage server can call them. */
+
+static void h_fs_inode_alloc(struct regs *r) {
+    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint32_t type = r->ebx;
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+    if (ino < 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }   /* out of inodes */
+
+    struct on_disk_inode inode;
+    for (size_t i = 0; i < sizeof(inode); i++) ((uint8_t *)&inode)[i] = 0;
+    inode.type  = type;
+    inode.uid   = tasks[get_current_task()].uid;
+    inode.gid   = tasks[get_current_task()].gid;
+    inode.mode  = (type == 2) ? 0040755u : 0100644u;
+    inode.links = 1;
+    storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &inode);
+
+    r->eax = (uint32_t)(int32_t)ino;
+}
+
+static void h_fs_inode_free(struct regs *r) {
+    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino = r->ebx;
+    if (ino == 0) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }   /* never free root */
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    r->eax = (storage_free_inode_blocks(mfs, ino) == 0) ? 0 : (uint32_t)SYS_ERR_IO;
+}
+
+static void h_fblock_read(struct regs *r) {
+    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino   = r->ebx;
+    uint64_t block = r->ecx;
+    void    *ubuf  = (void *)(addr_t)r->edx;
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    uint8_t kbuf[BLOCK_SIZE];
+    /* Fails on an unallocated hole or an authentication failure; the server
+     * only reads blocks within a known size, so this is a genuine error. */
+    if (storage_read_file_block(mfs, ino, block, kbuf) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+    if (copy_to_user(ubuf, kbuf, BLOCK_SIZE) != 0)           { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
+    r->eax = BLOCK_SIZE;
+}
+
+static void h_fblock_write(struct regs *r) {
+    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino   = r->ebx;
+    uint64_t block = r->ecx;
+    const void *ubuf = (const void *)(addr_t)r->edx;
+    uint32_t len   = r->esi;
+    if (len > BLOCK_SIZE) len = BLOCK_SIZE;
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    uint8_t kbuf[BLOCK_SIZE];
+    for (int i = 0; i < BLOCK_SIZE; i++) kbuf[i] = 0;   /* zero-pad short writes */
+    if (len > 0 && copy_from_user(kbuf, ubuf, len) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
+    if (storage_write_file_block(mfs, ino, block, kbuf) != 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }
+    /* Logical file size is owned by the FS server (it may write full blocks for
+     * read-modify-write); it sets size via SYS_FS_SET_SIZE. */
+    r->eax = len;
+}
+
+static void h_fs_set_size(struct regs *r) {
+    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino  = r->ebx;
+    uint64_t size = r->ecx;
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+    inode.size = size;
+    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }
+    r->eax = 0;
+}
+
+static void h_fs_stat(struct regs *r) {
+    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino  = r->ebx;
+    void    *uout = (void *)(addr_t)r->ecx;
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+
+    struct fs_stat st;
+    st.size  = inode.size;
+    st.type  = inode.type;
+    st.mode  = inode.mode;
+    st.uid   = inode.uid;
+    st.gid   = inode.gid;
+    st.links = inode.links;
+    if (copy_to_user(uout, &st, sizeof(st)) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
     r->eax = 0;
 }
 
@@ -2511,7 +2705,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 56
+#define SYSCALL_TABLE_SIZE 62
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -2570,6 +2764,14 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #endif
     [SYS_SIGACTION]                = { h_sigaction,               SC_NONE, 0, SC_ANYTYPE }, /* self: register own handler */
     [SYS_SIGRETURN]                = { h_sigreturn_stub,          SC_NONE, 0, SC_ANYTYPE }, /* real work in interrupt_handler64 */
+    /* Encrypted object-store API — same gate as the raw block syscalls
+     * (CAP_BLOCK_DEV slot 7 here + uid 0 in the handler). */
+    [SYS_FS_INODE_ALLOC]           = { h_fs_inode_alloc,          7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_FS_INODE_FREE]            = { h_fs_inode_free,           7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_FBLOCK_READ]              = { h_fblock_read,             7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_FBLOCK_WRITE]             = { h_fblock_write,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_FS_STAT]                  = { h_fs_stat,                 7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_FS_SET_SIZE]              = { h_fs_set_size,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -2581,7 +2783,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_SIGRETURN + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_FS_SET_SIZE + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -57,7 +57,10 @@ extern uint8_t stack_top[];
 #define PASS_SALT_LEN           16
 #define PASS_HASH_LEN           32
 #define MAX_FS_OBJECTS          64
-#define INODES_PER_BLOCK        (BLOCK_SIZE / 128)
+/* On-disk inodes are 240 bytes, so only 2 fit in a 512-byte block. (The old
+ * `BLOCK_SIZE/128 = 4` overran the block buffer when writing inode 2 or 3.)
+ * A _Static_assert next to the struct definition pins this to sizeof. */
+#define INODES_PER_BLOCK        2
 uint32_t rust_get_user_page_protection(uint32_t t,uint32_t v);
 bool rust_user_page_is_noexec(uint64_t vaddr);
 int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, const uint8_t *name, size_t nlen);
@@ -169,6 +172,23 @@ void users_init(void);
 #define SYS_PREEMPT_TRACE      53   /* PREEMPT_SELFTEST builds only; NOSYS otherwise */
 #define SYS_SIGACTION          54   /* register this task's own fault-signal handler */
 #define SYS_SIGRETURN          55   /* resume the pre-signal context (from a handler) */
+/* Encrypted object-store API for the userspace FS server (see include/syscall.h). */
+#define SYS_FS_INODE_ALLOC     56
+#define SYS_FS_INODE_FREE      57
+#define SYS_FBLOCK_READ        58
+#define SYS_FBLOCK_WRITE       59
+#define SYS_FS_STAT            60
+#define SYS_FS_SET_SIZE        61
+/* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
+ * include/syscall.h — keep byte-identical). */
+struct fs_stat {
+    uint64_t size;
+    uint32_t type;
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t links;
+};
 
 /* Signal numbers delivered to a registered handler on a ring-3 fault. */
 #define SIG_ILL                 4   /* illegal instruction (#UD) */
@@ -417,6 +437,8 @@ typedef struct on_disk_inode {
     uint32_t generation;
     uint32_t checksum;
 } on_disk_inode_t;
+_Static_assert(sizeof(struct on_disk_inode) * INODES_PER_BLOCK <= BLOCK_SIZE,
+               "on_disk_inode too large: INODES_PER_BLOCK inodes must fit one block");
 
 typedef struct mounted_fs {
     int mounted;
@@ -551,6 +573,8 @@ void cpu_detect_features(void);
 void init_syscall_instruction_path(void);
 void ramfs_init(void);
 void ata_init(void);
+int  ata_read(uint32_t lba, void *buf, uint32_t sectors);
+int  ata_write(uint32_t lba, const void *buf, uint32_t sectors);
 void scheduler_init(void);
 void smp_bringup(void);
 void aslr_init_seed(void);
@@ -629,6 +653,9 @@ int64_t storage_alloc_inode(block_device_t *bd, fs_superblock_t *sb);
 void storage_free_inode(block_device_t *bd, fs_superblock_t *sb, uint64_t ino);
 int  storage_read_inode(block_device_t *bd, fs_superblock_t *sb, uint64_t ino, on_disk_inode_t *inode_out);
 int  storage_write_inode(block_device_t *bd, fs_superblock_t *sb, uint64_t ino, const on_disk_inode_t *inode);
+/* Free all data blocks (direct + single-indirect) and the inode itself. Used by
+ * the FS server's delete path via SYS_FS_INODE_FREE. */
+int  storage_free_inode_blocks(mounted_fs_t *mfs, uint64_t ino);
 /* Derives 64 bytes of per-block subkeys (enc_key32 ‖ mac_key32) from the volume
  * key via HKDF-SHA256, binding (ino, block) into the info string so every block
  * gets independent keys. */
@@ -670,6 +697,10 @@ void preempt_selftest(void);
 #endif
 #ifdef SIGNAL_SELFTEST
 void signal_selftest(void);
+#endif
+#ifdef FS_SELFTEST
+void fs_selftest(void);
+int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
 #endif
 
 

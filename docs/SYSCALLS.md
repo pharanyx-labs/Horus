@@ -40,8 +40,8 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 
 | Number | Name              | Description                                  | Required Capability        | Notes |
 |--------|-------------------|----------------------------------------------|----------------------------|-------|
-| 21     | `SYS_IPC_SEND`    | Send a message to an endpoint                | endpoint WRITE (slot 3)    | Busy-spin + `yield()` rendezvous; revalidates the cap after the spin |
-| 22     | `SYS_IPC_RECV`    | Receive a message from an endpoint           | endpoint READ (slot 3)     | Returns length |
+| 21     | `SYS_IPC_SEND`    | Send a message to an endpoint                | endpoint WRITE (slot 3)    | **Non-blocking**: returns -2 if the single-slot mailbox is full (caller polls from ring 3) |
+| 22     | `SYS_IPC_RECV`    | Receive a message from an endpoint           | endpoint READ (slot 3)     | **Non-blocking**: returns -2 if no message; else returns length |
 | 23     | `SYS_IPC_CALL`    | RPC-style send (thin wrapper over send)      | endpoint WRITE (slot 3)    | No atomic reply-block yet |
 | 24     | `SYS_IPC_REPLY`   | Reply (thin wrapper over send)               | endpoint WRITE (slot 3)    | — |
 | 25     | `SYS_NOTIFY`      | Post a notification                          | endpoint WRITE (slot 3)    | **Not implemented** — returns `SYS_ERR_NOSYS` (-38) after the cap check |
@@ -101,7 +101,20 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 | 47     | `SYS_BLOCK_READ`                | Read a 512-byte block                        | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Over the in-kernel virtual disk |
 | 48     | `SYS_BLOCK_WRITE`               | Write a 512-byte block                       | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Over the in-kernel virtual disk |
 | 49     | `SYS_REGISTER_FS_SERVER`        | Register the caller as the FS server         | `CAP_USER` admin + endpoint cap  | — |
-| 50     | `SYS_CONNECT_FS_SERVER`         | Obtain an endpoint capability to the FS server | dest slot in 4..255            | — |
+| 50     | `SYS_CONNECT_FS_SERVER`         | Obtain an endpoint capability to the FS server | dest slot in 4..255            | Now mints a valid (fresh-serial) cap |
+
+### Encrypted object store (used by the userspace FS server)
+
+The kernel exposes its persistent, encrypted inode/block store to a ring-3 filesystem server. AEAD keys never leave the kernel; the server addresses storage by (inode, logical block) and builds all filesystem semantics on top. All are gated on `CAP_BLOCK_DEV` (slot 7) + uid 0, like the raw block syscalls.
+
+| Number | Name                 | Description                                        | Required Capability            | Notes |
+|--------|----------------------|----------------------------------------------------|--------------------------------|-------|
+| 56     | `SYS_FS_INODE_ALLOC` | Allocate a fresh inode of a type                   | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Returns inode number |
+| 57     | `SYS_FS_INODE_FREE`  | Free an inode and its data blocks                  | `CAP_BLOCK_DEV` (slot 7) + uid 0 | — |
+| 58     | `SYS_FBLOCK_READ`    | Read+decrypt logical block of an inode             | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Returns `BLOCK_SIZE` (512) |
+| 59     | `SYS_FBLOCK_WRITE`   | Encrypt+write logical block of an inode            | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Fresh per-write nonce |
+| 60     | `SYS_FS_STAT`        | Read inode metadata (`struct fs_stat`)             | `CAP_BLOCK_DEV` (slot 7) + uid 0 | — |
+| 61     | `SYS_FS_SET_SIZE`    | Set an inode's logical size                        | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Server owns file size |
 
 > Number **53** (`SYS_PREEMPT_TRACE`) is a **test-only** hook, present in the dispatch table and wired to a trace handler *only* in `PREEMPT_SELFTEST=1` builds; in the default/ship kernel its table slot is absent and the number fails closed.
 
@@ -131,4 +144,4 @@ For the most up-to-date status, consult [`TESTS.md`](../TESTS.md), [`CHANGES.md`
 
 **Contribution Note**: This reference should be kept in sync with `include/syscall.h` and the syscall handler table in the kernel.
 
-*Last updated: 2026-07-01 — added `SYS_AUDIT_DIGEST` (52); numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*
+*Last updated: 2026-07-02 — added the encrypted object-store API (56-61) for the userspace filesystem server and made IPC send/recv non-blocking; numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*

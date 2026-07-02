@@ -37,7 +37,7 @@ The shell accepts input and dispatches commands. Several are implemented end-to-
 
 ### IPC
 
-The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated, with the TOCTOU revalidation noted above). It is a busy-spin-with-`yield()` rendezvous rather than a true blocking/queueing endpoint, so semantics under contention are simplistic. `SYS_IPC_CALL`/`SYS_IPC_REPLY` are thin wrappers over send. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and then return a distinct `SYS_ERR_NOSYS` (-38).
+The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated). It is **non-blocking**: a send to a full mailbox or a recv on an empty one returns a would-block code (-2) and the caller polls from ring 3, where timer preemption interleaves it with the peer. (The previous in-kernel busy-spin called the cooperative `yield()`, which cannot correctly context-switch two ring-3 tasks — only timer preemption can — so a kernel-side spin would deadlock.) Each endpoint is a **single-slot mailbox**, so it serves **one in-flight request at a time**; concurrent multi-client IPC with reply routing is a follow-up. `SYS_IPC_CALL`/`SYS_IPC_REPLY` are thin wrappers over send. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and then return a distinct `SYS_ERR_NOSYS` (-38).
 
 ### Filesystem (capfs / ramfs)
 
@@ -49,7 +49,7 @@ The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault
 
 ### Disk-backed storage
 
-`storage.c` implements encrypted block storage — a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`) with per-block HKDF-SHA256 keys, a fresh random per-write nonce, and `(ino, block)` bound as AAD — plus key rotation over a virtual disk, and `ata.c` is a working 28-bit-LBA PIO driver. However the live filesystem is the in-memory tree above; the encrypted-storage path and mounting are partial and not wired in as the default backing store.
+`storage.c` implements encrypted block storage — a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`) with per-block HKDF-SHA256 keys, a fresh random per-write nonce, and `(ino, block)` bound as AAD — over a real superblock/inode/bitmap layout. As of the Phase 2 increment this store **works and is exercised end-to-end** by the userspace `fs_server` (below), via the encrypted object-store syscalls. The backing device is selectable: an in-RAM virtual disk by default, or a real ATA disk (`ata.c`, 28-bit-LBA PIO) with `STORAGE_ATA=1` (probe + format-on-first-boot). Remaining gaps: the per-block crypto metadata (nonces/tags) is still kept in kernel RAM, so files survive within a boot but **cross-reboot ATA persistence needs that metadata persisted too**; and single-bitmap-block geometry caps a volume at 4096 data blocks (multi-block bitmaps + double-indirect data are follow-ups).
 
 ---
 
@@ -61,7 +61,7 @@ All filesystem contents live in memory and are lost on reboot. The encrypted-sto
 
 ### Userspace filesystem server
 
-`userspace/fs_server.c` is a skeleton; its IPC dispatch is not implemented end-to-end.
+`userspace/fs_server.c` is now a working ring-3 filesystem server: it implements a hierarchical, persistent FS (directories are inode data; root = inode 0) on top of the kernel's encrypted object store, and serves clients over IPC (versioned protocol in `include/fs_proto.h`). It is proven end-to-end by `make smoke-fs` (and `STORAGE=ata` against a real disk). What remains: it serves **one client at a time** (single-slot mailbox), enforces access only at the service boundary (an endpoint cap to reach it) rather than **per-file ACLs**, and does not yet supersede the legacy in-memory capfs behind `SYS_FS_*`.
 
 ### SMP / multicore
 

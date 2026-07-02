@@ -34,6 +34,43 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 - Per-spawn stack and heap ASLR seeded from the CSPRNG
 - 54 Rust unit tests; headless QEMU boot self-tests (`make smoke`; `make smoke-elf` for the ELF loader + W^X; `make smoke-preempt` for preemption; `make smoke-signal` for fault-signal delivery); GitHub Actions CI runs nine gated jobs (rust test + `clippy -D warnings`, kernel/ISO build, alt-config build matrix, smoke-boot, ELF/W^X boot self-test, preemptive-scheduling self-test, signal-handling self-test, reproducible-build check, security scans + SBOM)
 
+### Added — Phase 2: userspace filesystem server over a persistent encrypted store
+
+A first robust increment of the Phase 2 "functional filesystem" work: filesystem
+semantics now run in a **ring-3 server** backed by the kernel's encrypted block
+store, reachable by clients over IPC.
+
+- **Encrypted object-store syscalls (56-61).** The kernel exposes a capability-
+  gated, encrypted inode/block API to ring 3 — `SYS_FS_INODE_ALLOC`/`_FREE`,
+  `SYS_FBLOCK_READ`/`_WRITE` (per-(ino,block) ChaCha20+HMAC AEAD, decrypt-and-
+  verify / fresh-nonce seal in the kernel), `SYS_FS_STAT`, and `SYS_FS_SET_SIZE`
+  — all gated on `CAP_BLOCK_DEV` (slot 7) + uid 0. **AEAD keys never leave the
+  kernel TCB**; the server addresses storage by (inode, logical block) only.
+- **Userspace `fs_server`.** Rewritten from a demo into a real hierarchical FS:
+  directories are inode data holding packed dir entries (root = inode 0), with
+  lookup/create/mkdir/read/write/readdir/delete/stat over a versioned IPC
+  protocol (`include/fs_proto.h`) that fits the 256-byte mailbox. Requests and
+  replies use two well-known endpoints (4/5) so a single-slot mailbox can't
+  alias a request as its own reply.
+- **Block store made real & selectable.** `storage.c` geometry is now computed
+  from the device size (the old hardcoded `inode_count=16384` overran a 1024-
+  block disk, so it had never functioned), fixed `INODES_PER_BLOCK` (2, not 4 —
+  a 240-byte inode overran the block buffer at inode 2/3), added inode/block
+  free-on-delete, and a **selectable backend**: RAM vdisk by default, ATA disk
+  with `STORAGE_ATA=1` (probe + format-on-first-boot).
+- **IPC is now non-blocking.** `SYS_IPC_SEND`/`RECV` return a would-block code
+  instead of spinning on the cooperative `yield()` (which cannot correctly
+  switch two ring-3 tasks); callers poll from ring 3 where timer preemption
+  interleaves them. `sys_connect_fs_server` now mints a valid (fresh-serial) cap.
+- **`make smoke-fs`** — a gated `FS_SELFTEST=1` boot self-test spawns the server
+  + a client that drives the full path over IPC and prints `FS_SELFTEST: PASS`;
+  `make smoke-fs STORAGE=ata` runs it against a real ATA disk image.
+
+Deferred (tracked follow-ups): concurrent/multi-client IPC, cross-reboot
+persistence of the per-block crypto metadata (nonces/tags), per-file ACLs,
+double-indirect data blocks and multi-block bitmaps, and reconciling the legacy
+in-memory capfs (`SYS_FS_*`) with the server.
+
 ### Security
 
 Recent hardening pass (see git history for individual commits):

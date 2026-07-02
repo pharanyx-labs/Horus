@@ -336,3 +336,20 @@ embedded_sigtest_bin_start:
 .global embedded_sigtest_bin_end
 embedded_sigtest_bin_end:
 #endif
+
+#ifdef FS_SELFTEST
+/* PIE userspace fs_server + a client that drives it over IPC, used by the
+ * filesystem self-test (fs_selftest). Only embedded in the FS_SELFTEST build. */
+.align 16
+.global embedded_fsserver_bin_start
+embedded_fsserver_bin_start:
+.incbin "userspace/fs_server.bin"
+.global embedded_fsserver_bin_end
+embedded_fsserver_bin_end:
+.align 16
+.global embedded_fsclient_bin_start
+embedded_fsclient_bin_start:
+.incbin "userspace/fsclient.bin"
+.global embedded_fsclient_bin_end
+embedded_fsclient_bin_end:
+#endif

@@ -131,15 +131,19 @@ The scheduler is preemptive round-robin. Tasks can be runnable, blocked on IPC o
 
 IPC is endpoint-based. The kernel maintains 64 endpoints. A sending task writes a message to an endpoint; a task waiting on that endpoint receives it. Messages carry a small payload (up to the register set) and a sender badge.
 
-**Notifications** complement endpoints: a task can post a signal to a notification object and another task can block waiting for it, without exchanging a full message.
+Each endpoint is a **single-slot mailbox**, and send/recv are **non-blocking** (they return a would-block code rather than spinning in the kernel on the cooperative `yield()`, which cannot correctly switch two ring-3 tasks). A userspace peer therefore polls from ring 3, where the timer preempts and interleaves it with the other party. This is enough for one in-flight request at a time; concurrent multi-client IPC with reply routing is future work.
 
-The basic send/receive/call/reply cycle is implemented. The call/reply path (`SYS_IPC_CALL`) is partially complete.
+**Notifications** are intended to complement endpoints (post a signal without a full message) but are not yet implemented (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY` return `SYS_ERR_NOSYS`).
+
+### Userspace filesystem server
+
+Phase 2 puts filesystem *semantics* in a ring-3 server (`userspace/fs_server.c`). The kernel provides only a **persistent, encrypted object store** — inode allocation and per-(inode, block) AEAD I/O via syscalls 56-61 (`SYS_FS_INODE_ALLOC`/`_FREE`, `SYS_FBLOCK_READ`/`_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE`), gated on `CAP_BLOCK_DEV` + uid 0. Encryption keys never leave the kernel TCB. The server builds directories (as inode data; root = inode 0), path resolution, and file sizes on top, and answers clients over IPC using the protocol in `include/fs_proto.h` (requests on endpoint 4, replies on 5). The block store (`storage.c`) is RAM-backed by default or ATA-backed with `STORAGE_ATA=1`. Proven end-to-end by `make smoke-fs`.
 
 ---
 
 ## Syscall interface
 
-Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C calling convention on the stack or in registers. Syscall numbers run `SYS_YIELD` = 0 through `SYS_SIGRETURN` = 55 (53 is the test-only `SYS_PREEMPT_TRACE`, present only in `PREEMPT_SELFTEST` builds).
+Syscalls use `int 0x80`. The syscall number is in `eax`; arguments follow the C calling convention on the stack or in registers. Syscall numbers run `SYS_YIELD` = 0 through `SYS_FS_SET_SIZE` = 61 (53 is the test-only `SYS_PREEMPT_TRACE`, present only in `PREEMPT_SELFTEST` builds; 56-61 are the encrypted object-store API used by the userspace filesystem server).
 
 Dispatch is **table-driven**: `syscall_handler` indexes a `syscall_table[]` of descriptors `{ handler, slot, rights, type }`, validates the number, and — for syscalls whose authority is a single fixed capability — enforces that capability in one central place before calling the handler. A number with no entry (including the reserved/gap numbers below) fails closed. A `_Static_assert` pins the table size to the highest syscall number, so a syscall cannot be added without a table slot. Syscalls with dynamic or self-authorising policy (the capability ops, the FS ops, auth/sudo, user management) carry no fixed slot and authorise inside their handler or the helper they call.
 

@@ -1,229 +1,245 @@
+/* Horus userspace filesystem server (Phase 2).
+ *
+ * A ring-3 server that implements a hierarchical, persistent filesystem on top
+ * of the kernel's *encrypted* object store. All filesystem semantics — names,
+ * directories, path structure — live here in userspace; the kernel only
+ * provides inode allocation and encrypted (ino, block) I/O (SYS_FS_INODE_ALLOC/
+ * FREE, SYS_FBLOCK_READ/WRITE, SYS_FS_STAT), keeping every AEAD key in the TCB.
+ *
+ * Directories are ordinary file inodes whose data is an array of `fs_dirent`
+ * records (16 per 512-byte block); the root directory is inode 0. Clients reach
+ * the server over IPC (endpoint slot 4) using the protocol in <fs_proto.h>.
+ *
+ * Limitations this increment (documented): one in-flight request at a time
+ * (single-slot mailbox), and per-file ACLs are not yet enforced — access is
+ * gated at the service boundary (a client must hold an endpoint capability to
+ * reach the server, and only the server holds the storage capability).
+ */
+
 #include "syscall.h"
+#include "fs_proto.h"
 
-static void print(const char *s) {
-    sys_print(s);
+#define BLK        512u
+#define DIRENTS_PER_BLK (BLK / sizeof(struct fs_dirent))   /* 16 */
+
+/* Console output goes through SYS_WRITE (fd 1); SYS_PRINT is not dispatched. */
+static void println(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); sys_write(1, "\n", 1); }
+
+/* Busy-wait in ring 3 between non-blocking IPC polls so the timer can preempt
+ * us and run the peer (the cooperative yield() cannot switch two ring-3 tasks). */
+static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { } }
+
+static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
+static void umemcpy(void *d, const void *s, unsigned n) { uint8_t *a = d; const uint8_t *b = s; while (n--) *a++ = *b++; }
+static unsigned uslen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
+static int ustreq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+static void ustrncpy(char *d, const char *s, unsigned n) { unsigned i = 0; for (; i + 1 < n && s[i]; i++) d[i] = s[i]; d[i] = 0; }
+
+/* Number of data blocks a directory inode currently spans. */
+static unsigned dir_nblocks(uint32_t dir_ino) {
+    struct fs_stat st;
+    if (sys_fs_stat(dir_ino, &st) != 0) return 0;
+    return (unsigned)((st.size + BLK - 1) / BLK);
 }
 
-static void println(const char *s) {
-    print(s);
-    print("\n");
-}
-
-#define OP_LOOKUP   1
-#define OP_CREATE   2
-#define OP_MKDIR    3
-#define OP_DELETE   4
-#define OP_READDIR  5
-#define OP_READ     6
-#define OP_WRITE    7
-#define OP_STAT     8
-
-struct fs_request {
-    uint32_t op;
-    uint32_t handle;
-    char name[32];
-    uint32_t type;
-    uint32_t rights;
-    uint32_t offset;
-    uint32_t len;
-    uint8_t  data[128];
-};
-
-struct fs_response {
-    int32_t  rc;
-    uint32_t new_handle;
-    uint32_t size;
-    uint8_t  data[128];
-    char     listing[256];
-};
-
-typedef struct node {
-    uint32_t type;
-    char name[32];
-    uint32_t size;
-    uint8_t data[4096];
-    uint32_t owner;
-
-    struct node *children[16];
-    char child_names[16][32];
-    int num_children;
-    int in_use;
-} node_t;
-
-static node_t pool[64];
-static node_t *root_node = NULL;
-
-static void copy(void *d, const void *s, int n) {
-    uint8_t *dd = d; const uint8_t *ss = s;
-    while (n--) *dd++ = *ss++;
-}
-
-static int slen(const char *s) { int l=0; while(s[l])l++; return l; }
-static int scmp(const char *a, const char *b){ while(*a&&*a==*b){a++;b++;} return *a-*b; }
-static void scpy(char *d, const char *s){ while((*d++=*s++)); }
-
-static node_t *new_node(int type, const char *name) {
-    for (int i=0; i<64; i++) if (!pool[i].in_use) {
-        pool[i].in_use = 1;
-        pool[i].type = type;
-        scpy(pool[i].name, name);
-        pool[i].size = 0;
-        pool[i].num_children = 0;
-        return &pool[i];
+/* Find `name` in directory `dir_ino`. On hit, fill out_ino and out_type and
+ * return 1; on miss return 0. */
+static int dir_find(uint32_t dir_ino, const char *name, uint32_t *out_ino, uint32_t *out_type) {
+    unsigned nb = dir_nblocks(dir_ino);
+    static uint8_t blk[BLK];
+    for (unsigned b = 0; b < nb; b++) {
+        if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
+        struct fs_dirent *de = (struct fs_dirent *)blk;
+        for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
+            if (de[i].ino != 0 && ustreq(de[i].name, name)) {
+                if (out_ino)  *out_ino  = de[i].ino;
+                if (out_type) *out_type = de[i].type;
+                return 1;
+            }
+        }
     }
     return 0;
 }
 
-static void build_rich_tree(void) {
-    root_node = new_node(2, "/");
-    root_node->owner = 0;
-
-    node_t *home = new_node(2, "home");
-    root_node->children[0] = home; scpy(root_node->child_names[0], "home"); root_node->num_children=1;
-
-    node_t *etc = new_node(2, "etc");
-    root_node->children[1] = etc; scpy(root_node->child_names[1], "etc"); root_node->num_children=2;
-
-    node_t *usr = new_node(2, "user");
-    home->children[0] = usr; scpy(home->child_names[0], "user"); home->num_children=1;
-
-    node_t *f1 = new_node(1, "readme.txt");
-    usr->children[0] = f1; scpy(usr->child_names[0], "readme.txt"); usr->num_children=1;
-    const char *r = "This is the real userspace filesystem server.\nIt is feature-rich and runs entirely in userspace.\nAll metadata and data live here.\n";
-    copy(f1->data, r, slen(r)); f1->size = slen(r); f1->owner = 1000;
-
-    node_t *f2 = new_node(1, "hostname");
-    etc->children[0] = f2; scpy(etc->child_names[0], "hostname"); etc->num_children=1;
-    copy(f2->data, "horus-fs-server\n", 16); f2->size=16;
-
-    node_t *f3 = new_node(1, "motd");
-    root_node->children[2] = f3; scpy(root_node->child_names[2], "motd"); root_node->num_children=3;
-    const char *m = "Horus 0.4 - Capability Microkernel\nUserspace FS Server is ACTIVE and serving requests.\n";
-    copy(f3->data, m, slen(m)); f3->size = slen(m);
+/* Insert (name, ino, type) into directory `dir_ino`, reusing a free slot or
+ * appending a new block. Returns 0 on success, negative on failure. */
+static int dir_add(uint32_t dir_ino, const char *name, uint32_t ino, uint32_t type) {
+    unsigned nb = dir_nblocks(dir_ino);
+    static uint8_t blk[BLK];
+    for (unsigned b = 0; b < nb; b++) {
+        if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
+        struct fs_dirent *de = (struct fs_dirent *)blk;
+        for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
+            if (de[i].ino == 0) {
+                de[i].ino = ino; de[i].type = type;
+                ustrncpy(de[i].name, name, FS_DIRENT_NAME);
+                return sys_fblock_write(dir_ino, b, blk, BLK) == (int)BLK ? 0 : SYS_ERR_IO;
+            }
+        }
+    }
+    /* No free slot: append a fresh block and grow the directory's logical size
+     * so dir_nblocks (and thus lookup/readdir) sees the new block. */
+    umemset(blk, 0, BLK);
+    struct fs_dirent *de = (struct fs_dirent *)blk;
+    de[0].ino = ino; de[0].type = type;
+    ustrncpy(de[0].name, name, FS_DIRENT_NAME);
+    if (sys_fblock_write(dir_ino, nb, blk, BLK) != (int)BLK) return SYS_ERR_IO;
+    sys_fs_set_size(dir_ino, (nb + 1) * BLK);
+    return 0;
 }
 
-static node_t *find_child(node_t *dir, const char *name) {
-    if (!dir || dir->type != 2) return 0;
-    for (int i=0; i<dir->num_children; i++) {
-        if (scmp(dir->child_names[i], name)==0) return dir->children[i];
+/* Clear the entry named `name` from directory `dir_ino`. Returns the removed
+ * inode number (>0) or 0 if not found. */
+static uint32_t dir_remove(uint32_t dir_ino, const char *name) {
+    unsigned nb = dir_nblocks(dir_ino);
+    static uint8_t blk[BLK];
+    for (unsigned b = 0; b < nb; b++) {
+        if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
+        struct fs_dirent *de = (struct fs_dirent *)blk;
+        for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
+            if (de[i].ino != 0 && ustreq(de[i].name, name)) {
+                uint32_t victim = de[i].ino;
+                de[i].ino = 0; de[i].type = 0; de[i].name[0] = 0;
+                if (sys_fblock_write(dir_ino, b, blk, BLK) != (int)BLK) return 0;
+                return victim;
+            }
+        }
     }
     return 0;
 }
 
-int main(void) {
-    println("[fs_server] Starting feature-rich userspace filesystem server...");
+/* Return the `index`-th non-empty entry of `dir_ino` (fills ino, type, name);
+ * return 1 if present, 0 past the end. */
+static int dir_get(uint32_t dir_ino, uint32_t index, uint32_t *ino, uint32_t *type, char *name) {
+    unsigned nb = dir_nblocks(dir_ino);
+    static uint8_t blk[BLK];
+    uint32_t seen = 0;
+    for (unsigned b = 0; b < nb; b++) {
+        if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
+        struct fs_dirent *de = (struct fs_dirent *)blk;
+        for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
+            if (de[i].ino == 0) continue;
+            if (seen == index) {
+                *ino = de[i].ino; *type = de[i].type;
+                ustrncpy(name, de[i].name, FS_NAME_MAX);
+                return 1;
+            }
+            seen++;
+        }
+    }
+    return 0;
+}
 
-    build_rich_tree();
-    println("[fs_server] Rich tree ready: /, /home/user, /etc, motd, readme.txt, hostname");
+static void handle(const struct fs_request *rq, struct fs_response *rp) {
+    umemset(rp, 0, sizeof(*rp));
+    rp->magic = FS_PROTO_MAGIC;
 
-    println("[fs_server] Rich demo filesystem initialized.");
+    if (rq->magic != FS_PROTO_MAGIC) { rp->rc = SYS_ERR_INVAL; return; }
 
-    if (sys_register_fs_server(4) == 0) {
-        println("[fs_server] Registered as system FS server (listening on endpoint 4)");
+    switch (rq->op) {
+    case FS_OP_LOOKUP: {
+        uint32_t ino, type;
+        if (dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = 0; rp->ino = ino; rp->type = type; }
+        else rp->rc = SYS_ERR_NOENT;
+        break;
+    }
+    case FS_OP_CREATE:
+    case FS_OP_MKDIR: {
+        if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
+        if (dir_find(rq->dir_ino, rq->name, 0, 0)) { rp->rc = SYS_ERR_INVAL; break; }  /* exists */
+        uint32_t type = (rq->op == FS_OP_MKDIR) ? FS_TYPE_DIR : FS_TYPE_FILE;
+        int ino = sys_fs_inode_alloc(type);
+        if (ino < 0) { rp->rc = ino; break; }
+        int rc = dir_add(rq->dir_ino, rq->name, (uint32_t)ino, type);
+        if (rc != 0) { sys_fs_inode_free((uint32_t)ino); rp->rc = rc; break; }
+        rp->rc = 0; rp->ino = (uint32_t)ino; rp->type = type;
+        break;
+    }
+    case FS_OP_DELETE: {
+        uint32_t ino, type;
+        if (!dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = SYS_ERR_NOENT; break; }
+        /* Refuse to delete a non-empty directory. */
+        if (type == FS_TYPE_DIR) {
+            uint32_t cino, ctype; char cname[FS_NAME_MAX];
+            if (dir_get(ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_INVAL; break; }
+        }
+        if (dir_remove(rq->dir_ino, rq->name) == 0) { rp->rc = SYS_ERR_NOENT; break; }
+        sys_fs_inode_free(ino);
+        rp->rc = 0;
+        break;
+    }
+    case FS_OP_READDIR: {
+        uint32_t ino, type; char name[FS_NAME_MAX];
+        if (dir_get(rq->dir_ino, rq->offset, &ino, &type, name)) {
+            rp->rc = 0; rp->ino = ino; rp->type = type;
+            ustrncpy(rp->name, name, FS_NAME_MAX);
+        } else rp->rc = SYS_ERR_NOENT;   /* past end */
+        break;
+    }
+    case FS_OP_STAT: {
+        struct fs_stat st;
+        if (sys_fs_stat(rq->ino, &st) != 0) { rp->rc = SYS_ERR_NOENT; break; }
+        rp->rc = 0; rp->type = st.type; rp->size = (uint32_t)st.size;
+        break;
+    }
+    case FS_OP_READ: {
+        struct fs_stat st;
+        if (sys_fs_stat(rq->ino, &st) != 0) { rp->rc = SYS_ERR_NOENT; break; }
+        if (rq->offset >= st.size) { rp->rc = 0; rp->size = 0; break; }   /* EOF */
+        uint32_t blk = rq->offset / BLK, boff = rq->offset % BLK;
+        static uint8_t tmp[BLK];
+        if (sys_fblock_read(rq->ino, blk, tmp) != (int)BLK) { rp->rc = SYS_ERR_IO; break; }
+        uint32_t avail = (uint32_t)st.size - rq->offset;
+        uint32_t n = rq->len;
+        if (n > FS_IO_MAX) n = FS_IO_MAX;
+        if (n > BLK - boff) n = BLK - boff;
+        if (n > avail) n = avail;
+        umemcpy(rp->data, tmp + boff, n);
+        rp->rc = (int32_t)n; rp->size = n;
+        break;
+    }
+    case FS_OP_WRITE: {
+        uint32_t len = rq->len;
+        if (len > FS_IO_MAX) len = FS_IO_MAX;
+        uint32_t blk = rq->offset / BLK, boff = rq->offset % BLK;
+        if (boff + len > BLK) len = BLK - boff;   /* one block per request */
+        static uint8_t tmp[BLK];
+        /* Read-modify-write to preserve the rest of the block (hole => zeros). */
+        if (sys_fblock_read(rq->ino, blk, tmp) != (int)BLK) umemset(tmp, 0, BLK);
+        umemcpy(tmp + boff, rq->data, len);
+        if (sys_fblock_write(rq->ino, blk, tmp, BLK) != (int)BLK) { rp->rc = SYS_ERR_IO; break; }
+        /* Extend the logical file size if this write went past the old end
+         * (the kernel only stores fixed-size blocks; size is ours to track). */
+        struct fs_stat st;
+        uint32_t end = rq->offset + len;
+        if (sys_fs_stat(rq->ino, &st) == 0 && end > (uint32_t)st.size) sys_fs_set_size(rq->ino, end);
+        rp->rc = (int32_t)len;
+        break;
+    }
+    default:
+        rp->rc = SYS_ERR_NOSYS;
+        break;
+    }
+}
+
+void _start(void) {
+    println("[fs_server] userspace FS server starting (encrypted object store).");
+
+    /* Registration is best-effort: it publishes the service for clients that
+     * discover it via sys_connect_fs_server, but the request/reply endpoints
+     * themselves are the well-known FS_EP_REQ / FS_EP_REP. */
+    if (sys_register_fs_server(FS_EP_REQ) == 0) {
+        println("[fs_server] registered; serving on endpoints 4 (req) / 5 (rep).");
     } else {
-        println("[fs_server] Warning: could not register (no CAP_USER?)");
+        println("[fs_server] warning: registration failed; serving anyway.");
     }
 
-    println("[fs_server] Entering IPC server loop. Clients can connect via sys_connect_fs_server()");
-
-    struct fs_request req;
-    struct fs_response rep;
-
+    struct fs_request  rq;
+    struct fs_response rp;
     for (;;) {
-        int r = sys_ipc_recv(4, (char*)&req, sizeof(req));
-        if (r < 0) continue;
-
-        rep.rc = 0;
-        rep.new_handle = 0;
-        rep.size = 0;
-        rep.listing[0] = 0;
-
-        node_t *target = (node_t*)(uintptr_t)req.handle;
-
-        switch (req.op) {
-        case OP_LOOKUP: {
-            node_t *n = find_child(root_node, req.name);
-            if (n) {
-                rep.new_handle = (uint32_t)(uintptr_t)n;
-                rep.rc = 0;
-            } else {
-                rep.rc = -4;
-            }
-            break;
-        }
-        case OP_READDIR: {
-            char *p = rep.listing;
-            node_t *dir = target ? target : root_node;
-            if (dir && dir->type == 2) {
-                for (int i=0; i<dir->num_children && (p-rep.listing)<240; i++) {
-                    int l = slen(dir->child_names[i]);
-                    copy(p, dir->child_names[i], l);
-                    p += l; *p++ = '\n';
-                }
-            }
-            *p = 0;
-            rep.rc = 0;
-            break;
-        }
-        case OP_READ: {
-            if (target && target->type == 1) {
-                int nbytes = (req.len > target->size) ? (int)target->size : (int)req.len;
-                if (nbytes > 128) nbytes = 128;
-                copy(rep.data, target->data, nbytes);
-                rep.size = nbytes;
-                rep.rc = nbytes;
-            } else {
-                rep.rc = -1;
-            }
-            break;
-        }
-        case OP_CREATE:
-        case OP_MKDIR: {
-            node_t *parent = target ? target : root_node;
-            if (parent && parent->type == 2 && parent->num_children < 16) {
-                node_t *n = new_node(req.type, req.name);
-                if (n) {
-                    parent->children[parent->num_children] = n;
-                    scpy(parent->child_names[parent->num_children], req.name);
-                    parent->num_children++;
-                    rep.new_handle = (uint32_t)(uintptr_t)n;
-                    rep.rc = 0;
-                } else {
-                    rep.rc = -5;
-                }
-            } else {
-                rep.rc = -6;
-            }
-            break;
-        }
-        case OP_WRITE: {
-            if (target && target->type == 1) {
-                int w = req.len > 128 ? 128 : req.len;
-                if (req.offset + w > 4096) w = 4096 - req.offset;
-                if (w > 0) {
-                    copy(target->data + req.offset, req.data, w);
-                    if (req.offset + (uint32_t)w > target->size) target->size = req.offset + (uint32_t)w;
-                }
-                rep.rc = w;
-            } else {
-                rep.rc = -1;
-            }
-            break;
-        }
-        case OP_STAT: {
-            if (target) {
-                rep.size = target->size;
-                rep.rc = 0;
-            } else {
-                rep.rc = -1;
-            }
-            break;
-        }
-        default:
-            rep.rc = -100;
-            break;
-        }
-
-        sys_ipc_reply(4, (const char*)&rep, sizeof(rep));
+        int r = sys_ipc_recv(FS_EP_REQ, (char *)&rq, sizeof(rq));
+        if (r < 0) { spin_delay(); continue; }          /* no request yet */
+        handle(&rq, &rp);
+        while (sys_ipc_reply(FS_EP_REP, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
     }
 }

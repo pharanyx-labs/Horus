@@ -444,13 +444,17 @@ static void handle_command(char *cmd) {
         while (*p >= '0' && *p <= '9') { deluid = deluid*10 + (*p-'0'); p++; }
         int r = sys_userdel(deluid);
         println(r == 0 ? "user deleted" : "userdel failed");
-    } else if (strncmp(cmd, "passwd ", 7) == 0) {
+    } else if (strcmp(cmd, "passwd") == 0 || strncmp(cmd, "passwd ", 7) == 0) {
         println("New password: ");
         char newp[32];
         int plen = sys_get_pass(newp, 31);
         if (plen > 0) {
             newp[plen] = 0;
-            uint32_t target = 0;
+            /* Change the CURRENT user's password, not uid 0.  The old code
+             * always passed target=0, so non-root users got "passwd failed"
+             * (kernel rejects uid!=self unless admin) and root accidentally
+             * had an "admin only" passwd command. */
+            uint32_t target = sys_getuid();
             int r = sys_passwd(target, newp);
             for (int i=0; i<32; i++) newp[i]=0;
             println(r == 0 ? "password changed" : "passwd failed");

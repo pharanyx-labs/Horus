@@ -1139,6 +1139,12 @@ static int do_spawn(void) {
                     }
                 }
             }
+            /* If the page walk above did not find a present mapping, dphys was
+             * left equal to va (a user virtual address). Writing to that value
+             * as a physical address would silently corrupt kernel memory at
+             * physical va. Skip the copy for unmapped pages rather than
+             * writing to the wrong physical location. */
+            if (dphys == (uint64_t)va) { off += 4096; continue; }
             uint8_t *d = (uint8_t *)dphys;
             uint32_t poff = va & 0xfff;
             uint32_t chunk = 4096 - poff;
@@ -2643,6 +2649,7 @@ static void h_passwd(struct regs *r) {
     }
     newpass[31] = 0;
     r->eax = do_passwd(target, newpass);
+    secure_zero(newpass, sizeof(newpass));
 }
 
 /* SYS_ROTATE_KEYS (36): slot-8 READ, type CAP_CONSOLE enforced by the table. */

@@ -292,7 +292,9 @@ int capfs_lookup(struct capability *dir_cap, const char *name, struct capability
 int capfs_create(struct capability *dir_cap, const char *name, int type, struct capability *out_cap, uint32_t desired_rights) {
     if (!dir_cap || dir_cap->type != CAP_DIR || !out_cap || !name) return -1;
 
-    struct fs_object *dir = (struct fs_object *)dir_cap->object;
+    /* Use fs_resolve_cap so the generation check fires: a stale dir cap whose
+     * object was freed and reallocated cannot be used to create files. */
+    struct fs_object *dir = fs_resolve_cap(dir_cap);
     if (!dir || dir->type != FS_OBJ_DIR) return -1;
 
     if ((dir_cap->rights & CAP_RIGHT_FS_CREATE) == 0) return -2;
@@ -305,28 +307,32 @@ int capfs_create(struct capability *dir_cap, const char *name, int type, struct 
         if (my_strcmp(dir->child_names[i], name) == 0) return -8;
     }
 
+    /* Validate BEFORE allocating: the old order ran capfs_alloc_object first
+     * and then checked the Rust policy; a rejection left a pool slot permanently
+     * marked in_use=1 but never linked into any directory — unrecoverable leak. */
+    if (rust_validate_fs_operation((addr_t)get_current_task(), 1, dir_cap->rights, (const uint8_t*)name, nlen) < 0) {
+        return -20;
+    }
+
     struct fs_object *child = capfs_alloc_object(type, name);
     if (!child) return -6;
 
     extern tcb_t tasks[MAX_TASKS];
-
-    if (rust_validate_fs_operation((addr_t)get_current_task(), 1, dir_cap->rights, (const uint8_t*)name, my_strlen(name)) < 0) {
-        return -20;
-    }
-
     child->owner_uid = tasks[get_current_task()].uid;
-
-    /* Encryption keys (if any) were already derived by capfs_alloc_object from
-     * the owning task's file master key — no per-file key setup here. */
 
     int slot = dir->num_children++;
     dir->children[slot] = child;
     my_strcpy(dir->child_names[slot], name);
 
     out_cap->type   = (type == FS_OBJ_DIR) ? CAP_DIR : CAP_FILE;
-    out_cap->object = (addr_t)child;
+    /* Store packed (idx | gen<<32), consistent with capfs_lookup's fs_pack_object.
+     * The old code stored a raw pointer; a cap from capfs_lookup (packed) passed
+     * to capfs_read would then dereference the packed integer as an address —
+     * a fault or wild access. All cap resolution now goes through fs_resolve_cap
+     * which handles packed values uniformly. */
+    out_cap->object = fs_pack_object(child);
     out_cap->rights = desired_rights & dir_cap->rights;
-    out_cap->badge  = dir_cap->badge ? dir_cap->badge : (addr_t)dir;
+    out_cap->badge  = dir_cap->badge ? dir_cap->badge : fs_pack_object(dir);
 
     return 0;
 }
@@ -334,7 +340,7 @@ int capfs_create(struct capability *dir_cap, const char *name, int type, struct 
 int capfs_delete(struct capability *dir_cap, const char *name) {
     if (!dir_cap || dir_cap->type != CAP_DIR || !name) return -1;
 
-    struct fs_object *dir = (struct fs_object *)dir_cap->object;
+    struct fs_object *dir = fs_resolve_cap(dir_cap);
     if (!dir || dir->type != FS_OBJ_DIR) return -1;
 
     if ((dir_cap->rights & CAP_RIGHT_FS_DELETE) == 0) return -2;
@@ -343,6 +349,16 @@ int capfs_delete(struct capability *dir_cap, const char *name) {
         if (my_strcmp(dir->child_names[i], name) == 0) {
             struct fs_object *victim = dir->children[i];
             if (victim) {
+                /* Erase key material before releasing the slot: enc_key/mac_key
+                 * would otherwise sit readable in the pool until the next alloc
+                 * overwrites them. Bump gen so any outstanding capability whose
+                 * packed object field encodes the old generation fails
+                 * fs_resolve_cap's gen==cgen check on next use. */
+                secure_zero(victim->enc_key,   sizeof(victim->enc_key));
+                secure_zero(victim->mac_key,   sizeof(victim->mac_key));
+                secure_zero(victim->file_nonce, sizeof(victim->file_nonce));
+                secure_zero(victim->file_tag,   sizeof(victim->file_tag));
+                victim->gen++;
                 victim->in_use = 0;
                 victim->num_children = 0;
             }
@@ -361,7 +377,7 @@ int capfs_readdir(struct capability *dir_cap, char *buf, size_t bufsize) {
     if (!dir_cap || dir_cap->type != CAP_DIR || !buf || bufsize < 2) return -1;
     if ((dir_cap->rights & CAP_RIGHT_FS_LOOKUP) == 0) return -2;
 
-    struct fs_object *dir = (struct fs_object *)dir_cap->object;
+    struct fs_object *dir = fs_resolve_cap(dir_cap);
     if (!dir || dir->type != FS_OBJ_DIR) return -1;
 
     size_t pos = 0;
@@ -382,7 +398,7 @@ int capfs_read(struct capability *file_cap, void *buf, size_t len) {
 
     if (rust_validate_fs_operation((addr_t)get_current_task(), 3, file_cap->rights, NULL, 0) < 0) return -20;
 
-    struct fs_object *obj = (struct fs_object *)file_cap->object;
+    struct fs_object *obj = fs_resolve_cap(file_cap);
     if (!obj || obj->type != FS_OBJ_FILE) return -1;
 
     size_t to_read = len;
@@ -419,7 +435,7 @@ int capfs_write(struct capability *file_cap, const void *buf, size_t len) {
 
     if (rust_validate_fs_operation((addr_t)get_current_task(), 4, file_cap->rights, NULL, 0) < 0) return -20;
 
-    struct fs_object *obj = (struct fs_object *)file_cap->object;
+    struct fs_object *obj = fs_resolve_cap(file_cap);
     if (!obj || obj->type != FS_OBJ_FILE) return -1;
 
     if (len > FS_DATA_SIZE) len = FS_DATA_SIZE;

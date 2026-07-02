@@ -71,6 +71,19 @@ persistence of the per-block crypto metadata (nonces/tags), per-file ACLs,
 double-indirect data blocks and multi-block bitmaps, and reconciling the legacy
 in-memory capfs (`SYS_FS_*`) with the server.
 
+### Fixed
+
+- **Interactive login hung after entering the password.** `SYS_AUTH` runs the
+  Argon2id hash on the caller's per-task kernel stack, which was only 8 KiB —
+  too small for Argon2's several stacked 1 KiB blocks, so the hash overran the
+  stack and wedged the task. (Boot-time hashing worked because it runs on the
+  larger boot stack.) Raised `KERNEL_STACK_SIZE` to 32 KiB. Verified with a
+  scripted serial login (root → prompt) under both KVM and TCG.
+- **`make run` serial console showed nothing.** The console chardev on port
+  4445 used `wait=off`, so the banner/prompt were emitted before a client
+  connected and lost. Switched to `wait=on` (boot waits for `nc localhost 4445`)
+  and added `-machine accel=kvm:tcg` so interactive use gets KVM when available.
+
 ### Security
 
 Recent hardening pass (see git history for individual commits):

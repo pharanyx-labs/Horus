@@ -70,30 +70,69 @@ static void my_memcpy(void* dst, const void* src, size_t n) {
     while (n--) *d++ = *s++;
 }
 
-static void efs_apply_keystream(struct fs_object *obj, uint8_t *data, size_t len, int for_write)
-{
-    if (!obj || !obj->is_encrypted || len == 0) return;
+/* ------------------------------------------------------------------------- *
+ * Encryption at rest for is_encrypted files.
+ *
+ * Files are sealed with the kernel's ChaCha20 + HMAC-SHA256 Encrypt-then-MAC
+ * AEAD (rust/src/aead.rs) — the same authenticated construction used by the
+ * block-storage layer, and validated against its RFC known-answer vectors.
+ * This replaces a previous in-kernel homebrew XOR keystream that had no
+ * integrity protection and reused its keystream across rewrites.
+ *
+ * Per encrypted object we keep two independent HKDF-SHA256 subkeys
+ * (confidentiality + integrity) derived from the owning task's file master
+ * key, a nonce redrawn from the CSPRNG on every write (so (key,nonce) never
+ * repeats), and the authentication tag over the whole ciphertext.
+ * ------------------------------------------------------------------------- */
 
-    uint8_t state[32];
-    for (int i = 0; i < 32; i++) state[i] = obj->enc_file_key[i];
-    for (int i = 0; i < 16; i++) state[i] ^= obj->file_key_iv[i];
+/* Whole-object decrypt scratch: the AEAD tag covers the entire ciphertext, so
+ * even a partial read must open the full object before returning a prefix.
+ * Guarded by storage_lock along with the rest of the FS (single-core kernel). */
+static uint8_t efs_scratch[FS_DATA_SIZE];
 
-    for (size_t pos = 0; pos < len; pos++) {
-        
-        uint32_t *w = (uint32_t *)state;
-        w[0] += w[1] + (uint32_t)pos;
-        w[1] = (w[1] << 5) | (w[1] >> 27);
-        w[1] ^= w[0];
-        uint8_t ks = (uint8_t)(w[pos & 7] >> ((pos & 3) * 8));
-        data[pos] ^= ks ^ obj->file_key_iv[pos & 15];
+/* Additional authenticated data binding a ciphertext to its object identity
+ * (stable for the object's lifetime). Stops a valid (nonce,tag,ciphertext)
+ * triple from being replayed against a different object. */
+static void efs_aad(const struct fs_object *obj, uint8_t out[4]) {
+    out[0] = (uint8_t)(obj->integrity_tag);
+    out[1] = (uint8_t)(obj->integrity_tag >> 8);
+    out[2] = (uint8_t)(obj->integrity_tag >> 16);
+    out[3] = (uint8_t)(obj->integrity_tag >> 24);
+}
 
-        if ((pos & 15) == 15) {
-            uint8_t t = state[0]; for (int j=0; j<31; j++) state[j] = state[j+1]; state[31] = t;
-        }
+/* Derive the per-file AEAD subkeys from the task's 32-byte file master key via
+ * HKDF-SHA256 (fresh random salt -> independent keys per file) into the
+ * concatenation enc_key(32) || mac_key(32). Fails closed: if HKDF cannot
+ * produce key material the object is left unencrypted rather than sealed under
+ * a zero key. */
+static void efs_derive_file_keys(struct fs_object *obj, const uint8_t *master_key) {
+    static const char info[] = "horus/efs/file-key/v1";
+    uint8_t salt[16];
+    uint8_t okm[64];
+    rust_rng_fill(salt, sizeof(salt));
+    if (rust_hkdf_sha256(master_key, 32, salt, sizeof(salt),
+                         (const uint8_t *)info, sizeof(info) - 1,
+                         okm, sizeof(okm)) != 0) {
+        obj->is_encrypted = 0;
+        secure_zero(okm, sizeof(okm));
+        secure_zero(salt, sizeof(salt));
+        return;
     }
+    my_memcpy(obj->enc_key, okm, 32);
+    my_memcpy(obj->mac_key, okm + 32, 32);
+    secure_zero(okm, sizeof(okm));
+    secure_zero(salt, sizeof(salt));
+}
 
-    (void)for_write;
-    secure_zero(state, sizeof(state));
+/* Seal obj->data[0..size] in place with a fresh nonce; stores nonce and tag. */
+static void efs_seal(struct fs_object *obj) {
+    if (!obj->is_encrypted || !obj->data) return;
+    uint8_t aad[4];
+    efs_aad(obj, aad);
+    rust_rng_fill(obj->file_nonce, sizeof(obj->file_nonce));
+    rust_aead_seal(obj->enc_key, obj->mac_key, obj->file_nonce,
+                   aad, sizeof(aad),
+                   (uint8_t *)obj->data, (size_t)obj->size, obj->file_tag);
 }
 
 void ramfs_init(void) {
@@ -137,13 +176,7 @@ struct fs_object *capfs_alloc_object(int type, const char *name) {
             if (get_current_task() >= 0 && tasks[get_current_task()].has_file_key &&
                 has_encrypted_storage_cap()) {
                 obj->is_encrypted = 1;
-                const uint8_t *mk = tasks[get_current_task()].user_file_master_key;
-                for (int k = 0; k < 32; k++) {
-                    obj->enc_file_key[k] = mk[k] ^ (uint8_t)(i + k);
-                }
-                for (int k = 0; k < 16; k++) {
-                    obj->file_key_iv[k] = mk[k % 32] ^ (uint8_t)(addr_t)obj ^ (uint8_t)k;
-                }
+                efs_derive_file_keys(obj, tasks[get_current_task()].user_file_master_key);
             }
 
             fs_objects[i] = obj;
@@ -283,17 +316,8 @@ int capfs_create(struct capability *dir_cap, const char *name, int type, struct 
 
     child->owner_uid = tasks[get_current_task()].uid;
 
-    
-    if (tasks[get_current_task()].has_file_key && has_encrypted_storage_cap()) {
-        child->is_encrypted = 1;
-        const uint8_t *mk = tasks[get_current_task()].user_file_master_key;
-        for (int k = 0; k < 32; k++) {
-            child->enc_file_key[k] = mk[k] ^ (uint8_t)(k * 0x5F);
-        }
-        for (int k = 0; k < 16; k++) {
-            child->file_key_iv[k] = mk[(k + 3) % 32] ^ (uint8_t)(addr_t)child ^ (uint8_t)k;
-        }
-    }
+    /* Encryption keys (if any) were already derived by capfs_alloc_object from
+     * the owning task's file master key — no per-file key setup here. */
 
     int slot = dir->num_children++;
     dir->children[slot] = child;
@@ -364,11 +388,26 @@ int capfs_read(struct capability *file_cap, void *buf, size_t len) {
     size_t to_read = len;
     if (to_read > obj->size) to_read = obj->size;
 
-    my_memcpy(buf, obj->data, to_read);
-
     if (obj->is_encrypted) {
-        
-        efs_apply_keystream(obj, (uint8_t *)buf, to_read, 0);
+        size_t clen = (size_t)obj->size;
+        if (clen > FS_DATA_SIZE || !obj->data) return -1;
+
+        uint8_t aad[4];
+        efs_aad(obj, aad);
+
+        /* The AEAD tag covers the whole ciphertext, so decrypt-and-verify the
+         * entire object into scratch, then hand back only the requested prefix.
+         * On authentication failure nothing is copied to the caller. */
+        my_memcpy(efs_scratch, obj->data, clen);
+        if (rust_aead_open(obj->enc_key, obj->mac_key, obj->file_nonce,
+                           aad, sizeof(aad), efs_scratch, clen, obj->file_tag) != 0) {
+            secure_zero(efs_scratch, clen);
+            return -21;   /* AEAD authentication failed: tampered or wrong key */
+        }
+        my_memcpy(buf, efs_scratch, to_read);
+        secure_zero(efs_scratch, clen);
+    } else if (obj->data) {
+        my_memcpy(buf, obj->data, to_read);
     }
 
     return (int)to_read;
@@ -384,15 +423,15 @@ int capfs_write(struct capability *file_cap, const void *buf, size_t len) {
     if (!obj || obj->type != FS_OBJ_FILE) return -1;
 
     if (len > FS_DATA_SIZE) len = FS_DATA_SIZE;
+    if (!obj->data) return -1;
 
-    const uint8_t *src = (const uint8_t *)buf;
-
-    my_memcpy(obj->data, src, len);
+    my_memcpy(obj->data, buf, len);
     obj->size = (addr_t)len;
 
+    /* Seal in place: obj->data now holds ciphertext, authenticated by file_tag
+     * under a freshly drawn nonce. */
     if (obj->is_encrypted) {
-        
-        efs_apply_keystream(obj, obj->data, (size_t)obj->size, 1);
+        efs_seal(obj);
     }
 
     return (int)len;

@@ -437,8 +437,15 @@ typedef struct fs_object {
     char child_names[8][32];
     int num_children;
     void *children[8];
-    uint8_t enc_file_key[32];
-    uint8_t file_key_iv[16];
+    /* Encryption-at-rest (ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD).
+     * enc_key/mac_key are independent HKDF-SHA256 subkeys derived from the
+     * owning task's file master key; file_nonce is a fresh CSPRNG draw on every
+     * write (so (key,nonce) never repeats) and file_tag authenticates the whole
+     * ciphertext. See efs_* helpers in ramfs.c. */
+    uint8_t enc_key[32];
+    uint8_t mac_key[32];
+    uint8_t file_nonce[12];   /* AEAD_NONCE_LEN */
+    uint8_t file_tag[16];     /* AEAD_TAG_LEN   */
     char name[32];
     uint32_t gen;
 } fs_object_t;

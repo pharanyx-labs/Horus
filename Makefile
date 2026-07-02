@@ -346,7 +346,7 @@ security-install:
 	# Semgrep
 	pipx install semgrep || pip install --user semgrep
 	# Trivy (official install script)
-	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 	# gitleaks (via Go)
 	go install github.com/gitleaks/gitleaks@latest || echo "⚠️  Install Go to get gitleaks binary"
 	# cargo-audit for Rust
@@ -361,7 +361,7 @@ semgrep:
 
 trivy:
 	@echo "=== Trivy (secrets + misconfigs + vulns) ==="
-	command -v trivy >/dev/null 2>&1 || (curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin)
+	command -v trivy >/dev/null 2>&1 || (curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin)
 	trivy --version
 	trivy fs --scanners vuln,secret,misconfig .
 
@@ -371,7 +371,7 @@ gitleaks:
 	( \
 		GITLEAKS_VERSION=8.30.1; \
 		curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v$${GITLEAKS_VERSION}/gitleaks_$${GITLEAKS_VERSION}_linux_x64.tar.gz | \
-		tar -xz -C /usr/local/bin gitleaks \
+		sudo tar -xz -C /usr/local/bin gitleaks \
 	)
 	gitleaks detect --source . --verbose || true
 

@@ -1,19 +1,18 @@
 /*
- * Static-PIE (ET_DYN) linker script for the ELF-loader self-test image.
+ * Static-PIE (ET_DYN) linker script for relocatable Horus userspace binaries.
  *
- * Three page-aligned PT_LOAD segments with distinct permission flags, linked at
- * base 0 so the kernel loads it at a randomized base and applies relocations:
+ * Produces three page-aligned PT_LOAD segments with distinct permission flags
+ * so the kernel loader (try_elf_load) can apply per-segment W^X:
  *
  *   .text   FLAGS(5) = R + X
  *   .rodata FLAGS(4) = R
- *   .data   FLAGS(6) = R + W
+ *   .data   FLAGS(6) = R + W   (NX enforced by the kernel)
  *
- * The marker sections are pinned to the START of their segment so the kernel
- * self-test can find them at (base + segment vaddr):
- *   .rodata.marker -> first byte of .rodata  (0x5A)
- *   .data.selfptr  -> first word of .data     (&rodata_marker, relocated)
- *   .data.marker   -> next byte of .data      (0xD2)
- * (FLAGS bits: 1=X, 2=W, 4=R = ELF PF_X/PF_W/PF_R.)
+ * The image is linked at base 0; the kernel loads it at a randomized base
+ * (ASLR) and applies R_386_RELATIVE relocations. Freestanding userspace only
+ * traps via `int 0x80`, so GCC's GOTOFF addressing usually leaves zero dynamic
+ * relocations, but any that appear are handled by the loader. Kept as a real
+ * ELF (never objcopy-flattened). (FLAGS bits: 1=X, 2=W, 4=R = ELF PF_X/W/R.)
  */
 ENTRY(_start)
 
@@ -31,7 +30,7 @@ SECTIONS
     .text : { *(.text) *(.text.*) } :text
 
     . = ALIGN(0x1000);
-    .rodata  : { KEEP(*(.rodata.marker)) *(.rodata) *(.rodata.*) } :rodata
+    .rodata  : { *(.rodata) *(.rodata.*) } :rodata
     .dynamic : { *(.dynamic) }             :rodata :dyn
     .rel.dyn : { *(.rel.dyn) *(.rel.*) }   :rodata
     .dynsym  : { *(.dynsym) }              :rodata
@@ -39,7 +38,7 @@ SECTIONS
     .hash    : { *(.hash) *(.gnu.hash) }   :rodata
 
     . = ALIGN(0x1000);
-    .data : { KEEP(*(.data.selfptr)) KEEP(*(.data.marker)) *(.data) *(.data.*) } :data
+    .data : { *(.data) *(.data.*) }        :data
     .got  : { *(.got) *(.got.plt) }        :data
     .bss  : { *(.bss) *(.bss.*) *(COMMON) } :data
 

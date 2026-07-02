@@ -43,11 +43,26 @@ These items address the roughest edges in what already exists. They are good sta
 
 ## Phase 2 — Functional filesystem
 
-- **RAM filesystem extension**: Multi-level directory support, proper ownership and permission bits tied to the capability model.
-- **Filesystem server IPC**: Complete the `fs_server` userspace program so that filesystem operations flow through IPC rather than direct kernel calls. This is the microkernel architecture in practice.
-- **ATA driver integration**: Wire the working ATA read/write code to the storage layer so that the virtual disk in QEMU is actually used.
-- **Persistent inode store**: Implement the on-disk inode format that `storage.c` scaffolds, including a working superblock, block bitmap, and inode table. Crash recovery via the intent log.
-- **Capability-gated file access**: Enforce the filesystem capability rights (`CAP_RIGHT_FS_READ`, `CAP_RIGHT_FS_WRITE`, etc.) consistently in all filesystem syscalls.
+A first robust increment has landed (`make smoke-fs`): filesystem semantics run in
+a ring-3 `fs_server` over the kernel's persistent, encrypted object store, reached
+by clients over IPC. See "Recently completed" and `docs/ARCHITECTURE.md`.
+
+- **Filesystem server IPC** *(done, first increment)*: `fs_server` implements a
+  hierarchical FS (dirs as inode data; root = inode 0) with lookup/create/mkdir/
+  read/write/readdir/delete/stat over a versioned IPC protocol, backed by the
+  encrypted object-store syscalls (56-61). Remaining: concurrent/multi-client IPC.
+- **Persistent inode store** *(done, in-boot)*: `storage.c`'s superblock/inode/
+  bitmap layout works and is exercised end-to-end; geometry is computed from the
+  device. Remaining: crash-recovery replay of the intent log, multi-block bitmaps,
+  and double-indirect data blocks.
+- **ATA driver integration** *(done, selectable)*: `STORAGE_ATA=1` makes the ATA
+  disk the block backend (probe + format-on-first-boot). Remaining: persist the
+  per-block crypto metadata (nonces/tags) so files survive across reboots.
+- **RAM filesystem extension**: multi-level directories now exist in the server;
+  proper ownership/permission bits tied to the capability model are still to do.
+- **Capability-gated file access**: FS access is gated at the service boundary
+  (endpoint capability + storage capability); per-file ACLs are the next step,
+  along with reconciling the legacy in-memory capfs (`SYS_FS_*`) with the server.
 
 ---
 

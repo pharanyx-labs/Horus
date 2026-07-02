@@ -91,6 +91,33 @@ struct audit_event {
 #define SYS_SIGACTION          54
 #define SYS_SIGRETURN          55
 
+/* Encrypted object-store API for the userspace filesystem server (Phase 2).
+ * These expose the kernel's persistent, encrypted inode/block store to a ring-3
+ * FS server WITHOUT handing it key material — the AEAD stays in the kernel. The
+ * server addresses storage by (inode, logical block) and builds all filesystem
+ * semantics (names, directories, permissions) on top. Gated like the raw block
+ * syscalls: CAP_BLOCK_DEV (slot 7) + uid 0. */
+#define SYS_FS_INODE_ALLOC     56   /* (type) -> ino */
+#define SYS_FS_INODE_FREE      57   /* (ino)  -> 0 */
+#define SYS_FBLOCK_READ        58   /* (ino, block, buf) -> BLOCK_SIZE (decrypt+verify) */
+#define SYS_FBLOCK_WRITE       59   /* (ino, block, buf, len) -> len (encrypt, fresh nonce) */
+#define SYS_FS_STAT            60   /* (ino, struct fs_stat*) -> 0 */
+#define SYS_FS_SET_SIZE        61   /* (ino, size) -> 0 (server owns logical file size) */
+
+/* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
+struct fs_stat {
+    uint64_t size;
+    uint32_t type;
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t links;
+};
+
+/* Object types used by the FS server / SYS_FS_INODE_ALLOC. */
+#define FS_TYPE_FILE 1
+#define FS_TYPE_DIR  2
+
 #define AUDIT_AUTH          1
 #define AUDIT_SUDO          2
 #define AUDIT_USER_MGMT     3
@@ -122,16 +149,21 @@ static inline uint32_t syscall(uint32_t num, uint32_t a, uint32_t b, uint32_t c)
     return ret;
 }
 
+/* Up to 5 register args (num, a..e); the kernel reads eax,ebx,ecx,edx,esi,edi.
+ * Bind the high args directly to esi/edi with the "S"/"D" constraints rather
+ * than moving them in and clobbering — the previous "r"-operand form ran the
+ * 32-bit PIE register allocator out of registers (ebx is the GOT pointer, and
+ * esi/edi were both operands and clobbers). `f` is accepted for source
+ * compatibility but not passed (no sixth arg register in this ABI). */
 static inline uint32_t syscall6(uint32_t num, uint32_t a, uint32_t b, uint32_t c,
                                  uint32_t d, uint32_t e, uint32_t f) {
     uint32_t ret;
+    (void)f;
     asm volatile (
-        "movl %5, %%esi\n"
-        "movl %6, %%edi\n"
         "int $0x80"
         : "=a"(ret)
-        : "a"(num), "b"(a), "c"(b), "d"(c), "r"(d), "r"(e), "r"(f)
-        : "esi", "edi", "memory"
+        : "a"(num), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e)
+        : "memory"
     );
     return ret;
 }
@@ -326,6 +358,42 @@ static inline int sys_connect_fs_server(uint32_t dest_slot, uint32_t rights) {
 
 static inline int sys_cap_revoke(uint32_t slot) {
     return syscall(SYS_CAP_REVOKE, slot, 0, 0);
+}
+
+/* --- Encrypted object-store API (used by the userspace FS server) ---------- */
+
+/* Allocate a fresh inode of the given type (FS_TYPE_FILE / FS_TYPE_DIR).
+ * Returns the inode number, or a negative SYS_ERR_*. */
+static inline int sys_fs_inode_alloc(uint32_t type) {
+    return syscall(SYS_FS_INODE_ALLOC, type, 0, 0);
+}
+
+/* Free an inode and all of its data blocks. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_fs_inode_free(uint32_t ino) {
+    return syscall(SYS_FS_INODE_FREE, ino, 0, 0);
+}
+
+/* Read logical `block` of `ino` (decrypt-and-verify in the kernel) into `buf`
+ * (must hold BLOCK_SIZE=512 bytes). Returns bytes read (512) or a negative. */
+static inline int sys_fblock_read(uint32_t ino, uint32_t block, void *buf) {
+    return syscall(SYS_FBLOCK_READ, ino, block, (uint32_t)buf);
+}
+
+/* Write `len` (<=512) bytes to logical `block` of `ino` (kernel encrypts with a
+ * fresh nonce); short writes are zero-padded to a full block. Returns len. */
+static inline int sys_fblock_write(uint32_t ino, uint32_t block, const void *buf, uint32_t len) {
+    return (int)syscall6(SYS_FBLOCK_WRITE, ino, block, (uint32_t)buf, len, 0, 0);
+}
+
+/* Fill *out with the inode's metadata. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_fs_stat(uint32_t ino, struct fs_stat *out) {
+    return syscall(SYS_FS_STAT, ino, (uint32_t)out, 0);
+}
+
+/* Set an inode's logical size (the FS server owns file size; the kernel only
+ * stores fixed-size encrypted blocks). Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_fs_set_size(uint32_t ino, uint32_t size) {
+    return syscall(SYS_FS_SET_SIZE, ino, size, 0);
 }
 
 /* Audit-log integrity digest. Writes 40 bytes to `out` (8-byte little-endian

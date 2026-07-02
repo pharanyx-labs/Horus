@@ -129,6 +129,26 @@ void cap_init(void) {
      * initialize here — it is zeroed in the static and bumped lazily. */
 }
 
+#ifdef FS_SELFTEST
+/* Install a copy of a primordial root capability into a task's cspace slot with
+ * a fresh serial (so cap_lookup accepts it). Used only by the FS self-test
+ * harness to provision the server task's endpoint / object-store capabilities;
+ * root_cnode is otherwise file-private. */
+int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object) {
+    extern tcb_t tasks[MAX_TASKS];
+    if (pid < 0 || pid >= MAX_TASKS || slot >= CNODE_SIZE || root_slot >= CNODE_SIZE) return -1;
+    if (!tasks[pid].cspace) return -1;
+    uint32_t serial = cap_alloc_fresh_serial();
+    spin_lock(&cap_lock);
+    tasks[pid].cspace[slot]            = root_cnode[root_slot];
+    tasks[pid].cspace[slot].object     = object;
+    tasks[pid].cspace[slot].serial     = serial;
+    tasks[pid].cspace[slot].generation = 0;
+    spin_unlock(&cap_lock);
+    return 0;
+}
+#endif
+
 struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
     if (slot >= CNODE_SIZE) return NULL;
     struct capability *cspace = tasks[get_current_task()].cspace;

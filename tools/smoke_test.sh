@@ -56,11 +56,19 @@ trap cleanup EXIT
 #   run is deterministic instead of depending on host virtualization.
 # -no-reboot: a triple fault halts QEMU instead of looping, so we detect it.
 # isa-debug-exit: present for parity with `make run`; not relied on here.
+# Optional persistent ATA disk (SMOKE_DISK=<image>): attaches it as the primary
+# IDE drive so a STORAGE_ATA=1 kernel has a real block device to format/mount.
+DRIVE_ARG=""
+if [ -n "${SMOKE_DISK:-}" ]; then
+    DRIVE_ARG="-drive file=$SMOKE_DISK,format=raw,if=ide,index=0"
+fi
+
 qemu-system-x86_64 \
     -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap -accel tcg \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -net none \
+    $DRIVE_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 

@@ -72,6 +72,24 @@ ASFLAGS += -DSIGNAL_SELFTEST
 SIGNAL_SELFTEST_DEP = userspace/sigtest.bin
 endif
 
+# STORAGE_ATA=1 makes the filesystem's block store the ATA disk (persistent)
+# instead of the default in-RAM virtual disk. storage_init() probes the disk and
+# formats-on-first-boot. Pair with a QEMU -drive (see `make run-ata`).
+STORAGE_ATA ?= 0
+ifeq ($(STORAGE_ATA),1)
+CFLAGS  += -DSTORAGE_ATA
+endif
+
+# FS_SELFTEST=1 embeds the userspace fs_server and a client, spawns both at
+# boot, and drives the filesystem end-to-end over IPC against the encrypted
+# object store (prints FS_SELFTEST: PASS to serial). Gated off the ship kernel.
+FS_SELFTEST ?= 0
+ifeq ($(FS_SELFTEST),1)
+CFLAGS  += -DFS_SELFTEST
+ASFLAGS += -DFS_SELFTEST
+FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
+endif
+
 OBJS += src/boot/entry64.o
 OBJS += src/kernel/lowlevel64.o
 
@@ -120,7 +138,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP)
 
 src/kernel/rust_shims.o: src/kernel/rust_shims.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -216,6 +234,12 @@ SHIPPED_PIE_BINS = userspace/shell.bin userspace/hello.bin \
 $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
+# PIE test-only binaries (not shipped): built via the same static-PIE path as
+# the shipped bins, but kept out of $(SHIPPED_PIE_BINS)/`userspace`.
+PIE_TEST_BINS = userspace/fsclient.bin
+$(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "$*"
+
 # Flat self-test payloads: HORU-wrap the objcopy'd raw image (loaded flat).
 userspace/%.bin: userspace/%.raw tools/mkheadered
 	@name="$$(basename $@ .bin)"; ./tools/mkheadered $< $@ "$$name"
@@ -257,6 +281,29 @@ smoke-signal:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='SIGNAL_SELFTEST: PASS' \
 		FAIL_MARKER='SIGNAL_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated filesystem self-test, boot headless, and require the
+# client to report PASS -- runtime proof that the userspace fs_server serves a
+# client over IPC against the kernel's encrypted object store. `STORAGE=ata`
+# runs the same test against a real ATA disk image (the persistent backend).
+ifeq ($(STORAGE),ata)
+SMOKE_FS_FLAGS = STORAGE_ATA=1
+SMOKE_FS_ENV   = SMOKE_DISK=horus-fs.img
+SMOKE_FS_PREP  = dd if=/dev/zero of=horus-fs.img bs=512 count=$(BLOCKS_PER_DISK) status=none
+BLOCKS_PER_DISK ?= 1024
+else
+SMOKE_FS_FLAGS =
+SMOKE_FS_ENV   =
+SMOKE_FS_PREP  = true
+endif
+.PHONY: smoke-fs
+smoke-fs:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
+	@$(MAKE) --no-print-directory boot.iso
+	@$(SMOKE_FS_PREP)
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
+		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

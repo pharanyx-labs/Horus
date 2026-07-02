@@ -36,7 +36,8 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 #define STORAGE_VERSION 1
 
 static struct virtual_disk g_vdisk;
-static uint8_t g_vdisk_buffer[BLOCKS_PER_DISK * BLOCK_SIZE];
+/* Unused when STORAGE_ATA selects the ATA backend instead of the RAM vdisk. */
+static uint8_t g_vdisk_buffer[BLOCKS_PER_DISK * BLOCK_SIZE] __attribute__((unused));
 
 static int vdisk_read(struct block_device *bd, uint64_t block, void *buf) {
     struct virtual_disk *vd = (struct virtual_disk *)bd->private;
@@ -251,17 +252,54 @@ int storage_block_write(uint64_t block, const void *buf) {
     return do_block_write(block, buf);
 }
 
+#ifdef STORAGE_ATA
+/* ATA-backed block device. A block is one 512-byte LBA sector (BLOCK_SIZE), so
+ * the mapping is 1:1. Selected at build time with STORAGE_ATA=1; the crypto
+ * metadata table (nonce/tag) still lives in kernel RAM this increment, so files
+ * survive within a boot but cross-reboot persistence needs the meta persisted
+ * too (documented follow-up). */
+static int atadisk_read(struct block_device *bd, uint64_t block, void *buf) {
+    (void)bd;
+    return ata_read((uint32_t)block, buf, 1);
+}
+static int atadisk_write(struct block_device *bd, uint64_t block, const void *buf) {
+    (void)bd;
+    return ata_write((uint32_t)block, buf, 1);
+}
+static struct block_device g_ata_bd = {
+    .name = "ata0",
+    .total_blocks = BLOCKS_PER_DISK,
+    .read_block = atadisk_read,
+    .write_block = atadisk_write,
+    .private = 0,
+};
+#endif
+
 int storage_init(void) {
+#ifdef STORAGE_ATA
+    /* Persistent backing: probe the ATA disk. If it already holds a valid Horus
+     * volume, mount it; otherwise format-on-first-boot then mount. */
+    ata_init();
+    current_bd = &g_ata_bd;
+    if (storage_mount(&g_ata_bd) != 0) {
+        if (storage_format(&g_ata_bd) != 0) return -1;
+        if (storage_mount(&g_ata_bd) != 0) return -1;
+    }
+    return 0;
+#else
+    /* Default: ephemeral in-RAM virtual disk. */
     g_vdisk.data = g_vdisk_buffer;
     g_vdisk.size = sizeof(g_vdisk_buffer);
     g_vdisk.block_count = BLOCKS_PER_DISK;
 
     my_memset(g_vdisk.data, 0, g_vdisk.size);
 
-    storage_format(&g_vdisk_bd);
-    storage_mount(&g_vdisk_bd);
+    current_bd = &g_vdisk_bd;
+    if (storage_format(&g_vdisk_bd) != 0) return -1;
+    if (storage_mount(&g_vdisk_bd) != 0) return -1;
 
     return 0;
+#endif
 }
 
 static int bitmap_test(const uint8_t *bitmap, uint64_t bit) {
@@ -295,7 +333,7 @@ int64_t storage_alloc_block(struct block_device *bd, struct fs_superblock *sb) {
     uint8_t bitmap[BLOCK_SIZE];
     if (read_block_bitmap(bd, sb, bitmap) != 0) return -1;
 
-    int64_t block = bitmap_find_free(bitmap, sb->total_blocks - sb->data_start);
+    int64_t block = bitmap_find_free(bitmap, sb->block_count);
     if (block < 0) return -1;
 
     bitmap_set(bitmap, block);
@@ -441,9 +479,27 @@ int storage_format(struct block_device *bd) {
 
     sb.inode_bitmap_start = 1;
     sb.block_bitmap_start = 2;
-    sb.inode_table_start = 3;
-    sb.data_start = 3 + (16384 / INODES_PER_BLOCK) + 1;
-    sb.inode_count = 16384;
+    sb.inode_table_start  = 3;
+
+    /* Geometry is computed from the device size instead of hardcoded. One bitmap
+     * block addresses at most BLOCK_SIZE*8 (=4096) bits, so both the inode count
+     * and the data region are bounded to a single bitmap block; multi-block
+     * bitmaps (larger disks) are a documented follow-up. */
+    const uint64_t BITS_PER_BLOCK = (uint64_t)BLOCK_SIZE * 8;
+
+    uint64_t inodes = bd->total_blocks / 4;   /* ~1 inode per 4 blocks */
+    if (inodes < 16) inodes = 16;
+    if (inodes > BITS_PER_BLOCK) inodes = BITS_PER_BLOCK;
+    uint64_t table_blocks = (inodes + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK;
+    inodes = table_blocks * INODES_PER_BLOCK;
+
+    sb.inode_count = inodes;
+    sb.data_start  = sb.inode_table_start + table_blocks;
+    if (sb.data_start >= bd->total_blocks) return -1;   /* disk too small */
+
+    uint64_t data_blocks = bd->total_blocks - sb.data_start;
+    if (data_blocks > BITS_PER_BLOCK) data_blocks = BITS_PER_BLOCK;
+    sb.block_count = data_blocks;
 
     /* Random per-volume salt from the central CSPRNG (was raw-TSC derived). */
     secure_random_bytes(sb.volume_key_salt, sizeof(sb.volume_key_salt));
@@ -452,14 +508,21 @@ int storage_format(struct block_device *bd) {
 
     uint8_t zero[BLOCK_SIZE];
     my_memset(zero, 0, BLOCK_SIZE);
-    bd->write_block(bd, sb.inode_bitmap_start, zero);
     bd->write_block(bd, sb.block_bitmap_start, zero);
 
+    /* Zero the whole inode table so inodes sharing a block with a freshly used
+     * one read back clean (matters on a garbage ATA disk at first format). */
+    for (uint64_t b = 0; b < table_blocks; b++) {
+        bd->write_block(bd, sb.inode_table_start + b, zero);
+    }
+
+    /* inode 0 (root) is allocated in the inode bitmap. */
     bitmap_set(zero, 0);
     bd->write_block(bd, sb.inode_bitmap_start, zero);
 
     struct on_disk_inode root;
     my_memset(&root, 0, sizeof(root));
+    root.type = 2;          /* directory */
     root.mode = 0040755;
     root.links = 2;
     storage_write_inode(bd, &sb, 0, &root);
@@ -669,18 +732,9 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode 
         return phys;
     }
 
-    logical_block -= 1024;
-
-    if (inode->double_indirect == 0) {
-        if (!allocate) return 0;
-        uint64_t dbl = storage_alloc_block(bd, sb);
-        if (dbl == (uint64_t)-1) return 0;
-        inode->double_indirect = dbl;
-        uint8_t zero[BLOCK_SIZE];
-        my_memset(zero, 0, BLOCK_SIZE);
-        bd->write_block(bd, dbl, zero);
-    }
-
+    /* Double-indirect data mapping is not implemented (a documented follow-up),
+     * so fail cleanly past the single-indirect range rather than allocating a
+     * block we would then leak. Caps a file at 12 + 1024 blocks. */
     return 0;
 }
 
@@ -723,6 +777,43 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
     }
 
     return do_block_write(phys, temp);
+}
+
+/* Free every data block an inode references (direct + single-indirect), clear
+ * their per-block crypto metadata, then release the inode. Backs the FS
+ * server's delete path via SYS_FS_INODE_FREE. */
+int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return -1;
+
+    for (int i = 0; i < 12; i++) {
+        if (inode.direct[i]) {
+            storage_free_block(mfs->bd, &mfs->sb, inode.direct[i]);
+            if (inode.direct[i] < BLOCKS_PER_DISK) g_block_meta[inode.direct[i]].present = 0;
+            inode.direct[i] = 0;
+        }
+    }
+    if (inode.indirect) {
+        uint8_t ib[BLOCK_SIZE];
+        if (mfs->bd->read_block(mfs->bd, inode.indirect, ib) == 0) {
+            uint64_t *ptrs = (uint64_t *)ib;
+            for (unsigned k = 0; k < BLOCK_SIZE / sizeof(uint64_t); k++) {
+                if (ptrs[k]) {
+                    storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
+                    if (ptrs[k] < BLOCKS_PER_DISK) g_block_meta[ptrs[k]].present = 0;
+                }
+            }
+        }
+        storage_free_block(mfs->bd, &mfs->sb, inode.indirect);
+        if (inode.indirect < BLOCKS_PER_DISK) g_block_meta[inode.indirect].present = 0;
+        inode.indirect = 0;
+    }
+
+    inode.size = 0;
+    inode.links = 0;
+    storage_write_inode(mfs->bd, &mfs->sb, ino, &inode);
+    storage_free_inode(mfs->bd, &mfs->sb, ino);
+    return 0;
 }
 
 int storage_write_capfs_blob(uint64_t inode, const void *data, size_t len) {

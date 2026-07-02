@@ -644,9 +644,11 @@ int sys_fs_mint_file(uint32_t dir_slot, uint32_t dest_slot, uint32_t new_rights)
         return -2;
     }
 
-    struct capability *dest = &tasks[get_current_task()].cspace[dest_slot];
-    struct fs_object *obj = (struct fs_object *)dir_cap->object;
-    dest->type = (obj && obj->type == FS_OBJ_DIR) ? CAP_DIR : CAP_FILE;
+    /* rust_cap_mint already copied dir_cap->type (CAP_DIR or CAP_FILE) into
+     * dest->type. The old code additionally cast dir_cap->object to a raw
+     * fs_object pointer to re-derive the type; after the capfs refactor
+     * cap->object is a packed (idx|gen<<32) value, not a pointer, so the cast
+     * produced a garbage address. The cap_mint copy is both correct and safe. */
 
     audit_log(AUDIT_CAP_MINT, dest_slot, 0, "fs mint");
     return 0;

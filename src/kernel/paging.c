@@ -179,38 +179,45 @@ void create_user_pagedir(uint32_t task_id) {
     
 
     int pages_to_map = (int)USER_ASPACE_PREMAP_PAGES;
-    uint64_t vbase = USER_AREA_BASE;
-    int pdi = (int)((vbase >> 21) & 511);
+    /* Premap the image window at the task's (possibly ASLR-randomized) base.
+     * ASLR_MAX_LOAD_RANDOM_PAGES bounds the base so [base, base+premap) lies
+     * within a single 2 MiB PD entry, so a single page table covers the image
+     * and the PT index is derived from the real virtual address (not the loop
+     * counter, which would only be correct for a 2 MiB-aligned base). */
+    uint64_t vbase = tasks[task_id].image_base ? (uint64_t)tasks[task_id].image_base
+                                               : (uint64_t)USER_AREA_BASE;
+    int pdi      = (int)((vbase >> 21) & 511);
+    int base_pti = (int)((vbase >> 12) & 511);
 
-    for (int p = 0; p < pages_to_map && pdi < 512; p++) {
-        int pt_idx = p & 511;
-        if (pt_idx == 0) {
-
-            uint64_t pt_phys = alloc_user_physical_page();
-            if (pt_phys == 0) break;
-            uint64_t *pt = (uint64_t *)pt_phys;
-
+    uint64_t *cur_pt = 0;
+    if (pdi < 512) {
+        /* Replace the 2 MiB huge-page mapping installed above for this PD entry
+         * with a fine-grained page table. Identity-fill it (supervisor, as
+         * before) so the non-image pages of the 2 MiB region stay mapped, then
+         * map the image pages as USER at the randomized base offset. */
+        uint64_t pt_phys = alloc_user_physical_page();
+        if (pt_phys) {
+            cur_pt = (uint64_t *)pt_phys;
             uint64_t region_base = (uint64_t)pdi * 0x200000ULL;
             for (int k = 0; k < 512; k++)
-                pt[k] = (region_base + (uint64_t)k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
+                cur_pt[k] = (region_base + (uint64_t)k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
             my_pd[pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
         }
+    }
 
-        uint64_t *cur_pt = (uint64_t *)(my_pd[pdi] & ~0xFFFULL);
-        if (!cur_pt) break;
+    for (int p = 0; p < pages_to_map && cur_pt; p++) {
+        int pt_idx = base_pti + p;
+        if (pt_idx >= 512) break;   /* window stays within one PD (base is bounded) */
 
         uint64_t phys = alloc_user_physical_page();
         if (phys == 0) break;
 
-        
         uint8_t *pg = (uint8_t *)phys;
         for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
 
         uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(vbase + (uint64_t)p * PAGE_SIZE));
         uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
         cur_pt[pt_idx] = phys | flags;
-
-        if (((p + 1) & 511) == 0) pdi++;
     }
 
     

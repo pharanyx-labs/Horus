@@ -45,7 +45,11 @@ extern uint8_t stack_top[];
 #define USER_MEM_MAX_COPY           (64*1024)
 #define ASLR_HIGH_STACK_BASE        0x00007ff000000000ULL
 #define USER_HIGH_STACK_WINDOW      (16*1024*1024ULL)
-#define ASLR_MAX_LOAD_RANDOM_PAGES  16
+/* Image-base ASLR window (pages). The randomized base is USER_AREA_BASE +
+ * [0, ASLR_MAX_LOAD_RANDOM_PAGES) pages. Bounded so the whole premap window
+ * (base + USER_ASPACE_PREMAP_PAGES) stays within a single 2 MiB PD entry, which
+ * lets create_user_pagedir map the image into one page table. */
+#define ASLR_MAX_LOAD_RANDOM_PAGES  (512 - USER_ASPACE_PREMAP_PAGES)
 #define ASLR_MAX_STACK_RANDOM_PAGES 4
 #define ASLR_MAX_HEAP_GAP_PAGES     8
 #define DEMO_TASK_STACK_TOP         0x00007fffe0000000ULL
@@ -345,7 +349,14 @@ typedef struct tcb {
     uint32_t in_signal;
     struct interrupt_frame64 sig_frame;
 
-    uint8_t  padding[52];
+    /* ASLR: per-task randomized image load base (and end), chosen at spawn for
+     * PIE (ET_DYN) images. create_user_pagedir premaps the image window at
+     * `image_base`; the flat/non-PIE fallback keeps the fixed USER_AREA_BASE.
+     * Carved from padding so the struct size is unchanged. */
+    uint32_t image_base;
+    uint32_t image_end;
+
+    uint8_t  padding[44];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];
@@ -766,7 +777,7 @@ int capfs_write(struct capability *file_cap, const void *buf, size_t len);
 int  ramfs_list(char *buf, size_t buflen);
 
 
-void create_task(int id, uint64_t entry, uint64_t stack_top);
+void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base);
 void create_user_pagedir(uint32_t id);
 void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);

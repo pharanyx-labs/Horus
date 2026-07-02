@@ -44,7 +44,7 @@ void scheduler_init(void) {
         tasks[i].auth_lockout_until = 0;
     }
 
-    create_task(0, 0, 0);
+    create_task(0, 0, 0, 0);
 
     tasks[0].uid = 0;
     tasks[0].gid = 0;
@@ -71,8 +71,14 @@ void scheduler_init(void) {
     current_kernel_stack_top = KERNEL_TSS_STACK;
 }
 
-void create_task(int id, addr_t entry, addr_t stack_top) {
+void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     if (id >= MAX_TASKS) return;
+
+    /* Record the (possibly ASLR-randomized) image base before create_user_pagedir
+     * runs, so it premaps the image window at the right virtual address. Default
+     * to the fixed low base for task 0 / callers that don't relocate. */
+    tasks[id].image_base = image_base ? (uint32_t)image_base : (uint32_t)USER_AREA_BASE;
+    tasks[id].image_end  = tasks[id].image_base;   /* refined by the loader once the image size is known */
 
     tasks[id].state = 1;
     tasks[id].esp = (addr_t)(stack_top ? (stack_top - 256) : 0);
@@ -141,7 +147,7 @@ create_user_pagedir(id);
 }
 
 void create_user_task(int id, addr_t entry, addr_t stack_top) {
-    create_task(id, entry, stack_top);
+    create_task(id, entry, stack_top, USER_AREA_BASE);
 }
 
 static uint64_t aslr_rng_state[2] = { 0x1234567890ABCDEFULL, 0xFEDCBA0987654321ULL };

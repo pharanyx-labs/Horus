@@ -760,6 +760,100 @@ static int do_receive_program(struct program_header *hdr_out) {
     return rc;
 }
 
+static inline uint32_t elf_rd32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Apply i386 dynamic relocations for a static-PIE (ET_DYN) image after its
+ * segments have been copied into the task address space (still writable) and
+ * before the W^X protection pass. Only R_386_RELATIVE (type 8) is implemented:
+ * `*(u32*)(r_offset + slide) += slide`. Any other relocation type, a DT_RELA
+ * table (i386 uses REL), an out-of-bounds table, or a target outside a loaded
+ * segment causes a hard failure (fail closed) rather than a silently corrupt
+ * image. `slide` is the load bias; seg_va[]/seg_memsz[] describe the mapped
+ * segments (for target validation); the reloc table is read from the staging
+ * file image, patches go through copy_from/to_user (current task == new task).
+ * Returns 0 on success (including "no dynamic relocations"), negative on error. */
+static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
+                                      uint16_t e_phnum, uint32_t phentsize,
+                                      uint32_t slide,
+                                      const uint32_t *seg_va, const uint32_t *seg_memsz,
+                                      int nseg) {
+    /* Locate PT_DYNAMIC (p_type == 2). */
+    uint32_t dyn_off = 0, dyn_sz = 0;
+    for (uint16_t i = 0; i < e_phnum; i++) {
+        const uint8_t *p = ph + (uint32_t)i * phentsize;
+        uint32_t p_type = elf_rd32(p);
+        if (p_type == 2) {                 /* PT_DYNAMIC */
+            dyn_off = elf_rd32(p + 4);     /* p_offset (Elf32_Phdr) */
+            dyn_sz  = elf_rd32(p + 16);    /* p_filesz */
+            break;
+        }
+    }
+    if (dyn_off == 0 || dyn_sz == 0) return 0;                 /* no dynamic info */
+    if (dyn_off > MAX_PROGRAM_SIZE || dyn_sz > MAX_PROGRAM_SIZE ||
+        dyn_off + dyn_sz > MAX_PROGRAM_SIZE) return -16;
+
+    /* Walk Elf32_Dyn { int32 d_tag; uint32 d_val; } for the REL table. */
+    uint32_t rel_vaddr = 0, rel_sz = 0, rel_ent = 8;
+    for (uint32_t o = 0; o + 8 <= dyn_sz; o += 8) {
+        int32_t  tag = (int32_t)elf_rd32(st + dyn_off + o);
+        uint32_t val = elf_rd32(st + dyn_off + o + 4);
+        if (tag == 0) break;               /* DT_NULL */
+        else if (tag == 17) rel_vaddr = val;   /* DT_REL   */
+        else if (tag == 18) rel_sz    = val;   /* DT_RELSZ */
+        else if (tag == 19) rel_ent   = val;   /* DT_RELENT */
+        else if (tag == 7)  return -16;        /* DT_RELA: unsupported on i386 */
+    }
+    if (rel_vaddr == 0 || rel_sz == 0) return 0;               /* no REL relocations */
+    if (rel_ent != 8) return -16;
+
+    /* Map the REL table's (link-time, base-0) vaddr to a file offset via the
+     * PT_LOAD segment that contains it. */
+    uint32_t rel_file_off = 0;
+    int mapped = 0;
+    for (uint16_t i = 0; i < e_phnum; i++) {
+        const uint8_t *p = ph + (uint32_t)i * phentsize;
+        if (elf_rd32(p) != 1) continue;    /* PT_LOAD */
+        uint32_t p_offset = elf_rd32(p + 4);
+        uint32_t p_vaddr  = elf_rd32(p + 8);
+        uint32_t p_filesz = elf_rd32(p + 16);
+        if (rel_vaddr >= p_vaddr && rel_vaddr < p_vaddr + p_filesz) {
+            rel_file_off = p_offset + (rel_vaddr - p_vaddr);
+            mapped = 1;
+            break;
+        }
+    }
+    if (!mapped) return -16;
+    if (rel_file_off > MAX_PROGRAM_SIZE || rel_sz > MAX_PROGRAM_SIZE ||
+        rel_file_off + rel_sz > MAX_PROGRAM_SIZE) return -16;
+
+    uint32_t nrel = rel_sz / 8;
+    if (nrel > 8192) return -16;           /* sane cap */
+    for (uint32_t k = 0; k < nrel; k++) {
+        const uint8_t *r = st + rel_file_off + (uint32_t)k * 8;
+        uint32_t r_offset = elf_rd32(r);
+        uint32_t r_info   = elf_rd32(r + 4);
+        uint32_t r_type   = r_info & 0xFF;
+        if (r_type == 0) continue;         /* R_386_NONE */
+        if (r_type != 8) return -16;       /* only R_386_RELATIVE (fail closed) */
+
+        uint32_t target = r_offset + slide;
+        int in_seg = 0;
+        for (int s = 0; s < nseg; s++) {
+            if (target >= seg_va[s] && target + 4 <= seg_va[s] + seg_memsz[s]) { in_seg = 1; break; }
+        }
+        if (!in_seg) return -16;
+
+        uint32_t w;
+        if (copy_from_user(&w, (void *)(uintptr_t)target, 4) != 0) return -16;
+        w += slide;
+        if (copy_to_user((void *)(uintptr_t)target, &w, 4) != 0) return -16;
+    }
+    return 0;
+}
+
 static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
 {
     if (!out_entry) return -1;
@@ -887,6 +981,18 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
         }
     }
 
+    /* Apply dynamic relocations for a PIE image while the pages are still
+     * writable. i386 static-PIE uses R_386_RELATIVE (or, commonly, none at all
+     * thanks to GOTOFF addressing). A 64-bit PIE would need R_X86_64_RELATIVE,
+     * which is not implemented -- fail closed rather than run it unrelocated. */
+    if (ei_class == 1) {
+        int rrc = elf_apply_relocations_i386(st, ph, e_phnum, phentsize, slide,
+                                             seg_va, seg_memsz, nseg);
+        if (rrc != 0) return rrc;
+    } else if (e_type == 3) {   /* ET_DYN, 64-bit: unsupported */
+        return -16;
+    }
+
     /* W^X protection pass. Every page touched by a PT_LOAD segment is set to
      * the union of the permissions of the segments covering it (so a page
      * shared between, say, the end of .text and the start of .rodata keeps
@@ -943,14 +1049,25 @@ static int do_spawn(void) {
     aslr_mix_entropy(spawn_entropy);
 
 
-    /* Load base is fixed: userspace binaries are non-PIE (linked at
-     * USER_AREA_BASE), so they cannot be relocated. Stack base IS randomized
-     * within the mapped low-stack window. */
+    /* Image-base ASLR. PIE (ET_DYN) images are position-independent and are
+     * relocated by try_elf_load, so they can load at a randomized base. Non-PIE
+     * flat images (the legacy fallback path below) have absolute addresses baked
+     * at USER_AREA_BASE and cannot move, so they keep the fixed base. Decide from
+     * the staged bytes' ELF magic. The random base is page-aligned and bounded
+     * (ASLR_MAX_LOAD_RANDOM_PAGES) so the premap window stays in one PD entry.
+     * Stack base and heap gap are already randomized (below / aslr_*). */
+    int staged_is_elf = (armed_hdr.size >= 4 &&
+                         loader_staging[0] == 0x7f && loader_staging[1] == 'E' &&
+                         loader_staging[2] == 'L' && loader_staging[3] == 'F');
     uint32_t load_base = USER_AREA_BASE;
+    if (staged_is_elf) {
+        load_base = (uint32_t)(USER_AREA_BASE + aslr_random_offset(ASLR_MAX_LOAD_RANDOM_PAGES));
+        load_base &= ~0xFFFu;
+    }
 
     uint32_t stack_top = (uint32_t)aslr_random_stack_top(0x007ff000u);
 
-    create_task(new_id, load_base + armed_hdr.entry, stack_top);
+    create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base);
 
     set_current_task(new_id);
     
@@ -1010,6 +1127,7 @@ static int do_spawn(void) {
     tasks[new_id].eip = elf_loaded ? entry_point : (load_base + entry_point);
 
     uint32_t img_end = load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF);
+    tasks[new_id].image_end = img_end;
     uint32_t heap_gap = aslr_random_offset(ASLR_MAX_HEAP_GAP_PAGES);
     tasks[new_id].heap_start   = img_end + 0x1000 + heap_gap;
     tasks[new_id].heap_current = tasks[new_id].heap_start;
@@ -1079,6 +1197,17 @@ static int selftest_read_byte(uint64_t cr3, uint64_t vaddr, uint8_t *out) {
     return 0;
 }
 
+static int selftest_read_u32(uint64_t cr3, uint64_t vaddr, uint32_t *out) {
+    uint32_t v = 0;
+    for (int i = 0; i < 4; i++) {
+        uint8_t b;
+        if (selftest_read_byte(cr3, vaddr + i, &b) != 0) return -1;
+        v |= (uint32_t)b << (i * 8);
+    }
+    *out = v;
+    return 0;
+}
+
 void elf_loader_selftest(void) {
     extern uint8_t embedded_elftest_start[];
     extern uint8_t embedded_elftest_end[];
@@ -1099,31 +1228,68 @@ void elf_loader_selftest(void) {
     int pid = do_spawn();                 /* runs the real try_elf_load + W^X pass */
     if (pid <= 0) { print("ELF_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
 
-    uint64_t cr3 = tasks[pid].cr3;
+    uint64_t cr3  = tasks[pid].cr3;
+    uint32_t base = tasks[pid].image_base;   /* ASLR-randomized load base */
 
-    /* elftest.ld pins these vaddrs; slide is 0 (min_vaddr == load_base). */
-    uint64_t pte_text = user_lookup_pte(cr3, 0x400000);   /* .text   R+X */
-    uint64_t pte_data = user_lookup_pte(cr3, 0x401000);   /* .data   R+W */
-    uint64_t pte_ro   = user_lookup_pte(cr3, 0x402000);   /* .rodata R   */
+    /* Parse the three PT_LOAD program headers from the staged (base-0) ELF to
+     * locate each segment by its permission flags, so the checks hold at the
+     * randomized base (identify by PF_X -> text, PF_W -> data, R-only -> rodata). */
+    const uint8_t *est = loader_staging;
+    uint32_t e_phoff = elf_rd32(est + 28);
+    uint16_t e_phnum = (uint16_t)est[44] | ((uint16_t)est[45] << 8);
+    uint32_t text_va = 0xFFFFFFFFu, ro_va = 0xFFFFFFFFu, data_va = 0xFFFFFFFFu;
+    for (uint16_t i = 0; i < e_phnum && i < 16; i++) {
+        const uint8_t *p = est + e_phoff + (uint32_t)i * 32;
+        if (elf_rd32(p) != 1) continue;            /* PT_LOAD */
+        uint32_t va = elf_rd32(p + 8);
+        uint32_t fl = elf_rd32(p + 24);
+        if      (fl & 1u) text_va = va;            /* PF_X */
+        else if (fl & 2u) data_va = va;            /* PF_W */
+        else              ro_va   = va;            /* R only */
+    }
 
     int ok = 1;
     const char *why = "";
-    if      (!((pte_text & SELFTEST_PTE_PRESENT) && (pte_text & SELFTEST_PTE_USER))) { ok = 0; why = "text-absent"; }
-    else if (!((pte_data & SELFTEST_PTE_PRESENT) && (pte_data & SELFTEST_PTE_USER))) { ok = 0; why = "data-absent"; }
-    else if (!((pte_ro   & SELFTEST_PTE_PRESENT) && (pte_ro   & SELFTEST_PTE_USER))) { ok = 0; why = "rodata-absent"; }
-    /* W^X execute bits: code executable (NX clear), data/rodata non-exec. */
-    else if (pte_text & SELFTEST_PTE_NX)    { ok = 0; why = "text-noexec"; }
-    else if (!(pte_data & SELFTEST_PTE_NX)) { ok = 0; why = "data-executable"; }
-    else if (!(pte_ro   & SELFTEST_PTE_NX)) { ok = 0; why = "rodata-executable"; }
-    /* write bits: data writable, rodata read-only. */
-    else if (!(pte_data & SELFTEST_PTE_WRITE)) { ok = 0; why = "data-readonly"; }
-    else if (pte_ro & SELFTEST_PTE_WRITE)      { ok = 0; why = "rodata-writable"; }
+    if (text_va == 0xFFFFFFFFu || ro_va == 0xFFFFFFFFu || data_va == 0xFFFFFFFFu) {
+        ok = 0; why = "phdr-missing";
+    }
 
-    /* Content spot-check: segment bytes copied to the correct vaddrs. */
+    uint64_t pte_text = 0, pte_data = 0, pte_ro = 0;
+    if (ok) {
+        pte_text = user_lookup_pte(cr3, (uint64_t)base + text_va);
+        pte_data = user_lookup_pte(cr3, (uint64_t)base + data_va);
+        pte_ro   = user_lookup_pte(cr3, (uint64_t)base + ro_va);
+
+        if      (!((pte_text & SELFTEST_PTE_PRESENT) && (pte_text & SELFTEST_PTE_USER))) { ok = 0; why = "text-absent"; }
+        else if (!((pte_data & SELFTEST_PTE_PRESENT) && (pte_data & SELFTEST_PTE_USER))) { ok = 0; why = "data-absent"; }
+        else if (!((pte_ro   & SELFTEST_PTE_PRESENT) && (pte_ro   & SELFTEST_PTE_USER))) { ok = 0; why = "rodata-absent"; }
+        /* W^X execute bits: code executable (NX clear), data/rodata non-exec. */
+        else if (pte_text & SELFTEST_PTE_NX)    { ok = 0; why = "text-noexec"; }
+        else if (!(pte_data & SELFTEST_PTE_NX)) { ok = 0; why = "data-executable"; }
+        else if (!(pte_ro   & SELFTEST_PTE_NX)) { ok = 0; why = "rodata-executable"; }
+        /* write bits: data writable, rodata read-only. */
+        else if (!(pte_data & SELFTEST_PTE_WRITE)) { ok = 0; why = "data-readonly"; }
+        else if (pte_ro & SELFTEST_PTE_WRITE)      { ok = 0; why = "rodata-writable"; }
+    }
+
+    /* Content spot-check: markers copied to the right (randomized) vaddrs. The
+     * data segment holds selfptr (4 bytes) then the 0xD2 marker. */
     if (ok) {
         uint8_t b;
-        if (selftest_read_byte(cr3, 0x401000, &b) != 0 || b != 0xD2)      { ok = 0; why = "data-marker"; }
-        else if (selftest_read_byte(cr3, 0x402000, &b) != 0 || b != 'E')  { ok = 0; why = "rodata-marker"; }
+        if (selftest_read_byte(cr3, (uint64_t)base + ro_va, &b) != 0 || b != 0x5A)      { ok = 0; why = "rodata-marker"; }
+        else if (selftest_read_byte(cr3, (uint64_t)base + data_va + 4, &b) != 0 || b != 0xD2) { ok = 0; why = "data-marker"; }
+    }
+
+    /* Relocation check: selfptr (first word of .data) was linked as &rodata_marker
+     * (link vaddr == ro_va) and must have been fixed up to base + ro_va by the
+     * loader's R_386_RELATIVE handling. If relocation were skipped it would still
+     * hold the small link-time value (< base) and this fails. */
+    if (ok) {
+        uint32_t selfptr = 0;
+        uint8_t b;
+        if (selftest_read_u32(cr3, (uint64_t)base + data_va, &selfptr) != 0) { ok = 0; why = "selfptr-read"; }
+        else if (selfptr != base + ro_va)                                   { ok = 0; why = "selfptr-not-relocated"; }
+        else if (selftest_read_byte(cr3, selfptr, &b) != 0 || b != 0x5A)     { ok = 0; why = "selfptr-target"; }
     }
 
     if (ok) {
@@ -1622,7 +1788,9 @@ static void h_exec(struct regs *r) {
         return;
     }
 
-    create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP);
+    /* Premap stays at the fixed base (this path loads a non-relocated image);
+     * the user-supplied load_base only drives the entry/eip, as before. */
+    create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP, USER_AREA_BASE);
 
     tasks[new_id].heap_start = USER_HEAP_BASE + new_id * 0x10000;
     tasks[new_id].heap_current = tasks[new_id].heap_start;

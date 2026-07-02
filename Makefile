@@ -176,12 +176,24 @@ iso: kernel.elf
 	@mkdir -p iso/boot/grub && cp kernel.elf iso/boot/ && cp grub.cfg iso/boot/grub/grub.cfg
 	@grub-mkrescue -o horus.iso iso 2>/dev/null || true
 
-USERSPACE_CFLAGS = -m32 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
+# Userspace is built position-independent (-fPIE): the shipped binaries are
+# linked as static-PIE ELFs (ET_DYN) and loaded by the kernel at a randomized
+# base (ASLR), which relocates them. GCC's GOTOFF addressing keeps freestanding
+# code position-independent (usually zero dynamic relocations). The gated flat
+# self-test payloads (preempttest/sigtest) reuse the same objects linked as a
+# fixed-base flat image; PIE objects link cleanly at a fixed address too.
+USERSPACE_CFLAGS = -m32 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
                    -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
 
 userspace/%.o: userspace/%.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
 
+# Static-PIE (ET_DYN) link for the shipped, ASLR-loaded binaries.
+userspace/%.pie.elf: userspace/%.o userspace/pie.ld
+	$(LD) -m elf_i386 -pie -T userspace/pie.ld -o $@ $<
+
+# Fixed-base flat link (used by the gated selftest payloads that are embedded
+# raw and loaded at USER_AREA_BASE without relocation).
 userspace/%.elf: userspace/%.o
 	$(LD) -m elf_i386 -Ttext=0x400000 -o $@ $<
 
@@ -189,7 +201,7 @@ userspace/%.elf: userspace/%.o
 # distinct page-aligned R+X / R+W / R PT_LOAD segments (explicit rule wins over
 # the pattern rule above). It is kept as a real ELF, never objcopy-flattened.
 userspace/elftest.elf: userspace/elftest.o userspace/elftest.ld
-	$(LD) -m elf_i386 -T userspace/elftest.ld -o $@ $<
+	$(LD) -m elf_i386 -pie -T userspace/elftest.ld -o $@ $<
 
 userspace/%.raw: userspace/%.elf
 	objcopy -O binary $< $@
@@ -197,13 +209,21 @@ userspace/%.raw: userspace/%.elf
 tools/mkheadered: tools/mkheadered.c
 	$(CC) -o $@ $<
 
+# Shipped binaries: HORU-wrap the static-PIE ELF (real ELF payload, so the
+# kernel's do_spawn routes it through try_elf_load with ASLR + relocations).
+SHIPPED_PIE_BINS = userspace/shell.bin userspace/hello.bin \
+                   userspace/fs_server.bin userspace/captest.bin
+$(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "$*"
+
+# Flat self-test payloads: HORU-wrap the objcopy'd raw image (loaded flat).
 userspace/%.bin: userspace/%.raw tools/mkheadered
 	@name="$$(basename $@ .bin)"; ./tools/mkheadered $< $@ "$$name"
 
-userspace: userspace/shell.bin userspace/hello.bin userspace/fs_server.bin userspace/captest.bin
+userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.elf userspace/*.raw userspace/*.bin tools/mkheadered
+	rm -f userspace/*.o userspace/*.elf userspace/*.pie.elf userspace/*.raw userspace/*.bin tools/mkheadered
 
 # Build the kernel with the gated ELF-loader self-test, boot it headless, and
 # require the in-kernel self-test to report PASS on serial (in addition to the

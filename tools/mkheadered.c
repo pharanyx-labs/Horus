@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
     const char *output = argv[2];
     const char *name = (argc > 3) ? argv[3] : "";
 
-    FILE *fin = fopen(input, "rb");
+    FILE *fin = fopen(input, "rb"); /* nosemgrep: path-manipulation -- build tool; paths are Makefile-controlled, not user input */
     if (!fin) {
         perror("open input");
         return 1;
@@ -80,7 +80,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    FILE *fout = fopen(output, "wb");
+    FILE *fout = fopen(output, "wb"); /* nosemgrep: path-manipulation -- build tool; paths are Makefile-controlled, not user input */
     if (!fout) {
         perror("open output");
         free(data);

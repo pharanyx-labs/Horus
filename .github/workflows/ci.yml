@@ -201,8 +201,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cppcheck flawfinder
           pipx install semgrep || pip install semgrep
-          # Trivy
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          # Trivy — pinned release + checksum verification (avoids curl|sh)
+          TRIVY_VERSION=0.72.0
+          curl -sfL https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -o trivy.tar.gz
+          echo "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea  trivy.tar.gz" | sha256sum --check
+          tar -xzf trivy.tar.gz trivy && sudo mv trivy /usr/local/bin/ && rm trivy.tar.gz
           # gitleaks pinned
           go install github.com/gitleaks/gitleaks@v8.21.0 || true
           # Rust bare-metal target for cargo-audit and Makefile

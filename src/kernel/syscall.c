@@ -569,7 +569,22 @@ int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial
             size_t hlen = kstrlen(users[i].home);
             kstrcpy(users[i].home + hlen, name);
             kstrcpy(users[i].shell, "/bin/shell");
-            set_user_password(uid, initial_password);
+            users[i].auth_fail_count = 0;
+            users[i].auth_lockout_until = 0;
+            if (initial_password && *initial_password) {
+                set_user_password(uid, initial_password);
+            } else {
+                /* No initial password supplied: lock the account by storing random
+                 * bytes in pass_hash. Argon2id output is pseudorandom but derived
+                 * from (password, salt, pepper) — storing arbitrary random bytes
+                 * means no password can ever produce a match, so the account is
+                 * inaccessible until an explicit SYS_PASSWD call sets a real hash.
+                 * This closes the window where `useradd name` (empty password)
+                 * followed by a crash or kill left a live account anyone could
+                 * authenticate to with "". */
+                generate_salt(users[i].salt, PASS_SALT_LEN);
+                secure_random_bytes(users[i].pass_hash, PASS_HASH_LEN);
+            }
             users[i].valid = 1;
             user_count++;
             if (uid >= next_uid) next_uid = uid + 1;
@@ -1856,6 +1871,15 @@ static void h_exec(struct regs *r) {
     uint32_t entry_offset = r->ecx;
     (void)(r->edx);
 
+    /* Guard against uint32 overflow: a crafted (load_base, entry_offset) pair
+     * whose sum wraps around could yield an entry point at an arbitrary address.
+     * The resulting task would fault immediately (paging enforces ring separation),
+     * but the overflow is confusing and could mask future bugs. */
+    if ((uint64_t)load_base + entry_offset >= USER_MAX_VADDR) {
+        r->eax = -1;
+        return;
+    }
+
     int new_id = -1;
     for (int i = 1; i < MAX_TASKS; i++) {
         if (tasks[i].state == 0) {
@@ -1977,6 +2001,11 @@ static void h_run(struct regs *r) {
     tasks[get_current_task()].heap_current = tasks[get_current_task()].heap_start;
 
     if (get_current_task() == 0) {
+        r->eax = -1;
+        return;
+    }
+    /* Guard uint32 overflow same as h_exec. */
+    if ((uint64_t)load_base + entry >= USER_MAX_VADDR) {
         r->eax = -1;
         return;
     }

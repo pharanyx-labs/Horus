@@ -100,6 +100,19 @@ create_user_pagedir(id);
     tasks[id].cspace = cspace_pool[id];
     tasks[id].cspace_size = 256;
 
+    /* Zero the entire cspace before installing initial capabilities.
+     * cspace_pool is static (zeroed at BSS init) but task slots are reused:
+     * a dead task's CAP_USER/CAP_CONSOLE/etc. would otherwise survive into
+     * the next task spawned at the same index, granting it unearned authority. */
+    for (int s = 0; s < 256; s++) {
+        tasks[id].cspace[s].type       = CAP_NULL;
+        tasks[id].cspace[s].rights     = 0;
+        tasks[id].cspace[s].object     = 0;
+        tasks[id].cspace[s].badge      = 0;
+        tasks[id].cspace[s].serial     = 0;
+        tasks[id].cspace[s].generation = 0;
+    }
+
     tasks[id].cspace[0].type   = CAP_TCB;
     tasks[id].cspace[0].rights = CAP_RIGHT_ALL;
     tasks[id].cspace[0].object = id;
@@ -487,7 +500,6 @@ int get_current_task(void) {
     int c = this_cpu();
     if (c < 0 || c >= MAX_CPUS) c = 0;
     return percpu_current_task[c];
-    return 0;
 }
 
 void set_current_task(int v) {

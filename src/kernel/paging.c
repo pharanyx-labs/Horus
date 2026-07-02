@@ -310,8 +310,6 @@ void switch_cr3(addr_t cr3) {
     smp_maybe_shootdown(0); 
 }
 
-#define PAGE_COW   (1 << 9)
-
 int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
     
     uint64_t cr3_phys = tasks[get_current_task()].cr3;

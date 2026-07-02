@@ -487,29 +487,37 @@ void users_init(void) {
 
     users_load_from_ramfs();
 
+    /* Find the "user" account in whichever state the database is in after
+     * users_load_from_ramfs: it may have been loaded with a changed password,
+     * or may not exist yet (first boot, or ramfs tampered and cleared). */
     int dev_idx = -1;
     for (int ii = 0; ii < MAX_USERS; ii++) {
         if (users[ii].valid && kstrcmp(users[ii].name, "user") == 0) { dev_idx = ii; break; }
     }
     if (dev_idx < 0) {
+        /* Account missing: create it with the default password and persist so
+         * subsequent boots pick up the correct (possibly later changed) password.
+         * Only runs on first boot or after a corrupted ramfs wipes the database. */
         for (int ii = 0; ii < MAX_USERS; ii++) if (!users[ii].valid) { dev_idx = ii; break; }
         if (dev_idx >= 0) {
             users[dev_idx].uid = 1000;
             users[dev_idx].gid = 100;
             kstrcpy(users[dev_idx].name, "user");
-            set_user_password(dev_idx, "password");
             kstrcpy(users[dev_idx].home, "/home/user");
             users[dev_idx].auth_fail_count = 0;
             users[dev_idx].auth_lockout_until = 0;
             kstrcpy(users[dev_idx].shell, "/bin/shell");
             users[dev_idx].valid = 1;
             user_count = dev_idx + 1;
+            /* Pass uid 1000, not the slot index — set_user_password searches by
+             * uid, not by position, so passing dev_idx would silently fail. */
+            set_user_password(1000, "password");
+            users_persist();
         }
     }
-    if (dev_idx >= 0) {
-        set_user_password(users[dev_idx].uid, "password");
-        users_persist();
-    }
+    /* The old code had an unconditional set_user_password("password") here that
+     * ran even when the account was loaded from ramfs with a changed password,
+     * resetting it every reboot and making SYS_PASSWD useless for "user". */
 }
 
 static int loader_receive_to_staging(struct program_header *out_hdr) {

@@ -87,6 +87,9 @@ dist/
 
 # AI editor artifacts
 .aider*
+.claude/
+CLAUDE.md
+graphify-out/
 
 # System Prompt
 system_prompt.txt

@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **54 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Four **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, `make smoke-elf` boots a real multi-segment ELF and asserts the loader enforced W^X, `make smoke-preempt` spawns two non-yielding ring-3 tasks and asserts the timer preempts and time-slices them, and `make smoke-signal` faults a task on purpose and asserts its registered handler runs instead of the task being killed. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
+The Rust security core has **54 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Four **headless QEMU boot tests** run in CI: `make smoke` boots the kernel and asserts it reaches userspace with no fault, `make smoke-elf` boots a real multi-segment static-PIE ELF at a randomised base and asserts the loader enforced W^X **and** applied its `R_386_RELATIVE` relocation correctly (a pointer in `.data` resolves to `base + &marker`), `make smoke-preempt` spawns two non-yielding ring-3 tasks and asserts the timer preempts and time-slices them, and `make smoke-signal` faults a task on purpose and asserts its registered handler runs instead of the task being killed. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
 
 ---
 
@@ -69,7 +69,7 @@ help
 2. **kernel** — builds `kernel.elf` and a bootable ISO (x86-64) and uploads them as artifacts
 3. **altconfigs** — a build matrix over `DEBUG_SHELL=1` and `MINIMAL_SECURE=1` (the `#ifdef`-toggled configurations, which have broken silently before)
 4. **smoke** — installs QEMU and runs `make smoke` (headless boot to the shell banner, no fault)
-5. **smoke-elf** — runs `make smoke-elf`: boots a real multi-segment ELF and requires `ELF_SELFTEST: PASS` (the loader mapped each `PT_LOAD` under the correct W^X permissions)
+5. **smoke-elf** — runs `make smoke-elf`: boots a real multi-segment static-PIE ELF at a randomised load base and requires `ELF_SELFTEST: PASS` (the loader mapped each `PT_LOAD` under the correct W^X permissions and relocated the image — a `.data` pointer resolves to `base + &marker`)
 6. **smoke-preempt** — runs `make smoke-preempt`: spawns two non-yielding ring-3 tracers and requires `PREEMPT_SELFTEST: PASS` (the timer time-sliced them, proven by interleaved traces)
 7. **smoke-signal** — runs `make smoke-signal`: a task registers a fault handler then faults on purpose, and requires `SIGNAL_SELFTEST: PASS` (the handler ran instead of the task being killed)
 8. **reproducible** — builds `kernel.elf` twice and fails if the two are not byte-for-byte identical

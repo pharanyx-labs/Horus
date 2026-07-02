@@ -52,9 +52,9 @@ The kernel uses **recursive page table mapping**: PML4 entry 510 points back at 
 
 **Copy-on-write** is implemented at the page level. Shared pages are marked `PAGE_COW`. On the first write fault, `rust_handle_demand_page_fault()` allocates a fresh physical page, copies the content, and remaps the faulting address (preserving the page's NX bit). Physical pages carry reference counts maintained in Rust (`rust_page_ref_inc`, `rust_page_ref_dec`). The COW-copy-vs-demand-zero decision logic is unit-tested.
 
-**W^X**: `EFER.NXE` is enabled at boot and the kernel uses the PTE NX bit (63) to keep writable pages non-executable. User stacks (low and high ASLR) are mapped no-execute. The ELF loader honours each `PT_LOAD` segment's `p_flags`, mapping code read+execute and data/rodata read[+write]+NX; the policy decision (`rust_user_page_is_noexec`) lives in Rust and is unit-tested. The flat-binary fallback path (used by the shipped userspace binaries, which are not ELF) keeps its image executable.
+**W^X**: `EFER.NXE` is enabled at boot and the kernel uses the PTE NX bit (63) to keep writable pages non-executable. User stacks (low and high ASLR) are mapped no-execute. The ELF loader honours each `PT_LOAD` segment's `p_flags`, mapping code read+execute and data/rodata read[+write]+NX; the policy decision (`rust_user_page_is_noexec`) lives in Rust and is unit-tested. The shipped userspace binaries are static-PIE ELFs and take this path; a flat-binary fallback remains for non-ELF images (loaded at the fixed base, image left executable).
 
-**ASLR**: per-spawn stack top and heap gap are randomised from the CSPRNG. Load-base randomisation (PIE userspace) is still an open work item.
+**ASLR**: per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG. Userspace is built static-PIE (`ET_DYN`); `do_spawn` picks a random page-aligned base and `try_elf_load` applies `R_386_RELATIVE` relocations there. Image-base entropy is bounded (~9 bits) because userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window; wider randomisation would require a 64-bit userspace ABI. Non-PIE flat images (the fallback) still load at the fixed base.
 
 ---
 
@@ -119,7 +119,7 @@ Horus supports up to 64 concurrent tasks. Each task has:
 - A dedicated **kernel stack** (8 KB) used during syscall and interrupt handling
 - A **user heap** tracked by `heap_start`, `heap_current`, `heap_end`
 - A **UID and GID** establishing its authentication context
-- A per-user **file master key** slot (infrastructure present, not yet active)
+- A per-user **file master key** slot; when the task also holds the encrypted-storage capability, encrypted capfs files derive their per-file AEAD subkeys (via HKDF-SHA256) from it
 
 The scheduler is preemptive round-robin. Tasks can be runnable, blocked on IPC or a notification, or dead. The PIT fires at 100 Hz; on a tick that interrupted **ring 3**, the timer ISR switches to the next runnable task by swapping the per-task kernel stack that holds its full interrupt trap frame (`preempt_on_tick` in `scheduler.c` returns the kernel `%rsp` to resume on, and `isr_common_stub64` loads it before the `iretq` epilogue). A freshly spawned task gets a fabricated initial frame (`sched_prepare_user_context`) so the timer can `iretq` into it at its entry point. A tick that lands in **ring 0** (mid syscall or handler) never switches — the kernel is effectively non-preemptible, which sidesteps lock/reentrancy hazards (spinlocks disable interrupts, so a tick can't even fire inside a critical section). This is single-core with no priorities. Tasks may still yield cooperatively; that older `yield()`/IPC switch is a separate path and is not hardened to the full-context mechanism.
 
@@ -209,13 +209,13 @@ The Rust crate at `rust/` compiles to a static library (`libhorus_shell.a`) that
 | `blake2b.rs` | BLAKE2b (RFC 7693) — the hash primitive under Argon2id |
 | `argon2.rs` | Argon2id (RFC 9106) memory-hard password hashing |
 | `rng.rs` | ChaCha20 fast-key-erasure CSPRNG; RDRAND + timing-jitter seeding |
-| `aead.rs` | ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (encryption-at-rest) |
+| `aead.rs` | ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (encryption-at-rest — used by both the block-storage layer and the in-memory capfs per-file encryption) |
 | `audit.rs` | Tamper-evident audit log: per-entry HMAC (sequence-bound) + running hash-chain head |
 | `auth.rs` | Auth/sudo lockout + anti-spray throttle; least-privilege sudo frame rights |
 | `ps.rs` | Task state-name labels for the `ps` renderers |
 | `crypto.rs` | Intentionally empty — the primitives live in the modules above |
 
-The Rust code is safe Rust throughout, with one deliberate exception: two FFI entry points that dereference C-supplied raw pointers (`rust_cap_has_rights`, `rust_handle_command`) are marked `unsafe extern "C"` with documented `# Safety` contracts. All other `unsafe` is confined to the C-side shim files.
+The Rust code is safe Rust internally: the crate contains no `unsafe` blocks in its logic. The one unavoidable `unsafe` is the FFI boundary itself — the ~30 `rust_*` entry points the C kernel calls are `unsafe extern "C"` functions because they dereference C-supplied raw pointers (capability slots, page-refcount tables, key/nonce/tag buffers, command strings). Each carries a documented `# Safety` contract, validates its arguments (null and length checks, fail-closed on bad input), and copies through fixed-size local buffers rather than trusting caller bounds. So the *surface* is the whole FFI API, but the *risk* is confined to those thin, contract-checked shims; all computation behind them is safe Rust.
 
 ---
 
@@ -241,4 +241,4 @@ Reference checksums of a known-good build are stored in `.build1.sha` and `.buil
 
 ### What the design does not yet provide
 
-See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: SMP is non-functional, the filesystem has no persistent backing (the encrypted-block AEAD exists but is not the live backing store), and userspace is non-PIE so load-base ASLR is not applied. (Scheduling is now preemptive on a single core, but has no priorities and no microarchitectural flush-on-switch between time-sliced tasks.) (Cryptography is no longer a gap — the primitives are audited-standard algorithms implemented in safe Rust and validated against published vectors.)
+See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: SMP is non-functional and the filesystem has no persistent backing (the encrypted-block AEAD exists but is not the live backing store). (Scheduling is now preemptive on a single core, but has no priorities and no microarchitectural flush-on-switch between time-sliced tasks. Userspace is now static-PIE with a randomised load base, though image-base entropy is bounded by the 32-bit low-memory window.) (Cryptography is no longer a gap — the primitives are audited-standard algorithms implemented in safe Rust and validated against published vectors.)

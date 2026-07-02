@@ -41,7 +41,7 @@ The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gate
 
 ### Filesystem (capfs / ramfs)
 
-An in-memory capability-addressed filesystem works: lookup, create, delete, read, write, and readdir each enforce the relevant `CAP_RIGHT_FS_*` right, with per-file encryption support. It is a single in-memory tree; persistence and richer POSIX semantics are absent (see below).
+An in-memory capability-addressed filesystem works: lookup, create, delete, read, write, and readdir each enforce the relevant `CAP_RIGHT_FS_*` right. Files created by a task that holds the encrypted-storage capability are sealed with the same ChaCha20 + HMAC-SHA256 AEAD as the block-storage layer — per-file HKDF-SHA256 subkeys derived from the task's file master key, a fresh per-write nonce, the object identity bound as AAD, and fail-closed verification on read (this replaced an earlier unauthenticated homebrew XOR keystream). It is a single in-memory tree; persistence and richer POSIX semantics are absent (see below).
 
 ### Copy-on-write paging
 
@@ -67,9 +67,9 @@ All filesystem contents live in memory and are lost on reboot. The encrypted-sto
 
 LAPIC detection and AP-bringup scaffolding exist, but no AP is brought up and the scheduler/IPC paths assume a single core. Running on real multi-core hardware will not crash but will use one core.
 
-### Full ASLR (PIE userspace)
+### ASLR entropy ceiling (32-bit userspace window)
 
-Per-spawn stack top and heap gap are randomised from the CSPRNG, but userspace binaries are linked non-PIE at a fixed load address (`0x400000`), so load-base randomisation is not applied. See the security note below.
+Per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG: userspace is built static-PIE (`ET_DYN`) and loaded at a random page-aligned base by `try_elf_load`, which applies `R_386_RELATIVE` relocations. The remaining limitation is *entropy*, not mechanism — userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window, so the image base has ~9 bits of entropy rather than the tens of bits a 64-bit userspace ABI would allow.
 
 ---
 
@@ -81,9 +81,9 @@ These matter specifically for anyone evaluating Horus as a security system:
 
 The block cipher itself is now sound: a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD with independent per-block HKDF subkeys and a fresh random per-write nonce, which replaced an earlier hand-rolled routine that was not actually AES. The remaining limitation is *integration, not cryptography* — the live filesystem is the in-memory tree, so this encrypted-block path is not yet the default backing store and has not been exercised end-to-end at runtime.
 
-### No load-base ASLR
+### Bounded load-base ASLR entropy
 
-Stack and heap are randomised per spawn; the load address is fixed (non-PIE), so code/GOT layout is predictable to an attacker who knows the binary.
+Stack, heap, and image base are all randomised per spawn (userspace is static-PIE and relocated at load). Because userspace is confined to the low ~8 MiB 32-bit window, the load base has only ~9 bits of entropy, so a determined attacker with a memory-disclosure primitive faces a smaller search space than on a 64-bit-userspace system.
 
 ### Audit log is tamper-evident, not tamper-proof
 

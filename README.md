@@ -111,6 +111,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Transitive cross-task revocation + lineage (use-after-revoke prevention) | ✅ Working |
 | SMEP / SMAP hardening (when CPU advertises) | ✅ Working |
 | W^X — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
+| ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; ~9-bit entropy in the 32-bit window) | ✅ Working |
 | Table-driven syscall dispatch (central capability gate) | ✅ Working |
 | User authentication + lockout (PBKDF2-HMAC-SHA256) | ✅ Working |
 | Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
@@ -118,7 +119,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | PS/2 keyboard input | ✅ Working |
 | Preemptive round-robin scheduling (timer-driven, ring-3) | ✅ Working |
 | Fault signals (ring-3 handler on fault instead of kill) | ✅ Working |
-| Rust security-core unit tests (49) + GitHub Actions CI (9 gated jobs) | ✅ Working |
+| Rust security-core unit tests (54) + GitHub Actions CI (9 gated jobs) | ✅ Working |
 | Headless QEMU self-tests: smoke-boot, ELF/W^X, preemption, signals (`make smoke`/`smoke-elf`/`smoke-preempt`/`smoke-signal`) | ✅ Working |
 | Reproducible builds | ✅ Working |
 | Userspace shell and commands | 🟡 Partial |
@@ -155,7 +156,7 @@ make run      # builds boot.iso and launches QEMU
 ### Verify it
 
 ```bash
-make test               # Rust unit tests (48) + a clean full build
+make test               # Rust unit tests (54) + a clean full build
 make smoke              # headless QEMU boot to the ring-3 shell, no fault
 make smoke-elf          # boots a real multi-segment ELF; asserts W^X enforcement
 make reproducible-build # byte-for-byte deterministic kernel.elf
@@ -168,7 +169,7 @@ make reproducible-build # byte-for-byte deterministic kernel.elf
 | `DEBUG_SHELL` | `0` | Enable the in-kernel debug shell |
 | `MINIMAL_SECURE` | `0` | Strip non-essential kernel features (smaller attack surface) |
 | `RUST_ENABLED` | `1` | Link the Rust security core (`0` uses C stub shims) |
-| `ELF_SELFTEST` | `0` | Embed a real ELF and self-test the loader + W^X at boot |
+| `ELF_SELFTEST` | `0` | Embed a real static-PIE ELF and self-test the loader (W^X + `R_386_RELATIVE` relocation at the randomised base) at boot |
 
 Horus is x86-64 only. See [docs/BUILDING.md](docs/BUILDING.md) for the full toolchain reference and troubleshooting.
 

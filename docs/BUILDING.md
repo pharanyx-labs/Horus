@@ -101,7 +101,7 @@ make clean
 
 ### `make test`
 
-Runs the Rust unit tests (48 across the security core — see [TESTS.md](../TESTS.md)), then does a clean full build to verify compilation.
+Runs the Rust unit tests (54 across the security core — see [TESTS.md](../TESTS.md)), then does a clean full build to verify compilation.
 
 ```bash
 make test

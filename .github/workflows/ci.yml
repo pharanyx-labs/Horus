@@ -26,7 +26,7 @@ jobs:
     name: Rust unit tests + clippy (deny-warnings gate)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install clippy component
         run: rustup component add clippy
       - name: Unit tests (release)
@@ -38,7 +38,7 @@ jobs:
     name: Build kernel.elf + bootable ISO (x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install build toolchain
         run: |
           sudo apt-get update
@@ -52,7 +52,7 @@ jobs:
       - name: Build bootable ISO
         run: make boot.iso
       - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: horus-kernel-x86_64
           path: |
@@ -75,7 +75,7 @@ jobs:
           - DEBUG_SHELL=1
           - MINIMAL_SECURE=1
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install build toolchain
         run: |
           sudo apt-get update
@@ -90,7 +90,7 @@ jobs:
     name: QEMU smoke-boot (headless)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install build toolchain + QEMU
         run: |
           sudo apt-get update
@@ -107,7 +107,7 @@ jobs:
     name: QEMU ELF-loader W^X self-test (headless)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install build toolchain + QEMU
         run: |
           sudo apt-get update
@@ -124,7 +124,7 @@ jobs:
     name: QEMU preemptive-scheduling self-test (headless)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install build toolchain + QEMU
         run: |
           sudo apt-get update
@@ -141,7 +141,7 @@ jobs:
     name: QEMU signal-handling self-test (headless)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install build toolchain + QEMU
         run: |
           sudo apt-get update
@@ -158,7 +158,7 @@ jobs:
     name: Verify reproducible kernel build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
       - name: Install build toolchain
         run: |
           sudo apt-get update
@@ -191,7 +191,7 @@ jobs:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
         with:
           fetch-depth: 0   # needed for gitleaks full history scan
 
@@ -221,7 +221,7 @@ jobs:
           echo "SBOM generated: sbom.cyclonedx.json"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: horus-sbom-cyclonedx
           path: sbom.cyclonedx.json

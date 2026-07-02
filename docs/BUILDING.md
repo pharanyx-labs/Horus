@@ -30,7 +30,7 @@ This document covers toolchain requirements, build targets, build flags, and how
 sudo apt-get update
 sudo apt-get install \
     build-essential gcc binutils make \
-    xorriso grub-pc-bin \
+    xorriso grub-pc-bin grub-common mtools \
     qemu-system-x86
 ```
 
@@ -188,7 +188,7 @@ If Cargo is not installed or the Rust target is missing, the build will fail wit
 ## Troubleshooting
 
 **`grub-mkrescue failed`**
-Install `grub-pc-bin` and `xorriso`. On some distros: `sudo apt-get install grub-pc-bin xorriso`.
+Install `grub-pc-bin`, `grub-common`, `xorriso`, and `mtools`. The `mtools` package provides `mformat`, which `grub-mkrescue` requires: `sudo apt-get install grub-pc-bin grub-common xorriso mtools`.
 
 **`cargo not found`**
 Install Rust via `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`

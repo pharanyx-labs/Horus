@@ -284,6 +284,9 @@ void create_user_pagedir(uint32_t task_id) {
     tasks[task_id].cr3 = pml4_phys;
 
     
+    /* The stack must be large enough for the deepest in-kernel call chain —
+     * notably the Argon2id password hash run from SYS_AUTH, which stacks several
+     * 1 KiB blocks and overflowed the old 8 KiB stack (login hung). */
     static uint8_t per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2] __attribute__((aligned(4096)));
     uint8_t *stack_area = per_task_kstacks[task_id];
     uint64_t guard_vaddr = (uint64_t)stack_area;

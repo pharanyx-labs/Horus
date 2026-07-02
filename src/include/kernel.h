@@ -39,7 +39,7 @@ typedef uint64_t vaddr_t;
 extern uint8_t stack_top[];
 #define KERNEL_TSS_STACK        ((uintptr_t)stack_top)
 #define USER_ASPACE_PREMAP_PAGES 32
-#define KERNEL_STACK_SIZE 8192
+#define KERNEL_STACK_SIZE 32768
 #define MAX_USERS               32
 #define USER_HEAP_BASE              0x0000000001000000ULL
 #define USER_MEM_MAX_COPY           (64*1024)

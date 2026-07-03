@@ -117,6 +117,7 @@ static void load_meta_region(struct mounted_fs *mfs);
 static void update_meta_hmac(void);
 static int  derive_kek(const char *password, size_t plen,
                        const uint8_t *kek_salt, uint8_t *kek32);
+static void storage_fsck_pass(struct mounted_fs *mfs);
 
 /* Per-block subkeys = HKDF-SHA256(ikm = volume_key, salt = disk_key,
  * info = "horus-block-aead-v3" || ino || block) -> enc_key(32) || mac_key(32).
@@ -864,7 +865,58 @@ int storage_unlock(const char *password, size_t plen)
     }
 
     mfs->unlocked = 1;
+    storage_fsck_pass(mfs);
     return 0;
+}
+
+/* Sweep the inode bitmap and free any slot that is allocated but contains
+ * stale data from an interrupted operation:
+ *
+ *   type == 0, all fields zero:
+ *     storage_alloc_inode set the bitmap bit, but the kernel crashed before
+ *     storage_write_inode ran.  The slot is still the zeroed bytes written at
+ *     format time.  No data blocks were ever allocated (that happens at first
+ *     write, after the inode is initialized), so clearing the bitmap bit is
+ *     the complete fix.
+ *
+ *   type != 0, links == 0:
+ *     storage_free_inode_blocks freed the data blocks and wrote back the inode
+ *     with links=0, but the kernel crashed before storage_free_inode cleared the
+ *     bitmap bit.  The data blocks are already freed; we just need to clear the
+ *     bit to avoid a permanent "inode slot occupied" leak.
+ *
+ * Reads one inode table block per iteration (INODES_PER_BLOCK inodes each) to
+ * avoid re-reading the same sector for every inode.  Writes the updated bitmap
+ * only when at least one slot was reclaimed (dirty flag). */
+static void storage_fsck_pass(struct mounted_fs *mfs)
+{
+    uint8_t inode_bitmap[BLOCK_SIZE];
+    if (do_block_read(mfs->sb.inode_bitmap_start, inode_bitmap) != 0) return;
+
+    int dirty = 0;
+    uint64_t table_blocks =
+        (mfs->sb.inode_count + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK;
+
+    for (uint64_t tb = 0; tb < table_blocks; tb++) {
+        uint8_t blk[BLOCK_SIZE];
+        if (do_block_read(mfs->sb.inode_table_start + tb, blk) != 0) continue;
+        struct on_disk_inode *slots = (struct on_disk_inode *)blk;
+
+        for (int i = 0; i < INODES_PER_BLOCK; i++) {
+            uint64_t ino = tb * (uint64_t)INODES_PER_BLOCK + (uint64_t)i;
+            if (ino == 0 || ino >= mfs->sb.inode_count) continue;
+            if (!bitmap_test(inode_bitmap, ino)) continue;
+
+            if (slots[i].type == 0 ||
+                (slots[i].type != 0 && slots[i].links == 0)) {
+                bitmap_clear(inode_bitmap, ino);
+                dirty = 1;
+            }
+        }
+    }
+
+    if (dirty)
+        do_block_write(mfs->sb.inode_bitmap_start, inode_bitmap);
 }
 
 int storage_rekey(const char *new_password, size_t plen)

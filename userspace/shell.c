@@ -154,9 +154,9 @@ static void show_general_help_us(void) {
     println("Process & Loader:");
     print_cmd("ps",               "List visible tasks");
     print_cmd("mem",              "Heap demo (sbrk)");
-    print_cmd("receive",          "Receive binary (arm for spawn)");
-    print_cmd("spawn",            "Spawn armed image");
-    print_cmd("load",             "receive + spawn (one step)");
+    print_cmd("spawn <name>",     "Spawn embedded binary (hello, captest, fs_server)");
+    print_cmd("receive",          "Receive binary over serial (arms for spawn)");
+    print_cmd("load",             "receive + spawn (serial, one step)");
     println("");
     println("IPC & Notifications:");
     print_cmd("ipc_send/recv",    "Synchronous endpoint IPC");
@@ -212,8 +212,9 @@ static void show_topic_help_us(const char *topic) {
         println("Usage:       receive");
         println("Notes:       Follow with 'spawn' (or use the combined 'load' command).");
     } else if (strcmp(t, "spawn") == 0) {
-        println("Description: Launch a previously armed userspace binary into its own ring-3 AS.");
-        println("Usage:       spawn");
+        println("Description: Launch an embedded binary or a previously armed image.");
+        println("Usage:       spawn <name>   -- spawn a named binary (hello, captest, fs_server)");
+        println("             spawn          -- spawn whatever was last armed via 'receive'");
         println("Notes:       Child receives a fresh 4-level address space and restricted caps.");
     } else if (strcmp(t, "sudo") == 0) {
         println("Description: Authenticate and spawn an elevated (armed) image as a privileged task.");
@@ -543,14 +544,27 @@ static void handle_command(char *cmd) {
         } else {
             println("Receive error");
         }
-    } else if (strcmp(cmd, "spawn") == 0) {
-        int pid = sys_spawn();
+    } else if (strcmp(cmd, "spawn") == 0 || strncmp(cmd, "spawn ", 6) == 0) {
+        int pid;
+        if (cmd[5] == ' ') {
+            const char *name = cmd + 6;
+            while (*name == ' ') name++;
+            pid = sys_spawn_named(name);
+            if (pid == SYS_ERR_NOENT) {
+                print("spawn: unknown binary '");
+                print(name);
+                println("' (try: hello, captest, fs_server)");
+                pid = 0;
+            }
+        } else {
+            pid = sys_spawn();
+        }
         if (pid > 0) {
             print("Spawned new task pid=");
             print_decimal(pid);
             println("");
-        } else {
-            println("Spawn failed (no armed image or no free slot)");
+        } else if (pid < 0) {
+            println("Spawn failed (no armed image or no free task slot)");
         }
     } else if (strcmp(cmd, "load") == 0) {
         struct program_header h;
@@ -574,7 +588,7 @@ static void handle_command(char *cmd) {
             if (fss_connect() == 0) {
                 println("Connected to userspace FS server");
             } else {
-                println("Failed to connect to FS server (is it running? use receive + spawn fs_server.bin)");
+                println("Failed to connect to FS server (is it running? try: spawn fs_server)");
             }
         } else if (strcmp(cmd, "fss_ls") == 0) {
             struct fss_req req = {0};

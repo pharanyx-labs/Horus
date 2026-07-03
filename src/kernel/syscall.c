@@ -139,6 +139,60 @@ static uint8_t loader_staging[MAX_PROGRAM_SIZE];
 static struct program_header armed_hdr;
 static int program_armed = 0;
 
+/* Named embedded binaries — always available for spawn-by-name.
+ * Each .bin file has a 44-byte Horus header: magic(4), entry(4), size(4),
+ * name[32], followed by the ELF/flat payload. */
+struct embedded_binary {
+    const char *name;
+    const uint8_t *start;
+    const uint8_t *end;
+};
+
+extern uint8_t embedded_shell_bin_start[];
+extern uint8_t embedded_shell_bin_end[];
+extern uint8_t embedded_hello_bin_start[];
+extern uint8_t embedded_hello_bin_end[];
+extern uint8_t embedded_captest_bin_start[];
+extern uint8_t embedded_captest_bin_end[];
+extern uint8_t embedded_fsserver_bin_start[];
+extern uint8_t embedded_fsserver_bin_end[];
+
+static const struct embedded_binary embedded_binaries[] = {
+    { "shell",     embedded_shell_bin_start,   embedded_shell_bin_end   },
+    { "hello",     embedded_hello_bin_start,   embedded_hello_bin_end   },
+    { "captest",   embedded_captest_bin_start, embedded_captest_bin_end },
+    { "fs_server", embedded_fsserver_bin_start,embedded_fsserver_bin_end},
+    { NULL, NULL, NULL }
+};
+
+/* Arm the staging buffer from a named embedded binary.
+ * Returns 0 on success, negative on error (not found, bad magic, too large). */
+static int arm_named_binary(const char *name) {
+    for (int i = 0; embedded_binaries[i].name != NULL; i++) {
+        if (kstrcmp(embedded_binaries[i].name, name) != 0) continue;
+        const uint8_t *bin = embedded_binaries[i].start;
+        uint32_t full_sz = (uint32_t)(embedded_binaries[i].end - bin);
+        if (full_sz < 44) return -1;
+        uint32_t magic   = (uint32_t)bin[0] | ((uint32_t)bin[1]<<8) |
+                           ((uint32_t)bin[2]<<16) | ((uint32_t)bin[3]<<24);
+        uint32_t h_entry = (uint32_t)bin[4] | ((uint32_t)bin[5]<<8) |
+                           ((uint32_t)bin[6]<<16) | ((uint32_t)bin[7]<<24);
+        uint32_t h_size  = (uint32_t)bin[8] | ((uint32_t)bin[9]<<8) |
+                           ((uint32_t)bin[10]<<16) | ((uint32_t)bin[11]<<24);
+        if (magic != 0x55524F48u) return -2;
+        if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -3;
+        if (full_sz < 44 + h_size) h_size = full_sz - 44;
+        for (uint32_t j = 0; j < h_size; j++) loader_staging[j] = bin[44 + j];
+        armed_hdr.entry = h_entry;
+        armed_hdr.size  = h_size;
+        for (int k = 0; k < 31; k++) armed_hdr.name[k] = (char)bin[12 + k];
+        armed_hdr.name[31] = 0;
+        program_armed = 1;
+        return 0;
+    }
+    return -4;  /* not found */
+}
+
 static struct audit_event audit_log_buffer[AUDIT_LOG_SIZE];
 static uint32_t audit_head = 0;
 static uint32_t audit_count = 0;
@@ -2592,13 +2646,30 @@ static void h_ramfs_create(struct regs *r) {
     r->eax = ramfs_create(name, 0);
 }
 
-/* SYS_SPAWN (28): slot-3 WRITE|EXEC enforced by the table. */
+/* SYS_SPAWN (28): slot-3 WRITE|EXEC enforced by the table.
+ * ebx = userspace pointer to a null-terminated binary name, or 0.
+ * ecx = max bytes to read from the name (0 means up to 31).
+ * If ebx is nonzero, arm the named embedded binary then spawn it.
+ * If ebx is zero, spawn whatever is currently armed (legacy behaviour). */
 static void h_spawn(struct regs *r) {
-    int pid = do_spawn();
-    if (pid > 0) {
-        schedule();
+    if (r->ebx) {
+        char name[32];
+        uint32_t len = r->ecx ? r->ecx : 31u;
+        if (len > 31) len = 31;
+        if (copy_from_user(name, (void *)(addr_t)r->ebx, len) != 0) {
+            r->eax = (uint32_t)SYS_ERR_FAULT;
+            return;
+        }
+        name[len] = 0;
+        int rc = arm_named_binary(name);
+        if (rc != 0) {
+            r->eax = (uint32_t)SYS_ERR_NOENT;
+            return;
+        }
     }
-    r->eax = pid;
+    int pid = do_spawn();
+    if (pid > 0) schedule();
+    r->eax = (uint32_t)pid;
 }
 
 /* SYS_GETUID (29). */

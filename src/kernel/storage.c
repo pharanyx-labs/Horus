@@ -867,6 +867,50 @@ int storage_unlock(const char *password, size_t plen)
     return 0;
 }
 
+int storage_rekey(const char *new_password, size_t plen)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted || !mfs->unlocked) return -1;
+
+    struct fs_superblock *sb = &mfs->sb;
+
+    /* Fresh salt + nonce so the old wrapped key is immediately invalidated. */
+    uint8_t new_kek_salt[32], new_nonce[12];
+    secure_random_bytes(new_kek_salt, sizeof(new_kek_salt));
+    secure_random_bytes(new_nonce,    sizeof(new_nonce));
+
+    uint8_t kek[32];
+    if (derive_kek(new_password, plen, new_kek_salt, kek) != 0) return -2;
+
+    uint8_t wrap_keys[64];
+    {
+        const char *label = "horus-wrap-v1";
+        uint8_t info[13]; size_t n = 0;
+        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+        if (rust_hkdf_sha256(kek, 32, new_kek_salt, sizeof(new_kek_salt),
+                             info, n, wrap_keys, 64) != 0) {
+            secure_zero(kek, sizeof(kek));
+            return -3;
+        }
+    }
+    secure_zero(kek, sizeof(kek));
+
+    uint8_t new_ct[32], new_tag[16];
+    my_memcpy(new_ct, mfs->disk_key, 32);
+    rust_aead_seal(wrap_keys, wrap_keys + 32, new_nonce,
+                   sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                   new_ct, 32, new_tag);
+    secure_zero(wrap_keys, sizeof(wrap_keys));
+
+    my_memcpy(sb->kek_salt,          new_kek_salt, 32);
+    my_memcpy(sb->wrapped_key_nonce, new_nonce,    12);
+    my_memcpy(sb->wrapped_key_ct,    new_ct,       32);
+    my_memcpy(sb->wrapped_key_tag,   new_tag,      16);
+
+    mfs->bd->write_block(mfs->bd, 0, sb);
+    return 0;
+}
+
 int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len)
 {
     extern tcb_t tasks[MAX_TASKS];

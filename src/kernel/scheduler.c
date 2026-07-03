@@ -918,23 +918,45 @@ void tlb_shootdown(uint64_t vaddr) {
 }
 
 #ifdef SMP
-/* Receiver-side ack hook (idt.c, vector 0xFB). Stage-2 shootdown is
- * fire-and-forget, so there is nothing to count yet; kept as the single ack
- * choke point that the Stage-4 bounded-wait protocol will build on. */
-void smp_ack_shootdown(void) { }
+/* TLB-shootdown acknowledgement protocol.
+ *
+ * The initiator serialises on shootdown_lock (a raw test-and-set that does NOT
+ * disable interrupts), sets smp_shootdown_pending to the number of other CPUs,
+ * broadcasts vector 0xFB, and spins until every receiver has flushed and
+ * decremented the counter. Because the lock does not mask interrupts and the
+ * single caller (below) is invoked with interrupts enabled and no scheduler lock
+ * held, an initiator waiting for acks -- or waiting for the lock -- still
+ * services other CPUs' shootdown IPIs, so two initiators cannot wedge each
+ * other. A bounded spin is a final backstop against a wedged CPU. */
+static volatile int shootdown_lock = 0;
+volatile int smp_shootdown_pending = 0;
+
+/* Receiver side (idt.c, vector 0xFB), after flushing its TLB. */
+void smp_ack_shootdown(void) {
+    __sync_fetch_and_sub(&smp_shootdown_pending, 1);
+}
 #endif
 
 /* Flush `vaddr` locally and, on a multi-CPU system, ask every other CPU to flush
- * too (broadcast IPI, vector 0xFB). On a single-CPU system it is just a local
- * invlpg. NOTE: the cross-CPU flush is currently fire-and-forget -- the local
- * flush is always synchronous, and receivers flush their whole TLB on the IPI,
- * but the initiator does not yet wait for acknowledgements. */
+ * too and wait for them to acknowledge before returning -- so once this returns
+ * no CPU can still hold a stale translation for `vaddr`. On a single-CPU system
+ * it is just a local invlpg.
+ *
+ * MUST be called with interrupts enabled and no scheduler/​page lock held (see
+ * the protocol note above); it is therefore NOT used on the switch_cr3 fast path
+ * (a local CR3 reload already flushes the local TLB). */
 void smp_maybe_shootdown(uint64_t vaddr) {
     tlb_shootdown(vaddr);
 #ifdef SMP
     if (smp_get_online_count() > 1) {
+        while (__sync_lock_test_and_set(&shootdown_lock, 1))
+            __asm__ volatile ("pause");              /* IF stays set: still service IPIs */
+        smp_shootdown_pending = smp_get_online_count() - 1;
         __asm__ volatile ("mfence" ::: "memory");
-        lapic_write(0x300, 0x000C0000 | 0xFB);      /* all-excluding-self, vec 0xFB */
+        lapic_write(0x300, 0x000C0000 | 0xFB);       /* all-excluding-self, vec 0xFB */
+        for (int i = 0; i < 100000000 && smp_shootdown_pending > 0; i++)
+            __asm__ volatile ("pause");
+        __sync_lock_release(&shootdown_lock);
     }
 #endif
 }

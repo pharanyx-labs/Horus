@@ -432,6 +432,12 @@ void idt_init64(void)
     pit_init();      /* periodic timer tick for preemptive scheduling */
 }
 
+/* Load the shared kernel IDT on an application processor. The IDT table is
+ * global and identical for every CPU, so an AP just points IDTR at it. */
+void ap_load_idt(void) {
+    __asm__ volatile ("lidt %0" :: "m"(idt64_ptr) : "memory");
+}
+
 void page_fault_handler(struct regs *r) {
     addr_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));

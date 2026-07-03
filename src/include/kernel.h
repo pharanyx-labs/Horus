@@ -423,7 +423,10 @@ typedef struct virtual_disk {
 
 typedef struct fs_superblock {
     uint32_t magic;
-    uint32_t version;
+    uint32_t version;           /* 2 = includes persisted crypto-metadata region */
+    uint64_t meta_start;        /* first block of the nonce/tag metadata region (v2+) */
+    uint32_t meta_blocks;       /* number of blocks in that region */
+    uint32_t _pad;
     uint64_t inode_bitmap_start;
     uint64_t block_bitmap_start;
     uint64_t data_bitmap_start;
@@ -768,6 +771,14 @@ int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
  * 0), else zeroes buf and returns -1. */
 #define AEAD_NONCE_LEN 12
 #define AEAD_TAG_LEN   16
+
+/* Crypto metadata region: one 32-byte slot per physical block (nonce+tag+present+3pad).
+ * 16 slots fit in one 512-byte sector → 64 sectors cover all BLOCKS_PER_DISK=1024 slots.
+ * These constants drive both the on-disk layout (storage_format) and the in-memory
+ * flush granularity (storage_encrypt_block). */
+#define META_ENTRY_SIZE        32   /* must equal sizeof(struct block_crypto_meta) — asserted in storage.c */
+#define META_ENTRIES_PER_BLOCK (BLOCK_SIZE / META_ENTRY_SIZE)
+#define META_BLOCKS_COUNT      (BLOCKS_PER_DISK / META_ENTRIES_PER_BLOCK)
 int  rust_aead_seal(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t *nonce,
                     const uint8_t *aad, size_t aad_len,
                     uint8_t *buf, size_t len, uint8_t *tag_out);

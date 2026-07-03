@@ -41,7 +41,7 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### C kernel work
 
-- **ATA cross-reboot persistence** (`src/kernel/storage.c`): The per-block crypto metadata (nonces/tags) lives in kernel RAM; it needs to be persisted alongside the data blocks so files survive reboots on the ATA backend.
+- **Crash-recovery replay for the intent log** (`src/kernel/storage.c`): The intent log records in-flight operations (alloc/free/create) but currently has no replay pass on mount. Replaying it after an unclean shutdown would make the filesystem consistent after a power loss.
 - **Scheduler priorities / fairness** (`src/kernel/scheduler.c`): The round-robin timer preemption works; adding weights or priority queues would make it more suitable as a base for real workloads.
 - **Concurrent IPC / multi-client fs_server** (`userspace/fs_server.c`): The fs_server currently handles one client at a time (single endpoint); a proper select/multiplex loop would allow multiple tasks to use the filesystem concurrently.
 

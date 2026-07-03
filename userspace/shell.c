@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "fs_proto.h"
 
 static void print(const char *s) {
     size_t l = 0; while (s[l]) l++;
@@ -31,33 +32,6 @@ static const char* strstr(const char *haystack, const char *needle) {
     return 0;
 }
 
-#define FSS_OP_LOOKUP   1
-#define FSS_OP_CREATE   2
-#define FSS_OP_MKDIR    3
-#define FSS_OP_DELETE   4
-#define FSS_OP_READDIR  5
-#define FSS_OP_READ     6
-#define FSS_OP_WRITE    7
-#define FSS_OP_STAT     8
-
-struct fss_req {
-    uint32_t op;
-    uint32_t handle;
-    char name[32];
-    uint32_t type;
-    uint32_t rights;
-    uint32_t offset;
-    uint32_t len;
-    uint8_t  data[128];
-};
-
-struct fss_rep {
-    int32_t  rc;
-    uint32_t new_handle;
-    uint32_t size;
-    uint8_t  data[128];
-    char     listing[256];
-};
 
 static int fss_connected = 0;
 static uint32_t fss_ep_slot = 0;
@@ -68,6 +42,9 @@ static void fss_strcpy(char *d, const char *s) { while((*d++ = *s++)); }
 static int fss_connect(void) {
     if (fss_connected) return 0;
     fss_ep_slot = 20;
+    /* sys_connect_fs_server mints a cap in slot fss_ep_slot so the kernel's
+     * slot-3 check passes for SYS_IPC_CALL.  The actual send/receive uses the
+     * well-known endpoint indices directly (FS_EP_REQ / FS_EP_REP). */
     int rc = sys_connect_fs_server(fss_ep_slot, 3);
     if (rc == 0) {
         fss_connected = 1;
@@ -76,12 +53,16 @@ static int fss_connect(void) {
     return -1;
 }
 
-static int fss_call(struct fss_req *req, struct fss_rep *rep) {
+static int fss_call(struct fs_request *req, struct fs_response *rep) {
     if (!fss_connected) {
         if (fss_connect() != 0) return -1;
     }
-    int r = sys_ipc_call(fss_ep_slot, (const char*)req, sizeof(*req), (char*)rep, sizeof(*rep));
-    return r;
+    req->magic = FS_PROTO_MAGIC;
+    /* Blocking IPC: send on FS_EP_REQ (4), block until reply arrives on
+     * FS_EP_REP (5).  The kernel unblocks us and fills *rep atomically. */
+    int r = sys_ipc_call(FS_EP_REQ, FS_EP_REP,
+                         (const char *)req, sizeof(*req), (char *)rep);
+    return (r < 0) ? r : 0;
 }
 
 static void *memcpy(void *dest, const void *src, size_t n) {
@@ -591,30 +572,37 @@ static void handle_command(char *cmd) {
                 println("Failed to connect to FS server (is it running? try: spawn fs_server)");
             }
         } else if (strcmp(cmd, "fss_ls") == 0) {
-            struct fss_req req = {0};
-            struct fss_rep rep;
-            req.op = FSS_OP_READDIR;
-            req.handle = 0;
-            if (fss_call(&req, &rep) == 0 && rep.rc == 0) {
-                print("Userspace FS contents:\n");
-                print(rep.listing);
-            } else {
-                println("fss_ls failed (server not connected?)");
+            struct fs_request  req = {0};
+            struct fs_response rep;
+            req.op      = FS_OP_READDIR;
+            req.dir_ino = 0;
+            print("Userspace FS contents:\n");
+            int found = 0;
+            for (int idx = 0; idx < 256; idx++) {
+                req.offset = (uint32_t)idx;
+                if (fss_call(&req, &rep) < 0 || rep.rc < 0) break;
+                print("  "); print(rep.name);
+                print(rep.type == 2 ? "/\n" : "\n");
+                found = 1;
             }
+            if (!found) println("  (empty or server not connected)");
         } else if (strncmp(cmd, "fss_cat ", 8) == 0) {
             const char *name = cmd + 8;
-            struct fss_req req = {0};
-            struct fss_rep rep;
-            req.op = FSS_OP_LOOKUP;
-            req.handle = 0;
+            struct fs_request  req = {0};
+            struct fs_response rep;
+            req.op      = FS_OP_LOOKUP;
+            req.dir_ino = 0;
             fss_strcpy(req.name, name);
             if (fss_call(&req, &rep) == 0 && rep.rc == 0) {
-                req.op = FSS_OP_READ;
-                req.handle = rep.new_handle;
-                req.len = 128;
+                uint32_t ino = rep.ino;
+                req.op     = FS_OP_READ;
+                req.ino    = ino;
+                req.offset = 0;
+                req.len    = FS_IO_MAX;
                 if (fss_call(&req, &rep) == 0 && rep.rc > 0) {
-                    rep.data[rep.rc < 128 ? rep.rc : 127] = 0;
-                    print((char*)rep.data);
+                    int l = rep.rc < FS_IO_MAX ? rep.rc : FS_IO_MAX - 1;
+                    rep.data[l] = 0;
+                    print((char *)rep.data);
                     println("");
                 } else {
                     println("read failed");
@@ -626,32 +614,45 @@ static void handle_command(char *cmd) {
             char *space = (char*)strstr(cmd + 10, " ");
             if (space) {
                 *space = 0;
-                const char *fname = cmd + 10;
+                const char *fname   = cmd + 10;
                 const char *content = space + 1;
-                struct fss_req req = {0};
-                struct fss_rep rep;
-                req.op = FSS_OP_LOOKUP;
-                req.handle = 0;
+                struct fs_request  req = {0};
+                struct fs_response rep;
+                req.op      = FS_OP_LOOKUP;
+                req.dir_ino = 0;
                 fss_strcpy(req.name, fname);
                 if (fss_call(&req, &rep) == 0 && rep.rc == 0) {
-                    req.op = FSS_OP_WRITE;
-                    req.handle = rep.new_handle;
+                    req.op     = FS_OP_WRITE;
+                    req.ino    = rep.ino;
                     req.offset = 0;
-                    req.len = fss_strlen(content) > 128 ? 128 : fss_strlen(content);
-                    fss_strcpy((char*)req.data, content);
-                    int w = fss_call(&req, &rep);
-                    print("wrote "); print_decimal(w > 0 ? w : 0); println(" bytes to userspace FS");
+                    int wlen = fss_strlen(content);
+                    if (wlen > FS_IO_MAX) wlen = FS_IO_MAX;
+                    req.len = (uint32_t)wlen;
+                    fss_strcpy((char *)req.data, content);
+                    fss_call(&req, &rep);
+                    print("wrote ");
+                    print_decimal(rep.rc > 0 ? rep.rc : 0);
+                    println(" bytes to userspace FS");
                 } else {
-                    println("file not found for write (create it first with fss_mkdir or fss_create in server)");
+                    println("file not found (create it first with fss_create)");
                 }
             } else {
                 println("usage: fss_write <file> <text>");
             }
-        } else if (strcmp(cmd, "fss_tree") == 0) {
-            println("Userspace FS server tree (demo):");
-            println("/\n  home/\n    user/\n      readme.txt\n  etc/\n    hostname\n  motd");
+        } else if (strncmp(cmd, "fss_create ", 11) == 0) {
+            const char *name = cmd + 11;
+            struct fs_request  req = {0};
+            struct fs_response rep;
+            req.op      = FS_OP_CREATE;
+            req.dir_ino = 0;
+            fss_strcpy(req.name, name);
+            if (fss_call(&req, &rep) == 0 && rep.rc == 0) {
+                print("created: "); println(name);
+            } else {
+                println("create failed");
+            }
         } else {
-            println("fss commands: fss fss_connect fss_ls fss_cat <name> fss_write <file> <txt> fss_tree");
+            println("fss commands: fss fss_connect fss_ls fss_cat <name> fss_write <file> <txt> fss_create <name>");
         }
     } else {
         println("Unknown command. Type 'help' or 'help <cmd>' for usage.");

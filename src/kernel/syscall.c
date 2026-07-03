@@ -1645,6 +1645,47 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * authorizing cap was revoked/replaced mid-spin (lookup/use TOCTOU). */
     cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_RIGHT_WRITE));
 
+    /* If a task is blocking in SYS_IPC_CALL waiting for a reply on this
+     * endpoint, deliver directly: copy from the sender's userspace into a
+     * kernel buffer, switch to the waiter's address space, copy into its reply
+     * buffer, patch its saved trap frame's rax with the length, then mark it
+     * runnable.  ipc_block_switch in interrupt_handler64 already saved the
+     * waiter's frame — the next timer tick will iretq it back to ring 3 with
+     * the return value in eax. */
+    int waiter = e->blocked_waiter;
+    if (waiter > 0 && waiter < MAX_TASKS &&
+            tasks[waiter].state == TASK_BLOCKED_IPC) {
+        if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) return -1;
+
+        uint8_t kbuf[IPC_MSG_MAX];
+        int copy_len = 0;
+        if (len > 0) {
+            if (copy_from_user(kbuf, msg, len) != 0) return -1;
+            copy_len = (int)len;
+        }
+
+        if (copy_len > 0 && tasks[waiter].ipc_reply_buf != 0) {
+            uint64_t sender_cr3 = tasks[get_current_task()].cr3;
+            switch_cr3(tasks[waiter].cr3);
+            copy_to_user((void*)(addr_t)tasks[waiter].ipc_reply_buf, kbuf,
+                         (size_t)copy_len);
+            switch_cr3(sender_cr3);
+        }
+
+        /* Patch the waiter's saved interrupt frame so that when the timer
+         * resumes it, eax holds the reply length (the return value of
+         * sys_ipc_call). */
+        struct interrupt_frame64 *wf =
+            (struct interrupt_frame64 *)tasks[waiter].saved_ksp;
+        wf->rax = (uint64_t)(uint32_t)copy_len;
+
+        e->blocked_waiter = -1;
+        __asm__ volatile ("" ::: "memory");
+        tasks[waiter].state       = TASK_RUNNABLE;
+        tasks[waiter].runnable_ctx = 1;
+        return 0;
+    }
+
     /* Non-blocking: if the single mailbox slot is still full, tell the caller to
      * retry. The old form spun in-kernel calling yield(), but the cooperative
      * scheduler cannot correctly switch two ring-3 tasks (only timer preemption
@@ -1657,7 +1698,7 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
     e->msg_len = (int)len;
     e->sender_task = get_current_task();
     __asm__ volatile ("" ::: "memory");
-    e->has_message = 1;          
+    e->has_message = 1;
     return 0;
 }
 
@@ -2677,9 +2718,46 @@ static void h_getuid(struct regs *r) {
     r->eax = tasks[get_current_task()].uid;
 }
 
-/* SYS_IPC_SEND (21) / SYS_IPC_CALL (23): slot-3 WRITE enforced by the table. */
+/* SYS_IPC_SEND (21): slot-3 WRITE enforced by the table. */
 static void h_ipc_send(struct regs *r) {
     r->eax = sys_ipc_send(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
+}
+
+/* SYS_IPC_CALL (23): atomic send-then-block-until-reply.
+ *   ebx = send endpoint index
+ *   ecx = reply endpoint index
+ *   edx = userspace ptr to message to send
+ *   esi = send length
+ *   edi = userspace ptr to reply buffer
+ * The handler deposits the message, marks the task BLOCKED_IPC, and returns.
+ * interrupt_handler64 detects the blocked state and calls ipc_block_switch()
+ * to yield to the next runnable task.  When sys_ipc_send delivers a message to
+ * the reply endpoint, it patches this task's saved frame and marks it runnable. */
+static void h_ipc_call(struct regs *r) {
+    uint32_t send_ep  = r->ebx;
+    uint32_t reply_ep = r->ecx;
+    const void *msg   = (const void *)(addr_t)r->edx;
+    size_t   send_len = (size_t)r->esi;
+    uint32_t reply_buf = r->edi;
+
+    if (send_ep >= MAX_ENDPOINTS || reply_ep >= MAX_ENDPOINTS) {
+        r->eax = (uint32_t)-1; return;
+    }
+
+    /* Deposit the outgoing message into send_ep. */
+    int rc = sys_ipc_send(send_ep, msg, send_len);
+    if (rc < 0) { r->eax = (uint32_t)rc; return; }
+
+    int cur = get_current_task();
+
+    /* Arm the reply endpoint with the waiter info before blocking. */
+    endpoints[reply_ep].blocked_waiter = cur;
+    tasks[cur].ipc_reply_buf  = reply_buf;
+    tasks[cur].state          = TASK_BLOCKED_IPC;
+    tasks[cur].runnable_ctx   = 0;
+    /* r->eax is set by interrupt_handler64 after we return from here:
+     * it will be overwritten by ipc_block_switch/wf->rax when unblocked. */
+    r->eax = 0;
 }
 /* SYS_IPC_RECV (22): slot-3 READ enforced by the table. */
 static void h_ipc_recv(struct regs *r) {
@@ -2845,7 +2923,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXEC]                     = { h_run,                     3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_IPC_SEND]                 = { h_ipc_send,                3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_IPC_RECV]                 = { h_ipc_recv,                3, CAP_RIGHT_READ,  SC_ANYTYPE },
-    [SYS_IPC_CALL]                 = { h_ipc_send,                3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_IPC_CALL]                 = { h_ipc_call,                3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_IPC_REPLY]                = { h_ipc_reply,               3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_NOTIFY]                   = { h_notify,                  3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_WAIT_NOTIFY]              = { h_wait_notify,             3, CAP_RIGHT_READ,  SC_ANYTYPE },

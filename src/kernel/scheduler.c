@@ -303,6 +303,41 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     return tasks[next].saved_ksp;
 }
 
+/* Called from interrupt_handler64 after a blocking SYS_IPC_CALL.  The caller's
+ * state is already TASK_BLOCKED_IPC and runnable_ctx is 0.  Save frame_rsp as
+ * its saved_ksp, find the next runnable task, switch to it, and return its
+ * saved_ksp so the ISR epilogue resumes that task via iretq. */
+uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
+    tasks[blocked_task].saved_ksp = frame_rsp;
+
+    int next = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        int cand = (blocked_task + i) % MAX_TASKS;
+        if (cand == 0) continue;
+        if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
+                tasks[cand].runnable_ctx) {
+            next = cand;
+            break;
+        }
+    }
+    if (next < 0) {
+        /* No other runnable task.  Revert the block so the caller doesn't
+         * deadlock permanently — it will spin at user level until the server
+         * catches up. */
+        tasks[blocked_task].state       = TASK_RUNNABLE;
+        tasks[blocked_task].runnable_ctx = 1;
+        return frame_rsp;
+    }
+
+    switch_cr3(tasks[next].cr3);
+    uint64_t kstop = task_kstack_top(next);
+    set_tss_kernel_stack(kstop);
+    current_kernel_stack_top = kstop;
+    set_current_task(next);
+
+    return tasks[next].saved_ksp;
+}
+
 void aslr_init_seed(void) {
     /* Seed the ASLR PRNG from the central CSPRNG (RDRAND / TSC-jitter seeded)
      * rather than a bare TSC read, which is observable from ring 3 and would

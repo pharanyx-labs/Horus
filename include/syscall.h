@@ -239,10 +239,25 @@ static inline int sys_ipc_recv(int ep_slot, void *msg, size_t max_len) {
     return syscall(SYS_IPC_RECV, (uint32_t)ep_slot, (uint32_t)msg, (uint32_t)max_len);
 }
 
-static inline int sys_ipc_call(int ep_slot, const void *send_msg, size_t send_len,
-                               void *recv_msg, size_t recv_max) {
-    (void)recv_msg; (void)recv_max;
-    return syscall(SYS_IPC_CALL, (uint32_t)ep_slot, (uint32_t)send_msg, send_len);
+/* Blocking send-then-receive: sends to send_ep, blocks until a message arrives
+ * on reply_ep, copies at most IPC_MSG_MAX bytes into rbuf.  Returns the number
+ * of bytes received, or a negative error code.
+ * Uses EBX=send_ep, ECX=reply_ep, EDX=msg, ESI=len, EDI=rbuf (5 data args,
+ * no EBP needed so -fno-omit-frame-pointer builds are safe). */
+static inline int sys_ipc_call(int send_ep, int reply_ep,
+                               const void *msg, uint32_t len,
+                               void *rbuf) {
+    uint32_t ret;
+    asm volatile("int $0x80"
+                 : "=a"(ret)
+                 : "a"((uint32_t)SYS_IPC_CALL),
+                   "b"((uint32_t)send_ep),
+                   "c"((uint32_t)reply_ep),
+                   "d"((uint32_t)(uintptr_t)msg),
+                   "S"(len),
+                   "D"((uint32_t)(uintptr_t)rbuf)
+                 : "memory");
+    return (int)ret;
 }
 
 static inline int sys_ipc_reply(int ep_slot, const void *msg, size_t len) {

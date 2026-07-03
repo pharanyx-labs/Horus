@@ -9,7 +9,8 @@ int ramfs_read(int fd, void *b, size_t l){(void)fd;(void)b;(void)l;return -1;}
 int ramfs_list(char *b, size_t n){(void)b;(void)n;return 0;}
 int storage_init(void){return 0;}
 int storage_mount(block_device_t *b){(void)b;return 0;}
-int storage_format(block_device_t *b){(void)b;return 0;}
+/* storage_format_sealed is static in storage.c — no stub needed here. */
+int storage_unlock(const char *p,size_t l){(void)p;(void)l;return 0;}
 int storage_block_read(uint64_t bl, void *buf){(void)bl;(void)buf;return -1;}
 int storage_block_write(uint64_t bl, const void *buf){(void)bl;(void)buf;return -1;}
 void ata_init(void){}

@@ -3,8 +3,9 @@
 int fs_server_task_id = -1;
 int fs_server_listen_ep_idx = -1;
 
-int storage_format(struct block_device *bd);
+static int storage_format_sealed(struct block_device *bd, const char *password, size_t plen);
 int storage_mount(struct block_device *bd);
+int storage_unlock(const char *password, size_t plen);
 int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, void *buf);
 int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, const void *buf);
 struct mounted_fs *storage_get_mounted_fs(void);
@@ -33,11 +34,17 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 }
 
 #define STORAGE_MAGIC   0x48534653
-#define STORAGE_VERSION 3   /* v3 adds stable disk_key + HMAC over the metadata region */
+#define STORAGE_VERSION 4   /* v4: disk_key wrapped by password-derived Argon2id KEK */
 
 static struct virtual_disk g_vdisk;
 /* Unused when STORAGE_ATA selects the ATA backend instead of the RAM vdisk. */
 static uint8_t g_vdisk_buffer[BLOCKS_PER_DISK * BLOCK_SIZE] __attribute__((unused));
+
+/* Deferred-format state: storage_init() sets this when no valid disk is found,
+ * then storage_unlock() (called at first login) formats+seals with the user's
+ * password so disk_key is never committed to disk without a KEK. */
+static int                  g_needs_format    = 0;
+static struct block_device *g_needs_format_bd = NULL;
 
 static int vdisk_read(struct block_device *bd, uint64_t block, void *buf) {
     struct virtual_disk *vd = (struct virtual_disk *)bd->private;
@@ -108,6 +115,8 @@ static struct block_crypto_meta g_block_meta[BLOCKS_PER_DISK];
 static void flush_meta_block(uint64_t phys);
 static void load_meta_region(struct mounted_fs *mfs);
 static void update_meta_hmac(void);
+static int  derive_kek(const char *password, size_t plen,
+                       const uint8_t *kek_salt, uint8_t *kek32);
 
 /* Per-block subkeys = HKDF-SHA256(ikm = volume_key, salt = disk_key,
  * info = "horus-block-aead-v3" || ino || block) -> enc_key(32) || mac_key(32).
@@ -125,7 +134,7 @@ int storage_derive_block_keys(uint64_t ino, uint64_t block,
                               uint8_t *enc_key32, uint8_t *mac_key32)
 {
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) return -1;
+    if (!mfs || !mfs->mounted || !mfs->unlocked) return -1;
 
     uint8_t info[19 + 8 + 8];
     const char *label = "horus-block-aead-v3";
@@ -136,7 +145,7 @@ int storage_derive_block_keys(uint64_t ino, uint64_t block,
 
     uint8_t okm[64];
     if (rust_hkdf_sha256(vol_key, vol_key_len,
-                         mfs->sb.disk_key, sizeof(mfs->sb.disk_key),
+                         mfs->disk_key, sizeof(mfs->disk_key),
                          info, p, okm, sizeof(okm)) != 0) {
         return -1;
     }
@@ -166,7 +175,7 @@ int storage_encrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf
 {
     if (phys >= BLOCKS_PER_DISK) return -1;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) return -1;
+    if (!mfs || !mfs->mounted || !mfs->unlocked) return -1;
 
     uint8_t enc_key[32], mac_key[32];
     uint8_t nonce[AEAD_NONCE_LEN], tag[AEAD_TAG_LEN], aad[16];
@@ -210,7 +219,7 @@ int storage_decrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf
 {
     if (phys >= BLOCKS_PER_DISK) { secure_zero(buf, BLOCK_SIZE); return -1; }
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { secure_zero(buf, BLOCK_SIZE); return -1; }
+    if (!mfs || !mfs->mounted || !mfs->unlocked) { secure_zero(buf, BLOCK_SIZE); return -1; }
 
     uint8_t enc_key[32], mac_key[32];
     uint8_t nonce[AEAD_NONCE_LEN], tag[AEAD_TAG_LEN], aad[16];
@@ -378,28 +387,42 @@ static struct block_device g_ata_bd = {
 
 int storage_init(void) {
 #ifdef STORAGE_ATA
-    /* Persistent backing: probe the ATA disk. If it already holds a valid Horus
-     * volume, mount it; otherwise format-on-first-boot then mount. */
+    /* Persistent backing: probe the ATA disk.  If a valid v4 volume exists,
+     * mount it (key derivation is deferred to storage_unlock at login time).
+     * If not, record the device so storage_unlock can format+seal it with the
+     * user's password when the first login succeeds — disk_key is never
+     * committed to disk without a KEK. */
     ata_init();
     current_bd = &g_ata_bd;
     if (storage_mount(&g_ata_bd) != 0) {
-        if (storage_format(&g_ata_bd) != 0) return -1;
-        if (storage_mount(&g_ata_bd) != 0) return -1;
+        g_needs_format    = 1;
+        g_needs_format_bd = &g_ata_bd;
     }
     return 0;
 #else
-    /* Default: ephemeral in-RAM virtual disk. */
-    g_vdisk.data = g_vdisk_buffer;
-    g_vdisk.size = sizeof(g_vdisk_buffer);
+    /* Ephemeral in-RAM virtual disk: format and unlock immediately using a
+     * per-boot random password (no user input needed; the vdisk is never
+     * persisted so the password is discarded after unlock). */
+    g_vdisk.data        = g_vdisk_buffer;
+    g_vdisk.size        = sizeof(g_vdisk_buffer);
     g_vdisk.block_count = BLOCKS_PER_DISK;
-
     my_memset(g_vdisk.data, 0, g_vdisk.size);
-
     current_bd = &g_vdisk_bd;
-    if (storage_format(&g_vdisk_bd) != 0) return -1;
-    if (storage_mount(&g_vdisk_bd) != 0) return -1;
 
-    return 0;
+    uint8_t boot_pass[32];
+    secure_random_bytes(boot_pass, sizeof(boot_pass));
+    if (storage_format_sealed(&g_vdisk_bd, (const char *)boot_pass,
+                              sizeof(boot_pass)) != 0) {
+        secure_zero(boot_pass, sizeof(boot_pass));
+        return -1;
+    }
+    if (storage_mount(&g_vdisk_bd) != 0) {
+        secure_zero(boot_pass, sizeof(boot_pass));
+        return -1;
+    }
+    int rc = storage_unlock((const char *)boot_pass, sizeof(boot_pass));
+    secure_zero(boot_pass, sizeof(boot_pass));
+    return rc;
 #endif
 }
 
@@ -569,7 +592,26 @@ int storage_dir_add(struct mounted_fs *mfs, uint64_t dir_ino, const char *name,
     return 0;
 }
 
-int storage_format(struct block_device *bd) {
+/* Derive a 32-byte Key Encryption Key from password + kek_salt using Argon2id.
+ * No kernel_pepper: the KEK must reproduce from the same inputs across reboots.
+ * Domain-separated from the login hash by the different salt length (32B vs 32B
+ * login_salt||pepper) and the different downstream use (wrapping vs verification). */
+static int derive_kek(const char *password, size_t plen,
+                      const uint8_t *kek_salt, uint8_t *kek32)
+{
+    /* Uses kernel_argon2id (syscall.c) to share the single 4MiB scratch buffer.
+     * No kernel_pepper: kek_salt is random per-format and stable across reboots,
+     * so the same password always yields the same KEK from the same disk. */
+    return kernel_argon2id((const uint8_t *)password, plen,
+                           kek_salt, 32, kek32, 32);
+}
+
+/* Format a block device and seal disk_key with the user's password.
+ * disk_key is randomly generated, never stored in plaintext on disk.
+ * KEK = Argon2id(password, kek_salt); wrapped = AEAD(KEK, disk_key). */
+static int storage_format_sealed(struct block_device *bd,
+                                  const char *password, size_t plen)
+{
     struct fs_superblock sb;
     my_memset(&sb, 0, sizeof(sb));
 
@@ -607,26 +649,59 @@ int storage_format(struct block_device *bd) {
     if (data_blocks > BITS_PER_BLOCK) data_blocks = BITS_PER_BLOCK;
     sb.block_count = data_blocks;
 
-    /* Per-volume salt (domain-separates volumes) and per-format disk secret
-     * (the stable root of all block key derivation — see disk_key comment in
-     * fs_superblock_t).  Both from the CSPRNG so they are unpredictable. */
+    /* Per-volume HKDF diversifier — random per-format, stable on disk. */
     secure_random_bytes(sb.volume_key_salt, sizeof(sb.volume_key_salt));
-    secure_random_bytes(sb.disk_key, sizeof(sb.disk_key));
+
+    /* Generate disk_key — root of all per-block key derivation.
+     * Never written in plaintext to disk; sealed below with the user's KEK. */
+    uint8_t disk_key[32];
+    secure_random_bytes(disk_key, sizeof(disk_key));
+
+    /* KEK = Argon2id(password, kek_salt).  kek_salt is random per-format but
+     * contains no kernel_pepper so the same password always yields the same KEK
+     * across reboots.  KEK is expanded to 64 bytes via HKDF then used as the
+     * enc_key||mac_key pair for the wrapping AEAD. */
+    secure_random_bytes(sb.kek_salt,          sizeof(sb.kek_salt));
+    secure_random_bytes(sb.wrapped_key_nonce, sizeof(sb.wrapped_key_nonce));
+    {
+        uint8_t kek[32];
+        if (derive_kek(password, plen, sb.kek_salt, kek) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -1;
+        }
+        uint8_t wrap_keys[64];
+        {
+            const char *label = "horus-wrap-v1";
+            uint8_t info[13]; size_t n = 0;
+            for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+            if (rust_hkdf_sha256(kek, 32, sb.kek_salt, sizeof(sb.kek_salt),
+                                 info, n, wrap_keys, 64) != 0) {
+                secure_zero(kek, sizeof(kek));
+                secure_zero(disk_key, sizeof(disk_key));
+                return -2;
+            }
+        }
+        secure_zero(kek, sizeof(kek));
+        my_memcpy(sb.wrapped_key_ct, disk_key, 32);
+        rust_aead_seal(wrap_keys, wrap_keys + 32, sb.wrapped_key_nonce,
+                       sb.volume_key_salt, sizeof(sb.volume_key_salt),
+                       sb.wrapped_key_ct, 32, sb.wrapped_key_tag);
+        secure_zero(wrap_keys, sizeof(wrap_keys));
+    }
 
     /* Compute the initial metadata HMAC over an all-zeros g_block_meta[] so
-     * storage_mount's verify step matches on the very first mount after format.
-     * We zero g_block_meta here too so any leftover data from a prior session
-     * doesn't corrupt the HMAC we're about to write. */
+     * the first storage_unlock after format passes the verify step cleanly. */
     my_memset(g_block_meta, 0, sizeof(g_block_meta));
     {
         uint8_t fmt_mac_key[32];
-        if (derive_meta_mac_key(sb.disk_key, sizeof(sb.disk_key),
+        if (derive_meta_mac_key(disk_key, sizeof(disk_key),
                                 sb.volume_key_salt, sizeof(sb.volume_key_salt),
                                 fmt_mac_key) == 0) {
             compute_meta_hmac(fmt_mac_key, sb.meta_hmac);
             secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
         }
     }
+    secure_zero(disk_key, sizeof(disk_key));
 
     bd->write_block(bd, 0, &sb);
 
@@ -679,70 +754,117 @@ int storage_mount(struct block_device *bd) {
         return -2;
     }
 
-    g_mounted_fs.bd = bd;
-    g_mounted_fs.sb = *sb;
-    g_mounted_fs.mounted = 1;
-
-    /* Volume key = HKDF-SHA256(IKM=disk_key, salt=volume_key_salt,
-     * info="horus-volume-key-v2").  disk_key is per-format stable (on disk),
-     * replacing the old v1 derivation which used kernel_pepper (per-boot
-     * ephemeral from RDRAND) — that made every ATA block undecryptable after
-     * reboot because the key changed on every boot. */
-    {
-        const char *label = "horus-volume-key-v2";
-        uint8_t info[19];
-        size_t p = 0;
-        for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
-        if (rust_hkdf_sha256(sb->disk_key, sizeof(sb->disk_key),
-                             sb->volume_key_salt, sizeof(sb->volume_key_salt),
-                             info, p,
-                             g_mounted_fs.volume_key, sizeof(g_mounted_fs.volume_key)) != 0) {
-            g_mounted_fs.mounted = 0;
-            return -3;
-        }
-    }
-
-    /* Metadata HMAC key — same stable inputs, different info string. */
-    if (derive_meta_mac_key(sb->disk_key, sizeof(sb->disk_key),
-                            sb->volume_key_salt, sizeof(sb->volume_key_salt),
-                            g_mounted_fs.meta_mac_key) != 0) {
-        g_mounted_fs.mounted = 0;
-        return -4;
-    }
-
-    /* Restore the nonce+tag table from the persisted metadata region. */
-    load_meta_region(&g_mounted_fs);
-
-    /* Verify HMAC over the loaded metadata.  A mismatch means the nonce/tag
-     * region was modified without a matching ciphertext update — partial
-     * rollback attack.  Return -2 so storage_init reformats the volume; this
-     * is fail-closed: we don't serve any data with unverified AEAD parameters.
-     * Note: constant-time compare prevents timing side-channels on the tag. */
-    {
-        uint8_t computed[32];
-        if (compute_meta_hmac(g_mounted_fs.meta_mac_key, computed) != 0) {
-            g_mounted_fs.mounted = 0;
-            secure_zero(g_mounted_fs.meta_mac_key, sizeof(g_mounted_fs.meta_mac_key));
-            secure_zero(g_mounted_fs.volume_key,   sizeof(g_mounted_fs.volume_key));
-            return -2;
-        }
-        int mismatch = 0;
-        for (int i = 0; i < 32; i++)
-            mismatch |= (computed[i] ^ g_mounted_fs.sb.meta_hmac[i]);
-        secure_zero(computed, sizeof(computed));
-        if (mismatch) {
-            g_mounted_fs.mounted = 0;
-            secure_zero(g_mounted_fs.meta_mac_key, sizeof(g_mounted_fs.meta_mac_key));
-            secure_zero(g_mounted_fs.volume_key,   sizeof(g_mounted_fs.volume_key));
-            return -2;
-        }
-    }
-
+    g_mounted_fs.bd       = bd;
+    g_mounted_fs.sb       = *sb;
+    g_mounted_fs.mounted  = 1;
+    g_mounted_fs.unlocked = 0;
+    /* Key derivation deferred to storage_unlock() — we need the user's
+     * password to unwrap disk_key before any crypto work can proceed. */
     return 0;
 }
 
 struct mounted_fs *storage_get_mounted_fs(void) {
     return &g_mounted_fs;
+}
+
+/* Called at first successful login.  If no valid v4 disk exists (g_needs_format)
+ * formats and seals one with the user's password first; then unwraps disk_key,
+ * derives volume_key + meta_mac_key, and verifies the metadata HMAC. */
+int storage_unlock(const char *password, size_t plen)
+{
+    if (g_needs_format) {
+        if (storage_format_sealed(g_needs_format_bd, password, plen) != 0) return -1;
+        if (storage_mount(g_needs_format_bd) != 0) return -1;
+        g_needs_format    = 0;
+        g_needs_format_bd = NULL;
+    }
+
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted)  return -2;
+    if (mfs->unlocked)  return 0;   /* idempotent: already unlocked */
+
+    struct fs_superblock *sb = &mfs->sb;
+
+    /* Step 1 — Derive KEK from password + stable on-disk salt (no kernel_pepper). */
+    uint8_t kek[32];
+    if (derive_kek(password, plen, sb->kek_salt, kek) != 0) return -3;
+
+    /* Step 2 — Expand KEK → enc_key[32] || mac_key[32] for wrapping AEAD. */
+    uint8_t wrap_keys[64];
+    {
+        const char *label = "horus-wrap-v1";
+        uint8_t info[13]; size_t n = 0;
+        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+        if (rust_hkdf_sha256(kek, 32, sb->kek_salt, sizeof(sb->kek_salt),
+                             info, n, wrap_keys, 64) != 0) {
+            secure_zero(kek, sizeof(kek));
+            return -4;
+        }
+    }
+    secure_zero(kek, sizeof(kek));
+
+    /* Step 3 — AEAD-open the wrapped disk_key.
+     * Tag mismatch → wrong password or tampered header; deny without revealing which. */
+    uint8_t disk_key[32];
+    my_memcpy(disk_key, sb->wrapped_key_ct, 32);
+    if (rust_aead_open(wrap_keys, wrap_keys + 32, sb->wrapped_key_nonce,
+                       sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                       disk_key, 32, sb->wrapped_key_tag) != 0) {
+        secure_zero(disk_key,   sizeof(disk_key));
+        secure_zero(wrap_keys,  sizeof(wrap_keys));
+        return -5;
+    }
+    secure_zero(wrap_keys, sizeof(wrap_keys));
+
+    /* Step 4 — Store plaintext disk_key in RAM; derive volume_key + meta_mac_key. */
+    my_memcpy(mfs->disk_key, disk_key, 32);
+    secure_zero(disk_key, sizeof(disk_key));
+
+    {
+        const char *label = "horus-volume-key-v2";
+        uint8_t info[19]; size_t n = 0;
+        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+        if (rust_hkdf_sha256(mfs->disk_key, 32,
+                             sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                             info, n,
+                             mfs->volume_key, sizeof(mfs->volume_key)) != 0) {
+            secure_zero(mfs->disk_key, sizeof(mfs->disk_key));
+            return -6;
+        }
+    }
+    if (derive_meta_mac_key(mfs->disk_key, 32,
+                            sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                            mfs->meta_mac_key) != 0) {
+        secure_zero(mfs->disk_key,   sizeof(mfs->disk_key));
+        secure_zero(mfs->volume_key, sizeof(mfs->volume_key));
+        return -7;
+    }
+
+    /* Step 5 — Load metadata region and verify HMAC (detects nonce/tag rollback). */
+    load_meta_region(mfs);
+    {
+        uint8_t computed[32];
+        if (compute_meta_hmac(mfs->meta_mac_key, computed) != 0) {
+            secure_zero(mfs->disk_key,      sizeof(mfs->disk_key));
+            secure_zero(mfs->volume_key,    sizeof(mfs->volume_key));
+            secure_zero(mfs->meta_mac_key,  sizeof(mfs->meta_mac_key));
+            return -8;
+        }
+        int bad = 0;
+        for (int i = 0; i < 32; i++)
+            bad |= (computed[i] ^ mfs->sb.meta_hmac[i]);
+        secure_zero(computed, sizeof(computed));
+        if (bad) {
+            secure_zero(mfs->disk_key,      sizeof(mfs->disk_key));
+            secure_zero(mfs->volume_key,    sizeof(mfs->volume_key));
+            secure_zero(mfs->meta_mac_key,  sizeof(mfs->meta_mac_key));
+            my_memset(g_block_meta, 0, sizeof(g_block_meta));
+            return -9;   /* partial metadata rollback detected */
+        }
+    }
+
+    mfs->unlocked = 1;
+    return 0;
 }
 
 int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len)

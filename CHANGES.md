@@ -71,6 +71,86 @@ persistence of the per-block crypto metadata (nonces/tags), per-file ACLs,
 double-indirect data blocks and multi-block bitmaps, and reconciling the legacy
 in-memory capfs (`SYS_FS_*`) with the server.
 
+### Security — hardening pass (this session)
+
+A focused security review of every kernel file produced the following fixes, each
+committed individually (see git log `fix(security): …`):
+
+- **Capability space not zeroed on task-slot reuse** (`scheduler.c`). `cspace_pool`
+  is a static array whose slots are reused when a task exits. Without a clear, a
+  newly spawned task at slot *N* inherited the dead task's `CAP_USER`,
+  `CAP_CONSOLE`, and `CAP_ENCRYPTED_STORAGE` — granting it unearned authority with
+  no capability mint or grant. `create_task` now zeroes all 256 slots before
+  installing the initial capabilities.
+- **Page-fault handler double-call** (`idt.c`). The `rust_handle_demand_page_fault`
+  weak stub called `handle_demand_page_fault` internally; `page_fault_handler` then
+  called it again for `action == 0/1`. The second call found the page already
+  present (returns −2), fell through to `rust_validate_page_fault`, and could kill
+  a task whose page fault had already been correctly handled. The stub now returns
+  −1 ("not handled") so there is one authoritative C call site.
+- **New accounts created with empty password** (`syscall.c`). `h_useradd` passed
+  `""` as the initial password; `do_useradd` hashed the empty string with
+  `argon2id("", random_salt ‖ pepper)` — a valid hash anyone could match. Accounts
+  created without an explicit initial password now receive a CSPRNG-random
+  `pass_hash` that no Argon2id invocation can produce, locking the account until
+  `SYS_PASSWD` sets a real password.
+- **Entry-point integer overflow** (`syscall.c`). Both `h_exec` and `h_run` accept
+  user-supplied `load_base` and `entry_offset` as `uint32_t` and added them without
+  an overflow check. A crafted pair whose sum wraps could produce an entry point at
+  an arbitrary address. Both handlers now reject `load_base + entry_offset ≥
+  USER_MAX_VADDR`.
+- **Duplicate `#define PAGE_COW`** (`paging.c`). Removed the second definition at
+  line 313; the first (line 15) is authoritative and matches `idt.c`.
+- **capfs: raw `fs_object *` casts bypassed generation check** (`ramfs.c`). Four
+  functions — `capfs_create`, `capfs_delete`, `capfs_readdir`, `capfs_read`,
+  `capfs_write` — cast `cap->object` directly to `struct fs_object *`, bypassing
+  the generation check that `capfs_lookup` (the only correct caller) enforced via
+  `fs_resolve_cap`. This allowed: (a) use-after-free — a deleted file's slot
+  reached through a stale cap; (b) mismatched object-value formats — `capfs_lookup`
+  stores a packed `(idx | gen<<32)` value while `capfs_create` stored a raw
+  pointer, so a lookup-derived cap passed to `capfs_read` dereferenced the packed
+  integer as an address, producing a kernel fault or wild read. All five functions
+  now use `fs_resolve_cap(cap)`, and `capfs_create` now stores `fs_pack_object()`
+  to match `capfs_lookup`.
+- **capfs: pool object leaked on Rust validation failure** (`ramfs.c`). The old
+  `capfs_create` allocated a pool object (marking it `in_use = 1`) before running
+  the Rust FS policy check; a rejection returned −20 but left the slot permanently
+  live and unlinked — unrecoverable until reboot. Validation now runs first.
+- **capfs: key material not zeroed on delete** (`ramfs.c`). `capfs_delete` set
+  `in_use = 0` without zeroing `enc_key`, `mac_key`, `file_nonce`, or `file_tag`.
+  The deleted object's key material sat in the pool until the next allocation.
+  All four fields are now wiped with `secure_zero` before release, and the
+  generation counter is bumped so outstanding packed capabilities immediately fail
+  the `fs_resolve_cap` generation check.
+- **Password reset every reboot** (`syscall.c`). `users_init` unconditionally
+  called `set_user_password(uid, "password")` after loading the persisted user
+  database from ramfs — resetting every changed password on every boot and making
+  `SYS_PASSWD` effectively non-functional for the `"user"` account. The call is
+  removed; password changes now survive across reboots. Additionally, the
+  first-boot creation branch passed the array *index* (not the uid) to
+  `set_user_password`, so the call always failed silently — fixed to pass uid 1000.
+- **h_passwd kernel stack not cleared** (`syscall.c`). The `newpass[]` buffer was
+  not zeroed after `do_passwd` returned, leaving the cleartext password sitting in
+  the kernel stack frame until the next function at the same stack depth. Added
+  `secure_zero`.
+- **shell `passwd` hardcoded uid 0** (`userspace/shell.c`). The `passwd` command
+  always passed `target = 0` to `sys_passwd`, so non-root users got "passwd
+  failed" (kernel correctly rejects uid != self unless admin), and root would be
+  changing uid 0's password rather than the current user's. Fixed to pass
+  `sys_getuid()`. The branch also required a trailing space (`"passwd "`) so
+  typing `passwd` alone never matched; expanded to also accept the bare command.
+- **`sys_fs_mint_file` raw pointer crash** (`syscall.c`). After the `capfs`
+  refactor, `cap->object` is a packed `(idx | gen<<32)` value, not a raw pointer.
+  `sys_fs_mint_file` cast it to `struct fs_object *` to re-read the object type;
+  this produced a garbage address and could fault or mislabel a `CAP_DIR` as
+  `CAP_FILE`. The cast is redundant: `rust_cap_mint` already copies `src.typ` into
+  the destination slot. The dead cast was removed.
+- **Flat binary loader: write to wrong physical address** (`syscall.c`). If the
+  page-table walk in `do_spawn`'s flat-binary fallback path failed to find a mapped
+  page (present bit clear), `dphys` was left equal to the user virtual address;
+  writing to that value as a physical address would corrupt kernel memory at that
+  offset. Unmapped pages are now skipped rather than written.
+
 ### Fixed
 
 - **Interactive login hung after entering the password.** `SYS_AUTH` runs the

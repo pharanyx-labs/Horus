@@ -64,7 +64,7 @@ The capability system is the core security mechanism. All other security propert
 
 ### What a capability is
 
-A capability is an unforgeable token residing in a task's **capability node (CNode)**. Each CNode has 256 slots. Slots 0–3 are reserved for kernel-assigned capabilities; slots 4–255 are available to userspace.
+A capability is an unforgeable token residing in a task's **capability node (CNode)**. Each CNode has 256 slots. Slots 0–3 are reserved for kernel-assigned capabilities; slots 4–255 are available to userspace. All 256 slots are **zeroed to `CAP_NULL` when a task slot is allocated** (`create_task` in `scheduler.c`), so a reused slot cannot inherit the dead task's capabilities.
 
 ```c
 typedef struct capability {

@@ -133,9 +133,11 @@ The kernel exposes its persistent, encrypted inode/block store to a ring-3 files
 
 ## Future Work
 
-- Expanded task management (`SYS_SPAWN` full implementation)
-- More complete filesystem and storage APIs
-- Preemptive scheduling support
+- Blocking IPC endpoints (`SYS_IPC_SEND`/`RECV` that sleep in the kernel rather than returning a would-block code)
+- Atomic `SYS_IPC_CALL` reply-block (currently a thin wrapper over non-blocking send)
+- Per-file ACLs in the userspace FS server (currently access is enforced at the service boundary only)
+- Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY` — both return `SYS_ERR_NOSYS` today)
+- SMP-aware IPC locking and TLB-shootdown IPIs (Phase 4)
 - Additional device classes
 
 For the most up-to-date status, consult [`TESTS.md`](../TESTS.md), [`CHANGES.md`](../CHANGES.md), and [`ROADMAP.md`](../ROADMAP.md).
@@ -144,4 +146,4 @@ For the most up-to-date status, consult [`TESTS.md`](../TESTS.md), [`CHANGES.md`
 
 **Contribution Note**: This reference should be kept in sync with `include/syscall.h` and the syscall handler table in the kernel.
 
-*Last updated: 2026-07-02 — added the encrypted object-store API (56-61) for the userspace filesystem server and made IPC send/recv non-blocking; numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*
+*Last updated: 2026-07-03 — added the encrypted object-store API (56-61) for the userspace filesystem server and made IPC send/recv non-blocking; numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*

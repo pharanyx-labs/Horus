@@ -207,11 +207,17 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         int ipc_caller = get_current_task();
         syscall_handler(&r);
         frame->rax = (uint64_t)r.eax;
-        /* SYS_IPC_CALL may have blocked the task.  If so, save the frame and
-         * switch to the next runnable task exactly as the timer ISR would. */
-        if (ipc_caller > 0 && ipc_caller < MAX_TASKS &&
-                tasks[ipc_caller].state == TASK_BLOCKED_IPC) {
-            return ipc_block_switch(ipc_caller, (uint64_t)frame);
+        /* SYS_WAIT_NOTIFY returns the badge in ebx so the wrapper can read it
+         * from the register without needing a cross-address-space pointer copy. */
+        frame->rbx = (uint64_t)r.ebx;
+        /* SYS_IPC_CALL / SYS_WAIT_NOTIFY may have blocked the task.  If so,
+         * save the frame and switch to the next runnable task exactly as the
+         * timer ISR would.  Both blocking states use the same switch path. */
+        if (ipc_caller > 0 && ipc_caller < MAX_TASKS) {
+            int st = (int)tasks[ipc_caller].state;
+            if (st == TASK_BLOCKED_IPC || st == TASK_BLOCKED_NOTIF) {
+                return ipc_block_switch(ipc_caller, (uint64_t)frame);
+            }
         }
     } else if (vector < 32) {
         

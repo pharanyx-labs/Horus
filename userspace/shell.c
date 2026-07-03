@@ -110,10 +110,14 @@ static void show_general_help_us(void) {
     print_cmd("exit, logout",     "End session / return to login prompt");
     print_cmd("yield",            "Voluntarily yield the CPU");
     println("");
-    println("Files & Text:");
-    print_cmd("ls",               "List files (simple in-memory listing)");
+    println("Files & Text (via userspace fs_server):");
+    print_cmd("ls",               "List files in the encrypted FS");
     print_cmd("cat <file>",       "Print a file's contents");
-    print_cmd("echo <text>",      "Print text back to the console");
+    print_cmd("touch <file>",     "Create an empty file");
+    print_cmd("mkdir <dir>",      "Create a directory");
+    print_cmd("rm <name>",        "Delete a file or directory");
+    print_cmd("echo <t> > <f>",   "Write text to a file (creates if needed)");
+    print_cmd("echo <text>",      "Print text to the console");
     println("");
     println("User & Security:");
     print_cmd("whoami, id",       "Show current uid (and gid)");
@@ -141,9 +145,10 @@ static void show_general_help_us(void) {
     println("");
     println("IPC & Notifications:");
     print_cmd("ipc_send/recv",    "Synchronous endpoint IPC");
-    print_cmd("notify/wait_notify","Async single-badge notifications");
+    print_cmd("notify <badge>",   "Send a notification badge (async)");
+    print_cmd("wait_notify",      "Block until a notification badge arrives");
     println("");
-    print_cmd("fss*",             "Userspace FS server demo (fss fss_ls ...)");
+    print_cmd("fss*",             "Low-level FS ops (fss_ls fss_cat fss_write ...)");
     println("");
     println("Note: Privileged ops require appropriate caps (often slot 3) or uid 0.");
     println("Type 'help <command>' for details on a topic.");
@@ -174,13 +179,14 @@ static void show_topic_help_us(const char *topic) {
         println("             STATE HEAP CAPS FLAGS. * marks your task; STATE is run/blkd;");
         println("             FLAGS: K=in kernel, B<n>=blocked on task n, N=notify wait.");
     } else if (strcmp(t, "ls") == 0) {
-        println("Description: List files in the simple in-memory listing.");
+        println("Description: List files and directories in the userspace encrypted filesystem.");
         println("Usage:       ls");
-        println("Notes:       For capability-mediated directories use 'cap_ls <slot>'.");
+        println("Notes:       Requires fs_server to be running (spawn fs_server).");
+        println("             Directories shown with trailing /. For cap-based ops use cap_ls.");
     } else if (strcmp(t, "cat") == 0) {
-        println("Description: Print the contents of a file by name.");
+        println("Description: Print the contents of a file from the userspace filesystem.");
         println("Usage:       cat <file>");
-        println("Notes:       For capability-mediated files use 'cap_cat <slot>'.");
+        println("Notes:       Requires fs_server. For capability files use 'cap_cat <slot>'.");
     } else if (strcmp(t, "echo") == 0) {
         println("Description: Echo the remaining text back to the console.");
         println("Usage:       echo <text>");
@@ -316,45 +322,106 @@ static void handle_command(char *cmd) {
             println("(limited visibility - only own task shown for non-admin)");
         }
     } else if (strcmp(cmd, "ls") == 0) {
-        println("hello.txt");
-        println("readme.txt");
+        struct fs_request  rq = {0};
+        struct fs_response rp;
+        rq.op = FS_OP_READDIR; rq.dir_ino = 0;
+        int n = 0;
+        for (rq.offset = 0; rq.offset < 4096; rq.offset++) {
+            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
+                if (rq.offset == 0 && !fss_connected)
+                    println("ls: spawn fs_server first");
+                break;
+            }
+            print(rp.name);
+            print(rp.type == FS_TYPE_DIR ? "/\n" : "\n");
+            n++;
+        }
+        if (n == 0 && fss_connected) println("(empty)");
     } else if (strncmp(cmd, "cat ", 4) == 0) {
-        const char* filename = cmd + 4;
-        int fd = sys_open(filename);
-        if (fd < 0) {
-            println("File not found");
-            return;
+        const char *name = cmd + 4;
+        struct fs_request  rq = {0};
+        struct fs_response rp;
+        rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
+        fss_strcpy(rq.name, name);
+        if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
+            println("cat: file not found");
+        } else {
+            rq.op = FS_OP_READ; rq.ino = rp.ino;
+            rq.offset = 0; rq.len = FS_IO_MAX;
+            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
+                println("cat: read failed");
+            } else {
+                int l = rp.rc < FS_IO_MAX ? rp.rc : FS_IO_MAX - 1;
+                rp.data[l] = 0;
+                print((char *)rp.data);
+                if (l == 0 || rp.data[l-1] != '\n') print("\n");
+            }
         }
-        char buf[256];
-        int n = sys_read(fd, buf, sizeof(buf)-1);
-        if (n > 0) {
-            buf[n] = 0;
-            print(buf);
-            if (buf[n-1] != '\n') print("\n");
-        }
+    } else if (strncmp(cmd, "mkdir ", 6) == 0) {
+        const char *name = cmd + 6;
+        struct fs_request  rq = {0};
+        struct fs_response rp;
+        rq.op = FS_OP_MKDIR; rq.dir_ino = 0;
+        fss_strcpy(rq.name, name);
+        if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
+            println("mkdir: failed (name exists or server not running)");
+        else { print("mkdir: created "); println(name); }
+    } else if (strncmp(cmd, "rm ", 3) == 0) {
+        const char *name = cmd + 3;
+        struct fs_request  rq = {0};
+        struct fs_response rp;
+        rq.op = FS_OP_DELETE; rq.dir_ino = 0;
+        fss_strcpy(rq.name, name);
+        if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
+            println("rm: failed (not found or server not running)");
+        else { print("rm: removed "); println(name); }
+    } else if (strncmp(cmd, "touch ", 6) == 0) {
+        const char *name = cmd + 6;
+        struct fs_request  rq = {0};
+        struct fs_response rp;
+        rq.op = FS_OP_CREATE; rq.dir_ino = 0;
+        fss_strcpy(rq.name, name);
+        if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
+            println("touch: failed (already exists or server not running)");
+        else { print("touch: created "); println(name); }
     } else if (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ') {
         const char* rest = cmd + 5;
         const char* redirect = strstr(rest, " > ");
         if (redirect) {
-            char text[128];
-            char fname[32];
-            size_t tlen = redirect - rest;
+            char text[FS_IO_MAX];
+            char fname[FS_NAME_MAX];
+            size_t tlen = (size_t)(redirect - rest);
             if (tlen >= sizeof(text)) tlen = sizeof(text)-1;
             memcpy(text, rest, tlen);
             text[tlen] = 0;
-
             const char* fstart = redirect + 3;
             size_t flen = strlen(fstart);
             if (flen >= sizeof(fname)) flen = sizeof(fname)-1;
             memcpy(fname, fstart, flen);
             fname[flen] = 0;
 
-            int fd = sys_open(fname);
-            if (fd >= 0) {
-                sys_write(fd, text, strlen(text));
-            } else {
-                println("Cannot write to file");
+            struct fs_request  rq = {0};
+            struct fs_response rp;
+            rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
+            fss_strcpy(rq.name, fname);
+            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
+                /* file doesn't exist yet — create it */
+                rq.op = FS_OP_CREATE; rq.dir_ino = 0;
+                fss_strcpy(rq.name, fname);
+                if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
+                    println("echo: cannot create file"); goto echo_done;
+                }
             }
+            { /* write the text */
+                uint32_t wlen = (uint32_t)tlen;
+                if (wlen > FS_IO_MAX) wlen = FS_IO_MAX;
+                rq.op = FS_OP_WRITE; rq.ino = rp.ino;
+                rq.offset = 0; rq.len = wlen;
+                memcpy(rq.data, text, wlen);
+                if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
+                    println("echo: write failed");
+            }
+            echo_done:;
         } else {
             println(rest);
         }

@@ -32,8 +32,8 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
     while (n-- && (*dst++ = *src++));
 }
 
-#define STORAGE_MAGIC 0x48534653
-#define STORAGE_VERSION 1
+#define STORAGE_MAGIC   0x48534653
+#define STORAGE_VERSION 2   /* v2 adds the persisted crypto-metadata region */
 
 static struct virtual_disk g_vdisk;
 /* Unused when STORAGE_ATA selects the ATA backend instead of the RAM vdisk. */
@@ -87,19 +87,26 @@ static void intent_append(uint32_t kind, uint64_t a0, uint64_t a1, uint32_t gen)
     intent_head = (intent_head + 1) % INTENT_LOG_SLOTS;
 }
 
-/* Per-physical-block AEAD metadata: the 12-byte nonce and 16-byte tag for each
- * encrypted block. Held in kernel RAM rather than stealing 28 bytes from the
- * 512-byte data block, so encryption stays length-preserving and the file/dir
- * layer keeps a full BLOCK_SIZE payload. The backing disk is itself an
- * ephemeral RAM buffer, so this table shares its lifetime; a reformat
- * re-randomises the volume key, so any stale (nonce,tag) simply fails to
- * authenticate (fail-closed) rather than ever decrypting wrongly. */
+/* Per-physical-block AEAD metadata: nonce (12), tag (16), present flag (1),
+ * and 3 bytes of padding to reach exactly META_ENTRY_SIZE=32 bytes.  Packing
+ * to 32 bytes lets META_ENTRIES_PER_BLOCK=16 entries fit one 512-byte sector
+ * cleanly, making the on-disk metadata region exactly META_BLOCKS_COUNT=64
+ * sectors.  The region is written to disk on every encrypt/free so it survives
+ * across reboots; a missing or corrupt entry causes AEAD to fail closed
+ * (buffer zeroed, -1 returned) rather than ever decrypting wrongly. */
 struct block_crypto_meta {
-    uint8_t nonce[AEAD_NONCE_LEN];
-    uint8_t tag[AEAD_TAG_LEN];
-    uint8_t present;
+    uint8_t nonce[AEAD_NONCE_LEN];   /* 12 */
+    uint8_t tag[AEAD_TAG_LEN];       /* 16 */
+    uint8_t present;                  /*  1 */
+    uint8_t _pad[3];                  /*  3 → total 32 = META_ENTRY_SIZE */
 };
+_Static_assert(sizeof(struct block_crypto_meta) == META_ENTRY_SIZE,
+               "block_crypto_meta must be META_ENTRY_SIZE bytes");
 static struct block_crypto_meta g_block_meta[BLOCKS_PER_DISK];
+
+/* forward declarations — defined after do_block_read/do_block_write */
+static void flush_meta_block(uint64_t phys);
+static void load_meta_region(struct mounted_fs *mfs);
 
 /* Per-block subkeys = HKDF-SHA256(ikm = volume key, salt = kernel pepper,
  * info = "horus-block-aead-v2" || ino || block) -> enc_key(32) || mac_key(32).
@@ -176,6 +183,11 @@ int storage_encrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf
     for (int i = 0; i < AEAD_NONCE_LEN; i++) g_block_meta[phys].nonce[i] = nonce[i];
     for (int i = 0; i < AEAD_TAG_LEN; i++)   g_block_meta[phys].tag[i]   = tag[i];
     g_block_meta[phys].present = 1;
+    /* Persist nonce+tag to disk immediately so they survive a reboot.
+     * Written before the caller writes the ciphertext block: a crash between
+     * here and the data write leaves new-meta / old-ciphertext, which the
+     * AEAD rejects (fail-closed), never silently serving stale plaintext. */
+    flush_meta_block(phys);
     spin_unlock(&storage_lock);
     return 0;
 }
@@ -250,6 +262,44 @@ int storage_block_read(uint64_t block, void *buf) {
 
 int storage_block_write(uint64_t block, const void *buf) {
     return do_block_write(block, buf);
+}
+
+/* Serialize and write the metadata sector that covers physical block `phys`.
+ * Called while holding storage_lock (single-CPU ring-0, so a blocking ATA
+ * write inside the lock is safe — the timer never preempts ring 0). */
+static void flush_meta_block(uint64_t phys)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || mfs->sb.meta_start == 0) return;
+    if (phys >= BLOCKS_PER_DISK) return;
+
+    uint64_t meta_blk = phys / META_ENTRIES_PER_BLOCK;
+    uint64_t base     = meta_blk * META_ENTRIES_PER_BLOCK;
+
+    uint8_t buf[BLOCK_SIZE];
+    for (uint64_t i = 0; i < META_ENTRIES_PER_BLOCK; i++) {
+        my_memcpy(buf + i * META_ENTRY_SIZE,
+                  &g_block_meta[base + i],
+                  META_ENTRY_SIZE);
+    }
+    do_block_write(mfs->sb.meta_start + meta_blk, buf);
+}
+
+/* Read the entire metadata region from disk into g_block_meta on mount. */
+static void load_meta_region(struct mounted_fs *mfs)
+{
+    if (!mfs || mfs->sb.meta_start == 0) return;
+    for (uint64_t i = 0; i < META_BLOCKS_COUNT; i++) {
+        uint8_t buf[BLOCK_SIZE];
+        if (do_block_read(mfs->sb.meta_start + i, buf) != 0) continue;
+        uint64_t base = i * META_ENTRIES_PER_BLOCK;
+        for (uint64_t j = 0; j < META_ENTRIES_PER_BLOCK; j++) {
+            if (base + j >= BLOCKS_PER_DISK) break;
+            my_memcpy(&g_block_meta[base + j],
+                      buf + j * META_ENTRY_SIZE,
+                      META_ENTRY_SIZE);
+        }
+    }
 }
 
 #ifdef STORAGE_ATA
@@ -477,9 +527,14 @@ int storage_format(struct block_device *bd) {
     sb.total_blocks = bd->total_blocks;
     sb.block_size = BLOCK_SIZE;
 
-    sb.inode_bitmap_start = 1;
-    sb.block_bitmap_start = 2;
-    sb.inode_table_start  = 3;
+    /* Block 0: superblock.  Blocks 1..META_BLOCKS_COUNT: crypto metadata region.
+     * All other regions are shifted past it so the metadata lives at a fixed,
+     * known offset regardless of disk geometry. */
+    sb.meta_start         = 1;
+    sb.meta_blocks        = META_BLOCKS_COUNT;
+    sb.inode_bitmap_start = 1 + META_BLOCKS_COUNT;
+    sb.block_bitmap_start = 2 + META_BLOCKS_COUNT;
+    sb.inode_table_start  = 3 + META_BLOCKS_COUNT;
 
     /* Geometry is computed from the device size instead of hardcoded. One bitmap
      * block addresses at most BLOCK_SIZE*8 (=4096) bits, so both the inode count
@@ -508,6 +563,13 @@ int storage_format(struct block_device *bd) {
 
     uint8_t zero[BLOCK_SIZE];
     my_memset(zero, 0, BLOCK_SIZE);
+
+    /* Zero the crypto metadata region so every block starts with present=0;
+     * load_meta_region reads it back on mount and initialises g_block_meta. */
+    for (uint64_t m = 0; m < META_BLOCKS_COUNT; m++) {
+        bd->write_block(bd, sb.meta_start + m, zero);
+    }
+
     bd->write_block(bd, sb.block_bitmap_start, zero);
 
     /* Zero the whole inode table so inodes sharing a block with a freshly used
@@ -540,7 +602,11 @@ int storage_mount(struct block_device *bd) {
 
     struct fs_superblock *sb = (struct fs_superblock *)block_buf;
 
-    if (sb->magic != STORAGE_MAGIC) {
+    /* Reject disks with the wrong magic or an older on-disk version.  A v1 disk
+     * has no metadata region (meta_start=0) and would silently serve undecryptable
+     * blocks after reboot.  Returning -2 here triggers storage_init to reformat,
+     * which is the correct recovery for an incompatible layout. */
+    if (sb->magic != STORAGE_MAGIC || sb->version != STORAGE_VERSION) {
         return -2;
     }
 
@@ -567,6 +633,10 @@ int storage_mount(struct block_device *bd) {
             return -3;
         }
     }
+
+    /* Restore the nonce+tag table from the persisted metadata region so blocks
+     * written in a previous boot can be authenticated and decrypted correctly. */
+    load_meta_region(&g_mounted_fs);
 
     return 0;
 }
@@ -789,7 +859,10 @@ int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
     for (int i = 0; i < 12; i++) {
         if (inode.direct[i]) {
             storage_free_block(mfs->bd, &mfs->sb, inode.direct[i]);
-            if (inode.direct[i] < BLOCKS_PER_DISK) g_block_meta[inode.direct[i]].present = 0;
+            if (inode.direct[i] < BLOCKS_PER_DISK) {
+                g_block_meta[inode.direct[i]].present = 0;
+                flush_meta_block(inode.direct[i]);
+            }
             inode.direct[i] = 0;
         }
     }
@@ -800,12 +873,18 @@ int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
             for (unsigned k = 0; k < BLOCK_SIZE / sizeof(uint64_t); k++) {
                 if (ptrs[k]) {
                     storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
-                    if (ptrs[k] < BLOCKS_PER_DISK) g_block_meta[ptrs[k]].present = 0;
+                    if (ptrs[k] < BLOCKS_PER_DISK) {
+                        g_block_meta[ptrs[k]].present = 0;
+                        flush_meta_block(ptrs[k]);
+                    }
                 }
             }
         }
         storage_free_block(mfs->bd, &mfs->sb, inode.indirect);
-        if (inode.indirect < BLOCKS_PER_DISK) g_block_meta[inode.indirect].present = 0;
+        if (inode.indirect < BLOCKS_PER_DISK) {
+            g_block_meta[inode.indirect].present = 0;
+            flush_meta_block(inode.indirect);
+        }
         inode.indirect = 0;
     }
 

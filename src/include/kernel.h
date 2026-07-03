@@ -423,7 +423,7 @@ typedef struct virtual_disk {
 
 typedef struct fs_superblock {
     uint32_t magic;
-    uint32_t version;           /* 2 = includes persisted crypto-metadata region */
+    uint32_t version;           /* 3 = stable disk_key + persisted+HMACed crypto-metadata */
     uint64_t meta_start;        /* first block of the nonce/tag metadata region (v2+) */
     uint32_t meta_blocks;       /* number of blocks in that region */
     uint32_t _pad;
@@ -437,8 +437,19 @@ typedef struct fs_superblock {
     uint64_t total_blocks;
     uint32_t block_size;
     uint8_t  volume_key_salt[16];
-    uint8_t  volume_key[16];
+    uint8_t  volume_key[16];    /* unused field kept for layout compat */
     uint32_t generation;
+    /* v3 additions — stable per-format secret and metadata integrity tag */
+    uint8_t  disk_key[32];      /* random per-format; root of all block key derivation.
+                                  * Stored in plaintext: provides key stability across
+                                  * reboots (without this, kernel_pepper changes per boot
+                                  * and every block becomes undecryptable after reboot).
+                                  * For passphrase-gated unwrapping (LUKS-style), wrap
+                                  * this with a KEK from the user password — future work. */
+    uint8_t  meta_hmac[32];     /* HMAC-SHA256(meta_mac_key, g_block_meta[]) over the
+                                  * entire in-memory metadata region; recomputed on every
+                                  * flush, verified on mount to detect partial rollback of
+                                  * the nonce/tag region without matching ciphertext. */
 } fs_superblock_t;
 
 typedef struct on_disk_inode {
@@ -467,6 +478,8 @@ typedef struct mounted_fs {
     fs_superblock_t sb;
     uint8_t volume_key[16];
     uint8_t *inode_cache;
+    uint8_t meta_mac_key[32];   /* HKDF(disk_key, volume_key_salt, "horus-meta-mac-v1"),
+                                  * derived at mount, used to HMAC the metadata region */
 } mounted_fs_t;
 
 typedef struct fs_object {

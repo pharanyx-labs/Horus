@@ -33,7 +33,7 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 }
 
 #define STORAGE_MAGIC   0x48534653
-#define STORAGE_VERSION 2   /* v2 adds the persisted crypto-metadata region */
+#define STORAGE_VERSION 3   /* v3 adds stable disk_key + HMAC over the metadata region */
 
 static struct virtual_disk g_vdisk;
 /* Unused when STORAGE_ATA selects the ATA backend instead of the RAM vdisk. */
@@ -107,26 +107,37 @@ static struct block_crypto_meta g_block_meta[BLOCKS_PER_DISK];
 /* forward declarations — defined after do_block_read/do_block_write */
 static void flush_meta_block(uint64_t phys);
 static void load_meta_region(struct mounted_fs *mfs);
+static void update_meta_hmac(void);
 
-/* Per-block subkeys = HKDF-SHA256(ikm = volume key, salt = kernel pepper,
- * info = "horus-block-aead-v2" || ino || block) -> enc_key(32) || mac_key(32).
- * Binding (ino, block) into `info` gives every block independent keys, and the
- * split into two 32-byte subkeys keeps the AEAD's encryption and MAC keys
- * independent (required for the Encrypt-then-MAC composition to be sound). */
+/* Per-block subkeys = HKDF-SHA256(ikm = volume_key, salt = disk_key,
+ * info = "horus-block-aead-v3" || ino || block) -> enc_key(32) || mac_key(32).
+ *
+ * Salt changed from kernel_pepper (per-boot ephemeral) to disk_key (per-format
+ * stable).  The old v2 derivation made every block undecryptable after reboot
+ * because kernel_pepper changes on every boot.  disk_key is stored in the
+ * superblock and survives reboots, making ATA-backed files persistent.
+ *
+ * Security property: keys are unknown to anyone who cannot read disk_key from
+ * the superblock.  For passphrase-gated unwrapping (so disk_key itself stays
+ * secret without the passphrase), wrap it with a KEK — future work. */
 int storage_derive_block_keys(uint64_t ino, uint64_t block,
                               const uint8_t *vol_key, size_t vol_key_len,
                               uint8_t *enc_key32, uint8_t *mac_key32)
 {
-    extern uint8_t kernel_pepper[16];
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) return -1;
+
     uint8_t info[19 + 8 + 8];
-    const char *label = "horus-block-aead-v2";
+    const char *label = "horus-block-aead-v3";
     size_t p = 0;
     for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
-    for (int i = 0; i < 8; i++) info[p++] = (uint8_t)(ino >> (i * 8));
+    for (int i = 0; i < 8; i++) info[p++] = (uint8_t)(ino   >> (i * 8));
     for (int i = 0; i < 8; i++) info[p++] = (uint8_t)(block >> (i * 8));
 
     uint8_t okm[64];
-    if (rust_hkdf_sha256(vol_key, vol_key_len, kernel_pepper, 16, info, p, okm, sizeof(okm)) != 0) {
+    if (rust_hkdf_sha256(vol_key, vol_key_len,
+                         mfs->sb.disk_key, sizeof(mfs->sb.disk_key),
+                         info, p, okm, sizeof(okm)) != 0) {
         return -1;
     }
     for (int i = 0; i < 32; i++) {
@@ -283,6 +294,8 @@ static void flush_meta_block(uint64_t phys)
                   META_ENTRY_SIZE);
     }
     do_block_write(mfs->sb.meta_start + meta_blk, buf);
+    /* Keep the superblock's meta_hmac in sync so mount can verify integrity. */
+    update_meta_hmac();
 }
 
 /* Read the entire metadata region from disk into g_block_meta on mount. */
@@ -300,6 +313,44 @@ static void load_meta_region(struct mounted_fs *mfs)
                       META_ENTRY_SIZE);
         }
     }
+}
+
+/* Derive the HMAC key for the metadata region:
+ *   meta_mac_key = HKDF-SHA256(IKM=disk_key, salt=volume_key_salt, info="horus-meta-mac-v1")
+ * disk_key and volume_key_salt are both on-disk stable values, so meta_mac_key
+ * is the same across reboots for the same formatted volume. */
+static int derive_meta_mac_key(const uint8_t *disk_key,   size_t dk_len,
+                                const uint8_t *vk_salt,    size_t salt_len,
+                                uint8_t       *out32)
+{
+    const char *label = "horus-meta-mac-v1";
+    uint8_t info[18];
+    size_t p = 0;
+    for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
+    return rust_hkdf_sha256(disk_key, dk_len, vk_salt, salt_len, info, p, out32, 32);
+}
+
+/* HMAC-SHA256(meta_mac_key, entire g_block_meta[] array) → out32.
+ * Covers all BLOCKS_PER_DISK entries at once; at 32 KB this is cheap. */
+static int compute_meta_hmac(const uint8_t *mac_key, uint8_t *out32)
+{
+    return rust_hmac_sha256(mac_key, 32,
+                            (const uint8_t *)g_block_meta, sizeof(g_block_meta),
+                            out32);
+}
+
+/* Recompute the metadata HMAC, store it in the in-memory superblock, and
+ * flush the superblock (block 0) to disk.  Called while holding storage_lock
+ * after every metadata-sector write, so the HMAC always reflects the current
+ * state of the metadata region. */
+static void update_meta_hmac(void)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) return;
+    uint8_t tag[32];
+    if (compute_meta_hmac(mfs->meta_mac_key, tag) != 0) return;
+    my_memcpy(mfs->sb.meta_hmac, tag, 32);
+    do_block_write(0, &mfs->sb);   /* superblock is always block 0 */
 }
 
 #ifdef STORAGE_ATA
@@ -556,8 +607,26 @@ int storage_format(struct block_device *bd) {
     if (data_blocks > BITS_PER_BLOCK) data_blocks = BITS_PER_BLOCK;
     sb.block_count = data_blocks;
 
-    /* Random per-volume salt from the central CSPRNG (was raw-TSC derived). */
+    /* Per-volume salt (domain-separates volumes) and per-format disk secret
+     * (the stable root of all block key derivation — see disk_key comment in
+     * fs_superblock_t).  Both from the CSPRNG so they are unpredictable. */
     secure_random_bytes(sb.volume_key_salt, sizeof(sb.volume_key_salt));
+    secure_random_bytes(sb.disk_key, sizeof(sb.disk_key));
+
+    /* Compute the initial metadata HMAC over an all-zeros g_block_meta[] so
+     * storage_mount's verify step matches on the very first mount after format.
+     * We zero g_block_meta here too so any leftover data from a prior session
+     * doesn't corrupt the HMAC we're about to write. */
+    my_memset(g_block_meta, 0, sizeof(g_block_meta));
+    {
+        uint8_t fmt_mac_key[32];
+        if (derive_meta_mac_key(sb.disk_key, sizeof(sb.disk_key),
+                                sb.volume_key_salt, sizeof(sb.volume_key_salt),
+                                fmt_mac_key) == 0) {
+            compute_meta_hmac(fmt_mac_key, sb.meta_hmac);
+            secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
+        }
+    }
 
     bd->write_block(bd, 0, &sb);
 
@@ -614,18 +683,17 @@ int storage_mount(struct block_device *bd) {
     g_mounted_fs.sb = *sb;
     g_mounted_fs.mounted = 1;
 
-    /* Volume key = HKDF-SHA256(ikm = kernel pepper, salt = on-disk per-volume
-     * salt, info = "horus-volume-key-v1"). Replaces the previous homebrew ARX
-     * mixing (which also wrote 32 bytes into this 16-byte field). The pepper is
-     * the secret input, so the volume key is unpredictable without it; binding
-     * the per-volume salt domain-separates distinct volumes. */
+    /* Volume key = HKDF-SHA256(IKM=disk_key, salt=volume_key_salt,
+     * info="horus-volume-key-v2").  disk_key is per-format stable (on disk),
+     * replacing the old v1 derivation which used kernel_pepper (per-boot
+     * ephemeral from RDRAND) — that made every ATA block undecryptable after
+     * reboot because the key changed on every boot. */
     {
-        extern uint8_t kernel_pepper[16];
-        const char *label = "horus-volume-key-v1";
+        const char *label = "horus-volume-key-v2";
         uint8_t info[19];
         size_t p = 0;
         for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
-        if (rust_hkdf_sha256(kernel_pepper, 16,
+        if (rust_hkdf_sha256(sb->disk_key, sizeof(sb->disk_key),
                              sb->volume_key_salt, sizeof(sb->volume_key_salt),
                              info, p,
                              g_mounted_fs.volume_key, sizeof(g_mounted_fs.volume_key)) != 0) {
@@ -634,9 +702,41 @@ int storage_mount(struct block_device *bd) {
         }
     }
 
-    /* Restore the nonce+tag table from the persisted metadata region so blocks
-     * written in a previous boot can be authenticated and decrypted correctly. */
+    /* Metadata HMAC key — same stable inputs, different info string. */
+    if (derive_meta_mac_key(sb->disk_key, sizeof(sb->disk_key),
+                            sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                            g_mounted_fs.meta_mac_key) != 0) {
+        g_mounted_fs.mounted = 0;
+        return -4;
+    }
+
+    /* Restore the nonce+tag table from the persisted metadata region. */
     load_meta_region(&g_mounted_fs);
+
+    /* Verify HMAC over the loaded metadata.  A mismatch means the nonce/tag
+     * region was modified without a matching ciphertext update — partial
+     * rollback attack.  Return -2 so storage_init reformats the volume; this
+     * is fail-closed: we don't serve any data with unverified AEAD parameters.
+     * Note: constant-time compare prevents timing side-channels on the tag. */
+    {
+        uint8_t computed[32];
+        if (compute_meta_hmac(g_mounted_fs.meta_mac_key, computed) != 0) {
+            g_mounted_fs.mounted = 0;
+            secure_zero(g_mounted_fs.meta_mac_key, sizeof(g_mounted_fs.meta_mac_key));
+            secure_zero(g_mounted_fs.volume_key,   sizeof(g_mounted_fs.volume_key));
+            return -2;
+        }
+        int mismatch = 0;
+        for (int i = 0; i < 32; i++)
+            mismatch |= (computed[i] ^ g_mounted_fs.sb.meta_hmac[i]);
+        secure_zero(computed, sizeof(computed));
+        if (mismatch) {
+            g_mounted_fs.mounted = 0;
+            secure_zero(g_mounted_fs.meta_mac_key, sizeof(g_mounted_fs.meta_mac_key));
+            secure_zero(g_mounted_fs.volume_key,   sizeof(g_mounted_fs.volume_key));
+            return -2;
+        }
+    }
 
     return 0;
 }

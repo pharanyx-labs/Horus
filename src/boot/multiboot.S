@@ -236,6 +236,7 @@ gdt64_start:
     .quad 0x0000000000000000   /* 0x40: 64-bit TSS descriptor (high), filled at runtime */
 gdt64_end:
 
+.global gdt64_ptr
 gdt64_ptr:
     .word gdt64_end - gdt64_start - 1
     .quad gdt64_start
@@ -297,6 +298,18 @@ high_pdpt:
     .space 4096
 
 .section .rodata
+#ifdef SMP
+/* Real-mode AP startup trampoline (src/boot/ap_trampoline.S), linked flat at
+ * 0x8000 and copied there by smp_start_aps before the broadcast SIPI. Only
+ * embedded in the SMP build. */
+.align 16
+.global ap_trampoline_start
+ap_trampoline_start:
+.incbin "src/boot/ap_trampoline.bin"
+.global ap_trampoline_end
+ap_trampoline_end:
+#endif
+
 .align 16
 .global embedded_shell_bin_start
 embedded_shell_bin_start:

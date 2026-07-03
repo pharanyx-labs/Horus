@@ -130,6 +130,28 @@ tss_flush:
     ltr %ax
     ret
 
+/* Adopt the shared kernel GDT on an application processor and reload the
+ * segment registers to the kernel selectors (CS=0x08, data=0x10).  Called from
+ * ap_entry64() after the trampoline hands over on the AP's own stack. No LTR
+ * here: the single kernel TSS descriptor is the BSP's, so APs load a per-CPU TSS
+ * separately once they take interrupts. */
+.extern gdt64_ptr
+.global ap_load_kernel_segments
+ap_load_kernel_segments:
+    lgdt (gdt64_ptr)
+    pushq $0x08
+    leaq 1f(%rip), %rax
+    pushq %rax
+    lretq
+1:
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
+    movw %ax, %fs
+    movw %ax, %gs
+    ret
+
 .global idt_load
 idt_load:
     lidt (%rdi)

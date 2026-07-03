@@ -566,233 +566,113 @@ void spin_unlock(spinlock_t *lock) {
     }
 }
 
+/* ===== SMP: application-processor bringup ================================== *
+ * The BSP copies the real-mode trampoline (src/boot/ap_trampoline.S) to
+ * AP_TRAMP_PHYS, publishes three qword cells the trampoline consumes, then wakes
+ * every AP at once with a broadcast INIT-SIPI-SIPI ("all excluding self", so no
+ * APIC-id enumeration / MADT parse is needed).  Each AP walks itself up to long
+ * mode, picks a private idle stack by LAPIC id, and enters ap_entry64().  All of
+ * this is gated on SMP=1; the default build is single-CPU and never wakes an AP.
+ *
+ * smp_cpus_online counts CPUs that finished bringup (BSP starts it at 1) and is
+ * the source of truth for smp_get_online_count() and the TLB-shootdown path. */
 static volatile int smp_cpus_online = 1;
 
-#define AP_TRAMP_PHYS 0x8000UL
-#define AP_COMM_CR3   0x510UL
+/* Low-memory cells shared with the trampoline. MUST match ap_trampoline.S. */
+#define AP_TRAMP_PHYS        0x8000UL
+#define AP_STACK_BASE_CELL   0x8FD8UL
+#define AP_CR3_CELL          0x8FE0UL
+#define AP_ENTRY_CELL        0x8FE8UL
+#define AP_IDLE_STACK_SIZE   0x4000UL
 
-static const uint8_t ap_trampoline_blob[512] = {
-    
-    0xFA,                         
-    0x31,0xC0,                    
-    0x8E,0xD8,                    
-    0x8E,0xC0,                    
-    0x8E,0xD0,                    
-    0x0F,0x01,0x16,0xF0,0x81,     
-    0x0F,0x20,0xC0,               
-    0x0C,0x01,                    
-    0x0F,0x22,0xC0,               
-    
-    0xBA,0xF8,0x03,               
-    0xB0,0x50,                    
-    0xEE,                         
-    0xB0,0x45,                    
-    0xEE,
-    0xEA,0x28,0x80,0x08,0x00,     
-    
-    
-    0xBA,0xF8,0x03,0xB0,0x33,0xEE,0xB0,0x32,0xEE,
-    0x66,0xB8,0x18,0x00,          
-    0x66,0x8E,0xD8, 0x66,0x8E,0xC0, 0x66,0x8E,0xD0, 0x66,0x8E,0xE0, 
-    0x0F,0x20,0xE0,               
-    0x0D,0xA0,0x00,0x00,0x00,     
-    0x0F,0x22,0xE0,               
-    
-    0xBA,0xF8,0x03,0xB0,0x43,0xEE,0xB0,0x34,0xEE,
-    0xB9,0x80,0x00,0x00,0xC0,     
-    0x0F,0x32,                    
-    0x0D,0x00,0x01,0x00,0x00,     
-    0x0F,0x30,                    
-    
-    0xBA,0xF8,0x03,0xB0,0x45,0xEE,0xB0,0x46,0xEE,
-    0xA1,0x10,0x05,0x00,0x00,     
-    0x0F,0x22,0xD8,               
-    
-    0xBA,0xF8,0x03,0xB0,0x43,0xEE,0xB0,0x52,0xEE,
-    0x0F,0x20,0xC0,               
-    0x0D,0x00,0x00,0x00,0x80,     
-    0x0F,0x22,0xC0,               
-    
-    0xBA,0xF8,0x03,               
-    0xB0,0x50,                    
-    0xEE,
-    0xB0,0x47,                    
-    0xEE,
-    0xEA,0x97,0x80,0x10,0x00,     
-    
-    
-    0x48,0xBA,0xF8,0x03,0x00,0x00,0x00,0x00,0x00,0x00,  
-    0xB0,0x36,                    
-    0xEE,
-    0xB0,0x34,                    
-    0xEE,
-    
-    0xB0,0x4A,0xEE,0xB0,0x4D,0xEE, 
-    0x48,0x31,0xC0,               
-    0xB8,0x18,0x00,0x00,0x00,     
-    0x8E,0xD8,0x8E,0xC0,0x8E,0xD0,0x8E,0xE0, 
-    
-    0xB0,0x50,0xEE,0xB0,0x54,0xEE, 
-    
-    0x48,0xC7,0xC4,0x00,0x00,0x02,0x00,   
-    0xB0,0x41,0xEE,0xB0,0x50,0xEE,        
-    
-    0x48,0xB8,0x00,0x00,0xE0,0xFE,0x00,0x00,0x00,0x00, 
-    0x31,0xC9,                         
-    0x89,0x88,0x80,0x02,0x00,0x00,     
-    0x8B,0x90,0xF0,0x00,0x00,0x00,     
-    0x81,0xE2,0x00,0xFF,0xFF,0xFF,     
-    0x81,0xCA,0xFF,0x01,0x00,0x00,     
-    0x89,0x90,0xF0,0x00,0x00,0x00,     
-    0x89,0x88,0x80,0x02,0x00,0x00,     
-    0xB0,0x4C,0xEE,0xB0,0x45,0xEE,     
-    
-    0x48,0xB8,0x20,0x05,0x00,0x00,0x00,0x00,0x00,0x00, 
-    0xFE,0x00,                          
-    0xB0,0x42,0xEE,0xB0,0x50,0xEE,     
-    0xFA,                               
-    0xF4,                               
-    0xEB,0xFD,                          
-    
-    
-};
-
-static uint8_t ap_gdt32[32] = {
-    0,0,0,0,0,0,0,0,                         
-    0xFF,0xFF,0x00,0x00,0x00,0x9A,0xCF,0x00, 
-    0xFF,0xFF,0x00,0x00,0x00,0x9A,0xAF,0x00, 
-    0xFF,0xFF,0x00,0x00,0x00,0x92,0xCF,0x00  
-};
-
-void ap_entry64(void) {
-    __asm__ volatile ("movq $0x20000, %%rsp" ::: "memory");
-
-    __asm__ volatile (
-        "movw $0x3f8, %%dx\n"
-        "movb $'A', %%al; outb %%al, %%dx\n"
-        "movb $'P', %%al; outb %%al, %%dx\n"
-        "movb $'6', %%al; outb %%al, %%dx\n"
-        "movb $'4', %%al; outb %%al, %%dx\n"
-        "movb $'E', %%al; outb %%al, %%dx\n"
-        "movb $'N', %%al; outb %%al, %%dx\n"
-        ::: "rax","rdx","memory"
-    );
-
+static inline void lapic_write(uint32_t reg, uint32_t val) {
     volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
-    lapic[0x280/4] = 0;
-    lapic[0xF0/4] = (lapic[0xF0/4] & 0xFFFFFF00) | 0xFF | 0x100;
-    lapic[0x280/4] = 0;
+    lapic[reg / 4] = val;
+}
+static inline uint32_t lapic_read(uint32_t reg) {
+    volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
+    return lapic[reg / 4];
+}
 
-    int cpu = this_cpu();
-    if (cpu <= 0 || cpu >= MAX_CPUS) cpu = 1;
+/* Enable the local APIC: clear the task-priority register (accept every vector)
+ * and set the spurious-interrupt vector register (enable bit 8 + vector 0xFF).
+ * Run once by the BSP and once by every AP. */
+static void lapic_enable(void) {
+    lapic_write(0x80, 0);                                    /* TPR = 0 */
+    lapic_write(0xF0, (lapic_read(0xF0) & 0xFFFFFF00) | 0x100 | 0xFF);
+}
+
+static void lapic_enable_bsp(void) { lapic_enable(); }
+
+static void smp_busy_delay(int iters) {
+    for (volatile int d = 0; d < iters; d++) __asm__ volatile ("pause");
+}
+
+#ifdef SMP
+/* Per-CPU idle stacks. APs index by LAPIC id (see ap_trampoline.S), so MAX_CPUS
+ * slots cover ids 0..MAX_CPUS-1; slot 0 (the BSP's) is unused on this path. */
+static uint8_t ap_idle_stacks[MAX_CPUS][AP_IDLE_STACK_SIZE] __attribute__((aligned(16)));
+
+extern uint8_t ap_trampoline_start[], ap_trampoline_end[];
+extern void ap_load_kernel_segments(void);   /* lowlevel64.S */
+void ap_load_idt(void);                       /* idt.c */
+
+/* 64-bit C entry for every AP, reached from the trampoline on the AP's private
+ * idle stack.  Stage 1: adopt the shared kernel GDT/IDT, enable the local APIC,
+ * check in, and park.  (Later stages replace the park with scheduler entry.) */
+void ap_entry64(void) {
+    ap_load_kernel_segments();    /* shared kernel GDT: CS=0x08, data=0x10 */
+    ap_load_idt();                /* shared kernel IDT */
+    lapic_enable();
 
     __sync_fetch_and_add(&smp_cpus_online, 1);
 
-    __asm__ volatile (
-        "movw $0x3f8, %%dx\n"
-        "movb $'O', %%al; outb %%al, %%dx\n"
-        "movb $'K', %%al; outb %%al, %%dx\n"
-        ::: "rax","rdx","memory"
-    );
-
-    for (;;) {
-        __asm__ volatile ("cli; hlt" ::: "memory");
-    }
+    /* Park with interrupts masked until a later stage claims this CPU. */
+    for (;;) __asm__ volatile ("cli; hlt");
 }
 
-static void lapic_enable_bsp(void) {
-    volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
-    
-    lapic[0x280/4] = 0;
-    
-    lapic[0xF0/4] = (lapic[0xF0/4] & 0xFFFFFF00) | 0xFF | 0x100;
-    lapic[0x280/4] = 0; 
+/* Broadcast INIT then two SIPIs to "all excluding self" (ICR destination
+ * shorthand 0b11).  Wakes every AP without an APIC-id list. */
+static void lapic_broadcast_init_sipi(uint8_t vector) {
+    lapic_write(0x300, 0x000C4500);                /* INIT assert, all-excl-self */
+    smp_busy_delay(500000);                        /* ~10 ms settle */
+    lapic_write(0x300, 0x000C4600 | vector);       /* SIPI #1 */
+    smp_busy_delay(50000);
+    lapic_write(0x300, 0x000C4600 | vector);       /* SIPI #2 (spec: send twice) */
+    smp_busy_delay(50000);
 }
 
-static void lapic_send_init(uint32_t apic_id) {
-    volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
-    lapic[0x280/4] = 0; 
-    
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'I', %%al; outb %%al, %%dx; movb $'H', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    lapic[0x310/4] = (apic_id << 24); 
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'I', %%al; outb %%al, %%dx; movb $'1', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    lapic[0x300/4] = 0x00004500U;     
-    for (volatile int d=0; d<400000; d++) { __asm__ volatile("pause"); }
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'I', %%al; outb %%al, %%dx; movb $'2', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    lapic[0x300/4] = 0x00004500U;     
-    for (volatile int d=0; d<400000; d++) { __asm__ volatile("pause"); }
-}
+static void smp_start_aps(void) {
+    /* Stage the trampoline at its real-mode SIPI load address. */
+    uint8_t *dst = (uint8_t *)AP_TRAMP_PHYS;
+    uint32_t n = (uint32_t)(ap_trampoline_end - ap_trampoline_start);
+    for (uint32_t i = 0; i < n; i++) dst[i] = ap_trampoline_start[i];
 
-static void lapic_send_sipi(uint32_t apic_id, uint8_t vector) {
-    volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
-    lapic[0x280/4] = 0; 
-    
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'S', %%al; outb %%al, %%dx; movb $'H', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    lapic[0x310/4] = (apic_id << 24);
-    lapic[0x300/4] = 0x00004600U | vector;  
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'S', %%al; outb %%al, %%dx; movb $'1', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'.', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    for (volatile int d = 0; d < 600000; d++) { __asm__ volatile("pause"); }
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'.', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    
-    lapic[0x300/4] = 0x00004600U | vector;
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'S', %%al; outb %%al, %%dx; movb $'2', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
-    for (volatile int d = 0; d < 600000; d++) { __asm__ volatile("pause"); }
-    
-    __asm__ volatile ("movw $0x3f8, %%dx; movb $'S', %%al; outb %%al, %%dx; movb $'D', %%al; outb %%al, %%dx" ::: "rax","rdx","memory");
+    /* Publish the cells the trampoline reads (CR3, entry, idle-stack base). */
+    uint64_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    *(volatile uint64_t *)AP_CR3_CELL        = cr3;
+    *(volatile uint64_t *)AP_ENTRY_CELL      = (uint64_t)(uintptr_t)&ap_entry64;
+    *(volatile uint64_t *)AP_STACK_BASE_CELL = (uint64_t)(uintptr_t)&ap_idle_stacks[0][0];
+    __asm__ volatile ("mfence" ::: "memory");
+
+    lapic_broadcast_init_sipi((uint8_t)(AP_TRAMP_PHYS >> 12));   /* vector 0x08 */
+
+    /* Wait (bounded) for the APs to check in. */
+    for (int spins = 0; spins < 200 && smp_cpus_online < MAX_CPUS; spins++)
+        smp_busy_delay(20000);
+
+    print("[smp] CPUs online: ");
+    print_hex((uint64_t)smp_cpus_online);
+    print("\n");
 }
+#endif /* SMP */
 
 void smp_bringup(void) {
     lapic_enable_bsp();
-
-    
-    uint64_t cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3) : : "memory");
-    
-    uint32_t cr3_low = (uint32_t)cr3;
-    __asm__ volatile (
-        "movl %0, (%1)"
-        :: "r"(cr3_low), "r"(AP_COMM_CR3)
-        : "memory"
-    );
-
-    
-    uint8_t *dst = (uint8_t *)AP_TRAMP_PHYS;
-    
-    for (int i = 0; i < (int)sizeof(ap_trampoline_blob); i++) dst[i] = ap_trampoline_blob[i];
-
-    
-    uint16_t *gdt_lim = (uint16_t *)(dst + 0x1F0);
-    uint32_t *gdt_base = (uint32_t *)(dst + 0x1F2);
-    *gdt_lim = sizeof(ap_gdt32) - 1;
-    *gdt_base = (uint32_t)(AP_TRAMP_PHYS + 0x200); 
-    
-    uint8_t *gdt_dst = (uint8_t *)(AP_TRAMP_PHYS + 0x200);
-    for (int i = 0; i < 32; i++) gdt_dst[i] = ap_gdt32[i];
-
-    
-    extern void ap_entry64(void);
-    uint64_t ap_target = (uint64_t)(uintptr_t)&ap_entry64;
-    __asm__ volatile (
-        "movq %0, (%1)"
-        :: "r"(ap_target), "r"(0x528UL)
-        : "memory"
-    );
-    
-    __asm__ volatile (
-        "movb $1, (%0)"
-        :: "r"(0x520UL)
-        : "memory"
-    );
-
-
-    
-    (void)lapic_send_init; (void)lapic_send_sipi;
-
-
-    for (volatile int d=0; d < 100000; d++) {
-        __asm__ volatile("pause");
-    }
+#ifdef SMP
+    smp_start_aps();
+#endif
 
     println("[ok] kernel ready, starting init...");
 #ifdef PREEMPT_SELFTEST
@@ -841,13 +721,5 @@ void smp_maybe_shootdown(uint64_t vaddr) {
 }
 
 int smp_get_online_count(void) {
-    uint8_t cell;
-    
-    __asm__ volatile ("movb 0x520, %0" : "=q"(cell) : : "memory");
-    if (cell > 0) {
-        
-        if ((int)cell > smp_cpus_online) smp_cpus_online = (int)cell;
-        return (int)cell;
-    }
     return smp_cpus_online;
 }

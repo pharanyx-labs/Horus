@@ -100,6 +100,19 @@ ASFLAGS += -DNEWLIB_SELFTEST
 NEWLIB_SELFTEST_DEP = userspace/hello_newlib.bin
 endif
 
+# SMP=1 brings up the application processors (multi-core) at boot: the BSP wakes
+# every AP with a broadcast INIT-SIPI-SIPI and each walks itself to long mode via
+# the real-mode trampoline (src/boot/ap_trampoline.S). Gated so the default build
+# is single-CPU and byte-for-byte unaffected. Run under QEMU with -smp N (see
+# `make smoke-smp`). ASFLAGS also gets the define so the gated .incbin of the
+# trampoline blob in multiboot.S is included.
+SMP ?= 0
+ifeq ($(SMP),1)
+CFLAGS  += -DSMP
+ASFLAGS += -DSMP
+AP_TRAMPOLINE_DEP = src/boot/ap_trampoline.bin
+endif
+
 OBJS += src/boot/entry64.o
 OBJS += src/kernel/lowlevel64.o
 
@@ -148,7 +161,15 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP)
+
+# AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
+# directive emits the right encodings) and linked flat at its SIPI load address
+# 0x8000, then emitted as a raw binary that multiboot.S embeds via .incbin.
+src/boot/ap_trampoline.o: src/boot/ap_trampoline.S
+	$(CC) -m32 -ffreestanding -fno-pic -x assembler-with-cpp -c $< -o $@
+src/boot/ap_trampoline.bin: src/boot/ap_trampoline.o
+	$(LD) -m elf_i386 -Ttext=0x8000 --oformat binary -o $@ $<
 
 src/kernel/rust_shims.o: src/kernel/rust_shims.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -196,7 +217,7 @@ boot.iso: kernel.elf grub.cfg
 	@rm -rf isofiles
 
 clean: userspace-clean
-	rm -f kernel.elf src/boot/*.o src/kernel/*.o src/kernel/rust_*.o
+	rm -f kernel.elf src/boot/*.o src/boot/*.bin src/kernel/*.o src/kernel/rust_*.o
 	rm -rf rust/target
 
 clean-rust:

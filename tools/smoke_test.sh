@@ -63,12 +63,18 @@ if [ -n "${SMOKE_DISK:-}" ]; then
     DRIVE_ARG="-drive file=$SMOKE_DISK,format=raw,if=ide,index=0"
 fi
 
+# SMP_CPUS=<n> boots the guest with n logical CPUs (for the SMP self-test).
+SMP_ARG=""
+if [ -n "${SMP_CPUS:-}" ]; then
+    SMP_ARG="-smp $SMP_CPUS"
+fi
+
 qemu-system-x86_64 \
     -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap -accel tcg \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -net none \
-    $DRIVE_ARG \
+    $DRIVE_ARG $SMP_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 

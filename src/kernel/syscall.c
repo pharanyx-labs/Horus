@@ -1974,22 +1974,53 @@ static void h_sysinfo(struct regs *r) {
     }
 }
 
-/* SYS_SBRK (10): grow/shrink the caller's heap within its fixed bounds. */
+/* SYS_SBRK (10): increment the program break by `increment` bytes.
+ * Returns the OLD break (pointer to start of newly allocated region) on
+ * success, or (uint32_t)-1 on failure.  heap_end grows on demand up to
+ * USER_HEAP_MAX_SIZE; the demand pager allocates physical pages lazily. */
 static void h_sbrk(struct regs *r) {
+    int tid = get_current_task();
     int32_t increment = (int32_t)r->ebx;
-    if (increment == 0) {
-        r->eax = tasks[get_current_task()].heap_current;
+    if (increment == 0) { r->eax = tasks[tid].heap_current; return; }
+
+    uint32_t new_current = tasks[tid].heap_current + (uint32_t)increment;
+    uint32_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+
+    if (new_current < tasks[tid].heap_start || new_current > heap_max) {
+        r->eax = (uint32_t)-1;
         return;
     }
-
-    uint32_t new_current = tasks[get_current_task()].heap_current + increment;
-    if (new_current > tasks[get_current_task()].heap_end || new_current < tasks[get_current_task()].heap_start) {
-        r->eax = 0;
-    } else {
-        uint32_t old = tasks[get_current_task()].heap_current;
-        tasks[get_current_task()].heap_current = new_current;
-        r->eax = old;
+    /* Extend the authorised ceiling on demand; physical pages arrive lazily. */
+    if (new_current > tasks[tid].heap_end) {
+        uint32_t new_end = (new_current + 0xFFFU) & ~0xFFFU;
+        if (new_end > heap_max) new_end = heap_max;
+        tasks[tid].heap_end = new_end;
     }
+    uint32_t old = tasks[tid].heap_current;
+    tasks[tid].heap_current = new_current;
+    r->eax = old;
+}
+
+/* SYS_BRK (62): set the program break to an absolute address.
+ * Returns the new break on success.  On failure (addr out of range) returns
+ * the unchanged current break — callers check return == addr to detect error,
+ * matching the Linux brk(2) convention.  addr=0 queries without changing. */
+static void h_brk(struct regs *r) {
+    int tid = get_current_task();
+    uint32_t addr     = r->ebx;
+    uint32_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+
+    if (addr == 0) { r->eax = tasks[tid].heap_current; return; }
+
+    if (addr < tasks[tid].heap_start || addr > heap_max) {
+        r->eax = tasks[tid].heap_current;   /* failure: return unchanged break */
+        return;
+    }
+    uint32_t aligned = (addr + 0xFFFU) & ~0xFFFU;
+    if (aligned > heap_max) aligned = heap_max;
+    tasks[tid].heap_current = aligned;
+    tasks[tid].heap_end     = aligned;
+    r->eax = aligned;
 }
 
 /* SYS_WRITE (11): write to fd 1 (console). Length clamped to the scratch buf. */
@@ -2979,7 +3010,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 62
+#define SYSCALL_TABLE_SIZE 63
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -3046,6 +3077,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FBLOCK_WRITE]             = { h_fblock_write,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_FS_STAT]                  = { h_fs_stat,                 7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_FS_SET_SIZE]              = { h_fs_set_size,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_BRK]                     = { h_brk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, demand-paged */
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -3057,7 +3089,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_FS_SET_SIZE + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_BRK + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

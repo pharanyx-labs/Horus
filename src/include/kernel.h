@@ -193,6 +193,7 @@ void users_init(void);
 #define SYS_FBLOCK_WRITE       59
 #define SYS_FS_STAT            60
 #define SYS_FS_SET_SIZE        61
+#define SYS_BRK                62
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {
@@ -843,6 +844,12 @@ void secure_random_bytes(void *out, size_t n);
 #define ARGON2_M_COST_KIB   4096U
 #define ARGON2_T_COST       3U
 #define ARGON2_P_COST       1U
+
+/* Maximum heap size per task.  The demand pager allocates physical pages lazily
+ * so this is a virtual address ceiling, not a pre-committed reservation.
+ * 64 MiB fits comfortably in the 32-bit low-memory window without colliding
+ * with typical stack placements (stacks grow down from below 0x80000000). */
+#define USER_HEAP_MAX_SIZE  (64U * 1024U * 1024U)
 /* Shared Argon2id wrapper using the kernel's single pre-allocated scratch buffer.
  * Safe only for sequential (non-concurrent) calls — all kernel Argon2id users
  * (login hash + KEK derivation) run sequentially inside a single syscall. */

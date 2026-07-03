@@ -1785,6 +1785,25 @@ static int verify_password(const char *name, const char *pass) {
 
 #define IPC_SPIN_LIMIT 200000
 
+/* Serialise endpoint + notification operations across CPUs. A raw test-and-set
+ * (endpoint_lock) is used because these run inside the int-0x80 handler with IF
+ * already clear. In the single-CPU default build these compile to nothing, so
+ * that path is byte-for-byte unchanged. The lock guards the mailbox flags, the
+ * badge accumulator, and the wake handoff (state -> RUNNABLE + saved-frame
+ * patch); the actual task switch onto the woken task is done later by the
+ * running-CPU-guarded scheduler. */
+#ifdef SMP
+extern spinlock_t endpoint_lock;
+static inline void ipc_lock(void) {
+    while (__sync_lock_test_and_set(&endpoint_lock.locked, 1))
+        while (endpoint_lock.locked) __asm__ volatile ("pause");
+}
+static inline void ipc_unlock(void) { __sync_lock_release(&endpoint_lock.locked); }
+#else
+static inline void ipc_lock(void) { }
+static inline void ipc_unlock(void) { }
+#endif
+
 int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
     if (ep >= MAX_ENDPOINTS) return -1;
     if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
@@ -1804,15 +1823,16 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * runnable.  ipc_block_switch in interrupt_handler64 already saved the
      * waiter's frame — the next timer tick will iretq it back to ring 3 with
      * the return value in eax. */
+    ipc_lock();
     int waiter = e->blocked_waiter;
     if (waiter > 0 && waiter < MAX_TASKS &&
             tasks[waiter].state == TASK_BLOCKED_IPC) {
-        if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) return -1;
+        if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) { ipc_unlock(); return -1; }
 
         uint8_t kbuf[IPC_MSG_MAX];
         int copy_len = 0;
         if (len > 0) {
-            if (copy_from_user(kbuf, msg, len) != 0) return -1;
+            if (copy_from_user(kbuf, msg, len) != 0) { ipc_unlock(); return -1; }
             copy_len = (int)len;
         }
 
@@ -1835,6 +1855,7 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
         __asm__ volatile ("" ::: "memory");
         tasks[waiter].state       = TASK_RUNNABLE;
         tasks[waiter].runnable_ctx = 1;
+        ipc_unlock();
         return 0;
     }
 
@@ -1842,15 +1863,16 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * retry. The old form spun in-kernel calling yield(), but the cooperative
      * scheduler cannot correctly switch two ring-3 tasks (only timer preemption
      * can); a caller that polls from ring 3 gets preempted and makes progress. */
-    if (e->has_message) return -2;
+    if (e->has_message) { ipc_unlock(); return -2; }
 
-    if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) return -1;
+    if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) { ipc_unlock(); return -1; }
 
-    if (len > 0 && copy_from_user(e->msg, msg, len) != 0) return -1;
+    if (len > 0 && copy_from_user(e->msg, msg, len) != 0) { ipc_unlock(); return -1; }
     e->msg_len = (int)len;
     e->sender_task = get_current_task();
     __asm__ volatile ("" ::: "memory");
     e->has_message = 1;
+    ipc_unlock();
     return 0;
 }
 
@@ -1865,18 +1887,20 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
     /* Non-blocking (see sys_ipc_send): no message yet -> caller polls from ring
      * 3 and is timer-preempted, rather than spinning on the broken cooperative
      * yield in-kernel. */
-    if (!e->has_message) return -2;
+    ipc_lock();
+    if (!e->has_message) { ipc_unlock(); return -2; }
 
-    if (auth.valid && !cap_revalidate(3, CAP_RIGHT_READ, &auth)) return -1;
+    if (auth.valid && !cap_revalidate(3, CAP_RIGHT_READ, &auth)) { ipc_unlock(); return -1; }
 
     int len = e->msg_len;
     if (len > (int)max_len) len = (int)max_len;
     if (len < 0) len = 0;
-    if (len > 0 && copy_to_user(msg, e->msg, (size_t)len) != 0) return -1;
+    if (len > 0 && copy_to_user(msg, e->msg, (size_t)len) != 0) { ipc_unlock(); return -1; }
 
     e->last_sender = e->sender_task;
     __asm__ volatile ("" ::: "memory");
-    e->has_message = 0;          
+    e->has_message = 0;
+    ipc_unlock();
     return len;
 }
 
@@ -1899,6 +1923,7 @@ int sys_notify(uint32_t notif_slot, uint32_t badge) {
     if (notif_slot >= MAX_NOTIFICATIONS) return -1;
     struct notification *n = &notifications[notif_slot];
 
+    ipc_lock();
     n->pending_badge |= badge;
 
     int waiter = n->blocked_waiter;
@@ -1922,6 +1947,7 @@ int sys_notify(uint32_t notif_slot, uint32_t badge) {
         tasks[waiter].state       = TASK_RUNNABLE;
         tasks[waiter].runnable_ctx = 1;
     }
+    ipc_unlock();
     return 0;
 }
 
@@ -1933,9 +1959,11 @@ int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
     if (notif_slot >= MAX_NOTIFICATIONS) return -1;
     struct notification *n = &notifications[notif_slot];
 
+    ipc_lock();
     if (n->pending_badge != 0) {
         *out_badge = n->pending_badge;
         n->pending_badge = 0;
+        ipc_unlock();
         return 0;
     }
 
@@ -1946,6 +1974,7 @@ int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
     tasks[cur].runnable_ctx   = 0;
     /* out_badge and r->ebx will be patched by sys_notify when it wakes us. */
     *out_badge = 0;
+    ipc_unlock();
     return 0;
 }
 

@@ -394,6 +394,44 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
  * its saved_ksp, find the next runnable task, switch to it, and return its
  * saved_ksp so the ISR epilogue resumes that task via iretq. */
 uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
+#ifdef SMP
+    /* Serialise against preempt_on_tick / other CPUs' block-switches (same raw
+     * scheduler lock) and only take a task no other CPU is running. */
+    sched_raw_lock();
+    int cpu = this_cpu();
+    tasks[blocked_task].saved_ksp = frame_rsp;
+    task_running_cpu[blocked_task] = -1;   /* blocking: release it */
+
+    int next = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        int cand = (blocked_task + i) % MAX_TASKS;
+        if (cand == 0) continue;
+        if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
+                tasks[cand].runnable_ctx && task_running_cpu[cand] < 0) {
+            next = cand;
+            break;
+        }
+    }
+    if (next < 0) {
+        /* Nothing else runnable here: revert the block (caller spins at user
+         * level until the server catches up) and keep the task on this CPU. */
+        tasks[blocked_task].state        = TASK_RUNNABLE;
+        tasks[blocked_task].runnable_ctx = 1;
+        task_running_cpu[blocked_task]   = cpu;
+        sched_raw_unlock();
+        return frame_rsp;
+    }
+
+    task_running_cpu[next] = cpu;
+    switch_cr3(tasks[next].cr3);
+    uint64_t kstop = task_kstack_top(next);
+    set_tss_kernel_stack(kstop);
+    if (cpu == 0) current_kernel_stack_top = kstop;
+    set_current_task(next);
+    uint64_t ksp = tasks[next].saved_ksp;
+    sched_raw_unlock();
+    return ksp;
+#else
     tasks[blocked_task].saved_ksp = frame_rsp;
 
     int next = -1;
@@ -422,6 +460,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     set_current_task(next);
 
     return tasks[next].saved_ksp;
+#endif
 }
 
 void aslr_init_seed(void) {

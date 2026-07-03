@@ -172,6 +172,16 @@ idt_load:
 .global isr46
 .global isr47
 
+/* LAPIC timer (vector 0x40): per-CPU preemption tick on the application
+ * processors, where the legacy PIC IRQ0 does not reach. */
+.global isr64
+isr64: pushq $0; pushq $0x40; jmp isr_common_stub64
+
+/* TLB-shootdown IPI (vector 0xFB): a remote CPU changed a shared mapping and is
+ * asking this CPU to flush its TLB. */
+.global isr251
+isr251: pushq $0; pushq $0xFB; jmp isr_common_stub64
+
 isr34: pushq $0; pushq $34; jmp isr_common_stub64
 isr35: pushq $0; pushq $35; jmp isr_common_stub64
 isr36: pushq $0; pushq $36; jmp isr_common_stub64

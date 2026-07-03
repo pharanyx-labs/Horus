@@ -1,8 +1,20 @@
 #include "kernel.h"
 
 tcb_t tasks[MAX_TASKS];
-int current_task = 0;  
+int current_task = 0;
 int percpu_current_task[MAX_CPUS];
+
+#ifdef SMP
+/* Which CPU is currently running each task (-1 == not running anywhere). The SMP
+ * scheduler's mutual-exclusion guard: preempt_on_tick only ever claims a task
+ * whose entry is -1, so a task's single kernel stack + saved trap frame are
+ * never touched by two CPUs at once. Managed under the scheduler lock. */
+int task_running_cpu[MAX_TASKS];
+
+/* Bitmask of CPUs that have run at least one user task (bit c == CPU c). The SMP
+ * self-test reads it to confirm work actually landed on more than one core. */
+volatile unsigned smp_cpus_ran_tasks = 0;
+#endif
 
 static uint8_t kernel_stacks[MAX_TASKS][KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 
@@ -263,11 +275,33 @@ void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
     tasks[id].runnable_ctx  = 1;
 }
 
+#ifdef SMP
+int this_cpu(void);   /* defined below */
+
+/* Gate for cross-CPU task scheduling. APs come online and take timer ticks
+ * immediately, but they only start *pulling runnable tasks* once the BSP has
+ * populated the runnable pool and set this — which closes the window where an
+ * AP could grab a task the BSP launched (via lretq) but not yet claimed. Normal
+ * SMP boot leaves it 0 (APs idle, BSP runs the shell); the SMP self-test turns
+ * it on after spawning its pool of workers. */
+volatile int smp_sched_enabled = 0;
+
+/* Raw test-and-set on the scheduler lock for use *inside* an interrupt handler,
+ * where IF is already clear (the gate is an interrupt gate): unlike spin_lock()
+ * it must not touch IF, or the ISR epilogue's iretq would race a re-entry. */
+static void sched_raw_lock(void) {
+    while (__sync_lock_test_and_set(&scheduler_lock.locked, 1))
+        while (scheduler_lock.locked) __asm__ volatile ("pause");
+}
+static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked); }
+#endif
+
 /* Called from the timer ISR. Returns the kernel %rsp the ISR epilogue should
  * resume on: the same frame when we don't switch, or the next task's saved
  * frame when we do. */
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!preempt_enabled) return frame_rsp;
+#ifndef SMP
     if ((interrupted_cs & 3) != 3) return frame_rsp;   /* only preempt ring 3 */
 
     int cur = get_current_task();
@@ -301,6 +335,58 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     set_current_task(next);
 
     return tasks[next].saved_ksp;
+#else
+    /* SMP: any CPU may run any task, so selection + claim is serialised under the
+     * scheduler lock and a task is only ever taken when task_running_cpu[] shows
+     * it running nowhere. The shared runnable pool + this per-CPU pull is the
+     * load-balancing mechanism: an idle AP grabs whatever work is available. The
+     * BSP (cpu 0) is never pulled out of its ring-0 idle/kernel context by the
+     * timer -- only its ring-3 tasks are preempted -- which preserves the exact
+     * single-CPU boot flow; the APs do the multi-core work. */
+    int cpu = this_cpu();
+    if (!smp_sched_enabled) return frame_rsp;
+    int ring3 = ((interrupted_cs & 3) == 3);
+    if (!ring3 && cpu == 0) return frame_rsp;
+
+    sched_raw_lock();
+    int cur = percpu_current_task[cpu];
+
+    /* Defensively claim the task we are currently running, so another CPU cannot
+     * grab a task that was launched onto this CPU outside the timer path. */
+    if (cur > 0 && cur < MAX_TASKS && task_running_cpu[cur] < 0)
+        task_running_cpu[cur] = cpu;
+
+    int next = -1;
+    for (int i = 1; i <= MAX_TASKS; i++) {
+        int cand = (cur + i) % MAX_TASKS;
+        if (cand == 0) continue;
+        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
+            tasks[cand].runnable_ctx && task_running_cpu[cand] < 0) {
+            next = cand;
+            break;
+        }
+    }
+    if (next < 0) { sched_raw_unlock(); return frame_rsp; }   /* keep running cur */
+
+    /* Save + release the outgoing task if it was a real user task in ring 3. A
+     * ring-0 (idle) context is stateless and simply abandoned. */
+    if (cur > 0 && cur < MAX_TASKS && ring3) {
+        tasks[cur].saved_ksp    = frame_rsp;
+        tasks[cur].runnable_ctx = 1;
+        task_running_cpu[cur]   = -1;
+    }
+
+    task_running_cpu[next] = cpu;
+    smp_cpus_ran_tasks |= (1u << cpu);
+    switch_cr3(tasks[next].cr3);
+    uint64_t kstop = task_kstack_top(next);
+    set_tss_kernel_stack(kstop);
+    if (cpu == 0) current_kernel_stack_top = kstop;
+    set_current_task(next);
+    uint64_t ksp = tasks[next].saved_ksp;
+    sched_raw_unlock();
+    return ksp;
+#endif
 }
 
 /* Called from interrupt_handler64 after a blocking SYS_IPC_CALL.  The caller's
@@ -578,6 +664,11 @@ void spin_unlock(spinlock_t *lock) {
  * the source of truth for smp_get_online_count() and the TLB-shootdown path. */
 static volatile int smp_cpus_online = 1;
 
+/* Set once the local APIC is up on the BSP (so this_cpu() is safe to call).
+ * Gates the per-CPU TSS routing in set_tss_kernel_stack(); stays 0 in the
+ * single-CPU default build. Read by gdt.c. */
+volatile int smp_active = 0;
+
 /* Low-memory cells shared with the trampoline. MUST match ap_trampoline.S. */
 #define AP_TRAMP_PHYS        0x8000UL
 #define AP_STACK_BASE_CELL   0x8FD8UL
@@ -604,6 +695,10 @@ static void lapic_enable(void) {
 
 static void lapic_enable_bsp(void) { lapic_enable(); }
 
+/* Signal end-of-interrupt to the local APIC (write 0 to the EOI register).
+ * Called from the vector-0x40 LAPIC-timer path in idt.c. */
+void lapic_eoi(void) { lapic_write(0xB0, 0); }
+
 static void smp_busy_delay(int iters) {
     for (volatile int d = 0; d < iters; d++) __asm__ volatile ("pause");
 }
@@ -616,19 +711,77 @@ static uint8_t ap_idle_stacks[MAX_CPUS][AP_IDLE_STACK_SIZE] __attribute__((align
 extern uint8_t ap_trampoline_start[], ap_trampoline_end[];
 extern void ap_load_kernel_segments(void);   /* lowlevel64.S */
 void ap_load_idt(void);                       /* idt.c */
+void setup_ap_tss(int cpu, uintptr_t rsp0);   /* gdt.c */
+
+/* Count of LAPIC-timer ticks taken across all APs — the SMP self-test reads it
+ * to confirm the APs are actually being interrupted (and thus preemptible). */
+volatile unsigned long ap_timer_ticks = 0;
+
+/* LAPIC timer registers + the calibrated initial count for a ~100 Hz tick. */
+#define LAPIC_TIMER_LVT    0x320
+#define LAPIC_TIMER_INIT   0x380
+#define LAPIC_TIMER_CUR    0x390
+#define LAPIC_TIMER_DIV    0x3E0
+#define LAPIC_TIMER_VECTOR 0x40
+static uint32_t lapic_timer_count = 0;
+
+/* Measure the LAPIC timer frequency against PIT channel 2 (a one-shot mode-0
+ * countdown gated on port 0x61) and record the count for a ~10 ms period. Run
+ * once on the BSP before the APs start their periodic timers. */
+static void lapic_timer_calibrate(void) {
+    lapic_write(LAPIC_TIMER_DIV, 0x3);                       /* divide by 16 */
+    lapic_write(LAPIC_TIMER_LVT, (1u << 16) | LAPIC_TIMER_VECTOR);  /* masked */
+
+    uint8_t p61 = inb(0x61);
+    outb(0x61, (uint8_t)((p61 & 0xFD) | 0x01));   /* gate2 on, speaker off */
+    outb(0x43, 0xB0);                              /* ch2, lo/hi, mode 0 */
+    uint16_t cnt = 11932;                          /* ~10 ms @ 1.193182 MHz */
+    outb(0x42, (uint8_t)(cnt & 0xFF));
+    outb(0x42, (uint8_t)(cnt >> 8));
+
+    lapic_write(LAPIC_TIMER_INIT, 0xFFFFFFFFu);    /* start LAPIC countdown */
+    while (!(inb(0x61) & 0x20)) { }                /* wait for PIT OUT2 high */
+    uint32_t remaining = lapic_read(LAPIC_TIMER_CUR);
+    lapic_write(LAPIC_TIMER_INIT, 0);              /* stop */
+
+    lapic_timer_count = 0xFFFFFFFFu - remaining;   /* ticks in ~10 ms => 100 Hz */
+    if (lapic_timer_count < 1000) lapic_timer_count = 1000000;  /* sane fallback */
+}
+
+/* Start this CPU's LAPIC timer in periodic mode at the calibrated rate. */
+static void lapic_timer_start_periodic(void) {
+    lapic_write(LAPIC_TIMER_DIV, 0x3);                              /* divide by 16 */
+    lapic_write(LAPIC_TIMER_LVT, (1u << 17) | LAPIC_TIMER_VECTOR);  /* periodic */
+    lapic_write(LAPIC_TIMER_INIT, lapic_timer_count ? lapic_timer_count : 1000000);
+}
+
+/* The AP idle context: sit with interrupts enabled so the LAPIC timer keeps
+ * firing. Each tick runs preempt_on_tick(), which pulls a runnable task onto
+ * this CPU when one is available. Reached both as the AP's initial context and
+ * whenever it has no task to run. */
+void ap_idle_loop(void) {
+    for (;;) __asm__ volatile ("sti; hlt");
+}
 
 /* 64-bit C entry for every AP, reached from the trampoline on the AP's private
- * idle stack.  Stage 1: adopt the shared kernel GDT/IDT, enable the local APIC,
- * check in, and park.  (Later stages replace the park with scheduler entry.) */
+ * idle stack.  Adopt the shared kernel GDT/IDT, install a per-CPU TSS (own RSP0
+ * + IST fault stacks), enable the local APIC + its periodic timer, check in, and
+ * drop into the idle loop where timer ticks drive the scheduler. */
 void ap_entry64(void) {
     ap_load_kernel_segments();    /* shared kernel GDT: CS=0x08, data=0x10 */
     ap_load_idt();                /* shared kernel IDT */
+
+    int cpu = this_cpu();
+    uintptr_t idle_top = (uintptr_t)&ap_idle_stacks[0][0]
+                       + (uintptr_t)(cpu + 1) * AP_IDLE_STACK_SIZE;
+    setup_ap_tss(cpu, idle_top);  /* per-CPU TSS + IST, ltr'd */
+
     lapic_enable();
+    lapic_timer_start_periodic();
 
     __sync_fetch_and_add(&smp_cpus_online, 1);
 
-    /* Park with interrupts masked until a later stage claims this CPU. */
-    for (;;) __asm__ volatile ("cli; hlt");
+    ap_idle_loop();               /* timer ticks now schedule tasks onto this CPU */
 }
 
 /* Broadcast INIT then two SIPIs to "all excluding self" (ICR destination
@@ -643,6 +796,13 @@ static void lapic_broadcast_init_sipi(uint8_t vector) {
 }
 
 static void smp_start_aps(void) {
+    /* No task is running on any CPU yet. */
+    for (int i = 0; i < MAX_TASKS; i++) task_running_cpu[i] = -1;
+
+    /* Calibrate the LAPIC timer once (on the BSP, using the PIT) so every AP can
+     * start its periodic timer at a known ~100 Hz rate. */
+    lapic_timer_calibrate();
+
     /* Stage the trampoline at its real-mode SIPI load address. */
     uint8_t *dst = (uint8_t *)AP_TRAMP_PHYS;
     uint32_t n = (uint32_t)(ap_trampoline_end - ap_trampoline_start);
@@ -671,6 +831,9 @@ static void smp_start_aps(void) {
 void smp_bringup(void) {
     lapic_enable_bsp();
 #ifdef SMP
+    /* LAPIC is mapped (paging_init) and now enabled, so this_cpu() is safe and
+     * per-CPU TSS routing can turn on before any AP or context switch runs. */
+    smp_active = 1;
     smp_start_aps();
 #endif
 
@@ -695,6 +858,10 @@ void smp_bringup(void) {
      * printf/sprintf/malloc/string ops all work end-to-end (prints
      * NEWLIB_SELFTEST: PASS to serial). */
     newlib_selftest();
+#elif defined(SMP_SELFTEST)
+    /* Gated: spawn a pool of forever-looping workers and prove the application
+     * processors pull and run them concurrently (prints SMP_SELFTEST: PASS). */
+    smp_selftest();
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the
@@ -711,13 +878,26 @@ void tlb_shootdown(uint64_t vaddr) {
     __asm__ volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
 }
 
+#ifdef SMP
+/* Receiver-side ack hook (idt.c, vector 0xFB). Stage-2 shootdown is
+ * fire-and-forget, so there is nothing to count yet; kept as the single ack
+ * choke point that the Stage-4 bounded-wait protocol will build on. */
+void smp_ack_shootdown(void) { }
+#endif
+
+/* Flush `vaddr` locally and, on a multi-CPU system, ask every other CPU to flush
+ * too (broadcast IPI, vector 0xFB). On a single-CPU system it is just a local
+ * invlpg. NOTE: the cross-CPU flush is currently fire-and-forget -- the local
+ * flush is always synchronous, and receivers flush their whole TLB on the IPI,
+ * but the initiator does not yet wait for acknowledgements. */
 void smp_maybe_shootdown(uint64_t vaddr) {
     tlb_shootdown(vaddr);
+#ifdef SMP
     if (smp_get_online_count() > 1) {
         __asm__ volatile ("mfence" ::: "memory");
-        volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
-        lapic[0x300/4] = 0x000C0000 | 0xFB;
+        lapic_write(0x300, 0x000C0000 | 0xFB);      /* all-excluding-self, vec 0xFB */
     }
+#endif
 }
 
 int smp_get_online_count(void) {

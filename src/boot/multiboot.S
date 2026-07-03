@@ -234,6 +234,17 @@ gdt64_start:
     .quad 0x00CFF3000000FFFF
     .quad 0x0000000000000000   /* 0x38: 64-bit TSS descriptor (low),  filled at runtime */
     .quad 0x0000000000000000   /* 0x40: 64-bit TSS descriptor (high), filled at runtime */
+#ifdef SMP
+    /* Per-CPU (application-processor) 64-bit TSS descriptors, filled at runtime
+     * by setup_ap_tss(). Each 64-bit TSS descriptor occupies two 8-byte GDT
+     * slots, so these are selectors 0x48 / 0x58 / 0x68 for CPUs 1..MAX_CPUS-1. */
+    .quad 0x0000000000000000   /* 0x48: AP cpu 1 (low)  */
+    .quad 0x0000000000000000   /* 0x50: AP cpu 1 (high) */
+    .quad 0x0000000000000000   /* 0x58: AP cpu 2 (low)  */
+    .quad 0x0000000000000000   /* 0x60: AP cpu 2 (high) */
+    .quad 0x0000000000000000   /* 0x68: AP cpu 3 (low)  */
+    .quad 0x0000000000000000   /* 0x70: AP cpu 3 (high) */
+#endif
 gdt64_end:
 
 .global gdt64_ptr
@@ -355,9 +366,10 @@ embedded_elftest_start:
 embedded_elftest_end:
 #endif
 
-#ifdef PREEMPT_SELFTEST
+#if defined(PREEMPT_SELFTEST) || defined(SMP_SELFTEST)
 /* Flat userspace tracer used by the preemptive-scheduling self-test
- * (preempt_selftest). Two copies are spawned. Only in the PREEMPT_SELFTEST build. */
+ * (preempt_selftest) and reused as the worker payload by the SMP self-test
+ * (smp_selftest). Only embedded in those gated builds. */
 .align 16
 .global embedded_preempttest_bin_start
 embedded_preempttest_bin_start:

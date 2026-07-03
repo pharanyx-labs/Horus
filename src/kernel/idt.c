@@ -105,6 +105,11 @@ extern void isr128(void);
 
 extern tcb_t tasks[MAX_TASKS];
 extern void schedule(void);
+#ifdef SMP
+extern void lapic_eoi(void);                    /* scheduler.c */
+extern volatile unsigned long ap_timer_ticks;   /* scheduler.c */
+extern void smp_ack_shootdown(void);            /* scheduler.c */
+#endif
 
 void interrupt_handler(struct regs *r);
 void page_fault_handler(struct regs *r);
@@ -176,6 +181,24 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
             }
         }
         outb(0x20, 0x20);
+#ifdef SMP
+    } else if (vector == 0x40) {
+        /* LAPIC timer: the application processors' preemption tick (the legacy
+         * PIC IRQ0 only reaches the BSP). EOI to the local APIC, then let the
+         * preemptive scheduler decide whether to switch this CPU's task. */
+        lapic_eoi();
+        __sync_fetch_and_add(&ap_timer_ticks, 1ul);
+        return preempt_on_tick((uint64_t)frame, frame->cs);
+    } else if (vector == 0xFB) {
+        /* TLB-shootdown IPI: a remote CPU changed a shared mapping. Flush this
+         * CPU's TLB (reload CR3 drops all non-global entries) and acknowledge. */
+        uint64_t cr3;
+        __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
+        smp_ack_shootdown();
+        lapic_eoi();
+        return (uint64_t)frame;
+#endif
     } else if (vector == 0x80 || vec2 == 0x80) {
         int scur = get_current_task();
         if ((uint32_t)frame->rax == SYS_SIGRETURN && scur > 0 && scur < MAX_TASKS
@@ -421,6 +444,13 @@ void idt_init64(void)
 
     extern void isr128(void);
     idt64_set_gate(0x80, (uint64_t)isr128, 0x08, 0, 0xEE);
+
+#ifdef SMP
+    extern void isr64(void);    /* LAPIC timer (per-CPU preemption tick) */
+    extern void isr251(void);   /* TLB-shootdown IPI */
+    idt64_set_gate(0x40, (uint64_t)isr64,  0x08, 0, 0x8E);
+    idt64_set_gate(0xFB, (uint64_t)isr251, 0x08, 0, 0x8E);
+#endif
 
     idt64_ptr.limit = sizeof(idt64) - 1;
     idt64_ptr.base  = (addr_t)&idt64[0];

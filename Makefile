@@ -90,6 +90,16 @@ ASFLAGS += -DFS_SELFTEST
 FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
 endif
 
+# NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
+# spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
+# (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
+NEWLIB_SELFTEST ?= 0
+ifeq ($(NEWLIB_SELFTEST),1)
+CFLAGS  += -DNEWLIB_SELFTEST
+ASFLAGS += -DNEWLIB_SELFTEST
+NEWLIB_SELFTEST_DEP = userspace/hello_newlib.bin
+endif
+
 OBJS += src/boot/entry64.o
 OBJS += src/kernel/lowlevel64.o
 
@@ -138,7 +148,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP)
 
 src/kernel/rust_shims.o: src/kernel/rust_shims.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -214,6 +224,36 @@ userspace/%.o: userspace/%.c
 MALLOC_OBJ = userspace/malloc.o
 userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) userspace/pie.ld
 	$(LD) -m elf_i386 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ)
+
+# Newlib-linked PIE ELFs: compiled with newlib headers, linked against libc.a.
+# crt0.o provides _start → posix_init() → main().
+NEWLIB_INC      = newlib/install/i686-elf/include
+NEWLIB_LIB      = newlib/install/i686-elf/lib
+NEWLIB_CFLAGS   = $(USERSPACE_CFLAGS) -I $(NEWLIB_INC)
+NEWLIB_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
+                   userspace/posix.o userspace/crt0.o
+
+userspace/newlib_glue.o: userspace/newlib_glue.c
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/newlib_glue64.o: userspace/newlib_glue64.c
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/crt0.o: userspace/crt0.c
+	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
+
+userspace/hello_newlib.o: userspace/hello_newlib.c
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
+                                userspace/malloc.o userspace/pie.ld
+	$(LD) -m elf_i386 -pie -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o userspace/hello_newlib.o userspace/newlib_glue.o \
+	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
+	    -L$(NEWLIB_LIB) -lc
+
+userspace/hello_newlib.bin: userspace/hello_newlib.pie.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "hello_newlib"
 
 # Fixed-base flat link (used by the gated selftest payloads that are embedded
 # raw and loaded at USER_AREA_BASE without relocation).
@@ -309,6 +349,14 @@ smoke-fs:
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
 		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+.PHONY: smoke-newlib
+smoke-newlib:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
+		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

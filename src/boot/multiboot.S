@@ -364,6 +364,16 @@ embedded_sigtest_bin_start:
 embedded_sigtest_bin_end:
 #endif
 
+#ifdef NEWLIB_SELFTEST
+/* PIE hello_newlib binary: newlib printf/malloc/string smoke test. */
+.align 16
+.global embedded_hello_newlib_bin_start
+embedded_hello_newlib_bin_start:
+.incbin "userspace/hello_newlib.bin"
+.global embedded_hello_newlib_bin_end
+embedded_hello_newlib_bin_end:
+#endif
+
 #ifdef FS_SELFTEST
 /* PIE userspace fs_server + a client that drives it over IPC, used by the
  * filesystem self-test (fs_selftest). Only embedded in the FS_SELFTEST build. */

@@ -810,6 +810,11 @@ void smp_bringup(void) {
      * encrypted object store, proving the Phase 2 stack end-to-end
      * (prints FS_SELFTEST: PASS). */
     fs_selftest();
+#elif defined(NEWLIB_SELFTEST)
+    /* Gated: spawn hello_newlib (newlib + posix + malloc on Horus) and confirm
+     * printf/sprintf/malloc/string ops all work end-to-end (prints
+     * NEWLIB_SELFTEST: PASS to serial). */
+    newlib_selftest();
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the

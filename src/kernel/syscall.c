@@ -956,7 +956,7 @@ static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
     return 0;
 }
 
-static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
+static int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
 {
     if (!out_entry) return -1;
     const uint8_t *st = loader_staging;
@@ -1023,6 +1023,7 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
      * e_phnum is capped at 8 above, so PT_LOAD segments fit in these arrays. */
     uint32_t seg_va[8], seg_memsz[8], seg_flags[8];
     int nseg = 0;
+    uint32_t max_va_end = 0;
 
     for (uint16_t i = 0; i < e_phnum; i++) {
         const uint8_t *p = ph + (uint32_t)i * phentsize;
@@ -1047,6 +1048,8 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
         if (p_memsz < p_filesz) return -10;
         if (p_offset + p_filesz > MAX_PROGRAM_SIZE) return -11;
         uint32_t dest_va = p_vaddr + slide;
+        uint32_t va_end = dest_va + p_memsz;
+        if (va_end > max_va_end) max_va_end = va_end;
         if (dest_va < USER_AREA_BASE || dest_va >= USER_MAX_VADDR) return -12;
         if (dest_va + p_memsz < dest_va) return -13; 
 
@@ -1121,6 +1124,7 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry)
     uint64_t final_entry = (ei_class == 1) ? ((uint64_t)e_entry32 + slide) : (e_entry64 + slide);
     if (final_entry >= USER_MAX_VADDR) return -14;
     *out_entry = (uint32_t)final_entry;
+    if (out_img_end) *out_img_end = max_va_end;
     return 0;
 }
 
@@ -1175,7 +1179,13 @@ static int do_spawn(void) {
     
     uint32_t entry_point = armed_hdr.entry;
     uint32_t elf_entry = 0;
-    int elf_loaded = (try_elf_load(load_base, &elf_entry) == 0);
+    uint32_t elf_img_end = 0;
+    int elf_rc = try_elf_load(load_base, &elf_entry, &elf_img_end);
+    int elf_loaded = (elf_rc == 0);
+#ifdef NEWLIB_SELFTEST
+    print("do_spawn: elf_rc="); print_hex((uint64_t)(uint32_t)elf_rc);
+    print(" elf_entry="); print_hex(elf_entry); print("\n");
+#endif
     if (elf_loaded) {
         entry_point = elf_entry;
     } else {
@@ -1234,7 +1244,12 @@ static int do_spawn(void) {
     
     tasks[new_id].eip = elf_loaded ? entry_point : (load_base + entry_point);
 
-    uint32_t img_end = load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF);
+    /* For ELF loads, image_end must come from the actual highest PT_LOAD
+     * vaddr+memsz (accounts for ASLR slide and .bss extending past filesz);
+     * armed_hdr.size is the raw staged file size and undercounts .bss. */
+    uint32_t img_end = elf_loaded
+        ? ((elf_img_end + 0xFFF) & ~0xFFFu)
+        : (load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF));
     tasks[new_id].image_end = img_end;
     uint32_t heap_gap = aslr_random_offset(ASLR_MAX_HEAP_GAP_PAGES);
     tasks[new_id].heap_start   = img_end + 0x1000 + heap_gap;
@@ -1555,14 +1570,10 @@ void signal_selftest(void) {
 }
 #endif /* SIGNAL_SELFTEST */
 
-#ifdef FS_SELFTEST
-/* ---- Filesystem self-test (FS_SELFTEST builds only) ------------------------
- * Spawn the userspace fs_server plus a client that drives it over IPC against
- * the kernel's encrypted object store, proving the whole Phase 2 path (inode
- * alloc, encrypted (ino,block) I/O, directories, and the IPC protocol) end to
- * end. The client prints "FS_SELFTEST: PASS"; `make smoke-fs` asserts on it. */
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
+/* ---- Selftest spawn helper (FS_SELFTEST / NEWLIB_SELFTEST builds only) -----
+ * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
-/* Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
     uint32_t full = (uint32_t)(end - start);
     if (full < 44) return -1;
@@ -1583,7 +1594,9 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
     program_armed = 1;
     return do_spawn();
 }
+#endif /* FS_SELFTEST || NEWLIB_SELFTEST */
 
+#ifdef FS_SELFTEST
 void fs_selftest(void) {
     extern uint8_t embedded_fsserver_bin_start[], embedded_fsserver_bin_end[];
     extern uint8_t embedded_fsclient_bin_start[], embedded_fsclient_bin_end[];
@@ -1632,6 +1645,45 @@ void fs_selftest(void) {
     );
 }
 #endif /* FS_SELFTEST */
+/* ---- Newlib smoke test (NEWLIB_SELFTEST builds only) ---------------------- */
+#ifdef NEWLIB_SELFTEST
+void newlib_selftest(void) {
+    extern uint8_t embedded_hello_newlib_bin_start[], embedded_hello_newlib_bin_end[];
+
+    print("NEWLIB_SELFTEST: begin\n");
+
+    int pid = fs_spawn_embedded(embedded_hello_newlib_bin_start,
+                                embedded_hello_newlib_bin_end,
+                                "hello_newlib");
+    print("NEWLIB_SELFTEST: pid="); print_hex(pid); print("\n");
+    if (pid <= 0) {
+        print("NEWLIB_SELFTEST: FAIL spawn\n");
+        for (;;) asm volatile("hlt");
+    }
+    tasks[pid].uid = 0;
+
+    sched_enable_preemption();
+    uint64_t rip  = (uint64_t)tasks[pid].eip;
+    uint64_t rspv = tasks[pid].esp ? (uint64_t)tasks[pid].esp : 0x007ff000ULL;
+    uint64_t ucr3 = tasks[pid].cr3;
+    uintptr_t kst = tasks[pid].kernel_stack_top
+                    ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
+    print("NEWLIB_SELFTEST: rip="); print_hex(rip);
+    print(" rsp="); print_hex(rspv);
+    print(" cr3="); print_hex(ucr3); print("\n");
+    set_tss_kernel_stack(kst);
+    set_current_task(pid);
+    print("NEWLIB_SELFTEST: launching\n");
+    __asm__ volatile (
+        "mov %2, %%cr3\n\t"
+        "mov $0x33, %%ax\n\t"
+        "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
+        "mov %1, %%rsp\n\t"
+        "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
+        :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
+    );
+}
+#endif /* NEWLIB_SELFTEST */
 
 static struct user_account *find_user_by_name(const char *name) {
     for (int i = 0; i < MAX_USERS; i++) {

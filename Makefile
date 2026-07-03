@@ -209,8 +209,11 @@ userspace/%.o: userspace/%.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
 
 # Static-PIE (ET_DYN) link for the shipped, ASLR-loaded binaries.
-userspace/%.pie.elf: userspace/%.o userspace/pie.ld
-	$(LD) -m elf_i386 -pie -T userspace/pie.ld -o $@ $<
+# malloc.o is always linked so any binary can call malloc/free without
+# extra Makefile rules.
+MALLOC_OBJ = userspace/malloc.o
+userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) userspace/pie.ld
+	$(LD) -m elf_i386 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ)
 
 # Fixed-base flat link (used by the gated selftest payloads that are embedded
 # raw and loaded at USER_AREA_BASE without relocation).

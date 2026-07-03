@@ -265,6 +265,14 @@ static inline int sys_spawn(void) {
     return syscall(SYS_SPAWN, 0, 0, 0);
 }
 
+/* Spawn a named embedded binary (hello, captest, fs_server, shell).
+ * Returns the new task pid on success, negative on error. */
+static inline int sys_spawn_named(const char *name) {
+    uint32_t len = 0;
+    while (name[len] && len < 31) len++;
+    return (int)syscall(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, 0);
+}
+
 static inline uint32_t sys_getuid(void) {
     return syscall(SYS_GETUID, 0, 0, 0);
 }

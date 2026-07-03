@@ -304,6 +304,33 @@ embedded_shell_bin_start:
 .global embedded_shell_bin_end
 embedded_shell_bin_end:
 
+/* hello and captest are always embedded so 'spawn hello'/'spawn captest' work
+ * without a serial-port upload. */
+.align 16
+.global embedded_hello_bin_start
+embedded_hello_bin_start:
+.incbin "userspace/hello.bin"
+.global embedded_hello_bin_end
+embedded_hello_bin_end:
+
+.align 16
+.global embedded_captest_bin_start
+embedded_captest_bin_start:
+.incbin "userspace/captest.bin"
+.global embedded_captest_bin_end
+embedded_captest_bin_end:
+
+/* fs_server is also always embedded.  The FS_SELFTEST build embeds it under the
+ * same symbol names in the block below; this guard prevents duplicate definitions. */
+#ifndef FS_SELFTEST
+.align 16
+.global embedded_fsserver_bin_start
+embedded_fsserver_bin_start:
+.incbin "userspace/fs_server.bin"
+.global embedded_fsserver_bin_end
+embedded_fsserver_bin_end:
+#endif
+
 #ifdef ELF_SELFTEST
 /* Real multi-segment ELF used by the in-kernel ELF-loader self-test
  * (elf_loader_selftest). Only embedded in the ELF_SELFTEST build. */

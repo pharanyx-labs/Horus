@@ -751,6 +751,9 @@ void signal_selftest(void);
 void fs_selftest(void);
 int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
 #endif
+#ifdef NEWLIB_SELFTEST
+void newlib_selftest(void);
+#endif
 
 
 int  sys_ipc_send(uint32_t ep_slot, const void *msg, size_t len);

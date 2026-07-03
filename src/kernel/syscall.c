@@ -691,8 +691,17 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
     if (!is_admin && my_uid != target_uid) return -1;
 
     int rc = set_user_password(target_uid, new_password);
-    if (rc == 0) users_persist();
-    return rc;
+    if (rc != 0) return rc;
+    users_persist();
+
+    /* If the user is changing their own password, re-wrap disk_key with the
+     * new KEK so storage_unlock(new_password) succeeds on the next boot.
+     * Without this, the on-disk wrapped key would still require the old
+     * password and storage would be permanently locked after a reboot. */
+    if (target_uid == my_uid)
+        storage_rekey(new_password, kstrlen(new_password));
+
+    return 0;
 }
 
 int sys_fs_mint_file(uint32_t dir_slot, uint32_t dest_slot, uint32_t new_rights) {

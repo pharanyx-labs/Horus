@@ -89,9 +89,10 @@ The kernel runs in 64-bit long mode. Ring-3 userspace binaries are the sole 32-b
 
 ## Capabilities & security at a glance
 
-- **Transitive, system-wide revocation.** Revoking a capability nullifies it and every derived copy across every task's cspace *and* the kernel root cnode in a single atomic Rust sweep, then bumps a lineage generation counter — so a stale bit pattern that escaped the structural sweep still fails at point of use.
+- **Transitive, system-wide revocation.** Revoking a capability nullifies it and every derived copy across every task's cspace *and* the kernel root cnode in a single atomic Rust sweep, then bumps a lineage generation counter — so a stale bit pattern that escaped the structural sweep still fails at point of use. Task slots are **zeroed on reuse**, so a newly spawned task cannot inherit the dead task's capabilities.
 - **Centralized authorization.** Syscall dispatch is a descriptor table that enforces each call's required capability at one choke point; an unlisted syscall number fails closed, and a compile-time assertion forbids adding a syscall without a table slot.
 - **Hardware isolation.** Ring 0/3 separation with per-task page tables; **SMEP** and **SMAP** engaged when advertised; **W^X** enforced via `EFER.NXE` and the PTE NX bit (non-executable stacks; ELF `PT_LOAD` segments honour their `p_flags`).
+- **Generation-checked in-memory filesystem.** All capfs operations resolve capabilities through `fs_resolve_cap()`, which validates the packed object token against a per-slot generation counter. Deleted slots get their generation bumped and key material wiped, so stale capabilities immediately fail rather than dangling over freed objects.
 - **Modern cryptography, safe Rust.** Argon2id (RFC 9106) memory-hard password hashing on an in-house BLAKE2b, HKDF-SHA256 key derivation, a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD for storage, and a ChaCha20 fast-key-erasure CSPRNG seeded from RDRAND and timing jitter — all validated against published/reference vectors.
 - **Tamper-evident audit log.** Each event is bound by an HMAC keyed to a per-boot secret, and a running hash-chain head commits to the entire ordered history; `SYS_AUDIT_DIGEST` exposes the digest and verify status for an external monitor.
 
@@ -113,7 +114,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | W^X — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
 | ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; ~9-bit entropy in the 32-bit window) | ✅ Working |
 | Table-driven syscall dispatch (central capability gate) | ✅ Working |
-| User authentication + lockout (PBKDF2-HMAC-SHA256) | ✅ Working |
+| User authentication + lockout (Argon2id memory-hard hashing) | ✅ Working |
 | Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
 | Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256) | ✅ Working |
 | PS/2 keyboard input | ✅ Working |
@@ -126,8 +127,8 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Endpoint-based IPC | 🟡 Partial |
 | RAM-backed filesystem | 🟡 Partial |
 | Copy-on-write paging | 🟡 Partial |
-| ATA disk driver | 🟡 Stub |
-| Userspace filesystem server | 🟡 Stub |
+| ATA disk driver | 🟡 Partial |
+| Userspace filesystem server (ring-3 IPC server over encrypted store) | 🟡 Partial |
 | Disk-backed persistent storage (as default) | ⬜ Not yet |
 | Symmetric multiprocessing | ⬜ Not yet |
 

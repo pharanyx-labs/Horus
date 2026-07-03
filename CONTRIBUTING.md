@@ -41,11 +41,11 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### C kernel work
 
-- **Preemptive scheduler** (`src/kernel/scheduler.c`): Hook the timer ISR to force a task switch. The round-robin logic already exists; it just needs to be called from the interrupt path.
-- **IPC call/reply** (`src/kernel/syscall.c`): Complete `SYS_IPC_CALL` so a caller blocks until a server replies atomically (it is currently a thin wrapper over send).
-- **Blocking IPC endpoints** (`src/kernel/syscall.c`): replace the busy-spin-with-`yield()` rendezvous with real blocking/queueing semantics.
-- **ATA + storage integration** (`src/kernel/ata.c`, `src/kernel/storage.c`): Wire the working ATA driver to the on-disk inode format sketched in `storage.c`.
+- **Blocking IPC endpoints** (`src/kernel/syscall.c`): The current `SYS_IPC_SEND`/`RECV` are non-blocking (callers poll from ring 3). Implement a proper queued-send / blocked-recv so a server can sleep until a message arrives without burning CPU.
+- **IPC call/reply atomicity** (`src/kernel/syscall.c`): `SYS_IPC_CALL` is currently a thin wrapper over send; make it block until the server's matching `SYS_IPC_REPLY` so clients do not need to poll.
+- **ATA cross-reboot persistence** (`src/kernel/storage.c`): The per-block crypto metadata (nonces/tags) lives in kernel RAM; it needs to be persisted alongside the data blocks so files survive reboots on the ATA backend.
 - **Shell command stubs** (`userspace/shell.c`): Fill in `ls`, `cat`, `mkdir`, `rm`, and `spawn` to call the correct syscalls.
+- **Scheduler priorities / fairness** (`src/kernel/scheduler.c`): The round-robin timer preemption works; adding weights or priority queues would make it more suitable as a base for real workloads.
 
 ### Rust work
 

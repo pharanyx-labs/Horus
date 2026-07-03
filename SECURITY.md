@@ -28,6 +28,36 @@ For balance, the following are implemented and enforced today (single-core, pree
 - **Audit trail:** capability mint/transfer/move/revoke (and the FS/auth paths) record their outcome to the audit log.
 - **Tamper-evident audit log:** every audit entry is bound by an HMAC keyed to the per-boot secret pepper (the MAC binds the entry's absolute sequence number, so an in-place edit, a ring-slot swap, or a replay no longer verifies), and a running hash-chain head commits to the *entire* ordered history — including entries already overwritten in the ring. `SYS_AUDIT_DIGEST` (a `CAP_AUDIT`-gated read) returns the event count, the chain-head MAC, and a constant-time verify status, so an external monitor can detect dropped, rewritten, or rolled-back events over time. The keyed-hash logic lives in safe Rust (`rust/src/audit.rs`).
 - **Fault signals (no new authority):** a task may register *its own* ring-3 fault handler (`SYS_SIGACTION`) so a page fault or CPU exception is delivered to it instead of killing the task. This is self-authority only — it grants no power over any other task (async cross-task signalling is not implemented). The handler entry is validated to the user code window in safe Rust (fail-closed), a fault *inside* a handler is not re-delivered (no loops), and the handler runs at ring 3 with unchanged privileges, so the worst a malformed handler can do is fault again and terminate its own task.
+- **Capability space zeroed on task-slot reuse.** `cspace_pool` is a static array;
+  when a task exits and its slot is reused, `create_task` now zeroes all 256
+  capability slots before installing the new task's initial capabilities, preventing
+  an inheriting task from acquiring the dead task's `CAP_USER`, `CAP_CONSOLE`, or
+  `CAP_ENCRYPTED_STORAGE`.
+- **capfs object-access goes through generation check.** All capfs operations
+  (`create`, `delete`, `readdir`, `read`, `write`) now resolve capabilities through
+  `fs_resolve_cap()`, which validates the packed `(idx | gen<<32)` object value and
+  the generation counter, rather than casting `cap->object` to a raw pointer.
+  Deleted objects bump their generation so all outstanding capabilities pointing at
+  that slot immediately fail the check. Key material (`enc_key`, `mac_key`,
+  `file_nonce`, `file_tag`) is wiped with `secure_zero` before a slot is released.
+- **Locked initial password for newly created accounts.** Accounts created via
+  `SYS_USERADD` without an explicit initial password receive a CSPRNG-random
+  `pass_hash` that no Argon2id invocation can match, locking the account until
+  `SYS_PASSWD` sets a real password. Previously, the Argon2id hash of the empty
+  string was stored, which anyone could match.
+- **Password changes persist across reboots.** `users_init` no longer
+  unconditionally resets the `"user"` account password to `"password"` after
+  loading the persisted user database.
+- **Kernel stack cleared after password operations.** `h_passwd` and `h_auth`
+  both call `secure_zero` on their cleartext password buffers before returning.
+- **Page-fault handler calls demand pager exactly once.** The
+  `rust_handle_demand_page_fault` weak stub no longer calls `handle_demand_page_fault`
+  internally; the outer `page_fault_handler` calls it once. The previous double-call
+  caused valid demand faults to fall through to the task-kill path.
+- **`sys_fs_mint_file` uses `rust_cap_mint` type propagation.** The redundant
+  `(struct fs_object *)cap->object` cast (which dereferenced a packed integer as a
+  pointer after the capfs refactor) has been removed; `rust_cap_mint` already copies
+  the capability type correctly.
 - **Supply chain / CI:** every change is gated by a CI pipeline of nine jobs — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a signal-handling self-test, a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
 
 The security-critical primitives (capabilities, memory refcounting, hashing, RNG, FFI validation) live in safe `no_std` Rust and carry unit tests; the rest of the kernel is C and has **not** undergone systematic fuzzing or third-party review.

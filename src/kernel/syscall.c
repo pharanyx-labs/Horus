@@ -1584,10 +1584,23 @@ void smp_selftest(void) {
         int distinct = 0;
         for (int c = 0; c < 32; c++) if (mask & (1u << c)) distinct++;
         if (distinct >= 2 && ap_timer_ticks > t0 + 10) {
+            /* Multi-core scheduling proven. Now exercise the TLB-shootdown
+             * round-trip: broadcast to the (busy, interrupts-enabled) APs and
+             * confirm every one flushed and acknowledged. */
+            extern volatile int smp_shootdown_pending;
+            extern void smp_maybe_shootdown(uint64_t);
+            smp_maybe_shootdown(0x1000);
+            int shootdown_ok = (smp_shootdown_pending == 0);
+            if (!shootdown_ok) {
+                print("SMP_SELFTEST: FAIL shootdown pending=");
+                print_decimal(smp_shootdown_pending); print("\n");
+                for (;;) asm volatile("hlt");
+            }
             print("SMP_SELFTEST: PASS online="); print_decimal(online);
             print(" cpus_ran=0x"); print_hex(mask);
             print(" distinct="); print_decimal(distinct);
             print(" ap_ticks="); print_decimal((uint32_t)ap_timer_ticks);
+            print(" shootdown=ok");
             print("\n");
             for (;;) asm volatile("hlt");
         }

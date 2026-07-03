@@ -306,8 +306,11 @@ void switch_cr3(addr_t cr3) {
         for(;;) { asm volatile("cli; hlt"); }
     }
     asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
-    
-    smp_maybe_shootdown(0); 
+    /* The CR3 reload above already flushed this CPU's non-global TLB entries, so
+     * a purely local address-space switch needs no cross-CPU shootdown. (A real
+     * shootdown -- for tearing down or reducing permissions on a mapping another
+     * CPU may have cached -- goes through smp_maybe_shootdown at that site, with
+     * interrupts enabled and no scheduler lock held, so its ack wait is safe.) */
 }
 
 int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {

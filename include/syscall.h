@@ -103,6 +103,7 @@ struct audit_event {
 #define SYS_FBLOCK_WRITE       59   /* (ino, block, buf, len) -> len (encrypt, fresh nonce) */
 #define SYS_FS_STAT            60   /* (ino, struct fs_stat*) -> 0 */
 #define SYS_FS_SET_SIZE        61   /* (ino, size) -> 0 (server owns logical file size) */
+#define SYS_BRK                62   /* (addr) -> new break; addr=0 queries current break */
 
 /* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
 struct fs_stat {
@@ -201,6 +202,14 @@ static inline int sys_get_line(char *buf, size_t max) {
 
 static inline void *sys_sbrk(intptr_t increment) {
     return (void*)syscall(SYS_SBRK, (uint32_t)increment, 0, 0);
+}
+
+/* sys_brk(addr): set the program break to addr and return the new break.
+ * If addr is NULL/0, returns the current break without changing it.
+ * On failure (out of range) returns the unchanged current break — callers
+ * should compare the return value to addr to detect failure, matching Linux. */
+static inline void *sys_brk(void *addr) {
+    return (void*)syscall(SYS_BRK, (uint32_t)(uintptr_t)addr, 0, 0);
 }
 
 static inline int sys_write(int fd, const void *buf, size_t len) {

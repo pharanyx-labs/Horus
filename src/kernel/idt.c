@@ -204,8 +204,15 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         r.useresp = (uint32_t)frame->rsp;
         r.cs = (uint32_t)frame->cs;
         r.ds = r.es = r.fs = r.gs = r.ss = 0x30;
+        int ipc_caller = get_current_task();
         syscall_handler(&r);
         frame->rax = (uint64_t)r.eax;
+        /* SYS_IPC_CALL may have blocked the task.  If so, save the frame and
+         * switch to the next runnable task exactly as the timer ISR would. */
+        if (ipc_caller > 0 && ipc_caller < MAX_TASKS &&
+                tasks[ipc_caller].state == TASK_BLOCKED_IPC) {
+            return ipc_block_switch(ipc_caller, (uint64_t)frame);
+        }
     } else if (vector < 32) {
         
         if ((frame->cs & 3) != 0 && get_current_task() > 0) {

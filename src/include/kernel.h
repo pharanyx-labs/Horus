@@ -67,11 +67,17 @@ int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, c
 #define MAX_ENDPOINTS 64
 #define IPC_MSG_MAX   256
 
+/* Task states. */
+#define TASK_DEAD        0
+#define TASK_RUNNABLE    1
+#define TASK_BLOCKED_IPC 2
+
 struct endpoint {
-    int      has_message;     
+    int      has_message;
     int      msg_len;
-    int      sender_task;     
-    int      last_sender;     
+    int      sender_task;
+    int      last_sender;
+    int      blocked_waiter;   /* task id blocked waiting for a message here, or -1 */
     uint8_t  msg[IPC_MSG_MAX];
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
@@ -376,7 +382,11 @@ typedef struct tcb {
     uint32_t image_base;
     uint32_t image_end;
 
-    uint8_t  padding[44];
+    /* Blocking IPC: set by h_ipc_call before yielding, consumed by ipc_block_switch
+     * when the reply arrives and the waiter is resumed. */
+    uint32_t ipc_reply_buf;    /* userspace ptr in the waiter's address space */
+
+    uint8_t  padding[40];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];
@@ -538,6 +548,11 @@ int smp_get_online_count(void);
 uint64_t interrupt_handler64(struct interrupt_frame64 *frame);
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs);
 void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp);
+/* Called from interrupt_handler64 after a SYS_IPC_CALL sets the caller's state
+ * to TASK_BLOCKED_IPC.  Saves the current interrupt frame as the blocked task's
+ * saved_ksp, finds the next runnable task, switches to it, and returns that
+ * task's saved_ksp so the ISR epilogue does iretq into the new task. */
+uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp);
 void sched_enable_preemption(void);
 
 /* Signal delivery (idt.c): on a ring-3 fault, redirect the trap frame into the

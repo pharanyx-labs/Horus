@@ -41,8 +41,6 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### C kernel work
 
-- **Blocking IPC endpoints** (`src/kernel/syscall.c`): The current `SYS_IPC_SEND`/`RECV` are non-blocking (callers poll from ring 3). Implement a proper queued-send / blocked-recv so a server can sleep until a message arrives without burning CPU.
-- **IPC call/reply atomicity** (`src/kernel/syscall.c`): `SYS_IPC_CALL` is currently a thin wrapper over send; make it block until the server's matching `SYS_IPC_REPLY` so clients do not need to poll.
 - **ATA cross-reboot persistence** (`src/kernel/storage.c`): The per-block crypto metadata (nonces/tags) lives in kernel RAM; it needs to be persisted alongside the data blocks so files survive reboots on the ATA backend.
 - **Shell command stubs** (`userspace/shell.c`): Fill in `ls`, `cat`, `mkdir`, `rm`, and `spawn` to call the correct syscalls.
 - **Scheduler priorities / fairness** (`src/kernel/scheduler.c`): The round-robin timer preemption works; adding weights or priority queues would make it more suitable as a base for real workloads.

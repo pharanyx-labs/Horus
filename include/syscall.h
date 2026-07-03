@@ -268,8 +268,18 @@ static inline int sys_notify(int notif_slot, uint32_t badge) {
     return syscall(SYS_NOTIFY, (uint32_t)notif_slot, badge, 0);
 }
 
+/* sys_wait_notify: block until a badge arrives on notif_slot (or return
+ * immediately if one is already pending).  The kernel returns the accumulated
+ * badge bits in EBX (written via frame->rbx in interrupt_handler64) so no
+ * cross-address-space pointer copy is needed. */
 static inline int sys_wait_notify(int notif_slot, uint32_t *out_badge) {
-    return syscall(SYS_WAIT_NOTIFY, (uint32_t)notif_slot, (uint32_t)out_badge, 0);
+    uint32_t ret, badge;
+    asm volatile("int $0x80"
+                 : "=a"(ret), "=b"(badge)
+                 : "a"((uint32_t)SYS_WAIT_NOTIFY), "b"((uint32_t)notif_slot)
+                 : "ecx", "edx", "memory");
+    if (out_badge) *out_badge = badge;
+    return (int)ret;
 }
 
 static inline int sys_receive_program(struct program_header *hdr_out) {

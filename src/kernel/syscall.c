@@ -1732,17 +1732,69 @@ int sys_ipc_reply(uint32_t ep, const void *msg, size_t len) {
 
     return sys_ipc_send(ep, msg, len);
 }
-/* Notifications are not implemented yet. The SYS_NOTIFY / SYS_WAIT_NOTIFY
- * handlers still gate these on a capability (slot 3) before calling in; the
- * distinct SYS_ERR_NOSYS return makes "not implemented" unambiguous to callers
- * rather than colliding with -1 (denied/bad-arg). */
+/* Notification objects — one 32-bit badge accumulator per slot, plus a
+ * blocked-waiter field mirroring the endpoint design. */
+struct notification notifications[MAX_NOTIFICATIONS];
+
+/* sys_notify: OR `badge` into the pending_badge of notification `notif_slot`.
+ * If a task is currently blocking in SYS_WAIT_NOTIFY on this slot, wake it:
+ * deliver the accumulated badge via its saved trap frame (rbx), patch its
+ * return value (rax=0), and mark it runnable.  The badge is delivered through
+ * the saved interrupt frame so no cross-address-space pointer copy is needed.
+ *
+ * Multiple notify() calls before a wait() accumulate badges via OR. */
 int sys_notify(uint32_t notif_slot, uint32_t badge) {
-    (void)notif_slot; (void)badge;
-    return SYS_ERR_NOSYS;
+    if (notif_slot >= MAX_NOTIFICATIONS) return -1;
+    struct notification *n = &notifications[notif_slot];
+
+    n->pending_badge |= badge;
+
+    int waiter = n->blocked_waiter;
+    if (waiter > 0 && waiter < MAX_TASKS &&
+            tasks[waiter].state == TASK_BLOCKED_NOTIF) {
+        uint32_t b = n->pending_badge;
+        n->pending_badge    = 0;
+        n->blocked_waiter   = -1;
+
+        /* Patch the waiter's saved trap frame: rax=0 (success), rbx=badge.
+         * interrupt_handler64 wrote frame->rbx from r.ebx before calling
+         * ipc_block_switch; patching here overwrites that with the real badge
+         * so that when the timer iretq's the waiter back to ring 3 the value
+         * is already in ebx for the userspace wrapper to read. */
+        struct interrupt_frame64 *wf =
+            (struct interrupt_frame64 *)tasks[waiter].saved_ksp;
+        wf->rax = 0;
+        wf->rbx = (uint64_t)b;
+
+        __asm__ volatile ("" ::: "memory");
+        tasks[waiter].state       = TASK_RUNNABLE;
+        tasks[waiter].runnable_ctx = 1;
+    }
+    return 0;
 }
+
+/* sys_wait_notify: if a badge is already pending, consume it and return 0
+ * (badge written via r->ebx → frame->rbx by interrupt_handler64).  Otherwise
+ * block the task in TASK_BLOCKED_NOTIF state; sys_notify will wake it and
+ * patch its saved frame when a badge arrives. */
 int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
-    (void)notif_slot; (void)out_badge;
-    return SYS_ERR_NOSYS;
+    if (notif_slot >= MAX_NOTIFICATIONS) return -1;
+    struct notification *n = &notifications[notif_slot];
+
+    if (n->pending_badge != 0) {
+        *out_badge = n->pending_badge;
+        n->pending_badge = 0;
+        return 0;
+    }
+
+    /* No badge pending — block. */
+    int cur = get_current_task();
+    n->blocked_waiter         = cur;
+    tasks[cur].state          = TASK_BLOCKED_NOTIF;
+    tasks[cur].runnable_ctx   = 0;
+    /* out_badge and r->ebx will be patched by sys_notify when it wakes us. */
+    *out_badge = 0;
+    return 0;
 }
 
 void syscall_handler64(void)
@@ -2771,7 +2823,10 @@ static void h_ipc_reply(struct regs *r) {
 static void h_notify(struct regs *r) {
     r->eax = sys_notify(r->ebx, r->ecx);
 }
-/* SYS_WAIT_NOTIFY (26): slot-3 READ enforced by the table. */
+/* SYS_WAIT_NOTIFY (26): slot-3 READ enforced by the table.
+ * The badge is returned in r->ebx so interrupt_handler64 writes it into
+ * frame->rbx; the userspace wrapper reads it from the ebx output constraint.
+ * For the blocking path r->ebx is patched in sys_notify via saved_ksp->rbx. */
 static void h_wait_notify(struct regs *r) {
     uint32_t badge = 0;
     r->eax = sys_wait_notify(r->ebx, &badge);

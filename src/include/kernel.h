@@ -68,19 +68,27 @@ int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, c
 #define IPC_MSG_MAX   256
 
 /* Task states. */
-#define TASK_DEAD        0
-#define TASK_RUNNABLE    1
-#define TASK_BLOCKED_IPC 2
+#define TASK_DEAD          0
+#define TASK_RUNNABLE      1
+#define TASK_BLOCKED_IPC   2   /* blocked inside SYS_IPC_CALL waiting for a reply */
+#define TASK_BLOCKED_NOTIF 3   /* blocked inside SYS_WAIT_NOTIFY waiting for a badge */
 
 struct endpoint {
     int      has_message;
     int      msg_len;
     int      sender_task;
     int      last_sender;
-    int      blocked_waiter;   /* task id blocked waiting for a message here, or -1 */
+    int      blocked_waiter;   /* task id blocked in SYS_IPC_CALL on this endpoint, -1=none */
     uint8_t  msg[IPC_MSG_MAX];
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
+
+#define MAX_NOTIFICATIONS 64
+struct notification {
+    uint32_t pending_badge;    /* accumulated badge bits not yet consumed */
+    int      blocked_waiter;   /* task id blocked in SYS_WAIT_NOTIFY here, -1=none */
+};
+extern struct notification notifications[MAX_NOTIFICATIONS];
 /* Canonical task_info ABI. MUST stay byte-identical to the copies in
  * include/syscall.h and src/include/syscall_userspace.h — the kernel fills this
  * layout and ring-3 reads it across copy_to_user (SYS_GET_TASK_INFO). A prior

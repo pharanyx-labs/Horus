@@ -48,6 +48,7 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 ### Rust work
 
 - **Argon2 tuning** *(multi-lane + configurable cost done)*: `rust/src/argon2.rs` now supports `p ≥ 1` lanes and the `m`/`t`/`p` cost is set by three `kernel.h` defines. Remaining nice-to-haves: a true intra-request threaded fill (the lanes are currently filled sequentially, so `p > 1` changes the hash but not wall-clock time on one core), and exposing the cost profile to an admin at runtime.
+- **Key-slot support** *(future)*: the current v4 format stores one wrapped `disk_key` (one passphrase slot). A LUKS2-style key-slot array would allow multiple passphrases or recovery keys to unwrap the same `disk_key` without a full reformat.
 - **Property-based tests for the capability core**: add a `proptest`/`quickcheck`-style harness (or hand-rolled generators, since the crate is `no_std`) over mint/transfer/revoke to fuzz the lineage and revocation invariants beyond the current example-based tests.
 - **Kani / Verus verification**: Apply a Rust verification tool to `capability.rs` to formally verify the revocation properties.
 

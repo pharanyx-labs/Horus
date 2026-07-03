@@ -350,6 +350,17 @@ static void strong_password_hash(const char *password, const uint8_t *salt,
     secure_zero(combined_salt, sizeof(combined_salt));
 }
 
+int kernel_argon2id(const uint8_t *pwd, size_t plen,
+                    const uint8_t *salt, size_t salt_len,
+                    uint8_t *out, size_t out_len)
+{
+    return rust_argon2id_hash(pwd, plen, salt, salt_len,
+                              ARGON2_T_COST, ARGON2_M_COST_KIB, ARGON2_P_COST,
+                              argon2_scratch,
+                              sizeof(argon2_scratch) / sizeof(argon2_scratch[0]),
+                              out, out_len);
+}
+
 static int constant_time_compare(const uint8_t *a, const uint8_t *b, size_t len) {
     uint8_t diff = 0;
     for (size_t i = 0; i < len; i++) {
@@ -2245,6 +2256,10 @@ static void h_auth(struct regs *r) {
                 char *mat = upass;
                 size_t mlen = kstrlen(upass);
                 derive_and_store_user_file_key(u->uid, mat, mlen);
+                /* Unlock ATA storage (or format+seal on first boot).
+                 * Uses the same password: same Argon2id input, different
+                 * salt (kek_salt vs login salt||pepper) → independent keys. */
+                storage_unlock(mat, mlen);
             }
 
             if (r->edx) {

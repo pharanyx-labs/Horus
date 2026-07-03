@@ -423,9 +423,9 @@ typedef struct virtual_disk {
 
 typedef struct fs_superblock {
     uint32_t magic;
-    uint32_t version;           /* 3 = stable disk_key + persisted+HMACed crypto-metadata */
-    uint64_t meta_start;        /* first block of the nonce/tag metadata region (v2+) */
-    uint32_t meta_blocks;       /* number of blocks in that region */
+    uint32_t version;            /* 4 = disk_key wrapped by password-derived KEK (LUKS-style) */
+    uint64_t meta_start;         /* first block of the nonce/tag metadata region */
+    uint32_t meta_blocks;        /* number of blocks in that region */
     uint32_t _pad;
     uint64_t inode_bitmap_start;
     uint64_t block_bitmap_start;
@@ -436,20 +436,21 @@ typedef struct fs_superblock {
     uint64_t block_count;
     uint64_t total_blocks;
     uint32_t block_size;
-    uint8_t  volume_key_salt[16];
-    uint8_t  volume_key[16];    /* unused field kept for layout compat */
+    uint8_t  volume_key_salt[16]; /* per-volume HKDF diversifier */
+    uint8_t  volume_key[16];      /* unused; kept for struct layout compat */
     uint32_t generation;
-    /* v3 additions — stable per-format secret and metadata integrity tag */
-    uint8_t  disk_key[32];      /* random per-format; root of all block key derivation.
-                                  * Stored in plaintext: provides key stability across
-                                  * reboots (without this, kernel_pepper changes per boot
-                                  * and every block becomes undecryptable after reboot).
-                                  * For passphrase-gated unwrapping (LUKS-style), wrap
-                                  * this with a KEK from the user password — future work. */
-    uint8_t  meta_hmac[32];     /* HMAC-SHA256(meta_mac_key, g_block_meta[]) over the
-                                  * entire in-memory metadata region; recomputed on every
-                                  * flush, verified on mount to detect partial rollback of
-                                  * the nonce/tag region without matching ciphertext. */
+    /* v4: password-wrapped disk key — disk_key never stored in plaintext on disk.
+     * disk_key is the root of all block key and metadata MAC derivation; it is
+     * sealed here with a KEK = Argon2id(password, kek_salt) so the volume is
+     * unreadable without the passphrase, even with physical disk access. */
+    uint8_t  kek_salt[32];           /* Argon2id salt for KEK (no kernel_pepper: must
+                                       * be reproducible across reboots from the same pwd) */
+    uint8_t  wrapped_key_nonce[12];  /* AEAD nonce for disk_key sealing */
+    uint8_t  wrapped_key_ct[32];     /* AEAD ciphertext of disk_key[32] */
+    uint8_t  wrapped_key_tag[16];    /* AEAD auth tag; wrong pwd → open fails → locked */
+    uint8_t  meta_hmac[32];          /* HMAC-SHA256(meta_mac_key, g_block_meta[]);
+                                       * recomputed on every metadata flush, verified on
+                                       * unlock to detect partial nonce/tag rollback */
 } fs_superblock_t;
 
 typedef struct on_disk_inode {
@@ -473,13 +474,14 @@ _Static_assert(sizeof(struct on_disk_inode) * INODES_PER_BLOCK <= BLOCK_SIZE,
                "on_disk_inode too large: INODES_PER_BLOCK inodes must fit one block");
 
 typedef struct mounted_fs {
-    int mounted;
+    int     mounted;             /* 1 after storage_mount reads a valid superblock */
+    int     unlocked;            /* 1 after storage_unlock derives disk_key from password */
     block_device_t *bd;
     fs_superblock_t sb;
-    uint8_t volume_key[16];
+    uint8_t volume_key[16];      /* HKDF(disk_key, volume_key_salt, "horus-volume-key-v2") */
     uint8_t *inode_cache;
-    uint8_t meta_mac_key[32];   /* HKDF(disk_key, volume_key_salt, "horus-meta-mac-v1"),
-                                  * derived at mount, used to HMAC the metadata region */
+    uint8_t disk_key[32];        /* plaintext disk_key in RAM after unlock; zeroed on error */
+    uint8_t meta_mac_key[32];    /* HKDF(disk_key, volume_key_salt, "horus-meta-mac-v1") */
 } mounted_fs_t;
 
 typedef struct fs_object {
@@ -676,8 +678,11 @@ int  do_passwd(uint32_t target, const char *newpass);
 int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len);
 
 
-int  storage_format(block_device_t *bd);
 int  storage_mount(block_device_t *bd);
+/* Unlock storage at login time: on first boot formats+seals; on subsequent boots
+ * derives KEK from password, unwraps disk_key, derives volume/MAC keys, and
+ * verifies the metadata HMAC.  Must be called after verify_password succeeds. */
+int  storage_unlock(const char *password, size_t plen);
 int  storage_read_file_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block, void *buf);
 int  storage_write_file_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block, const void *buf);
 mounted_fs_t *storage_get_mounted_fs(void);
@@ -685,7 +690,6 @@ block_device_t *storage_get_default_device(void);
 void storage_set_default_device(block_device_t *bd);
 int capfs_init(void);
 int storage_init(void);
-int storage_mount(block_device_t *bd);
 int64_t storage_alloc_block(block_device_t *bd, fs_superblock_t *sb);
 void storage_free_block(block_device_t *bd, fs_superblock_t *sb, uint64_t block);
 int64_t storage_alloc_inode(block_device_t *bd, fs_superblock_t *sb);
@@ -834,6 +838,12 @@ void secure_random_bytes(void *out, size_t n);
 #define ARGON2_M_COST_KIB   4096U
 #define ARGON2_T_COST       3U
 #define ARGON2_P_COST       1U
+/* Shared Argon2id wrapper using the kernel's single pre-allocated scratch buffer.
+ * Safe only for sequential (non-concurrent) calls — all kernel Argon2id users
+ * (login hash + KEK derivation) run sequentially inside a single syscall. */
+int kernel_argon2id(const uint8_t *pwd, size_t plen,
+                    const uint8_t *salt, size_t salt_len,
+                    uint8_t *out, size_t out_len);
 
 
 #define CAP_DIR                 12

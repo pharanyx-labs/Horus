@@ -106,6 +106,17 @@ endif
 # is single-CPU and byte-for-byte unaffected. Run under QEMU with -smp N (see
 # `make smoke-smp`). ASFLAGS also gets the define so the gated .incbin of the
 # trampoline blob in multiboot.S is included.
+# SMP_SELFTEST=1 implies SMP=1 and, at boot, spawns a pool of forever-looping
+# workers and proves the application processors pull and run them concurrently
+# (prints SMP_SELFTEST: PASS to serial). Drives `make smoke-smp`.
+SMP_SELFTEST ?= 0
+ifeq ($(SMP_SELFTEST),1)
+SMP := 1
+CFLAGS  += -DSMP_SELFTEST
+ASFLAGS += -DSMP_SELFTEST
+SMP_SELFTEST_DEP = userspace/preempttest.bin
+endif
+
 SMP ?= 0
 ifeq ($(SMP),1)
 CFLAGS  += -DSMP
@@ -161,7 +172,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -378,6 +389,19 @@ smoke-newlib:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
 		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated SMP self-test, boot headless under -smp 4, and require the
+# in-kernel test to report PASS -- runtime proof that the application processors
+# come online and concurrently run scheduled user tasks. SMP_CPUS drives QEMU's
+# core count.
+SMP_CPUS ?= 4
+.PHONY: smoke-smp
+smoke-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
+		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

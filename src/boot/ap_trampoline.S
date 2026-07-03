@@ -108,6 +108,17 @@ long_mode:
     movw %ax, %fs
     movw %ax, %gs
 
+    /* Enable SSE, matching the BSP (long_mode_entry): the kernel is compiled
+     * with SSE codegen, so an AP that skips this #UDs on the first xmm op. */
+    movq %cr0, %rax
+    andq $~(1 << 2), %rax             /* clear CR0.EM */
+    orq  $(1 << 1), %rax              /* set CR0.MP  */
+    movq %rax, %cr0
+    movq %cr4, %rax
+    orq  $((1 << 9) | (1 << 10)), %rax  /* CR4.OSFXSR | CR4.OSXMMEXCPT */
+    movq %rax, %cr4
+    fninit
+
     movw $COM1, %dx
     movb $'3', %al
     outb %al, %dx

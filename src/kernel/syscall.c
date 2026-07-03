@@ -1518,6 +1518,86 @@ void preempt_selftest(void) {
 }
 #endif /* PREEMPT_SELFTEST */
 
+#ifdef SMP_SELFTEST
+/* ---- SMP self-test (SMP_SELFTEST builds only) -----------------------------
+ * The application processors are already online (smp_bringup). Spawn a pool of
+ * forever-looping worker tasks, open the cross-CPU scheduling gate, and confirm
+ * the APs actually pull and run those workers: they must be observed running on
+ * at least two distinct CPUs while the APs' LAPIC timer keeps ticking. The
+ * workers reuse the preemption-test payload, so each also does an int-0x80
+ * syscall from ring 3 on an AP -- exercising per-CPU TSS RSP0 delivery. Prints
+ * "SMP_SELFTEST: PASS ..." for `make smoke-smp`. The BSP stays in ring 0 here
+ * (its cpu-0 ring-0 context is never pulled into a task), so it monitors freely
+ * while the APs do the work. */
+static int smp_spawn_worker(uint32_t entry, uint32_t size, const uint8_t *payload) {
+    for (uint32_t i = 0; i < size; i++) loader_staging[i] = payload[i];
+    armed_hdr.entry = entry;
+    armed_hdr.size  = size;
+    armed_hdr.name[0] = 'w'; armed_hdr.name[1] = 'k'; armed_hdr.name[2] = 0;
+    program_armed = 1;
+    return do_spawn();
+}
+
+void smp_selftest(void) {
+    extern uint8_t embedded_preempttest_bin_start[];
+    extern uint8_t embedded_preempttest_bin_end[];
+    extern volatile int smp_sched_enabled;
+    extern volatile unsigned smp_cpus_ran_tasks;
+    extern volatile unsigned long ap_timer_ticks;
+
+    int online = smp_get_online_count();
+    print("SMP_SELFTEST: begin online="); print_decimal(online); print("\n");
+    if (online < 2) { print("SMP_SELFTEST: FAIL no-aps\n"); for (;;) asm volatile("hlt"); }
+
+    uint32_t full_sz = (uint32_t)(embedded_preempttest_bin_end - embedded_preempttest_bin_start);
+    if (full_sz < 44) { print("SMP_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+    const uint8_t *bin = embedded_preempttest_bin_start;
+    uint32_t magic   = *(const uint32_t *)bin;
+    uint32_t h_entry = *(const uint32_t *)(bin + 4);
+    uint32_t h_size  = *(const uint32_t *)(bin + 8);
+    if (magic != 0x55524F48)                     { print("SMP_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("SMP_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
+    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    const uint8_t *payload = bin + 44;
+
+    /* Spawn one worker per online CPU so an AP always has work to pull. Preserve
+     * the kernel address space across do_spawn (which installs the new task's
+     * CR3) so the BSP keeps monitoring on the kernel page tables. */
+    uint64_t kcr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
+    int spawned = 0;
+    for (int i = 0; i < online; i++) {
+        if (smp_spawn_worker(h_entry, h_size, payload) > 0) spawned++;
+    }
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
+    if (spawned < 2) { print("SMP_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    print("SMP_SELFTEST: spawned="); print_decimal(spawned); print(" workers\n");
+
+    /* Arm preemption and open the gate: the APs now pull workers on each tick. */
+    sched_enable_preemption();
+    smp_sched_enabled = 1;
+
+    unsigned long t0 = ap_timer_ticks;
+    for (int spins = 0; spins < 4000; spins++) {
+        for (volatile int d = 0; d < 200000; d++) __asm__ volatile ("pause");
+        unsigned mask = smp_cpus_ran_tasks;
+        int distinct = 0;
+        for (int c = 0; c < 32; c++) if (mask & (1u << c)) distinct++;
+        if (distinct >= 2 && ap_timer_ticks > t0 + 10) {
+            print("SMP_SELFTEST: PASS online="); print_decimal(online);
+            print(" cpus_ran=0x"); print_hex(mask);
+            print(" distinct="); print_decimal(distinct);
+            print(" ap_ticks="); print_decimal((uint32_t)ap_timer_ticks);
+            print("\n");
+            for (;;) asm volatile("hlt");
+        }
+    }
+    print("SMP_SELFTEST: FAIL timeout cpus_ran=0x"); print_hex(smp_cpus_ran_tasks);
+    print(" ap_ticks="); print_decimal((uint32_t)ap_timer_ticks); print("\n");
+    for (;;) asm volatile("hlt");
+}
+#endif /* SMP_SELFTEST */
+
 #ifdef SIGNAL_SELFTEST
 /* ---- Signal-handling self-test (SIGNAL_SELFTEST builds only) ---------------
  * Spawn the sigtest payload: it registers a ring-3 fault handler and then does

@@ -388,6 +388,15 @@ embedded_proctest_bin_start:
 .incbin "userspace/proctest.bin"
 .global embedded_proctest_bin_end
 embedded_proctest_bin_end:
+
+/* exectest: a child the proctest driver spawns to exercise SYS_EXEC_NAMED — it
+ * execs itself into "hello" in place. Only in PROC_SELFTEST. */
+.align 16
+.global embedded_exectest_bin_start
+embedded_exectest_bin_start:
+.incbin "userspace/exectest.bin"
+.global embedded_exectest_bin_end
+embedded_exectest_bin_end:
 #endif
 
 #ifdef SIGNAL_SELFTEST

@@ -76,5 +76,25 @@ void _start(void) {
     if (!reaped) { report("PROC_SELFTEST: FAIL r3-spawn-exit\n"); sys_exit(); }
 
     report("PROC_SELFTEST: PASS exit+kill+spawn\n");
+
+    /* --- SYS_EXEC_NAMED: spawn a child ("exectest") that replaces its own image
+     * with "hello" in place (same pid, same cspace). We (the driver) stay alive
+     * so the child's exit switches cleanly back to us. If exec worked, control
+     * passed to hello, which runs and exits, so the child pid reaches the dead
+     * state; if exec had *returned*, the child would print "FAIL exec-returned"
+     * (caught by the smoke fail-marker), and a broken exec would fault (caught by
+     * the kernel fault detector). Observing the child cleanly gone, with neither,
+     * confirms exec transferred control into the replaced image. --- */
+    int ec = sys_spawn_named("exectest");
+    if (ec <= 0) { report("PROC_SELFTEST: FAIL exec-spawn\n"); sys_exit(); }
+    int ec_gone = 0;
+    struct task_info ei;
+    for (int i = 0; i < 8000; i++) {
+        if (sys_get_task_info(ec, &ei) == 0 && ei.state == 0) { ec_gone = 1; break; }
+        settle();
+    }
+    if (!ec_gone) { report("PROC_SELFTEST: FAIL exec-child-stuck\n"); sys_exit(); }
+
+    report("PROC_SELFTEST: PASS exit+kill+spawn+exec\n");
     sys_exit();
 }

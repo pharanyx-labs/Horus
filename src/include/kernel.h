@@ -195,6 +195,7 @@ void users_init(void);
 #define SYS_FS_SET_SIZE        61
 #define SYS_BRK                62
 #define SYS_KILL               63   /* terminate a task; gated on a CAP_TCB cap to it */
+#define SYS_EXEC_NAMED         64   /* replace the caller's image with a named embedded binary */
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {
@@ -542,6 +543,12 @@ void task_teardown(int id);
 /* Resume the next runnable task after `dead` terminated (returns its saved kernel
  * %rsp for the ISR epilogue), or 0 if nothing else is runnable. See scheduler.c. */
 uint64_t task_exit_switch(int dead);
+/* Re-enter task `t` via the fresh context SYS_EXEC_NAMED fabricated for it (same
+ * task, replaced image). Returns its saved kernel %rsp for the ISR epilogue. */
+uint64_t exec_reenter_switch(int t);
+/* Set by h_exec_named; consumed by interrupt_handler64 to resume the exec'd task
+ * via exec_reenter_switch instead of the old image's trap frame. -1 = none. */
+extern int g_exec_reenter_task;
 char console_getc(void);
 void console_putc(char c);
 void console_puts(const char *s);

@@ -196,6 +196,7 @@ void users_init(void);
 #define SYS_BRK                62
 #define SYS_KILL               63   /* terminate a task; gated on a CAP_TCB cap to it */
 #define SYS_EXEC_NAMED         64   /* replace the caller's image with a named embedded binary */
+#define SYS_CAP_GRANT          65   /* delegate a capability into a supervised child's cspace */
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {

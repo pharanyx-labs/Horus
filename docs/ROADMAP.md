@@ -130,6 +130,14 @@ Cross-cutting work that should grow alongside every other phase.
   `docs/paging_isolation.tla`) to cover IPC, the scheduler, and SMP interactions.
 - **Formal verification**: apply Verus or Kani to the capability operations in
   `rust/src/capability.rs`.
+- **User/kernel address separation**: the kernel is linked low (1 MiB) and its
+  BSS extends past `USER_AREA_BASE` (4 MiB), so a task's low-memory mappings
+  (image, heap) share virtual addresses with kernel data like `tasks[]`. Image
+  ASLR is currently pinned to keep the premap window off the kernel's writable
+  globals (see `choose_image_placement`); the full fix is to move the user
+  address space above the kernel image (or the kernel to the higher half) so no
+  user mapping can ever shadow kernel state, which would also restore image-base
+  ASLR.
 
 ---
 

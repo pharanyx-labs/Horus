@@ -159,6 +159,8 @@ extern uint8_t embedded_fsserver_bin_end[];
 #ifdef PROC_SELFTEST
 extern uint8_t embedded_exectest_bin_start[];
 extern uint8_t embedded_exectest_bin_end[];
+extern uint8_t embedded_grantee_bin_start[];
+extern uint8_t embedded_grantee_bin_end[];
 #endif
 
 static const struct embedded_binary embedded_binaries[] = {
@@ -170,6 +172,9 @@ static const struct embedded_binary embedded_binaries[] = {
     /* exectest: spawnable by name so the proc self-test can launch a child that
      * exercises SYS_EXEC_NAMED (it execs into "hello"). PROC_SELFTEST only. */
     { "exectest",  embedded_exectest_bin_start, embedded_exectest_bin_end },
+    /* grantee: child that exercises SYS_CAP_GRANT (uses a delegated CAP_AUDIT and
+     * checks fail-closed upward). PROC_SELFTEST only. */
+    { "grantee",   embedded_grantee_bin_start,  embedded_grantee_bin_end  },
 #endif
     { NULL, NULL, NULL }
 };
@@ -1156,9 +1161,28 @@ static void choose_image_placement(int tid, uint32_t *out_load_base, uint32_t *o
     int staged_is_elf = (armed_hdr.size >= 4 &&
                          loader_staging[0] == 0x7f && loader_staging[1] == 'E' &&
                          loader_staging[2] == 'L' && loader_staging[3] == 'F');
+
+    /* Bound the image-base ASLR so the premap window (base + PREMAP pages, mapped
+     * as USER by create_user_pagedir) can never reach the kernel's own writable
+     * globals. The kernel is linked low and its BSS extends above USER_AREA_BASE,
+     * so an unbounded window could land over tasks[]/scheduler state; a kernel
+     * read of that data on the task's CR3 would then return the task's (zeroed)
+     * user page and corrupt the scheduler. kernel_bss_floor is the link-time start
+     * of .bss (see linker64.ld). */
+    extern uint8_t kernel_bss_floor[];
+    uint32_t eff_max_pages = ASLR_MAX_LOAD_RANDOM_PAGES;
+    uint32_t window_bytes  = (uint32_t)USER_ASPACE_PREMAP_PAGES * PAGE_SIZE;
+    uint32_t floor         = (uint32_t)(uintptr_t)kernel_bss_floor;
+    if (floor > USER_AREA_BASE + window_bytes) {
+        uint32_t safe_pages = (floor - window_bytes - (uint32_t)USER_AREA_BASE) / PAGE_SIZE;
+        if (safe_pages < eff_max_pages) eff_max_pages = safe_pages;
+    } else {
+        eff_max_pages = 0;   /* no safe room below the kernel data: pin at the base */
+    }
+
     uint32_t load_base = USER_AREA_BASE;
-    if (staged_is_elf) {
-        load_base = (uint32_t)(USER_AREA_BASE + aslr_random_offset(ASLR_MAX_LOAD_RANDOM_PAGES));
+    if (staged_is_elf && eff_max_pages > 0) {
+        load_base = (uint32_t)(USER_AREA_BASE + aslr_random_offset(eff_max_pages));
         load_base &= ~0xFFFu;
     }
 
@@ -3201,6 +3225,52 @@ static void h_cap_revoke(struct regs *r) {
     audit_log(AUDIT_CAP_REVOKE, r->ebx, ok ? 0 : -1, ok ? "cap revoke" : "cap revoke denied");
 }
 
+/* SYS_CAP_GRANT (65): delegate a capability into a supervised child's cspace.
+ * Copy the caller's capability at `src_slot` into tasks[target]'s cspace at
+ * `dest_slot` with a fresh serial (so the grantee's cap_lookup accepts it),
+ * preserving type/rights/object/badge/generation so the delegated copy tracks the
+ * same lineage — a later revoke of the object invalidates it too. Authorised by a
+ * CAP_TCB (WRITE) to the target (the spawner's per-child cap) or CAP_USER admin,
+ * exactly like SYS_KILL: a task may only push capabilities down into children it
+ * supervises (no ambient authority upward). The target must be a live task other
+ * than the caller. The caller can only delegate a capability it actually holds. */
+static void h_cap_grant(struct regs *r) {
+    int cur = get_current_task();
+    int target = (int)r->ebx;
+    uint32_t src_slot  = r->ecx;
+    uint32_t dest_slot = r->edx;
+
+    if (target <= 0 || target >= MAX_TASKS || target == cur || tasks[target].state == 0) {
+        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    if (src_slot >= CNODE_SIZE || dest_slot >= CNODE_SIZE) {
+        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    if (!tasks[cur].cspace || !tasks[target].cspace) {
+        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    /* Same authority as SYS_KILL: a CAP_TCB to the target, or admin. */
+    if (!task_kill_authorized(target)) {
+        audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, -1, "cap grant denied");
+        r->eax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    /* The source must be a live capability the caller actually holds. */
+    struct capability *src = cap_lookup(src_slot, 0);
+    if (!src || src->type == CAP_NULL) {
+        r->eax = (uint32_t)SYS_ERR_NOENT; return;
+    }
+    capability_t granted = *src;                 /* snapshot before taking cap_lock */
+    uint32_t fresh = cap_alloc_fresh_serial();   /* grabs cap_lock itself; call first */
+    granted.serial = fresh;
+
+    spin_lock(&cap_lock);
+    tasks[target].cspace[dest_slot] = granted;
+    spin_unlock(&cap_lock);
+
+    audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, 0, "cap grant");
+    r->eax = 0;
+}
+
 /* clear screen (5): slot-3 WRITE enforced by the table. */
 static void h_clear(struct regs *r) {
     clear_screen();
@@ -3460,7 +3530,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 65
+#define SYSCALL_TABLE_SIZE 66
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -3492,6 +3562,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_RECEIVE_PROGRAM]          = { h_receive_program,         3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_SPAWN]                    = { h_spawn,                   3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_EXEC_NAMED]               = { h_exec_named,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_CAP_GRANT]                = { h_cap_grant,               SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
@@ -3542,7 +3613,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_EXEC_NAMED + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_CAP_GRANT + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

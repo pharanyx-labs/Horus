@@ -33,9 +33,11 @@ Already in place:
   `ls` / `cat` / `mkdir` / `rm` / `touch` / redirection from the shell.
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer.
-- **Process control** — a task can terminate itself (`SYS_EXIT`) or another task
-  it holds a `CAP_TCB` capability for (`SYS_KILL`), with waiter wake-up and
-  SMP-safe teardown (`make smoke-proc`).
+- **Process control** — a task can spawn a child from ring 3 (`SYS_SPAWN`, which
+  runs in the kernel address space and hands the caller a `CAP_TCB` to the child),
+  terminate itself (`SYS_EXIT`), or terminate a task it holds a `CAP_TCB`
+  capability for (`SYS_KILL`), with waiter wake-up and SMP-safe teardown
+  (`make smoke-proc`).
 - **CI** — eleven gated jobs: headless QEMU smoke-boot, seven runtime self-tests
   (ELF loader + W^X, preemption, fault signals, filesystem, newlib, SMP,
   process-control), a reproducible-build check, `clippy -D warnings`, and a
@@ -52,11 +54,6 @@ Good starting points for new contributors.
 - **Asynchronous signals**: extend the existing *synchronous* fault-signal
   delivery to task-to-task signalling (gated on a TCB capability), with signal
   masking and alternate signal stacks.
-- **Ring-3 spawn**: `do_spawn` currently only works from kernel context — it
-  touches physical pages via the kernel's low identity map, so a `SYS_SPAWN` from
-  a ring-3 task faults (its CR3 doesn't map those pages), and it leaves the child
-  as the current task. Make it run in the kernel address space and preserve the
-  caller. This is the prerequisite for the next two items.
 - **`exec` / `fork`**: only `spawn` exists today. Provide `exec` (replace the
   current image) and evaluate `fork` (or a spawn-with-inheritance primitive) so a
   shell can launch and replace programs conventionally.

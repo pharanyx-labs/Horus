@@ -64,6 +64,17 @@ void _start(void) {
     }
     if (!dead) { report("PROC_SELFTEST: FAIL kill\n"); sys_exit(); }
 
-    report("PROC_SELFTEST: PASS exit+kill\n");
+    /* --- ring-3 spawn: the driver spawns a child itself, which then exits --- */
+    int child = sys_spawn_named("hello");
+    if (child <= 0) { report("PROC_SELFTEST: FAIL r3-spawn\n"); sys_exit(); }
+    int reaped = 0;
+    struct task_info ci;
+    for (int i = 0; i < 6000; i++) {
+        if (sys_get_task_info(child, &ci) == 0 && ci.state == 0) { reaped = 1; break; }
+        settle();
+    }
+    if (!reaped) { report("PROC_SELFTEST: FAIL r3-spawn-exit\n"); sys_exit(); }
+
+    report("PROC_SELFTEST: PASS exit+kill+spawn\n");
     sys_exit();
 }

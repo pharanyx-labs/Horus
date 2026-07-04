@@ -366,16 +366,28 @@ embedded_elftest_start:
 embedded_elftest_end:
 #endif
 
-#if defined(PREEMPT_SELFTEST) || defined(SMP_SELFTEST)
+#if defined(PREEMPT_SELFTEST) || defined(SMP_SELFTEST) || defined(PROC_SELFTEST)
 /* Flat userspace tracer used by the preemptive-scheduling self-test
- * (preempt_selftest) and reused as the worker payload by the SMP self-test
- * (smp_selftest). Only embedded in those gated builds. */
+ * (preempt_selftest), reused as the worker payload by the SMP self-test
+ * (smp_selftest) and as the "looper" kill target by the process-control
+ * self-test (proc_selftest). Only embedded in those gated builds. */
 .align 16
 .global embedded_preempttest_bin_start
 embedded_preempttest_bin_start:
 .incbin "userspace/preempttest.bin"
 .global embedded_preempttest_bin_end
 embedded_preempttest_bin_end:
+#endif
+
+#ifdef PROC_SELFTEST
+/* Flat userspace driver for the process-control self-test (proc_selftest):
+ * spawns children and exercises SYS_EXIT / SYS_KILL. Only in PROC_SELFTEST. */
+.align 16
+.global embedded_proctest_bin_start
+embedded_proctest_bin_start:
+.incbin "userspace/proctest.bin"
+.global embedded_proctest_bin_end
+embedded_proctest_bin_end:
 #endif
 
 #ifdef SIGNAL_SELFTEST

@@ -1294,6 +1294,26 @@ static int do_spawn(void) {
     sched_prepare_user_context(new_id, tasks[new_id].eip,
                                tasks[new_id].esp ? tasks[new_id].esp : 0x007ff000ULL);
 
+    /* Grant the spawner a CAP_TCB capability to the new child so it can wait on,
+     * signal, or terminate it (SYS_WAIT / SYS_KILL). Installed in the first free
+     * cspace slot at or above 16, clear of the reserved low slots. Skipped when
+     * the "spawner" is the kernel/idle task (boot-time spawns). */
+    int spawner = get_current_task();
+    if (spawner > 0 && spawner < MAX_TASKS && tasks[spawner].cspace) {
+        capability_t *cs = tasks[spawner].cspace;
+        for (uint32_t s = 16; s < tasks[spawner].cspace_size; s++) {
+            if (cs[s].type == CAP_NULL) {
+                cs[s].type       = CAP_TCB;
+                cs[s].rights     = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+                cs[s].object     = (uint64_t)new_id;
+                cs[s].badge      = 0;
+                cs[s].serial     = (0xB0000000U | ((uint32_t)new_id << 16) | s);
+                cs[s].generation = 0;
+                break;
+            }
+        }
+    }
+
     return new_id;
 }
 
@@ -1610,6 +1630,96 @@ void smp_selftest(void) {
     for (;;) asm volatile("hlt");
 }
 #endif /* SMP_SELFTEST */
+
+#ifdef PROC_SELFTEST
+/* Spawn a registered (spawn_table) program from the kernel, keeping the kernel
+ * address space across do_spawn (which installs the new task's CR3 and makes it
+ * current). Returns the new pid. */
+static int proc_spawn_named(const char *name) {
+    uint64_t kcr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
+    set_current_task(0);                 /* so do_spawn's spawner-cap grant is skipped */
+    int pid = (arm_named_binary(name) == 0) ? do_spawn() : -1;
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
+    return pid;
+}
+
+/* Spawn a HORU-headered embedded image with an explicit task name. */
+static int proc_spawn_embed(const uint8_t *start, const uint8_t *end, const char *nm) {
+    uint32_t full = (uint32_t)(end - start);
+    if (full < 44) return -1;
+    uint32_t magic   = *(const uint32_t *)start;
+    uint32_t h_entry = *(const uint32_t *)(start + 4);
+    uint32_t h_size  = *(const uint32_t *)(start + 8);
+    if (magic != 0x55524F48 || h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -1;
+    if (full < 44 + h_size) h_size = full - 44;
+
+    uint64_t kcr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
+    set_current_task(0);
+    for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = start[44 + i];
+    armed_hdr.entry = h_entry;
+    armed_hdr.size  = h_size;
+    int k = 0;
+    for (; nm[k] && k < 31; k++) armed_hdr.name[k] = nm[k];
+    armed_hdr.name[k] = 0;
+    program_armed = 1;
+    int pid = do_spawn();
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
+    return pid;
+}
+
+/* ---- Process-control self-test (PROC_SELFTEST builds only) -----------------
+ * The kernel spawns three tasks: a "hello" child that finishes with sys_exit, a
+ * "looper" child (the preemption-test payload) that loops forever, and the
+ * proctest driver. The driver is granted CAP_AUDIT (to read task state) and a
+ * CAP_TCB capability to the looper (to terminate it), then dropped to ring 3. It
+ * confirms the hello child exits and that it can SYS_KILL the looper via that
+ * capability, printing PROC_SELFTEST: PASS. (The driver does not spawn anything
+ * itself — ring-3 spawn is deferred to the init/exec stage.) This lretq into
+ * ring 3 does not return. */
+void proc_selftest(void) {
+    extern uint8_t embedded_proctest_bin_start[];
+    extern uint8_t embedded_proctest_bin_end[];
+    extern uint8_t embedded_preempttest_bin_start[];
+    extern uint8_t embedded_preempttest_bin_end[];
+
+    print("PROC_SELFTEST: begin\n");
+
+    int hello_id = proc_spawn_named("hello");
+    int loop_id  = proc_spawn_embed(embedded_preempttest_bin_start, embedded_preempttest_bin_end, "looper");
+    int a        = proc_spawn_embed(embedded_proctest_bin_start,   embedded_proctest_bin_end,   "proc");
+    if (hello_id <= 0 || loop_id <= 0 || a <= 0) { print("PROC_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    /* Grant the driver a real CAP_AUDIT (root slot 7) so SYS_GET_TASK_INFO can
+     * read the children's state — but NOT admin, so the kill must go through a
+     * genuine CAP_TCB capability — plus a CAP_TCB to the looper child (root slot
+     * 0 is the primordial TCB cap), scoped to loop_id. Both get fresh serials so
+     * cap_lookup accepts them. */
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    cap_install_from_root(a, 7, 7, 0);            /* CAP_AUDIT: read task info   */
+    cap_install_from_root(a, 16, 0, (uint32_t)loop_id);  /* CAP_TCB -> captest   */
+    tasks[a].uid = 0;
+
+    sched_enable_preemption();
+    {
+        uint64_t rip  = (uint64_t)tasks[a].eip;
+        uint64_t rspv = tasks[a].esp ? (uint64_t)tasks[a].esp : 0x007ff000ULL;
+        uint64_t ucr3 = tasks[a].cr3;
+        uintptr_t kst = tasks[a].kernel_stack_top ? tasks[a].kernel_stack_top : KERNEL_TSS_STACK;
+        set_tss_kernel_stack(kst);
+        set_current_task(a);
+        __asm__ volatile (
+            "mov %2, %%cr3\n\t"
+            "mov $0x33, %%ax\n\t"
+            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
+            "mov %1, %%rsp\n\t"
+            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
+            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
+        );
+    }
+}
+#endif /* PROC_SELFTEST */
 
 #ifdef SIGNAL_SELFTEST
 /* ---- Signal-handling self-test (SIGNAL_SELFTEST builds only) ---------------
@@ -2313,6 +2423,55 @@ static void h_fs_list(struct regs *r) {
     if (n < 0) { r->eax = -1; return; }
     if (copy_to_user(user_buf, kbuf, n+1) == 0) r->eax = n;
     else r->eax = -1;
+}
+
+/* SYS_EXIT (2): terminate the calling task. Teardown runs here; the switch away
+ * from the now-dead caller is done in interrupt_handler64, which detects
+ * state == 0 on return from the syscall and redirects to the kernel reaper
+ * (exactly as the ring-3 fault-kill path does). */
+static void h_exit(struct regs *r) {
+    task_teardown(get_current_task());
+    r->eax = 0;
+}
+
+/* Return non-zero if the current task may terminate `target`: either it holds a
+ * CAP_TCB capability to the target with WRITE rights (every task has one to
+ * itself at slot 0; a spawner is granted one per child in do_spawn), or it holds
+ * CAP_USER admin authority (slot 6). */
+static int task_kill_authorized(int target) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) return 0;
+
+    struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
+    if (admin && admin->type == CAP_USER) return 1;
+
+    capability_t *cs = tasks[cur].cspace;
+    if (!cs) return 0;
+    for (uint32_t s = 0; s < tasks[cur].cspace_size; s++) {
+        if (cs[s].type == CAP_TCB && cs[s].object == (uint64_t)target &&
+            (cs[s].rights & CAP_RIGHT_WRITE)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* SYS_KILL (63): terminate task ebx. Authorised by a CAP_TCB capability to the
+ * target (or CAP_USER admin) — enforced in the handler because the target is
+ * dynamic, so the central slot-based gate cannot express it. Killing yourself
+ * behaves like SYS_EXIT (interrupt_handler64 redirects on the state==0 return). */
+static void h_kill(struct regs *r) {
+    int target = (int)r->ebx;
+    if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
+        r->eax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
+    if (!task_kill_authorized(target)) {
+        r->eax = (uint32_t)SYS_ERR_PERM;
+        return;
+    }
+    task_teardown(target);
+    r->eax = 0;
 }
 
 /* SYS_WAIT (17): block until task `tid` exits. */
@@ -3184,10 +3343,12 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 63
+#define SYSCALL_TABLE_SIZE 64
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
+    [SYS_EXIT]                     = { h_exit,                    SC_NONE, 0, SC_ANYTYPE }, /* self-terminate */
+    [SYS_KILL]                     = { h_kill,                    SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB/admin in handler */
     [SYS_GET_LINE]                 = { h_get_line,                SC_NONE, 0, SC_ANYTYPE }, /* slot 8 or 3 READ (fallback in handler) */
     [4]                            = { h_cap_mint,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_mint */
     [5]                            = { h_clear,                   3, CAP_RIGHT_WRITE, SC_ANYTYPE },
@@ -3263,7 +3424,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_BRK + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_KILL + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

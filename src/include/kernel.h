@@ -194,6 +194,7 @@ void users_init(void);
 #define SYS_FS_STAT            60
 #define SYS_FS_SET_SIZE        61
 #define SYS_BRK                62
+#define SYS_KILL               63   /* terminate a task; gated on a CAP_TCB cap to it */
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {
@@ -534,6 +535,13 @@ int  get_current_task(void);
 void set_current_task(int v);
 void schedule(void);
 void yield(void);
+/* Terminate task `id`: wake any SYS_WAIT waiter, drop its signal handler, mark it
+ * dead (state 0) and release its SMP running-CPU guard. Does NOT switch away from
+ * the caller — the SYS_EXIT/SYS_KILL paths handle that. */
+void task_teardown(int id);
+/* Resume the next runnable task after `dead` terminated (returns its saved kernel
+ * %rsp for the ISR epilogue), or 0 if nothing else is runnable. See scheduler.c. */
+uint64_t task_exit_switch(int dead);
 char console_getc(void);
 void console_putc(char c);
 void console_puts(const char *s);
@@ -756,6 +764,9 @@ void newlib_selftest(void);
 #endif
 #ifdef SMP_SELFTEST
 void smp_selftest(void);
+#endif
+#ifdef PROC_SELFTEST
+void proc_selftest(void);
 #endif
 
 

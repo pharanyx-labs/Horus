@@ -647,6 +647,73 @@ void yield(void) {
     schedule();
 }
 
+/* Terminate task `id`: wake a SYS_WAIT waiter blocked on it, drop its signal
+ * handler, mark it dead, and (SMP) release its running-CPU guard so no core will
+ * reselect it. The caller (SYS_EXIT / SYS_KILL) is responsible for switching the
+ * CPU away from the task if it happens to be the one currently running. */
+void task_teardown(int id) {
+    if (id <= 0 || id >= MAX_TASKS) return;
+
+    int w = tasks[id].waiter;
+    if (w >= 0 && w < MAX_TASKS) {
+        if (tasks[w].state == 0) tasks[w].state = 1;   /* unblock the waiter */
+        tasks[id].waiter = -1;
+    }
+
+    tasks[id].sig_handler = 0;
+    tasks[id].in_signal   = 0;
+    tasks[id].state       = 0;   /* dead: the scheduler will not select it */
+#ifdef SMP
+    task_running_cpu[id]  = -1;  /* release the SMP mutual-exclusion guard */
+#endif
+}
+
+/* Switch away from a task that has just terminated (SYS_EXIT / SYS_KILL-self),
+ * called from interrupt_handler64 with the dead task's trap frame. The dead
+ * frame is abandoned (not saved); we resume the next runnable task via its saved
+ * trap frame — the same iretq mechanism the timer and blocking IPC use — and
+ * return its kernel %rsp for the ISR epilogue. Returns 0 if nothing else is
+ * runnable, so the caller can fall back to the kernel idle/reaper. */
+uint64_t task_exit_switch(int dead) {
+#ifdef SMP
+    sched_raw_lock();
+    int cpu = this_cpu();
+#endif
+    int next = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        int cand = (dead + i) % MAX_TASKS;
+        if (cand == 0) continue;
+        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
+#ifdef SMP
+            && task_running_cpu[cand] < 0
+#endif
+           ) { next = cand; break; }
+    }
+    if (next < 0) {
+#ifdef SMP
+        sched_raw_unlock();
+#endif
+        return 0;   /* nothing else to run — caller idles */
+    }
+#ifdef SMP
+    task_running_cpu[next] = cpu;
+#endif
+    switch_cr3(tasks[next].cr3);
+    uint64_t kstop = task_kstack_top(next);
+    set_tss_kernel_stack(kstop);
+#ifdef SMP
+    if (cpu == 0) current_kernel_stack_top = kstop;
+#else
+    current_kernel_stack_top = kstop;
+#endif
+    set_current_task(next);
+    uint64_t ksp = tasks[next].saved_ksp;
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+    return ksp;
+}
+
 int this_cpu(void) {
     
     volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
@@ -901,6 +968,10 @@ void smp_bringup(void) {
     /* Gated: spawn a pool of forever-looping workers and prove the application
      * processors pull and run them concurrently (prints SMP_SELFTEST: PASS). */
     smp_selftest();
+#elif defined(PROC_SELFTEST)
+    /* Gated: drive SYS_EXIT + SYS_KILL from ring 3 and confirm both children
+     * reach the dead state (prints PROC_SELFTEST: PASS). */
+    proc_selftest();
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the

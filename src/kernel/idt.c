@@ -241,6 +241,20 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
             if (st == TASK_BLOCKED_IPC || st == TASK_BLOCKED_NOTIF) {
                 return ipc_block_switch(ipc_caller, (uint64_t)frame);
             }
+            /* SYS_EXIT / SYS_KILL-self: the caller terminated itself. It is dead;
+             * do not iretq back into it. Resume the next runnable task via its
+             * saved trap frame (the same mechanism the timer uses); if nothing
+             * else is runnable, fall back to the kernel reaper on task 0's stack. */
+            if (st == 0) {
+                uint64_t rsp = task_exit_switch(ipc_caller);
+                if (rsp) return rsp;
+                frame->rip    = (uint64_t)resume_shell_after_fault;
+                frame->cs     = 0x08;
+                frame->rflags = 0x202;
+                frame->rsp    = tasks[0].kernel_stack_top;
+                frame->ss     = 0x10;
+                return (uint64_t)frame;
+            }
         }
     } else if (vector < 32) {
         

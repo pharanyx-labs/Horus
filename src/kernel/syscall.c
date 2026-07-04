@@ -1128,7 +1128,7 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_i
     return 0;
 }
 
-static int do_spawn(void) {
+static int do_spawn_inner(void) {
     if (!program_armed) {
         return -1;
     }
@@ -1294,27 +1294,51 @@ static int do_spawn(void) {
     sched_prepare_user_context(new_id, tasks[new_id].eip,
                                tasks[new_id].esp ? tasks[new_id].esp : 0x007ff000ULL);
 
-    /* Grant the spawner a CAP_TCB capability to the new child so it can wait on,
-     * signal, or terminate it (SYS_WAIT / SYS_KILL). Installed in the first free
-     * cspace slot at or above 16, clear of the reserved low slots. Skipped when
-     * the "spawner" is the kernel/idle task (boot-time spawns). */
-    int spawner = get_current_task();
-    if (spawner > 0 && spawner < MAX_TASKS && tasks[spawner].cspace) {
-        capability_t *cs = tasks[spawner].cspace;
-        for (uint32_t s = 16; s < tasks[spawner].cspace_size; s++) {
-            if (cs[s].type == CAP_NULL) {
-                cs[s].type       = CAP_TCB;
-                cs[s].rights     = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
-                cs[s].object     = (uint64_t)new_id;
-                cs[s].badge      = 0;
-                cs[s].serial     = (0xB0000000U | ((uint32_t)new_id << 16) | s);
-                cs[s].generation = 0;
-                break;
-            }
+    return new_id;
+}
+
+/* Give `spawner` a CAP_TCB capability to child `pid`, so it can wait on, signal,
+ * or terminate the child (SYS_WAIT / SYS_KILL). Installed in the first free
+ * cspace slot at or above 16, clear of the reserved low slots, with a fresh
+ * serial so cap_lookup accepts it. No-op for the kernel/idle spawner. */
+static void grant_child_tcb_cap(int spawner, int pid) {
+    if (spawner <= 0 || spawner >= MAX_TASKS || pid <= 0 || pid >= MAX_TASKS) return;
+    capability_t *cs = tasks[spawner].cspace;
+    if (!cs) return;
+    for (uint32_t s = 16; s < tasks[spawner].cspace_size; s++) {
+        if (cs[s].type == CAP_NULL) {
+            cs[s].type       = CAP_TCB;
+            cs[s].rights     = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+            cs[s].object     = (uint64_t)pid;
+            cs[s].badge      = 0;
+            cs[s].serial     = cap_alloc_fresh_serial();
+            cs[s].generation = 0;
+            break;
         }
     }
+}
 
-    return new_id;
+/* do_spawn must run in the kernel address space: create_user_pagedir and the
+ * image loader reach freshly-allocated physical pages through the kernel's low
+ * identity map, which a ring-3 caller's CR3 does not provide, and do_spawn_inner
+ * installs the child as the current task. This wrapper switches to the kernel
+ * page tables for the duration and restores the caller's address space + current
+ * task on return, so SYS_SPAWN works from ring 3 and the caller continues. The
+ * caller is also granted a CAP_TCB to the new child. */
+static int do_spawn(void) {
+    extern uint64_t pml4[];
+    uint64_t caller_cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(caller_cr3));
+    int caller_task = get_current_task();
+    uint64_t kcr3 = (uint64_t)(uintptr_t)pml4;
+
+    if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
+    int pid = do_spawn_inner();
+    set_current_task(caller_task);
+    if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
+
+    if (pid > 0) grant_child_tcb_cap(caller_task, pid);
+    return pid;
 }
 
 #ifdef ELF_SELFTEST
@@ -3149,7 +3173,9 @@ static void h_spawn(struct regs *r) {
         }
     }
     int pid = do_spawn();
-    if (pid > 0) schedule();
+    /* Don't switch to the child here: do_spawn returns with the caller restored
+     * as the current task, and the child (runnable) is picked up by the timer.
+     * The old cooperative schedule() mis-handles a ring-3 caller mid-syscall. */
     r->eax = (uint32_t)pid;
 }
 

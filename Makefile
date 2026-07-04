@@ -100,6 +100,16 @@ ASFLAGS += -DNEWLIB_SELFTEST
 NEWLIB_SELFTEST_DEP = userspace/hello_newlib.bin
 endif
 
+# PROC_SELFTEST=1 embeds the proctest driver and, at boot, drives SYS_EXIT +
+# SYS_KILL from ring 3, confirming both a self-exiting child and a killed child
+# reach the dead state (prints PROC_SELFTEST: PASS). Gated off the ship kernel.
+PROC_SELFTEST ?= 0
+ifeq ($(PROC_SELFTEST),1)
+CFLAGS  += -DPROC_SELFTEST
+ASFLAGS += -DPROC_SELFTEST
+PROC_SELFTEST_DEP = userspace/proctest.bin userspace/preempttest.bin
+endif
+
 # SMP=1 brings up the application processors (multi-core) at boot: the BSP wakes
 # every AP with a broadcast INIT-SIPI-SIPI and each walks itself to long mode via
 # the real-mode trampoline (src/boot/ap_trampoline.S). Gated so the default build
@@ -172,7 +182,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -312,8 +322,11 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
 # PIE test-only binaries (not shipped): built via the same static-PIE path as
-# the shipped bins, but kept out of $(SHIPPED_PIE_BINS)/`userspace`.
-PIE_TEST_BINS = userspace/fsclient.bin
+# the shipped bins, but kept out of $(SHIPPED_PIE_BINS)/`userspace`. proctest is
+# PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
+# -fPIE go through the GOT and only resolve once try_elf_load applies the
+# R_386_RELATIVE relocations — the flat load path does not.
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -402,6 +415,17 @@ smoke-smp:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated process-control self-test, boot headless, and require the
+# in-kernel driver to report PASS -- runtime proof that SYS_EXIT and SYS_KILL
+# terminate tasks (a self-exiting child and a killed child both reach dead).
+.PHONY: smoke-proc
+smoke-proc:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: PASS' \
+		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

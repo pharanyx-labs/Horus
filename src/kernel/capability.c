@@ -129,11 +129,11 @@ void cap_init(void) {
      * initialize here — it is zeroed in the static and bumped lazily. */
 }
 
-#ifdef FS_SELFTEST
+#if defined(FS_SELFTEST) || defined(PROC_SELFTEST)
 /* Install a copy of a primordial root capability into a task's cspace slot with
- * a fresh serial (so cap_lookup accepts it). Used only by the FS self-test
- * harness to provision the server task's endpoint / object-store capabilities;
- * root_cnode is otherwise file-private. */
+ * a fresh serial (so cap_lookup accepts it). Used by the FS and process-control
+ * self-test harnesses to provision a task with capabilities it would otherwise
+ * receive via delegation; root_cnode is otherwise file-private. */
 int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object) {
     extern tcb_t tasks[MAX_TASKS];
     if (pid < 0 || pid >= MAX_TASKS || slot >= CNODE_SIZE || root_slot >= CNODE_SIZE) return -1;

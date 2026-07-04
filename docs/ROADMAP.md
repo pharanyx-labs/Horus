@@ -33,24 +33,30 @@ Already in place:
   `ls` / `cat` / `mkdir` / `rm` / `touch` / redirection from the shell.
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer.
-- **CI** — ten gated jobs: headless QEMU smoke-boot, six runtime self-tests
-  (ELF loader + W^X, preemption, fault signals, filesystem, newlib, SMP), a
-  reproducible-build check, `clippy -D warnings`, and a SAST/SBOM scan.
+- **Process control** — a task can terminate itself (`SYS_EXIT`) or another task
+  it holds a `CAP_TCB` capability for (`SYS_KILL`), with waiter wake-up and
+  SMP-safe teardown (`make smoke-proc`).
+- **CI** — eleven gated jobs: headless QEMU smoke-boot, seven runtime self-tests
+  (ELF loader + W^X, preemption, fault signals, filesystem, newlib, SMP,
+  process-control), a reproducible-build check, `clippy -D warnings`, and a
+  SAST/SBOM scan.
 
 ---
 
 ## Phase 1 — Process lifecycle and control
 
-The kernel can *spawn* tasks but not manage their lifetime; this phase makes
-processes first-class. Good starting points for new contributors.
+Task termination has landed (`SYS_EXIT` / capability-gated `SYS_KILL`, see the
+foundation summary); the rest of this phase makes processes fully first-class.
+Good starting points for new contributors.
 
-- **Task termination (`kill`)**: there is no syscall to stop another task — a
-  runaway or misbehaving process survives until reboot. Add a capability-gated
-  terminate (authorised by a capability to the target's TCB) that cleanly tears
-  down the task's address space, capability space, and any core it is running on.
 - **Asynchronous signals**: extend the existing *synchronous* fault-signal
   delivery to task-to-task signalling (gated on a TCB capability), with signal
   masking and alternate signal stacks.
+- **Ring-3 spawn**: `do_spawn` currently only works from kernel context — it
+  touches physical pages via the kernel's low identity map, so a `SYS_SPAWN` from
+  a ring-3 task faults (its CR3 doesn't map those pages), and it leaves the child
+  as the current task. Make it run in the kernel address space and preserve the
+  caller. This is the prerequisite for the next two items.
 - **`exec` / `fork`**: only `spawn` exists today. Provide `exec` (replace the
   current image) and evaluate `fork` (or a spawn-with-inheritance primitive) so a
   shell can launch and replace programs conventionally.

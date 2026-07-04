@@ -104,6 +104,7 @@ struct audit_event {
 #define SYS_FS_STAT            60   /* (ino, struct fs_stat*) -> 0 */
 #define SYS_FS_SET_SIZE        61   /* (ino, size) -> 0 (server owns logical file size) */
 #define SYS_BRK                62   /* (addr) -> new break; addr=0 queries current break */
+#define SYS_KILL               63   /* (tid) -> terminate task tid; needs a CAP_TCB cap to it */
 
 /* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
 struct fs_stat {
@@ -226,6 +227,13 @@ static inline int sys_open(const char* path) {
 
 static inline int sys_wait(int task_id) {
     return syscall(SYS_WAIT, (uint32_t)task_id, 0, 0);
+}
+
+/* Terminate task `tid`. Authorised by holding a CAP_TCB capability to the target
+ * in the caller's cspace (spawners get one for each child), or CAP_USER (admin).
+ * Returns 0 on success, negative on permission/argument error. */
+static inline int sys_kill(int tid) {
+    return syscall(SYS_KILL, (uint32_t)tid, 0, 0);
 }
 
 static inline int sys_get_task_info(int id, struct task_info *out) {

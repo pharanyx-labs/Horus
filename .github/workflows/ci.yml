@@ -171,6 +171,23 @@ jobs:
       - name: Boot SMP_SELFTEST kernel under -smp 4 and assert APs run scheduled tasks + TLB shootdown
         run: make smoke-smp
 
+  smoke-proc:
+    name: QEMU process-control self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot PROC_SELFTEST kernel and assert SYS_EXIT + capability-gated SYS_KILL work
+        run: make smoke-proc
+
   reproducible:
     name: Verify reproducible kernel build
     runs-on: ubuntu-latest

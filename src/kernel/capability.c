@@ -129,11 +129,11 @@ void cap_init(void) {
      * initialize here — it is zeroed in the static and bumped lazily. */
 }
 
-#if defined(FS_SELFTEST) || defined(PROC_SELFTEST)
 /* Install a copy of a primordial root capability into a task's cspace slot with
- * a fresh serial (so cap_lookup accepts it). Used by the FS and process-control
- * self-test harnesses to provision a task with capabilities it would otherwise
- * receive via delegation; root_cnode is otherwise file-private. */
+ * a fresh serial (so cap_lookup accepts it). Used to bootstrap the ring-3 init
+ * process with the capabilities it delegates onward (spawn_initial_userspace_init)
+ * and by the FS/process-control self-test harnesses; root_cnode is otherwise
+ * file-private. */
 int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object) {
     extern tcb_t tasks[MAX_TASKS];
     if (pid < 0 || pid >= MAX_TASKS || slot >= CNODE_SIZE || root_slot >= CNODE_SIZE) return -1;
@@ -147,7 +147,6 @@ int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t o
     spin_unlock(&cap_lock);
     return 0;
 }
-#endif
 
 struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
     if (slot >= CNODE_SIZE) return NULL;

@@ -328,6 +328,15 @@ embedded_shell_bin_start:
 .global embedded_shell_bin_end
 embedded_shell_bin_end:
 
+/* init: the ring-3 PID-1 process the kernel launches first; it spawns and
+ * supervises the shell. Always embedded (it is the boot userspace entry). */
+.align 16
+.global embedded_init_bin_start
+embedded_init_bin_start:
+.incbin "userspace/init.bin"
+.global embedded_init_bin_end
+embedded_init_bin_end:
+
 /* hello and captest are always embedded so 'spawn hello'/'spawn captest' work
  * without a serial-port upload. */
 .align 16

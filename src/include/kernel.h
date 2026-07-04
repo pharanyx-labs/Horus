@@ -637,6 +637,9 @@ void scheduler_init(void);
 void smp_bringup(void);
 void aslr_init_seed(void);
 void spawn_initial_userspace_shell(void);
+/* Launch the ring-3 init process (PID-1) — the first userspace task, which then
+ * spawns and supervises the shell. Replaces spawn_initial_userspace_shell at boot. */
+void spawn_initial_userspace_init(void);
 int cpu_has_aesni(void);
 void cpu_enable_protections(void);
 void paging_init(void);

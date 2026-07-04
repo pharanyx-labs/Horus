@@ -3889,6 +3889,60 @@ int process_user_command(const char *cmd) {
 }
 #endif
 
+/* Launch the ring-3 init process (PID-1 role) as the first userspace task,
+ * replacing the former "kernel spawns the shell directly" arrangement. init is
+ * endowed with exactly the capabilities it needs to do its job and no more:
+ * CAP_AUDIT (slot 7) to observe its children's liveness, and CAP_CONSOLE (slot 8)
+ * + CAP_ENCRYPTED_STORAGE (slot 9) to delegate to the shell it spawns. init then
+ * launches and supervises the shell from ring 3 (see userspace/init.c), handing
+ * it those two caps via SYS_CAP_GRANT. Structure mirrors the old shell launcher:
+ * stage the embedded image, do_spawn, endow, then lretq into ring 3. */
+void spawn_initial_userspace_init(void) {
+    extern uint8_t embedded_init_bin_start[];
+    extern uint8_t embedded_init_bin_end[];
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    uint32_t full_sz = (uint32_t)(embedded_init_bin_end - embedded_init_bin_start);
+    if (full_sz < 44) return;
+    const uint8_t *bin = embedded_init_bin_start;
+    uint32_t magic = *(const uint32_t *)bin;
+    uint32_t h_entry = *(const uint32_t *)(bin + 4);
+    uint32_t h_size = *(const uint32_t *)(bin + 8);
+    if (magic != 0x55524F48) return;
+    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return;
+    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    armed_hdr.entry = h_entry;
+    armed_hdr.size = h_size;
+    const uint8_t *payload = bin + 44;
+    for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
+    program_armed = 1;
+    int pid = do_spawn();
+    if (pid > 0) {
+        tasks[pid].uid = 0;   /* init is the privileged supervisor */
+        /* Least privilege: only what init must wield (audit) or delegate onward
+         * (console, storage). Copied from the primordial root cnode with fresh
+         * serials so init's — and its grantees' — cap_lookups accept them. */
+        cap_install_from_root(pid, 7, 7, 0);   /* root[7] = CAP_AUDIT             */
+        cap_install_from_root(pid, 8, 8, 0);   /* root[8] = CAP_CONSOLE           */
+        cap_install_from_root(pid, 9, 9, 0);   /* root[9] = CAP_ENCRYPTED_STORAGE */
+
+        uint64_t rip  = (uint64_t)tasks[pid].eip;
+        uint64_t rspv = tasks[pid].esp ? (uint64_t)tasks[pid].esp : 0x007ff000ULL;
+        uint64_t ucr3 = tasks[pid].cr3;
+        uintptr_t kst = tasks[pid].kernel_stack_top ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
+        set_tss_kernel_stack(kst);
+        set_current_task(pid);
+        sched_enable_preemption();
+        __asm__ volatile (
+            "mov %2, %%cr3\n\t"
+            "mov $0x33, %%ax\n\t"
+            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
+            "mov %1, %%rsp\n\t"
+            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
+            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
+        );
+    }
+}
+
 void spawn_initial_userspace_shell(void) {
     extern uint8_t embedded_shell_bin_start[];
     extern uint8_t embedded_shell_bin_end[];

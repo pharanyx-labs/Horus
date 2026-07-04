@@ -1011,7 +1011,7 @@ void smp_bringup(void) {
      * ring 3, so it never returns to kernel_main. */
     elf_loader_selftest();
 #endif
-    spawn_initial_userspace_shell();
+    spawn_initial_userspace_init();
 #endif
 }
 

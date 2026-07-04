@@ -33,11 +33,13 @@ Already in place:
   `ls` / `cat` / `mkdir` / `rm` / `touch` / redirection from the shell.
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer.
-- **Process control** — a task can spawn a child from ring 3 (`SYS_SPAWN`, which
-  runs in the kernel address space and hands the caller a `CAP_TCB` to the child),
-  terminate itself (`SYS_EXIT`), or terminate a task it holds a `CAP_TCB`
-  capability for (`SYS_KILL`), with waiter wake-up and SMP-safe teardown
-  (`make smoke-proc`).
+- **Process control** — a ring-3 `init` (PID 1) launches at boot and spawns,
+  capability-endows and supervises the shell. A task can spawn a child from ring 3
+  (`SYS_SPAWN`, which runs in the kernel address space and hands the caller a
+  `CAP_TCB` to the child), replace its own image (`SYS_EXEC_NAMED`), delegate a
+  capability down to a child it supervises (`SYS_CAP_GRANT`), terminate itself
+  (`SYS_EXIT`), or terminate a task it holds a `CAP_TCB` for (`SYS_KILL`), with
+  waiter wake-up and SMP-safe teardown (`make smoke-proc`).
 - **CI** — eleven gated jobs: headless QEMU smoke-boot, seven runtime self-tests
   (ELF loader + W^X, preemption, fault signals, filesystem, newlib, SMP,
   process-control), a reproducible-build check, `clippy -D warnings`, and a
@@ -59,9 +61,12 @@ Good starting points for new contributors.
   launch-and-replace programs. Still to do: `exec` with caller-supplied arguments
   and an `exec`-from-file-descriptor path, and evaluate `fork` (or a
   spawn-with-inheritance primitive).
-- **Userspace init**: a ring-3 init process that launches and supervises the
-  shell and the servers, replacing the current arrangement where the kernel
-  spawns the shell directly.
+- **Userspace init / servers**: a ring-3 init (PID 1) now launches at boot and
+  spawns, capability-endows (`SYS_CAP_GRANT`) and supervises the shell — the
+  kernel no longer spawns the shell directly. Remaining: have init also launch
+  the servers (`fs_server` is still started on demand from the shell), which
+  needs each server's boot capability provisioning expressed as delegations from
+  init rather than the current direct root-cnode installs.
 
 ---
 

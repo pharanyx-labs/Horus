@@ -89,7 +89,7 @@ void kernel_main(uint32_t mb_info) {
 #ifdef DEBUG_SHELL
     shell_prompt_loop();
 #else
-    spawn_initial_userspace_shell();
+    spawn_initial_userspace_init();
     set_current_task(0);
     for(;;) schedule();
 #endif

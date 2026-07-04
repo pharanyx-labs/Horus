@@ -397,6 +397,16 @@ embedded_exectest_bin_start:
 .incbin "userspace/exectest.bin"
 .global embedded_exectest_bin_end
 embedded_exectest_bin_end:
+
+/* grantee: a child the proctest driver spawns to exercise SYS_CAP_GRANT — it
+ * uses a delegated CAP_AUDIT and checks that unauthorised grants fail. Only in
+ * PROC_SELFTEST. */
+.align 16
+.global embedded_grantee_bin_start
+embedded_grantee_bin_start:
+.incbin "userspace/grantee.bin"
+.global embedded_grantee_bin_end
+embedded_grantee_bin_end:
 #endif
 
 #ifdef SIGNAL_SELFTEST

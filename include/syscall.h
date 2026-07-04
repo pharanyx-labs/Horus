@@ -106,6 +106,7 @@ struct audit_event {
 #define SYS_BRK                62   /* (addr) -> new break; addr=0 queries current break */
 #define SYS_KILL               63   /* (tid) -> terminate task tid; needs a CAP_TCB cap to it */
 #define SYS_EXEC_NAMED         64   /* (name) -> replace the caller's own image with a named embedded binary; does not return on success */
+#define SYS_CAP_GRANT          65   /* (target_tid, src_slot, dest_slot) -> copy caller's cap into a supervised child's cspace slot */
 
 /* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
 struct fs_stat {
@@ -325,6 +326,17 @@ static inline int sys_exec_named(const char *name) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
     return (int)syscall(SYS_EXEC_NAMED, (uint32_t)(uintptr_t)name, len, 0);
+}
+
+/* Delegate a capability to a child task: copy the caller's capability at
+ * `src_slot` into `target_tid`'s cspace at `dest_slot`, with a fresh serial so
+ * the grantee's cap_lookup accepts it. Authorised only if the caller holds a
+ * CAP_TCB to `target_tid` (the per-child cap a spawner receives) or CAP_USER
+ * admin — a task may only push capabilities down into children it supervises.
+ * Returns 0 on success, negative on error (unauthorised, bad slot/target, or no
+ * capability at src_slot). */
+static inline int sys_cap_grant(int target_tid, uint32_t src_slot, uint32_t dest_slot) {
+    return (int)syscall(SYS_CAP_GRANT, (uint32_t)target_tid, src_slot, dest_slot);
 }
 
 static inline uint32_t sys_getuid(void) {

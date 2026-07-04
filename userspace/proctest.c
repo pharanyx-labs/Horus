@@ -95,6 +95,22 @@ void _start(void) {
     }
     if (!ec_gone) { report("PROC_SELFTEST: FAIL exec-child-stuck\n"); sys_exit(); }
 
-    report("PROC_SELFTEST: PASS exit+kill+spawn+exec\n");
+    /* --- SYS_CAP_GRANT: delegate our CAP_AUDIT (slot 7) into a child's cspace.
+     * We hold a CAP_TCB to the child (granted on spawn), so the grant is
+     * authorised. The child ("grantee") polls SYS_READ_AUDIT until the delegated
+     * cap lands (proving the grant works) and checks that its own unauthorised
+     * grants are all denied (fail-closed), then prints "grant OK" and exits. --- */
+    int gp = sys_spawn_named("grantee");
+    if (gp <= 0) { report("PROC_SELFTEST: FAIL grant-spawn\n"); sys_exit(); }
+    if (sys_cap_grant(gp, 7, 7) != 0) { report("PROC_SELFTEST: FAIL grant-rc\n"); sys_exit(); }
+    int gg = 0;
+    struct task_info gi;
+    for (int i = 0; i < 12000; i++) {
+        if (sys_get_task_info(gp, &gi) == 0 && gi.state == 0) { gg = 1; break; }
+        settle();
+    }
+    if (!gg) { report("PROC_SELFTEST: FAIL grant-child-stuck\n"); sys_exit(); }
+
+    report("PROC_SELFTEST: PASS exit+kill+spawn+exec+grant\n");
     sys_exit();
 }

@@ -313,7 +313,8 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     for (int i = 1; i < MAX_TASKS; i++) {
         int cand = (cur + i) % MAX_TASKS;
         if (cand == 0 || cand == cur) continue;
-        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx) {
+        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
+            && tasks[cand].saved_ksp) {
             next = cand;
             break;
         }
@@ -333,7 +334,6 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     set_tss_kernel_stack(kstop);
     current_kernel_stack_top = kstop;
     set_current_task(next);
-
     return tasks[next].saved_ksp;
 #else
     /* SMP: any CPU may run any task, so selection + claim is serialised under the
@@ -361,7 +361,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
         int cand = (cur + i) % MAX_TASKS;
         if (cand == 0) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
-            tasks[cand].runnable_ctx && task_running_cpu[cand] < 0) {
+            tasks[cand].runnable_ctx && tasks[cand].saved_ksp && task_running_cpu[cand] < 0) {
             next = cand;
             break;
         }
@@ -407,7 +407,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         int cand = (blocked_task + i) % MAX_TASKS;
         if (cand == 0) continue;
         if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
-                tasks[cand].runnable_ctx && task_running_cpu[cand] < 0) {
+                tasks[cand].runnable_ctx && tasks[cand].saved_ksp && task_running_cpu[cand] < 0) {
             next = cand;
             break;
         }
@@ -439,7 +439,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         int cand = (blocked_task + i) % MAX_TASKS;
         if (cand == 0) continue;
         if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
-                tasks[cand].runnable_ctx) {
+                tasks[cand].runnable_ctx && tasks[cand].saved_ksp) {
             next = cand;
             break;
         }
@@ -663,6 +663,8 @@ void task_teardown(int id) {
     tasks[id].sig_handler = 0;
     tasks[id].in_signal   = 0;
     tasks[id].state       = 0;   /* dead: the scheduler will not select it */
+    tasks[id].runnable_ctx = 0;  /* and it has no resumable context any more */
+    tasks[id].saved_ksp    = 0;
 #ifdef SMP
     task_running_cpu[id]  = -1;  /* release the SMP mutual-exclusion guard */
 #endif
@@ -684,6 +686,7 @@ uint64_t task_exit_switch(int dead) {
         int cand = (dead + i) % MAX_TASKS;
         if (cand == 0) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
+            && tasks[cand].saved_ksp
 #ifdef SMP
             && task_running_cpu[cand] < 0
 #endif
@@ -714,8 +717,36 @@ uint64_t task_exit_switch(int dead) {
     return ksp;
 }
 
+/* Enter task `t` via the fresh ring-3 context sched_prepare_user_context just
+ * fabricated for it — used by SYS_EXEC_NAMED, which replaced the task's image in
+ * place. Mirrors task_exit_switch's tail (install the address space + kernel
+ * stack, hand the saved frame to the ISR epilogue) but re-enters the *same* task
+ * rather than switching away. Returns the kernel %rsp for the ISR epilogue. */
+uint64_t exec_reenter_switch(int t) {
+    if (t <= 0 || t >= MAX_TASKS) return 0;
+#ifdef SMP
+    sched_raw_lock();
+    int cpu = this_cpu();
+    task_running_cpu[t] = cpu;
+#endif
+    switch_cr3(tasks[t].cr3);
+    uint64_t kstop = task_kstack_top(t);
+    set_tss_kernel_stack(kstop);
+#ifdef SMP
+    if (cpu == 0) current_kernel_stack_top = kstop;
+#else
+    current_kernel_stack_top = kstop;
+#endif
+    set_current_task(t);
+    uint64_t ksp = tasks[t].saved_ksp;
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+    return ksp;
+}
+
 int this_cpu(void) {
-    
+
     volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
     uint32_t id_reg = lapic[0x20 / 4];
     uint32_t cpu = (id_reg >> 24) & 0xFF;

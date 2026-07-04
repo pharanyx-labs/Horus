@@ -105,6 +105,7 @@ struct audit_event {
 #define SYS_FS_SET_SIZE        61   /* (ino, size) -> 0 (server owns logical file size) */
 #define SYS_BRK                62   /* (addr) -> new break; addr=0 queries current break */
 #define SYS_KILL               63   /* (tid) -> terminate task tid; needs a CAP_TCB cap to it */
+#define SYS_EXEC_NAMED         64   /* (name) -> replace the caller's own image with a named embedded binary; does not return on success */
 
 /* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
 struct fs_stat {
@@ -313,6 +314,17 @@ static inline int sys_spawn_named(const char *name) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
     return (int)syscall(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, 0);
+}
+
+/* Replace the calling task's image with a named embedded binary (hello, captest,
+ * fs_server, shell), keeping the same task id and cspace (capabilities survive
+ * the exec, POSIX-style). On success this does not return — control resumes at
+ * the new image's entry point. Returns a negative error only on failure (e.g.
+ * unknown name), in which case the caller's image is left intact. */
+static inline int sys_exec_named(const char *name) {
+    uint32_t len = 0;
+    while (name[len] && len < 31) len++;
+    return (int)syscall(SYS_EXEC_NAMED, (uint32_t)(uintptr_t)name, len, 0);
 }
 
 static inline uint32_t sys_getuid(void) {

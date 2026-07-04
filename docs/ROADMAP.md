@@ -54,9 +54,11 @@ Good starting points for new contributors.
 - **Asynchronous signals**: extend the existing *synchronous* fault-signal
   delivery to task-to-task signalling (gated on a TCB capability), with signal
   masking and alternate signal stacks.
-- **`exec` / `fork`**: only `spawn` exists today. Provide `exec` (replace the
-  current image) and evaluate `fork` (or a spawn-with-inheritance primitive) so a
-  shell can launch and replace programs conventionally.
+- **`exec` / `fork`**: `SYS_EXEC_NAMED` replaces the caller's image in place with
+  a named embedded binary (same task id, capabilities preserved), so a shell can
+  launch-and-replace programs. Still to do: `exec` with caller-supplied arguments
+  and an `exec`-from-file-descriptor path, and evaluate `fork` (or a
+  spawn-with-inheritance primitive).
 - **Userspace init**: a ring-3 init process that launches and supervises the
   shell and the servers, replacing the current arrangement where the kernel
   spawns the shell directly.

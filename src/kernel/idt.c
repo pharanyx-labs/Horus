@@ -229,6 +229,16 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         r.ds = r.es = r.fs = r.gs = r.ss = 0x30;
         int ipc_caller = get_current_task();
         syscall_handler(&r);
+        /* SYS_EXEC_NAMED replaced the caller's image in place and fabricated a
+         * fresh ring-3 context for it at the top of its kernel stack — which is
+         * the SAME memory as this trap `frame`. Resume that context via the
+         * saved-frame path (installs the new CR3 + kernel stack) BEFORE the
+         * frame->rax/rbx writes below, which would otherwise clobber it. */
+        if (g_exec_reenter_task > 0) {
+            int t = g_exec_reenter_task;
+            g_exec_reenter_task = -1;
+            return exec_reenter_switch(t);
+        }
         frame->rax = (uint64_t)r.eax;
         /* SYS_WAIT_NOTIFY returns the badge in ebx so the wrapper can read it
          * from the register without needing a cross-address-space pointer copy. */
@@ -257,7 +267,7 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
             }
         }
     } else if (vector < 32) {
-        
+
         if ((frame->cs & 3) != 0 && get_current_task() > 0) {
             int cur = get_current_task();
             uint32_t signum = (vector == 6) ? SIG_ILL : SIG_SEGV; /* #UD vs other */

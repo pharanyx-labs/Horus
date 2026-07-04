@@ -156,12 +156,21 @@ extern uint8_t embedded_captest_bin_start[];
 extern uint8_t embedded_captest_bin_end[];
 extern uint8_t embedded_fsserver_bin_start[];
 extern uint8_t embedded_fsserver_bin_end[];
+#ifdef PROC_SELFTEST
+extern uint8_t embedded_exectest_bin_start[];
+extern uint8_t embedded_exectest_bin_end[];
+#endif
 
 static const struct embedded_binary embedded_binaries[] = {
     { "shell",     embedded_shell_bin_start,   embedded_shell_bin_end   },
     { "hello",     embedded_hello_bin_start,   embedded_hello_bin_end   },
     { "captest",   embedded_captest_bin_start, embedded_captest_bin_end },
     { "fs_server", embedded_fsserver_bin_start,embedded_fsserver_bin_end},
+#ifdef PROC_SELFTEST
+    /* exectest: spawnable by name so the proc self-test can launch a child that
+     * exercises SYS_EXEC_NAMED (it execs into "hello"). PROC_SELFTEST only. */
+    { "exectest",  embedded_exectest_bin_start, embedded_exectest_bin_end },
+#endif
     { NULL, NULL, NULL }
 };
 
@@ -1128,25 +1137,15 @@ static int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_i
     return 0;
 }
 
-static int do_spawn_inner(void) {
-    if (!program_armed) {
-        return -1;
-    }
-
-    int new_id = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
-        if (tasks[i].state == 0) {
-            new_id = i;
-            break;
-        }
-    }
-    if (new_id < 0) {
-        return -2;
-    }
-
+/* Pick the ASLR image base + stack top for the currently-armed staged image
+ * about to be loaded into task `tid`. PIE (ET_DYN) ELF images are relocated by
+ * try_elf_load and get a randomized, page-aligned, bounded base; non-PIE flat
+ * images keep the fixed USER_AREA_BASE (their addresses are baked in). Shared by
+ * spawn (tid = a fresh slot) and exec (tid = the current task). */
+static void choose_image_placement(int tid, uint32_t *out_load_base, uint32_t *out_stack_top) {
     uint64_t spawn_entropy = (uint64_t)armed_hdr.size;
     spawn_entropy ^= (uint64_t)armed_hdr.entry << 17;
-    spawn_entropy ^= (uint64_t)new_id * 0x9E3779B97F4A7C15ULL;
+    spawn_entropy ^= (uint64_t)tid * 0x9E3779B97F4A7C15ULL;
     spawn_entropy ^= (uint64_t)get_system_ticks() << 11;
     spawn_entropy ^= (uint64_t)get_current_task();
     spawn_entropy ^= read_tsc();
@@ -1154,14 +1153,6 @@ static int do_spawn_inner(void) {
 
     aslr_mix_entropy(spawn_entropy);
 
-
-    /* Image-base ASLR. PIE (ET_DYN) images are position-independent and are
-     * relocated by try_elf_load, so they can load at a randomized base. Non-PIE
-     * flat images (the legacy fallback path below) have absolute addresses baked
-     * at USER_AREA_BASE and cannot move, so they keep the fixed base. Decide from
-     * the staged bytes' ELF magic. The random base is page-aligned and bounded
-     * (ASLR_MAX_LOAD_RANDOM_PAGES) so the premap window stays in one PD entry.
-     * Stack base and heap gap are already randomized (below / aslr_*). */
     int staged_is_elf = (armed_hdr.size >= 4 &&
                          loader_staging[0] == 0x7f && loader_staging[1] == 'E' &&
                          loader_staging[2] == 'L' && loader_staging[3] == 'F');
@@ -1171,12 +1162,19 @@ static int do_spawn_inner(void) {
         load_base &= ~0xFFFu;
     }
 
-    uint32_t stack_top = (uint32_t)aslr_random_stack_top(0x007ff000u);
+    *out_load_base  = load_base;
+    *out_stack_top  = (uint32_t)aslr_random_stack_top(0x007ff000u);
+}
 
-    create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base);
+/* Load the currently-armed staged image into task `tid`'s (already-built)
+ * address space: run the ELF loader (or the flat-image fallback), then set
+ * eip/image_end/heap/name and disarm the loader. Makes `tid` the current task so
+ * the loader's copy_to_user writes into its address space. Shared by spawn and
+ * exec; the caller is responsible for building the address space beforehand
+ * (create_task for spawn, create_user_pagedir for exec). */
+static void load_staged_image_into(int tid, uint32_t load_base) {
+    set_current_task(tid);
 
-    set_current_task(new_id);
-    
     uint32_t entry_point = armed_hdr.entry;
     uint32_t elf_entry = 0;
     uint32_t elf_img_end = 0;
@@ -1189,7 +1187,7 @@ static int do_spawn_inner(void) {
     if (elf_loaded) {
         entry_point = elf_entry;
     } else {
-        
+
         uint32_t copy_sz = armed_hdr.size;
         if (copy_sz > 0x200000) copy_sz = 0x200000;
         extern platform_info_t platform;
@@ -1241,8 +1239,8 @@ static int do_spawn_inner(void) {
         if (platform.has_smap) { asm volatile("stac" ::: "memory"); }
     }
 
-    
-    tasks[new_id].eip = elf_loaded ? entry_point : (load_base + entry_point);
+
+    tasks[tid].eip = elf_loaded ? entry_point : (load_base + entry_point);
 
     /* For ELF loads, image_end must come from the actual highest PT_LOAD
      * vaddr+memsz (accounts for ASLR slide and .bss extending past filesz);
@@ -1250,26 +1248,51 @@ static int do_spawn_inner(void) {
     uint32_t img_end = elf_loaded
         ? ((elf_img_end + 0xFFF) & ~0xFFFu)
         : (load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF));
-    tasks[new_id].image_end = img_end;
+    tasks[tid].image_end = img_end;
     uint32_t heap_gap = aslr_random_offset(ASLR_MAX_HEAP_GAP_PAGES);
-    tasks[new_id].heap_start   = img_end + 0x1000 + heap_gap;
-    tasks[new_id].heap_current = tasks[new_id].heap_start;
-    tasks[new_id].heap_end     = tasks[new_id].heap_start + 0x10000;
+    tasks[tid].heap_start   = img_end + 0x1000 + heap_gap;
+    tasks[tid].heap_current = tasks[tid].heap_start;
+    tasks[tid].heap_end     = tasks[tid].heap_start + 0x10000;
 
     if (armed_hdr.name[0] != 0) {
         int k = 0;
         while (k < 31 && armed_hdr.name[k]) {
-            tasks[new_id].name[k] = armed_hdr.name[k];
+            tasks[tid].name[k] = armed_hdr.name[k];
             k++;
         }
-        tasks[new_id].name[k] = 0;
+        tasks[tid].name[k] = 0;
     } else {
-        tasks[new_id].name[0] = 'p'; tasks[new_id].name[1] = 'r';
-        tasks[new_id].name[2] = 'o'; tasks[new_id].name[3] = 'g';
-        tasks[new_id].name[4] = '0' + new_id; tasks[new_id].name[5] = 0;
+        tasks[tid].name[0] = 'p'; tasks[tid].name[1] = 'r';
+        tasks[tid].name[2] = 'o'; tasks[tid].name[3] = 'g';
+        tasks[tid].name[4] = '0' + tid; tasks[tid].name[5] = 0;
     }
 
     program_armed = 0;
+}
+
+static int do_spawn_inner(void) {
+    if (!program_armed) {
+        return -1;
+    }
+
+    int new_id = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state == 0) {
+            new_id = i;
+            break;
+        }
+    }
+    if (new_id < 0) {
+        return -2;
+    }
+
+    uint32_t load_base = USER_AREA_BASE;
+    uint32_t stack_top = 0;
+    choose_image_placement(new_id, &load_base, &stack_top);
+
+    create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base);
+
+    load_staged_image_into(new_id, load_base);
 
     uint32_t cap6_serial = 0;
     struct capability *creator_admin = cap_lookup(6, CAP_RIGHT_ALL);
@@ -1339,6 +1362,74 @@ static int do_spawn(void) {
 
     if (pid > 0) grant_child_tcb_cap(caller_task, pid);
     return pid;
+}
+
+/* Set by h_exec_named to ask interrupt_handler64 to re-enter this task via the
+ * fresh context sched_prepare_user_context fabricated for it, instead of iretq'ing
+ * back into the (now-replaced) old image. -1 when no exec re-entry is pending. */
+int g_exec_reenter_task = -1;
+
+/* SYS_EXEC_NAMED (64): replace the calling task's image with a named embedded
+ * binary, keeping the same task id and cspace (capabilities survive the exec,
+ * POSIX-style). Like do_spawn the rebuild+load must run in the kernel address
+ * space (create_user_pagedir and the loader reach fresh physical pages through
+ * the kernel identity map); unlike do_spawn we do NOT restore the caller — on
+ * success we switch to the freshly-built image's CR3 and drop to ring 3 at its
+ * entry, so this never returns. The old page directory/frames leak, consistent
+ * with the kernel's non-freeing task teardown (task_teardown only marks slots
+ * dead). Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
+static void h_exec_named(struct regs *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+
+    /* Resolve the program name (mirrors h_spawn). Done before any teardown, so a
+     * bad name fails cleanly with the caller's image still intact. */
+    if (!r->ebx) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    char name[32];
+    uint32_t len = r->ecx ? r->ecx : 31u;
+    if (len > 31) len = 31;
+    if (copy_from_user(name, (void *)(addr_t)r->ebx, len) != 0) {
+        r->eax = (uint32_t)SYS_ERR_FAULT;
+        return;
+    }
+    name[len] = 0;
+    if (arm_named_binary(name) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+
+    /* Past this point the caller's image is torn down and replaced; there is no
+     * clean return path. Switch to the kernel address space for the rebuild. */
+    extern uint64_t pml4[];
+    uint64_t kcr3 = (uint64_t)(uintptr_t)pml4;
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
+
+    uint32_t load_base = USER_AREA_BASE;
+    uint32_t stack_top = 0;
+    choose_image_placement(cur, &load_base, &stack_top);
+
+    /* Rebuild only the address space (fresh PML4 into tasks[cur].cr3); the cspace
+     * is untouched so capabilities survive. Reset signal dispositions like a real
+     * exec. create_user_pagedir reads image_base for the premap, so set it first. */
+    tasks[cur].image_base  = load_base;
+    tasks[cur].image_end   = load_base;
+    tasks[cur].esp         = stack_top ? (stack_top - 256) : 0;
+    tasks[cur].sig_handler = 0;
+    tasks[cur].in_signal   = 0;
+    create_user_pagedir(cur);
+
+    load_staged_image_into(cur, load_base);   /* sets eip/heap/name, disarms */
+
+    /* Enter the new image the same way spawn / the timer / the exit-switch enter
+     * a task: fabricate a fresh ring-3 trap frame (IF set, zeroed GP regs, ring-3
+     * selectors) and hand it to the ISR epilogue via saved_ksp. A hand-rolled
+     * lretq from inside the syscall ISR runs with interrupts off and the wrong
+     * initial context; this reuses the proven resume path instead. interrupt_
+     * handler64 sees g_exec_reenter_task and switches CR3 + kernel stack + resumes
+     * the fabricated frame. Runs with the kernel CR3 still active; the switch to
+     * tasks[cur].cr3 happens in exec_reenter_switch before the iretq. */
+    uint64_t new_eip = tasks[cur].eip;
+    uint64_t new_esp = tasks[cur].esp ? (uint64_t)tasks[cur].esp : 0x007ff000ULL;
+    sched_prepare_user_context(cur, new_eip, new_esp);
+    g_exec_reenter_task = cur;
+    r->eax = 0;
 }
 
 #ifdef ELF_SELFTEST
@@ -3369,7 +3460,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 64
+#define SYSCALL_TABLE_SIZE 65
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -3400,6 +3491,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_WAIT_NOTIFY]              = { h_wait_notify,             3, CAP_RIGHT_READ,  SC_ANYTYPE },
     [SYS_RECEIVE_PROGRAM]          = { h_receive_program,         3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_SPAWN]                    = { h_spawn,                   3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_EXEC_NAMED]               = { h_exec_named,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
@@ -3450,7 +3542,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_KILL + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_EXEC_NAMED + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

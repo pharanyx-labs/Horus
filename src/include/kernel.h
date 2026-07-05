@@ -914,6 +914,9 @@ int  ramfs_list(char *buf, size_t buflen);
 
 void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base);
 void create_user_pagedir(uint32_t id);
+/* Floor of always-live kernel state in low memory; a user heap must never grow
+ * at or above this (it would shadow kernel data on the task's own CR3). */
+uint32_t kernel_lowmem_critical_floor(void);
 void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);
 void aslr_mix_entropy(uint64_t val);

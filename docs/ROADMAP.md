@@ -137,11 +137,16 @@ Cross-cutting work that should grow alongside every other phase.
   `rust/src/capability.rs`.
 - **User/kernel address separation**: the kernel is linked low (1 MiB) and its
   BSS extends past `USER_AREA_BASE` (4 MiB), so a task's low-memory mappings
-  (image, heap) share virtual addresses with kernel data like `tasks[]`. Image
-  ASLR is currently pinned to keep the premap window off the kernel's writable
-  globals (see `choose_image_placement`); the full fix is to move the user
-  address space above the kernel image (or the kernel to the higher half) so no
-  user mapping can ever shadow kernel state, which would also restore image-base
+  (image, heap) share virtual addresses with kernel data like `tasks[]`. Two
+  interim guards are in place: image ASLR is pinned so the premap window can't
+  reach the kernel globals (`choose_image_placement`), and the user heap is
+  bounded below `kernel_lowmem_critical_floor()` so it can't grow up into the
+  always-live kernel state (`h_sbrk`/`h_brk`). Residual gaps a determined program
+  could still hit — the low user stack overlaps `kernel_stacks`, and a direct
+  (non-`sbrk`) fault into the critical window isn't yet refused by the demand
+  pager. The full fix is to move the user address space above the kernel image
+  (or the kernel to the higher half) so no user mapping can ever shadow kernel
+  state, which would also restore image-base
   ASLR.
 
 ---

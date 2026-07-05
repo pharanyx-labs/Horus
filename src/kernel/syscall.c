@@ -2409,6 +2409,13 @@ static void h_sbrk(struct regs *r) {
     uint32_t new_current = tasks[tid].heap_current + (uint32_t)increment;
     uint32_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
+    /* Never let the heap grow up into the kernel's always-live low-memory state:
+     * the kernel is linked low, so a user page mapped at/above this floor would
+     * shadow kernel data (tasks[], page tables, cspaces) on this task's own CR3
+     * and corrupt the kernel. Bounds the heap to the safe region below it. */
+    uint32_t kfloor = kernel_lowmem_critical_floor();
+    if (heap_max > kfloor) heap_max = kfloor;
+
     if (new_current < tasks[tid].heap_start || new_current > heap_max) {
         r->eax = (uint32_t)-1;
         return;
@@ -2432,6 +2439,10 @@ static void h_brk(struct regs *r) {
     int tid = get_current_task();
     uint32_t addr     = r->ebx;
     uint32_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+
+    /* Keep the heap clear of the kernel's always-live low-memory state (see h_sbrk). */
+    uint32_t kfloor = kernel_lowmem_critical_floor();
+    if (heap_max > kfloor) heap_max = kfloor;
 
     if (addr == 0) { r->eax = tasks[tid].heap_current; return; }
 

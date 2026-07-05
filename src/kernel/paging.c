@@ -121,6 +121,22 @@ void paging_init(void) {
     return;
 }
 
+/* Per-task kernel stacks. Big (4 MiB) .bss array; because the kernel is linked
+ * low, it lands around [1.46, 5.43) MiB — its tail overlaps the low user-image
+ * window. Its top edge is also the floor of the kernel's *always-critical* global
+ * data (page tables, tasks[], cspaces, locks), which is placed above it and must
+ * never be shadowed by a user mapping. kernel_lowmem_critical_floor() exposes that
+ * edge so the heap allocator can refuse to grow a user heap up into it. */
+static uint8_t per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2] __attribute__((aligned(4096)));
+
+/* Lowest kernel virtual address whose contents the kernel reads/writes while
+ * running on a *user* CR3 and that a user low-memory mapping must therefore never
+ * be allowed to overlay. Everything at or above this is always-live kernel state;
+ * below it (within the user window) lies only unused high-id kstack slots. */
+uint32_t kernel_lowmem_critical_floor(void) {
+    return (uint32_t)((uintptr_t)per_task_kstacks + sizeof(per_task_kstacks));
+}
+
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
     if (task_id == 0) {
@@ -287,7 +303,6 @@ void create_user_pagedir(uint32_t task_id) {
     /* The stack must be large enough for the deepest in-kernel call chain —
      * notably the Argon2id password hash run from SYS_AUTH, which stacks several
      * 1 KiB blocks and overflowed the old 8 KiB stack (login hung). */
-    static uint8_t per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2] __attribute__((aligned(4096)));
     uint8_t *stack_area = per_task_kstacks[task_id];
     uint64_t guard_vaddr = (uint64_t)stack_area;
     uint64_t stack_base = guard_vaddr + PAGE_SIZE;

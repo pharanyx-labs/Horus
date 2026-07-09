@@ -112,5 +112,24 @@ void _start(void) {
     if (!gg) { report("PROC_SELFTEST: FAIL grant-child-stuck\n"); sys_exit(); }
 
     report("PROC_SELFTEST: PASS exit+kill+spawn+exec+grant\n");
+
+    /* --- SYS_SIGNAL: async task-to-task signal to a registered handler. Spawn
+     * "sigtarget" (it registers a handler and spins); we hold its CAP_TCB from
+     * the spawn, so we may signal it. Give it time to register, then send
+     * SIG_USR1; the kernel redirects it into its handler, which prints the final
+     * "+signal" pass marker (only reachable via handler delivery — an unhandled
+     * signal would terminate it silently) and exits. Confirm it reaches dead. --- */
+    int sp = sys_spawn_named("sigtarget");
+    if (sp <= 0) { report("PROC_SELFTEST: FAIL sig-spawn\n"); sys_exit(); }
+    for (int i = 0; i < 3000; i++) settle();   /* let it register its handler */
+    if (sys_send_signal(sp, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sig-send\n"); sys_exit(); }
+    int sg = 0;
+    struct task_info si;
+    for (int i = 0; i < 12000; i++) {
+        if (sys_get_task_info(sp, &si) == 0 && si.state == 0) { sg = 1; break; }
+        settle();
+    }
+    if (!sg) { report("PROC_SELFTEST: FAIL sig-stuck\n"); sys_exit(); }
+    /* sigtarget's handler printed the final "+signal" PASS marker on delivery. */
     sys_exit();
 }

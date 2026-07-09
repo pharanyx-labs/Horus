@@ -416,6 +416,15 @@ embedded_grantee_bin_start:
 .incbin "userspace/grantee.bin"
 .global embedded_grantee_bin_end
 embedded_grantee_bin_end:
+
+/* sigtarget: a child the proctest driver signals to exercise SYS_SIGNAL — it
+ * registers a handler that fires on delivery. Only in PROC_SELFTEST. */
+.align 16
+.global embedded_sigtarget_bin_start
+embedded_sigtarget_bin_start:
+.incbin "userspace/sigtarget.bin"
+.global embedded_sigtarget_bin_end
+embedded_sigtarget_bin_end:
 #endif
 
 #ifdef SIGNAL_SELFTEST

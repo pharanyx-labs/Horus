@@ -70,6 +70,7 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 | 52     | `SYS_AUDIT_DIGEST` | Read the audit-log integrity digest          | `CAP_AUDIT` READ (slot 7)           | Writes 40 bytes (8-byte event count + 32-byte chain-head MAC); returns verify status (0 = intact, >0 = first tampered index + 1, -1 = uninitialised) |
 | 54     | `SYS_SIGACTION`    | Register/clear this task's own fault handler | None (self only)                    | Handler vaddr validated to the user code window (safe Rust); 0 clears. On a ring-3 fault the kernel enters the handler (signal # in `ebx`, fault addr in `ecx`) instead of killing the task |
 | 55     | `SYS_SIGRETURN`    | Resume the pre-signal context from a handler | None (self only)                    | Restores the exact interrupted trap frame; serviced in `interrupt_handler64`. Fails if called outside a handler |
+| 66     | `SYS_SIGNAL`       | Send an async signal to another task         | `CAP_TCB` to the target (or `CAP_USER` admin) | Same authority as `SYS_KILL`. Queues `signum` (1..31) on the target; redirected into its `SYS_SIGACTION` handler on its next return to ring 3 (signal # in `ebx`). Unhandled — or the uncatchable `SIG_KILL` (9) — takes the default terminate action |
 
 ### Capabilities
 

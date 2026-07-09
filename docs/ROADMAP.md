@@ -53,9 +53,14 @@ Task termination has landed (`SYS_EXIT` / capability-gated `SYS_KILL`, see the
 foundation summary); the rest of this phase makes processes fully first-class.
 Good starting points for new contributors.
 
-- **Asynchronous signals**: extend the existing *synchronous* fault-signal
-  delivery to task-to-task signalling (gated on a TCB capability), with signal
-  masking and alternate signal stacks.
+- **Asynchronous signals**: task-to-task signalling (`SYS_SIGNAL`, gated on a
+  `CAP_TCB` to the target) has landed — a queued signal is redirected into the
+  target's registered handler when it next returns to ring 3, reusing the
+  fault-signal delivery path; an unhandled signal (or the uncatchable
+  `SIG_KILL`) takes the default terminate action. Still to do: signal masking,
+  alternate signal stacks, queued delivery to a *blocked* target (today a
+  pending signal only lands once the target is next scheduled to run), and a
+  richer signal set.
 - **`exec` / `fork`**: `SYS_EXEC_NAMED` replaces the caller's image in place with
   a named embedded binary (same task id, capabilities preserved), so a shell can
   launch-and-replace programs. Still to do: `exec` with caller-supplied arguments

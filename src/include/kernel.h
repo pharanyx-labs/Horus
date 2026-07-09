@@ -197,6 +197,7 @@ void users_init(void);
 #define SYS_KILL               63   /* terminate a task; gated on a CAP_TCB cap to it */
 #define SYS_EXEC_NAMED         64   /* replace the caller's image with a named embedded binary */
 #define SYS_CAP_GRANT          65   /* delegate a capability into a supervised child's cspace */
+#define SYS_SIGNAL             66   /* send a signal to a task held via CAP_TCB (async delivery) */
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {
@@ -210,7 +211,11 @@ struct fs_stat {
 
 /* Signal numbers delivered to a registered handler on a ring-3 fault. */
 #define SIG_ILL                 4   /* illegal instruction (#UD) */
+#define SIG_KILL                9   /* uncatchable terminate (SYS_SIGNAL: always default-kills) */
+#define SIG_USR1               10   /* application-defined, for task-to-task signalling */
 #define SIG_SEGV               11   /* invalid memory access (page fault / #GP) */
+#define SIG_TERM               15   /* polite terminate (default action if no handler) */
+#define SIG_MAX                31   /* signal numbers are 1..31 */
 
 #define CAP_NULL                0
 #define CAP_TCB                 1
@@ -398,7 +403,13 @@ typedef struct tcb {
      * when the reply arrives and the waiter is resumed. */
     uint32_t ipc_reply_buf;    /* userspace ptr in the waiter's address space */
 
-    uint8_t  padding[40];
+    /* Async task-to-task signal pending delivery (SYS_SIGNAL). Set by the sender
+     * (gated on a CAP_TCB to this task), consumed when this task is next resumed
+     * to ring 3, which redirects it into its sig_handler. Carved from padding so
+     * the struct size is unchanged. 0 = none. */
+    uint32_t pending_sig;
+
+    uint8_t  padding[36];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];

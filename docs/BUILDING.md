@@ -20,8 +20,8 @@ This document covers toolchain requirements, build targets, build flags, and how
 | Tool | Purpose |
 |---|---|
 | `xorriso` | ISO image creation |
-| `grub-pc-bin` | GRUB2 Multiboot2 bootloader modules |
-| `grub-mkrescue` | ISO assembly |
+| `grub-pc-bin` / `grub-common` | GRUB2 Multiboot2 bootloader modules + `grub-mkrescue` |
+| `mtools` | `mformat`, required by `grub-mkrescue` |
 | `qemu-system-x86_64` | Emulation / boot tests |
 
 ### Installing on Debian / Ubuntu
@@ -39,11 +39,6 @@ sudo apt-get install \
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
-```
-
-Then add the required target:
-
-```bash
 rustup target add x86_64-unknown-none
 ```
 
@@ -53,83 +48,53 @@ rustup target add x86_64-unknown-none
 
 ### `make` / `make all`
 
-Builds `kernel.elf` (x86-64). This is the main build target. It will:
-
-1. Compile the Rust crate to `rust/target/x86_64-unknown-none/release/libhorus_shell.a`
-2. Compile all C and assembly source files
-3. Link everything into `kernel.elf` using the linker script `linker64.ld`
-
-```bash
-make
-```
+Builds `kernel.elf` (x86-64). It compiles the Rust crate to `libhorus_shell.a`, compiles all C and assembly sources and the userspace binaries, and links everything with `linker64.ld`.
 
 ### `make run`
 
-Builds `boot.iso` and launches QEMU with the following configuration:
-
-- 512 MB RAM
-- CPU model `qemu64` with AES-NI enabled
-- SDL display (VGA text mode, 80×50)
-- Two serial ports: localhost:4445 (debug socket) and localhost:4444 (serial)
-- No network (isolated)
+Builds `boot.iso` and launches QEMU: 512 MB RAM, `qemu64` CPU with AES/RDRAND/SMEP/SMAP, `-machine accel=kvm:tcg` (KVM when available), SDL display, and two serial ports. The console is on the socket serial at `localhost:4445` and **boot waits for a connection** (`wait=on`), so connect from another terminal:
 
 ```bash
 make run
+nc localhost 4445        # the interactive console
 ```
 
-Connect to the debug serial port from another terminal:
-
-```bash
-nc localhost 4445
-```
+Default login: `user` / `password` (or `root` / `rootpass`).
 
 ### `make boot.iso`
 
-Builds the bootable ISO without launching QEMU. Requires `xorriso` and `grub-mkrescue`.
-
-```bash
-make boot.iso
-```
+Builds the bootable ISO without launching QEMU.
 
 ### `make clean`
 
-Removes all compiled objects, the Rust build cache, and the `tools/mkheadered` binary. Does not remove `boot.iso` (which is in `.gitignore` and not tracked).
-
-```bash
-make clean
-```
+Removes compiled objects, the Rust build cache, and `tools/mkheadered`. Does not remove `boot.iso` (untracked).
 
 ### `make test`
 
 Runs the Rust unit tests (54 across the security core — see [TESTS.md](../TESTS.md)), then does a clean full build to verify compilation.
 
-```bash
-make test
-```
+### Headless self-test targets
 
-### `make smoke-elf`
+Each of these does a clean build with the relevant `*_SELFTEST` (or `SMP`) flag, boots headless under QEMU (`tools/smoke_test.sh`, software TCG — no host KVM needed), and asserts on a serial marker. `SMOKE_TIMEOUT=<seconds>` overrides the default 40 s.
 
-Builds the kernel with `ELF_SELFTEST=1` (which embeds a real multi-segment ELF), boots it headless, and requires the in-kernel self-test to report `ELF_SELFTEST: PASS` on serial — a runtime check that the ELF loader maps each `PT_LOAD` with the correct W^X permissions. Does not affect the default (ship) kernel.
-
-```bash
-make smoke-elf
-```
-
-### `make smoke`
-
-Boots the kernel headless under QEMU and asserts it reaches the ring-3 shell banner with no fault/panic — the runtime boot check. Builds `boot.iso` first; needs `qemu-system-x86_64`. `SMOKE_TIMEOUT=<seconds>` overrides the default 40 s wait.
-
-```bash
-make smoke
-```
+| Target | Asserts |
+|---|---|
+| `make smoke` | Boots to the ring-3 login prompt with no fault/panic — the end-to-end boot check |
+| `make smoke-elf` | Loads a real multi-segment static-PIE ELF at a randomised base; W^X per `PT_LOAD` and correct `R_386_RELATIVE` relocation (`ELF_SELFTEST: PASS`) |
+| `make smoke-preempt` | The timer preempts and time-slices two non-yielding ring-3 tasks (`PREEMPT_SELFTEST: PASS`) |
+| `make smoke-signal` | A task faults on purpose and its registered handler runs instead of being killed (`SIGNAL_SELFTEST: PASS`) |
+| `make smoke-proc` | Ring-3 process control: exit + kill + spawn + exec + grant + signal + wait (+ fault-wait) (`PROC_SELFTEST: PASS …`) |
+| `make smoke-fs` | The ring-3 `fs_server` + a client drive the full path over IPC (`FS_SELFTEST: PASS`); `make smoke-fs STORAGE=ata` runs it against a real ATA image |
+| `make smoke-newlib` | The newlib libc port over the POSIX fd layer (`NEWLIB_SELFTEST: PASS`) |
+| `make smoke-smp` | Application processors come online and concurrently run scheduled tasks (`SMP_SELFTEST: PASS`); `SMP_CPUS=<n>` sets the core count |
 
 ### `make reproducible-build`
 
-Performs a clean build with a fixed `SOURCE_DATE_EPOCH` (2021-01-01 UTC) and records the SHA-256 checksums to `.build.sha`. Used to verify that the build is byte-for-byte deterministic.
+Clean-builds twice with a fixed `SOURCE_DATE_EPOCH` (2021-01-01 UTC) and fails if the two `kernel.elf`/`boot.iso` are not byte-for-byte identical; checksums are recorded to `.build.sha`.
 
-```bash
-make reproducible-build
-```
+### `make security`
+
+Runs the security scanners (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) and emits a CycloneDX SBOM. Advisory (non-blocking in CI).
 
 ---
 
@@ -137,70 +102,53 @@ make reproducible-build
 
 Pass flags as `make FLAG=VALUE`.
 
-| Flag | Default | Values | Effect |
-|---|---|---|---|
-| `DEBUG_SHELL` | `0` | `0`, `1` | Enables in-kernel debug shell (`#ifdef DEBUG_SHELL` code) |
-| `MINIMAL_SECURE` | `0` | `0`, `1` | Strips optional kernel features for a smaller attack surface |
-| `RUST_ENABLED` | `1` | `0`, `1` | If `0`, links C stub shims instead of the Rust library |
-| `ELF_SELFTEST` | `0` | `0`, `1` | Embeds a real ELF and runs an in-kernel loader + W^X self-test at boot |
+| Flag | Default | Effect |
+|---|---|---|
+| `RUST_ENABLED` | `1` | If `0`, links C stub shims instead of the Rust library |
+| `DEBUG_SHELL` | `0` | Enables the in-kernel debug shell (`#ifdef DEBUG_SHELL` code) |
+| `MINIMAL_SECURE` | `0` | Strips optional kernel features for a smaller attack surface |
+| `SMP` | `0` | Brings up the application processors (multi-core). `SMP_CPUS` sets the guest core count |
+| `STORAGE_ATA` | `0` | Uses a real ATA disk (probe + format-on-first-boot) instead of the RAM vdisk. `BLOCKS_PER_DISK` sizes it |
+| `ELF_SELFTEST` | `0` | Embeds a real static-PIE ELF and runs an in-kernel loader + W^X + relocation self-test at boot |
+| `PREEMPT_SELFTEST` | `0` | Runs the two-task preemption self-test at boot |
+| `SIGNAL_SELFTEST` | `0` | Runs the fault-signal self-test at boot |
+| `PROC_SELFTEST` | `0` | Runs the ring-3 process-control self-test at boot |
+| `FS_SELFTEST` | `0` | Runs the filesystem-server self-test at boot |
+| `NEWLIB_SELFTEST` | `0` | Runs the newlib libc self-test at boot |
+| `SMP_SELFTEST` | `0` | Runs the multi-core self-test at boot (implies `SMP=1`) |
 
-Examples:
-
-```bash
-make DEBUG_SHELL=1
-make MINIMAL_SECURE=1
-```
-
-> **Architecture:** Horus is x86-64 only. The kernel runs in 64-bit long mode; there is no 32-bit kernel build. (The `DEBUG_SHELL=1` and `MINIMAL_SECURE=1` configurations are covered by a CI build matrix.)
+> **Architecture:** Horus is x86-64 only. The kernel runs in 64-bit long mode; there is no 32-bit kernel build. The `DEBUG_SHELL=1` and `MINIMAL_SECURE=1` configurations are covered by a CI build matrix (the `altconfigs` job).
 
 ---
 
 ## Userspace programs
 
-Userspace programs (`shell`, `hello`, `fs_server`, `captest`) are compiled as flat 32-bit ELF binaries (EM_386) loaded at virtual address `0x400000` and run in a compatibility-mode segment beneath the 64-bit kernel. The `mkheadered` tool adds a custom program header that the kernel's loader uses to map them into a task's address space.
-
-Build all userspace programs:
+Userspace programs (`init`, `shell`, `fs_server`, `hello`, `captest`, plus the self-test drivers) are compiled as **static-PIE** 32-bit ELF binaries (`EM_386`, `ET_DYN`, linked with `userspace/pie.ld`) and run in a compatibility-mode segment beneath the 64-bit kernel. `do_spawn` picks a random page-aligned load base and the kernel's loader applies `R_386_RELATIVE` relocations there. The `mkheadered` tool prepends a custom program header the loader consumes. A flat-binary fallback remains for non-ELF images (loaded at the fixed base). Larger userspace programs link against the newlib libc port over a per-process POSIX fd layer, with `malloc`/`sbrk`/`brk`.
 
 ```bash
-make userspace
+make userspace       # build all userspace binaries
 ```
 
-The kernel image (`boot.iso`) bundles the compiled userspace binaries. Rebuilding the kernel after changing userspace requires re-running `make` from the top level.
+The kernel image bundles the compiled userspace binaries, so rebuilding after changing userspace requires re-running `make` from the top level.
 
 ---
 
 ## Rust crate details
 
-The Rust crate is at `rust/`. It builds as a `staticlib` (`crate-type = ["staticlib"]`) with:
-
-- `panic = "abort"` (no unwinding)
-- `opt-level = "z"` (size-optimised)
-- `lto = true` (link-time optimisation)
-- `codegen-units = 1` (deterministic output)
-- `strip = true`
-
-The resulting archive is `rust/target/<target>/release/libhorus_shell.a`. The linker links it with `--whole-archive` to pull in all symbol definitions.
-
-If Cargo is not installed or the Rust target is missing, the build will fail with an explicit error message indicating what is needed.
+The Rust crate is at `rust/`. It builds as a `staticlib` with `panic = "abort"`, `opt-level = "z"`, `lto = true`, `codegen-units = 1`, and `strip = true`. The resulting `libhorus_shell.a` is linked with `--whole-archive`. If Cargo or the `x86_64-unknown-none` target is missing, the build fails with an explicit error.
 
 ---
 
 ## Troubleshooting
 
-**`grub-mkrescue failed`**
-Install `grub-pc-bin`, `grub-common`, `xorriso`, and `mtools`. The `mtools` package provides `mformat`, which `grub-mkrescue` requires: `sudo apt-get install grub-pc-bin grub-common xorriso mtools`.
+**`grub-mkrescue failed`** — install `grub-pc-bin grub-common xorriso mtools` (`mtools` provides `mformat`).
 
-**`cargo not found`**
-Install Rust via `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+**`cargo not found`** — install Rust via `rustup`.
 
-**`rust target x86_64-unknown-none missing`**
-Run: `rustup target add x86_64-unknown-none`
+**`rust target x86_64-unknown-none missing`** — `rustup target add x86_64-unknown-none`.
 
-**`ERROR: rust/target/.../libhorus_shell.a missing`**
-Run `cargo build --release --manifest-path rust/Cargo.toml --target x86_64-unknown-none` manually and check for errors.
+**`ERROR: rust/target/.../libhorus_shell.a missing`** — run `cargo build --release --manifest-path rust/Cargo.toml --target x86_64-unknown-none` and read the error.
 
-**Linker errors about missing `rust_*` symbols**
-Ensure `RUST_ENABLED=1` (the default) or that the Rust crate built successfully. If you need to build without Rust, pass `RUST_ENABLED=0` to use the C stub shims instead.
+**Linker errors about missing `rust_*` symbols** — ensure `RUST_ENABLED=1` (default) or that the crate built; pass `RUST_ENABLED=0` to use the C stub shims.
 
-**QEMU displays nothing / serial output only**
-The 64-bit build configures GRUB's terminal to serial. If you are not connected to localhost:4445, you will see nothing on the SDL window until the kernel switches to VGA mode. Connect via `nc localhost 4445` or remove the `terminal_input/output serial` lines from `grub.cfg`.
+**QEMU shows nothing / serial only** — the boot configures GRUB's terminal to serial and waits for a console connection. Connect via `nc localhost 4445`.

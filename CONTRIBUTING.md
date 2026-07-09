@@ -1,6 +1,6 @@
 # Contributing to Horus
 
-Thank you for your interest. Horus is an early-stage research microkernel and there is meaningful work available at every level — from fixing shell command stubs to designing the SMP scheduler. Contributions of all sizes are welcome.
+Thank you for your interest. Horus is an early-stage research microkernel and there is meaningful work available at every level — from fixing shell command stubs to hardening the SMP scheduler. Contributions of all sizes are welcome.
 
 ---
 
@@ -19,7 +19,7 @@ git clone https://github.com/yossicohenmcr-ctrl/Horus
 cd Horus
 
 # Install build tools (Debian/Ubuntu)
-sudo apt-get install build-essential gcc binutils make xorriso grub-pc-bin qemu-system-x86
+sudo apt-get install build-essential gcc binutils make xorriso grub-pc-bin mtools qemu-system-x86
 
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -28,7 +28,7 @@ rustup target add x86_64-unknown-none
 
 # Build and run
 make
-make run
+make run            # console on serial: nc localhost 4445
 ```
 
 See [docs/BUILDING.md](docs/BUILDING.md) for a full explanation of build targets and flags.
@@ -41,26 +41,26 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### C kernel work
 
-- **Crash-recovery replay for the intent log** (`src/kernel/storage.c`): The intent log records in-flight operations (alloc/free/create) but currently has no replay pass on mount. Replaying it after an unclean shutdown would make the filesystem consistent after a power loss.
-- **Scheduler priorities / fairness** (`src/kernel/scheduler.c`): The round-robin timer preemption works; adding weights or priority queues would make it more suitable as a base for real workloads.
-- **Concurrent IPC / multi-client fs_server** (`userspace/fs_server.c`): The fs_server currently handles one client at a time (single endpoint); a proper select/multiplex loop would allow multiple tasks to use the filesystem concurrently.
+- **SMP maturity** (`src/kernel/scheduler.c`): multi-core works behind `SMP=1` over a shared runnable pool. Per-CPU run queues, scheduling priorities/fairness, and making it default-on are the next steps.
+- **Persistent-by-default filesystem** (`src/kernel/storage.c`): the encrypted ATA store works but is opt-in and keeps its per-block crypto metadata (nonces/tags) in RAM. Persisting that metadata and making ATA the default backend would give cross-reboot durability.
+- **Concurrent / multi-client `fs_server`** (`userspace/fs_server.c`): the server handles one client at a time (single-slot mailbox); a proper multiplex loop would let multiple tasks use the filesystem concurrently.
+- **Richer signals** (`src/kernel/idt.c`, `syscall.c`): `SYS_SIGNAL` delivers async signals into a handler; per-signal masking, alternate signal stacks, and delivery to a *blocked* target remain.
 
 ### Rust work
 
-- **Argon2 tuning** *(multi-lane + configurable cost done)*: `rust/src/argon2.rs` now supports `p ≥ 1` lanes and the `m`/`t`/`p` cost is set by three `kernel.h` defines. Remaining nice-to-haves: a true intra-request threaded fill (the lanes are currently filled sequentially, so `p > 1` changes the hash but not wall-clock time on one core), and exposing the cost profile to an admin at runtime.
-- **Key-slot support** *(future)*: the current v4 format stores one wrapped `disk_key` (one passphrase slot). A LUKS2-style key-slot array would allow multiple passphrases or recovery keys to unwrap the same `disk_key` without a full reformat.
-- **Property-based tests for the capability core**: add a `proptest`/`quickcheck`-style harness (or hand-rolled generators, since the crate is `no_std`) over mint/transfer/revoke to fuzz the lineage and revocation invariants beyond the current example-based tests.
-- **Kani / Verus verification**: Apply a Rust verification tool to `capability.rs` to formally verify the revocation properties.
+- **Argon2 intra-request threading** (`rust/src/argon2.rs`): multi-lane + configurable cost is done, but lanes are filled sequentially, so `p > 1` changes the hash without reducing wall-clock time on one core.
+- **Property-based tests for the capability core**: add hand-rolled generators (the crate is `no_std`) over mint/transfer/grant/revoke to fuzz the lineage and revocation invariants beyond the current example-based tests.
+- **Kani / Verus verification**: apply a Rust verification tool to `capability.rs` to formally verify the revocation properties.
 
 ### Testing
 
-- **Integration test suite**: A headless smoke-boot test (`make smoke`) already runs in CI and asserts the kernel boots to userspace with no fault. Extend it into a harness that drives scripted shell sessions (login, capability denials, ELF-under-W^X) and checks the output.
-- **Syscall fuzzer**: Apply coverage-guided fuzzing to the syscall interface. The kernel runs in QEMU under a controlled environment; `syzkaller` or a custom harness could work.
-- **More Rust unit tests**: the crate has 54 tests today (capability revocation/lineage/mint-subsetting, the refcount trust boundary, the crypto vectors, the AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id against reference vectors, the W^X policy, the signal-handler-address window). Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
+- **Integration test suite**: `make smoke` boots to userspace with no fault; extend it into a harness that drives scripted shell sessions (login, capability denials, ELF-under-W^X) and checks the output. Gating the existing `smoke-fs` and `smoke-newlib` targets in CI is low-hanging fruit.
+- **Syscall fuzzer**: coverage-guided fuzzing of the syscall interface / FFI boundary (`cargo-fuzz` on the host, or `syzkaller` under QEMU/KVM).
+- **More Rust unit tests**: the crate has 54 tests today. Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
 
 ### Documentation
 
-- Any clarification to [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) or [docs/BUILDING.md](docs/BUILDING.md)
+- Clarifications to [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) or [docs/BUILDING.md](docs/BUILDING.md)
 - Annotated examples showing how to use the capability API from userspace
 - TLA+ extensions to the existing specifications
 
@@ -70,19 +70,17 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 ### C
 
-- `snake_case` for functions and variables
-- `UPPER_CASE` for constants and macros
-- Types end in `_t` (`tcb_t`, `capability_t`)
-- No comments explaining what the code does — only why, for non-obvious invariants
-- No dynamic allocation in the kernel (no `malloc` — everything is statically allocated or stack-allocated)
-- All kernel code is freestanding — no libc headers except via the kernel header
+- `snake_case` for functions and variables; `UPPER_CASE` for constants and macros; types end in `_t`
+- Comments explain *why* (non-obvious invariants), not *what*
+- No dynamic allocation in the kernel — everything is statically or stack-allocated
+- Freestanding — no libc headers except via the kernel header
 
 ### Rust
 
-- Follow standard `rustfmt` formatting
+- Standard `rustfmt` formatting
 - All kernel-side Rust must be `no_std`, `no_alloc`
-- FFI functions exposed to C must be `extern "C"` with `#[no_mangle]`
-- No `unsafe` in `capability.rs`, `memory.rs`, or `lib.rs` — unsafe belongs exclusively in the C-side FFI shims
+- FFI functions exposed to C are `unsafe extern "C"` with `#[no_mangle]`, carry a `# Safety` contract, and validate their arguments (fail closed)
+- No `unsafe` in the logic of `capability.rs`, `memory.rs`, or `lib.rs` — unsafe belongs exclusively in the C-facing FFI shims
 
 ---
 
@@ -90,10 +88,10 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 1. Fork the repository and create a branch from `main`
 2. Make your changes. Keep commits focused — one logical change per commit
-3. Ensure `make` succeeds with no new warnings
-4. Ensure `make test` passes
-5. If your change affects the architecture, update `docs/ARCHITECTURE.md`
-6. Open a pull request with a clear description of what changed and why
+3. Ensure `make` succeeds with no new warnings, and `make test` passes
+4. Run the self-test relevant to your change (`make smoke`, `smoke-proc`, `smoke-fs`, …)
+5. If your change affects the architecture, update `docs/ARCHITECTURE.md` (and `docs/SYSCALLS.md` for a new syscall)
+6. Open a pull request with a clear description of what changed and why (see the PR template)
 
 Pull requests that break the build, introduce new warnings without justification, or touch security-critical paths without explanation will be held for discussion before merging.
 
@@ -101,6 +99,6 @@ Pull requests that break the build, introduce new warnings without justification
 
 ## A note on security changes
 
-The capability system, authentication, and audit log are security-critical paths. Changes to these areas receive closer review. If you are proposing a change that affects security properties — even positively — describe the invariant you are preserving or introducing, and explain why the change does not break existing guarantees.
+The capability system, authentication, audit log, and the process-control authority model (`SYS_KILL`/`SYS_SIGNAL`/`SYS_CAP_GRANT` gating) are security-critical paths and receive closer review. If you are proposing a change that affects security properties — even positively — describe the invariant you are preserving or introducing, and explain why the change does not break existing guarantees.
 
 If you find a security issue, please follow the disclosure process in [SECURITY.md](SECURITY.md).

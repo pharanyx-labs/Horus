@@ -15,6 +15,7 @@ assignees: yossicohenmcr-ctrl
 - [ ] Capability system / revocation / lineage
 - [ ] Memory management / paging / FFI boundary
 - [ ] IPC / scheduler
+- [ ] Process control (spawn / exec / kill / signal / grant / wait)
 - [ ] Cryptography / RNG / key derivation
 - [ ] Authentication / audit logging
 - [ ] Build / CI / supply chain
@@ -26,12 +27,13 @@ assignees: yossicohenmcr-ctrl
 ## Impact Assessment
 - Confidentiality / Integrity / Availability impact?
 - Can an unprivileged task escalate privileges or bypass capability checks?
+- Can a task terminate, signal, or endow another task without holding its `CAP_TCB`?
 - Is this a new issue or regression from a previous state?
 - Any known workarounds?
 
 ## Environment
 - Horus commit / version:
-- Build configuration (DEBUG_SHELL, MINIMAL_SECURE, RUST_ENABLED, ELF_SELFTEST):
+- Build configuration (`DEBUG_SHELL`, `MINIMAL_SECURE`, `RUST_ENABLED`, `SMP`, `STORAGE_ATA`, any `*_SELFTEST`):
 - Host / QEMU version:
 - CPU features (if relevant, e.g. SMEP/SMAP, RDRAND, AES-NI):
 

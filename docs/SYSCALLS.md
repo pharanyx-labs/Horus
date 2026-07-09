@@ -1,7 +1,7 @@
 # Horus Syscall Reference
 
-**Document Status**: Early development (as of July 2026)  
-**Interface**: Syscall number in `eax`/`rax`; arguments in `ebx, ecx, edx, esi, edi`. The kernel services syscalls through its `int 0x80` handler (`syscall_handler`), which dispatches via a descriptor table: for syscalls with a single fixed authorising capability it is enforced centrally before the handler runs, and any syscall number with no table entry fails closed.  
+**Document Status**: Early development (as of July 2026)
+**Interface**: Syscall number in `eax`/`rax`; arguments in `ebx, ecx, edx, esi, edi`. The kernel services syscalls through its `int 0x80` handler (`interrupt_handler64` → `syscall_handler`), which dispatches via a descriptor table: for syscalls with a single fixed authorising capability it is enforced centrally before the handler runs, and any syscall number with no table entry fails closed.
 **Security Model**: All operations are capability-gated. No ambient authority.
 
 ---
@@ -10,31 +10,41 @@
 
 Horus treats **capabilities** as the fundamental security primitive. Every syscall that interacts with a resource (tasks, memory, IPC endpoints, files, devices) requires an appropriate capability with the necessary rights.
 
-This document provides a comprehensive reference for all implemented and planned syscalls. Numbers are considered stable for implemented calls but subject to change during early development.
+Numbers below are the authoritative values from [`include/syscall.h`](../include/syscall.h); capability requirements reflect the current handler in `src/kernel/syscall.c`. "Required capability" refers to a typed capability the caller must hold in the named cspace slot. Syscalls with dynamic or self-authorising policy carry no fixed table slot and authorise inside their handler.
 
-For full details on the capability system, revocation semantics, and memory model, see [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md).
+For the capability system, revocation semantics, and memory model, see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
 ## Syscall Categories
-
-Numbers below are the authoritative values from [`include/syscall.h`](../include/syscall.h); capability requirements reflect the current handler in `src/kernel/syscall.c`. "Required capability" refers to a typed capability the caller must hold in the named cspace slot.
 
 ### Core / process
 
 | Number | Name              | Description                                                  | Required Capability                          | Notes |
 |--------|-------------------|--------------------------------------------------------------|----------------------------------------------|-------|
 | 0      | `SYS_YIELD`       | Yield the CPU to the scheduler                               | None                                         | — |
+| 2      | `SYS_EXIT`        | Terminate the calling task                                   | None (self)                                  | Tears the task down, wakes any `SYS_WAIT` waiter, and switches to the next runnable task; does not return |
 | 3      | `SYS_GET_LINE`    | Read a line from the console                                 | `CAP_CONSOLE` (slot 8) or endpoint READ (slot 3) | Returns length read |
-| 10     | `SYS_SBRK`        | Move the user heap break                                     | None (caller's own heap, within fixed bounds)| Returns previous break, or 0 on failure |
+| 10     | `SYS_SBRK`        | Move the user heap break by a delta                         | None (caller's own heap, within fixed bounds)| Returns previous break, or 0 on failure |
 | 11     | `SYS_WRITE`       | Write to a descriptor (fd 1 → console)                       | None for console; ramfs paths need slot-3 caps | Bytes written |
 | 12     | `SYS_READ`        | Read from a descriptor (fd 0 → console, fd ≥ 3 → ramfs)      | endpoint READ (slot 3) for ramfs             | Bytes read |
 | 13     | `SYS_OPEN`        | Open a ramfs file by name                                    | endpoint READ (slot 3)                       | Returns fd |
-| 17     | `SYS_WAIT`        | Block until another task exits                               | None                                         | Suspends the caller on the preemptive block/switch path (like a blocking `SYS_IPC_CALL`); the target's teardown wakes it. Returns 0 (incl. if the target is already dead), -1 on a bad tid |
-| 18     | `SYS_GET_TASK_INFO` | Read task metadata                                         | Self always; other tasks need `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7) | — |
-| 19     | `SYS_EXEC`        | Enter ring 3 at load-base + entry                            | endpoint WRITE\|EXEC (slot 3)                | — |
+| 17     | `SYS_WAIT`        | Block until another task exits                              | None                                          | Suspends the caller on the preemptive block/switch path (`TASK_BLOCKED_WAIT`), like a blocking `SYS_IPC_CALL`; the target's teardown wakes it. Returns 0 (incl. if the target is already dead), -1 on a bad tid |
+| 18     | `SYS_GET_TASK_INFO` | Read task metadata (name, state, uid, …)                  | Self always; other tasks need `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7) | Never exposes `cr3` |
+| 19     | `SYS_EXEC`        | Enter ring 3 at load-base + entry                            | endpoint WRITE\|EXEC (slot 3)                | Rejects `load_base + entry_offset ≥ USER_MAX_VADDR` (overflow guard) |
+| 62     | `SYS_BRK`         | Set the absolute heap break (`addr=0` queries current)      | None (own heap, demand-paged)                | Bounded below `kernel_lowmem_critical_floor()` so the heap can't grow into kernel data |
 
-> Numbers **1** (`SYS_PRINT`), **2** (`SYS_EXIT`) and **20** (`SYS_GETPID`) are defined in `syscall.h` but **not dispatched** by the current handler — console output goes through `SYS_WRITE` (fd 1) and the current UID through `SYS_GETUID`.
+> Numbers **1** (`SYS_PRINT`) and **20** (`SYS_GETPID`) are defined in `syscall.h` but **not dispatched** — console output goes through `SYS_WRITE` (fd 1) and the current UID through `SYS_GETUID`.
+
+### Process control (ring-3, Phase 1)
+
+| Number | Name              | Description                                                  | Required Capability                          | Notes |
+|--------|-------------------|--------------------------------------------------------------|----------------------------------------------|-------|
+| 28     | `SYS_SPAWN`       | Spawn a named embedded binary as a new task                 | endpoint WRITE\|EXEC (slot 3)                | Runs the ELF load in the kernel address space; hands the caller a `CAP_TCB` to the child. `sys_spawn_named(name)` wrapper |
+| 63     | `SYS_KILL`        | Terminate task `tid`                                        | `CAP_TCB` to the target (or `CAP_USER` admin)| Enforced in the handler since the target is dynamic |
+| 64     | `SYS_EXEC_NAMED`  | Replace the caller's own image with a named embedded binary | endpoint WRITE\|EXEC (slot 3)                | Same task id and cspace (capabilities survive, POSIX-style); does not return on success |
+| 65     | `SYS_CAP_GRANT`   | Copy the caller's cap from `src_slot` into a supervised child's `dest_slot` | `CAP_TCB` to the target (or `CAP_USER` admin) | Least-privilege delegation from a parent that spawned the child |
+| 66     | `SYS_SIGNAL`      | Send an async signal to another task                        | `CAP_TCB` to the target (or `CAP_USER` admin)| Same authority as `SYS_KILL`. Queues `signum` (1..31); redirected into the target's `SYS_SIGACTION` handler on its next return to ring 3 (signal # in `ebx`). Unhandled — or the uncatchable `SIG_KILL` (9) — takes the default terminate action |
 
 ### IPC
 
@@ -42,35 +52,41 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 |--------|-------------------|----------------------------------------------|----------------------------|-------|
 | 21     | `SYS_IPC_SEND`    | Send a message to an endpoint                | endpoint WRITE (slot 3)    | **Non-blocking**: returns -2 if the single-slot mailbox is full (caller polls from ring 3) |
 | 22     | `SYS_IPC_RECV`    | Receive a message from an endpoint           | endpoint READ (slot 3)     | **Non-blocking**: returns -2 if no message; else returns length |
-| 23     | `SYS_IPC_CALL`    | RPC-style send (thin wrapper over send)      | endpoint WRITE (slot 3)    | No atomic reply-block yet |
+| 23     | `SYS_IPC_CALL`    | RPC-style send that may block for a reply    | endpoint WRITE (slot 3)    | Can block the caller (`TASK_BLOCKED_IPC`), resumed via the block/switch path |
 | 24     | `SYS_IPC_REPLY`   | Reply (thin wrapper over send)               | endpoint WRITE (slot 3)    | — |
-| 25     | `SYS_NOTIFY`      | Post a notification                          | endpoint WRITE (slot 3)    | **Not implemented** — returns `SYS_ERR_NOSYS` (-38) after the cap check |
-| 26     | `SYS_WAIT_NOTIFY` | Wait for a notification                      | endpoint READ (slot 3)     | **Not implemented** — returns `SYS_ERR_NOSYS` (-38) |
+| 25     | `SYS_NOTIFY`      | Post a notification                          | endpoint WRITE (slot 3)    | **Not implemented** — cap check, then `SYS_ERR_NOSYS` (-38) |
+| 26     | `SYS_WAIT_NOTIFY` | Wait for a notification badge                | endpoint READ (slot 3)     | **Not implemented** — `SYS_ERR_NOSYS` (-38) |
 
 ### Task / program loading
 
 | Number | Name                  | Description                                  | Required Capability          | Notes |
 |--------|-----------------------|----------------------------------------------|------------------------------|-------|
-| 27     | `SYS_RECEIVE_PROGRAM` | Receive a program image via the loader       | endpoint WRITE\|EXEC (slot 3)| Arms the staged image |
-| 28     | `SYS_SPAWN`           | Spawn the armed program as a new task        | endpoint WRITE\|EXEC (slot 3)| Implemented: ELF load + paging/heap/ASLR setup |
+| 27     | `SYS_RECEIVE_PROGRAM` | Receive a program image via the loader       | endpoint WRITE\|EXEC (slot 3)| Arms the staged image for `SYS_SPAWN`/`SYS_EXEC` |
 
 ### Authentication & audit
 
 | Number | Name               | Description                                  | Required Capability                 | Notes |
 |--------|--------------------|----------------------------------------------|-------------------------------------|-------|
 | 29     | `SYS_GETUID`       | Get the current UID                          | None                                | — |
-| 30     | `SYS_AUTH`         | Authenticate as a user                       | None (verifies a password)          | Lockout after repeated failures; updates audit log |
-| 31     | `SYS_SUDO`         | Re-authenticate and spawn the armed program as root | None (verifies the caller's password) | Returns new pid |
+| 30     | `SYS_AUTH`         | Authenticate as a user                       | None (verifies a password)          | Argon2id hash + constant-time compare; lockout + anti-spray throttle; scrubs the cleartext buffer; updates the audit log |
+| 31     | `SYS_SUDO`         | Re-authenticate and spawn the armed program as root | None (verifies the caller's password) | Returns new pid; least-privilege sudo frame |
 | 32     | `SYS_GET_PASS`     | Read a password from the console (masked)    | None                                | Returns length |
-| 33     | `SYS_USERADD`      | Add a user account                           | Admin: `CAP_USER` (slot 6) or uid 0 | — |
+| 33     | `SYS_USERADD`      | Add a user account                           | Admin: `CAP_USER` (slot 6) or uid 0 | No initial password → CSPRNG-random hash (account locked until `SYS_PASSWD`) |
 | 34     | `SYS_USERDEL`      | Remove a user account                        | Admin: `CAP_USER` (slot 6) or uid 0 | — |
-| 35     | `SYS_PASSWD`       | Change a password                            | Self, or admin for another user     | — |
+| 35     | `SYS_PASSWD`       | Change a password                            | Self, or admin for another user     | Persists across reboots; scrubs the cleartext buffer |
 | 36     | `SYS_ROTATE_KEYS`  | Rotate stored-block keys                     | `CAP_CONSOLE` (slot 8)              | Returns blocks rotated |
 | 37     | `SYS_READ_AUDIT`   | Read the kernel audit log                    | `CAP_AUDIT` READ (slot 7)           | Circular buffer |
 | 52     | `SYS_AUDIT_DIGEST` | Read the audit-log integrity digest          | `CAP_AUDIT` READ (slot 7)           | Writes 40 bytes (8-byte event count + 32-byte chain-head MAC); returns verify status (0 = intact, >0 = first tampered index + 1, -1 = uninitialised) |
-| 54     | `SYS_SIGACTION`    | Register/clear this task's own fault handler | None (self only)                    | Handler vaddr validated to the user code window (safe Rust); 0 clears. On a ring-3 fault the kernel enters the handler (signal # in `ebx`, fault addr in `ecx`) instead of killing the task |
+
+### Signals
+
+| Number | Name               | Description                                  | Required Capability                 | Notes |
+|--------|--------------------|----------------------------------------------|-------------------------------------|-------|
+| 54     | `SYS_SIGACTION`    | Register/clear this task's own fault/signal handler | None (self only)             | Handler vaddr validated to the user code window (safe Rust); 0 clears. On a ring-3 fault the kernel enters the handler (signal # in `ebx`, fault addr in `ecx`) instead of killing the task |
 | 55     | `SYS_SIGRETURN`    | Resume the pre-signal context from a handler | None (self only)                    | Restores the exact interrupted trap frame; serviced in `interrupt_handler64`. Fails if called outside a handler |
-| 66     | `SYS_SIGNAL`       | Send an async signal to another task         | `CAP_TCB` to the target (or `CAP_USER` admin) | Same authority as `SYS_KILL`. Queues `signum` (1..31) on the target; redirected into its `SYS_SIGACTION` handler on its next return to ring 3 (signal # in `ebx`). Unhandled — or the uncatchable `SIG_KILL` (9) — takes the default terminate action |
+| 66     | `SYS_SIGNAL`       | *(see Process control)* async task-to-task signal | `CAP_TCB` to the target          | Delivered into the target's `SYS_SIGACTION` handler; default-terminates if unhandled |
+
+Signal numbers: `SIG_ILL` (4, `#UD`), `SIG_KILL` (9, uncatchable), `SIG_USR1` (10), `SIG_SEGV` (11, page fault / `#GP`), `SIG_TERM` (15, default terminate). Range is 1..31 (`SIG_MAX`).
 
 ### Capabilities
 
@@ -81,70 +97,54 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 | 9      | *(move)*         | Move a capability (transfer, then revoke the source) | `CAP_RIGHT_MINT` on the source    | No public macro |
 | 51     | `SYS_CAP_REVOKE` | Revoke a capability and **all** derived copies       | `CAP_RIGHT_REVOKE` on the target  | System-wide sweep + lineage generation bump |
 
-### Filesystem (capability-addressed)
+### Filesystem — in-memory capfs (capability-addressed)
 
 | Number | Name               | Description                               | Required Capability            | Notes |
 |--------|--------------------|-------------------------------------------|--------------------------------|-------|
-| 38     | `SYS_FS_MINT_FILE` | Mint a reduced-rights file/dir capability | dir cap `FS_LOOKUP`\|`MINT`     | — |
+| 38     | `SYS_FS_MINT_FILE` | Mint a reduced-rights file/dir capability | dir cap `FS_LOOKUP`\|`MINT`     | Type propagated by `rust_cap_mint` |
 | 39     | `SYS_FS_LOOKUP`    | Resolve a name in a directory capability  | dir cap `FS_LOOKUP`            | — |
 | 40     | `SYS_FS_CREATE`    | Create a file or directory                | dir cap `FS_CREATE`            | — |
-| 41     | `SYS_FS_DELETE`    | Delete a name                             | dir cap `FS_DELETE`            | — |
+| 41     | `SYS_FS_DELETE`    | Delete a name                             | dir cap `FS_DELETE`            | Wipes key material + bumps generation |
 | 42     | `SYS_FS_READDIR`   | List a directory                          | dir cap `FS_LOOKUP`            | Bounced through a kernel buffer + `copy_to_user` |
 | 43     | `SYS_FS_GET_ROOT`  | Obtain the root directory capability      | `CAP_USER` admin (slot 6) or uid 0 | — |
-| 44     | `SYS_FS_READ`      | Read from a file capability               | file cap `FS_READ`            | Returns bytes |
-| 45     | `SYS_FS_WRITE`     | Write to a file capability                | file cap `FS_WRITE`           | Returns bytes |
+| 44     | `SYS_FS_READ`      | Read from a file capability               | file cap `FS_READ`            | Decrypt-and-verify for encrypted files |
+| 45     | `SYS_FS_WRITE`     | Write to a file capability                | file cap `FS_WRITE`           | Fresh-nonce AEAD seal for encrypted files |
+
+All capfs operations resolve capabilities through `fs_resolve_cap()`, which validates the packed `(idx | gen<<32)` object value against the per-slot generation counter, so a stale capability over a deleted object fails closed.
+
+### Encrypted object store (userspace filesystem-server backend)
+
+The kernel exposes only an encrypted inode/block API; the ring-3 `fs_server` builds directories, paths, and file sizes on top. AEAD keys never leave the kernel TCB.
+
+| Number | Name                | Description                                   | Required Capability            | Notes |
+|--------|---------------------|-----------------------------------------------|--------------------------------|-------|
+| 56     | `SYS_FS_INODE_ALLOC`| Allocate an inode of a given type             | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Returns ino |
+| 57     | `SYS_FS_INODE_FREE` | Free an inode                                 | `CAP_BLOCK_DEV` + uid 0        | — |
+| 58     | `SYS_FBLOCK_READ`   | Read (decrypt + verify) an (inode, block)     | `CAP_BLOCK_DEV` + uid 0        | Returns `BLOCK_SIZE`; fail-closed on a bad tag |
+| 59     | `SYS_FBLOCK_WRITE`  | Write (encrypt, fresh nonce) an (inode, block)| `CAP_BLOCK_DEV` + uid 0        | Per-(ino,block) AEAD |
+| 60     | `SYS_FS_STAT`       | Read inode metadata                           | `CAP_BLOCK_DEV` + uid 0        | Writes a `struct fs_stat` |
+| 61     | `SYS_FS_SET_SIZE`   | Set an inode's logical size                   | `CAP_BLOCK_DEV` + uid 0        | Server owns logical file size |
 
 ### Block storage & server registration
 
-| Number | Name                            | Description                                  | Required Capability              | Notes |
-|--------|---------------------------------|----------------------------------------------|----------------------------------|-------|
-| 46     | `SYS_REGISTER_STORAGE_BACKEND`  | *(Removed)*                                  | —                                | **Fails closed** (`SYS_ERR_NOSYS`). Formerly registered a ring-3 callback the kernel invoked from ring 0 (SMEP violation / TCB escape); a userspace provider must be an IPC server |
-| 47     | `SYS_BLOCK_READ`                | Read a 512-byte block                        | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Over the in-kernel virtual disk |
-| 48     | `SYS_BLOCK_WRITE`               | Write a 512-byte block                       | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Over the in-kernel virtual disk |
-| 49     | `SYS_REGISTER_FS_SERVER`        | Register the caller as the FS server         | `CAP_USER` admin + endpoint cap  | — |
-| 50     | `SYS_CONNECT_FS_SERVER`         | Obtain an endpoint capability to the FS server | dest slot in 4..255            | Now mints a valid (fresh-serial) cap |
+| Number | Name                          | Description                              | Required Capability      | Notes |
+|--------|-------------------------------|------------------------------------------|--------------------------|-------|
+| 46     | `SYS_REGISTER_STORAGE_BACKEND`| *(removed)*                              | —                        | **Fails closed** (`SYS_ERR_NOSYS`); ABI slot reserved. Used to register ring-3 function pointers the kernel called from ring 0 — a TCB escape. See [SECURITY.md](../SECURITY.md) |
+| 47     | `SYS_BLOCK_READ`              | Read a raw storage block                  | `CAP_BLOCK_DEV`          | — |
+| 48     | `SYS_BLOCK_WRITE`            | Write a raw storage block                 | `CAP_BLOCK_DEV`          | — |
+| 49     | `SYS_REGISTER_FS_SERVER`     | Register the ring-3 filesystem server     | admin                    | — |
+| 50     | `SYS_CONNECT_FS_SERVER`      | Obtain endpoints to the filesystem server | None                     | Mints fresh-serial endpoint caps |
 
-### Encrypted object store (used by the userspace FS server)
+### Test-only
 
-The kernel exposes its persistent, encrypted inode/block store to a ring-3 filesystem server. AEAD keys never leave the kernel; the server addresses storage by (inode, logical block) and builds all filesystem semantics on top. All are gated on `CAP_BLOCK_DEV` (slot 7) + uid 0, like the raw block syscalls.
-
-| Number | Name                 | Description                                        | Required Capability            | Notes |
-|--------|----------------------|----------------------------------------------------|--------------------------------|-------|
-| 56     | `SYS_FS_INODE_ALLOC` | Allocate a fresh inode of a type                   | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Returns inode number |
-| 57     | `SYS_FS_INODE_FREE`  | Free an inode and its data blocks                  | `CAP_BLOCK_DEV` (slot 7) + uid 0 | — |
-| 58     | `SYS_FBLOCK_READ`    | Read+decrypt logical block of an inode             | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Returns `BLOCK_SIZE` (512) |
-| 59     | `SYS_FBLOCK_WRITE`   | Encrypt+write logical block of an inode            | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Fresh per-write nonce |
-| 60     | `SYS_FS_STAT`        | Read inode metadata (`struct fs_stat`)             | `CAP_BLOCK_DEV` (slot 7) + uid 0 | — |
-| 61     | `SYS_FS_SET_SIZE`    | Set an inode's logical size                        | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Server owns file size |
-
-> Number **53** (`SYS_PREEMPT_TRACE`) is a **test-only** hook, present in the dispatch table and wired to a trace handler *only* in `PREEMPT_SELFTEST=1` builds; in the default/ship kernel its table slot is absent and the number fails closed.
-
-> The handler also services a few **raw-numbered** operations that have no public macro: **5** (clear screen, slot-3 WRITE), **6** (kernel version string), **14** (legacy in-place task create, slot-3 WRITE\|EXEC), **15** (ramfs create, slot-3 WRITE), **16** (ramfs list, slot-3 READ), and **7** (`DEBUG_SHELL` builds only: run an in-kernel shell command).
+| Number | Name               | Description                                  | Notes |
+|--------|--------------------|----------------------------------------------|-------|
+| 53     | `SYS_PREEMPT_TRACE`| Append to the preemption trace ring          | Present only in `PREEMPT_SELFTEST` builds; `SYS_ERR_NOSYS` otherwise |
 
 ---
 
-## Common Conventions
+## Dispatch and error model
 
-- **Error Codes**: Errors are negative; success is 0 (or a non-negative result). They come from a shared, descriptive, errno-aligned set in [`include/errno.h`](../include/errno.h) — `SYS_ERR_PERM` (−1, missing capability), `SYS_ERR_NOENT` (−2), `SYS_ERR_AUTH` (−13, bad password/lockout), `SYS_ERR_FAULT` (−14, bad user pointer), `SYS_ERR_INVAL` (−22), `SYS_ERR_NOSYS` (−38, unknown/unimplemented syscall), `SYS_ERR_REVOKED`/`SYS_ERR_NORIGHT` (capability-specific), and more. `sys_strerror(code)` renders a human-readable reason. The header is shared verbatim by the kernel and userspace, so the same condition yields the same code everywhere.
-- **Capability Rights**: See full bitmask in `ARCHITECTURE.md`. Common rights include `READ`, `WRITE`, `EXEC`, `GRANT`, `MINT`, `REVOKE`.
-- **Revocation Semantics**: `SYS_CAP_REVOKE` performs a complete system-wide sweep. Lineage tracking prevents use-after-revoke even if a stale capability bit pattern remains.
-- **Message Format (IPC)**: Small fixed-size payload + sender badge.
+Dispatch is table-driven: `syscall_handler` indexes `syscall_table[]` of descriptors `{ handler, slot, rights, type }`, validates the number, and — for syscalls whose authority is a single fixed capability — enforces that capability in one central place before calling the handler. A number with no entry fails closed. A `_Static_assert` pins the table size to the highest syscall number + 1, so a syscall cannot be added without a table slot.
 
----
-
-## Future Work
-
-- Blocking IPC endpoints (`SYS_IPC_SEND`/`RECV` that sleep in the kernel rather than returning a would-block code)
-- Atomic `SYS_IPC_CALL` reply-block (currently a thin wrapper over non-blocking send)
-- Per-file ACLs in the userspace FS server (currently access is enforced at the service boundary only)
-- Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY` — both return `SYS_ERR_NOSYS` today)
-- SMP-aware IPC locking and TLB-shootdown IPIs (Phase 4)
-- Additional device classes
-
-For the most up-to-date status, consult [`TESTS.md`](../TESTS.md), [`CHANGES.md`](../CHANGES.md), and [`ROADMAP.md`](../ROADMAP.md).
-
----
-
-**Contribution Note**: This reference should be kept in sync with `include/syscall.h` and the syscall handler table in the kernel.
-
-*Last updated: 2026-07-03 — added the encrypted object-store API (56-61) for the userspace filesystem server and made IPC send/recv non-blocking; numbers and capability requirements synced against `include/syscall.h` and the table-driven `syscall_handler` dispatch.*
+Error codes come from the shared, errno-aligned `SYS_ERR_*` vocabulary in [`include/errno.h`](../include/errno.h) (included by both kernel and userspace): `SYS_ERR_PERM` (missing capability), `SYS_ERR_NOSYS` (unknown/removed syscall), `SYS_ERR_AUTH`, `SYS_ERR_FAULT`, `SYS_ERR_INVAL`, `SYS_ERR_NOENT`, `SYS_ERR_REVOKED`, `SYS_ERR_NORIGHT`, … `sys_strerror()` renders them; the shell prints it.

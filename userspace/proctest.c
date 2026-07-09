@@ -113,6 +113,21 @@ void _start(void) {
 
     report("PROC_SELFTEST: PASS exit+kill+spawn+exec+grant\n");
 
+    /* --- SYS_WAIT: block until a child exits, on the preemptive block/switch
+     * path (TASK_BLOCKED_WAIT) rather than the old cooperative yield() spin.
+     * Spawn "hello" (which exits on its own) and immediately block on it — the
+     * child has not been scheduled yet, so this reliably suspends us until the
+     * child's teardown wakes us. sys_wait must return 0 only once the child is
+     * actually dead (an early/spurious wake while it is still alive is a bug). */
+    int wc = sys_spawn_named("hello");
+    if (wc <= 0) { report("PROC_SELFTEST: FAIL wait-spawn\n"); sys_exit(); }
+    if (sys_wait(wc) != 0) { report("PROC_SELFTEST: FAIL wait-rc\n"); sys_exit(); }
+    struct task_info wi;
+    if (sys_get_task_info(wc, &wi) == 0 && wi.state != 0) {
+        report("PROC_SELFTEST: FAIL wait-early\n"); sys_exit();   /* woke while still alive */
+    }
+    report("PROC_SELFTEST: wait OK\n");
+
     /* --- SYS_SIGNAL: async task-to-task signal to a registered handler. Spawn
      * "sigtarget" (it registers a handler and spins); we hold its CAP_TCB from
      * the spawn, so we may signal it. Give it time to register, then send

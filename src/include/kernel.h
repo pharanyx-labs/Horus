@@ -72,6 +72,7 @@ int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, c
 #define TASK_RUNNABLE      1
 #define TASK_BLOCKED_IPC   2   /* blocked inside SYS_IPC_CALL waiting for a reply */
 #define TASK_BLOCKED_NOTIF 3   /* blocked inside SYS_WAIT_NOTIFY waiting for a badge */
+#define TASK_BLOCKED_WAIT  4   /* blocked inside SYS_WAIT until the target task exits */
 
 struct endpoint {
     int      has_message;

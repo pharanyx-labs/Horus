@@ -425,6 +425,15 @@ embedded_sigtarget_bin_start:
 .incbin "userspace/sigtarget.bin"
 .global embedded_sigtarget_bin_end
 embedded_sigtarget_bin_end:
+
+/* faulter: a child that takes an unhandled #UD fault, to exercise the fault-kill
+ * wake path (SYS_WAIT waiter woken on a *fault* death). Only in PROC_SELFTEST. */
+.align 16
+.global embedded_faulter_bin_start
+embedded_faulter_bin_start:
+.incbin "userspace/faulter.bin"
+.global embedded_faulter_bin_end
+embedded_faulter_bin_end:
 #endif
 
 #ifdef SIGNAL_SELFTEST

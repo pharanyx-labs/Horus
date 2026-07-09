@@ -128,6 +128,20 @@ void _start(void) {
     }
     report("PROC_SELFTEST: wait OK\n");
 
+    /* --- SYS_WAIT wakes on a FAULT death too: spawn "faulter" (takes an
+     * unhandled #UD) and block on it. The kernel's fault handler tears the task
+     * down and must wake us just like a clean exit does — this is the path a
+     * blocking init relies on to relaunch a shell that *faulted*, not only one
+     * that exited. sys_wait must return 0 with the child confirmed dead. --- */
+    int fc = sys_spawn_named("faulter");
+    if (fc <= 0) { report("PROC_SELFTEST: FAIL fault-spawn\n"); sys_exit(); }
+    if (sys_wait(fc) != 0) { report("PROC_SELFTEST: FAIL fault-wait-rc\n"); sys_exit(); }
+    struct task_info fi;
+    if (sys_get_task_info(fc, &fi) == 0 && fi.state != 0) {
+        report("PROC_SELFTEST: FAIL fault-wait-early\n"); sys_exit();
+    }
+    report("PROC_SELFTEST: fault-wait OK\n");
+
     /* --- SYS_SIGNAL: async task-to-task signal to a registered handler. Spawn
      * "sigtarget" (it registers a handler and spins); we hold its CAP_TCB from
      * the spawn, so we may signal it. Give it time to register, then send

@@ -161,6 +161,8 @@ extern uint8_t embedded_exectest_bin_start[];
 extern uint8_t embedded_exectest_bin_end[];
 extern uint8_t embedded_grantee_bin_start[];
 extern uint8_t embedded_grantee_bin_end[];
+extern uint8_t embedded_sigtarget_bin_start[];
+extern uint8_t embedded_sigtarget_bin_end[];
 #endif
 
 static const struct embedded_binary embedded_binaries[] = {
@@ -175,6 +177,9 @@ static const struct embedded_binary embedded_binaries[] = {
     /* grantee: child that exercises SYS_CAP_GRANT (uses a delegated CAP_AUDIT and
      * checks fail-closed upward). PROC_SELFTEST only. */
     { "grantee",   embedded_grantee_bin_start,  embedded_grantee_bin_end  },
+    /* sigtarget: child that registers a handler and is signalled by the driver to
+     * exercise SYS_SIGNAL (async task-to-task delivery). PROC_SELFTEST only. */
+    { "sigtarget", embedded_sigtarget_bin_start, embedded_sigtarget_bin_end},
 #endif
     { NULL, NULL, NULL }
 };
@@ -1437,6 +1442,7 @@ static void h_exec_named(struct regs *r) {
     tasks[cur].esp         = stack_top ? (stack_top - 256) : 0;
     tasks[cur].sig_handler = 0;
     tasks[cur].in_signal   = 0;
+    tasks[cur].pending_sig = 0;
     create_user_pagedir(cur);
 
     load_staged_image_into(cur, load_base);   /* sets eip/heap/name, disarms */
@@ -2624,6 +2630,30 @@ static void h_kill(struct regs *r) {
     r->eax = 0;
 }
 
+/* SYS_SIGNAL (66): send signal `ecx` to task `ebx`. Same authority as SYS_KILL —
+ * a CAP_TCB to the target (or CAP_USER admin), enforced here since the target is
+ * dynamic. If the target registered a handler it is delivered asynchronously:
+ * pending_sig is queued and consumed when the task is next resumed to ring 3,
+ * redirecting it into its handler (see preempt_on_tick / try_deliver_fault_signal).
+ * With no handler — or for the uncatchable SIG_KILL — the default action applies
+ * and the target is terminated. Signalling yourself is permitted (self-TCB). */
+static void h_signal(struct regs *r) {
+    int target      = (int)r->ebx;
+    uint32_t signum = r->ecx;
+    if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
+        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    if (signum == 0 || signum > SIG_MAX) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!task_kill_authorized(target))   { r->eax = (uint32_t)SYS_ERR_PERM;  return; }
+
+    if (signum == SIG_KILL || tasks[target].sig_handler == 0) {
+        task_teardown(target);                 /* default action: terminate */
+    } else {
+        tasks[target].pending_sig = signum;    /* async: delivered on next resume */
+    }
+    r->eax = 0;
+}
+
 /* SYS_WAIT (17): block until task `tid` exits. */
 static void h_wait(struct regs *r) {
     int tid = r->ebx;
@@ -3541,7 +3571,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 66
+#define SYSCALL_TABLE_SIZE 67
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -3574,6 +3604,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SPAWN]                    = { h_spawn,                   3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_EXEC_NAMED]               = { h_exec_named,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_CAP_GRANT]                = { h_cap_grant,               SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
+    [SYS_SIGNAL]                   = { h_signal,                  SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
@@ -3624,7 +3655,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_CAP_GRANT + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_SIGNAL + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -107,6 +107,13 @@ struct audit_event {
 #define SYS_KILL               63   /* (tid) -> terminate task tid; needs a CAP_TCB cap to it */
 #define SYS_EXEC_NAMED         64   /* (name) -> replace the caller's own image with a named embedded binary; does not return on success */
 #define SYS_CAP_GRANT          65   /* (target_tid, src_slot, dest_slot) -> copy caller's cap into a supervised child's cspace slot */
+#define SYS_SIGNAL             66   /* (target_tid, signum) -> deliver a signal to a task held via CAP_TCB */
+
+/* Signal numbers (subset). A task registers a handler with sys_signal() (see
+ * below); an unhandled signal terminates the target (default action). */
+#define SIG_KILL                9
+#define SIG_USR1               10
+#define SIG_TERM               15
 
 /* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
 struct fs_stat {
@@ -337,6 +344,15 @@ static inline int sys_exec_named(const char *name) {
  * capability at src_slot). */
 static inline int sys_cap_grant(int target_tid, uint32_t src_slot, uint32_t dest_slot) {
     return (int)syscall(SYS_CAP_GRANT, (uint32_t)target_tid, src_slot, dest_slot);
+}
+
+/* Send signal `signum` (1..31) to task `target_tid`, which the caller must hold a
+ * CAP_TCB for (or be admin). If the target registered a handler (sys_signal), it
+ * is redirected into it on its next return to ring 3 with `signum` in ebx;
+ * otherwise the target is terminated (default action). Returns 0 on success,
+ * negative on error (no capability, bad target/signum). */
+static inline int sys_send_signal(int target_tid, uint32_t signum) {
+    return (int)syscall(SYS_SIGNAL, (uint32_t)target_tid, signum, 0);
 }
 
 static inline uint32_t sys_getuid(void) {

@@ -105,6 +105,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     tasks[id].runnable_ctx = 0;
     tasks[id].sig_handler = 0;   /* no signal handler until the task registers one */
     tasks[id].in_signal = 0;
+    tasks[id].pending_sig = 0;    /* no async signal queued */
 
 create_user_pagedir(id);
 
@@ -296,6 +297,24 @@ static void sched_raw_lock(void) {
 static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked); }
 #endif
 
+/* Async signal delivery. When a ring-3 task is about to resume, redirect it into
+ * its registered handler if SYS_SIGNAL queued one. Reuses the fault-signal path:
+ * try_deliver_fault_signal rewrites the trap frame to enter the handler (signal
+ * number in ebx) and saves the pre-signal frame for SYS_SIGRETURN. Left pending
+ * if the task is already inside a handler (delivered after it returns). */
+extern int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
+                                    uint32_t signum, uint64_t fault_addr);
+static void deliver_pending_signal(uint64_t frame_ptr, int tid) {
+    if (tid <= 0 || tid >= MAX_TASKS) return;
+    uint32_t sig = tasks[tid].pending_sig;
+    if (sig == 0) return;
+    struct interrupt_frame64 *f = (struct interrupt_frame64 *)frame_ptr;
+    if ((f->cs & 3) != 3) return;   /* only into a ring-3 frame */
+    if (try_deliver_fault_signal(f, tid, sig, 0)) {
+        tasks[tid].pending_sig = 0;
+    }
+}
+
 /* Called from the timer ISR. Returns the kernel %rsp the ISR epilogue should
  * resume on: the same frame when we don't switch, or the next task's saved
  * frame when we do. */
@@ -306,6 +325,9 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) return frame_rsp;
+
+    /* Deliver any signal queued for the running task before it resumes. */
+    deliver_pending_signal(frame_rsp, cur);
 
     /* Round-robin: the next runnable user task (id != 0) with a resumable
      * context. */

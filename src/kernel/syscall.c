@@ -163,6 +163,8 @@ extern uint8_t embedded_grantee_bin_start[];
 extern uint8_t embedded_grantee_bin_end[];
 extern uint8_t embedded_sigtarget_bin_start[];
 extern uint8_t embedded_sigtarget_bin_end[];
+extern uint8_t embedded_faulter_bin_start[];
+extern uint8_t embedded_faulter_bin_end[];
 #endif
 
 static const struct embedded_binary embedded_binaries[] = {
@@ -180,6 +182,9 @@ static const struct embedded_binary embedded_binaries[] = {
     /* sigtarget: child that registers a handler and is signalled by the driver to
      * exercise SYS_SIGNAL (async task-to-task delivery). PROC_SELFTEST only. */
     { "sigtarget", embedded_sigtarget_bin_start, embedded_sigtarget_bin_end},
+    /* faulter: child that takes an unhandled #UD fault, so the driver can verify
+     * a SYS_WAIT waiter is woken on a *fault* death too. PROC_SELFTEST only. */
+    { "faulter",   embedded_faulter_bin_start,  embedded_faulter_bin_end  },
 #endif
     { NULL, NULL, NULL }
 };

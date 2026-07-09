@@ -8,8 +8,10 @@
  * CAP_CONSOLE (slot 8) + CAP_ENCRYPTED_STORAGE (slot 9) to hand to the shell.
  * init then spawns the shell, delegates it those two caps via SYS_CAP_GRANT
  * (authorised because init holds the shell's CAP_TCB from the spawn), and
- * supervises it: if the shell ever exits or faults, init relaunches it. init
- * itself never exits.
+ * supervises it with a blocking SYS_WAIT: init sleeps until the shell exits or
+ * faults, then relaunches it. Blocking (rather than polling) means init consumes
+ * no CPU while the shell runs — the shell is the only runnable task. init itself
+ * never exits.
  *
  * (fs_server remains launched on demand from the shell, as before; init taking
  * over the servers is a follow-up that needs the server's cap provisioning
@@ -21,7 +23,8 @@ static void report(const char *s) {
     sys_write(1, s, (unsigned)n);
 }
 
-/* Preemptible ring-3 spin so the timer keeps running while init waits. */
+/* Preemptible ring-3 spin, used only on the fatal fallback paths below (when
+ * there is no shell to wait on). */
 static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 
 /* Slots init holds the delegable caps in, matching the kernel endowment. */
@@ -44,20 +47,14 @@ static int launch_shell(void) {
 void _start(void) {
     report("init: starting, launching shell\n");
 
-    int sh = launch_shell();
-    if (sh < 0) { report("init: FATAL could not launch shell\n"); for (;;) settle(); }
-
-    /* Supervise the shell by polling its liveness (SYS_GET_TASK_INFO, gated on
-     * init's CAP_AUDIT). A poll loop rather than a blocking wait keeps init on
-     * the proven preemptive path. On exit/fault, relaunch. */
-    struct task_info ti;
+    /* Launch the shell, then block in SYS_WAIT until it exits or faults, and
+     * relaunch. SYS_WAIT suspends init on the preemptive block/switch path, so
+     * while the shell runs init is off the run queue entirely (no polling). */
     for (;;) {
-        int alive = (sys_get_task_info(sh, &ti) == 0 && ti.state != 0);
-        if (!alive) {
-            report("init: shell exited, relaunching\n");
-            sh = launch_shell();
-            if (sh < 0) { report("init: FATAL relaunch failed\n"); for (;;) settle(); }
-        }
-        settle();
+        int sh = launch_shell();
+        if (sh < 0) { report("init: FATAL could not launch shell\n"); for (;;) settle(); }
+
+        sys_wait(sh);   /* returns once the shell task is dead */
+        report("init: shell exited, relaunching\n");
     }
 }

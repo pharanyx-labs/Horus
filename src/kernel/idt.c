@@ -273,9 +273,17 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
             uint32_t signum = (vector == 6) ? SIG_ILL : SIG_SEGV; /* #UD vs other */
             if (!try_deliver_fault_signal(frame, cur, signum, 0)) {
                 int killed = cur;
-                tasks[killed].state = 0;
-                schedule();
-                if (killed > 0) tasks[0].state = 1;
+                /* Tear the task down — marks it dead AND wakes any SYS_WAIT
+                 * waiter (e.g. init supervising the shell) — then resume the
+                 * next runnable task via its saved frame, exactly as the
+                 * SYS_EXIT path does. The old code raw-set state=0 and spun the
+                 * cooperative schedule(), which never woke a blocked waiter, so
+                 * a faulting shell left a blocking init asleep forever. */
+                task_teardown(killed);
+                uint64_t rsp = task_exit_switch(killed);
+                if (rsp) return rsp;
+                /* Nothing else runnable: fall back to the kernel reaper/idle on
+                 * task 0's stack. */
                 frame->rip    = (uint64_t)resume_shell_after_fault;
                 frame->cs     = 0x08;
                 frame->rflags = 0x202;

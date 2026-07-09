@@ -5,36 +5,36 @@
 <!-- Why is this change needed? What problem does it solve? -->
 
 ## Security Impact
-**REQUIRED for any change touching capability system, memory management, IPC, scheduler, crypto, auth, audit, build/CI, or FFI boundary.**
+**REQUIRED for any change touching the capability system, memory management, IPC, scheduler, process control (spawn/exec/kill/signal/grant/wait), crypto, auth, audit, build/CI, or the FFI boundary.**
 
-- Does this change preserve all existing security invariants (capability lineage/revocation correctness, no ambient authority, FFI safety, isolation guarantees)?
+- Does this change preserve all existing security invariants (capability lineage/revocation correctness, no ambient authority, `CAP_TCB`-gated kill/signal/grant, FFI safety, isolation guarantees)?
 - What new attack surface or trust assumption is introduced?
 - How was the change reviewed against the threat model in SECURITY.md and ARCHITECTURE.md?
-- List any new capabilities, rights, or kernel objects added.
+- List any new capabilities, rights, kernel objects, or syscalls added.
 
 <!-- Example answers:
 - Yes, revocation sweep + generation bump still covers all derived caps.
-- No new ambient authority paths.
-- Tested with new property-based test in rust/src/capability.rs.
+- No new ambient authority paths; the new syscall is gated on a CAP_TCB in its handler.
+- Tested with a new self-test step in userspace/proctest.c.
 -->
 
 ## Testing Performed
 - [ ] `make` builds cleanly (no new warnings)
 - [ ] `make test` / `cargo test --release` passes
 - [ ] `make reproducible-build` still produces identical artifacts
-- [ ] `make smoke` passes (headless QEMU boot to the shell banner; required if userspace, the loader, paging, or boot changed)
-- [ ] `make smoke-elf` passes (ELF loader + W^X boot self-test; required if the ELF loader, paging, or W^X policy changed)
-- [ ] New or updated unit/property tests added for security-critical logic
+- [ ] `make smoke` passes (headless boot to the login prompt; required if userspace, the loader, paging, or boot changed)
+- [ ] Relevant self-test passes: `smoke-elf` / `smoke-preempt` / `smoke-signal` / `smoke-proc` / `smoke-smp` / `smoke-fs` / `smoke-newlib`
+- [ ] New or updated unit/self-tests added for security-critical logic
 - [ ] Security scans (`make security`) reviewed; no new high-severity findings
 
 ## Checklist
 - [ ] I have read `docs/ARCHITECTURE.md`, `docs/LIMITATIONS.md`, and `CONTRIBUTING.md`
 - [ ] Changes to security-critical paths include explicit explanation of invariants preserved
-- [ ] Documentation updated (ARCHITECTURE.md, LIMITATIONS.md, code comments)
+- [ ] Documentation updated (`docs/ARCHITECTURE.md`, `docs/SYSCALLS.md` for a new syscall, `docs/LIMITATIONS.md`, code comments)
 - [ ] No new external dependencies introduced without justification
-- [ ] This PR does not increase the C unsafe surface or add `unsafe` in rust/src/capability.rs / memory.rs / crypto.rs
+- [ ] This PR does not increase the C unsafe surface or add `unsafe` in the logic of `rust/src/capability.rs`, `memory.rs`, or `lib.rs`
 
-## Screenshots / Logs (if UI or boot behavior changed)
+## Screenshots / Logs (if boot behaviour changed)
 <!-- Optional but helpful for reviewers -->
 
 ## Related Issues / PRs

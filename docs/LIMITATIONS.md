@@ -10,20 +10,24 @@ Horus is a research and learning project. It is not a production operating syste
 
 These subsystems are functional in the current codebase:
 
-- **Boot sequence** — Multiboot2 boot via GRUB2 into x86-64 long mode
-- **VGA terminal** — text mode, colour output, kernel log buffer, serial mirror
-- **Hardware isolation** — Ring 0/Ring 3 separation, per-task page tables, user/kernel memory split. SMEP and SMAP are enabled when the CPU advertises them (ring 0 cannot execute or casually read user pages; user copies go through a kernel mapping rather than the user mapping), and the boot CPU brings these up after feature detection.
-- **W^X for user memory** — `EFER.NXE` is on and the kernel sets the PTE NX bit so writable pages are never executable: user stacks are mapped non-executable, and the ELF loader honours each `PT_LOAD` segment's `p_flags` (code read+execute, data/rodata read[+write]+no-execute). The W^X policy decision lives in Rust and is unit-tested; the live shell boot (which runs through the flat-binary fallback) is covered by the smoke-boot test.
-- **Capability mint, transfer, and revoke** — the core capability operations work, including transitive revocation across every task's cspace and the kernel root cnode. Revocation requires `CAP_RIGHT_REVOKE` on the target (mint/transfer require `CAP_RIGHT_MINT`); a "no ambient authority" guard refuses cap operations from any non-kernel task that lacks its own cspace.
-- **Lineage tracking** — use-after-revoke is prevented via per-lineage generation counters; a looked-up capability can be snapshotted and re-validated at point of use (wired into the IPC send/recv paths to close a lookup/use TOCTOU window across the cooperative yield).
+- **Boot sequence** — Multiboot2 boot via GRUB2 into x86-64 long mode; a ring-3 `init` (PID 1) launches the shell.
+- **VGA terminal** — text mode, colour output, kernel log buffer, serial mirror; PS/2 keyboard input.
+- **Hardware isolation** — Ring 0/Ring 3 separation, per-task page tables, user/kernel memory split. SMEP and SMAP are enabled when the CPU advertises them (ring 0 cannot execute or casually read user pages; user copies go through a kernel mapping), brought up after feature detection.
+- **W^X for user memory** — `EFER.NXE` is on and the kernel sets the PTE NX bit so writable pages are never executable: user stacks are mapped non-executable, and the ELF loader honours each `PT_LOAD` segment's `p_flags`. The policy decision lives in Rust and is unit-tested; the shipped static-PIE binaries take the ELF path and are covered by the smoke-boot and `smoke-elf` tests.
+- **Capability mint, transfer, grant, and revoke** — the core operations work, including transitive revocation across every task's cspace and the kernel root cnode. Revocation requires `CAP_RIGHT_REVOKE`; mint/transfer require `CAP_RIGHT_MINT`; a "no ambient authority" guard refuses cap operations from any non-kernel task lacking its own cspace. `SYS_CAP_GRANT` delegates one slot from a supervisor into a child it spawned.
+- **Lineage tracking** — use-after-revoke is prevented via per-lineage generation counters; a looked-up capability can be snapshotted and re-validated at point of use (wired into the IPC paths to close a lookup/use TOCTOU window).
 - **Capability/FFI integrity** — the C `capability_t` and Rust `Capability` layouts are pinned by mirrored compile-time assertions; the refcount table is registered once and every later inc/dec must present the exact (pointer, length) or is refused.
-- **User authentication** — login, lockout after failed attempts, per-user UID assignment
-- **Audit log** — kernel-side circular buffer of security events; capability mint/transfer/move/revoke and the FS/auth paths record outcomes. The log is **tamper-evident**: each entry is HMAC'd (binding its sequence number) and a running hash-chain head commits to the whole ordered history, both keyed by the per-boot pepper (`rust/src/audit.rs`); `SYS_AUDIT_DIGEST` returns the digest + constant-time verify status. See the security note below for the scope (detector, not tamper-proof).
-- **Keyboard input** — PS/2 scancode translation, key buffer
-- **Preemptive round-robin scheduling** — the timer (PIT at 100 Hz) preempts ring-3 tasks via a full-context kernel-stack switch, so CPU-bound tasks time-share without cooperating. A tick that lands in ring 0 never switches (the kernel stays effectively non-preemptible, avoiding lock/reentrancy hazards). Proven at runtime by `make smoke-preempt`, which spawns two non-yielding tracers and asserts they interleave. (The legacy cooperative `yield()`/IPC switch between multiple tasks is a separate, older path and is not hardened.)
-- **Fault signals** — a task can register its own fault handler (`SYS_SIGACTION`); a ring-3 fault (page fault → `SIG_SEGV`, `#UD` → `SIG_ILL`) is then delivered to that handler in ring 3 — signal number in `ebx`, faulting address in `ecx` — instead of the task being summarily killed, and `SYS_SIGRETURN` resumes the exact pre-signal context. Attack-surface controls: the handler address is validated to the user code window in safe Rust (fail-closed); a fault *inside* a handler is not re-delivered (no loops); the handler runs at ring 3 with unchanged privileges. Proven at runtime by `make smoke-signal` (a task faults on purpose and its handler runs). Asynchronous *task-to-task* signalling also exists (`SYS_SIGNAL`, gated on a `CAP_TCB` to the target, same authority as `SYS_KILL`): a signal is queued on the target and redirected into its registered handler when it next returns to ring 3 (reusing the fault-signal path), or takes the default terminate action when unhandled or for the uncatchable `SIG_KILL`; proven by `make smoke-proc` (the `+signal` marker). **Scope:** no alternate signal stack, no per-signal masking, and a pending async signal only lands once the target is next scheduled to run (no wakeup of a *blocked* target yet).
-- **Reproducible builds** — `make reproducible-build` yields a byte-for-byte identical `kernel.elf` across clean builds (verified in CI)
-- **Userspace task spawning** — `SYS_SPAWN` loads an ELF image, sets up paging/heap/ASLR and a capability space, and is gated on a capability (`CAP_RIGHT_WRITE | CAP_RIGHT_EXEC` on slot 3)
+- **User authentication** — login, lockout after failed attempts + anti-spray throttle, per-user UID assignment, Argon2id memory-hard hashing; password changes persist across reboots.
+- **Audit log** — kernel-side circular buffer of security events. **Tamper-evident**: each entry is HMAC'd (binding its sequence number) and a running hash-chain head commits to the whole ordered history, keyed by the per-boot pepper (`rust/src/audit.rs`); `SYS_AUDIT_DIGEST` returns the digest + constant-time verify status. Detector, not tamper-proof (see below).
+- **Preemptive round-robin scheduling** — the timer (PIT at 100 Hz) preempts ring-3 tasks via a full-context kernel-stack switch, so CPU-bound tasks time-share without cooperating. A tick in ring 0 never switches (the kernel stays effectively non-preemptible). Proven by `make smoke-preempt`. Blocking (`SYS_IPC_CALL`, `SYS_WAIT`) uses the same full-context block/switch path; the legacy cooperative `yield()` switch has been retired from console input, `SYS_WAIT`, and `init`, surviving only as the boot launch of the first task.
+- **Ring-3 process control** — a task can `SYS_SPAWN` a named child (receiving its `CAP_TCB`), replace its own image in place (`SYS_EXEC_NAMED`), delegate caps to a child (`SYS_CAP_GRANT`), terminate itself (`SYS_EXIT`) or a task it holds a `CAP_TCB` for (`SYS_KILL`), and block until a task exits (`SYS_WAIT`). Proven by `make smoke-proc`.
+- **`init` supervision** — a ring-3 PID 1 spawns, capability-endows, and blocking-supervises the shell, relaunching it on exit or fault.
+- **Fault signals** — a task registers its own handler (`SYS_SIGACTION`); a ring-3 fault (page fault → `SIG_SEGV`, `#UD` → `SIG_ILL`) is delivered to it (signal # in `ebx`, fault addr in `ecx`) instead of killing it, and `SYS_SIGRETURN` resumes the exact pre-signal context. The handler address is validated in safe Rust (fail-closed); a fault *inside* a handler is not re-delivered; the handler runs at ring 3 with unchanged privileges. Proven by `make smoke-signal`.
+- **Async task-to-task signals** — `SYS_SIGNAL` (gated on a `CAP_TCB` to the target, same authority as `SYS_KILL`) queues a signal that is redirected into the target's handler on its next return to ring 3, or takes the default terminate action when unhandled or for the uncatchable `SIG_KILL`. Proven by `make smoke-proc`. **Scope:** no alternate signal stack, no per-signal masking, and a pending async signal only lands once the target is next scheduled to run (no wakeup of a *blocked* target yet).
+- **Symmetric multiprocessing (behind `SMP=1`)** — application processors are brought up (LAPIC INIT-SIPI-SIPI), each runs its own LAPIC-timer preemption tick over a shared runnable pool, IPC/notification paths lock for cross-CPU safety, and TLB-shootdown IPIs are acknowledged. Proven by `make smoke-smp`. Off by default; see the SMP note below.
+- **Filesystem server** — a ring-3 `fs_server` over the kernel's encrypted object store, reached over IPC; real `ls`/`cat`/`mkdir`/`rm`/`touch`/redirection from the shell. Proven by `make smoke-fs`.
+- **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace `malloc`, and a newlib libc port over a per-process POSIX fd layer (`make smoke-newlib`).
+- **Reproducible builds** — `make reproducible-build` yields a byte-for-byte identical `kernel.elf` across clean builds (verified in CI).
 
 ---
 
@@ -33,23 +37,23 @@ These subsystems compile and run but are incomplete:
 
 ### Userspace shell
 
-The shell accepts input and dispatches commands. Several are implemented end-to-end; others parse their arguments but return errors or do little. Coverage is uneven and should not be assumed complete for any given command.
+The shell accepts input and dispatches commands. Several are implemented end-to-end; others parse their arguments but return errors or do little. Coverage is uneven.
 
 ### IPC
 
-The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated). It is **non-blocking**: a send to a full mailbox or a recv on an empty one returns a would-block code (-2) and the caller polls from ring 3, where timer preemption interleaves it with the peer. (The previous in-kernel busy-spin called the cooperative `yield()`, which cannot correctly context-switch two ring-3 tasks — only timer preemption can — so a kernel-side spin would deadlock.) Each endpoint is a **single-slot mailbox**, so it serves **one in-flight request at a time**; concurrent multi-client IPC with reply routing is a follow-up. `SYS_IPC_CALL`/`SYS_IPC_REPLY` are thin wrappers over send. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and then return a distinct `SYS_ERR_NOSYS` (-38).
+The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated). `SYS_IPC_SEND`/`RECV` are **non-blocking** (return a would-block code `-2`; the caller polls from ring 3 where preemption interleaves it); `SYS_IPC_CALL` can block on the full-context path. Each endpoint is a **single-slot mailbox**, so it serves **one in-flight request at a time**; concurrent multi-client IPC with reply routing is a follow-up. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and return `SYS_ERR_NOSYS` (-38).
 
-### Filesystem (capfs / ramfs)
+### Filesystem (in-memory capfs)
 
-An in-memory capability-addressed filesystem works: lookup, create, delete, read, write, and readdir each enforce the relevant `CAP_RIGHT_FS_*` right. All five operations resolve capabilities through `fs_resolve_cap()`, which validates the packed `(idx | gen<<32)` object value against the pool's per-slot generation counter — stale capabilities pointing at deleted objects are rejected rather than dangling. On delete, `enc_key`, `mac_key`, `file_nonce`, and `file_tag` are wiped with `secure_zero` before the slot is released, and the generation counter is bumped. Files created by a task that holds the encrypted-storage capability are sealed with the same ChaCha20 + HMAC-SHA256 AEAD as the block-storage layer — per-file HKDF-SHA256 subkeys derived from the task's file master key, a fresh per-write nonce, the object identity bound as AAD, and fail-closed verification on read (this replaced an earlier unauthenticated homebrew XOR keystream). It is a single in-memory tree; persistence and richer POSIX semantics are absent (see below).
+A legacy in-memory capability-addressed filesystem works: lookup/create/delete/read/write/readdir each enforce the relevant `CAP_RIGHT_FS_*` right, resolving capabilities through `fs_resolve_cap()` (packed `(idx | gen<<32)` value + per-slot generation, so stale caps over deleted objects fail closed). Encrypted files are sealed with the same ChaCha20 + HMAC-SHA256 AEAD as block storage. It is a single in-memory tree and coexists with the newer `fs_server`; reconciling the two is tracked work.
 
 ### Copy-on-write paging
 
-The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault handler calls into Rust to decide demand-zero vs. COW-copy. The common cases work and the Rust decision logic is unit-tested, but the end-to-end paths have not been stress-tested and likely have edge cases.
+The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault handler calls into Rust to decide demand-zero vs. COW-copy. The common cases work and the Rust logic is unit-tested, but the end-to-end paths have not been stress-tested and likely have edge cases.
 
 ### Disk-backed storage
 
-`storage.c` implements encrypted block storage — a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`) with per-block HKDF-SHA256 keys, a fresh random per-write nonce, and `(ino, block)` bound as AAD — over a real superblock/inode/bitmap layout. As of the Phase 2 increment this store **works and is exercised end-to-end** by the userspace `fs_server` (below), via the encrypted object-store syscalls. The backing device is selectable: an in-RAM virtual disk by default, or a real ATA disk (`ata.c`, 28-bit-LBA PIO) with `STORAGE_ATA=1` (probe + format-on-first-boot). Remaining gaps: the per-block crypto metadata (nonces/tags) is still kept in kernel RAM, so files survive within a boot but **cross-reboot ATA persistence needs that metadata persisted too**; and single-bitmap-block geometry caps a volume at 4096 data blocks (multi-block bitmaps + double-indirect data are follow-ups).
+`storage.c` implements encrypted block storage — a ChaCha20 + HMAC-SHA256 AEAD with per-block HKDF keys, fresh per-write nonce, `(ino, block)` as AAD — over a real superblock/inode/bitmap layout, exercised end-to-end by `fs_server` via the encrypted object-store syscalls. The device is selectable: a RAM vdisk by default, or a real ATA disk (`ata.c`, 28-bit-LBA PIO) with `STORAGE_ATA=1`. Remaining gaps: the per-block crypto metadata (nonces/tags) is kept in kernel RAM, so **cross-reboot ATA persistence needs that metadata persisted too**; and single-bitmap-block geometry caps a volume at 4096 data blocks (multi-block bitmaps + double-indirect data are follow-ups).
 
 ---
 
@@ -57,19 +61,23 @@ The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault
 
 ### Persistent storage as the default
 
-All filesystem contents live in memory and are lost on reboot. The encrypted-storage and ATA code exist but are not the active backing store for the filesystem.
+The default backing store is the in-RAM virtual disk, so filesystem contents are lost on reboot. The encrypted-block AEAD and the ATA driver both work, but making the ATA store the default (and persisting the per-block crypto metadata across reboots) is Phase 2 work.
 
-### Userspace filesystem server
+### Multi-client filesystem access
 
-`userspace/fs_server.c` is now a working ring-3 filesystem server: it implements a hierarchical, persistent FS (directories are inode data; root = inode 0) on top of the kernel's encrypted object store, and serves clients over IPC (versioned protocol in `include/fs_proto.h`). It is proven end-to-end by `make smoke-fs` (and `STORAGE=ata` against a real disk). What remains: it serves **one client at a time** (single-slot mailbox), enforces access only at the service boundary (an endpoint cap to reach it) rather than **per-file ACLs**, and does not yet supersede the legacy in-memory capfs behind `SYS_FS_*`.
+`fs_server` serves **one client at a time** (single-slot mailbox), enforces access only at the service boundary (an endpoint cap to reach it) rather than **per-file ACLs**, and does not yet supersede the legacy in-memory capfs behind `SYS_FS_*`.
 
-### SMP / multicore
+### SMP as default
 
-LAPIC detection and AP-bringup scaffolding exist, but no AP is brought up and the scheduler/IPC paths assume a single core. Running on real multi-core hardware will not crash but will use one core.
+Multi-core works behind `SMP=1`, but the shipped kernel is single-core. The multi-core scheduler shares one runnable pool with a per-CPU pull; there are no per-CPU run queues, no priorities or fairness, and no flush-on-switch. Retiring the gate and hardening the scheduler is Phase 3.
+
+### Notifications
+
+`SYS_NOTIFY` / `SYS_WAIT_NOTIFY` return `SYS_ERR_NOSYS`.
 
 ### ASLR entropy ceiling (32-bit userspace window)
 
-Per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG: userspace is built static-PIE (`ET_DYN`) and loaded at a random page-aligned base by `try_elf_load`, which applies `R_386_RELATIVE` relocations. The remaining limitation is *entropy*, not mechanism — userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window, so the image base has ~9 bits of entropy rather than the tens of bits a 64-bit userspace ABI would allow.
+Per-spawn stack top, heap gap, and image load base are all randomised from the CSPRNG (userspace is static-PIE and relocated at load). The remaining limitation is *entropy*, not mechanism — userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window, so the image base has ~9 bits of entropy rather than the tens of bits a 64-bit userspace ABI would allow.
 
 ---
 
@@ -77,21 +85,21 @@ Per-spawn stack top, heap gap, **and image load base** are randomised from the C
 
 These matter specifically for anyone evaluating Horus as a security system:
 
-### Encrypted storage is not the live backing store
+### Encrypted storage is not the live default
 
-The block cipher itself is now sound: a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD with independent per-block HKDF subkeys and a fresh random per-write nonce, which replaced an earlier hand-rolled routine that was not actually AES. The remaining limitation is *integration, not cryptography* — the live filesystem is the in-memory tree, so this encrypted-block path is not yet the default backing store and has not been exercised end-to-end at runtime.
+The block cipher is sound (ChaCha20 + HMAC-SHA256 AEAD, per-block HKDF subkeys, fresh per-write nonce). The remaining limitation is *integration* — the RAM vdisk is the default device and cross-reboot persistence of the crypto metadata is not yet wired.
 
 ### Bounded load-base ASLR entropy
 
-Stack, heap, and image base are all randomised per spawn (userspace is static-PIE and relocated at load). Because userspace is confined to the low ~8 MiB 32-bit window, the load base has only ~9 bits of entropy, so a determined attacker with a memory-disclosure primitive faces a smaller search space than on a 64-bit-userspace system.
+Because userspace is confined to the low ~8 MiB 32-bit window, the load base has only ~9 bits of entropy, so a determined attacker with a memory-disclosure primitive faces a smaller search space than on a 64-bit-userspace system.
 
 ### Audit log is tamper-evident, not tamper-proof
 
-The audit log is now integrity-protected: every entry carries an HMAC that binds its absolute sequence number, and a running chain head (`HMAC(pepper, head || mac)`) commits to the entire ordered history, so edits, ring-slot swaps, replays, drops, and sequence rollbacks are all *detectable* — including by an external monitor that periodically records the chain head via `SYS_AUDIT_DIGEST`. The residual limitation is that this is a **detector**, not a guarantee: an attacker who fully compromises the kernel and reads the per-boot pepper can recompute a self-consistent chain. That is the same accepted trust boundary as the user-database integrity tag.
+Edits, ring-slot swaps, replays, drops, and rollbacks are all *detectable* (including by an external monitor recording the chain head via `SYS_AUDIT_DIGEST`). The residual limitation is that this is a **detector**: an attacker who fully compromises the kernel and reads the per-boot pepper can recompute a self-consistent chain — the same accepted trust boundary as the user-database tag.
 
 ### No covert / cache side-channel mitigation
 
-Single-core today, so cross-core/SMT channels do not yet apply. The timer now preempts and switches between mutually distrusting ring-3 tasks on that single core, but there is no flush-on-switch or cache partitioning to limit microarchitectural leakage across the switch. Tracked in `SECURITY.md`.
+The timer preempts and switches between mutually distrusting ring-3 tasks (and, under `SMP=1`, across cores), but there is no flush-on-switch or cache partitioning to limit microarchitectural leakage. Tracked in `SECURITY.md`.
 
 ### No privilege separation within the kernel
 
@@ -102,10 +110,10 @@ All kernel code runs at the same privilege level with access to all kernel data;
 ## Code quality notes
 
 - Compilation success is not evidence of correct runtime behaviour; some paths are partial.
-- Error codes are a shared, descriptive, errno-aligned `SYS_ERR_*` set (`include/errno.h`) used by both the kernel and userspace, with `sys_strerror()` for human-readable reasons. The syscall dispatcher and the auth / user-copy paths return specific codes; some deeper internal helpers still use ad-hoc small negatives that are mapped or surfaced generically.
-- The Rust crate is named `horus_shell` for historical reasons; the name does not reflect its current role (it is the security core: capabilities, memory refcounting, SHA-2/HMAC/HKDF/PBKDF2, ChaCha20 RNG, FFI validation).
-- `src/kernel/minimal_secure_stubs.c` supplies the stub implementations used by the `MINIMAL_SECURE=1` build (which strips the filesystem/storage stack); it is build configuration, not security logic.
-- Tests: 54 Rust unit tests cover the capability engine, the memory/refcount trust boundary, the RNG and SHA-2 family against published vectors, the ChaCha20+HMAC AEAD (round-trip, tamper, wrong-AAD, nonce separation), the tamper-evident audit MAC/chain (`audit.rs`), BLAKE2b + Argon2id (single- and multi-lane) against RFC 7693 / `argon2-cffi` reference vectors, the W^X page policy, the signal-handler-address window, and the FFI validation/policy functions. CI runs nine gated jobs (`cargo test` + `clippy -D warnings`, kernel/ISO build, an alt-config build matrix, a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a signal-handling self-test, a reproducible-build check, and security scans + SBOM). The smoke-boot tests confirm the kernel boots to userspace with no fault, that the ELF loader enforces W^X, that the timer preempts and time-slices two ring-3 tasks, and that a ring-3 fault is delivered to a registered handler, but there is no *deeper* integration harness (scripted shell sessions) or fuzzing yet, and no automatic checking of the TLA+ specs in `docs/`.
+- Error codes are a shared, descriptive, errno-aligned `SYS_ERR_*` set (`include/errno.h`) used by both kernel and userspace, with `sys_strerror()`. The dispatcher and the auth / user-copy paths return specific codes; some deeper helpers still use ad-hoc small negatives.
+- The Rust crate is named `horus_shell` for historical reasons; it is the security core (capabilities, memory refcounting, the SHA-2/BLAKE2b/Argon2id/KDF/AEAD/RNG primitives, FFI validation).
+- `src/kernel/minimal_secure_stubs.c` supplies the stubs for the `MINIMAL_SECURE=1` build; it is build configuration, not security logic.
+- **Tests:** 54 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **11 gated jobs** (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; and six headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, SMP; a reproducible-build check; and a security scan + SBOM). There is still no *deeper* integration harness (scripted shell sessions) or fuzzing, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -117,11 +125,12 @@ Rough orientation only, not guarantees. The capability system is the most comple
 |---|---|
 | Capability model (design and core implementation) | ~85% |
 | Boot and hardware initialisation | ~85% |
+| Process model (spawn/exec/kill/wait/signal, init) | ~70% |
 | Memory management | ~55% |
-| Task scheduling | ~55% (preemptive round-robin; single-core, no priorities) |
-| IPC | ~35% (send/recv; no notifications, no real blocking) |
-| Filesystem | ~35% (in-memory, capability-gated; no persistence) |
-| Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD; all standard primitives) | ~80% |
-| Storage / disk I/O | ~25% (driver + sound encrypted-block code, not wired as default) |
-| SMP | ~5% (detection/scaffolding only) |
-| Testing | ~40% (54 unit tests + CI + smoke-boot + ELF/W^X + preemption + signal self-tests; no deeper integration/fuzz) |
+| Task scheduling | ~60% (preemptive; SMP behind a gate; no priorities) |
+| IPC | ~35% (send/recv + blocking call; no notifications, single-slot) |
+| Filesystem | ~50% (ring-3 server over encrypted store; not persistent-by-default) |
+| Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD) | ~80% |
+| Storage / disk I/O | ~40% (driver + sound encrypted-block code; not default, metadata not persisted) |
+| SMP | ~55% (works behind `SMP=1`; not default, shared run queue, no priorities) |
+| Testing | ~45% (54 unit tests + 11 CI jobs + six boot self-tests; no deeper integration/fuzz) |

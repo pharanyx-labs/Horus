@@ -2,63 +2,36 @@
 
 ## Project security posture
 
-Horus is a **research microkernel** in early development. It is not suitable for use in production environments or for handling sensitive workloads. The security properties described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) reflect the design intent; several of them are not yet fully implemented. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) describes the current gaps honestly.
+Horus is a **research microkernel** in early development. It is not suitable for use in production environments or for handling sensitive workloads. The security properties described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) reflect the design intent; several of them are not yet fully realised. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) describes the current gaps honestly.
 
 Known weaknesses include:
 
-- SMP is not yet implemented (single-core); preemptive scheduling is now implemented but the legacy cooperative `yield()`/IPC switch between multiple tasks is a separate, un-hardened path
+- SMP works behind the `SMP=1` build gate but is not default-on; the multi-core scheduler shares a single runnable pool (no per-CPU run queues, no priorities), and there is no flush-on-switch between mutually distrusting tasks
 - Load-base ASLR is applied (userspace is static-PIE, relocated at a random base), but image-base entropy is bounded (~9 bits) by the 32-bit low-memory window userspace runs in
-- Disk-backed persistent storage is not the live backing store (the filesystem is in-memory); the encrypted-block path, though now cryptographically sound, is not yet wired in as the default
+- Disk-backed persistent storage is not the live backing store (the default is the in-RAM vdisk); the encrypted-block path, though cryptographically sound, is not yet the default and does not persist its crypto metadata across reboots
 - The audit log is tamper-*evident* (an HMAC chain detects modification), not tamper-*proof* — an attacker who can read the per-boot key can recompute a consistent chain (see the audit-log note below)
 
 These are not undisclosed vulnerabilities — they are documented, known limitations of an incomplete system.
 
 ## Hardening currently in place
 
-For balance, the following are implemented and enforced today (single-core, preemptive build):
+The following are implemented and enforced today:
 
 - **Hardware isolation:** Ring 0/3 separation with per-task page tables; **SMEP** and **SMAP** enabled when advertised (ring 0 cannot execute, and cannot casually read/write, user pages — user copies resolve the physical address under the kernel mapping rather than dereferencing a user virtual address).
-- **W^X for user memory:** `EFER.NXE` is enabled and the kernel sets the PTE NX bit so a writable page is never executable. User stacks are mapped non-executable, and the ELF loader honours each `PT_LOAD` segment's `p_flags` (code read+execute, data/rodata no-execute). The flat-binary fallback (the shipped, non-ELF userspace) keeps its image executable; its boot is covered by the smoke-boot test.
+- **W^X for user memory:** `EFER.NXE` is enabled and the kernel sets the PTE NX bit so a writable page is never executable. User stacks are mapped non-executable, and the ELF loader honours each `PT_LOAD` segment's `p_flags` (code read+execute, data/rodata no-execute). The shipped userspace is static-PIE and takes this path; a flat-binary fallback (kept executable) remains for non-ELF images.
 - **Centralised syscall authorisation:** dispatch is a descriptor table that enforces each syscall's required capability at a single choke point; an unlisted syscall number fails closed, and a compile-time assertion prevents adding a syscall without a table slot.
 - **No ambient authority:** capability revoke requires `CAP_RIGHT_REVOKE` on the target and mint/transfer require `CAP_RIGHT_MINT`; a non-kernel task with no cspace is refused rather than defaulting to the kernel root cnode. Revocation is system-wide (every task's cspace plus the kernel root) and bumps the lineage generation, so derived copies in other tasks cannot outlive their parent.
-- **Use-after-revoke / TOCTOU:** per-lineage generation counters invalidate stale capabilities; a snapshot + revalidate-at-use guard is wired into the IPC send/recv paths so a revoke during the cooperative yield aborts the operation.
+- **Least-privilege process control:** a spawned child returns its `CAP_TCB` only to the spawner. `SYS_KILL`, `SYS_SIGNAL`, and `SYS_CAP_GRANT` on a task are gated on holding that `CAP_TCB` (or `CAP_USER` admin), so a task cannot terminate, signal, or endow another task it was not given authority over. A supervisor delegates one cap slot at a time into a child's cspace with `SYS_CAP_GRANT`.
+- **Use-after-revoke / TOCTOU:** per-lineage generation counters invalidate stale capabilities; a snapshot + revalidate-at-use guard is wired into the IPC send/recv paths so a revoke during a lookup/use window aborts the operation.
 - **FFI integrity:** the C and Rust capability layouts are pinned by mirrored compile-time assertions; the page refcount table is registered once and any later inc/dec presenting a different (pointer, length) is refused, not trusted.
-- **Encryption-at-rest:** both encryption paths use one ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD in safe Rust (`rust/src/aead.rs`), with independent HKDF-SHA256 enc/mac subkeys, a fresh random per-write nonce, context bound as AAD, and constant-time fail-closed verification. The block-storage layer keys per block and binds `(ino, block)` as AAD (replacing a hand-rolled non-AES "AES-128"); the in-memory capfs per-file encryption keys per file from the owning task's file master key and binds the object identity as AAD (replacing a hand-rolled unauthenticated XOR keystream that reused its keystream across rewrites and had no integrity check).
-- **No ring-3 code in ring 0:** `SYS_REGISTER_STORAGE_BACKEND` — which used to register userspace function pointers the kernel called from ring 0 — fails closed; any userspace storage/FS provider must run as a ring-3 IPC server.
-- **Audit trail:** capability mint/transfer/move/revoke (and the FS/auth paths) record their outcome to the audit log.
-- **Tamper-evident audit log:** every audit entry is bound by an HMAC keyed to the per-boot secret pepper (the MAC binds the entry's absolute sequence number, so an in-place edit, a ring-slot swap, or a replay no longer verifies), and a running hash-chain head commits to the *entire* ordered history — including entries already overwritten in the ring. `SYS_AUDIT_DIGEST` (a `CAP_AUDIT`-gated read) returns the event count, the chain-head MAC, and a constant-time verify status, so an external monitor can detect dropped, rewritten, or rolled-back events over time. The keyed-hash logic lives in safe Rust (`rust/src/audit.rs`).
-- **Fault signals (no new authority):** a task may register *its own* ring-3 fault handler (`SYS_SIGACTION`) so a page fault or CPU exception is delivered to it instead of killing the task. This is self-authority only — it grants no power over any other task (async cross-task signalling is not implemented). The handler entry is validated to the user code window in safe Rust (fail-closed), a fault *inside* a handler is not re-delivered (no loops), and the handler runs at ring 3 with unchanged privileges, so the worst a malformed handler can do is fault again and terminate its own task.
-- **Capability space zeroed on task-slot reuse.** `cspace_pool` is a static array;
-  when a task exits and its slot is reused, `create_task` now zeroes all 256
-  capability slots before installing the new task's initial capabilities, preventing
-  an inheriting task from acquiring the dead task's `CAP_USER`, `CAP_CONSOLE`, or
-  `CAP_ENCRYPTED_STORAGE`.
-- **capfs object-access goes through generation check.** All capfs operations
-  (`create`, `delete`, `readdir`, `read`, `write`) now resolve capabilities through
-  `fs_resolve_cap()`, which validates the packed `(idx | gen<<32)` object value and
-  the generation counter, rather than casting `cap->object` to a raw pointer.
-  Deleted objects bump their generation so all outstanding capabilities pointing at
-  that slot immediately fail the check. Key material (`enc_key`, `mac_key`,
-  `file_nonce`, `file_tag`) is wiped with `secure_zero` before a slot is released.
-- **Locked initial password for newly created accounts.** Accounts created via
-  `SYS_USERADD` without an explicit initial password receive a CSPRNG-random
-  `pass_hash` that no Argon2id invocation can match, locking the account until
-  `SYS_PASSWD` sets a real password. Previously, the Argon2id hash of the empty
-  string was stored, which anyone could match.
-- **Password changes persist across reboots.** `users_init` no longer
-  unconditionally resets the `"user"` account password to `"password"` after
-  loading the persisted user database.
-- **Kernel stack cleared after password operations.** `h_passwd` and `h_auth`
-  both call `secure_zero` on their cleartext password buffers before returning.
-- **Page-fault handler calls demand pager exactly once.** The
-  `rust_handle_demand_page_fault` weak stub no longer calls `handle_demand_page_fault`
-  internally; the outer `page_fault_handler` calls it once. The previous double-call
-  caused valid demand faults to fall through to the task-kill path.
-- **`sys_fs_mint_file` uses `rust_cap_mint` type propagation.** The redundant
-  `(struct fs_object *)cap->object` cast (which dereferenced a packed integer as a
-  pointer after the capfs refactor) has been removed; `rust_cap_mint` already copies
-  the capability type correctly.
-- **Supply chain / CI:** every change is gated by a CI pipeline of nine jobs — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), a headless QEMU smoke-boot, an ELF-loader + W^X boot self-test, a preemptive-scheduling self-test, a signal-handling self-test, a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
+- **Encryption-at-rest:** both encryption paths use one ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD in safe Rust (`rust/src/aead.rs`), with independent HKDF-SHA256 enc/mac subkeys, a fresh random per-write nonce, context bound as AAD, and constant-time fail-closed verification. The block-storage layer keys per block and binds `(ino, block)` as AAD; the in-memory capfs per-file encryption keys per file from the owning task's file master key and binds the object identity as AAD.
+- **No ring-3 code in ring 0:** `SYS_REGISTER_STORAGE_BACKEND` — which used to register userspace function pointers the kernel called from ring 0 — fails closed; any userspace storage/FS provider must run as a ring-3 IPC server (as `fs_server` does).
+- **Tamper-evident audit log:** every audit entry is bound by an HMAC keyed to the per-boot secret pepper (the MAC binds the entry's absolute sequence number, so an in-place edit, a ring-slot swap, or a replay no longer verifies), and a running hash-chain head commits to the *entire* ordered history — including entries already overwritten in the ring. `SYS_AUDIT_DIGEST` (a `CAP_AUDIT`-gated read) returns the event count, the chain-head MAC, and a constant-time verify status. The keyed-hash logic lives in safe Rust (`rust/src/audit.rs`).
+- **Signals grant no new authority:** a task may register *its own* ring-3 handler (`SYS_SIGACTION`) so a fault or an async signal is delivered to it instead of killing it outright. The handler entry is validated to the user code window in safe Rust (fail-closed), a fault *inside* a handler is not re-delivered (no loops), and the handler runs at ring 3 with unchanged privileges — the worst a malformed handler can do is fault again and terminate its own task. Async cross-task signalling (`SYS_SIGNAL`) requires a `CAP_TCB` on the target, the same authority as killing it, so it opens no new cross-task reach.
+- **Capability space zeroed on task-slot reuse:** `cspace_pool` is a static array; when a task exits and its slot is reused, `create_task` zeroes all 256 capability slots before installing the new task's initial capabilities, preventing an inheriting task from acquiring the dead task's `CAP_USER`, `CAP_CONSOLE`, or `CAP_ENCRYPTED_STORAGE`.
+- **capfs object access goes through a generation check:** all capfs operations resolve capabilities through `fs_resolve_cap()`, which validates the packed `(idx | gen<<32)` object value and the generation counter rather than casting `cap->object` to a raw pointer. Deleted objects bump their generation (so outstanding capabilities fail closed) and have their key material wiped with `secure_zero` before release.
+- **Account and password hygiene:** accounts created without an explicit initial password get a CSPRNG-random `pass_hash` that no Argon2id invocation can match (locked until `SYS_PASSWD`); password changes persist across reboots; `h_passwd`/`h_auth` scrub their cleartext buffers with `secure_zero` before returning.
+- **Supply chain / CI:** every change is gated by a pipeline of eleven jobs — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), a headless QEMU smoke-boot, five runtime self-tests (ELF-loader + W^X, preemption, signals, SMP, process-control), a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
 
 The security-critical primitives (capabilities, memory refcounting, hashing, RNG, FFI validation) live in safe `no_std` Rust and carry unit tests; the rest of the kernel is C and has **not** undergone systematic fuzzing or third-party review.
 
@@ -66,85 +39,26 @@ The security-critical primitives (capabilities, memory refcounting, hashing, RNG
 
 ## Cryptography & entropy (current implementation)
 
-As of the crypto/entropy hardening pass, the security-sensitive primitives are
-audited-standard algorithms implemented in safe Rust (`rust/src/sha256.rs`,
-`rust/src/rng.rs`) and validated against published known-answer vectors:
+The security-sensitive primitives are audited-standard algorithms implemented in safe Rust and validated against published known-answer vectors:
 
-- **Password hashing:** Argon2id (RFC 9106), the memory-hard KDF, implemented
-  from scratch in safe Rust on the crate's own BLAKE2b (`rust/src/argon2.rs`,
-  `blake2b.rs`) and validated against the `argon2-cffi` reference vectors. It is
-  multi-lane capable (`p ≥ 1`, validated at p=2/p=4); the cost is configurable
-  (`ARGON2_M_COST_KIB`/`_T_COST`/`_P_COST` in `kernel.h`) and the kernel runs
-  4 MiB / 3 passes / 1 lane. A per-user random salt and a per-boot secret pepper
-  are folded into the salt; the raw 32-byte tag is stored. Being memory-hard, it
-  forces an attacker to spend memory as well as time, defeating the cheap
-  GPU/ASIC parallel brute force that the previous PBKDF2-HMAC-SHA256 (and, before
-  it, a custom XOR-rotate scheme) was vulnerable to.
-- **User database integrity:** HMAC-SHA256 over the serialized records, keyed by
-  the per-boot pepper.
-- **Audit-log integrity:** each entry carries `HMAC(pepper, LE64(seq) || event)`
-  and the log keeps a running chain head `HMAC(pepper, head || mac)` over every
-  event ever appended (`rust/src/audit.rs`). This is an integrity *detector* and
-  defence-in-depth: it defeats tampering by code that cannot read the pepper
-  (stray writes, logic bugs, a confined task reading the log), and lets an
-  external monitor that records the chain head detect drops, rewrites, and
-  rollbacks. It is **not** a guarantee against a full kernel compromise that can
-  read the pepper — the same accepted limit as the user-database tag above.
-- **Key derivation** (per-file keys, per-block keys, user file master keys,
-  volume key): HKDF-SHA256 (RFC 5869) with context binding.
-- **Encryption-at-rest:** a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD
-  (`rust/src/aead.rs`), composed from the crate's RFC-tested ChaCha20 and HMAC
-  primitives (no new primitive cryptography). Every write draws a fresh random
-  96-bit nonce (so a rewrite never reuses a keystream), uses independent HKDF
-  enc/mac subkeys, binds context as AAD, verifies the 128-bit tag in constant
-  time, and fails closed (the buffer is zeroed) on any authentication failure.
-  Two callers share this one construction:
-    * the **block-storage** layer keys per block and binds `(ino, block)` as AAD
-      — this replaced a hand-rolled "AES-128" that was not in fact AES (broken
-      AES-NI key schedule + an unaudited ARX software fallback);
-    * the **in-memory capfs per-file** encryption keys each file from the owning
-      task's file master key (HKDF with a fresh random salt) and binds the
-      object identity as AAD — this replaced a hand-rolled unauthenticated XOR
-      keystream (`efs_apply_keystream`) that derived keys by XORing the master
-      key with the object index and reused its keystream across rewrites. Reads
-      decrypt-and-verify the whole object before returning any bytes, so a
-      tampered file yields an authentication error, not plaintext.
-- **Randomness:** a single ChaCha20 fast-key-erasure CSPRNG, reseeded at boot
-  from RDRAND (with retry + health check, when CPUID advertises it), TSC jitter,
-  and boot counters. All salts, peppers, nonces, per-file keys, and the ASLR
-  PRNG seed are drawn from this pool. Raw TSC is never used directly as
-  randomness (it is readable from ring 3 and therefore predictable). The pool is
-  asserted seeded at boot before any key material is derived.
+- **Password hashing:** Argon2id (RFC 9106), the memory-hard KDF, implemented from scratch in safe Rust on the crate's own BLAKE2b (`rust/src/argon2.rs`, `blake2b.rs`) and validated against the `argon2-cffi` reference vectors. Multi-lane capable (`p ≥ 1`, validated at p=2/p=4); cost is configurable (`ARGON2_M_COST_KIB`/`_T_COST`/`_P_COST` in `kernel.h`) and the kernel runs 4 MiB / 3 passes / 1 lane. A per-user random salt and a per-boot secret pepper are folded in; the raw 32-byte tag is stored.
+- **User database integrity:** HMAC-SHA256 over the serialized records, keyed by the per-boot pepper.
+- **Audit-log integrity:** each entry carries `HMAC(pepper, LE64(seq) || event)` and the log keeps a running chain head `HMAC(pepper, head || mac)` over every event ever appended (`rust/src/audit.rs`). This is an integrity *detector* and defence-in-depth: it defeats tampering by code that cannot read the pepper, and lets an external monitor recording the chain head detect drops, rewrites, and rollbacks. It is **not** a guarantee against a full kernel compromise that can read the pepper.
+- **Key derivation** (per-file keys, per-block keys, user file master keys, volume key): HKDF-SHA256 (RFC 5869) with context binding.
+- **Encryption-at-rest:** a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (`rust/src/aead.rs`), composed from the crate's RFC-tested ChaCha20 and HMAC primitives. Every write draws a fresh random 96-bit nonce, uses independent HKDF enc/mac subkeys, binds context as AAD, verifies the 128-bit tag in constant time, and fails closed (buffer zeroed) on any authentication failure. Two callers share it: the **block-storage** layer (keys per block, `(ino, block)` as AAD) and the **in-memory capfs per-file** encryption (keys per file from the owning task's file master key, object identity as AAD).
+- **Randomness:** a single ChaCha20 fast-key-erasure CSPRNG, reseeded at boot from RDRAND (with retry + health check when advertised), TSC jitter, and boot counters. All salts, peppers, nonces, per-file keys, and the ASLR PRNG seed are drawn from this pool. Raw TSC is never used directly as randomness. The pool is asserted seeded at boot before any key material is derived.
 
 ---
 
 ## Side-channel threat model
 
-Horus runs single-core today (now with timer preemption of ring-3 tasks), so
-classic cross-core cache and SMT side channels do not yet apply. The following
-are tracked for when SMP lands:
+Horus preempts and switches between mutually distrusting ring-3 tasks on a single core, and — under `SMP=1` — across cores. It does **not** claim resistance to microarchitectural side channels:
 
-- **Timestamp counter (TSC):** `rdtsc` is readable from ring 3. The kernel
-  therefore treats it as *public* and never uses it as a source of secret
-  randomness — only as one (whitened) input to the CSPRNG, whose output an
-  attacker cannot reconstruct from TSC alone. Disabling ring-3 `rdtsc` via
-  `CR4.TSD` is a possible future mitigation but breaks userspace timing APIs.
-- **Constant-time comparisons:** password-hash and MAC/tag comparisons use a
-  data-independent accumulating compare (`constant_time_compare`) to avoid
-  early-exit timing oracles.
-- **Secret zeroization:** derived keys and intermediate key material are wiped
-  with `secure_zero` (volatile, non-elidable) after use.
-- **Cache partitioning / flush-on-context-switch:** not implemented. Now that
-  the timer preempts and switches between mutually distrusting ring-3 tasks on a
-  single core, a context switch should ideally flush or partition shared
-  microarchitectural state (L1D, BTB) to limit Spectre/Meltdown-class leakage
-  across the switch. This is not yet done and is tracked as future hardening;
-  the current threat model does not claim resistance to microarchitectural
-  side channels between time-sliced tasks.
-- **RNG health:** RDRAND draws are retried and rejected on the degenerate
-  all-zeros / all-ones outputs a stuck hardware RNG would emit; the CSPRNG mixes
-  hardware output with timing entropy so a single failed source cannot zero the
-  pool.
+- **Timestamp counter (TSC):** `rdtsc` is readable from ring 3, so the kernel treats it as *public* and never uses it as a source of secret randomness — only as one whitened input to the CSPRNG. Disabling ring-3 `rdtsc` via `CR4.TSD` is a possible future mitigation but breaks userspace timing APIs.
+- **Constant-time comparisons:** password-hash and MAC/tag comparisons use a data-independent accumulating compare (`constant_time_compare`) to avoid early-exit timing oracles.
+- **Secret zeroization:** derived keys and intermediate key material are wiped with `secure_zero` (volatile, non-elidable) after use.
+- **Cache partitioning / flush-on-context-switch:** not implemented. A context switch between distrusting tasks (single-core time-slicing or cross-core under SMP) should ideally flush or partition shared microarchitectural state (L1D, BTB); this is not yet done and is tracked as future hardening.
+- **RNG health:** RDRAND draws are retried and rejected on the degenerate all-zeros / all-ones outputs a stuck hardware RNG would emit; the CSPRNG mixes hardware output with timing entropy so a single failed source cannot zero the pool.
 
 ---
 
@@ -152,9 +66,7 @@ are tracked for when SMP lands:
 
 If you discover a security issue in Horus that is not already documented in [docs/LIMITATIONS.md](docs/LIMITATIONS.md), please report it responsibly rather than disclosing it publicly right away.
 
-**How to report:**
-
-Open a GitHub Security Advisory in this repository (Settings → Security → Advisories → New draft advisory). This creates a private thread visible only to repository maintainers.
+**How to report:** open a GitHub Security Advisory in this repository (Settings → Security → Advisories → New draft advisory). This creates a private thread visible only to repository maintainers.
 
 Include:
 
@@ -175,13 +87,14 @@ Given the project's status, the following are in scope for responsible disclosur
 - Memory safety issues in the C kernel or Rust FFI boundary
 - Authentication bypass in the user authentication path
 - Privilege escalation from Ring 3 to Ring 0
+- A task terminating, signalling, or endowing another task without the required `CAP_TCB`
 
 The following are out of scope for now, because they are known and documented:
 
 - Bounded load-base ASLR entropy (userspace is static-PIE with a randomised base, but confined to the low 32-bit window, so ~9 bits)
-- Absence of covert-channel / cache side-channel mitigations (single-core today)
-- Missing preemption or SMP support
-- Stub implementations that return errors
+- Absence of covert-channel / cache side-channel mitigations
+- SMP scheduler maturity (works behind `SMP=1`; not default, no per-CPU queues/priorities)
+- Stub implementations that return errors (e.g. `SYS_NOTIFY`/`SYS_WAIT_NOTIFY`)
 
 ---
 

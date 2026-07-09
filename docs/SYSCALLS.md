@@ -30,7 +30,7 @@ Numbers below are the authoritative values from [`include/syscall.h`](../include
 | 11     | `SYS_WRITE`       | Write to a descriptor (fd 1 → console)                       | None for console; ramfs paths need slot-3 caps | Bytes written |
 | 12     | `SYS_READ`        | Read from a descriptor (fd 0 → console, fd ≥ 3 → ramfs)      | endpoint READ (slot 3) for ramfs             | Bytes read |
 | 13     | `SYS_OPEN`        | Open a ramfs file by name                                    | endpoint READ (slot 3)                       | Returns fd |
-| 17     | `SYS_WAIT`        | Block until another task exits                               | None                                         | — |
+| 17     | `SYS_WAIT`        | Block until another task exits                               | None                                         | Suspends the caller on the preemptive block/switch path (like a blocking `SYS_IPC_CALL`); the target's teardown wakes it. Returns 0 (incl. if the target is already dead), -1 on a bad tid |
 | 18     | `SYS_GET_TASK_INFO` | Read task metadata                                         | Self always; other tasks need `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7) | — |
 | 19     | `SYS_EXEC`        | Enter ring 3 at load-base + entry                            | endpoint WRITE\|EXEC (slot 3)                | — |
 

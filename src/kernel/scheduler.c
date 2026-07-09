@@ -678,7 +678,13 @@ void task_teardown(int id) {
 
     int w = tasks[id].waiter;
     if (w >= 0 && w < MAX_TASKS) {
-        if (tasks[w].state == 0) tasks[w].state = 1;   /* unblock the waiter */
+        /* Unblock a SYS_WAIT waiter: make it runnable and resumable so the
+         * scheduler resumes it via the trap frame ipc_block_switch saved when it
+         * blocked (it returns from SYS_WAIT with eax already 0). */
+        if (tasks[w].state == TASK_BLOCKED_WAIT) {
+            tasks[w].state        = TASK_RUNNABLE;
+            tasks[w].runnable_ctx = 1;
+        }
         tasks[id].waiter = -1;
     }
 

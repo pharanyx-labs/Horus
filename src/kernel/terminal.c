@@ -207,7 +207,18 @@ char console_getc(void) {
             return c;
         }
 
-        yield();
+        /* Spin in place — do NOT call the cooperative yield()/schedule() here.
+         * Console input arrives from hardware (the keyboard IRQ or the serial
+         * UART), not from another task, so the waiter must stay the current
+         * task while it polls. With more than one runnable ring-3 task (e.g.
+         * init + the shell), the cooperative scheduler would switch CR3 and
+         * current_task to the peer and return on *this* task's kernel stack;
+         * the byte would then be delivered and copy_to_user'd under the wrong
+         * address space, intermittently hanging or corrupting the reader. Real
+         * task switching happens via timer preemption once this task is back in
+         * ring 3 (a ring-0 spin is never preempted, which is fine — nothing
+         * else needs to run for the awaited keystroke to arrive). */
+        __asm__ volatile ("pause");
     }
 }
 
@@ -311,8 +322,12 @@ void serial2_write_char(char c) {
 }
 
 char serial2_read_char(void) {
+    /* Hardware wait on COM2 — spin without the cooperative scheduler, for the
+     * same reason as console_getc(): the byte comes from the UART, not a task,
+     * so this reader must remain the current task (a cooperative switch here
+     * would leave a peer's CR3/current active on our kernel stack). */
     while ((inb(0x2FD) & 1) == 0) {
-        yield();
+        __asm__ volatile ("pause");
     }
     return inb(0x2F8);
 }

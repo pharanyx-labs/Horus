@@ -53,21 +53,32 @@ five runtime self-tests in CI. Already in place:
 
 ## Phase 1 — Process lifecycle and control
 
-Most of this phase has landed (see the summary above); what remains rounds it
-out. Good starting points for new contributors.
+The process model is now largely complete. **Signals** are done bar one niche
+feature: `SYS_SIGNAL` delivers async task-to-task signals into a registered
+handler, the pending set is a full 1..31 bitmask, `SYS_SIGMASK` blocks/unblocks
+signals (delivering the lowest unmasked one), and a signal to a task parked in
+`SYS_WAIT` interrupts the wait (`SYS_ERR_INTR`) and delivers promptly
+(`make smoke-proc`). **`fork` has been evaluated and deliberately not adopted:**
+the ring-3 `SYS_SPAWN` + `SYS_CAP_GRANT` model already gives create-a-task and
+hand-it-capabilities without fork's whole-address-space aliasing and its
+least-privilege problem (a forked child would inherit *every* parent capability).
 
-- **Richer signals**: `SYS_SIGNAL` delivers async task-to-task signals into a
-  registered handler today. Still to do: per-signal masking, alternate signal
-  stacks, queued delivery to a *blocked* target (a pending signal currently only
-  lands once the target is next scheduled to run), and a wider signal set.
-- **`exec` with arguments / `fork`**: `SYS_EXEC_NAMED` replaces the caller's
-  image in place (same task id, capabilities preserved). Still to do: `exec`
-  with caller-supplied arguments and an `exec`-from-file-descriptor path, and
-  evaluate `fork` (or a spawn-with-inheritance primitive).
-- **Init launches the servers**: `init` supervises the shell; have it also launch
-  `fs_server` (currently started on demand from the shell), which needs each
-  server's boot capability provisioning expressed as delegations from `init`
-  rather than the current direct root-cnode installs.
+What remains:
+
+- **Full argument passing**: `SYS_SPAWN` carries a single one-word argument today
+  (`SYS_SPAWN_ARG`); a POSIX `argc`/`argv` needs a small crt0 that reads an
+  argument vector the loader lays on the new stack, plus an `exec`-from-file-
+  descriptor path. This is a userspace-ABI change touching every binary, not a
+  process-model gap.
+- **Alternate signal stacks**: signals run on the interrupted user stack; a
+  `sigaltstack`-style separate handler stack (with an `SS_ONSTACK` guard) is a
+  low-priority robustness feature.
+- **Init launches the servers**: `init` blocking-supervises the shell; have it
+  also launch `fs_server`. This needs `init` endowed at boot with `CAP_BLOCK_DEV`
+  + `CAP_USER` + an endpoint cap so it can express the server's provisioning as
+  `SYS_CAP_GRANT` delegations (replacing the current direct root-cnode installs),
+  plus a boot-time FS integration test to prove the delegated server still
+  serves.
 
 ---
 

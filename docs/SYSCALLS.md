@@ -29,7 +29,7 @@ For the capability system, revocation semantics, and memory model, see [`docs/AR
 | 11     | `SYS_WRITE`       | Write to a descriptor (fd 1 → console)                       | None for console; ramfs paths need slot-3 caps | Bytes written |
 | 12     | `SYS_READ`        | Read from a descriptor (fd 0 → console, fd ≥ 3 → ramfs)      | endpoint READ (slot 3) for ramfs             | Bytes read |
 | 13     | `SYS_OPEN`        | Open a ramfs file by name                                    | endpoint READ (slot 3)                       | Returns fd |
-| 17     | `SYS_WAIT`        | Block until another task exits                              | None                                          | Suspends the caller on the preemptive block/switch path (`TASK_BLOCKED_WAIT`), like a blocking `SYS_IPC_CALL`; the target's teardown wakes it. Returns 0 (incl. if the target is already dead), -1 on a bad tid |
+| 17     | `SYS_WAIT`        | Block until another task exits                              | None                                          | Suspends the caller on the preemptive block/switch path (`TASK_BLOCKED_WAIT`); the target's teardown wakes it. Returns 0 (incl. if already dead), -1 on a bad tid, or `SYS_ERR_INTR` if a signal interrupts the wait |
 | 18     | `SYS_GET_TASK_INFO` | Read task metadata (name, state, uid, …)                  | Self always; other tasks need `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7) | Never exposes `cr3` |
 | 19     | `SYS_EXEC`        | Enter ring 3 at load-base + entry                            | endpoint WRITE\|EXEC (slot 3)                | Rejects `load_base + entry_offset ≥ USER_MAX_VADDR` (overflow guard) |
 | 62     | `SYS_BRK`         | Set the absolute heap break (`addr=0` queries current)      | None (own heap, demand-paged)                | Bounded below `kernel_lowmem_critical_floor()` so the heap can't grow into kernel data |
@@ -40,7 +40,8 @@ For the capability system, revocation semantics, and memory model, see [`docs/AR
 
 | Number | Name              | Description                                                  | Required Capability                          | Notes |
 |--------|-------------------|--------------------------------------------------------------|----------------------------------------------|-------|
-| 28     | `SYS_SPAWN`       | Spawn a named embedded binary as a new task                 | endpoint WRITE\|EXEC (slot 3)                | Runs the ELF load in the kernel address space; hands the caller a `CAP_TCB` to the child. `sys_spawn_named(name)` wrapper |
+| 28     | `SYS_SPAWN`       | Spawn a named embedded binary as a new task                 | endpoint WRITE\|EXEC (slot 3)                | Runs the ELF load in the kernel address space; hands the caller a `CAP_TCB` to the child. `edx` carries a one-word argument for the child. `sys_spawn_named(name)` / `sys_spawn_named_arg(name, arg)` |
+| 68     | `SYS_SPAWN_ARG`   | Read the one-word argument this task was spawned with       | None (self only)                             | Minimal parameter-passing channel; full `argc`/`argv` is future work |
 | 63     | `SYS_KILL`        | Terminate task `tid`                                        | `CAP_TCB` to the target (or `CAP_USER` admin)| Enforced in the handler since the target is dynamic |
 | 64     | `SYS_EXEC_NAMED`  | Replace the caller's own image with a named embedded binary | endpoint WRITE\|EXEC (slot 3)                | Same task id and cspace (capabilities survive, POSIX-style); does not return on success |
 | 65     | `SYS_CAP_GRANT`   | Copy the caller's cap from `src_slot` into a supervised child's `dest_slot` | `CAP_TCB` to the target (or `CAP_USER` admin) | Least-privilege delegation from a parent that spawned the child |
@@ -84,9 +85,10 @@ For the capability system, revocation semantics, and memory model, see [`docs/AR
 |--------|--------------------|----------------------------------------------|-------------------------------------|-------|
 | 54     | `SYS_SIGACTION`    | Register/clear this task's own fault/signal handler | None (self only)             | Handler vaddr validated to the user code window (safe Rust); 0 clears. On a ring-3 fault the kernel enters the handler (signal # in `ebx`, fault addr in `ecx`) instead of killing the task |
 | 55     | `SYS_SIGRETURN`    | Resume the pre-signal context from a handler | None (self only)                    | Restores the exact interrupted trap frame; serviced in `interrupt_handler64`. Fails if called outside a handler |
-| 66     | `SYS_SIGNAL`       | *(see Process control)* async task-to-task signal | `CAP_TCB` to the target          | Delivered into the target's `SYS_SIGACTION` handler; default-terminates if unhandled |
+| 66     | `SYS_SIGNAL`       | *(see Process control)* async task-to-task signal | `CAP_TCB` to the target          | Queued in a pending bitmask; the lowest unmasked one is delivered into the target's handler. Interrupts a `SYS_WAIT`-blocked target. Default-terminates if unhandled or `SIG_KILL` |
+| 67     | `SYS_SIGMASK`      | Block/unblock this task's own signals        | None (self only)                    | `how` = `SIG_SETMASK`/`SIG_BLOCK`/`SIG_UNBLOCK`, `mask` = bitmask; returns the old mask. A blocked signal stays pending until unblocked. `SIG_KILL` can never be blocked |
 
-Signal numbers: `SIG_ILL` (4, `#UD`), `SIG_KILL` (9, uncatchable), `SIG_USR1` (10), `SIG_SEGV` (11, page fault / `#GP`), `SIG_TERM` (15, default terminate). Range is 1..31 (`SIG_MAX`).
+Signal numbers: `SIG_ILL` (4, `#UD`), `SIG_KILL` (9, uncatchable/unmaskable), `SIG_USR1` (10), `SIG_SEGV` (11, page fault / `#GP`), `SIG_USR2` (12), `SIG_TERM` (15, default terminate). The pending set and mask are full 1..31 (`SIG_MAX`) bitmasks.
 
 ### Capabilities
 

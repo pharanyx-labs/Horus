@@ -365,10 +365,11 @@ static void update_meta_hmac(void)
 
 #ifdef STORAGE_ATA
 /* ATA-backed block device. A block is one 512-byte LBA sector (BLOCK_SIZE), so
- * the mapping is 1:1. Selected at build time with STORAGE_ATA=1; the crypto
- * metadata table (nonce/tag) still lives in kernel RAM this increment, so files
- * survive within a boot but cross-reboot persistence needs the meta persisted
- * too (documented follow-up). */
+ * the mapping is 1:1. Selected at build time with STORAGE_ATA=1. The per-block
+ * crypto metadata (nonce/tag) is persisted: storage_encrypt_block flushes each
+ * updated meta sector (flush_meta_block) and storage_unlock reloads the region
+ * (load_meta_region) and verifies its HMAC, so files survive a reboot — proven
+ * by `make smoke-fs-persist`. */
 static int atadisk_read(struct block_device *bd, uint64_t block, void *buf) {
     (void)bd;
     return ata_read((uint32_t)block, buf, 1);

@@ -48,10 +48,56 @@ void _start(void) {
     struct fs_request rq;
     struct fs_response rp;
 
+    /* Unlock the encrypted store. With the persistent ATA backend the disk comes
+     * up mounted-but-locked (disk_key is only unwrapped by a password), so a login
+     * must happen before any block can be read or written — otherwise the very
+     * first mkdir fails. Authenticate as the seeded root user (a test-login stand-in
+     * for the console login that unlocks a real deployment); storage_unlock is
+     * idempotent, so on the ephemeral RAM backend (already unlocked at boot) this is
+     * a harmless no-op. */
+    (void)sys_auth("root", "rootpass", 0);
+
     /* Our slot-3 endpoint cap was delegated by the spawner (see fs_selftest), so
      * IPC works immediately. The first rpc() polls until the server is serving.
      * (A best-effort connect also publishes discovery for real clients.) */
     (void)sys_connect_fs_server(4, CAP_R_W);
+
+#ifdef PERSIST_SELFTEST
+    /* Reboot-persistence check. Look up a sentinel file in the root directory
+     * (ino 0). Absent  -> this is the first boot on a fresh disk: create it and
+     * write known content, then print WROTE. Present -> a later boot against the
+     * same disk image: read it back and compare, printing PASS/FAIL. The two-boot
+     * `make smoke-fs-persist` target asserts WROTE on boot 1 and PASS on boot 2. */
+    {
+        const char *sentinel = "persist.txt";
+        const char *content  = "horus-persist-v1";
+        unsigned    clen     = uslen(content);
+
+        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
+        ucpy(rq.name, sentinel, FS_NAME_MAX);
+        if (rpc(&rq, &rp) == 0) {
+            uint32_t fino = rp.ino;                     /* later boot: verify */
+            umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = fino;
+            rq.offset = 0; rq.len = clen;
+            int rr = rpc(&rq, &rp);
+            if (rr != (int)clen) { put("PERSIST_SELFTEST: FAIL read-len\n"); sys_exit(); }
+            for (unsigned i = 0; i < clen; i++)
+                if (rp.data[i] != (uint8_t)content[i]) { put("PERSIST_SELFTEST: FAIL cmp\n"); sys_exit(); }
+            put("PERSIST_SELFTEST: PASS\n");
+            sys_exit();
+        }
+        /* first boot: create + write the sentinel, then report WROTE */
+        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = 0;
+        ucpy(rq.name, sentinel, FS_NAME_MAX);
+        if (rpc(&rq, &rp) != 0) { put("PERSIST_SELFTEST: FAIL create\n"); sys_exit(); }
+        uint32_t fino = rp.ino;
+        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_WRITE; rq.ino = fino;
+        rq.offset = 0; rq.len = clen; umemcpy(rq.data, content, clen);
+        if (rpc(&rq, &rp) != (int)clen) { put("PERSIST_SELFTEST: FAIL write\n"); sys_exit(); }
+        put("PERSIST_SELFTEST: WROTE\n");
+        sys_exit();
+    }
+#endif
 
     /* mkdir /docs */
     umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_MKDIR; rq.dir_ino = 0; ucpy(rq.name, "docs", FS_NAME_MAX);

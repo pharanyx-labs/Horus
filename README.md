@@ -50,12 +50,12 @@ Horus is engineered as if it were destined for production even though it is not 
 
 ```
  ┌──────────────────────────────────────────────────────────┐
- │                   Userspace  (Ring 3)                     │
+ │                   Userspace  (Ring 3)                    │
  │   init → shell     fs_server     hello     captest       │
  └──────────────────────┬───────────────────────────────────┘
                         │  syscalls (0-72, table-dispatched)
  ┌──────────────────────▼───────────────────────────────────┐
- │                  Horus Kernel  (Ring 0)                   │
+ │                  Horus Kernel  (Ring 0)                  │
  │                                                          │
  │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
  │  │ Capability │  │  Paging /  │  │  Scheduler /    │     │
@@ -80,7 +80,7 @@ Horus is engineered as if it were destined for production even though it is not 
  └──────────────────────┬───────────────────────────────────┘
                         │
  ┌──────────────────────▼───────────────────────────────────┐
- │            Hardware  (x86-64, 1..N cores)                 │
+ │            Hardware  (x86-64, 1..N cores)                │
  └──────────────────────────────────────────────────────────┘
 ```
 

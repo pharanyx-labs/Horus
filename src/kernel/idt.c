@@ -267,12 +267,14 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
             g_want_yield = -1;
             return sched_yield_switch(ipc_caller, (uint64_t)frame);
         }
-        /* SYS_IPC_CALL / SYS_WAIT_NOTIFY / SYS_WAIT may have blocked the task.
-         * If so, save the frame and switch to the next runnable task exactly as
-         * the timer ISR would.  All blocking states use the same switch path. */
+        /* SYS_IPC_CALL / SYS_WAIT_NOTIFY / SYS_WAIT: handlers set pending_block
+         * only. ipc_block_switch saves the frame first, then publishes the
+         * waiter so a cross-CPU wake cannot race a null/stale saved_ksp. */
         if (ipc_caller > 0 && ipc_caller < MAX_TASKS) {
             int st = (int)tasks[ipc_caller].state;
-            if (st == TASK_BLOCKED_IPC || st == TASK_BLOCKED_NOTIF || st == TASK_BLOCKED_WAIT) {
+            if (tasks[ipc_caller].pending_block != 0 ||
+                st == TASK_BLOCKED_IPC || st == TASK_BLOCKED_NOTIF ||
+                st == TASK_BLOCKED_WAIT) {
                 return ipc_block_switch(ipc_caller, (uint64_t)frame);
             }
             /* SYS_EXIT / SYS_KILL-self: the caller terminated itself. It is dead;

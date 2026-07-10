@@ -52,6 +52,7 @@ void scheduler_init(void) {
         tasks[i].ipc_role = 0;
         tasks[i].in_kernel = 0;
         tasks[i].blocked_on_notif = -1;
+        tasks[i].pending_block = 0;
         tasks[i].auth_fail_count = 0;
         tasks[i].auth_lockout_until = 0;
     }
@@ -103,6 +104,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     tasks[id].kernel_stack_top = (uint64_t)&kernel_stacks[id][KERNEL_STACK_SIZE - 16];
     tasks[id].saved_ksp = 0;
     tasks[id].runnable_ctx = 0;
+    tasks[id].pending_block = 0;
     tasks[id].sig_handler = 0;   /* no signal handler until the task registers one */
     tasks[id].in_signal = 0;
     tasks[id].pending_sigs = 0;   /* no async signals queued */
@@ -385,17 +387,41 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 #endif
 }
 
-/* Called from interrupt_handler64 after a blocking SYS_IPC_CALL.  The caller's
- * state is already TASK_BLOCKED_IPC and runnable_ctx is 0.  Save frame_rsp as
- * its saved_ksp, find the next runnable task, switch to it, and return its
- * saved_ksp so the ISR epilogue resumes that task via iretq. */
+/* Block/switch with the concurrent-IPC publish order:
+ *
+ *   1. Write saved_ksp (the live trap frame) first.
+ *   2. Full barrier so other CPUs observe the frame before the waiter.
+ *   3. Publish the block (endpoint blocked_waiter / wait link / notif waiter
+ *      + TASK_BLOCKED_* state) via ipc_publish_pending_block.
+ *   4. Only then switch away.
+ *
+ * The previous order set BLOCKED + waiter in the syscall handler and saved the
+ * frame only here — a reply on another CPU could patch a stale/null saved_ksp.
+ * Syscall handlers now only set pending_block (+ object fields); this path
+ * owns both the save and the publish. */
 uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
+    if (blocked_task <= 0 || blocked_task >= MAX_TASKS) return frame_rsp;
+
+    /* (1) Frame first — wakers must never see a published waiter without this. */
+    tasks[blocked_task].saved_ksp = frame_rsp;
+    __sync_synchronize();
+
+    /* (2) Publish waiter / BLOCKED state (or complete if already satisfied). */
+    int must_switch = 1;
+    if (tasks[blocked_task].pending_block != 0) {
+        must_switch = ipc_publish_pending_block(blocked_task);
+    } else {
+        /* Legacy path: already in BLOCKED_* (should not happen for new code). */
+        tasks[blocked_task].runnable_ctx = 0;
+    }
+    if (!must_switch) {
+        /* Wait already satisfied with a valid frame; resume the same task. */
+        return frame_rsp;
+    }
+
 #ifdef SMP
-    /* Serialise against preempt_on_tick / other CPUs' block-switches (same raw
-     * scheduler lock) and only take a task no other CPU is running. */
     sched_raw_lock();
     int cpu = this_cpu();
-    tasks[blocked_task].saved_ksp = frame_rsp;
     task_running_cpu[blocked_task] = -1;   /* blocking: release it */
 
     int next = -1;
@@ -409,11 +435,10 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         }
     }
     if (next < 0) {
-        /* Nothing else runnable here: revert the block (caller spins at user
-         * level until the server catches up) and keep the task on this CPU. */
-        tasks[blocked_task].state        = TASK_RUNNABLE;
-        tasks[blocked_task].runnable_ctx = 1;
-        task_running_cpu[blocked_task]   = cpu;
+        /* Nothing else runnable: un-publish and resume self (same fallback as
+         * before — the caller retries from ring 3 once another task exists). */
+        ipc_unpublish_block(blocked_task);
+        task_running_cpu[blocked_task] = cpu;
         sched_raw_unlock();
         return frame_rsp;
     }
@@ -428,8 +453,6 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     sched_raw_unlock();
     return ksp;
 #else
-    tasks[blocked_task].saved_ksp = frame_rsp;
-
     int next = -1;
     for (int i = 1; i < MAX_TASKS; i++) {
         int cand = (blocked_task + i) % MAX_TASKS;
@@ -441,11 +464,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         }
     }
     if (next < 0) {
-        /* No other runnable task.  Revert the block so the caller doesn't
-         * deadlock permanently — it will spin at user level until the server
-         * catches up. */
-        tasks[blocked_task].state       = TASK_RUNNABLE;
-        tasks[blocked_task].runnable_ctx = 1;
+        ipc_unpublish_block(blocked_task);
         return frame_rsp;
     }
 

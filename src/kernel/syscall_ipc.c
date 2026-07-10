@@ -11,7 +11,13 @@
  * that path is byte-for-byte unchanged. The lock guards the mailbox flags, the
  * badge accumulator, and the wake handoff (state -> RUNNABLE + saved-frame
  * patch); the actual task switch onto the woken task is done later by the
- * running-CPU-guarded scheduler. */
+ * running-CPU-guarded scheduler.
+ *
+ * Concurrent-IPC publish order (with ipc_block_switch):
+ *   syscall handler sets pending_block only (not yet wake-visible);
+ *   ipc_block_switch writes saved_ksp, barriers, then ipc_publish_pending_block
+ *   publishes blocked_waiter / WAIT link under this lock. Wakers always patch a
+ *   valid frame. */
 #ifdef SMP
 extern spinlock_t endpoint_lock;
 static inline void ipc_lock(void) {
@@ -23,6 +29,138 @@ static inline void ipc_unlock(void) { __sync_lock_release(&endpoint_lock.locked)
 static inline void ipc_lock(void) { }
 static inline void ipc_unlock(void) { }
 #endif
+
+/* After tasks[cur].saved_ksp is published: turn pending_block into a real
+ * wake-visible wait, or complete immediately if the event already arrived
+ * (reply in mailbox / target already dead / badge pending). Returns 1 if the
+ * task is now blocked (caller should switch away), 0 to resume the same frame. */
+int ipc_publish_pending_block(int cur) {
+    if (cur <= 0 || cur >= MAX_TASKS) return 0;
+    uint32_t kind = tasks[cur].pending_block;
+    tasks[cur].pending_block = 0;
+    if (kind == 0) return 0;
+
+    struct interrupt_frame64 *f =
+        (struct interrupt_frame64 *)tasks[cur].saved_ksp;
+    if (!f) {
+        /* No frame: refuse to publish a waiter (would be a use-after-stale). */
+        tasks[cur].state        = TASK_RUNNABLE;
+        tasks[cur].runnable_ctx = 1;
+        return 0;
+    }
+
+    if (kind == TASK_BLOCKED_IPC) {
+        int reply_ep = tasks[cur].blocked_on;
+        if (reply_ep < 0 || reply_ep >= MAX_ENDPOINTS) {
+            tasks[cur].state = TASK_RUNNABLE;
+            tasks[cur].runnable_ctx = 1;
+            return 0;
+        }
+        ipc_lock();
+        struct endpoint *e = &endpoints[reply_ep];
+        /* Reply raced in as a mailbox message before we published the waiter. */
+        if (e->has_message) {
+            int len = e->msg_len;
+            if (len < 0) len = 0;
+            if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
+            if (len > 0 && tasks[cur].ipc_reply_buf != 0) {
+                copy_to_user((void *)(addr_t)tasks[cur].ipc_reply_buf, e->msg,
+                             (size_t)len);
+            }
+            e->has_message = 0;
+            e->last_sender = e->sender_task;
+            f->rax = (uint64_t)(uint32_t)len;
+            tasks[cur].state        = TASK_RUNNABLE;
+            tasks[cur].runnable_ctx = 1;
+            tasks[cur].blocked_on   = -1;
+            ipc_unlock();
+            return 0;   /* resume same task with reply in hand */
+        }
+        e->blocked_waiter       = cur;
+        tasks[cur].state        = TASK_BLOCKED_IPC;
+        tasks[cur].runnable_ctx = 0;
+        __asm__ volatile ("" ::: "memory");
+        ipc_unlock();
+        return 1;
+    }
+
+    if (kind == TASK_BLOCKED_WAIT) {
+        int tid = tasks[cur].blocked_on;
+        /* Re-check: target may have exited after the handler looked. */
+        if (tid < 0 || tid >= MAX_TASKS || tasks[tid].state == TASK_DEAD) {
+            f->rax = 0;
+            tasks[cur].state        = TASK_RUNNABLE;
+            tasks[cur].runnable_ctx = 1;
+            tasks[cur].blocked_on   = -1;
+            return 0;
+        }
+        tasks[tid].waiter       = cur;
+        tasks[cur].state        = TASK_BLOCKED_WAIT;
+        tasks[cur].runnable_ctx = 0;
+        __asm__ volatile ("" ::: "memory");
+        return 1;
+    }
+
+    if (kind == TASK_BLOCKED_NOTIF) {
+        int slot = tasks[cur].blocked_on_notif;
+        if (slot < 0 || slot >= MAX_NOTIFICATIONS) {
+            tasks[cur].state = TASK_RUNNABLE;
+            tasks[cur].runnable_ctx = 1;
+            return 0;
+        }
+        ipc_lock();
+        struct notification *n = &notifications[slot];
+        if (n->pending_badge != 0) {
+            uint32_t b = n->pending_badge;
+            n->pending_badge = 0;
+            f->rax = 0;
+            f->rbx = (uint64_t)b;
+            tasks[cur].state        = TASK_RUNNABLE;
+            tasks[cur].runnable_ctx = 1;
+            ipc_unlock();
+            return 0;
+        }
+        n->blocked_waiter       = cur;
+        tasks[cur].state        = TASK_BLOCKED_NOTIF;
+        tasks[cur].runnable_ctx = 0;
+        __asm__ volatile ("" ::: "memory");
+        ipc_unlock();
+        return 1;
+    }
+
+    tasks[cur].state        = TASK_RUNNABLE;
+    tasks[cur].runnable_ctx = 1;
+    return 0;
+}
+
+/* Undo a published block when the scheduler cannot switch away (no other
+ * runnable task). Clears waiter links so we do not leave a dangling publish. */
+void ipc_unpublish_block(int cur) {
+    if (cur <= 0 || cur >= MAX_TASKS) return;
+    int st = (int)tasks[cur].state;
+    if (st == TASK_BLOCKED_IPC) {
+        int ep = tasks[cur].blocked_on;
+        ipc_lock();
+        if (ep >= 0 && ep < MAX_ENDPOINTS && endpoints[ep].blocked_waiter == cur)
+            endpoints[ep].blocked_waiter = -1;
+        ipc_unlock();
+        tasks[cur].blocked_on = -1;
+    } else if (st == TASK_BLOCKED_WAIT) {
+        int tid = tasks[cur].blocked_on;
+        if (tid >= 0 && tid < MAX_TASKS && tasks[tid].waiter == cur)
+            tasks[tid].waiter = -1;
+        tasks[cur].blocked_on = -1;
+    } else if (st == TASK_BLOCKED_NOTIF) {
+        int slot = tasks[cur].blocked_on_notif;
+        ipc_lock();
+        if (slot >= 0 && slot < MAX_NOTIFICATIONS &&
+            notifications[slot].blocked_waiter == cur)
+            notifications[slot].blocked_waiter = -1;
+        ipc_unlock();
+    }
+    tasks[cur].state        = TASK_RUNNABLE;
+    tasks[cur].runnable_ctx = 1;
+}
 
 int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
     if (ep >= MAX_ENDPOINTS) return -1;
@@ -78,15 +216,18 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
 
         /* Patch the waiter's saved interrupt frame so that when the timer
          * resumes it, eax holds the reply length (the return value of
-         * sys_ipc_call). */
+         * sys_ipc_call). saved_ksp is always valid when blocked_waiter is set
+         * (publish-after-save); refuse if not. */
         struct interrupt_frame64 *wf =
             (struct interrupt_frame64 *)tasks[waiter].saved_ksp;
+        if (!wf) { ipc_unlock(); return -1; }
         wf->rax = (uint64_t)(uint32_t)copy_len;
 
         e->blocked_waiter = -1;
         __asm__ volatile ("" ::: "memory");
-        tasks[waiter].state       = TASK_RUNNABLE;
+        tasks[waiter].state        = TASK_RUNNABLE;
         tasks[waiter].runnable_ctx = 1;
+        tasks[waiter].blocked_on   = -1;
         ipc_unlock();
         return 0;
     }
@@ -166,17 +307,16 @@ int sys_notify(uint32_t notif_slot, uint32_t badge) {
         n->blocked_waiter   = -1;
 
         /* Patch the waiter's saved trap frame: rax=0 (success), rbx=badge.
-         * interrupt_handler64 wrote frame->rbx from r.ebx before calling
-         * ipc_block_switch; patching here overwrites that with the real badge
-         * so that when the timer iretq's the waiter back to ring 3 the value
-         * is already in ebx for the userspace wrapper to read. */
+         * saved_ksp is valid whenever blocked_waiter is published. */
         struct interrupt_frame64 *wf =
             (struct interrupt_frame64 *)tasks[waiter].saved_ksp;
-        wf->rax = 0;
-        wf->rbx = (uint64_t)b;
+        if (wf) {
+            wf->rax = 0;
+            wf->rbx = (uint64_t)b;
+        }
 
         __asm__ volatile ("" ::: "memory");
-        tasks[waiter].state       = TASK_RUNNABLE;
+        tasks[waiter].state        = TASK_RUNNABLE;
         tasks[waiter].runnable_ctx = 1;
     }
     ipc_unlock();
@@ -185,8 +325,8 @@ int sys_notify(uint32_t notif_slot, uint32_t badge) {
 
 /* sys_wait_notify: if a badge is already pending, consume it and return 0
  * (badge written via r->ebx → frame->rbx by interrupt_handler64).  Otherwise
- * block the task in TASK_BLOCKED_NOTIF state; sys_notify will wake it and
- * patch its saved frame when a badge arrives. */
+ * record a pending block; ipc_block_switch saves the frame then publishes the
+ * notif waiter so a concurrent sys_notify cannot race a null saved_ksp. */
 int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
     if (notif_slot >= MAX_NOTIFICATIONS) return -1;
     struct notification *n = &notifications[notif_slot];
@@ -199,11 +339,10 @@ int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
         return 0;
     }
 
-    /* No badge pending — block. */
+    /* No badge pending — intent only; not wake-visible until publish. */
     int cur = get_current_task();
-    n->blocked_waiter         = cur;
-    tasks[cur].state          = TASK_BLOCKED_NOTIF;
-    tasks[cur].runnable_ctx   = 0;
+    tasks[cur].blocked_on_notif = (int)notif_slot;
+    tasks[cur].pending_block    = TASK_BLOCKED_NOTIF;
     /* out_badge and r->ebx will be patched by sys_notify when it wakes us. */
     *out_badge = 0;
     ipc_unlock();
@@ -221,10 +360,10 @@ void h_ipc_send(struct regs *r) {
  *   edx = userspace ptr to message to send
  *   esi = send length
  *   edi = userspace ptr to reply buffer
- * The handler deposits the message, marks the task BLOCKED_IPC, and returns.
- * interrupt_handler64 detects the blocked state and calls ipc_block_switch()
- * to yield to the next runnable task.  When sys_ipc_send delivers a message to
- * the reply endpoint, it patches this task's saved frame and marks it runnable. */
+ * The handler deposits the message and records a pending block only — the
+ * reply endpoint's blocked_waiter is *not* published here. interrupt_handler64
+ * calls ipc_block_switch, which saves the trap frame first and only then
+ * publishes the waiter (so a cross-CPU reply cannot race a null saved_ksp). */
 void h_ipc_call(struct regs *r) {
     uint32_t send_ep  = r->ebx;
     uint32_t reply_ep = r->ecx;
@@ -242,13 +381,12 @@ void h_ipc_call(struct regs *r) {
 
     int cur = get_current_task();
 
-    /* Arm the reply endpoint with the waiter info before blocking. */
-    endpoints[reply_ep].blocked_waiter = cur;
-    tasks[cur].ipc_reply_buf  = reply_buf;
-    tasks[cur].state          = TASK_BLOCKED_IPC;
-    tasks[cur].runnable_ctx   = 0;
-    /* r->eax is set by interrupt_handler64 after we return from here:
-     * it will be overwritten by ipc_block_switch/wf->rax when unblocked. */
+    /* Intent only — not wake-visible until ipc_publish_pending_block. */
+    tasks[cur].ipc_reply_buf = reply_buf;
+    tasks[cur].blocked_on    = (int)reply_ep;
+    tasks[cur].pending_block = TASK_BLOCKED_IPC;
+    /* r->eax is set by interrupt_handler64 after we return; a wake patches
+     * saved_ksp->rax with the reply length. */
     r->eax = 0;
 }
 /* SYS_IPC_RECV (22): slot-3 READ enforced by the table. */

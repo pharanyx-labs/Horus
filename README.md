@@ -30,7 +30,7 @@ The kernel is written in C. The security-critical core — the capability engine
 Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **six headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
 
 > ### Project status — research / early development
-> Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store, a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait), and multi-core support behind a build gate. Some subsystems (persistent-by-default storage, multi-client IPC, richer signals) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
+> Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store (persistent when an ATA disk is present), a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support behind a build gate. Some subsystems (multi-client IPC, per-file FS permissions, SMP default-on) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
 
 ---
 
@@ -53,7 +53,7 @@ Horus is engineered as if it were destined for production even though it is not 
  │                   Userspace  (Ring 3)                     │
  │   init → shell     fs_server     hello     captest       │
  └──────────────────────┬───────────────────────────────────┘
-                        │  syscalls (0-66, table-dispatched)
+                        │  syscalls (0-72, table-dispatched)
  ┌──────────────────────▼───────────────────────────────────┐
  │                  Horus Kernel  (Ring 0)                   │
  │                                                          │
@@ -114,17 +114,18 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | SMEP / SMAP hardening (when CPU advertises) | ✅ Working |
 | W^X — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
 | ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; ~9-bit entropy in the 32-bit window) | ✅ Working |
-| Table-driven syscall dispatch (central capability gate, 0–66) | ✅ Working |
+| Table-driven syscall dispatch (central capability gate, 0–72) | ✅ Working |
 | User authentication + lockout (Argon2id memory-hard hashing) | ✅ Working |
 | Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
 | Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256) | ✅ Working |
 | PS/2 keyboard input | ✅ Working |
 | Preemptive round-robin scheduling (timer-driven, ring-3) | ✅ Working |
 | Fault signals (ring-3 handler on fault instead of kill) | ✅ Working |
-| Async task-to-task signals (`SYS_SIGNAL`, gated on `CAP_TCB`) | ✅ Working |
-| Ring-3 process control — `SYS_SPAWN`, `SYS_EXEC_NAMED`, `SYS_KILL`, `SYS_EXIT`, `SYS_WAIT` | ✅ Working |
+| Async task-to-task signals (`SYS_SIGNAL` / `SYS_SIGMASK` / `SYS_SIGALTSTACK`, `CAP_TCB`-gated) | ✅ Working |
+| Ring-3 process control — spawn/exec/kill/exit/wait/grant + image exec | ✅ Working |
 | Ring-3 `init` (PID 1) — spawns, endows (`SYS_CAP_GRANT`) and blocking-supervises the shell | ✅ Working |
 | Userspace filesystem server (ring-3 IPC server over encrypted object store) | ✅ Working |
+| Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
 | Rust security-core unit tests (54) + GitHub Actions CI (11 gated jobs) | ✅ Working |
@@ -134,7 +135,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Endpoint-based IPC (single-slot, non-blocking) | 🟡 Partial |
 | In-memory capability-addressed filesystem (capfs) | 🟡 Partial |
 | Copy-on-write paging | 🟡 Partial |
-| Disk-backed persistent storage (as the default backend) | ⬜ Not yet |
+| Multi-client filesystem access / per-file ACLs | ⬜ Not yet |
 | Notifications (`SYS_NOTIFY` / `SYS_WAIT_NOTIFY`) | ⬜ Not yet (`SYS_ERR_NOSYS`) |
 
 ---
@@ -178,7 +179,7 @@ make reproducible-build # byte-for-byte deterministic kernel.elf
 | `MINIMAL_SECURE` | `0` | Strip non-essential kernel features (smaller attack surface) |
 | `RUST_ENABLED` | `1` | Link the Rust security core (`0` uses C stub shims) |
 | `SMP` | `0` | Bring up the application processors (multi-core) |
-| `STORAGE_ATA` | `0` | Use a real ATA disk as the block store instead of the RAM vdisk |
+| `STORAGE_ATA` | `0` | Prefer the ATA path in smoke/self-test builds; runtime always probes for a disk and falls back to the RAM vdisk when none is present |
 | `*_SELFTEST` | `0` | Boot-time self-tests: `ELF_`, `PREEMPT_`, `SIGNAL_`, `PROC_`, `FS_`, `NEWLIB_`, `SMP_` |
 
 Horus is x86-64 only. See [docs/BUILDING.md](docs/BUILDING.md) for the full toolchain reference, all targets, and troubleshooting.

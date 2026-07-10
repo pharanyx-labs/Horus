@@ -57,11 +57,23 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
         }
 
         if (copy_len > 0 && tasks[waiter].ipc_reply_buf != 0) {
-            uint64_t sender_cr3 = tasks[get_current_task()].cr3;
-            switch_cr3(tasks[waiter].cr3);
-            copy_to_user((void*)(addr_t)tasks[waiter].ipc_reply_buf, kbuf,
+            /* Deliver into the waiter's reply buffer. copy_to_user/user_copy
+             * translates the destination through tasks[get_current_task()].cr3,
+             * so the *current task* must be the waiter for its buffer to resolve
+             * -- merely switching cr3 is not enough (user_copy re-derives and
+             * restores cr3 itself). This was the bug: the reply was walked
+             * through the sender's page tables and written into the sender's
+             * address space, so a SYS_IPC_CALL caller (the shell) only ever saw a
+             * zeroed reply. Interrupts are masked so a timer tick cannot observe
+             * the transient current-task. */
+            uint64_t fl;
+            __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
+            int sender = get_current_task();
+            set_current_task(waiter);
+            copy_to_user((void *)(addr_t)tasks[waiter].ipc_reply_buf, kbuf,
                          (size_t)copy_len);
-            switch_cr3(sender_cr3);
+            set_current_task(sender);
+            __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
         }
 
         /* Patch the waiter's saved interrupt frame so that when the timer

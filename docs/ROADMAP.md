@@ -75,12 +75,16 @@ What remains:
 - **Alternate signal stacks**: signals run on the interrupted user stack; a
   `sigaltstack`-style separate handler stack (with an `SS_ONSTACK` guard) is a
   low-priority robustness feature.
-- **Init launches the servers**: `init` blocking-supervises the shell; have it
-  also launch `fs_server`. This needs `init` endowed at boot with `CAP_BLOCK_DEV`
-  + `CAP_USER` + an endpoint cap so it can express the server's provisioning as
-  `SYS_CAP_GRANT` delegations (replacing the current direct root-cnode installs),
-  plus a boot-time FS integration test to prove the delegated server still
-  serves.
+- **Init launches the servers**: `init` blocking-supervises the shell. The
+  capability-delegation path is now proven end-to-end: under `INIT_FS_SELFTEST`,
+  `init` is endowed at boot with a `CAP_USER` admin cap, two endpoint caps, and an
+  object-store cap, launches `fs_server`, and provisions **all four** of the
+  server's capabilities purely with `SYS_CAP_GRANT` — no direct root-cnode
+  installs — after which the delegated server registers and serves a client
+  end-to-end over the encrypted object store (`make smoke-init-fs`). What remains
+  is flipping the *default* boot to have `init` launch and supervise `fs_server`
+  alongside the shell — rewiring the shell to connect to the already-running
+  server instead of spawning its own — reusing this proven delegation path.
 
 ---
 

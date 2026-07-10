@@ -100,6 +100,19 @@ ASFLAGS += -DFS_SELFTEST
 FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
 endif
 
+# INIT_FS_SELFTEST=1 is the Phase-1 boot-time FS integration test: ring-3 init
+# launches the userspace fs_server and provisions it purely by delegation
+# (SYS_CAP_GRANT) instead of direct root-cnode installs, then launches the client
+# that drives it. Proves the delegated server still serves end-to-end (the client
+# prints FS_SELFTEST: PASS). fs_server is already always embedded; only the client
+# needs adding. Gated off the ship kernel.
+INIT_FS_SELFTEST ?= 0
+ifeq ($(INIT_FS_SELFTEST),1)
+CFLAGS  += -DINIT_FS_SELFTEST
+ASFLAGS += -DINIT_FS_SELFTEST
+INIT_FS_SELFTEST_DEP = userspace/fsclient.bin
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -192,7 +205,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -266,6 +279,11 @@ iso: kernel.elf
 # fixed-base flat image; PIE objects link cleanly at a fixed address too.
 USERSPACE_CFLAGS = -m32 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
                    -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
+# init.c switches to the delegated-fs-server boot path under this flag, so the
+# userspace build of init must see it too (kernel CFLAGS alone won't reach it).
+ifeq ($(INIT_FS_SELFTEST),1)
+USERSPACE_CFLAGS += -DINIT_FS_SELFTEST
+endif
 
 userspace/%.o: userspace/%.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
@@ -400,6 +418,19 @@ endif
 smoke-fs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
+	@$(MAKE) --no-print-directory boot.iso
+	@$(SMOKE_FS_PREP)
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
+		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Boot-time FS integration test: ring-3 init brings up the fs_server by delegation
+# (SYS_CAP_GRANT) and the delegated server serves the client end-to-end. Reuses
+# the fs client's PASS/FAIL markers ("INIT_FS_SELFTEST: FAIL ..." also matches the
+# FAIL substring). `STORAGE=ata` runs it against the persistent ATA backend.
+.PHONY: smoke-init-fs
+smoke-init-fs:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory INIT_FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
 	@$(MAKE) --no-print-directory boot.iso
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \

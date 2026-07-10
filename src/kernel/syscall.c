@@ -453,6 +453,11 @@ static void h_task_info(struct regs *r) {
         c = cap_lookup(7, CAP_RIGHT_READ);
         if (c && c->type == CAP_AUDIT) is_privileged = 1;
     }
+    /* root (uid 0) is the system administrator and may inspect every task, the
+     * same uid==0 authority the block/object-store syscalls enforce. This is what
+     * lets the root shell's `ps` list the servers init launched, even though the
+     * shell was not delegated a CAP_USER/CAP_AUDIT of its own. */
+    if (!is_privileged && tasks[get_current_task()].uid == 0) is_privileged = 1;
 
     if (!is_privileged && tid != get_current_task()) {
         r->eax = -3;

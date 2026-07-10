@@ -75,16 +75,16 @@ What remains:
 - **Alternate signal stacks**: signals run on the interrupted user stack; a
   `sigaltstack`-style separate handler stack (with an `SS_ONSTACK` guard) is a
   low-priority robustness feature.
-- **Init launches the servers**: `init` blocking-supervises the shell. The
-  capability-delegation path is now proven end-to-end: under `INIT_FS_SELFTEST`,
-  `init` is endowed at boot with a `CAP_USER` admin cap, two endpoint caps, and an
-  object-store cap, launches `fs_server`, and provisions **all four** of the
-  server's capabilities purely with `SYS_CAP_GRANT` — no direct root-cnode
-  installs — after which the delegated server registers and serves a client
-  end-to-end over the encrypted object store (`make smoke-init-fs`). What remains
-  is flipping the *default* boot to have `init` launch and supervise `fs_server`
-  alongside the shell — rewiring the shell to connect to the already-running
-  server instead of spawning its own — reusing this proven delegation path.
+- **Init launches the servers** — *done*. The default boot now brings up the
+  system through `init`: it is endowed from the root cnode with a `CAP_USER` admin
+  cap, two `CAP_ENDPOINT` caps and (via slot 9) the object-store cap, launches
+  `fs_server` and provisions **all four** of its capabilities purely with
+  `SYS_CAP_GRANT` — no direct root-cnode installs — so the server registers and
+  serves, then launches and supervises the shell alongside it. Spawned children
+  now inherit their spawner's uid (closing a latent "child comes up as uid 0"
+  hole), and the root shell can see every task (`ps`) under the same uid==0
+  authority the object-store syscalls enforce. `make smoke-init-fs` drives the
+  same delegated server with an automated client end-to-end.
 
 ---
 
@@ -92,6 +92,14 @@ What remains:
 
 The filesystem works end-to-end but is opt-in, single-client, and permission-less.
 
+- **Root-directory `readdir`**: reading the root directory (inode 0) over the
+  server enumerates thousands of spurious empty entries, so the shell's `ls` on
+  `/` floods blank lines — while `mkdir`/`touch`/`cat`/`lookup` all work and
+  `readdir` of a freshly-created *subdirectory* is clean (`make smoke-fs`). The
+  likely cause is that inode 0 is never initialised as an empty directory at
+  format (sub-inodes are zeroed by `storage_alloc_inode`, but the root is
+  special-cased), leaving a garbage size/blocks. Needs an instrumented build to
+  confirm, then a one-time root-inode init at format/mount.
 - **Persistent by default**: make the encrypted ATA store (`STORAGE_ATA=1`) the
   default backend instead of the in-RAM virtual disk, and persist the per-block
   crypto metadata (nonces/tags) so files survive a reboot.

@@ -8,7 +8,7 @@ Known weaknesses include:
 
 - SMP works behind the `SMP=1` build gate but is not default-on; the multi-core scheduler shares a single runnable pool (no per-CPU run queues, no priorities), and there is no flush-on-switch between mutually distrusting tasks
 - Load-base ASLR is applied (userspace is static-PIE, relocated at a random base), but image-base entropy is bounded (~9 bits) by the 32-bit low-memory window userspace runs in
-- Disk-backed persistent storage is not the live backing store (the default is the in-RAM vdisk); the encrypted-block path, though cryptographically sound, is not yet the default and does not persist its crypto metadata across reboots
+- Encrypted storage is persistent by default when an ATA disk is present (crypto metadata survives reboot; volume sealed until login), but diskless boots still use the ephemeral RAM vdisk, volumes are size-capped by single-bitmap geometry, and the filesystem still lacks per-file ownership/ACLs
 - The audit log is tamper-*evident* (an HMAC chain detects modification), not tamper-*proof* — an attacker who can read the per-boot key can recompute a consistent chain (see the audit-log note below)
 
 These are not undisclosed vulnerabilities — they are documented, known limitations of an incomplete system.

@@ -108,7 +108,7 @@ Pass flags as `make FLAG=VALUE`.
 | `DEBUG_SHELL` | `0` | Enables the in-kernel debug shell (`#ifdef DEBUG_SHELL` code) |
 | `MINIMAL_SECURE` | `0` | Strips optional kernel features for a smaller attack surface |
 | `SMP` | `0` | Brings up the application processors (multi-core). `SMP_CPUS` sets the guest core count |
-| `STORAGE_ATA` | `0` | Uses a real ATA disk (probe + format-on-first-boot) instead of the RAM vdisk. `BLOCKS_PER_DISK` sizes it |
+| `STORAGE_ATA` | `0` | Used by FS smoke/self-test targets to prefer the ATA path; at runtime the kernel always probes for a disk and falls back to the RAM vdisk when none is present. `BLOCKS_PER_DISK` sizes the volume |
 | `ELF_SELFTEST` | `0` | Embeds a real static-PIE ELF and runs an in-kernel loader + W^X + relocation self-test at boot |
 | `PREEMPT_SELFTEST` | `0` | Runs the two-task preemption self-test at boot |
 | `SIGNAL_SELFTEST` | `0` | Runs the fault-signal self-test at boot |

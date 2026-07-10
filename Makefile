@@ -113,6 +113,20 @@ ASFLAGS += -DINIT_FS_SELFTEST
 INIT_FS_SELFTEST_DEP = userspace/fsclient.bin
 endif
 
+# PERSIST_SELFTEST=1 builds the FS self-test client in reboot-persistence mode: it
+# writes a sentinel file on the first boot (prints PERSIST_SELFTEST: WROTE) and, on
+# a later boot against the same disk image, reads it back and verifies it (prints
+# PERSIST_SELFTEST: PASS). Reuses the FS_SELFTEST kernel driver (spawns server +
+# client); pair with STORAGE_ATA=1 and drive it with the two-boot `make
+# smoke-fs-persist`. The USERSPACE_CFLAGS half is applied after that variable is
+# defined below.
+PERSIST_SELFTEST ?= 0
+ifeq ($(PERSIST_SELFTEST),1)
+CFLAGS  += -DFS_SELFTEST -DPERSIST_SELFTEST
+ASFLAGS += -DFS_SELFTEST
+FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -284,6 +298,9 @@ USERSPACE_CFLAGS = -m32 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
 ifeq ($(INIT_FS_SELFTEST),1)
 USERSPACE_CFLAGS += -DINIT_FS_SELFTEST
 endif
+ifeq ($(PERSIST_SELFTEST),1)
+USERSPACE_CFLAGS += -DPERSIST_SELFTEST
+endif
 
 userspace/%.o: userspace/%.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
@@ -446,6 +463,30 @@ smoke-init-fs:
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
 		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Reboot-survival test: boot twice against ONE persistent ATA disk image. Boot 1
+# writes a sentinel file (PERSIST_SELFTEST: WROTE); boot 2, on the same image,
+# reads it back and verifies it byte-for-byte (PERSIST_SELFTEST: PASS) — proving
+# the encrypted object store and its per-block crypto metadata (nonces/tags)
+# survive a reboot. Argon2id KEK derivation + format-on-first-boot run under TCG,
+# so allow a generous timeout.
+PERSIST_BLOCKS  ?= 1024
+PERSIST_TIMEOUT ?= 300
+.PHONY: smoke-fs-persist
+smoke-fs-persist:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1
+	@$(MAKE) --no-print-directory boot.iso
+	@dd if=/dev/zero of=persist.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@echo "[persist] boot 1/2 — write sentinel to a fresh encrypted disk"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
+		REQUIRE_MARKER='PERSIST_SELFTEST: WROTE' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[persist] boot 2/2 — verify the file survived (same disk image)"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
+		REQUIRE_MARKER='PERSIST_SELFTEST: PASS' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[persist] PASS — encrypted file survived a reboot"
 
 .PHONY: smoke-newlib
 smoke-newlib:

@@ -60,7 +60,11 @@ trap cleanup EXIT
 # IDE drive so a STORAGE_ATA=1 kernel has a real block device to format/mount.
 DRIVE_ARG=""
 if [ -n "${SMOKE_DISK:-}" ]; then
-    DRIVE_ARG="-drive file=$SMOKE_DISK,format=raw,if=ide,index=0"
+    # cache=writethrough: every guest write is committed to the host image file
+    # immediately, so a two-boot persistence test (QEMU killed after a marker,
+    # then re-launched on the same image) never loses the first boot's writes to
+    # a writeback cache.
+    DRIVE_ARG="-drive file=$SMOKE_DISK,format=raw,if=ide,index=0,cache=writethrough"
 fi
 
 # SMP_CPUS=<n> boots the guest with n logical CPUs (for the SMP self-test).

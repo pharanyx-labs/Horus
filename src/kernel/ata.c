@@ -24,6 +24,17 @@ static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile ("outw %0, %1" : : "a"(val), "d"(port));
 }
 
+/* Serialises access to the ATA PIO port sequence across CPUs. This is a
+ * DEDICATED lock, deliberately NOT storage_lock: the crypto layer
+ * (storage_encrypt_block) holds storage_lock while flushing per-block metadata,
+ * which walks down through flush_meta_block -> do_block_write -> ata_write_sector.
+ * If the sector ops took storage_lock too, that path would re-acquire a
+ * non-recursive spinlock and self-deadlock — the exact hang that made the ATA
+ * backend never complete a write end-to-end. The RAM vdisk's block ops take no
+ * lock, so the bug was invisible there. Lock order is always storage_lock ->
+ * ata_lock (never the reverse), so no deadlock. */
+static spinlock_t ata_lock = { 0 };
+
 static void ata_wait_busy(void) {
     while (inb(ATA_STATUS) & 0x80) { }
 }
@@ -33,9 +44,7 @@ static void ata_400ns_delay(void) {
 }
 
 static int ata_read_sector(uint32_t lba, uint8_t *buf) {
-    
-    extern spinlock_t storage_lock;
-    spin_lock(&storage_lock);
+    spin_lock(&ata_lock);
 
     ata_wait_busy();
     ata_400ns_delay();
@@ -51,21 +60,19 @@ static int ata_read_sector(uint32_t lba, uint8_t *buf) {
     ata_400ns_delay();
 
     uint8_t status = inb(ATA_STATUS);
-    if (status & 0x01) { spin_unlock(&storage_lock); return -1; }
+    if (status & 0x01) { spin_unlock(&ata_lock); return -1; }
 
     for (int i = 0; i < 256; i++) {
         uint16_t data = inw(ATA_DATA);
         buf[i*2 + 0] = data & 0xFF;
         buf[i*2 + 1] = data >> 8;
     }
-    spin_unlock(&storage_lock);
+    spin_unlock(&ata_lock);
     return 0;
 }
 
 static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
-    
-    extern spinlock_t storage_lock;
-    spin_lock(&storage_lock);
+    spin_lock(&ata_lock);
 
     ata_wait_busy();
     ata_400ns_delay();
@@ -89,9 +96,9 @@ static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     ata_400ns_delay();
 
     uint8_t status = inb(ATA_STATUS);
-    if (status & 0x01) { spin_unlock(&storage_lock); return -1; }
+    if (status & 0x01) { spin_unlock(&ata_lock); return -1; }
 
-    spin_unlock(&storage_lock);
+    spin_unlock(&ata_lock);
     return 0;
 }
 

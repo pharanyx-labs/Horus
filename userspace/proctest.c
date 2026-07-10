@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "hello_image.h"   /* hello_image[]/hello_image_len: a real .bin for SYS_SPAWN_IMAGE */
 
 /*
  * Process-control self-test driver (PROC_SELFTEST builds only).
@@ -41,6 +42,10 @@ static int find_alive(const char *name) {
 
 /* Ring-3 spin (preemptible) so the timer can run/reap the children. */
 static void settle(void) { for (volatile int d = 0; d < 20000; d++) { } }
+
+/* Scratch stack for the SYS_SIGALTSTACK argument-validation checks (a user
+ * vaddr in our own image, so it satisfies the in-user-space range check). */
+static char probe_stk[4096];
 
 void _start(void) {
     /* --- SYS_EXIT: the "hello" child terminates itself --- */
@@ -175,6 +180,35 @@ void _start(void) {
         settle();
     }
     if (!atd) { report("PROC_SELFTEST: FAIL argv-stuck\n"); sys_exit(); }
+
+    /* --- SYS_SPAWN_IMAGE: spawn a child from a program image supplied in our own
+     * memory (execve-from-fd). hello_image[] is the real "hello" .bin embedded at
+     * build time — the same bytes a client would read from a file via the
+     * fs_server. The kernel validates and loads it through the same loader a named
+     * binary uses; the child (hello) runs and exits, so its pid must reach the
+     * dead state. Also covers SYS_EXEC_IMAGE, which shares its arming
+     * (arm_image_from_user) with this path and its image-replace tail with the
+     * already-tested SYS_EXEC_NAMED. --- */
+    int ii = sys_spawn_image(hello_image, hello_image_len, 0, 0);
+    if (ii <= 0) { report("PROC_SELFTEST: FAIL image-spawn\n"); sys_exit(); }
+    int ii_gone = 0;
+    struct task_info iii;
+    for (int i = 0; i < 8000; i++) {
+        if (sys_get_task_info(ii, &iii) == 0 && iii.state == 0) { ii_gone = 1; break; }
+        settle();
+    }
+    if (!ii_gone) { report("PROC_SELFTEST: FAIL image-stuck\n"); sys_exit(); }
+    report("PROC_SELFTEST: image OK\n");
+
+    /* --- SYS_SIGALTSTACK argument validation (fail-closed): a valid stack is
+     * accepted, a too-small one and one below the user address space are refused,
+     * and size 0 disables. Delivery *onto* a registered altstack is exercised
+     * end-to-end by sigtarget below, whose handler asserts it ran on it. --- */
+    if (sys_sigaltstack(probe_stk, sizeof(probe_stk)) != 0) { report("PROC_SELFTEST: FAIL altstack-set\n"); sys_exit(); }
+    if (sys_sigaltstack(probe_stk, 16) >= 0)                { report("PROC_SELFTEST: FAIL altstack-small\n"); sys_exit(); }
+    if (sys_sigaltstack((void *)0, sizeof(probe_stk)) >= 0) { report("PROC_SELFTEST: FAIL altstack-range\n"); sys_exit(); }
+    if (sys_sigaltstack((void *)0, SS_DISABLE) != 0)        { report("PROC_SELFTEST: FAIL altstack-disable\n"); sys_exit(); }
+    report("PROC_SELFTEST: altstack OK\n");
 
     /* --- SYS_SIGNAL: async task-to-task signal to a registered handler. Spawn
      * "sigtarget" (it registers a handler and spins); we hold its CAP_TCB from

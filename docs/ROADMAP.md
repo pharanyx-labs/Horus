@@ -29,7 +29,9 @@ five runtime self-tests in CI. Already in place:
   to a child it supervises (`SYS_CAP_GRANT`), signal a task it holds a `CAP_TCB`
   for (`SYS_SIGNAL`), terminate itself (`SYS_EXIT`) or such a task (`SYS_KILL`),
   and block until one exits (`SYS_WAIT`), with waiter wake-up on both a clean
-  exit and a fault (`make smoke-proc`).
+  exit and a fault. A task can also spawn/exec a program image it read from a
+  file (`SYS_SPAWN_IMAGE` / `SYS_EXEC_IMAGE`, execve-from-fd) and run signal
+  handlers on an alternate stack (`SYS_SIGALTSTACK`) (`make smoke-proc`).
 - **Multiprocessing** — the application processors are brought up and run
   scheduled tasks across cores with acknowledged TLB-shootdown IPIs, behind an
   `SMP=1` build gate (`make smoke-smp`).
@@ -51,40 +53,44 @@ five runtime self-tests in CI. Already in place:
 
 ---
 
-## Phase 1 — Process lifecycle and control
+## Phase 1 — Process lifecycle and control — *complete*
 
-The process model is now largely complete. **Signals** are done bar one niche
-feature: `SYS_SIGNAL` delivers async task-to-task signals into a registered
-handler, the pending set is a full 1..31 bitmask, `SYS_SIGMASK` blocks/unblocks
-signals (delivering the lowest unmasked one), and a signal to a task parked in
-`SYS_WAIT` interrupts the wait (`SYS_ERR_INTR`) and delivers promptly
-(`make smoke-proc`). **`argv` is done:** `SYS_SPAWN` and `SYS_EXEC_NAMED` marshal
-a full argument vector onto the child's stack, read back via `SYS_GET_ARGV`.
-**`fork` has been evaluated and deliberately not adopted:**
-the ring-3 `SYS_SPAWN` + `SYS_CAP_GRANT` model already gives create-a-task and
-hand-it-capabilities without fork's whole-address-space aliasing and its
-least-privilege problem (a forked child would inherit *every* parent capability).
+The process model is complete; the remaining work has moved into the phases
+below. For the record, the phase delivered:
 
-What remains:
+- **Signals** — `SYS_SIGNAL` delivers async task-to-task signals into a
+  registered handler, the pending set is a full 1..31 bitmask, `SYS_SIGMASK`
+  blocks/unblocks signals (delivering the lowest unmasked one), a signal to a
+  task parked in `SYS_WAIT` interrupts the wait (`SYS_ERR_INTR`) and delivers
+  promptly, and `SYS_SIGALTSTACK` runs a handler on a registered alternate stack
+  (an `SS_ONSTACK` guard, so a corrupt or overflowed primary stack cannot stop
+  the handler running).
+- **Full `argv`** — `SYS_SPAWN` and `SYS_EXEC_NAMED` marshal a full argument
+  vector onto the child's stack, read back via `SYS_GET_ARGV`.
+- **`exec` from a file** — `SYS_SPAWN_IMAGE` / `SYS_EXEC_IMAGE` spawn or exec a
+  program image the caller supplies in its own memory (execve-from-fd): the
+  caller reads the image from a file via the `fs_server` — the shell's `run
+  <file>` does exactly this — and the kernel validates it with the same loader a
+  named binary uses (`arm_image_from_user` → `try_elf_load`: W^X, bounds,
+  fail-closed relocations), gated by the same slot-3 `WRITE|EXEC` capability. This
+  decouples exec from any one filesystem and adds no kernel↔server IPC
+  reentrancy.
+- **`fork` — deliberately not adopted** — the ring-3 `SYS_SPAWN` +
+  `SYS_CAP_GRANT` model already gives create-a-task and hand-it-capabilities
+  without fork's whole-address-space aliasing and its least-privilege problem (a
+  forked child would inherit *every* parent capability).
+- **Init launches the servers** — the default boot brings up the system through
+  `init`: it is endowed from the root cnode with a `CAP_USER` admin cap, two
+  `CAP_ENDPOINT` caps and (via slot 9) the object-store cap, launches `fs_server`
+  and provisions **all four** of its capabilities purely with `SYS_CAP_GRANT` —
+  no direct root-cnode installs — then launches and supervises the shell
+  alongside it. Spawned children inherit their spawner's uid (closing a latent
+  "child comes up as uid 0" hole), and the root shell can see every task (`ps`)
+  under the same uid==0 authority the object-store syscalls enforce.
 
-- **`exec` from a file descriptor**: `SYS_SPAWN` and `SYS_EXEC_NAMED` both take a
-  full `argv` now (marshalled onto the child's stack; read via `SYS_GET_ARGV`),
-  and load a *named embedded* binary. The remaining piece is loading the program
-  image from a file/descriptor (an `execve`-from-fd path) rather than the fixed
-  embedded set, which depends on the filesystem read path.
-- **Alternate signal stacks**: signals run on the interrupted user stack; a
-  `sigaltstack`-style separate handler stack (with an `SS_ONSTACK` guard) is a
-  low-priority robustness feature.
-- **Init launches the servers** — *done*. The default boot now brings up the
-  system through `init`: it is endowed from the root cnode with a `CAP_USER` admin
-  cap, two `CAP_ENDPOINT` caps and (via slot 9) the object-store cap, launches
-  `fs_server` and provisions **all four** of its capabilities purely with
-  `SYS_CAP_GRANT` — no direct root-cnode installs — so the server registers and
-  serves, then launches and supervises the shell alongside it. Spawned children
-  now inherit their spawner's uid (closing a latent "child comes up as uid 0"
-  hole), and the root shell can see every task (`ps`) under the same uid==0
-  authority the object-store syscalls enforce. `make smoke-init-fs` drives the
-  same delegated server with an automated client end-to-end.
+Proven by `make smoke-proc` (exit + kill + spawn + exec + grant + image +
+altstack + signal) and `make smoke-init-fs` (the delegated server driven by an
+automated client end-to-end).
 
 ---
 
@@ -173,9 +179,10 @@ Cross-cutting work that should grow alongside every other phase.
 
 ## Contributing
 
-Phase 1 items are the most self-contained and the recommended starting point for
-new contributors. If you have kernel or systems experience and want something
-more involved, Phase 2 or 3 are good targets.
+Phase 1 is complete. Phase 2 (a production filesystem) and Phase 4 (userspace
+ecosystem) hold the most self-contained items and are the recommended starting
+point for new contributors. If you have kernel or systems experience and want
+something more involved, Phase 3 (SMP maturity) is a good target.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to set up your environment and
 submit work.

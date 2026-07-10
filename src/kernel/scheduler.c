@@ -107,6 +107,9 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     tasks[id].in_signal = 0;
     tasks[id].pending_sigs = 0;   /* no async signals queued */
     tasks[id].sig_mask     = 0;   /* nothing blocked */
+    tasks[id].sig_altstack_sp   = 0;   /* no alternate signal stack until registered */
+    tasks[id].sig_altstack_size = 0;
+    tasks[id].sig_on_stack      = 0;
     tasks[id].spawn_arg    = 0;   /* no spawn argument */
     tasks[id].argc         = 0;   /* no argument vector */
     tasks[id].argv_ptr     = 0;
@@ -639,6 +642,9 @@ void task_teardown(int id) {
 
     tasks[id].sig_handler = 0;
     tasks[id].in_signal   = 0;
+    tasks[id].sig_altstack_sp   = 0;   /* clear so a reused slot never inherits a stale altstack */
+    tasks[id].sig_altstack_size = 0;
+    tasks[id].sig_on_stack      = 0;
     tasks[id].state       = 0;   /* dead: the scheduler will not select it */
     tasks[id].runnable_ctx = 0;  /* and it has no resumable context any more */
     tasks[id].saved_ksp    = 0;

@@ -358,6 +358,17 @@ PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
+# execve-from-fd self-test: embed a real, already-built program image (hello) as
+# a C byte array so proctest can hand it to SYS_SPAWN_IMAGE — the same bytes a
+# client would read from a file. Generated from the .bin with coreutils only
+# (od/tr/grep/paste, present in CI); a PROC_SELFTEST-only prerequisite of proctest.
+userspace/hello_image.h: userspace/hello.bin
+	@printf 'static const unsigned char hello_image[] = {' > $@
+	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
+	@printf '};\nstatic const unsigned hello_image_len = sizeof(hello_image);\n' >> $@
+
+userspace/proctest.o: userspace/hello_image.h
+
 # Flat self-test payloads: HORU-wrap the objcopy'd raw image (loaded flat).
 userspace/%.bin: userspace/%.raw tools/mkheadered
 	@name="$$(basename $@ .bin)"; ./tools/mkheadered $< $@ "$$name"
@@ -365,7 +376,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.elf userspace/*.pie.elf userspace/*.raw userspace/*.bin tools/mkheadered
+	rm -f userspace/*.o userspace/*.elf userspace/*.pie.elf userspace/*.raw userspace/*.bin userspace/*_image.h tools/mkheadered
 
 # Build the kernel with the gated ELF-loader self-test, boot it headless, and
 # require the in-kernel self-test to report PASS on serial (in addition to the
@@ -465,7 +476,7 @@ smoke-proc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
 	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: PASS exit+kill+spawn+exec+grant+signal' \
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: PASS exit+kill+spawn+exec+grant+image+altstack+signal' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test

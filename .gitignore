@@ -103,3 +103,6 @@ __pycache__/
 *.pyc
 .venv/
 horus_usage.log
+
+# Generated program-image byte arrays for PROC_SELFTEST (execve-from-fd)
+userspace/*_image.h

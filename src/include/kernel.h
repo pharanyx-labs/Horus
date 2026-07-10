@@ -202,6 +202,13 @@ void users_init(void);
 #define SYS_SIGMASK            67   /* (how, mask) -> old mask; block/unblock this task's own signals */
 #define SYS_SPAWN_ARG          68   /* () -> the one-word argument this task was spawned with */
 #define SYS_GET_ARGV           69   /* (char ***out) -> argc; writes the argv[] base to *out */
+#define SYS_SPAWN_IMAGE        70   /* (image, len, arg, argv, argc) -> pid; spawn a child from a caller-supplied program image */
+#define SYS_EXEC_IMAGE         71   /* (image, len, 0, argv, argc) -> replace the caller's own image with a caller-supplied one; no return on success */
+#define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's own alternate signal stack (ss_size 0 disables) */
+
+/* Minimum size of a registered alternate signal stack (SYS_SIGALTSTACK); smaller
+ * requests fail closed so a handler always has room for at least a shallow frame. */
+#define SIG_ALTSTACK_MIN       2048
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {
@@ -435,7 +442,19 @@ typedef struct tcb {
     uint32_t argc;
     uint32_t argv_ptr;
 
-    uint8_t  padding[20];
+    /* Alternate signal stack (SYS_SIGALTSTACK). When sig_altstack_size is
+     * non-zero, a signal delivered while the task is not already running on the
+     * altstack enters its handler on [sig_altstack_sp, +sig_altstack_size)
+     * instead of the interrupted user stack; sig_on_stack is the SS_ONSTACK
+     * guard, set on delivery to the altstack and cleared by SYS_SIGRETURN so a
+     * nested signal does not re-use (and corrupt) the frame already on it. All
+     * zero => run handlers on the interrupted stack (previous behaviour). Carved
+     * from padding so the struct size is unchanged. */
+    uint32_t sig_altstack_sp;
+    uint32_t sig_altstack_size;
+    uint32_t sig_on_stack;
+
+    uint8_t  padding[8];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];

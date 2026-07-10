@@ -1,5 +1,6 @@
 #include "syscall.h"
 #include "fs_proto.h"
+#include "malloc.h"
 
 static void print(const char *s) {
     size_t l = 0; while (s[l]) l++;
@@ -140,6 +141,7 @@ static void show_general_help_us(void) {
     print_cmd("ps",               "List visible tasks");
     print_cmd("mem",              "Heap demo (sbrk)");
     print_cmd("spawn <name>",     "Spawn embedded binary (hello, captest, fs_server)");
+    print_cmd("run <file>",       "Load a program image from the FS and run it (execve-from-fd)");
     print_cmd("receive",          "Receive binary over serial (arms for spawn)");
     print_cmd("load",             "receive + spawn (serial, one step)");
     println("");
@@ -631,6 +633,55 @@ static void handle_command(char *cmd) {
         } else {
             println("Spawn failed after receive");
         }
+    } else if (strncmp(cmd, "run ", 4) == 0) {
+        /* execve-from-fd: read a program image from a file in the encrypted FS
+         * (over the fs_server, exactly like `cat`), then hand the bytes to
+         * SYS_SPAWN_IMAGE and wait for the child. The kernel validates the image
+         * with the same loader a named binary uses, so no new trust is placed in
+         * the file's contents. */
+        const char *name = cmd + 4;
+        while (*name == ' ') name++;
+        struct fs_request  rq = {0};
+        struct fs_response rp;
+        rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
+        fss_strcpy(rq.name, name);
+        if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) {
+            println("run: file not found (is fs_server running? try: spawn fs_server)");
+            return;
+        }
+        uint32_t ino = rp.ino;
+
+        struct fs_request sq = {0};
+        sq.op = FS_OP_STAT; sq.ino = ino;
+        if (fss_call(&sq, &rp) < 0 || rp.rc < 0) { println("run: stat failed"); return; }
+        uint32_t size = rp.size;
+        if (size == 0 || size > (256u * 1024u)) { println("run: bad image size"); return; }
+
+        unsigned char *buf = malloc(size);
+        if (!buf) { println("run: out of memory"); return; }
+
+        uint32_t off = 0;
+        int ok = 1;
+        while (off < size) {
+            uint32_t chunk = size - off;
+            if (chunk > FS_IO_MAX) chunk = FS_IO_MAX;
+            struct fs_request dq = {0};
+            dq.op = FS_OP_READ; dq.ino = ino; dq.offset = off; dq.len = chunk;
+            if (fss_call(&dq, &rp) < 0 || rp.rc <= 0) { ok = 0; break; }
+            uint32_t got = (uint32_t)rp.rc;
+            if (got > chunk) got = chunk;
+            memcpy(buf + off, rp.data, got);
+            off += got;
+            if (got < chunk) { ok = 0; break; }   /* short read: image truncated */
+        }
+        if (!ok) { println("run: read failed"); free(buf); return; }
+
+        int pid = sys_spawn_image(buf, size, 0, 0);
+        free(buf);                                 /* kernel already staged the image */
+        if (pid <= 0) { println("run: exec failed (not a valid program image?)"); return; }
+        print("run: pid="); print_decimal(pid); println("");
+        sys_wait(pid);
+        println("run: done");
     } else if (strncmp(cmd, "fss", 3) == 0) {
         if (strcmp(cmd, "fss_connect") == 0 || strcmp(cmd, "fss") == 0) {
             if (fss_connect() == 0) {

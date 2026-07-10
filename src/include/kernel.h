@@ -421,6 +421,13 @@ typedef struct tcb {
      * when the reply arrives and the waiter is resumed. */
     uint32_t ipc_reply_buf;    /* userspace ptr in the waiter's address space */
 
+    /* Block intent recorded by a syscall handler *before* the frame is saved.
+     * Non-zero (a TASK_BLOCKED_* value) means interrupt_handler64 must call
+     * ipc_block_switch, which saves the trap frame first and only then publishes
+     * the waiter so a cross-CPU notifier cannot patch a stale saved_ksp.
+     * Object is in blocked_on (reply ep or wait tid) or blocked_on_notif. */
+    uint32_t pending_block;
+
     /* Async signals. `pending_sigs` is a bitmask of queued signals (bit N =
      * signal N pending, 1..31), set by SYS_SIGNAL (gated on a CAP_TCB to this
      * task) or the fault path; the lowest-numbered *unmasked* one is delivered
@@ -657,11 +664,17 @@ int smp_get_online_count(void);
 uint64_t interrupt_handler64(struct interrupt_frame64 *frame);
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs);
 void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp);
-/* Called from interrupt_handler64 after a SYS_IPC_CALL sets the caller's state
- * to TASK_BLOCKED_IPC.  Saves the current interrupt frame as the blocked task's
- * saved_ksp, finds the next runnable task, switches to it, and returns that
- * task's saved_ksp so the ISR epilogue does iretq into the new task. */
+/* Called from interrupt_handler64 when the caller has pending_block set (or is
+ * already in a BLOCKED_* state). Saves the trap frame first, then publishes the
+ * waiter under the IPC lock so a cross-CPU wake always patches a valid frame.
+ * Returns the kernel %rsp for the ISR epilogue (next task, or same if already
+ * satisfied). */
 uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp);
+/* Publish pending_block after saved_ksp is valid. Returns 1 if the task is now
+ * blocked (switch away), 0 if the wait completed immediately (resume same). */
+int ipc_publish_pending_block(int cur);
+/* Undo a published block (no other runnable task to switch to). */
+void ipc_unpublish_block(int cur);
 void sched_enable_preemption(void);
 
 /* Signal delivery (idt.c): on a ring-3 fault, redirect the trap frame into the

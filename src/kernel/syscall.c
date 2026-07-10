@@ -417,23 +417,18 @@ static void h_signal(struct regs *r) {
 
 /* SYS_WAIT (17): block until task `tid` exits.
  *
- * The caller is suspended on the preemptive block/switch path — it marks itself
- * TASK_BLOCKED_WAIT and returns, and the int-0x80 epilogue saves its trap frame
- * and switches to the next runnable task via ipc_block_switch(), exactly like a
- * blocking SYS_IPC_CALL. task_teardown() wakes the waiter (state -> RUNNABLE,
- * runnable_ctx -> 1) when the target dies, and the waiter resumes via its saved
- * frame with eax already 0. This replaces the old cooperative yield() spin,
- * which mis-switched (swapped CR3/current but returned on the caller's own
- * kernel stack) whenever another ring-3 task was runnable. */
+ * Records a pending block only; ipc_block_switch saves the trap frame first and
+ * only then sets tasks[tid].waiter + TASK_BLOCKED_WAIT so a concurrent teardown
+ * cannot wake a task whose saved_ksp is not yet the SYS_WAIT frame. */
 static void h_wait(struct regs *r) {
     int cur = get_current_task();
     int tid = r->ebx;
     if (tid < 0 || tid >= MAX_TASKS || tid == cur) { r->eax = (uint32_t)-1; return; }
     if (tasks[tid].state == TASK_DEAD) { r->eax = 0; return; }  /* already gone: satisfied */
 
-    tasks[tid].waiter       = cur;
-    tasks[cur].state        = TASK_BLOCKED_WAIT;
-    tasks[cur].runnable_ctx = 0;
+    /* Intent only — not wake-visible until ipc_publish_pending_block. */
+    tasks[cur].blocked_on    = tid;
+    tasks[cur].pending_block = TASK_BLOCKED_WAIT;
     r->eax = 0;   /* the value the caller sees once task_teardown wakes it */
 }
 

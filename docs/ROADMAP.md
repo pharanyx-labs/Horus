@@ -135,9 +135,11 @@ production-grade and default.
   use the full-context trap-frame path (`sched_enter_user` /
   `sched_yield_switch` / `ipc_block_switch` / `preempt_on_tick`). The legacy
   cooperative `schedule()`/`yield()` switch has been removed.
-- **Concurrent-IPC correctness**: close the narrow block→save→wake window under
-  simultaneous cross-CPU IPC by publishing a blocked task's saved frame before it
-  becomes visible to a notifier on another core.
+- **Concurrent-IPC correctness** — *done*: syscall handlers only set
+  `pending_block`; `ipc_block_switch` writes `saved_ksp` first, barriers, then
+  `ipc_publish_pending_block` publishes the waiter (endpoint / SYS_WAIT link /
+  notification) so a cross-CPU wake always patches a valid trap frame. A reply
+  that races into the mailbox before publish is consumed immediately.
 
 ---
 

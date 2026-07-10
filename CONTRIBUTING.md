@@ -42,9 +42,9 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 ### C kernel work
 
 - **SMP maturity** (`src/kernel/scheduler.c`): multi-core works behind `SMP=1` over a shared runnable pool. Per-CPU run queues, scheduling priorities/fairness, and making it default-on are the next steps.
-- **Persistent-by-default filesystem** (`src/kernel/storage.c`): the encrypted ATA store works but is opt-in and keeps its per-block crypto metadata (nonces/tags) in RAM. Persisting that metadata and making ATA the default backend would give cross-reboot durability.
+- **Filesystem production hardening** (`src/kernel/storage.c`, `userspace/fs_server.c`): persistence on ATA is done; remaining work is a write-ahead intent log / `fsck`, multi-block bitmaps and double-indirect data for larger volumes, and per-file ownership/ACLs tied to the capability model.
 - **Concurrent / multi-client `fs_server`** (`userspace/fs_server.c`): the server handles one client at a time (single-slot mailbox); a proper multiplex loop would let multiple tasks use the filesystem concurrently.
-- **Richer signals** (`src/kernel/idt.c`, `syscall.c`): `SYS_SIGNAL` delivers async signals into a handler; per-signal masking, alternate signal stacks, and delivery to a *blocked* target remain.
+- **Notifications** (`src/kernel/syscall_ipc.c`): `SYS_NOTIFY` / `SYS_WAIT_NOTIFY` still return `SYS_ERR_NOSYS` after the capability check.
 
 ### Rust work
 

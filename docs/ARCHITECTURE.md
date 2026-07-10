@@ -168,7 +168,7 @@ A task registers its own handler with `SYS_SIGACTION`. Two delivery paths share 
 
 Pending signals are held in a full 1..31 bitmask, and `SYS_SIGMASK` blocks/unblocks signals (`SIG_KILL` excepted); `deliver_pending_signal` delivers the lowest-numbered *unmasked* pending signal, and a masked one stays queued until unblocked. A signal to a task parked in `SYS_WAIT` interrupts the wait (it returns `SYS_ERR_INTR`) and is delivered promptly rather than waiting on the awaited task.
 
-The handler entry is validated to the user code window in safe Rust (`rust_signal_handler_addr_ok`), a fault *inside* a handler is not re-delivered (the `in_signal` guard prevents loops), and the handler runs at ring 3 with unchanged privileges — so signals add recovery/notification without granting any new authority. The one remaining signal feature is an alternate (separate) signal stack; handlers currently run on the interrupted user stack.
+The handler entry is validated to the user code window in safe Rust (`rust_signal_handler_addr_ok`), a fault *inside* a handler is not re-delivered (the `in_signal` guard prevents loops), and the handler runs at ring 3 with unchanged privileges — so signals add recovery/notification without granting any new authority. `SYS_SIGALTSTACK` registers an alternate signal stack: a signal delivered while the task is not already on it enters the handler on `[ss_sp, ss_sp+ss_size)` (`SS_ONSTACK`), so a corrupt or overflowed primary stack cannot stop the handler running; the alternate stack is cleared on `SYS_SIGRETURN`.
 
 ---
 
@@ -182,7 +182,7 @@ Each endpoint is a **single-slot mailbox**. `SYS_IPC_SEND`/`SYS_IPC_RECV` are **
 
 ### Userspace filesystem server
 
-Filesystem *semantics* run in a ring-3 server (`userspace/fs_server.c`). The kernel provides only a **persistent, encrypted object store** — inode allocation and per-(inode, block) AEAD I/O via syscalls 56–61 (`SYS_FS_INODE_ALLOC`/`_FREE`, `SYS_FBLOCK_READ`/`_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE`), gated on `CAP_BLOCK_DEV` + uid 0. Encryption keys never leave the kernel TCB. The server builds directories (as inode data; root = inode 0), path resolution, and file sizes on top, and answers clients over IPC using the protocol in `include/fs_proto.h` (requests on endpoint 4, replies on 5). The block store (`storage.c`) is RAM-backed by default or ATA-backed with `STORAGE_ATA=1`. Proven end-to-end by `make smoke-fs`.
+Filesystem *semantics* run in a ring-3 server (`userspace/fs_server.c`). The kernel provides only a **persistent, encrypted object store** — inode allocation and per-(inode, block) AEAD I/O via syscalls 56–61 (`SYS_FS_INODE_ALLOC`/`_FREE`, `SYS_FBLOCK_READ`/`_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE`), gated on `CAP_BLOCK_DEV` + uid 0. Encryption keys never leave the kernel TCB. The server builds directories (as inode data; root = inode 0), path resolution, and file sizes on top, and answers clients over IPC using the protocol in `include/fs_proto.h` (requests on endpoint 4, replies on 5). The block store (`storage.c`) probes for an ATA disk at boot and uses the encrypted ATA backend when one is present (files and per-block crypto metadata survive reboot; the volume is sealed until login), falling back to an ephemeral RAM vdisk when none is attached. Proven end-to-end by `make smoke-fs` and `make smoke-fs-persist`.
 
 A separate, legacy **in-memory capfs** (`SYS_FS_*`, syscalls 38–45) also exists; reconciling it with the server is tracked work.
 
@@ -272,4 +272,4 @@ The build system sets `SOURCE_DATE_EPOCH=1609459200` (2021-01-01 UTC) and passes
 
 ### What the design does not yet provide
 
-See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: the filesystem has no persistent-by-default backing (the encrypted-block store exists but the RAM vdisk is the default); IPC is single-slot and lacks multi-client reply routing; SMP works behind a build gate but is not default-on and has no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks; and image-base ASLR entropy is bounded by the 32-bit low-memory window.
+See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: the filesystem is persistent on ATA but still single-client with no per-file ACLs (and no crash-recovery intent log); IPC is single-slot and lacks multi-client reply routing; SMP works behind a build gate but is not default-on and has no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks; and image-base ASLR entropy is bounded by the 32-bit low-memory window.

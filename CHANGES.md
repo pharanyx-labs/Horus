@@ -72,10 +72,10 @@ Application-processor bringup, a LAPIC-timer per-CPU preemptive scheduler, IPC +
 ### Known incomplete
 
 - IPC: single-slot mailboxes, one in-flight request; notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) return `SYS_ERR_NOSYS`.
-- Filesystem: not persistent-by-default (RAM vdisk); single-client `fs_server`, no per-file ACLs; legacy capfs not yet reconciled with the server.
+- Filesystem: single-client `fs_server` (no concurrent multi-client IPC), no per-file ownership/ACLs; legacy capfs not yet reconciled with the server; no write-ahead intent log / `fsck`; volume size capped by single-bitmap geometry.
+- Storage: persistent-by-default on ATA is done; residual gaps are crash resilience and larger volumes (see above). Diskless boots still use the ephemeral RAM vdisk.
 - SMP: works behind `SMP=1` but not default-on; shared runnable pool, no per-CPU queues/priorities, no flush-on-switch.
-- Signals: no masking, no alternate stack, no wake of a *blocked* target.
 - Bounded load-base ASLR entropy (~9 bits) from the 32-bit userspace window.
-- Deeper booted-kernel integration tests (beyond the smoke self-tests) and fuzzing.
+- Deeper booted-kernel integration tests (beyond the smoke self-tests) and fuzzing; `smoke-fs` / `smoke-newlib` are local targets, not yet gated in CI.
 
 See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for detail.

@@ -591,8 +591,18 @@ extern spinlock_t page_lock;
 
 int  get_current_task(void);
 void set_current_task(int v);
-void schedule(void);
+/* Request a voluntary yield from a syscall handler; interrupt_handler64 performs
+ * the full-context switch via sched_yield_switch. Not a cooperative mid-kernel switch. */
 void yield(void);
+/* Set by yield() to the yielding task id; consumed by interrupt_handler64. -1 = none. */
+extern volatile int g_want_yield;
+/* Idle this CPU (sti; hlt loop). The only inter-task path is full-context. */
+void __attribute__((noreturn)) kernel_idle(void);
+/* Enter a task that already has a fabricated/saved trap frame (do_spawn /
+ * sched_prepare_user_context). Noreturn: pop+iretq into ring 3. */
+void __attribute__((noreturn)) sched_enter_user(int tid);
+/* Voluntary yield with a live trap frame; returns the kernel %rsp for the ISR epilogue. */
+uint64_t sched_yield_switch(int cur, uint64_t frame_rsp);
 /* Terminate task `id`: wake any SYS_WAIT waiter, drop its signal handler, mark it
  * dead (state 0) and release its SMP running-CPU guard. Does NOT switch away from
  * the caller — the SYS_EXIT/SYS_KILL paths handle that. */

@@ -117,10 +117,8 @@ static int do_spawn_inner(void) {
     }
     spin_unlock(&cap_lock);
 
-    /* Fabricate an initial resumable trap frame so the preemptive scheduler can
-     * time-slice this task on the timer tick (entry/esp/cr3 are all final now).
-     * The initial shell is still launched explicitly via lretq below; for it
-     * this frame is simply overwritten on its first preemption. */
+    /* Fabricate an initial resumable trap frame so sched_enter_user and the
+     * preemptive scheduler can iretq into this task (entry/esp/cr3 are final). */
     sched_prepare_user_context(new_id, tasks[new_id].eip,
                                tasks[new_id].esp ? tasks[new_id].esp : 0x007ff000ULL);
 

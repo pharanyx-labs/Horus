@@ -92,14 +92,6 @@ What remains:
 
 The filesystem works end-to-end but is opt-in, single-client, and permission-less.
 
-- **Root-directory `readdir`**: reading the root directory (inode 0) over the
-  server enumerates thousands of spurious empty entries, so the shell's `ls` on
-  `/` floods blank lines — while `mkdir`/`touch`/`cat`/`lookup` all work and
-  `readdir` of a freshly-created *subdirectory* is clean (`make smoke-fs`). The
-  likely cause is that inode 0 is never initialised as an empty directory at
-  format (sub-inodes are zeroed by `storage_alloc_inode`, but the root is
-  special-cased), leaving a garbage size/blocks. Needs an instrumented build to
-  confirm, then a one-time root-inode init at format/mount.
 - **Persistent by default**: make the encrypted ATA store (`STORAGE_ATA=1`) the
   default backend instead of the in-RAM virtual disk, and persist the per-block
   crypto metadata (nonces/tags) so files survive a reboot.

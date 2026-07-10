@@ -363,13 +363,13 @@ static void update_meta_hmac(void)
     do_block_write(0, &mfs->sb);   /* superblock is always block 0 */
 }
 
-#ifdef STORAGE_ATA
-/* ATA-backed block device. A block is one 512-byte LBA sector (BLOCK_SIZE), so
- * the mapping is 1:1. Selected at build time with STORAGE_ATA=1. The per-block
- * crypto metadata (nonce/tag) is persisted: storage_encrypt_block flushes each
- * updated meta sector (flush_meta_block) and storage_unlock reloads the region
- * (load_meta_region) and verifies its HMAC, so files survive a reboot — proven
- * by `make smoke-fs-persist`. */
+/* ATA-backed block device (persistent). A block is one 512-byte LBA sector
+ * (BLOCK_SIZE), so the mapping is 1:1. The per-block crypto metadata (nonce/tag)
+ * is persisted: storage_encrypt_block flushes each updated meta sector
+ * (flush_meta_block) and storage_unlock reloads the region (load_meta_region)
+ * and verifies its HMAC, so files survive a reboot — proven by
+ * `make smoke-fs-persist`. Compiled unconditionally; storage_init() selects it
+ * at runtime when a disk is actually present. */
 static int atadisk_read(struct block_device *bd, uint64_t block, void *buf) {
     (void)bd;
     return ata_read((uint32_t)block, buf, 1);
@@ -385,26 +385,29 @@ static struct block_device g_ata_bd = {
     .write_block = atadisk_write,
     .private = 0,
 };
-#endif
 
 int storage_init(void) {
-#ifdef STORAGE_ATA
-    /* Persistent backing: probe the ATA disk.  If a valid v4 volume exists,
-     * mount it (key derivation is deferred to storage_unlock at login time).
-     * If not, record the device so storage_unlock can format+seal it with the
-     * user's password when the first login succeeds — disk_key is never
-     * committed to disk without a KEK. */
-    ata_init();
-    current_bd = &g_ata_bd;
-    if (storage_mount(&g_ata_bd) != 0) {
-        g_needs_format    = 1;
-        g_needs_format_bd = &g_ata_bd;
+    /* Persistent by default: probe for an ATA disk. If one is attached, use the
+     * encrypted ATA store — it comes up mounted-but-locked and disk_key is only
+     * unwrapped at login (storage_unlock), so files survive a reboot but the
+     * volume stays sealed until a user authenticates. A fresh or foreign disk is
+     * formatted+sealed at that first login (g_needs_format). If no disk is present
+     * — a diskless or CI boot — fall back to the ephemeral in-RAM vdisk, which is
+     * formatted and unlocked immediately with a per-boot throwaway key so the
+     * system still comes up without a login. ata_init()'s probe is bounded, so a
+     * floating/absent bus can never hang the boot. */
+    if (ata_init()) {
+        current_bd = &g_ata_bd;
+        if (storage_mount(&g_ata_bd) != 0) {
+            g_needs_format    = 1;   /* no valid v4 volume yet: seal it at first login */
+            g_needs_format_bd = &g_ata_bd;
+        }
+        return 0;                    /* unlock deferred to login */
     }
-    return 0;
-#else
-    /* Ephemeral in-RAM virtual disk: format and unlock immediately using a
-     * per-boot random password (no user input needed; the vdisk is never
-     * persisted so the password is discarded after unlock). */
+
+    /* No disk: ephemeral in-RAM virtual disk, formatted and unlocked immediately
+     * with a per-boot random password (the vdisk is never persisted, so the
+     * password is discarded after unlock and no login is required to use it). */
     g_vdisk.data        = g_vdisk_buffer;
     g_vdisk.size        = sizeof(g_vdisk_buffer);
     g_vdisk.block_count = BLOCKS_PER_DISK;
@@ -425,7 +428,6 @@ int storage_init(void) {
     int rc = storage_unlock((const char *)boot_pass, sizeof(boot_pass));
     secure_zero(boot_pass, sizeof(boot_pass));
     return rc;
-#endif
 }
 
 static int bitmap_test(const uint8_t *bitmap, uint64_t bit) {

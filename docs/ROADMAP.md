@@ -40,7 +40,10 @@ five runtime self-tests in CI. Already in place:
   AEAD for encryption-at-rest, all in safe `no_std` Rust.
 - **Filesystem** — a ring-3 `fs_server` over an encrypted object store, reached
   over IPC; real `ls` / `cat` / `mkdir` / `rm` / `touch` / redirection from the
-  shell (`make smoke-fs`).
+  shell. Persistent by default: the kernel probes for an ATA disk at boot and uses
+  the encrypted store (files survive a reboot, unsealed at login) when one is
+  present, falling back to an in-RAM disk when it is not (`make smoke-fs`,
+  `make smoke-fs-persist`).
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer
   (`make smoke-newlib`).
@@ -96,11 +99,15 @@ automated client end-to-end).
 
 ## Phase 2 — A production filesystem
 
-The filesystem works end-to-end but is opt-in, single-client, and permission-less.
+The filesystem now persists by default and works end-to-end, but is still
+single-client and permission-less. **Persistence is done:** the shipped kernel
+probes for an ATA disk at boot and uses the encrypted store when one is present
+(the per-block crypto metadata is flushed on write and reloaded + HMAC-verified at
+login, so files survive a reboot), falling back to the ephemeral RAM vdisk when no
+disk is attached; a persistent disk comes up sealed and is unwrapped at login.
+Proven by `make smoke-fs-persist` (write on boot 1, verify on boot 2 against the
+same disk image). What remains:
 
-- **Persistent by default**: make the encrypted ATA store (`STORAGE_ATA=1`) the
-  default backend instead of the in-RAM virtual disk, and persist the per-block
-  crypto metadata (nonces/tags) so files survive a reboot.
 - **Concurrency**: multi-client `fs_server` IPC — it currently serves one request
   at a time.
 - **Ownership and permissions**: per-file ownership/permission bits tied to the

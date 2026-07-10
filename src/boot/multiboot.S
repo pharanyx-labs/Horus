@@ -491,3 +491,15 @@ embedded_fsclient_bin_start:
 .global embedded_fsclient_bin_end
 embedded_fsclient_bin_end:
 #endif
+
+#if defined(INIT_FS_SELFTEST) && !defined(FS_SELFTEST)
+/* fsclient for the init-delegated FS integration test (INIT_FS_SELFTEST). The
+ * fs_server is already embedded above (the #ifndef FS_SELFTEST block); only the
+ * client needs adding here. */
+.align 16
+.global embedded_fsclient_bin_start
+embedded_fsclient_bin_start:
+.incbin "userspace/fsclient.bin"
+.global embedded_fsclient_bin_end
+embedded_fsclient_bin_end:
+#endif

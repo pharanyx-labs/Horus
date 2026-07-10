@@ -168,6 +168,16 @@ int do_spawn(void) {
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
 
     if (pid > 0) grant_child_tcb_cap(caller_task, pid);
+#ifdef INIT_FS_SELFTEST
+    /* INIT_FS_SELFTEST: the init-launched fs_server/fsclient must run as the
+     * spawner's uid (init is uid 0) so they pass the object-store's uid==0 gate.
+     * Children otherwise keep their (BSS-zero) slot uid; gated on the test build
+     * so the default spawn path is unchanged. */
+    if (pid > 0) {
+        tasks[pid].uid = tasks[caller_task].uid;
+        tasks[pid].gid = tasks[caller_task].gid;
+    }
+#endif
     return pid;
 }
 

@@ -388,6 +388,20 @@ void spawn_initial_userspace_init(void) {
         cap_install_from_root(pid, 7, 7, 0);   /* root[7] = CAP_AUDIT             */
         cap_install_from_root(pid, 8, 8, 0);   /* root[8] = CAP_CONSOLE           */
         cap_install_from_root(pid, 9, 9, 0);   /* root[9] = CAP_ENCRYPTED_STORAGE */
+#ifdef INIT_FS_SELFTEST
+        /* INIT_FS_SELFTEST: endow init to launch + provision the userspace
+         * fs_server purely by delegation (SYS_CAP_GRANT) — replacing the FS
+         * self-test's direct root-cnode installs. init holds every cap it hands
+         * the server: a CAP_USER admin cap (slot 6, the SYS_REGISTER_FS_SERVER
+         * gate); two CAP_ENDPOINT caps for the server's coarse IPC gate (slot 3)
+         * and its listen endpoint (slot 4, object FS_EP_REQ=4); and an all-rights
+         * cap for the object-store gate (slot 7). Slots 10-12 are free slots init
+         * delegates from; see provision_and_launch_fs() in userspace/init.c. */
+        cap_install_from_root(pid, 6, 6, 0);    /* root[6] = CAP_USER (ALL)                */
+        cap_install_from_root(pid, 10, 2, 0);   /* root[2] = CAP_ENDPOINT, object 0 (gate)  */
+        cap_install_from_root(pid, 11, 2, 4);   /* root[2] = CAP_ENDPOINT, object FS_EP_REQ */
+        cap_install_from_root(pid, 12, 8, 0);   /* root[8] = all-rights cap (block-dev bit) */
+#endif
 
         uint64_t rip  = (uint64_t)tasks[pid].eip;
         uint64_t rspv = tasks[pid].esp ? (uint64_t)tasks[pid].esp : 0x007ff000ULL;

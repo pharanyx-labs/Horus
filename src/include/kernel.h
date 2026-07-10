@@ -200,6 +200,7 @@ void users_init(void);
 #define SYS_CAP_GRANT          65   /* delegate a capability into a supervised child's cspace */
 #define SYS_SIGNAL             66   /* send a signal to a task held via CAP_TCB (async delivery) */
 #define SYS_SIGMASK            67   /* (how, mask) -> old mask; block/unblock this task's own signals */
+#define SYS_SPAWN_ARG          68   /* () -> the one-word argument this task was spawned with */
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {
@@ -422,7 +423,12 @@ typedef struct tcb {
     uint32_t pending_sigs;
     uint32_t sig_mask;
 
-    uint8_t  padding[32];
+    /* One-word argument handed to a task at spawn (SYS_SPAWN edx), retrieved by
+     * the child via SYS_SPAWN_ARG. A minimal parameter-passing channel (full
+     * argv is future work). Carved from padding so the struct size is unchanged. */
+    uint32_t spawn_arg;
+
+    uint8_t  padding[28];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];

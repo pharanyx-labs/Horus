@@ -54,6 +54,25 @@ void _start(void) {
     /* --- SYS_KILL: terminate the forever-looping "looper" via its TCB cap --- */
     int loop = find_alive("looper");
     if (loop < 0)            { report("PROC_SELFTEST: FAIL find-looper\n"); sys_exit(); }
+
+    /* --- async signal delivery to a SYS_WAIT-blocked task. Spawn "sigwaiter"
+     * with the looper's id as its argument; it registers a handler and blocks in
+     * sys_wait() on the (immortal) looper — so the only way its wait can return
+     * is if a signal interrupts it. We then signal sigwaiter: the wait must
+     * return SYS_ERR_INTR and the handler must run, so it prints "sigwait OK" and
+     * exits (old behaviour: a signal never lands on a blocked task, so it would
+     * hang). Done before we kill the looper it is parked on. --- */
+    int sw = sys_spawn_named_arg("sigwaiter", (uint32_t)loop);
+    if (sw <= 0) { report("PROC_SELFTEST: FAIL sigwait-spawn\n"); sys_exit(); }
+    for (int i = 0; i < 4000; i++) settle();   /* let it register + block in the wait */
+    if (sys_send_signal(sw, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sigwait-send\n"); sys_exit(); }
+    int swd = 0; struct task_info swi;
+    for (int i = 0; i < 12000; i++) {
+        if (sys_get_task_info(sw, &swi) == 0 && swi.state == 0) { swd = 1; break; }
+        settle();
+    }
+    if (!swd) { report("PROC_SELFTEST: FAIL sigwait-stuck\n"); sys_exit(); }
+
     if (sys_kill(loop) != 0) { report("PROC_SELFTEST: FAIL kill-rc\n");     sys_exit(); }
 
     int dead = 0;

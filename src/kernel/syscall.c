@@ -165,6 +165,8 @@ extern uint8_t embedded_sigtarget_bin_start[];
 extern uint8_t embedded_sigtarget_bin_end[];
 extern uint8_t embedded_faulter_bin_start[];
 extern uint8_t embedded_faulter_bin_end[];
+extern uint8_t embedded_sigwaiter_bin_start[];
+extern uint8_t embedded_sigwaiter_bin_end[];
 #endif
 
 static const struct embedded_binary embedded_binaries[] = {
@@ -185,6 +187,9 @@ static const struct embedded_binary embedded_binaries[] = {
     /* faulter: child that takes an unhandled #UD fault, so the driver can verify
      * a SYS_WAIT waiter is woken on a *fault* death too. PROC_SELFTEST only. */
     { "faulter",   embedded_faulter_bin_start,  embedded_faulter_bin_end  },
+    /* sigwaiter: blocks in SYS_WAIT on an immortal target so the driver can
+     * verify a signal interrupts the blocked wait. PROC_SELFTEST only. */
+    { "sigwaiter", embedded_sigwaiter_bin_start, embedded_sigwaiter_bin_end},
 #endif
     { NULL, NULL, NULL }
 };
@@ -1449,6 +1454,7 @@ static void h_exec_named(struct regs *r) {
     tasks[cur].in_signal    = 0;
     tasks[cur].pending_sigs = 0;
     tasks[cur].sig_mask     = 0;
+    tasks[cur].spawn_arg    = 0;
     create_user_pagedir(cur);
 
     load_staged_image_into(cur, load_base);   /* sets eip/heap/name, disarms */
@@ -2636,6 +2642,24 @@ static void h_kill(struct regs *r) {
     r->eax = 0;
 }
 
+/* A deliverable signal for a task blocked in SYS_WAIT must interrupt the wait so
+ * the handler runs promptly, rather than only when the awaited task eventually
+ * exits (which may be never). Rewrite the blocked task's saved SYS_WAIT trap
+ * frame to return SYS_ERR_INTR, drop the back-link from whatever it was waiting
+ * on (so that task's teardown won't also try to wake it), and make it runnable.
+ * It resumes from the wait with EINTR, and the queued signal is then delivered on
+ * its return to ring 3 (deliver_pending_signal). */
+static void signal_interrupt_wait(int t) {
+    struct interrupt_frame64 *f = (struct interrupt_frame64 *)tasks[t].saved_ksp;
+    if (!f) return;
+    f->rax = (uint64_t)(uint32_t)SYS_ERR_INTR;
+    for (int w = 1; w < MAX_TASKS; w++) {
+        if (tasks[w].waiter == t) { tasks[w].waiter = -1; break; }
+    }
+    tasks[t].state        = TASK_RUNNABLE;
+    tasks[t].runnable_ctx = 1;
+}
+
 /* SYS_SIGNAL (66): send signal `ecx` to task `ebx`. Same authority as SYS_KILL —
  * a CAP_TCB to the target (or CAP_USER admin), enforced here since the target is
  * dynamic. If the target registered a handler it is delivered asynchronously:
@@ -2658,6 +2682,12 @@ static void h_signal(struct regs *r) {
         task_teardown(target);                 /* default action: terminate */
     } else {
         tasks[target].pending_sigs |= (1u << signum);   /* async: delivered on next resume */
+        /* If it's parked in SYS_WAIT and this signal isn't masked, interrupt the
+         * wait so the handler runs promptly instead of waiting on the target. */
+        if (tasks[target].state == TASK_BLOCKED_WAIT &&
+            !(tasks[target].sig_mask & (1u << signum))) {
+            signal_interrupt_wait(target);
+        }
     }
     r->eax = 0;
 }
@@ -3387,10 +3417,18 @@ static void h_spawn(struct regs *r) {
         }
     }
     int pid = do_spawn();
+    /* Hand the child its one-word spawn argument (edx), retrievable via
+     * SYS_SPAWN_ARG. Zero for callers that don't pass one. */
+    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->edx;
     /* Don't switch to the child here: do_spawn returns with the caller restored
      * as the current task, and the child (runnable) is picked up by the timer.
      * The old cooperative schedule() mis-handles a ring-3 caller mid-syscall. */
     r->eax = (uint32_t)pid;
+}
+
+/* SYS_SPAWN_ARG (68): return the one-word argument this task was spawned with. */
+static void h_spawn_arg(struct regs *r) {
+    r->eax = tasks[get_current_task()].spawn_arg;
 }
 
 /* SYS_GETUID (29). */
@@ -3602,7 +3640,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 68
+#define SYSCALL_TABLE_SIZE 69
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -3637,6 +3675,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_CAP_GRANT]                = { h_cap_grant,               SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
     [SYS_SIGNAL]                   = { h_signal,                  SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
     [SYS_SIGMASK]                  = { h_sigmask,                 SC_NONE, 0, SC_ANYTYPE }, /* self: block/unblock own signals */
+    [SYS_SPAWN_ARG]                = { h_spawn_arg,               SC_NONE, 0, SC_ANYTYPE }, /* self: read own spawn argument */
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
@@ -3681,13 +3720,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_SIGMASK is currently the highest syscall number. Adding a higher one
+ * SYS_SPAWN_ARG is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_SIGMASK + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_SPAWN_ARG + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

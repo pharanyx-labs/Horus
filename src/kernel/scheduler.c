@@ -253,9 +253,9 @@ int this_cpu(void);   /* defined below */
 /* Gate for cross-CPU task scheduling. APs come online and take timer ticks
  * immediately, but they only start *pulling runnable tasks* once the BSP has
  * populated the runnable pool and set this — which closes the window where an
- * AP could grab a task the BSP launched (via lretq) but not yet claimed. Normal
- * SMP boot leaves it 0 (APs idle, BSP runs the shell); the SMP self-test turns
- * it on after spawning its pool of workers. */
+ * AP could grab a task the BSP launched (via sched_enter_user) but not yet
+ * claimed. Normal SMP boot leaves it 0 (APs idle, BSP runs the shell); the SMP
+ * self-test turns it on after spawning its pool of workers. */
 volatile int smp_sched_enabled = 0;
 
 /* Raw test-and-set on the scheduler lock for use *inside* an interrupt handler,
@@ -477,148 +477,134 @@ void print_boot_timestamp(void) {
     print(" ] ");
 }
 
-void context_switch(int next) {
-    
-    int cur = get_current_task();
-    if (next == cur || tasks[next].state != 1) return;
+/* Request a voluntary yield from a syscall handler. interrupt_handler64 sees
+ * g_want_yield matching the caller and performs sched_yield_switch on the live
+ * trap frame — the same full-context path as preemption and blocking IPC.
+ * Never switches from mid-kernel cooperative code (that path is gone). */
+volatile int g_want_yield = -1;
 
-    asm volatile(
-        "xor %%eax, %%eax\n"
-        "xor %%ebx, %%ebx\n"
-        "xor %%ecx, %%ecx\n"
-        "xor %%edx, %%edx\n"
-        ::: "eax", "ebx", "ecx", "edx", "memory"
-    );
-
-    asm volatile("mov %%esp, %0" : "=m"(tasks[cur].esp) : : "memory");
-    tasks[cur].eip = (addr_t)__builtin_return_address(0);
-
-    set_current_task(next);
-
-    uintptr_t kstack_top = tasks[next].kernel_stack_top;
-    if (kstack_top == 0) {
-        kstack_top = (addr_t)&kernel_stacks[next][KERNEL_STACK_SIZE - 16];
-    }
-    set_tss_kernel_stack(kstack_top);
-    current_kernel_stack_top = kstack_top;
-
-    if (tasks[next].cr3 != 0 && next != 0) switch_cr3(tasks[next].cr3);
+void yield(void) {
+    g_want_yield = get_current_task();
 }
 
-void schedule(void) {
-    scheduler_lock_acquire();
-    int cur = get_current_task();
+/* Idle the current CPU. The only way between tasks is the full-context path
+ * (timer preemption, ipc_block_switch, sched_yield_switch, sched_enter_user). */
+void __attribute__((noreturn)) kernel_idle(void) {
+    for (;;) __asm__ volatile ("sti; hlt");
+}
 
-    
+/* Enter a task that already has a fabricated/saved full trap frame
+ * (sched_prepare_user_context / do_spawn). Installs CR3, TSS RSP0, and current
+ * task, then runs the same pop+iretq epilogue as isr_common_stub64 so first
+ * entry matches every later resume. Does not return. */
+void __attribute__((noreturn)) sched_enter_user(int tid) {
+    if (tid <= 0 || tid >= MAX_TASKS ||
+        !tasks[tid].runnable_ctx || !tasks[tid].saved_ksp || !tasks[tid].cr3) {
+        kernel_idle();
+    }
+
+#ifdef SMP
+    sched_raw_lock();
+    int cpu = this_cpu();
+    task_running_cpu[tid] = cpu;
+#endif
+    switch_cr3(tasks[tid].cr3);
+    uint64_t kstop = task_kstack_top(tid);
+    set_tss_kernel_stack(kstop);
+#ifdef SMP
+    if (cpu == 0) current_kernel_stack_top = kstop;
+#else
+    current_kernel_stack_top = kstop;
+#endif
+    set_current_task(tid);
+    uint64_t ksp = tasks[tid].saved_ksp;
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+
+    /* Mirror isr_common_stub64's epilogue: load the saved frame as %rsp first
+     * (before clobbering any GPRs with segment selectors), set user data
+     * segments, pop GPRs, skip int_no/err_code, iretq into ring 3. */
+    __asm__ volatile (
+        "mov %0, %%rsp\n\t"
+        "mov $0x33, %%ax\n\t"
+        "mov %%ax, %%ds\n\t"
+        "mov %%ax, %%es\n\t"
+        "mov %%ax, %%fs\n\t"
+        "mov %%ax, %%gs\n\t"
+        "popq %%r15\n\t"
+        "popq %%r14\n\t"
+        "popq %%r13\n\t"
+        "popq %%r12\n\t"
+        "popq %%r11\n\t"
+        "popq %%r10\n\t"
+        "popq %%r9\n\t"
+        "popq %%r8\n\t"
+        "popq %%rbp\n\t"
+        "popq %%rdi\n\t"
+        "popq %%rsi\n\t"
+        "popq %%rdx\n\t"
+        "popq %%rcx\n\t"
+        "popq %%rbx\n\t"
+        "popq %%rax\n\t"
+        "addq $16, %%rsp\n\t"
+        "iretq\n\t"
+        :: "r"(ksp) : "memory", "cc", "rax"
+    );
+    __builtin_unreachable();
+}
+
+/* Voluntary yield with a live trap frame (SYS_YIELD). Save the caller's frame
+ * and switch to another runnable user task if one exists; otherwise resume the
+ * same frame. Returns the kernel %rsp for the ISR epilogue. */
+uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
+    if (cur <= 0 || cur >= MAX_TASKS) return frame_rsp;
+
+#ifdef SMP
+    sched_raw_lock();
+    int cpu = this_cpu();
+#endif
     int next = -1;
-    for (int i = 0; i < MAX_TASKS; i++) {
-        int cand = (cur + 1 + i) % MAX_TASKS;
-        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && cand != 0) {
+    for (int i = 1; i < MAX_TASKS; i++) {
+        int cand = (cur + i) % MAX_TASKS;
+        if (cand == 0 || cand == cur) continue;
+        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
+            tasks[cand].runnable_ctx && tasks[cand].saved_ksp
+#ifdef SMP
+            && task_running_cpu[cand] < 0
+#endif
+           ) {
             next = cand;
             break;
         }
     }
     if (next < 0) {
-        next = (cur + 1) % MAX_TASKS;
-        while (next != cur && tasks[next].state != 1) {
-            next = (next + 1) % MAX_TASKS;
-        }
-    }
-    if (next < 0 || tasks[next].state != 1) {
-        next = cur;
+#ifdef SMP
+        sched_raw_unlock();
+#endif
+        return frame_rsp;
     }
 
-    if (next != cur && tasks[next].cr3 != 0 && next != 0) {
-        uintptr_t kstack_top = tasks[next].kernel_stack_top;
-        if (kstack_top == 0) {
-            kstack_top = (addr_t)&kernel_stacks[next][KERNEL_STACK_SIZE - 16];
-        }
-        set_tss_kernel_stack(kstack_top);
-        current_kernel_stack_top = kstack_top;
-        int do_launch = (cur == 0);
-        if (!do_launch) {
-            switch_cr3(tasks[next].cr3);
-        }
-        set_current_task(next);
-        addr_t user_rsp = tasks[next].esp ? tasks[next].esp : (addr_t)0x007ff000;
-        uint64_t launch_cr3 = tasks[next].cr3;
-        scheduler_lock_release();
-        if (do_launch) {
-
-            __asm__ volatile (
-                "movw $0x3f8, %%dx\n"
-                "movb $'=', %%al; outb %%al, %%dx\n"
-                "movb $'=', %%al; outb %%al, %%dx\n"
-                "movb $'=', %%al; outb %%al, %%dx\n"
-                "movb $' ', %%al; outb %%al, %%dx\n"
-                "movb $'H', %%al; outb %%al, %%dx\n"
-                "movb $'o', %%al; outb %%al, %%dx\n"
-                "movb $'r', %%al; outb %%al, %%dx\n"
-                "movb $'u', %%al; outb %%al, %%dx\n"
-                "movb $'s', %%al; outb %%al, %%dx\n"
-                "movb $' ', %%al; outb %%al, %%dx\n"
-                "movb $'L', %%al; outb %%al, %%dx\n"
-                "movb $'o', %%al; outb %%al, %%dx\n"
-                "movb $'g', %%al; outb %%al, %%dx\n"
-                "movb $'i', %%al; outb %%al, %%dx\n"
-                "movb $'n', %%al; outb %%al, %%dx\n"
-                "movb $0x0a, %%al; outb %%al, %%dx\n"
-                ::: "rax", "rdx", "memory"
-            );
-            {
-                uint64_t rip = (uint64_t)tasks[next].eip;
-                uint64_t rspv = (uint64_t)user_rsp;
-                uint64_t ucr3 = launch_cr3;
-                __asm__ volatile (
-                    "mov %2, %%cr3\n\t"
-                    "mov $0x33, %%ax\n\t"
-                    "mov %%ax, %%ds\n\t"
-                    "mov %%ax, %%es\n\t"
-                    "mov %%ax, %%fs\n\t"
-                    "mov %%ax, %%gs\n\t"
-                    "mov %1, %%rsp\n\t"
-                    "pushq $0x33\n\t"
-                    "pushq %1\n\t"
-                    "pushq $0x2b\n\t"
-                    "pushq %0\n\t"
-                    "lretq\n\t"
-                    :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "ax"
-                );
-            }
-        }
-        return;
-    }
-
-    if (next != cur) {
-        if (tasks[next].cr3 != 0 && next != 0) {
-            
-            switch_cr3(tasks[next].cr3);
-            uintptr_t kstack_top = tasks[next].kernel_stack_top;
-            if (kstack_top == 0) {
-                kstack_top = (addr_t)&kernel_stacks[next][KERNEL_STACK_SIZE - 16];
-            }
-            set_tss_kernel_stack(kstack_top);
-            current_kernel_stack_top = kstack_top;
-            set_current_task(next);
-        } else if (tasks[cur].cr3 != 0) {
-            
-            
-            
-            set_current_task(next);
-        } else {
-            context_switch(next);
-        }
-    } else if (tasks[0].state != 1) {
-        tasks[0].state = 1;
-        if (0 != cur) {
-            context_switch(0);
-        }
-    }
-    scheduler_lock_release();
-}
-
-void yield(void) {
-    schedule();
+    tasks[cur].saved_ksp    = frame_rsp;
+    tasks[cur].runnable_ctx = 1;
+#ifdef SMP
+    task_running_cpu[cur]   = -1;
+    task_running_cpu[next]  = cpu;
+#endif
+    switch_cr3(tasks[next].cr3);
+    uint64_t kstop = task_kstack_top(next);
+    set_tss_kernel_stack(kstop);
+#ifdef SMP
+    if (cpu == 0) current_kernel_stack_top = kstop;
+#else
+    current_kernel_stack_top = kstop;
+#endif
+    set_current_task(next);
+    uint64_t ksp = tasks[next].saved_ksp;
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+    return ksp;
 }
 
 /* Terminate task `id`: wake a SYS_WAIT waiter blocked on it, drop its signal

@@ -104,7 +104,7 @@ extern void isr44(void); extern void isr45(void); extern void isr46(void); exter
 extern void isr128(void);
 
 extern tcb_t tasks[MAX_TASKS];
-extern void schedule(void);
+
 #ifdef SMP
 extern void lapic_eoi(void);                    /* scheduler.c */
 extern volatile unsigned long ap_timer_ticks;   /* scheduler.c */
@@ -112,7 +112,8 @@ extern void smp_ack_shootdown(void);            /* scheduler.c */
 #endif
 
 void interrupt_handler(struct regs *r);
-void page_fault_handler(struct regs *r);
+/* Returns non-zero kernel %rsp to resume on (task switch), or 0 to keep frame. */
+uint64_t page_fault_handler(struct regs *r);
 
 void segfault_park(void);
 
@@ -175,7 +176,8 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
     }
 
     if (vector == 14) {
-        page_fault_handler((struct regs *)frame);
+        uint64_t pf_rsp = page_fault_handler((struct regs *)frame);
+        if (pf_rsp) return pf_rsp;
     } else if (vector == 32) {
         /* Timer (IRQ0). EOI first so the PIC keeps delivering ticks even
          * across a task switch, then let the preemptive scheduler decide
@@ -260,6 +262,11 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         /* SYS_WAIT_NOTIFY returns the badge in ebx so the wrapper can read it
          * from the register without needing a cross-address-space pointer copy. */
         frame->rbx = (uint64_t)r.ebx;
+        /* SYS_YIELD: voluntary full-context switch (same path as preemption). */
+        if (g_want_yield == ipc_caller) {
+            g_want_yield = -1;
+            return sched_yield_switch(ipc_caller, (uint64_t)frame);
+        }
         /* SYS_IPC_CALL / SYS_WAIT_NOTIFY / SYS_WAIT may have blocked the task.
          * If so, save the frame and switch to the next runnable task exactly as
          * the timer ISR would.  All blocking states use the same switch path. */
@@ -517,7 +524,7 @@ void ap_load_idt(void) {
     __asm__ volatile ("lidt %0" :: "m"(idt64_ptr) : "memory");
 }
 
-void page_fault_handler(struct regs *r) {
+uint64_t page_fault_handler(struct regs *r) {
     addr_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
 
@@ -531,10 +538,10 @@ void page_fault_handler(struct regs *r) {
          * see the page already present (-2) and mis-route the fault to the kill path. */
         int action = rust_handle_demand_page_fault(fault_addr, err, 0, 1);
         if (action == 2) {
-            return;
+            return 0;
         }
         if (handle_demand_page_fault(fault_addr, err) == 0) {
-            return;
+            return 0;
         }
     }
     bool allowed = rust_validate_page_fault(cur, fault_addr, err);
@@ -546,7 +553,7 @@ void page_fault_handler(struct regs *r) {
          * task (and without printing the fault banner). */
         if (cur > 0 && (f64->cs & 3) &&
             try_deliver_fault_signal(f64, cur, SIG_SEGV, fault_addr)) {
-            return;
+            return 0;
         }
         int killed = get_current_task();
         if (killed == 0 || (f64->cs & 3) == 0) {
@@ -560,24 +567,25 @@ void page_fault_handler(struct regs *r) {
             print_hex(killed);
             println("");
         }
-        tasks[killed].state = 0;
-        schedule();
-        if (killed > 0) tasks[0].state = 1;
-
-        if ((killed > 0) && (f64->cs & 3)) {
+        /* Same as the vector < 32 kill path: tear down (wake SYS_WAIT waiters)
+         * and resume the next runnable task via its saved trap frame. */
+        if (killed > 0) {
+            task_teardown(killed);
+            uint64_t rsp = task_exit_switch(killed);
+            if (rsp) return rsp;
             f64->rip    = (uint64_t)resume_shell_after_fault;
             f64->cs     = 0x08;
             f64->rflags = 0x202;
             f64->rsp    = tasks[0].kernel_stack_top;
             f64->ss     = 0x10;
+            return 0;
         }
-        if (killed == 0) {
-            asm volatile("cli; hlt");
-        }
-        return;
+        asm volatile("cli; hlt");
+        return 0;
     }
 
     asm volatile("cli; hlt");
+    return 0;
 }
 
 void interrupt_handler(struct regs *r) {

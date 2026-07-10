@@ -130,10 +130,11 @@ production-grade and default.
 - **Real per-CPU run queues**: replace the shared runnable pool with per-CPU
   queues plus explicit load-balancing/migration, and add scheduling priorities
   and fairness.
-- **Finish retiring the cooperative switch**: console input, `SYS_WAIT`, `init`,
-  and IPC now use the full-context trap-frame mechanism; migrate the last
-  cooperative `yield()`/`schedule()` corners (e.g. the boot launch of the first
-  task) so the legacy path can be deleted.
+- **Finish retiring the cooperative switch** — *done*: boot of `init`, first
+  entry of every task, `SYS_YIELD`, blocking IPC/`SYS_WAIT`, and preemption all
+  use the full-context trap-frame path (`sched_enter_user` /
+  `sched_yield_switch` / `ipc_block_switch` / `preempt_on_tick`). The legacy
+  cooperative `schedule()`/`yield()` switch has been removed.
 - **Concurrent-IPC correctness**: close the narrow block→save→wake window under
   simultaneous cross-CPU IPC by publishing a blocked task's saved frame before it
   becomes visible to a notifier on another core.

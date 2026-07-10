@@ -686,7 +686,7 @@ void set_tss_kernel_stack(uint64_t kstack_top);
 void cpu_detect_features(void);
 void init_syscall_instruction_path(void);
 void ramfs_init(void);
-void ata_init(void);
+int ata_init(void);   /* probe primary master; 1 = ATA disk present, 0 = absent */
 int  ata_read(uint32_t lba, void *buf, uint32_t sectors);
 int  ata_write(uint32_t lba, const void *buf, uint32_t sectors);
 void scheduler_init(void);

@@ -75,8 +75,8 @@ void kernel_main(uint32_t mb_info) {
     entropy_init();
     init_syscall_instruction_path();
 #ifndef MINIMAL_SECURE
-    ramfs_init();
-    ata_init();
+    ramfs_init();   /* -> storage_init(): probes for an ATA disk (persistent) and
+                     * falls back to the ephemeral RAM vdisk when none is present */
 #endif
     scheduler_init();
     smp_bringup();

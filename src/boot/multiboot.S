@@ -434,6 +434,15 @@ embedded_faulter_bin_start:
 .incbin "userspace/faulter.bin"
 .global embedded_faulter_bin_end
 embedded_faulter_bin_end:
+
+/* sigwaiter: blocks in SYS_WAIT on an immortal target, to exercise async signal
+ * delivery interrupting a blocked wait. Only in PROC_SELFTEST. */
+.align 16
+.global embedded_sigwaiter_bin_start
+embedded_sigwaiter_bin_start:
+.incbin "userspace/sigwaiter.bin"
+.global embedded_sigwaiter_bin_end
+embedded_sigwaiter_bin_end:
 #endif
 
 #ifdef SIGNAL_SELFTEST

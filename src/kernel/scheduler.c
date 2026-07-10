@@ -107,6 +107,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     tasks[id].in_signal = 0;
     tasks[id].pending_sigs = 0;   /* no async signals queued */
     tasks[id].sig_mask     = 0;   /* nothing blocked */
+    tasks[id].spawn_arg    = 0;   /* no spawn argument */
 
 create_user_pagedir(id);
 

@@ -17,6 +17,7 @@
 
 #define SYS_ERR_PERM       (-1)   /* not permitted: missing capability / not owner */
 #define SYS_ERR_NOENT      (-2)   /* no such object: user, file, endpoint, task, slot */
+#define SYS_ERR_INTR       (-4)   /* a blocking call was interrupted by a signal (EINTR) */
 #define SYS_ERR_IO         (-5)   /* I/O error from a device or the storage layer */
 #define SYS_ERR_AGAIN     (-11)   /* temporarily unavailable / would block */
 #define SYS_ERR_NOMEM     (-12)   /* out of memory / no free task or object slot */
@@ -39,6 +40,7 @@ static inline const char *sys_strerror(int code) {
     switch (code) {
         case SYS_ERR_PERM:    return "operation not permitted (missing capability)";
         case SYS_ERR_NOENT:   return "no such object";
+        case SYS_ERR_INTR:    return "interrupted by a signal";
         case SYS_ERR_IO:      return "I/O error";
         case SYS_ERR_AGAIN:   return "temporarily unavailable";
         case SYS_ERR_NOMEM:   return "out of memory / no free slot";

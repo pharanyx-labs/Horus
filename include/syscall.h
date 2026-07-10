@@ -109,6 +109,7 @@ struct audit_event {
 #define SYS_CAP_GRANT          65   /* (target_tid, src_slot, dest_slot) -> copy caller's cap into a supervised child's cspace slot */
 #define SYS_SIGNAL             66   /* (target_tid, signum) -> deliver a signal to a task held via CAP_TCB */
 #define SYS_SIGMASK            67   /* (how, mask) -> old mask; block/unblock this task's own signals */
+#define SYS_SPAWN_ARG          68   /* () -> the one-word argument this task was spawned with */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -337,6 +338,20 @@ static inline int sys_spawn_named(const char *name) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
     return (int)syscall(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, 0);
+}
+
+/* Spawn a named binary, handing the child a one-word argument it can retrieve
+ * with sys_spawn_arg(). A minimal parameter-passing channel (full argv is future
+ * work); today it carries e.g. a task id for a supervisor/waiter child. */
+static inline int sys_spawn_named_arg(const char *name, uint32_t arg) {
+    uint32_t len = 0;
+    while (name[len] && len < 31) len++;
+    return (int)syscall(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, arg);
+}
+
+/* Retrieve the one-word argument this task was spawned with (0 if none). */
+static inline uint32_t sys_spawn_arg(void) {
+    return syscall(SYS_SPAWN_ARG, 0, 0, 0);
 }
 
 /* Replace the calling task's image with a named embedded binary (hello, captest,

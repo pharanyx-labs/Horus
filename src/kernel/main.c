@@ -49,10 +49,9 @@ void __attribute__((noreturn)) resume_shell_after_fault(void) {
     set_tss_kernel_stack(tasks[0].kernel_stack_top);
     shell_prompt_loop();
 #else
-    int t = get_current_task();
-    if (t > 0 && t < MAX_TASKS) tasks[t].state = 0;
-    schedule();
-    for(;;) { asm volatile("cli; hlt"); }
+    /* Task teardown (and waiter wake) already happened on the fault path.
+     * Park this CPU; there is no cooperative schedule() path any more. */
+    kernel_idle();
 #endif
 }
 
@@ -89,8 +88,10 @@ void kernel_main(uint32_t mb_info) {
 #ifdef DEBUG_SHELL
     shell_prompt_loop();
 #else
+    /* Normal boot never reaches here: smp_bringup() already dropped into
+     * ring 3 via sched_enter_user. This is only the fallback if that path
+     * returned (e.g. embed missing). Idle — do not cooperative-schedule. */
     spawn_initial_userspace_init();
-    set_current_task(0);
-    for(;;) schedule();
+    kernel_idle();
 #endif
 }

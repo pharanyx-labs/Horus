@@ -48,9 +48,10 @@ static void h_get_line(struct regs *r) {
 
 #ifdef DEBUG_SHELL
         if (ch == 0x1B) {
-            while ((inb(0x3FD) & 1) == 0) { yield(); }
+            /* Spin for serial — do not cooperative-yield mid-syscall. */
+            while ((inb(0x3FD) & 1) == 0) { __asm__ volatile ("pause"); }
             char seq1 = inb(0x3F8);
-            while ((inb(0x3FD) & 1) == 0) { yield(); }
+            while ((inb(0x3FD) & 1) == 0) { __asm__ volatile ("pause"); }
             char seq2 = inb(0x3F8);
 
             if (seq1 == '[') {
@@ -533,7 +534,12 @@ static void h_receive_program(struct regs *r) {
 
 /* SYS_AUTH: authenticate the calling task as a user (sets uid/gid on success). */
 
-static void h_yield(struct regs *r) { (void)r; yield(); }
+/* SYS_YIELD: request a full-context switch; interrupt_handler64 runs
+ * sched_yield_switch on the live trap frame after this returns. */
+static void h_yield(struct regs *r) {
+    yield();
+    r->eax = 0;
+}
 
 /* cap mint/transfer/move/revoke (4/8/9/51): authority enforced inside the
  * cap_* primitives (caller_has_authority + per-right checks). */

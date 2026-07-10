@@ -239,7 +239,7 @@ int process_user_command(const char *cmd) {
 
         tasks[id].state = 0;
         print("Killed "); print_hex(id); println("");
-        if ((int)id == get_current_task()) schedule();
+        if ((int)id == get_current_task()) kernel_idle();
         return 0;
     }
     if (action == 1) {
@@ -296,7 +296,7 @@ int process_user_command(const char *cmd) {
 
     if (cmd[0] == 'y' && cmd[1] == 'i' && cmd[2] == 'e' && cmd[3] == 'l' && cmd[4] == 'd' &&
         (cmd[5] == 0 || cmd[5] == ' ')) {
-        yield();
+        /* In-kernel debug shell has no live user trap frame; yield is a no-op. */
         return 0;
     }
 
@@ -338,10 +338,10 @@ int process_user_command(const char *cmd) {
         print_decimal(h.size); println(" bytes - spawning...");
         int pid = do_spawn();
         if (pid > 0) {
-            
-            schedule();
-            print("Spawned pid="); print_decimal(pid); println(" (revivable on fault)");
-            return 0;
+            /* Drop into the new task via the full-context path (fabricated frame
+             * from do_spawn). Does not return. */
+            sched_enable_preemption();
+            sched_enter_user(pid);
         } else {
             println("Spawn failed after receive");
             return -1;
@@ -360,7 +360,7 @@ int process_user_command(const char *cmd) {
  * + CAP_ENCRYPTED_STORAGE (slot 9) to delegate to the shell it spawns. init then
  * launches and supervises the shell from ring 3 (see userspace/init.c), handing
  * it those two caps via SYS_CAP_GRANT. Structure mirrors the old shell launcher:
- * stage the embedded image, do_spawn, endow, then lretq into ring 3. */
+ * stage the embedded image, do_spawn, endow, then sched_enter_user into ring 3. */
 void spawn_initial_userspace_init(void) {
     extern uint8_t embedded_init_bin_start[];
     extern uint8_t embedded_init_bin_end[];
@@ -400,21 +400,10 @@ void spawn_initial_userspace_init(void) {
         cap_install_from_root(pid, 10, 2, 0);   /* root[2] = CAP_ENDPOINT, object 0 (gate)  */
         cap_install_from_root(pid, 11, 2, 4);   /* root[2] = CAP_ENDPOINT, object FS_EP_REQ */
 
-        uint64_t rip  = (uint64_t)tasks[pid].eip;
-        uint64_t rspv = tasks[pid].esp ? (uint64_t)tasks[pid].esp : 0x007ff000ULL;
-        uint64_t ucr3 = tasks[pid].cr3;
-        uintptr_t kst = tasks[pid].kernel_stack_top ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
-        set_tss_kernel_stack(kst);
-        set_current_task(pid);
+        /* do_spawn already fabricated a full trap frame; enter via the same
+         * pop+iretq path every later resume uses. */
         sched_enable_preemption();
-        __asm__ volatile (
-            "mov %2, %%cr3\n\t"
-            "mov $0x33, %%ax\n\t"
-            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
-            "mov %1, %%rsp\n\t"
-            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
-            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
-        );
+        sched_enter_user(pid);
     }
 }
 
@@ -457,26 +446,10 @@ void spawn_initial_userspace_shell(void) {
         spin_unlock(&cap_lock);
 
 
-        {
-            uint64_t rip = (uint64_t)tasks[pid].eip;
-            uint64_t rspv = tasks[pid].esp ? (uint64_t)tasks[pid].esp : 0x007ff000ULL;
-            uint64_t ucr3 = tasks[pid].cr3;
-            uintptr_t kst = tasks[pid].kernel_stack_top ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
-            set_tss_kernel_stack(kst);
-            set_current_task(pid);
-            /* Boot's delicate single-threaded init is done; arm the timer to
-             * preempt ring-3 tasks from here on. (No-op while the shell is the
-             * only runnable task -- preempt_on_tick keeps it running.) */
-            sched_enable_preemption();
-            __asm__ volatile (
-                "mov %2, %%cr3\n\t"
-                "mov $0x33, %%ax\n\t"
-                "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
-                "mov %1, %%rsp\n\t"
-                "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
-                :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
-            );
-        }
+        /* Boot's delicate single-threaded init is done; arm the timer and
+         * enter via the fabricated full trap frame (do_spawn). */
+        sched_enable_preemption();
+        sched_enter_user(pid);
     }
 }
 

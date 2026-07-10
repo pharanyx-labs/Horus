@@ -161,6 +161,21 @@ void _start(void) {
     }
     report("PROC_SELFTEST: fault-wait OK\n");
 
+    /* --- full argv: spawn "argtest" with a known argument vector and confirm it
+     * reads the strings back (it prints "argv OK", or a FAIL marker on mismatch).
+     * The kernel marshals argv onto the child's initial stack at spawn. --- */
+    char *av[3];
+    av[0] = "argtest"; av[1] = "alpha"; av[2] = "bravo";
+    int at = sys_spawn_named_argv("argtest", 3, av);
+    if (at <= 0) { report("PROC_SELFTEST: FAIL argv-spawn\n"); sys_exit(); }
+    int atd = 0;
+    struct task_info ati;
+    for (int i = 0; i < 8000; i++) {
+        if (sys_get_task_info(at, &ati) == 0 && ati.state == 0) { atd = 1; break; }
+        settle();
+    }
+    if (!atd) { report("PROC_SELFTEST: FAIL argv-stuck\n"); sys_exit(); }
+
     /* --- SYS_SIGNAL: async task-to-task signal to a registered handler. Spawn
      * "sigtarget" (it registers a handler and spins); we hold its CAP_TCB from
      * the spawn, so we may signal it. Give it time to register, then send

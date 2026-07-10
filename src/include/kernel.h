@@ -201,6 +201,7 @@ void users_init(void);
 #define SYS_SIGNAL             66   /* send a signal to a task held via CAP_TCB (async delivery) */
 #define SYS_SIGMASK            67   /* (how, mask) -> old mask; block/unblock this task's own signals */
 #define SYS_SPAWN_ARG          68   /* () -> the one-word argument this task was spawned with */
+#define SYS_GET_ARGV           69   /* (char ***out) -> argc; writes the argv[] base to *out */
 /* Inode metadata returned by SYS_FS_STAT (mirrors struct fs_stat in
  * include/syscall.h — keep byte-identical). */
 struct fs_stat {
@@ -424,11 +425,17 @@ typedef struct tcb {
     uint32_t sig_mask;
 
     /* One-word argument handed to a task at spawn (SYS_SPAWN edx), retrieved by
-     * the child via SYS_SPAWN_ARG. A minimal parameter-passing channel (full
-     * argv is future work). Carved from padding so the struct size is unchanged. */
+     * the child via SYS_SPAWN_ARG. A fast path alongside the full argv below. */
     uint32_t spawn_arg;
 
-    uint8_t  padding[28];
+    /* Full argument vector. The kernel marshals the spawner's argv strings onto
+     * the child's initial user stack at spawn and records the count and the
+     * user vaddr of the argv[] pointer array here; the child reads them with
+     * SYS_GET_ARGV. Both 0 when spawned without arguments. */
+    uint32_t argc;
+    uint32_t argv_ptr;
+
+    uint8_t  padding[20];
 } tcb_t;
 
 extern tcb_t tasks[MAX_TASKS];

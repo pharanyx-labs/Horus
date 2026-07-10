@@ -108,6 +108,8 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     tasks[id].pending_sigs = 0;   /* no async signals queued */
     tasks[id].sig_mask     = 0;   /* nothing blocked */
     tasks[id].spawn_arg    = 0;   /* no spawn argument */
+    tasks[id].argc         = 0;   /* no argument vector */
+    tasks[id].argv_ptr     = 0;
 
 create_user_pagedir(id);
 

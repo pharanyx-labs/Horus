@@ -167,6 +167,8 @@ extern uint8_t embedded_faulter_bin_start[];
 extern uint8_t embedded_faulter_bin_end[];
 extern uint8_t embedded_sigwaiter_bin_start[];
 extern uint8_t embedded_sigwaiter_bin_end[];
+extern uint8_t embedded_argtest_bin_start[];
+extern uint8_t embedded_argtest_bin_end[];
 #endif
 
 static const struct embedded_binary embedded_binaries[] = {
@@ -190,6 +192,8 @@ static const struct embedded_binary embedded_binaries[] = {
     /* sigwaiter: blocks in SYS_WAIT on an immortal target so the driver can
      * verify a signal interrupts the blocked wait. PROC_SELFTEST only. */
     { "sigwaiter", embedded_sigwaiter_bin_start, embedded_sigwaiter_bin_end},
+    /* argtest: spawned with an argv to verify full argument passing. PROC_SELFTEST only. */
+    { "argtest",   embedded_argtest_bin_start,  embedded_argtest_bin_end  },
 #endif
     { NULL, NULL, NULL }
 };
@@ -1309,6 +1313,78 @@ static void load_staged_image_into(int tid, uint32_t load_base) {
     program_armed = 0;
 }
 
+/* --- spawn argument vector staging ------------------------------------------
+ * h_spawn copies the spawner's argv strings here (read from the spawner's own
+ * address space) before the child is built; do_spawn_inner then marshals them
+ * onto the child's initial stack once its address space exists. */
+#define SPAWN_MAX_ARGS   16
+#define SPAWN_ARGS_BYTES 512
+static uint32_t g_args_argc = 0;
+static uint32_t g_args_total = 0;              /* bytes used in g_args_strbuf */
+static char     g_args_strbuf[SPAWN_ARGS_BYTES];
+static uint16_t g_args_len[SPAWN_MAX_ARGS];    /* length incl NUL of each arg */
+
+/* Copy a NUL-terminated string from user vaddr `usrc` into `dst` (cap bytes incl
+ * NUL). Returns length excluding NUL, or -1 on fault / no NUL within cap. */
+static int copy_user_cstr(char *dst, uint32_t usrc, uint32_t cap) {
+    for (uint32_t i = 0; i < cap; i++) {
+        char c;
+        if (copy_from_user(&c, (const void *)(addr_t)(usrc + i), 1) != 0) return -1;
+        dst[i] = c;
+        if (c == 0) return (int)i;
+    }
+    return -1;   /* over-long / no terminator within cap */
+}
+
+/* Stage the spawner's argv (argc strings at user array `uargv`) for the next
+ * spawn. Clears the staging on any error so a partial vector is never applied. */
+static void stage_spawn_args(uint32_t uargv, uint32_t uargc) {
+    g_args_argc = 0; g_args_total = 0;
+    if (uargc == 0 || uargv == 0 || uargc > SPAWN_MAX_ARGS) return;
+    uint32_t ptrs[SPAWN_MAX_ARGS];
+    if (copy_from_user(ptrs, (const void *)(addr_t)uargv, uargc * 4) != 0) return;
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < uargc; i++) {
+        if (total >= SPAWN_ARGS_BYTES) return;
+        int len = copy_user_cstr(g_args_strbuf + total, ptrs[i], SPAWN_ARGS_BYTES - total);
+        if (len < 0) return;                 /* fault or over-long: abort, no args */
+        g_args_len[i] = (uint16_t)(len + 1);
+        total += (uint32_t)len + 1;
+    }
+    g_args_argc  = uargc;
+    g_args_total = total;
+}
+
+/* Marshal the staged argv onto child `tid`'s initial stack and record argc + the
+ * argv[] base on its TCB. Must run with `tid` current (so copy_to_user targets
+ * its address space) and before sched_prepare_user_context reads esp. Consumes
+ * the staging. No-op when nothing is staged. */
+static void build_child_argv(int tid) {
+    if (g_args_argc == 0) return;
+    uint32_t argc = g_args_argc;
+    uint32_t sp   = (tasks[tid].esp ? tasks[tid].esp : 0x007ff000u) & ~0xFu;
+    uint32_t str_vaddr[SPAWN_MAX_ARGS];
+    uint32_t off = 0;
+    for (uint32_t i = 0; i < argc; i++) {
+        uint32_t len = g_args_len[i];
+        sp -= len;
+        copy_to_user((void *)(addr_t)sp, g_args_strbuf + off, len);
+        str_vaddr[i] = sp;
+        off += len;
+    }
+    sp &= ~3u;
+    sp -= (argc + 1) * 4;                     /* argv[] array, NULL-terminated */
+    uint32_t argv_base = sp;
+    for (uint32_t i = 0; i < argc; i++)
+        copy_to_user((void *)(addr_t)(argv_base + i * 4), &str_vaddr[i], 4);
+    uint32_t nullp = 0;
+    copy_to_user((void *)(addr_t)(argv_base + argc * 4), &nullp, 4);
+    tasks[tid].argc     = argc;
+    tasks[tid].argv_ptr = argv_base;
+    tasks[tid].esp      = (argv_base - 16) & ~0xFu;
+    g_args_argc = 0; g_args_total = 0;
+}
+
 static int do_spawn_inner(void) {
     if (!program_armed) {
         return -1;
@@ -1332,6 +1408,11 @@ static int do_spawn_inner(void) {
     create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base);
 
     load_staged_image_into(new_id, load_base);
+
+    /* load_staged_image_into left `new_id` current, so copy_to_user targets its
+     * address space: marshal any staged argv onto its stack before its initial
+     * context is fabricated (this lowers new_id's esp below the argv block). */
+    build_child_argv(new_id);
 
     uint32_t cap6_serial = 0;
     struct capability *creator_admin = cap_lookup(6, CAP_RIGHT_ALL);
@@ -1434,6 +1515,11 @@ static void h_exec_named(struct regs *r) {
     name[len] = 0;
     if (arm_named_binary(name) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
 
+    /* Stage the new argv (esi = user char* array, edi = argc) NOW, while the
+     * caller's old address space is still active so copy_from_user can read the
+     * strings; it is marshalled onto the fresh stack after the rebuild. */
+    stage_spawn_args(r->esi, r->edi);
+
     /* Past this point the caller's image is torn down and replaced; there is no
      * clean return path. Switch to the kernel address space for the rebuild. */
     extern uint64_t pml4[];
@@ -1455,9 +1541,16 @@ static void h_exec_named(struct regs *r) {
     tasks[cur].pending_sigs = 0;
     tasks[cur].sig_mask     = 0;
     tasks[cur].spawn_arg    = 0;
+    tasks[cur].argc         = 0;
+    tasks[cur].argv_ptr     = 0;
     create_user_pagedir(cur);
 
     load_staged_image_into(cur, load_base);   /* sets eip/heap/name, disarms */
+
+    /* Marshal any staged argv onto the freshly-built stack (load_staged_image_into
+     * left `cur` current, so copy_to_user targets its new address space); this
+     * lowers tasks[cur].esp below the argv block before the frame is fabricated. */
+    build_child_argv(cur);
 
     /* Enter the new image the same way spawn / the timer / the exit-switch enter
      * a task: fabricate a fresh ring-3 trap frame (IF set, zeroed GP regs, ring-3
@@ -3416,7 +3509,12 @@ static void h_spawn(struct regs *r) {
             return;
         }
     }
+    /* Stage the caller's argv (esi = user char* array, edi = argc) before the
+     * child exists; do_spawn_inner marshals it onto the child's stack. Read here
+     * while the caller is still current so copy_from_user hits its memory. */
+    stage_spawn_args(r->esi, r->edi);
     int pid = do_spawn();
+    g_args_argc = 0;   /* drop staging if the spawn failed before consuming it */
     /* Hand the child its one-word spawn argument (edx), retrievable via
      * SYS_SPAWN_ARG. Zero for callers that don't pass one. */
     if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->edx;
@@ -3429,6 +3527,15 @@ static void h_spawn(struct regs *r) {
 /* SYS_SPAWN_ARG (68): return the one-word argument this task was spawned with. */
 static void h_spawn_arg(struct regs *r) {
     r->eax = tasks[get_current_task()].spawn_arg;
+}
+
+/* SYS_GET_ARGV (69): return this task's argc and write the argv[] base (a user
+ * vaddr into its own stack) to *ebx. argc 0 / argv 0 when spawned without args. */
+static void h_get_argv(struct regs *r) {
+    int cur = get_current_task();
+    uint32_t argv_ptr = tasks[cur].argv_ptr;
+    if (r->ebx) copy_to_user((void *)(addr_t)r->ebx, &argv_ptr, 4);
+    r->eax = tasks[cur].argc;
 }
 
 /* SYS_GETUID (29). */
@@ -3640,7 +3747,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 69
+#define SYSCALL_TABLE_SIZE 70
 
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -3676,6 +3783,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SIGNAL]                   = { h_signal,                  SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
     [SYS_SIGMASK]                  = { h_sigmask,                 SC_NONE, 0, SC_ANYTYPE }, /* self: block/unblock own signals */
     [SYS_SPAWN_ARG]                = { h_spawn_arg,               SC_NONE, 0, SC_ANYTYPE }, /* self: read own spawn argument */
+    [SYS_GET_ARGV]                 = { h_get_argv,                SC_NONE, 0, SC_ANYTYPE }, /* self: read own argument vector */
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
@@ -3720,13 +3828,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_SPAWN_ARG is currently the highest syscall number. Adding a higher one
+ * SYS_GET_ARGV is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_SPAWN_ARG + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_GET_ARGV + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

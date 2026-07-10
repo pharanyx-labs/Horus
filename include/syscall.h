@@ -110,6 +110,7 @@ struct audit_event {
 #define SYS_SIGNAL             66   /* (target_tid, signum) -> deliver a signal to a task held via CAP_TCB */
 #define SYS_SIGMASK            67   /* (how, mask) -> old mask; block/unblock this task's own signals */
 #define SYS_SPAWN_ARG          68   /* () -> the one-word argument this task was spawned with */
+#define SYS_GET_ARGV           69   /* (char ***out) -> argc; writes the argv[] base to *out */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -354,6 +355,26 @@ static inline uint32_t sys_spawn_arg(void) {
     return syscall(SYS_SPAWN_ARG, 0, 0, 0);
 }
 
+/* Spawn a named binary, passing it a full argument vector. The kernel copies the
+ * `argc` strings from argv[] onto the child's initial stack; the child reads them
+ * back with sys_get_argv(). Up to 16 args / 512 bytes total (excess is refused).
+ * Returns the child's task id, or negative on error. */
+static inline int sys_spawn_named_argv(const char *name, int argc, char *const argv[]) {
+    uint32_t len = 0;
+    while (name[len] && len < 31) len++;
+    return (int)syscall6(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, 0,
+                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+}
+
+/* Retrieve this task's argument vector. Writes the argv[] base pointer to
+ * *out_argv (NULL-terminated array) and returns argc (0 and NULL if none). */
+static inline int sys_get_argv(char ***out_argv) {
+    char **argv = 0;
+    int argc = (int)syscall(SYS_GET_ARGV, (uint32_t)(uintptr_t)&argv, 0, 0);
+    if (out_argv) *out_argv = argv;
+    return argc;
+}
+
 /* Replace the calling task's image with a named embedded binary (hello, captest,
  * fs_server, shell), keeping the same task id and cspace (capabilities survive
  * the exec, POSIX-style). On success this does not return — control resumes at
@@ -363,6 +384,17 @@ static inline int sys_exec_named(const char *name) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
     return (int)syscall(SYS_EXEC_NAMED, (uint32_t)(uintptr_t)name, len, 0);
+}
+
+/* Replace the caller's image with a named binary, passing it a full argument
+ * vector (marshalled onto the fresh stack; read back with sys_get_argv). On
+ * success does not return; a negative return means the exec failed and the
+ * caller's image is intact. */
+static inline int sys_exec_named_argv(const char *name, int argc, char *const argv[]) {
+    uint32_t len = 0;
+    while (name[len] && len < 31) len++;
+    return (int)syscall6(SYS_EXEC_NAMED, (uint32_t)(uintptr_t)name, len, 0,
+                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }
 
 /* Delegate a capability to a child task: copy the caller's capability at

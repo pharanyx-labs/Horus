@@ -443,6 +443,15 @@ embedded_sigwaiter_bin_start:
 .incbin "userspace/sigwaiter.bin"
 .global embedded_sigwaiter_bin_end
 embedded_sigwaiter_bin_end:
+
+/* argtest: spawned with a known argument vector to exercise full argv passing;
+ * reads its args back and checks them. Only in PROC_SELFTEST. */
+.align 16
+.global embedded_argtest_bin_start
+embedded_argtest_bin_start:
+.incbin "userspace/argtest.bin"
+.global embedded_argtest_bin_end
+embedded_argtest_bin_end:
 #endif
 
 #ifdef SIGNAL_SELFTEST

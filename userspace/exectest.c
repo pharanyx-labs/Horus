@@ -6,13 +6,16 @@ static void report(const char *s) {
 }
 
 /* Child spawned by the process-control self-test (proctest) to exercise
- * SYS_EXEC_NAMED. It replaces its own image, in place, with "hello": same task
- * id, same cspace. On success sys_exec_named never returns — control resumes at
- * hello's entry, hello runs and exits, and the task dies under the same pid the
- * driver is watching. Reaching the line after the exec means exec returned,
- * which is a failure by contract, so we shout about it and exit. */
+ * SYS_EXEC_NAMED *with arguments*. It replaces its own image, in place, with
+ * "argtest" and a full argv: same task id, same cspace. On success the exec
+ * never returns — control resumes at argtest's entry, which reads the argv back
+ * (proving exec marshalled it), prints "argv OK" and exits, so the task dies
+ * under the same pid the driver is watching. Reaching the line after the exec
+ * means exec returned, which is a failure by contract. */
 void _start(void) {
-    sys_exec_named("hello");
+    char *av[3];
+    av[0] = "argtest"; av[1] = "alpha"; av[2] = "bravo";
+    sys_exec_named_argv("argtest", 3, av);
     report("PROC_SELFTEST: FAIL exec-returned\n");
     sys_exit();
 }

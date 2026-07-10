@@ -73,6 +73,10 @@ Application-processor bringup, a LAPIC-timer per-CPU preemptive scheduler, IPC +
 
 - **Single full-context switch path** — `sched_enter_user` enters a task via its fabricated trap frame (pop+iretq, same epilogue as the ISR); boot of `init` and all self-test launches use it instead of `lretq`. `SYS_YIELD` requests a switch via `g_want_yield` and `sched_yield_switch` on the live trap frame. The cooperative `schedule()`/`context_switch()` path is deleted; idle is `kernel_idle` (sti; hlt). Page-fault kills use `task_teardown` + `task_exit_switch` like other fault paths.
 
+### Added — concurrent-IPC publish order (Phase 3)
+
+- **Save frame before waiter is visible** — `SYS_IPC_CALL` / `SYS_WAIT` / `SYS_WAIT_NOTIFY` only set `pending_block` (+ object fields). `ipc_block_switch` writes `saved_ksp`, barriers, then `ipc_publish_pending_block` publishes the waiter under the IPC lock. Cross-CPU replies/notifies/teardowns always patch a valid trap frame; a reply that arrives as a mailbox message before publish is consumed immediately.
+
 ### Known incomplete
 
 - IPC: single-slot mailboxes, one in-flight request; notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) return `SYS_ERR_NOSYS`.

@@ -3,19 +3,24 @@
 /*
  * Ring-3 init process (PID-1 role).
  *
- * The kernel launches this as the first userspace task and endows it with only
- * the capabilities it needs: CAP_AUDIT (slot 7) to observe its children, and
- * CAP_CONSOLE (slot 8) + CAP_ENCRYPTED_STORAGE (slot 9) to hand to the shell.
- * init then spawns the shell, delegates it those two caps via SYS_CAP_GRANT
- * (authorised because init holds the shell's CAP_TCB from the spawn), and
- * supervises it with a blocking SYS_WAIT: init sleeps until the shell exits or
- * faults, then relaunches it. Blocking (rather than polling) means init consumes
- * no CPU while the shell runs — the shell is the only runnable task. init itself
- * never exits.
+ * The kernel launches init as the first userspace task and endows it, from the
+ * primordial root cnode, with exactly the capabilities it must wield or delegate
+ * onward: CAP_AUDIT (slot 7), CAP_CONSOLE (slot 8) and CAP_ENCRYPTED_STORAGE
+ * (slot 9); plus a CAP_USER admin cap (slot 6) and two CAP_ENDPOINT caps (slots
+ * 10/11) it hands to the servers it launches.
  *
- * (fs_server remains launched on demand from the shell, as before; init taking
- * over the servers is a follow-up that needs the server's cap provisioning
- * expressed as delegations.)
+ * init is the delegation root for the system's servers. At boot it:
+ *   1. launches the userspace fs_server and provisions it entirely by delegation
+ *      (SYS_CAP_GRANT of the IPC gate, listen endpoint, CAP_USER for
+ *      registration, and the object-store cap) — no direct kernel cap installs;
+ *   2. launches the shell, delegates it CAP_CONSOLE + CAP_ENCRYPTED_STORAGE, and
+ *      supervises it with a blocking SYS_WAIT, relaunching it if it exits/faults.
+ *
+ * Blocking (rather than polling) on the shell means init consumes no CPU while
+ * the session runs. init itself never exits.
+ *
+ * Under INIT_FS_SELFTEST the shell step is replaced by an automated client that
+ * drives the delegated server end-to-end (see _start / `make smoke-init-fs`).
  */
 
 static void report(const char *s) {
@@ -27,44 +32,30 @@ static void report(const char *s) {
  * there is no shell to wait on). */
 static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 
-/* Slots init holds the delegable caps in, matching the kernel endowment. */
-#define CAP_SLOT_CONSOLE 8
-#define CAP_SLOT_STORAGE 9
-
-#ifdef INIT_FS_SELFTEST
-/* Free slots the kernel endows init with under INIT_FS_SELFTEST (see
- * spawn_initial_userspace_init): two endpoint caps + an all-rights cap that init
- * delegates to the fs_server it launches. */
+/* Slots init holds its delegable caps in, matching the kernel endowment in
+ * spawn_initial_userspace_init(). */
 #define CAP_SLOT_USER       6    /* CAP_USER admin cap (SYS_REGISTER_FS_SERVER gate) */
-#define INIT_EP_GATE_SLOT   10   /* CAP_ENDPOINT, object 0        (coarse IPC gate) */
-#define INIT_EP_LISTEN_SLOT 11   /* CAP_ENDPOINT, object FS_EP_REQ (server listen)  */
-#define INIT_BLOCKDEV_SLOT  12   /* all-rights cap (object-store gate)              */
+#define CAP_SLOT_CONSOLE    8    /* CAP_CONSOLE                                      */
+#define CAP_SLOT_STORAGE    9    /* CAP_ENCRYPTED_STORAGE (also the object-store cap)*/
+#define INIT_EP_GATE_SLOT   10   /* CAP_ENDPOINT, object 0         (coarse IPC gate) */
+#define INIT_EP_LISTEN_SLOT 11   /* CAP_ENDPOINT, object FS_EP_REQ (server listen)   */
 
-/* Launch the userspace fs_server and provision it entirely by delegation, then
- * launch the client that drives it and block until the client is done. No direct
- * kernel cap installs: init hands the server all four of its capabilities with
- * SYS_CAP_GRANT (IPC gate, listen endpoint, CAP_USER for registration, and the
- * object-store cap), exactly as a real service manager would. Returns 0 on
- * success, negative on a spawn/grant failure. */
-static int provision_and_launch_fs(void) {
+/* Launch the userspace fs_server and provision it entirely by delegation: init
+ * grants the server all four capabilities it needs — the coarse IPC gate (slot
+ * 3), its listen endpoint (slot 4, so SYS_REGISTER_FS_SERVER binds it), the
+ * CAP_USER that gates registration (slot 6), and the object-store cap (slot 7) —
+ * with no direct kernel cap installs. The grants are authorised because init is
+ * uid 0 and holds the server's CAP_TCB from the spawn. Returns the server's task
+ * id, or a negative value on a spawn/grant failure. */
+static int launch_fs_server(void) {
     int srv = sys_spawn_named("fs_server");
     if (srv <= 0) return -1;
-    if (sys_cap_grant(srv, INIT_EP_GATE_SLOT,   3) != 0) return -2;  /* IPC gate           */
-    if (sys_cap_grant(srv, INIT_EP_LISTEN_SLOT, 4) != 0) return -3;  /* listen endpoint    */
-    if (sys_cap_grant(srv, CAP_SLOT_USER,       6) != 0) return -4;  /* SYS_REGISTER_FS gate*/
-    if (sys_cap_grant(srv, INIT_BLOCKDEV_SLOT,  7) != 0) return -5;  /* object-store gate  */
-
-    int cli = sys_spawn_named("fsclient");
-    if (cli <= 0) return -5;
-    if (sys_cap_grant(cli, INIT_EP_GATE_SLOT, 3) != 0) return -6;    /* IPC gate          */
-
-    /* Block until the client finishes driving the server (it prints
-     * FS_SELFTEST: PASS/FAIL and exits). SYS_WAIT takes init off the run queue so
-     * the server + client are time-sliced by the preemptive scheduler. */
-    sys_wait(cli);
-    return 0;
+    if (sys_cap_grant(srv, INIT_EP_GATE_SLOT,   3) != 0) return -2;  /* IPC gate            */
+    if (sys_cap_grant(srv, INIT_EP_LISTEN_SLOT, 4) != 0) return -3;  /* listen endpoint     */
+    if (sys_cap_grant(srv, CAP_SLOT_USER,       6) != 0) return -4;  /* SYS_REGISTER_FS gate */
+    if (sys_cap_grant(srv, CAP_SLOT_STORAGE,    7) != 0) return -5;  /* object-store gate   */
+    return srv;
 }
-#endif
 
 /* Spawn the shell and delegate it the console + storage capabilities. Returns
  * the shell's task id, or a negative value on failure. */
@@ -80,23 +71,32 @@ static int launch_shell(void) {
 }
 
 void _start(void) {
+    /* Bring up the filesystem server first, so it is registered and serving by
+     * the time the shell (or the test client) issues its first request. */
+    int srv = launch_fs_server();
+    if (srv < 0) report("init: WARNING fs_server provisioning failed\n");
+    else         report("init: fs_server launched and provisioned\n");
+
 #ifdef INIT_FS_SELFTEST
-    /* Boot-time FS integration test: prove init can bring up the userspace
-     * fs_server by delegation alone and that the delegated server still serves a
-     * client end-to-end. The client's own FS_SELFTEST: PASS marker (asserted by
-     * `make smoke-init-fs`) is the proof; init's lines below trace the launch. */
-    report("INIT_FS_SELFTEST: init launching + provisioning fs_server by delegation\n");
-    if (provision_and_launch_fs() != 0)
-        report("INIT_FS_SELFTEST: FAIL init could not provision fs_server\n");
-    else
-        report("INIT_FS_SELFTEST: init supervised fs client to exit\n");
+    /* Boot-time FS integration test: prove init brings up fs_server by delegation
+     * alone and the delegated server serves a client end-to-end. The client's own
+     * FS_SELFTEST: PASS marker (asserted by `make smoke-init-fs`) is the proof. */
+    report("INIT_FS_SELFTEST: init launched fs_server by delegation; driving client\n");
+    int cli = sys_spawn_named("fsclient");
+    if (cli <= 0) { report("INIT_FS_SELFTEST: FAIL spawn-client\n"); for (;;) settle(); }
+    if (sys_cap_grant(cli, INIT_EP_GATE_SLOT, 3) != 0) {
+        report("INIT_FS_SELFTEST: FAIL grant-client\n"); for (;;) settle();
+    }
+    sys_wait(cli);   /* block until the client finishes driving the server */
+    report("INIT_FS_SELFTEST: init supervised fs client to exit\n");
     for (;;) settle();
 #else
     report("init: starting, launching shell\n");
 
     /* Launch the shell, then block in SYS_WAIT until it exits or faults, and
      * relaunch. SYS_WAIT suspends init on the preemptive block/switch path, so
-     * while the shell runs init is off the run queue entirely (no polling). */
+     * while the shell runs init is off the run queue entirely (no polling). The
+     * fs_server launched above keeps serving alongside the shell. */
     for (;;) {
         int sh = launch_shell();
         if (sh < 0) { report("init: FATAL could not launch shell\n"); for (;;) settle(); }

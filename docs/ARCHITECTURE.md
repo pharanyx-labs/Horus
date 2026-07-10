@@ -178,6 +178,8 @@ IPC is endpoint-based. The kernel maintains 64 endpoints. A sending task writes 
 
 Each endpoint is a **single-slot mailbox**. `SYS_IPC_SEND`/`SYS_IPC_RECV` are **non-blocking** (they return a would-block code rather than spinning), so a userspace peer polls from ring 3 where the timer interleaves it with the other party. `SYS_IPC_CALL` may block the caller (`TASK_BLOCKED_IPC`) on the full-context block/switch path and is resumed when the reply arrives. This is enough for one in-flight request at a time; concurrent multi-client IPC with reply routing is future work. A snapshot + revalidate-at-use guard closes a lookup/use TOCTOU window across the send/recv paths.
 
+**Block/wake publish order (SMP-safe):** the syscall handler only records a `pending_block` intent. `ipc_block_switch` then (1) stores the live trap frame in `saved_ksp`, (2) issues a full memory barrier, and (3) publishes the waiter under the IPC lock (`blocked_waiter` / `SYS_WAIT` link / notif waiter + `TASK_BLOCKED_*`). A notifier on another core therefore never patches a null or stale frame. If the event already arrived (reply in the mailbox, target already dead, badge pending), publish completes the wait immediately and resumes the same task.
+
 **Notifications** (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are intended to complement endpoints but are not yet implemented — they perform their capability check and then return `SYS_ERR_NOSYS`.
 
 ### Userspace filesystem server

@@ -155,7 +155,7 @@ The legacy cooperative `yield()`/`schedule()` switch cannot correctly context-sw
 
 ### Process control (ring-3, Phase 1)
 
-Tasks are first-class from ring 3. A task can `SYS_SPAWN` a named embedded binary (the load runs in the kernel address space; the caller receives the child's `CAP_TCB`), replace its own image in place with `SYS_EXEC_NAMED` (same pid and cspace), delegate a capability into a supervised child with `SYS_CAP_GRANT`, terminate itself (`SYS_EXIT`) or a task it holds a `CAP_TCB` for (`SYS_KILL`), and block until another task exits (`SYS_WAIT`).
+Tasks are first-class from ring 3. A task can `SYS_SPAWN` a named embedded binary (the load runs in the kernel address space; the caller receives the child's `CAP_TCB`), replace its own image in place with `SYS_EXEC_NAMED` (same pid and cspace), delegate a capability into a supervised child with `SYS_CAP_GRANT`, terminate itself (`SYS_EXIT`) or a task it holds a `CAP_TCB` for (`SYS_KILL`), and block until another task exits (`SYS_WAIT`). Both spawn and exec take a full `argv`: the kernel copies the vector out of the caller's address space and lays the strings + a NULL-terminated pointer array on the child's initial stack, which the child reads back with `SYS_GET_ARGV`.
 
 A ring-3 **`init` (PID 1)** launches at boot. The kernel endows it with `CAP_AUDIT` plus the `CAP_CONSOLE` and `CAP_ENCRYPTED_STORAGE` it hands to the shell. `init` spawns the shell, delegates those two caps with `SYS_CAP_GRANT` (authorised by the shell's `CAP_TCB` it holds from the spawn), and then **blocks in `SYS_WAIT`** on the shell — consuming no CPU while the shell runs — relaunching it if it ever exits or faults.
 

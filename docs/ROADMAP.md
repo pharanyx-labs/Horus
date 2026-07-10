@@ -58,18 +58,20 @@ feature: `SYS_SIGNAL` delivers async task-to-task signals into a registered
 handler, the pending set is a full 1..31 bitmask, `SYS_SIGMASK` blocks/unblocks
 signals (delivering the lowest unmasked one), and a signal to a task parked in
 `SYS_WAIT` interrupts the wait (`SYS_ERR_INTR`) and delivers promptly
-(`make smoke-proc`). **`fork` has been evaluated and deliberately not adopted:**
+(`make smoke-proc`). **`argv` is done:** `SYS_SPAWN` and `SYS_EXEC_NAMED` marshal
+a full argument vector onto the child's stack, read back via `SYS_GET_ARGV`.
+**`fork` has been evaluated and deliberately not adopted:**
 the ring-3 `SYS_SPAWN` + `SYS_CAP_GRANT` model already gives create-a-task and
 hand-it-capabilities without fork's whole-address-space aliasing and its
 least-privilege problem (a forked child would inherit *every* parent capability).
 
 What remains:
 
-- **Full argument passing**: `SYS_SPAWN` carries a single one-word argument today
-  (`SYS_SPAWN_ARG`); a POSIX `argc`/`argv` needs a small crt0 that reads an
-  argument vector the loader lays on the new stack, plus an `exec`-from-file-
-  descriptor path. This is a userspace-ABI change touching every binary, not a
-  process-model gap.
+- **`exec` from a file descriptor**: `SYS_SPAWN` and `SYS_EXEC_NAMED` both take a
+  full `argv` now (marshalled onto the child's stack; read via `SYS_GET_ARGV`),
+  and load a *named embedded* binary. The remaining piece is loading the program
+  image from a file/descriptor (an `execve`-from-fd path) rather than the fixed
+  embedded set, which depends on the filesystem read path.
 - **Alternate signal stacks**: signals run on the interrupted user stack; a
   `sigaltstack`-style separate handler stack (with an `SS_ONSTACK` guard) is a
   low-priority robustness feature.

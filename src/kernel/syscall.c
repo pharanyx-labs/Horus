@@ -678,6 +678,38 @@ static void h_sigmask(struct regs *r) {
     r->eax = old;
 }
 
+/* SYS_SIGALTSTACK (72): register (ss_size != 0) or disable (ss_size == 0) THIS
+ * task's own alternate signal stack. When set, a signal delivered while the task
+ * is not already running on it enters the handler on [ss_sp, ss_sp+ss_size)
+ * instead of the interrupted user stack (see try_deliver_fault_signal in idt.c).
+ * Self-only authority — a task sets its own altstack, never another's. The range
+ * must lie wholly inside the user address space and be at least SIG_ALTSTACK_MIN
+ * bytes, and cannot be changed while a handler is already running on it
+ * (SS_ONSTACK) — all three fail closed. Returns SYS_OK or a negative SYS_ERR_*. */
+static void h_sigaltstack(struct regs *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint32_t sp   = r->ebx;
+    uint32_t size = r->ecx;
+
+    /* Re-pointing the altstack while executing on it would corrupt the running
+     * handler's own frame — POSIX returns EPERM here; fail closed. */
+    if (tasks[cur].sig_on_stack) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+
+    if (size == 0) {                                  /* disable */
+        tasks[cur].sig_altstack_sp   = 0;
+        tasks[cur].sig_altstack_size = 0;
+        r->eax = SYS_OK;
+        return;
+    }
+    if (size < SIG_ALTSTACK_MIN)                 { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (sp < USER_AREA_BASE)                     { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if ((uint64_t)sp + (uint64_t)size > USER_MAX_VADDR) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    tasks[cur].sig_altstack_sp   = sp;
+    tasks[cur].sig_altstack_size = size;
+    r->eax = SYS_OK;
+}
+
 typedef struct {
     void   (*fn)(struct regs *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
@@ -685,7 +717,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 70
+#define SYSCALL_TABLE_SIZE 73
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -735,6 +767,12 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SIGMASK]                  = { h_sigmask,                 SC_NONE, 0, SC_ANYTYPE }, /* self: block/unblock own signals */
     [SYS_SPAWN_ARG]                = { h_spawn_arg,               SC_NONE, 0, SC_ANYTYPE }, /* self: read own spawn argument */
     [SYS_GET_ARGV]                 = { h_get_argv,                SC_NONE, 0, SC_ANYTYPE }, /* self: read own argument vector */
+    /* execve-from-fd: spawn/exec a caller-supplied program image. Same slot-3
+     * WRITE|EXEC gate as SYS_SPAWN / SYS_EXEC_NAMED; the image is validated by the
+     * loader (arm_image_from_user -> try_elf_load) exactly like a named binary. */
+    [SYS_SPAWN_IMAGE]              = { h_spawn_image,             3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_EXEC_IMAGE]               = { h_exec_image,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_SIGALTSTACK]              = { h_sigaltstack,             SC_NONE, 0, SC_ANYTYPE }, /* self: register own altstack */
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
@@ -779,13 +817,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_GET_ARGV is currently the highest syscall number. Adding a higher one
+ * SYS_SIGALTSTACK is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_GET_ARGV + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_SIGALTSTACK + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

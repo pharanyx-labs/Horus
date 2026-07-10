@@ -194,27 +194,17 @@ int g_exec_reenter_task = -1;
  * entry, so this never returns. The old page directory/frames leak, consistent
  * with the kernel's non-freeing task teardown (task_teardown only marks slots
  * dead). Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
-void h_exec_named(struct regs *r) {
+/* Shared tail of SYS_EXEC_NAMED / SYS_EXEC_IMAGE: replace the current task's
+ * image in place with the currently-armed staged image, keeping its task id and
+ * cspace (capabilities survive the exec, POSIX-style). Preconditions: a program
+ * is armed (arm_named_binary / arm_image_from_user succeeded) and any new argv is
+ * already staged from the caller's still-live address space. Like do_spawn the
+ * rebuild+load runs in the kernel address space; unlike do_spawn we do NOT
+ * restore the caller — on success we hand interrupt_handler64 a fresh ring-3
+ * context (g_exec_reenter_task) for the new image, so this never returns. The old
+ * page directory/frames leak, consistent with the kernel's non-freeing teardown. */
+static void exec_into_armed_image(struct regs *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-
-    /* Resolve the program name (mirrors h_spawn). Done before any teardown, so a
-     * bad name fails cleanly with the caller's image still intact. */
-    if (!r->ebx) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
-    char name[32];
-    uint32_t len = r->ecx ? r->ecx : 31u;
-    if (len > 31) len = 31;
-    if (copy_from_user(name, (void *)(addr_t)r->ebx, len) != 0) {
-        r->eax = (uint32_t)SYS_ERR_FAULT;
-        return;
-    }
-    name[len] = 0;
-    if (arm_named_binary(name) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
-
-    /* Stage the new argv (esi = user char* array, edi = argc) NOW, while the
-     * caller's old address space is still active so copy_from_user can read the
-     * strings; it is marshalled onto the fresh stack after the rebuild. */
-    stage_spawn_args(r->esi, r->edi);
 
     /* Past this point the caller's image is torn down and replaced; there is no
      * clean return path. Switch to the kernel address space for the rebuild. */
@@ -236,6 +226,9 @@ void h_exec_named(struct regs *r) {
     tasks[cur].in_signal    = 0;
     tasks[cur].pending_sigs = 0;
     tasks[cur].sig_mask     = 0;
+    tasks[cur].sig_altstack_sp   = 0;   /* a fresh image has no alternate signal stack */
+    tasks[cur].sig_altstack_size = 0;
+    tasks[cur].sig_on_stack      = 0;
     tasks[cur].spawn_arg    = 0;
     tasks[cur].argc         = 0;
     tasks[cur].argv_ptr     = 0;
@@ -261,6 +254,70 @@ void h_exec_named(struct regs *r) {
     sched_prepare_user_context(cur, new_eip, new_esp);
     g_exec_reenter_task = cur;
     r->eax = 0;
+}
+
+/* SYS_EXEC_NAMED (64): replace the caller's image with a named embedded binary.
+ * Resolve+arm the name and stage argv while the caller's address space is still
+ * live (a bad name fails cleanly, image intact), then hand off to the shared
+ * exec tail. Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
+void h_exec_named(struct regs *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+
+    if (!r->ebx) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    char name[32];
+    uint32_t len = r->ecx ? r->ecx : 31u;
+    if (len > 31) len = 31;
+    if (copy_from_user(name, (void *)(addr_t)r->ebx, len) != 0) {
+        r->eax = (uint32_t)SYS_ERR_FAULT;
+        return;
+    }
+    name[len] = 0;
+    if (arm_named_binary(name) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+
+    /* Stage the new argv (esi = user char* array, edi = argc) NOW, while the
+     * caller's old address space is still active so copy_from_user can read the
+     * strings; it is marshalled onto the fresh stack after the rebuild. */
+    stage_spawn_args(r->esi, r->edi);
+
+    exec_into_armed_image(r);   /* no clean return on success */
+}
+
+/* SYS_EXEC_IMAGE (71): replace the caller's image with a program image the caller
+ * supplies in its own memory (execve-from-fd — the caller read it from a file via
+ * the fs_server). Validate+arm the image and stage argv while the caller's
+ * address space is still live (a bad image fails cleanly, image intact), then
+ * hand off to the shared exec tail. ebx=image, ecx=len, esi=argv, edi=argc.
+ * Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
+void h_exec_image(struct regs *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+
+    int rc = arm_image_from_user(r->ebx, r->ecx, 0);
+    if (rc != 0) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }   /* image intact on failure */
+
+    /* Stage argv while the caller's old address space is still active. */
+    stage_spawn_args(r->esi, r->edi);
+
+    exec_into_armed_image(r);   /* no clean return on success */
+}
+
+/* SYS_SPAWN_IMAGE (70): spawn a child from a program image the caller supplies in
+ * its own memory (execve-from-fd, spawn form). Mirrors h_spawn but arms the
+ * loader from the caller's buffer instead of a named embedded binary.
+ * ebx=image, ecx=len, edx=one-word spawn arg, esi=argv, edi=argc. Returns the
+ * child pid, or a negative SYS_ERR_*. Slot-3 WRITE|EXEC enforced by the table. */
+void h_spawn_image(struct regs *r) {
+    int rc = arm_image_from_user(r->ebx, r->ecx, 0);
+    if (rc != 0) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    /* Stage the caller's argv before the child exists; do_spawn_inner marshals it
+     * onto the child's stack. Read here while the caller is still current. */
+    stage_spawn_args(r->esi, r->edi);
+    int pid = do_spawn();       /* consumes the armed image */
+    g_args_argc = 0;            /* drop staging if the spawn failed before consuming it */
+    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->edx;
+    r->eax = (uint32_t)pid;
 }
 
 

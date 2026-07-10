@@ -104,6 +104,81 @@ int arm_named_binary(const char *name) {
     return -4;  /* not found */
 }
 
+/* Arm the staging buffer from a program image the caller supplies in its own
+ * address space (execve-from-fd): the caller reads the image from a file — via
+ * the userspace fs_server over IPC, the normal filesystem read path — into a
+ * buffer and hands (ubuf, len) here. This is the same trust model as
+ * SYS_RECEIVE_PROGRAM (which stages an image received over serial): the bytes
+ * are untrusted and are validated by the same loader (try_elf_load: W^X, bounds,
+ * fail-closed relocations) before anything runs. Two container formats are
+ * accepted, mirroring arm_named_binary:
+ *   - a 44-byte Horus header {magic,entry,size,name[32]} + payload (a `.bin`), or
+ *   - a bare ELF (0x7f 'E' 'L' 'F'), whose entry the ELF loader computes.
+ * Every read is bounds-checked and goes through copy_from_user (present/user
+ * checks, SMAP-safe) against the *current* task, so it must run while the
+ * caller's address space is still active. Fails closed (program_armed left 0,
+ * negative return) on a bad pointer, an over-long/short image, or an
+ * unrecognised container. `name_hint` (may be NULL) names a bare-ELF image and
+ * backfills an empty Horus name. Returns 0 on success, negative on error. */
+int arm_image_from_user(uint32_t ubuf, uint32_t len, const char *name_hint) {
+    program_armed = 0;
+    if (ubuf == 0)                             return -1;
+    if (len < 4 || len > MAX_PROGRAM_SIZE)     return -2;
+
+    uint8_t probe[4];
+    if (copy_from_user(probe, (const void *)(addr_t)ubuf, 4) != 0) return -3;
+    uint32_t m = (uint32_t)probe[0] | ((uint32_t)probe[1] << 8) |
+                 ((uint32_t)probe[2] << 16) | ((uint32_t)probe[3] << 24);
+
+    uint32_t payload_off, payload_len, h_entry;
+    char hname[32];
+    hname[0] = 0;
+
+    if (len >= 44 && m == 0x55524F48u) {            /* Horus .bin: header + payload */
+        uint8_t hdr[44];
+        if (copy_from_user(hdr, (const void *)(addr_t)ubuf, 44) != 0) return -3;
+        h_entry = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
+                  ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+        uint32_t h_size = (uint32_t)hdr[8] | ((uint32_t)hdr[9] << 8) |
+                          ((uint32_t)hdr[10] << 16) | ((uint32_t)hdr[11] << 24);
+        if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -4;
+        if (44u + h_size > len) h_size = len - 44u;  /* clamp to what was supplied */
+        payload_off = 44;
+        payload_len = h_size;
+        for (int k = 0; k < 31; k++) hname[k] = (char)hdr[12 + k];
+        hname[31] = 0;
+    } else if (probe[0] == 0x7f && probe[1] == 'E' &&
+               probe[2] == 'L' && probe[3] == 'F') {  /* bare ELF */
+        h_entry = 0;                                 /* try_elf_load computes it */
+        payload_off = 0;
+        payload_len = len;
+    } else {
+        return -5;                                   /* unrecognised container: fail closed */
+    }
+
+    for (uint32_t off = 0; off < payload_len; ) {
+        uint32_t chunk = payload_len - off;
+        if (chunk > USER_MEM_MAX_COPY) chunk = USER_MEM_MAX_COPY;
+        if (copy_from_user(loader_staging + off,
+                           (const void *)((addr_t)ubuf + payload_off + off), chunk) != 0)
+            return -6;
+        off += chunk;
+    }
+
+    if (hname[0] == 0 && name_hint) {
+        int k = 0;
+        for (; k < 31 && name_hint[k]; k++) hname[k] = name_hint[k];
+        hname[k] = 0;
+    }
+
+    armed_hdr.entry = h_entry;
+    armed_hdr.size  = payload_len;
+    for (int k = 0; k < 32; k++) armed_hdr.name[k] = hname[k];
+    armed_hdr.name[31] = 0;
+    program_armed = 1;
+    return 0;
+}
+
 
 static int loader_receive_to_staging(struct program_header *out_hdr) {
     struct program_header hdr;

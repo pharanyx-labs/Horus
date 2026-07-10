@@ -126,8 +126,12 @@ void segfault_park(void);
  *     (validated in safe Rust; fail closed).
  * On delivery the full pre-signal trap frame is saved for SYS_SIGRETURN, and the
  * live frame is rewritten to enter the handler in ring 3 with the signal number
- * in ebx and the faulting address in ecx. cs/ss/rsp are unchanged: the handler
- * runs at ring 3 on the current user stack -- no new privilege is granted. */
+ * in ebx and the faulting address in ecx. cs/ss are unchanged, so the handler
+ * runs at ring 3 -- no new privilege is granted. rsp is the interrupted user
+ * stack, UNLESS the task registered an alternate signal stack (SYS_SIGALTSTACK)
+ * and is not already running on it, in which case the handler runs on that stack
+ * (SS_ONSTACK) so a corrupt or overflowed primary stack cannot stop the handler
+ * from running; sigreturn clears the on-stack flag. */
 int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
                              uint32_t signum, uint64_t fault_addr) {
     if (cur <= 0 || cur >= MAX_TASKS) return 0;
@@ -136,10 +140,22 @@ int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
     uint32_t h = tasks[cur].sig_handler;
     if (h == 0 || !rust_signal_handler_addr_ok(h)) return 0;
 
+    /* Pick the handler's stack before saving the frame, so sig_frame keeps the
+     * interrupted rsp for an exact SYS_SIGRETURN. Align the altstack top to 16
+     * bytes minus 8 to reproduce the rsp%16==8 a normal call-entry would give. */
+    uint64_t hrsp = frame->rsp;
+    if (tasks[cur].sig_altstack_size && !tasks[cur].sig_on_stack) {
+        hrsp = ((uint64_t)tasks[cur].sig_altstack_sp +
+                (uint64_t)tasks[cur].sig_altstack_size) & ~0xFULL;
+        hrsp -= 8;
+        tasks[cur].sig_on_stack = 1;
+    }
+
     tasks[cur].sig_frame = *frame;     /* full context for SYS_SIGRETURN */
     tasks[cur].in_signal = 1;
 
     frame->rip     = (uint64_t)h;
+    frame->rsp     = hrsp;                  /* interrupted stack, or the altstack */
     frame->rbx     = (uint64_t)signum;     /* ebx = signal number */
     frame->rcx     = fault_addr;           /* ecx = faulting address (0 if n/a) */
     frame->rflags |= 0x200;                /* ensure IF set while the handler runs */
@@ -209,6 +225,7 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
              * reach. Exact resume of the interrupted instruction. */
             *frame = tasks[scur].sig_frame;
             tasks[scur].in_signal = 0;
+            tasks[scur].sig_on_stack = 0;   /* left the alternate signal stack */
             return (uint64_t)frame;
         }
         struct regs r;

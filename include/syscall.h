@@ -111,6 +111,9 @@ struct audit_event {
 #define SYS_SIGMASK            67   /* (how, mask) -> old mask; block/unblock this task's own signals */
 #define SYS_SPAWN_ARG          68   /* () -> the one-word argument this task was spawned with */
 #define SYS_GET_ARGV           69   /* (char ***out) -> argc; writes the argv[] base to *out */
+#define SYS_SPAWN_IMAGE        70   /* (image, len, arg, argv, argc) -> pid; spawn a child from a caller-supplied program image (execve-from-fd) */
+#define SYS_EXEC_IMAGE         71   /* (image, len, 0, argv, argc) -> replace the caller's own image with a caller-supplied one; no return on success */
+#define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's alternate signal stack (ss_size 0 disables) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -123,6 +126,12 @@ struct audit_event {
 #define SIG_SETMASK             0   /* replace the blocked set */
 #define SIG_BLOCK               1   /* add to the blocked set */
 #define SIG_UNBLOCK             2   /* remove from the blocked set */
+
+/* sys_sigaltstack(): smallest alternate signal stack the kernel accepts, and the
+ * ss_size value that disables the altstack (run handlers on the interrupted
+ * stack). Mirror of SIG_ALTSTACK_MIN in the kernel. */
+#define SIGSTKSZ_MIN         2048
+#define SS_DISABLE              0
 
 /* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
 struct fs_stat {
@@ -395,6 +404,45 @@ static inline int sys_exec_named_argv(const char *name, int argc, char *const ar
     while (name[len] && len < 31) len++;
     return (int)syscall6(SYS_EXEC_NAMED, (uint32_t)(uintptr_t)name, len, 0,
                          (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+}
+
+/* Spawn a child from a program image the caller supplies in its own memory
+ * (execve-from-fd): read a file into `image` (len bytes) via the fs_server, then
+ * call this. The image is a Horus `.bin` (44-byte header + payload) or a bare
+ * ELF; the kernel validates it with the same loader a named binary uses. The
+ * child is handed a full argv (marshalled onto its stack; read via
+ * sys_get_argv). Returns the child pid, or a negative SYS_ERR_* (the caller is
+ * unaffected on failure). Needs slot-3 WRITE|EXEC, like sys_spawn_named. */
+static inline int sys_spawn_image(const void *image, uint32_t len, int argc, char *const argv[]) {
+    return (int)syscall6(SYS_SPAWN_IMAGE, (uint32_t)(uintptr_t)image, len, 0,
+                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+}
+
+/* As sys_spawn_image but also hands the child a one-word argument (sys_spawn_arg). */
+static inline int sys_spawn_image_arg(const void *image, uint32_t len, uint32_t arg,
+                                      int argc, char *const argv[]) {
+    return (int)syscall6(SYS_SPAWN_IMAGE, (uint32_t)(uintptr_t)image, len, arg,
+                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+}
+
+/* Replace the caller's own image with a caller-supplied program image
+ * (execve-from-fd, in place), keeping the same task id and cspace (capabilities
+ * survive, POSIX-style). On success this does not return — control resumes at the
+ * new image's entry. A negative return means the image was rejected and the
+ * caller's image is intact. Needs slot-3 WRITE|EXEC. */
+static inline int sys_exec_image(const void *image, uint32_t len, int argc, char *const argv[]) {
+    return (int)syscall6(SYS_EXEC_IMAGE, (uint32_t)(uintptr_t)image, len, 0,
+                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+}
+
+/* Register this task's alternate signal stack: signals delivered while the task
+ * is not already running on it enter the handler on [ss_sp, ss_sp+ss_size)
+ * instead of the interrupted stack. Pass ss_size == SS_DISABLE to turn it off.
+ * ss_size must be >= SIGSTKSZ_MIN and the range must lie inside the user address
+ * space. Returns 0 on success, negative on error (bad range, or called while a
+ * handler is running on the altstack). */
+static inline int sys_sigaltstack(void *ss_sp, uint32_t ss_size) {
+    return syscall(SYS_SIGALTSTACK, (uint32_t)(uintptr_t)ss_sp, ss_size, 0);
 }
 
 /* Delegate a capability to a child task: copy the caller's capability at

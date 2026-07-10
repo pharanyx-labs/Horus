@@ -23,7 +23,17 @@ OBJS = src/boot/multiboot.o \
        src/kernel/paging.o \
        src/kernel/capability.o \
        src/kernel/scheduler.o \
+       src/kernel/smp.o \
+       src/kernel/aslr.o \
        src/kernel/syscall.o \
+       src/kernel/kshell.o \
+       src/kernel/loader.o \
+       src/kernel/kaudit.o \
+       src/kernel/kusers.o \
+       src/kernel/syscall_fs.o \
+       src/kernel/kspawn.o \
+       src/kernel/selftest.o \
+       src/kernel/syscall_ipc.o \
        src/kernel/ramfs.o \
        src/kernel/storage.o \
        src/kernel/crypto.o \

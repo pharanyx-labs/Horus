@@ -108,12 +108,19 @@ struct audit_event {
 #define SYS_EXEC_NAMED         64   /* (name) -> replace the caller's own image with a named embedded binary; does not return on success */
 #define SYS_CAP_GRANT          65   /* (target_tid, src_slot, dest_slot) -> copy caller's cap into a supervised child's cspace slot */
 #define SYS_SIGNAL             66   /* (target_tid, signum) -> deliver a signal to a task held via CAP_TCB */
+#define SYS_SIGMASK            67   /* (how, mask) -> old mask; block/unblock this task's own signals */
 
-/* Signal numbers (subset). A task registers a handler with sys_signal() (see
+/* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
-#define SIG_KILL                9
+#define SIG_KILL                9   /* uncatchable: always terminates, never masked */
 #define SIG_USR1               10
+#define SIG_USR2               12
 #define SIG_TERM               15
+
+/* sys_sigmask() `how`: combine the supplied mask with the current blocked set. */
+#define SIG_SETMASK             0   /* replace the blocked set */
+#define SIG_BLOCK               1   /* add to the blocked set */
+#define SIG_UNBLOCK             2   /* remove from the blocked set */
 
 /* Inode metadata returned by SYS_FS_STAT. Kept ABI-stable across kernel/user. */
 struct fs_stat {
@@ -195,6 +202,14 @@ static inline int sys_signal(uint32_t handler) {
  * to the handler on success (execution jumps back to the interrupted point). */
 static inline void sys_sigreturn(void) {
     syscall(SYS_SIGRETURN, 0, 0, 0);
+}
+
+/* Block/unblock this task's own signals. `how` is SIG_SETMASK / SIG_BLOCK /
+ * SIG_UNBLOCK; `mask` is a bitmask (bit N = signal N). A blocked signal that
+ * arrives stays pending and is delivered once unblocked. SIG_KILL can never be
+ * blocked. Returns the previous blocked mask. */
+static inline uint32_t sys_sigmask(uint32_t how, uint32_t mask) {
+    return syscall(SYS_SIGMASK, how, mask, 0);
 }
 
 static inline int sys_print(const char *s) {

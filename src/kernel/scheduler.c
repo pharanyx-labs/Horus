@@ -105,7 +105,8 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     tasks[id].runnable_ctx = 0;
     tasks[id].sig_handler = 0;   /* no signal handler until the task registers one */
     tasks[id].in_signal = 0;
-    tasks[id].pending_sig = 0;    /* no async signal queued */
+    tasks[id].pending_sigs = 0;   /* no async signals queued */
+    tasks[id].sig_mask     = 0;   /* nothing blocked */
 
 create_user_pagedir(id);
 
@@ -298,20 +299,23 @@ static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked)
 #endif
 
 /* Async signal delivery. When a ring-3 task is about to resume, redirect it into
- * its registered handler if SYS_SIGNAL queued one. Reuses the fault-signal path:
- * try_deliver_fault_signal rewrites the trap frame to enter the handler (signal
- * number in ebx) and saves the pre-signal frame for SYS_SIGRETURN. Left pending
- * if the task is already inside a handler (delivered after it returns). */
+ * its registered handler if SYS_SIGNAL queued one. The lowest-numbered *unmasked*
+ * pending signal is delivered; masked signals stay queued until SYS_SIGMASK
+ * unblocks them. Reuses the fault-signal path: try_deliver_fault_signal rewrites
+ * the trap frame to enter the handler (signal number in ebx) and saves the
+ * pre-signal frame for SYS_SIGRETURN. Left pending if the task is already inside a
+ * handler (delivered after it returns; the in_signal guard lives in that helper). */
 extern int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
                                     uint32_t signum, uint64_t fault_addr);
 static void deliver_pending_signal(uint64_t frame_ptr, int tid) {
     if (tid <= 0 || tid >= MAX_TASKS) return;
-    uint32_t sig = tasks[tid].pending_sig;
-    if (sig == 0) return;
+    uint32_t deliverable = tasks[tid].pending_sigs & ~tasks[tid].sig_mask;
+    if (deliverable == 0) return;
     struct interrupt_frame64 *f = (struct interrupt_frame64 *)frame_ptr;
     if ((f->cs & 3) != 3) return;   /* only into a ring-3 frame */
+    uint32_t sig = (uint32_t)__builtin_ctz(deliverable);   /* lowest pending signal (1..31) */
     if (try_deliver_fault_signal(f, tid, sig, 0)) {
-        tasks[tid].pending_sig = 0;
+        tasks[tid].pending_sigs &= ~(1u << sig);
     }
 }
 

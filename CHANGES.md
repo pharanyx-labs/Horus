@@ -69,6 +69,10 @@ Application-processor bringup, a LAPIC-timer per-CPU preemptive scheduler, IPC +
 - **Errno-aligned error codes** — a shared `SYS_ERR_*` vocabulary (`include/errno.h`) with `sys_strerror()`, distinguishing an unknown syscall from a missing capability.
 - **32-bit kernel build removed** — the kernel is x86-64 long-mode only.
 
+### Added — retire cooperative schedule (Phase 3)
+
+- **Single full-context switch path** — `sched_enter_user` enters a task via its fabricated trap frame (pop+iretq, same epilogue as the ISR); boot of `init` and all self-test launches use it instead of `lretq`. `SYS_YIELD` requests a switch via `g_want_yield` and `sched_yield_switch` on the live trap frame. The cooperative `schedule()`/`context_switch()` path is deleted; idle is `kernel_idle` (sti; hlt). Page-fault kills use `task_teardown` + `task_exit_switch` like other fault paths.
+
 ### Known incomplete
 
 - IPC: single-slot mailboxes, one in-flight request; notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) return `SYS_ERR_NOSYS`.

@@ -205,26 +205,10 @@ void preempt_selftest(void) {
     int b = preempt_spawn_one(h_entry, h_size, payload);
     if (a <= 0 || b <= 0) { print("PREEMPT_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
-    /* Launch task A into ring 3, then let the timer time-slice A and B (B first
-     * runs from its fabricated frame on the initial preemption). Arm preemption
-     * before the drop. This lretq does not return. */
+    /* Launch task A into ring 3 via its fabricated trap frame; the timer then
+     * time-slices A and B. Does not return. */
     sched_enable_preemption();
-    {
-        uint64_t rip  = (uint64_t)tasks[a].eip;
-        uint64_t rspv = tasks[a].esp ? (uint64_t)tasks[a].esp : 0x007ff000ULL;
-        uint64_t ucr3 = tasks[a].cr3;
-        uintptr_t kst = tasks[a].kernel_stack_top ? tasks[a].kernel_stack_top : KERNEL_TSS_STACK;
-        set_tss_kernel_stack(kst);
-        set_current_task(a);
-        __asm__ volatile (
-            "mov %2, %%cr3\n\t"
-            "mov $0x33, %%ax\n\t"
-            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
-            "mov %1, %%rsp\n\t"
-            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
-            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
-        );
-    }
+    sched_enter_user(a);
 }
 #endif /* PREEMPT_SELFTEST */
 
@@ -366,7 +350,7 @@ static int proc_spawn_embed(const uint8_t *start, const uint8_t *end, const char
  * CAP_TCB capability to the looper (to terminate it), then dropped to ring 3. It
  * confirms the hello child exits and that it can SYS_KILL the looper via that
  * capability, printing PROC_SELFTEST: PASS. (The driver does not spawn anything
- * itself — ring-3 spawn is deferred to the init/exec stage.) This lretq into
+ * itself — ring-3 spawn is deferred to the init/exec stage.) Entry into
  * ring 3 does not return. */
 void proc_selftest(void) {
     extern uint8_t embedded_proctest_bin_start[];
@@ -392,22 +376,7 @@ void proc_selftest(void) {
     tasks[a].uid = 0;
 
     sched_enable_preemption();
-    {
-        uint64_t rip  = (uint64_t)tasks[a].eip;
-        uint64_t rspv = tasks[a].esp ? (uint64_t)tasks[a].esp : 0x007ff000ULL;
-        uint64_t ucr3 = tasks[a].cr3;
-        uintptr_t kst = tasks[a].kernel_stack_top ? tasks[a].kernel_stack_top : KERNEL_TSS_STACK;
-        set_tss_kernel_stack(kst);
-        set_current_task(a);
-        __asm__ volatile (
-            "mov %2, %%cr3\n\t"
-            "mov $0x33, %%ax\n\t"
-            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
-            "mov %1, %%rsp\n\t"
-            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
-            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
-        );
-    }
+    sched_enter_user(a);
 }
 #endif /* PROC_SELFTEST */
 
@@ -416,7 +385,7 @@ void proc_selftest(void) {
  * Spawn the sigtest payload: it registers a ring-3 fault handler and then does
  * a null-pointer write. Without signal handling that fault kills the task;
  * with it, the kernel redirects the task into its handler, which prints
- * "SIGNAL_SELFTEST: PASS". This lretq into ring 3 does not return. */
+ * "SIGNAL_SELFTEST: PASS". Entry into ring 3 does not return. */
 void signal_selftest(void) {
     extern uint8_t embedded_sigtest_bin_start[];
     extern uint8_t embedded_sigtest_bin_end[];
@@ -443,23 +412,9 @@ void signal_selftest(void) {
     int a = do_spawn();
     if (a <= 0) { print("SIGNAL_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
-    /* Launch into ring 3. Single task -> no preemption needed. */
-    {
-        uint64_t rip  = (uint64_t)tasks[a].eip;
-        uint64_t rspv = tasks[a].esp ? (uint64_t)tasks[a].esp : 0x007ff000ULL;
-        uint64_t ucr3 = tasks[a].cr3;
-        uintptr_t kst = tasks[a].kernel_stack_top ? tasks[a].kernel_stack_top : KERNEL_TSS_STACK;
-        set_tss_kernel_stack(kst);
-        set_current_task(a);
-        __asm__ volatile (
-            "mov %2, %%cr3\n\t"
-            "mov $0x33, %%ax\n\t"
-            "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
-            "mov %1, %%rsp\n\t"
-            "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
-            :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
-        );
-    }
+    /* Launch into ring 3 via the fabricated full trap frame. */
+    sched_enable_preemption();
+    sched_enter_user(a);
 }
 #endif /* SIGNAL_SELFTEST */
 
@@ -518,24 +473,10 @@ void fs_selftest(void) {
      * follow-up.) */
     cap_install_from_root(cli, 3, 2, 0);
 
-    /* Launch the server; when it blocks in recv it yields and (with preemption
-     * armed) the scheduler runs the client, which connects and drives the test.
-     * This lretq does not return. */
+    /* Launch the server; when it blocks in IPC the full-context path runs the
+     * client. Does not return. */
     sched_enable_preemption();
-    uint64_t rip  = (uint64_t)tasks[srv].eip;
-    uint64_t rspv = tasks[srv].esp ? (uint64_t)tasks[srv].esp : 0x007ff000ULL;
-    uint64_t ucr3 = tasks[srv].cr3;
-    uintptr_t kst = tasks[srv].kernel_stack_top ? tasks[srv].kernel_stack_top : KERNEL_TSS_STACK;
-    set_tss_kernel_stack(kst);
-    set_current_task(srv);
-    __asm__ volatile (
-        "mov %2, %%cr3\n\t"
-        "mov $0x33, %%ax\n\t"
-        "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
-        "mov %1, %%rsp\n\t"
-        "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
-        :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
-    );
+    sched_enter_user(srv);
 }
 #endif /* FS_SELFTEST */
 /* ---- Newlib smoke test (NEWLIB_SELFTEST builds only) ---------------------- */
@@ -555,26 +496,9 @@ void newlib_selftest(void) {
     }
     tasks[pid].uid = 0;
 
-    sched_enable_preemption();
-    uint64_t rip  = (uint64_t)tasks[pid].eip;
-    uint64_t rspv = tasks[pid].esp ? (uint64_t)tasks[pid].esp : 0x007ff000ULL;
-    uint64_t ucr3 = tasks[pid].cr3;
-    uintptr_t kst = tasks[pid].kernel_stack_top
-                    ? tasks[pid].kernel_stack_top : KERNEL_TSS_STACK;
-    print("NEWLIB_SELFTEST: rip="); print_hex(rip);
-    print(" rsp="); print_hex(rspv);
-    print(" cr3="); print_hex(ucr3); print("\n");
-    set_tss_kernel_stack(kst);
-    set_current_task(pid);
     print("NEWLIB_SELFTEST: launching\n");
-    __asm__ volatile (
-        "mov %2, %%cr3\n\t"
-        "mov $0x33, %%ax\n\t"
-        "mov %%ax, %%ds\n\t mov %%ax, %%es\n\t mov %%ax, %%fs\n\t mov %%ax, %%gs\n\t"
-        "mov %1, %%rsp\n\t"
-        "pushq $0x33\n\t pushq %1\n\t pushq $0x2b\n\t pushq %0\n\t lretq\n\t"
-        :: "r"(rip), "r"(rspv), "r"(ucr3) : "memory", "rax"
-    );
+    sched_enable_preemption();
+    sched_enter_user(pid);
 }
 #endif /* NEWLIB_SELFTEST */
 

@@ -31,15 +31,16 @@ static void fail2(const char *stage, int v) { put("FS_SELFTEST: FAIL "); put(sta
  * and runs the server (cooperative yield() cannot switch two ring-3 tasks). */
 static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { } }
 
-/* One request/reply round-trip (polling the non-blocking IPC); returns rc. */
+/* One request/reply round-trip via blocking IPC (sys_ipc_call); returns rc.
+ * Using ipc_call (not send + poll-recv on the shared FS_EP_REP) is what makes
+ * concurrent clients safe: the server replies with SYS_IPC_REPLY_TO, which
+ * routes the reply to THIS caller's blocked call by kernel-recorded identity, so
+ * one client can never poll another's reply off a shared endpoint. Retries on -2
+ * (request mailbox momentarily full — another client's request is in flight). */
 static int rpc(struct fs_request *rq, struct fs_response *rp) {
     rq->magic = FS_PROTO_MAGIC;
-    while (sys_ipc_send(FS_EP_REQ, rq, sizeof(*rq)) < 0) spin_delay();
-    for (;;) {
-        int r = sys_ipc_recv(FS_EP_REP, rp, sizeof(*rp));
-        if (r >= 0) break;
-        spin_delay();
-    }
+    int r;
+    while ((r = sys_ipc_call(FS_EP_REQ, FS_EP_REP, rq, sizeof(*rq), rp)) < 0) spin_delay();
     if (rp->magic != FS_PROTO_MAGIC) return -102;
     return rp->rc;
 }
@@ -95,12 +96,84 @@ void _start(void) {
      * for the console login that unlocks a real deployment); storage_unlock is
      * idempotent, so on the ephemeral RAM backend (already unlocked at boot) this is
      * a harmless no-op. */
-    (void)sys_auth("root", "rootpass", 0);
+#ifndef CONC_SELFTEST
+    (void)sys_auth("root", "rootpass", 0);   /* CONC workers are already uid 0 (kernel-set), RAM store unlocked */
+#endif
 
     /* Our slot-3 endpoint cap was delegated by the spawner (see fs_selftest), so
      * IPC works immediately. The first rpc() polls until the server is serving.
      * (A best-effort connect also publishes discovery for real clients.) */
     (void)sys_connect_fs_server(4, CAP_R_W);
+
+#ifdef CONC_SELFTEST
+    /* Multi-client concurrency test. Several client tasks hammer the one
+     * fs_server at once; each must receive ITS OWN replies (SYS_IPC_REPLY_TO
+     * routes by the request's kernel-recorded sender). Role is the spawn arg:
+     * 0 = coordinator, 1..NWORK = workers. A worker repeatedly writes a distinct
+     * byte pattern to its own file and reads it back: a mis-routed reply yields
+     * another worker's bytes (-> FAIL), and a lost reply hangs the worker so its
+     * done-marker never appears (-> the coordinator never PASSes -> smoke
+     * times out). The coordinator waits for every worker's done-marker, then
+     * prints the single PASS the smoke asserts. */
+    {
+        const unsigned NWORK = 3;
+        const unsigned ITERS = 12;
+        uint32_t role = sys_spawn_arg();
+
+        if (role == 0) {
+            /* Coordinator: wait until every worker task has exited. Poll task
+             * state (not the fs) so the server stays free for the workers — the
+             * coordinator, also named "fsclient", is the last one left. A worker
+             * that lost a reply would hang here forever -> smoke times out. */
+            struct task_info ti;
+            for (;;) {
+                int alive = 0;
+                for (int id = 1; id < 64; id++)
+                    if (sys_get_task_info(id, &ti) == 0 && ti.state != 0 && ueq(ti.name, "fsclient")) alive++;
+                if (alive <= 1) break;   /* only the coordinator remains */
+                for (int d = 0; d < 40; d++) spin_delay();
+            }
+            /* Verify each worker's file still holds ITS OWN bytes — a mis-routed
+             * create/lookup reply would have made a worker write into another's
+             * file, which this catches even though that worker read back its own
+             * value. */
+            for (unsigned i = 1; i <= NWORK; i++) {
+                char fn[8]; fn[0]='w'; fn[1]=(char)('0'+i); fn[2]=0;
+                umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ucpy(rq.name, fn, FS_NAME_MAX);
+                if (rpc(&rq, &rp) != 0) { put("CONC_SELFTEST: FAIL vlookup\n"); sys_exit(); }
+                uint32_t vino = rp.ino;
+                umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = vino; rq.offset = 0; rq.len = 16;
+                if (rpc(&rq, &rp) != 16) { put("CONC_SELFTEST: FAIL vread\n"); sys_exit(); }
+                for (int b = 0; b < 16; b++)
+                    if (rp.data[b] != (uint8_t)(0xA0u + i)) { put("CONC_SELFTEST: FAIL vcontent\n"); sys_exit(); }
+            }
+            put("CONC_SELFTEST: PASS\n");
+            sys_exit();
+        }
+
+        /* Worker `role`: create /w<role>, then loop write+read+verify its own
+         * distinct bytes. A mis-routed read reply yields another worker's bytes. */
+        char fn[8]; fn[0]='w'; fn[1]=(char)('0'+role); fn[2]=0;
+        uint8_t want = (uint8_t)(0xA0u + role);
+        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = 0; ucpy(rq.name, fn, FS_NAME_MAX);
+        (void)rpc(&rq, &rp);                                  /* ok if it already exists */
+        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ucpy(rq.name, fn, FS_NAME_MAX);
+        if (rpc(&rq, &rp) != 0) { put("CONC_SELFTEST: FAIL lookup\n"); sys_exit(); }
+        uint32_t ino = rp.ino;
+
+        for (unsigned k = 0; k < ITERS; k++) {
+            umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_WRITE; rq.ino = ino; rq.offset = 0; rq.len = 16;
+            for (int b = 0; b < 16; b++) rq.data[b] = want;
+            if (rpc(&rq, &rp) != 16) { put("CONC_SELFTEST: FAIL write\n"); sys_exit(); }
+
+            umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = ino; rq.offset = 0; rq.len = 16;
+            if (rpc(&rq, &rp) != 16) { put("CONC_SELFTEST: FAIL readlen\n"); sys_exit(); }
+            for (int b = 0; b < 16; b++)
+                if (rp.data[b] != want) { put("CONC_SELFTEST: FAIL crosstalk\n"); sys_exit(); }
+        }
+        sys_exit();
+    }
+#endif
 
 #ifdef PERSIST_SELFTEST
     /* Reboot-persistence check. Look up a sentinel file in the root directory

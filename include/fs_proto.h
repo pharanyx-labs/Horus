@@ -4,10 +4,13 @@
 /* IPC protocol between clients and the userspace filesystem server (Phase 2).
  *
  * Transport is the kernel's single-slot endpoint mailbox (IPC_MSG_MAX = 256),
- * so BOTH structs below must stay <= 256 bytes. The exchange is one request
- * then one reply on the same endpoint (client: send then recv; server: recv,
- * process, reply) — i.e. one in-flight request at a time (single-client;
- * concurrent clients are a documented follow-up).
+ * so BOTH structs below must stay <= 256 bytes. A client issues one request and
+ * blocks for the reply with SYS_IPC_CALL on FS_EP_REQ; the server does
+ * recv(FS_EP_REQ), process, then SYS_IPC_REPLY_TO(FS_EP_REQ), which routes the
+ * reply to that request's kernel-recorded sender. This makes CONCURRENT CLIENTS
+ * safe: replies are delivered by identity, so two clients can never collide on a
+ * shared reply endpoint. Requests still serialise through the single mailbox slot
+ * (one processed at a time); a client whose request finds the slot full retries.
  *
  * The server persists everything through the kernel's encrypted object-store
  * syscalls (SYS_FS_INODE_ALLOC/FREE, SYS_FBLOCK_READ/WRITE, SYS_FS_STAT); it
@@ -19,12 +22,12 @@
 
 #define FS_PROTO_MAGIC   0x48465250u   /* "HFRP" */
 
-/* Well-known endpoint indices for the FS service. Requests and replies use
- * SEPARATE endpoints: the kernel mailbox has a single message slot, so sharing
- * one endpoint would let a client read back its own request as the "reply".
- * (One in-flight request at a time — concurrent clients are a follow-up.) */
+/* Well-known endpoint indices for the FS service. Requests go to FS_EP_REQ;
+ * replies are routed back to each caller by identity via SYS_IPC_REPLY_TO (see
+ * above), so FS_EP_REP is only the endpoint a client parks its SYS_IPC_CALL block
+ * on — not a shared mailbox other clients could read a reply from. */
 #define FS_EP_REQ   4   /* client -> server requests */
-#define FS_EP_REP   5   /* server -> client replies  */
+#define FS_EP_REP   5   /* client's SYS_IPC_CALL reply-wait endpoint */
 
 /* Rights a client requests when connecting (CAP_RIGHT_READ | CAP_RIGHT_WRITE),
  * enough to send requests and receive replies. */

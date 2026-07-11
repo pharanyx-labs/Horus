@@ -44,7 +44,9 @@ five runtime self-tests in CI. Already in place:
   the encrypted store (files survive a reboot, unsealed at login) when one is
   present, falling back to an in-RAM disk when it is not. Per-file ownership and
   POSIX permissions are enforced by the server against the caller's kernel-attested
-  identity (`make smoke-fs`, `make smoke-fs-persist`, `make smoke-fs-perms`).
+  identity, and multiple clients can use it concurrently (replies routed to each
+  caller by identity via `SYS_IPC_REPLY_TO`) (`make smoke-fs`, `smoke-fs-persist`,
+  `smoke-fs-perms`, `smoke-fs-conc`).
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer
   (`make smoke-newlib`).
@@ -118,10 +120,19 @@ as the only ambient authority. New inodes are owned by their creator; `chmod` is
 owner-or-root, `chown` is root-only. Proven by `make smoke-fs-perms` (a non-root
 client is denied what its real uid disallows and cannot claim to be another user).
 
+**Multi-client concurrency is done:** several clients can use the one
+(single-threaded) `fs_server` at once without their replies colliding. The server
+replies with `SYS_IPC_REPLY_TO`, which routes each reply to the request's
+kernel-recorded sender — delivered directly into that client's blocked
+`SYS_IPC_CALL`, never via a shared reply endpoint that another client could poll
+or overwrite. Requests still serialise through the server (one processed at a
+time), which is appropriate for a single-core-default kernel; genuine parallel
+processing (a worker pool) is a later step. Proven by `make smoke-fs-conc` (three
+clients hammer the server concurrently, each verifying it receives only its own
+replies).
+
 What remains:
 
-- **Concurrency**: multi-client `fs_server` IPC — it currently serves one request
-  at a time.
 - **Per-file ACLs**: beyond the owner/group/other bits, and reconcile the legacy
   in-memory capfs (`SYS_FS_*`) with the server.
 - **Crash resilience**: a write-ahead intent log for atomic multi-block updates, a

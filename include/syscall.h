@@ -116,6 +116,7 @@ struct audit_event {
 #define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's alternate signal stack (ss_size 0 disables) */
 #define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of an endpoint's last sender */
 #define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (fs server only) */
+#define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the last sender on req_ep (multi-client safe routing) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -316,6 +317,16 @@ static inline int sys_ipc_call(int send_ep, int reply_ep,
 
 static inline int sys_ipc_reply(int ep_slot, const void *msg, size_t len) {
     return syscall(SYS_IPC_REPLY, (uint32_t)ep_slot, (uint32_t)msg, (uint32_t)len);
+}
+
+/* Reply to the task that sent the request most recently received on `req_ep`,
+ * delivered directly to that client's blocked sys_ipc_call by kernel-recorded
+ * identity (not via a shared reply endpoint) — so one server can serve concurrent
+ * clients without their replies colliding. Returns 0 on delivery (or if the
+ * client has gone). A negative return means "retry" (the client raced and hasn't
+ * finished blocking yet); a server loops until it succeeds. */
+static inline int sys_ipc_reply_to(int req_ep, const void *msg, size_t len) {
+    return syscall(SYS_IPC_REPLY_TO, (uint32_t)req_ep, (uint32_t)(uintptr_t)msg, (uint32_t)len);
 }
 
 /* Kernel-attested identity of the task that last sent on endpoint `ep`: returns

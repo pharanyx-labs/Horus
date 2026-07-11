@@ -463,6 +463,21 @@ void fs_selftest(void) {
     cap_install_from_root(srv, 6, 6, 0);          /* root_cnode[6] = CAP_USER (ALL) */
     cap_install_from_root(srv, 7, 8, 0);          /* root_cnode[8] = ALL rights     */
 
+#ifdef CONC_SELFTEST
+    /* Multi-client concurrency test: spawn a coordinator (spawn arg 0) plus three
+     * worker clients (args 1..3), each uid 0 with a delegated endpoint cap, all
+     * hammering the single server at once. Each worker verifies it receives ITS
+     * OWN replies (SYS_IPC_REPLY_TO routes by the request's kernel-recorded
+     * sender); the coordinator waits for every worker's done-marker and prints
+     * CONC_SELFTEST: PASS. */
+    for (int i = 0; i <= 3; i++) {
+        int c = fs_spawn_embedded(embedded_fsclient_bin_start, embedded_fsclient_bin_end, "fsclient");
+        if (c <= 0) { print("CONC_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+        tasks[c].uid       = 0;
+        tasks[c].spawn_arg = (uint32_t)i;       /* 0 = coordinator, 1..3 = workers */
+        cap_install_from_root(c, 3, 2, 0);      /* endpoint cap for the IPC gate */
+    }
+#else
     int cli = fs_spawn_embedded(embedded_fsclient_bin_start, embedded_fsclient_bin_end, "fsclient");
     if (cli <= 0) { print("FS_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     tasks[cli].uid = 0;
@@ -472,9 +487,10 @@ void fs_selftest(void) {
      * which slots 0-3 reserve; reconciling that with the slot-3 IPC gate is a
      * follow-up.) */
     cap_install_from_root(cli, 3, 2, 0);
+#endif
 
     /* Launch the server; when it blocks in IPC the full-context path runs the
-     * client. Does not return. */
+     * client(s). Does not return. */
     sched_enable_preemption();
     sched_enter_user(srv);
 }

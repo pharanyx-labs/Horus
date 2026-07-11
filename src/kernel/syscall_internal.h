@@ -134,6 +134,7 @@ void h_fs_inode_free(struct regs *r);
 void h_fblock_read(struct regs *r);
 void h_fblock_write(struct regs *r);
 void h_fs_set_size(struct regs *r);
+void h_fs_set_meta(struct regs *r);
 void h_fs_stat(struct regs *r);
 void h_fs_mint_file(struct regs *r);
 void h_fs_lookup(struct regs *r);
@@ -149,6 +150,7 @@ void h_ipc_send(struct regs *r);
 void h_ipc_call(struct regs *r);
 void h_ipc_recv(struct regs *r);
 void h_ipc_reply(struct regs *r);
+void h_ipc_sender(struct regs *r);
 void h_notify(struct regs *r);
 void h_wait_notify(struct regs *r);
 /* selftest.c (test-only trace hook) */

@@ -58,6 +58,7 @@ For the capability system, revocation semantics, and memory model, see [`docs/AR
 | 22     | `SYS_IPC_RECV`    | Receive a message from an endpoint           | endpoint READ (slot 3)     | **Non-blocking**: returns -2 if no message; else returns length |
 | 23     | `SYS_IPC_CALL`    | RPC-style send that may block for a reply    | endpoint WRITE (slot 3)    | Can block the caller (`TASK_BLOCKED_IPC`), resumed via the block/switch path |
 | 24     | `SYS_IPC_REPLY`   | Reply (thin wrapper over send)               | endpoint WRITE (slot 3)    | — |
+| 73     | `SYS_IPC_SENDER`  | Kernel-attested identity of an endpoint's last sender | endpoint READ (slot 3) | Returns the sender's uid and (via `*ecx`) gid, taken from `tasks[last_sender]` — set at login, not from the message — so a server (e.g. the `fs_server`) learns who a client is without trusting the client. Returns `(uint32_t)-1` if there is no valid sender |
 | 25     | `SYS_NOTIFY`      | Post a notification                          | endpoint WRITE (slot 3)    | **Not implemented** — cap check, then `SYS_ERR_NOSYS` (-38) |
 | 26     | `SYS_WAIT_NOTIFY` | Wait for a notification badge                | endpoint READ (slot 3)     | **Not implemented** — `SYS_ERR_NOSYS` (-38) |
 
@@ -128,8 +129,9 @@ The kernel exposes only an encrypted inode/block API; the ring-3 `fs_server` bui
 | 57     | `SYS_FS_INODE_FREE` | Free an inode                                 | `CAP_BLOCK_DEV` + uid 0        | — |
 | 58     | `SYS_FBLOCK_READ`   | Read (decrypt + verify) an (inode, block)     | `CAP_BLOCK_DEV` + uid 0        | Returns `BLOCK_SIZE`; fail-closed on a bad tag |
 | 59     | `SYS_FBLOCK_WRITE`  | Write (encrypt, fresh nonce) an (inode, block)| `CAP_BLOCK_DEV` + uid 0        | Per-(ino,block) AEAD |
-| 60     | `SYS_FS_STAT`       | Read inode metadata                           | `CAP_BLOCK_DEV` + uid 0        | Writes a `struct fs_stat` |
+| 60     | `SYS_FS_STAT`       | Read inode metadata                           | `CAP_BLOCK_DEV` + uid 0        | Writes a `struct fs_stat` (size, type, mode, uid, gid, links) |
 | 61     | `SYS_FS_SET_SIZE`   | Set an inode's logical size                   | `CAP_BLOCK_DEV` + uid 0        | Server owns logical file size |
+| 74     | `SYS_FS_SET_META`   | Persist an inode's owner (uid/gid) + mode     | `CAP_BLOCK_DEV` + uid 0        | Only the low 12 permission bits are settable (file-type bits preserved); the `fs_server` uses it to stamp the creator as owner and to apply chmod/chown after authorising the caller |
 
 ### Block storage & server registration
 

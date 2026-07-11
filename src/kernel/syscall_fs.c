@@ -346,6 +346,31 @@ void h_fs_set_size(struct regs *r) {
     r->eax = 0;
 }
 
+/* SYS_FS_SET_META (74): persist an inode's owner (uid/gid) and permission bits.
+ * Same gate as the rest of the object-store API — CAP_BLOCK_DEV (slot 7, table)
+ * plus the uid==0 check here — so only the trusted filesystem server can call it.
+ * The server is the reference monitor: it chooses the values (owner = the
+ * kernel-attested creator at create time; chmod/chown only after authorising the
+ * attested caller), and this writes them through. Only the low 12 permission bits
+ * are caller-settable; the file-type bits are preserved, so a chmod can never
+ * turn a directory into a regular file. */
+void h_fs_set_meta(struct regs *r) {
+    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino  = r->ebx;
+    uint32_t mode = r->ecx;
+    uint32_t uid  = r->edx;
+    uint32_t gid  = r->esi;
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+    inode.mode = (inode.mode & ~0007777u) | (mode & 0007777u);
+    inode.uid  = uid;
+    inode.gid  = gid;
+    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }
+    r->eax = 0;
+}
+
 void h_fs_stat(struct regs *r) {
     if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino  = r->ebx;

@@ -114,6 +114,8 @@ struct audit_event {
 #define SYS_SPAWN_IMAGE        70   /* (image, len, arg, argv, argc) -> pid; spawn a child from a caller-supplied program image (execve-from-fd) */
 #define SYS_EXEC_IMAGE         71   /* (image, len, 0, argv, argc) -> replace the caller's own image with a caller-supplied one; no return on success */
 #define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's alternate signal stack (ss_size 0 disables) */
+#define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of an endpoint's last sender */
+#define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (fs server only) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -314,6 +316,15 @@ static inline int sys_ipc_call(int send_ep, int reply_ep,
 
 static inline int sys_ipc_reply(int ep_slot, const void *msg, size_t len) {
     return syscall(SYS_IPC_REPLY, (uint32_t)ep_slot, (uint32_t)msg, (uint32_t)len);
+}
+
+/* Kernel-attested identity of the task that last sent on endpoint `ep`: returns
+ * its uid and (via *out_gid) gid, as fixed by that task's login. A client cannot
+ * forge this — it is not read from the request — so a server uses it instead of
+ * trusting any identity a client places in the message body. Returns
+ * (uint32_t)-1 when there is no valid last sender. */
+static inline uint32_t sys_ipc_sender(int ep, uint32_t *out_gid) {
+    return syscall(SYS_IPC_SENDER, (uint32_t)ep, (uint32_t)(uintptr_t)out_gid, 0);
 }
 
 static inline int sys_notify(int notif_slot, uint32_t badge) {
@@ -594,6 +605,13 @@ static inline int sys_fs_stat(uint32_t ino, struct fs_stat *out) {
  * stores fixed-size encrypted blocks). Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_fs_set_size(uint32_t ino, uint32_t size) {
     return syscall(SYS_FS_SET_SIZE, ino, size, 0);
+}
+
+/* Persist an inode's permission bits (low 12 of `mode`) and owner (uid/gid).
+ * Object-store server only (uid 0 + CAP_BLOCK_DEV); the file-type bits are
+ * preserved. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_fs_set_meta(uint32_t ino, uint32_t mode, uint32_t uid, uint32_t gid) {
+    return (int)syscall6(SYS_FS_SET_META, ino, mode, uid, gid, 0, 0);
 }
 
 /* Audit-log integrity digest. Writes 40 bytes to `out` (8-byte little-endian

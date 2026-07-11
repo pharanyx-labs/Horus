@@ -42,8 +42,9 @@ five runtime self-tests in CI. Already in place:
   over IPC; real `ls` / `cat` / `mkdir` / `rm` / `touch` / redirection from the
   shell. Persistent by default: the kernel probes for an ATA disk at boot and uses
   the encrypted store (files survive a reboot, unsealed at login) when one is
-  present, falling back to an in-RAM disk when it is not (`make smoke-fs`,
-  `make smoke-fs-persist`).
+  present, falling back to an in-RAM disk when it is not. Per-file ownership and
+  POSIX permissions are enforced by the server against the caller's kernel-attested
+  identity (`make smoke-fs`, `make smoke-fs-persist`, `make smoke-fs-perms`).
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer
   (`make smoke-newlib`).
@@ -99,20 +100,30 @@ automated client end-to-end).
 
 ## Phase 2 — A production filesystem
 
-The filesystem now persists by default and works end-to-end, but is still
-single-client and permission-less. **Persistence is done:** the shipped kernel
-probes for an ATA disk at boot and uses the encrypted store when one is present
-(the per-block crypto metadata is flushed on write and reloaded + HMAC-verified at
-login, so files survive a reboot), falling back to the ephemeral RAM vdisk when no
-disk is attached; a persistent disk comes up sealed and is unwrapped at login.
-Proven by `make smoke-fs-persist` (write on boot 1, verify on boot 2 against the
-same disk image). What remains:
+The filesystem now persists by default, enforces per-file ownership and
+permissions, and works end-to-end; it is still single-client.
+
+**Persistence is done:** the shipped kernel probes for an ATA disk at boot and
+uses the encrypted store when one is present (the per-block crypto metadata is
+flushed on write and reloaded + HMAC-verified at login, so files survive a
+reboot), falling back to the ephemeral RAM vdisk when no disk is attached; a
+persistent disk comes up sealed and is unwrapped at login. Proven by
+`make smoke-fs-persist`.
+
+**Ownership and permissions are done:** the `fs_server` is the filesystem
+reference monitor, enforcing POSIX owner/group/other rwx and ownership against the
+caller's *kernel-attested* uid/gid — `SYS_IPC_SENDER` gives the server the sender's
+login identity, never anything the client puts in the request — with root (uid 0)
+as the only ambient authority. New inodes are owned by their creator; `chmod` is
+owner-or-root, `chown` is root-only. Proven by `make smoke-fs-perms` (a non-root
+client is denied what its real uid disallows and cannot claim to be another user).
+
+What remains:
 
 - **Concurrency**: multi-client `fs_server` IPC — it currently serves one request
   at a time.
-- **Ownership and permissions**: per-file ownership/permission bits tied to the
-  capability model, and per-file ACLs; reconcile the legacy in-memory capfs
-  (`SYS_FS_*`) with the server.
+- **Per-file ACLs**: beyond the owner/group/other bits, and reconcile the legacy
+  in-memory capfs (`SYS_FS_*`) with the server.
 - **Crash resilience**: a write-ahead intent log for atomic multi-block updates, a
   directory-tree `fsck` pass to reclaim written-but-never-linked inodes,
   multi-block allocation bitmaps, and double-indirect data blocks for larger

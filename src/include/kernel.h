@@ -497,6 +497,15 @@ typedef struct fs_superblock {
     uint64_t meta_start;         /* first block of the nonce/tag metadata region */
     uint32_t meta_blocks;        /* number of blocks in that region */
     uint32_t _pad;
+    /* v5: write-ahead redo log. Multi-block updates (bitmap + inode + meta block +
+     * data + this superblock's meta_hmac) are staged, committed to this region
+     * with an HMAC-authenticated header, then applied to their home locations —
+     * so a crash leaves the filesystem either fully before or fully after the
+     * operation, and the meta_hmac can never desync (which previously bricked the
+     * volume). One header sector + journal_blocks-1 data sectors. */
+    uint64_t journal_start;
+    uint32_t journal_blocks;
+    uint32_t _pad_j;
     uint64_t inode_bitmap_start;
     uint64_t block_bitmap_start;
     uint64_t data_bitmap_start;
@@ -552,6 +561,7 @@ typedef struct mounted_fs {
     uint8_t *inode_cache;
     uint8_t disk_key[32];        /* plaintext disk_key in RAM after unlock; zeroed on error */
     uint8_t meta_mac_key[32];    /* HKDF(disk_key, volume_key_salt, "horus-meta-mac-v1") */
+    uint8_t journal_mac_key[32]; /* HKDF(disk_key, volume_key_salt, "horus-journal-mac-v1") */
 } mounted_fs_t;
 
 typedef struct fs_object {

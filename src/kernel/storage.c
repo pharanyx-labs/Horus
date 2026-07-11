@@ -34,7 +34,7 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 }
 
 #define STORAGE_MAGIC   0x48534653
-#define STORAGE_VERSION 4   /* v4: disk_key wrapped by password-derived Argon2id KEK */
+#define STORAGE_VERSION 5   /* v5: adds the write-ahead redo log (journal region) */
 
 static struct virtual_disk g_vdisk;
 /* Unused when STORAGE_ATA selects the ATA backend instead of the RAM vdisk. */
@@ -269,20 +269,176 @@ void storage_set_default_device(struct block_device *bd) {
  * closed). The ETM crypto/MAC layer above this is kernel-mediated, so the
  * transport only ever moves ciphertext; a userspace disk driver, if ever
  * wanted, belongs behind an IPC server, not an in-kernel callback. */
-static int do_block_read(uint64_t block, void *buf) {
+static int raw_block_read(uint64_t block, void *buf) {
     return current_bd->read_block(current_bd, block, buf);
 }
 
-static int do_block_write(uint64_t block, const void *buf) {
+static int raw_block_write(uint64_t block, const void *buf) {
     return current_bd->write_block(current_bd, block, buf);
 }
 
+/* ---- Write-ahead redo log (journal) --------------------------------------- *
+ * A multi-block filesystem update (allocate a data block -> update the bitmap ->
+ * link it in the inode -> write the per-block crypto metadata + its superblock
+ * meta_hmac -> write the ciphertext) touches up to a handful of separate
+ * sectors. A crash partway through used to leave the volume inconsistent — and,
+ * worst of all, could desync the metadata region from sb.meta_hmac, which makes
+ * storage_unlock refuse to mount (a whole-volume brick).
+ *
+ * The journal makes each such update atomic. journal_begin() opens a
+ * transaction; while one is open, do_block_write STAGES (block, content) in RAM
+ * instead of writing home, and do_block_read returns staged content
+ * (read-your-writes). journal_commit() then:
+ *   1. writes the staged blocks into the journal data region;
+ *   2. writes the journal header — targets + a keyed HMAC over the payload — in
+ *      one atomic sector: this is the commit point;
+ *   3. applies the staged writes to their home locations;
+ *   4. clears the header.
+ * A crash before step 2 leaves home untouched (old state); after step 2, mount
+ * replays the committed transaction (idempotent redo) to complete it — so the
+ * filesystem is always either fully before or fully after the operation.
+ *
+ * Security: the header carries an HMAC keyed by journal_mac_key (derived from
+ * disk_key), so an attacker with raw disk access cannot forge a committed
+ * transaction that replay would blind-write to arbitrary blocks; every replay
+ * target is bounds-checked to the fs body (never the superblock-below region,
+ * never the journal itself). Staged data blocks are already ciphertext; staged
+ * metadata is plaintext exactly as it lives on disk — no new disclosure. */
+#define JOURNAL_MAGIC     0x4C52574Au        /* "JWRL" */
+#define JOURNAL_DATA_MAX  16                  /* max home sectors one txn may touch */
+#define JOURNAL_BLOCKS    (1 + JOURNAL_DATA_MAX)   /* header sector + data sectors */
+
+struct journal_header {
+    uint32_t magic;                      /* JOURNAL_MAGIC when a committed txn is present */
+    uint32_t count;                      /* number of home sectors (1..JOURNAL_DATA_MAX) */
+    uint64_t seq;                        /* monotonically increasing; also an HMAC input */
+    uint64_t target[JOURNAL_DATA_MAX];   /* home block number for each staged sector */
+    uint8_t  hmac[32];                   /* HMAC(journal_mac_key, seq||count||targets||data) */
+};
+_Static_assert(sizeof(struct journal_header) <= BLOCK_SIZE,
+               "journal header must fit one sector");
+
+static struct {
+    int      active;
+    int      overflow;                   /* a txn tried to touch > JOURNAL_DATA_MAX sectors */
+    int      n;
+    uint64_t target[JOURNAL_DATA_MAX];
+    uint8_t  data[JOURNAL_DATA_MAX][BLOCK_SIZE];
+} g_txn;
+static uint64_t g_journal_seq = 1;
+
+/* HMAC preimage scratch (seq||count||targets||data), guarded by storage_lock. */
+static uint8_t g_jscratch[8 + 4 + JOURNAL_DATA_MAX * 8 + JOURNAL_DATA_MAX * BLOCK_SIZE];
+
+static int do_block_read(uint64_t block, void *buf) {
+    if (g_txn.active) {
+        for (int i = g_txn.n - 1; i >= 0; i--)          /* newest staged write wins */
+            if (g_txn.target[i] == block) { my_memcpy(buf, g_txn.data[i], BLOCK_SIZE); return 0; }
+    }
+    return raw_block_read(block, buf);
+}
+
+static int do_block_write(uint64_t block, const void *buf) {
+    if (g_txn.active) {
+        for (int i = 0; i < g_txn.n; i++)               /* coalesce repeat writes to a block */
+            if (g_txn.target[i] == block) { my_memcpy(g_txn.data[i], buf, BLOCK_SIZE); return 0; }
+        if (g_txn.n >= JOURNAL_DATA_MAX) { g_txn.overflow = 1; return -1; }
+        g_txn.target[g_txn.n] = block;
+        my_memcpy(g_txn.data[g_txn.n], buf, BLOCK_SIZE);
+        g_txn.n++;
+        return 0;
+    }
+    return raw_block_write(block, buf);
+}
+
+static void journal_begin(void) {
+    g_txn.active = 1; g_txn.overflow = 0; g_txn.n = 0;
+}
+
+static void journal_abort(void) {
+    g_txn.active = 0; g_txn.overflow = 0; g_txn.n = 0;   /* discard staged writes; home untouched */
+}
+
+static int journal_compute_hmac(const uint8_t *mac_key, uint64_t seq, uint32_t count,
+                                const uint64_t *targets, const uint8_t (*data)[BLOCK_SIZE],
+                                uint8_t out32[32]) {
+    size_t off = 0;
+    my_memcpy(g_jscratch + off, &seq,   8); off += 8;
+    my_memcpy(g_jscratch + off, &count, 4); off += 4;
+    for (uint32_t i = 0; i < count; i++) { my_memcpy(g_jscratch + off, &targets[i], 8); off += 8; }
+    for (uint32_t i = 0; i < count; i++) { my_memcpy(g_jscratch + off, data[i], BLOCK_SIZE); off += BLOCK_SIZE; }
+    return rust_hmac_sha256(mac_key, 32, g_jscratch, off, out32);
+}
+
+/* Crash-injection hook: WAL_CRASHTEST builds halt right after the commit header
+ * is durable but before the home apply, to exercise redo recovery on next boot.
+ * storage_fresh_format lets the two-boot test tell boot 1 (formatted a fresh
+ * disk) from boot 2 (mounted the existing one). */
+#ifdef WAL_CRASHTEST
+int g_wal_crash_armed = 0;
+int storage_fresh_format = 0;
+#endif
+
+/* Commit the open transaction (see the block comment above). Returns 0 on
+ * success (or when nothing was staged), -1 on overflow / write error — in which
+ * case nothing is applied to home and the caller should surface an error. */
+static int journal_commit(void) {
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || mfs->sb.journal_start == 0) { journal_abort(); return -1; }
+    if (g_txn.overflow) { journal_abort(); return -1; }
+    if (g_txn.n == 0)   { g_txn.active = 0; return 0; }
+
+    uint32_t count = (uint32_t)g_txn.n;
+    uint64_t jstart = mfs->sb.journal_start;
+
+    /* 1. Journal data region. */
+    for (uint32_t i = 0; i < count; i++)
+        if (raw_block_write(jstart + 1 + i, g_txn.data[i]) != 0) { journal_abort(); return -1; }
+
+    /* 2. Commit header (one atomic sector). */
+    struct journal_header hdr;
+    my_memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = JOURNAL_MAGIC;
+    hdr.count = count;
+    hdr.seq   = g_journal_seq;
+    for (uint32_t i = 0; i < count; i++) hdr.target[i] = g_txn.target[i];
+    if (journal_compute_hmac(mfs->journal_mac_key, hdr.seq, count, hdr.target,
+                             (const uint8_t (*)[BLOCK_SIZE])g_txn.data, hdr.hmac) != 0) {
+        journal_abort(); return -1;
+    }
+    uint8_t hbuf[BLOCK_SIZE];
+    my_memset(hbuf, 0, BLOCK_SIZE);
+    my_memcpy(hbuf, &hdr, sizeof(hdr));
+    if (raw_block_write(jstart, hbuf) != 0) { journal_abort(); return -1; }
+
+#ifdef WAL_CRASHTEST
+    if (g_wal_crash_armed) {
+        /* Commit header is now durable; the home apply below has NOT run. Announce
+         * and halt — the two-boot test kills QEMU here and reboots to recover. */
+        println("WAL_CRASHTEST: crashed-after-commit");
+        for (;;) __asm__ volatile ("hlt");
+    }
+#endif
+
+    /* 3. Apply to home locations. */
+    for (uint32_t i = 0; i < count; i++)
+        raw_block_write(g_txn.target[i], g_txn.data[i]);
+
+    /* 4. Clear the header so recovery finds nothing to replay. */
+    my_memset(hbuf, 0, BLOCK_SIZE);
+    raw_block_write(jstart, hbuf);
+
+    g_journal_seq++;
+    g_txn.active = 0; g_txn.n = 0;
+    return 0;
+}
+
 int storage_block_read(uint64_t block, void *buf) {
-    return do_block_read(block, buf);
+    return raw_block_read(block, buf);
 }
 
 int storage_block_write(uint64_t block, const void *buf) {
-    return do_block_write(block, buf);
+    return raw_block_write(block, buf);
 }
 
 /* Serialize and write the metadata sector that covers physical block `phys`.
@@ -338,6 +494,72 @@ static int derive_meta_mac_key(const uint8_t *disk_key,   size_t dk_len,
     size_t p = 0;
     for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
     return rust_hkdf_sha256(disk_key, dk_len, vk_salt, salt_len, info, p, out32, 32);
+}
+
+/* journal_mac_key = HKDF-SHA256(disk_key, volume_key_salt, "horus-journal-mac-v1").
+ * A distinct label from the meta-mac key so the two are independent. */
+static int derive_journal_mac_key(const uint8_t *disk_key, size_t dk_len,
+                                  const uint8_t *vk_salt,  size_t salt_len,
+                                  uint8_t       *out32)
+{
+    const char *label = "horus-journal-mac-v1";
+    uint8_t info[21];
+    size_t p = 0;
+    for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
+    return rust_hkdf_sha256(disk_key, dk_len, vk_salt, salt_len, info, p, out32, 32);
+}
+
+/* Replay any committed transaction left in the journal by a crash. Run at mount,
+ * BEFORE the metadata region is loaded and its HMAC verified, so a transaction
+ * that updated a meta sector and sb.meta_hmac together is completed atomically.
+ * Verifies the header's keyed HMAC and bounds-checks every target, so only a
+ * genuine, kernel-authored, intact transaction is ever applied; anything else is
+ * discarded (the operation is treated as never having happened). Idempotent. */
+static void journal_recover(struct mounted_fs *mfs)
+{
+    if (!mfs || !mfs->mounted || mfs->sb.journal_start == 0) return;
+    uint64_t jstart = mfs->sb.journal_start;
+
+    uint8_t hbuf[BLOCK_SIZE];
+    if (raw_block_read(jstart, hbuf) != 0) return;
+    struct journal_header hdr;
+    my_memcpy(&hdr, hbuf, sizeof(hdr));
+
+    if (hdr.magic != JOURNAL_MAGIC) return;                 /* nothing committed */
+    if (hdr.count == 0 || hdr.count > JOURNAL_DATA_MAX) goto discard;
+
+    /* Load the staged data and re-derive the HMAC over exactly what we would
+     * apply; a torn/forged journal fails here and is discarded. */
+    static uint8_t jdata[JOURNAL_DATA_MAX][BLOCK_SIZE];
+    for (uint32_t i = 0; i < hdr.count; i++)
+        if (raw_block_read(jstart + 1 + i, jdata[i]) != 0) goto discard;
+
+    uint8_t want[32];
+    if (journal_compute_hmac(mfs->journal_mac_key, hdr.seq, hdr.count, hdr.target,
+                             (const uint8_t (*)[BLOCK_SIZE])jdata, want) != 0) goto discard;
+    int bad = 0;
+    for (int i = 0; i < 32; i++) bad |= (want[i] ^ hdr.hmac[i]);
+    if (bad) goto discard;
+
+    /* Every target must land in the filesystem body — never block 0 (superblock
+     * lives there but is written via the txn's own staged copy, target != 0
+     * because update_meta_hmac stages block 0... actually it may; allow 0 since a
+     * valid HMAC proves the kernel authored it) — but never inside the journal
+     * region, and never past the disk. Fail closed on any out-of-range target. */
+    for (uint32_t i = 0; i < hdr.count; i++) {
+        uint64_t t = hdr.target[i];
+        if (t >= mfs->sb.total_blocks) goto discard;
+        if (t >= jstart && t < jstart + mfs->sb.journal_blocks) goto discard;
+    }
+
+    /* Redo. */
+    for (uint32_t i = 0; i < hdr.count; i++)
+        raw_block_write(hdr.target[i], jdata[i]);
+    if (hdr.seq >= g_journal_seq) g_journal_seq = hdr.seq + 1;
+
+discard:
+    my_memset(hbuf, 0, BLOCK_SIZE);
+    raw_block_write(jstart, hbuf);   /* clear the header either way */
 }
 
 /* HMAC-SHA256(meta_mac_key, entire g_block_meta[] array) → out32.
@@ -450,11 +672,11 @@ static int64_t bitmap_find_free(const uint8_t *bitmap, uint64_t max_bits) {
 }
 
 static int read_block_bitmap(struct block_device *bd, const struct fs_superblock *sb, uint8_t *buf) {
-    return bd->read_block(bd, sb->block_bitmap_start, buf);
+    (void)bd; return do_block_read(sb->block_bitmap_start, buf);
 }
 
 static int write_block_bitmap(struct block_device *bd, const struct fs_superblock *sb, const uint8_t *buf) {
-    return bd->write_block(bd, sb->block_bitmap_start, buf);
+    (void)bd; return do_block_write(sb->block_bitmap_start, buf);
 }
 
 int64_t storage_alloc_block(struct block_device *bd, struct fs_superblock *sb) {
@@ -481,21 +703,21 @@ void storage_free_block(struct block_device *bd, struct fs_superblock *sb, uint6
 
 int64_t storage_alloc_inode(struct block_device *bd, struct fs_superblock *sb) {
     uint8_t bitmap[BLOCK_SIZE];
-    if (bd->read_block(bd, sb->inode_bitmap_start, bitmap) != 0) return -1;
+    (void)bd; if (do_block_read(sb->inode_bitmap_start, bitmap) != 0) return -1;
 
     int64_t ino = bitmap_find_free(bitmap, sb->inode_count);
     if (ino < 0) return -1;
 
     bitmap_set(bitmap, ino);
-    bd->write_block(bd, sb->inode_bitmap_start, bitmap);
+    do_block_write(sb->inode_bitmap_start, bitmap);
     return ino;
 }
 
 void storage_free_inode(struct block_device *bd, struct fs_superblock *sb, uint64_t ino) {
     uint8_t bitmap[BLOCK_SIZE];
-    if (bd->read_block(bd, sb->inode_bitmap_start, bitmap) != 0) return;
+    (void)bd; if (do_block_read(sb->inode_bitmap_start, bitmap) != 0) return;
     bitmap_clear(bitmap, ino);
-    bd->write_block(bd, sb->inode_bitmap_start, bitmap);
+    do_block_write(sb->inode_bitmap_start, bitmap);
 }
 
 int storage_read_inode(struct block_device *bd, struct fs_superblock *sb,
@@ -506,7 +728,7 @@ int storage_read_inode(struct block_device *bd, struct fs_superblock *sb,
     uint32_t offset = (ino % INODES_PER_BLOCK) * sizeof(struct on_disk_inode);
 
     uint8_t buf[BLOCK_SIZE];
-    if (bd->read_block(bd, block, buf) != 0) return -1;
+    (void)bd; if (do_block_read(block, buf) != 0) return -1;
 
     my_memcpy(inode_out, buf + offset, sizeof(struct on_disk_inode));
     return 0;
@@ -520,10 +742,10 @@ int storage_write_inode(struct block_device *bd, struct fs_superblock *sb,
     uint32_t offset = (ino % INODES_PER_BLOCK) * sizeof(struct on_disk_inode);
 
     uint8_t buf[BLOCK_SIZE];
-    if (bd->read_block(bd, block, buf) != 0) return -1;
+    (void)bd; if (do_block_read(block, buf) != 0) return -1;
 
     my_memcpy(buf + offset, inode, sizeof(struct on_disk_inode));
-    return bd->write_block(bd, block, buf);
+    return do_block_write(block, buf);
 }
 
 int storage_dir_lookup(struct mounted_fs *mfs, uint64_t dir_ino, const char *name, uint64_t *out_ino) {
@@ -629,9 +851,13 @@ static int storage_format_sealed(struct block_device *bd,
      * known offset regardless of disk geometry. */
     sb.meta_start         = 1;
     sb.meta_blocks        = META_BLOCKS_COUNT;
-    sb.inode_bitmap_start = 1 + META_BLOCKS_COUNT;
-    sb.block_bitmap_start = 2 + META_BLOCKS_COUNT;
-    sb.inode_table_start  = 3 + META_BLOCKS_COUNT;
+    /* Write-ahead redo log sits right after the metadata region. */
+    sb.journal_start      = 1 + META_BLOCKS_COUNT;
+    sb.journal_blocks     = JOURNAL_BLOCKS;
+    uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
+    sb.inode_bitmap_start = after_j;
+    sb.block_bitmap_start = after_j + 1;
+    sb.inode_table_start  = after_j + 2;
 
     /* Geometry is computed from the device size instead of hardcoded. One bitmap
      * block addresses at most BLOCK_SIZE*8 (=4096) bits, so both the inode count
@@ -718,6 +944,12 @@ static int storage_format_sealed(struct block_device *bd,
         bd->write_block(bd, sb.meta_start + m, zero);
     }
 
+    /* Zero the journal region: a cleared header (magic 0) means "no committed
+     * transaction to replay" — a fresh volume has nothing to recover. */
+    for (uint32_t j = 0; j < sb.journal_blocks; j++) {
+        bd->write_block(bd, sb.journal_start + j, zero);
+    }
+
     bd->write_block(bd, sb.block_bitmap_start, zero);
 
     /* Zero the whole inode table so inodes sharing a block with a freshly used
@@ -781,6 +1013,9 @@ int storage_unlock(const char *password, size_t plen)
         if (storage_mount(g_needs_format_bd) != 0) return -1;
         g_needs_format    = 0;
         g_needs_format_bd = NULL;
+#ifdef WAL_CRASHTEST
+        storage_fresh_format = 1;   /* this boot formatted a fresh disk (boot 1) */
+#endif
     }
 
     struct mounted_fs *mfs = &g_mounted_fs;
@@ -843,6 +1078,27 @@ int storage_unlock(const char *password, size_t plen)
         secure_zero(mfs->volume_key, sizeof(mfs->volume_key));
         return -7;
     }
+    if (derive_journal_mac_key(mfs->disk_key, 32,
+                               sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                               mfs->journal_mac_key) != 0) {
+        secure_zero(mfs->disk_key,   sizeof(mfs->disk_key));
+        secure_zero(mfs->volume_key, sizeof(mfs->volume_key));
+        secure_zero(mfs->meta_mac_key, sizeof(mfs->meta_mac_key));
+        return -7;
+    }
+
+    /* Replay any committed transaction a crash left in the journal BEFORE the
+     * metadata region is loaded and its HMAC checked — so an update that touched
+     * a meta sector and sb.meta_hmac together is completed as a unit and the two
+     * always agree. */
+    journal_recover(mfs);
+    /* Recovery may have re-applied a committed transaction that included the
+     * superblock (its meta_hmac). Reload the in-RAM superblock so the HMAC check
+     * below compares against the post-recovery value, not the stale mount-time one. */
+    {
+        uint8_t sbbuf[BLOCK_SIZE];
+        if (raw_block_read(0, sbbuf) == 0) my_memcpy(&mfs->sb, sbbuf, sizeof(mfs->sb));
+    }
 
     /* Step 5 — Load metadata region and verify HMAC (detects nonce/tag rollback). */
     load_meta_region(mfs);
@@ -896,7 +1152,17 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
     uint8_t inode_bitmap[BLOCK_SIZE];
     if (do_block_read(mfs->sb.inode_bitmap_start, inode_bitmap) != 0) return;
 
-    int dirty = 0;
+    uint8_t block_bitmap[BLOCK_SIZE];
+    int have_bb = (do_block_read(mfs->sb.block_bitmap_start, block_bitmap) == 0);
+
+    /* Data blocks reachable from a live inode's direct/single-indirect pointers.
+     * Indexed by rel = phys - data_start, matching the block bitmap. */
+    static uint8_t referenced[BLOCK_SIZE];
+    my_memset(referenced, 0, BLOCK_SIZE);
+    const uint64_t data_start  = mfs->sb.data_start;
+    const uint64_t block_count = mfs->sb.block_count;
+
+    int inode_dirty = 0;
     uint64_t table_blocks =
         (mfs->sb.inode_count + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK;
 
@@ -907,19 +1173,60 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
 
         for (int i = 0; i < INODES_PER_BLOCK; i++) {
             uint64_t ino = tb * (uint64_t)INODES_PER_BLOCK + (uint64_t)i;
-            if (ino == 0 || ino >= mfs->sb.inode_count) continue;
+            if (ino >= mfs->sb.inode_count) continue;
             if (!bitmap_test(inode_bitmap, ino)) continue;
 
-            if (slots[i].type == 0 ||
-                (slots[i].type != 0 && slots[i].links == 0)) {
+            struct on_disk_inode *nd = &slots[i];
+            int alive = (nd->type != 0 && nd->links != 0);
+
+            /* Reclaim an allocated inode slot left dangling by an interrupted
+             * op (never the root inode 0): type==0 (bitmap set before the inode
+             * was initialised) or links==0 (freed before the bitmap bit cleared).
+             * Its data blocks, if any, are then reclaimed by the block sweep. */
+            if (ino != 0 && !alive) {
                 bitmap_clear(inode_bitmap, ino);
-                dirty = 1;
+                inode_dirty = 1;
+                continue;
+            }
+
+            /* Live inode (including root): mark every data block it references. */
+            for (int d = 0; d < 12; d++) {
+                uint64_t p = nd->direct[d];
+                if (p >= data_start && p < data_start + block_count)
+                    bitmap_set(referenced, p - data_start);
+            }
+            if (nd->indirect >= data_start && nd->indirect < data_start + block_count) {
+                bitmap_set(referenced, nd->indirect - data_start);
+                uint8_t ib[BLOCK_SIZE];
+                if (do_block_read(nd->indirect, ib) == 0) {
+                    uint64_t *ptrs = (uint64_t *)ib;
+                    for (unsigned k = 0; k < BLOCK_SIZE / sizeof(uint64_t); k++) {
+                        uint64_t p = ptrs[k];
+                        if (p >= data_start && p < data_start + block_count)
+                            bitmap_set(referenced, p - data_start);
+                    }
+                }
             }
         }
     }
 
-    if (dirty)
+    if (inode_dirty)
         do_block_write(mfs->sb.inode_bitmap_start, inode_bitmap);
+
+    /* Reclaim data blocks the bitmap marks allocated but no live inode references
+     * (crash-orphaned: allocated before the operation that would link them
+     * committed). Only clears bits; never touches a referenced block. */
+    if (have_bb) {
+        int bb_dirty = 0;
+        for (uint64_t r = 0; r < block_count; r++) {
+            if (bitmap_test(block_bitmap, r) && !bitmap_test(referenced, r)) {
+                bitmap_clear(block_bitmap, r);
+                bb_dirty = 1;
+            }
+        }
+        if (bb_dirty)
+            do_block_write(mfs->sb.block_bitmap_start, block_bitmap);
+    }
 }
 
 int storage_rekey(const char *new_password, size_t plen)
@@ -1105,11 +1412,11 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode 
             inode->indirect = indirect_phys;
             uint8_t zero[BLOCK_SIZE];
             my_memset(zero, 0, BLOCK_SIZE);
-            bd->write_block(bd, indirect_phys, zero);
+            do_block_write(indirect_phys, zero);
         }
 
         uint8_t indirect_block[BLOCK_SIZE];
-        bd->read_block(bd, indirect_phys, indirect_block);
+        do_block_read(indirect_phys, indirect_block);
 
         uint64_t *ptrs = (uint64_t *)indirect_block;
         uint64_t phys = ptrs[logical_block];
@@ -1118,7 +1425,7 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode 
             phys = storage_alloc_block(bd, sb);
             if (phys == (uint64_t)-1) return 0;
             ptrs[logical_block] = phys;
-            bd->write_block(bd, indirect_phys, indirect_block);
+            do_block_write(indirect_phys, indirect_block);
         }
         return phys;
     }
@@ -1149,11 +1456,18 @@ int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block
 }
 
 int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, const void *buf) {
+    /* One atomic transaction: the data-block allocation (block bitmap), the inode
+     * link, the per-block crypto metadata (+ its superblock meta_hmac), and the
+     * ciphertext all commit together or not at all. A crash therefore leaves the
+     * file either fully before or fully after this write — never with a dangling
+     * block or a meta_hmac that no longer matches the metadata region. */
+    journal_begin();
+
     struct on_disk_inode inode;
-    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return -1;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { journal_abort(); return -1; }
 
     uint64_t phys = get_physical_block(mfs, &inode, block, 1);
-    if (phys == 0) return -1;
+    if (phys == 0) { journal_abort(); return -1; }
 
     if (inode.direct[block] != phys && block < 12) {
         inode.direct[block] = phys;
@@ -1163,49 +1477,45 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
     uint8_t temp[BLOCK_SIZE];
     my_memcpy(temp, buf, BLOCK_SIZE);
 
-    if (storage_encrypt_block(phys, ino, block, temp) != 0) {
-        return -1;
-    }
+    if (storage_encrypt_block(phys, ino, block, temp) != 0) { journal_abort(); return -1; }
+    if (do_block_write(phys, temp) != 0)                     { journal_abort(); return -1; }
 
-    return do_block_write(phys, temp);
+    return journal_commit();
 }
 
-/* Free every data block an inode references (direct + single-indirect), clear
- * their per-block crypto metadata, then release the inode. Backs the FS
- * server's delete path via SYS_FS_INODE_FREE. */
+/* Free every data block an inode references (direct + single-indirect) and
+ * release the inode, as one atomic transaction. Backs the FS server's delete
+ * path via SYS_FS_INODE_FREE.
+ *
+ * The per-block crypto metadata (nonce/tag) of freed blocks is deliberately left
+ * untouched: the blocks are deallocated in the bitmap, and when one is later
+ * reallocated storage_encrypt_block overwrites its metadata with a fresh nonce,
+ * so the stale entry is harmless. Clearing it here instead would flush one meta
+ * sector (and its superblock meta_hmac) per freed block — many non-atomic writes
+ * that both overflow the journal and risk the very meta_hmac desync the journal
+ * exists to prevent. All the bitmap clears coalesce onto the single block-bitmap
+ * sector, so the transaction is only ~3 sectors (block bitmap + inode + inode
+ * bitmap). */
 int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
+    journal_begin();
+
     struct on_disk_inode inode;
-    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return -1;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { journal_abort(); return -1; }
 
     for (int i = 0; i < 12; i++) {
         if (inode.direct[i]) {
             storage_free_block(mfs->bd, &mfs->sb, inode.direct[i]);
-            if (inode.direct[i] < BLOCKS_PER_DISK) {
-                g_block_meta[inode.direct[i]].present = 0;
-                flush_meta_block(inode.direct[i]);
-            }
             inode.direct[i] = 0;
         }
     }
     if (inode.indirect) {
         uint8_t ib[BLOCK_SIZE];
-        if (mfs->bd->read_block(mfs->bd, inode.indirect, ib) == 0) {
+        if (do_block_read(inode.indirect, ib) == 0) {
             uint64_t *ptrs = (uint64_t *)ib;
-            for (unsigned k = 0; k < BLOCK_SIZE / sizeof(uint64_t); k++) {
-                if (ptrs[k]) {
-                    storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
-                    if (ptrs[k] < BLOCKS_PER_DISK) {
-                        g_block_meta[ptrs[k]].present = 0;
-                        flush_meta_block(ptrs[k]);
-                    }
-                }
-            }
+            for (unsigned k = 0; k < BLOCK_SIZE / sizeof(uint64_t); k++)
+                if (ptrs[k]) storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
         }
         storage_free_block(mfs->bd, &mfs->sb, inode.indirect);
-        if (inode.indirect < BLOCKS_PER_DISK) {
-            g_block_meta[inode.indirect].present = 0;
-            flush_meta_block(inode.indirect);
-        }
         inode.indirect = 0;
     }
 
@@ -1213,7 +1523,7 @@ int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
     inode.links = 0;
     storage_write_inode(mfs->bd, &mfs->sb, ino, &inode);
     storage_free_inode(mfs->bd, &mfs->sb, ino);
-    return 0;
+    return journal_commit();
 }
 
 int storage_write_capfs_blob(uint64_t inode, const void *data, size_t len) {

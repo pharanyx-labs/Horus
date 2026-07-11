@@ -215,6 +215,11 @@ void smp_bringup(void) {
      * encrypted object store, proving the Phase 2 stack end-to-end
      * (prints FS_SELFTEST: PASS). */
     fs_selftest();
+#elif defined(WAL_CRASHTEST)
+    /* Gated: two-boot journal crash-recovery test. Boot 1 commits a write then
+     * halts before applying it; boot 2 replays the committed transaction at mount
+     * and confirms the data survived (prints WAL_CRASHTEST: PASS). */
+    { extern void wal_crashtest(void); wal_crashtest(); }
 #elif defined(NEWLIB_SELFTEST)
     /* Gated: spawn hello_newlib (newlib + posix + malloc on Horus) and confirm
      * printf/sprintf/malloc/string ops all work end-to-end (prints

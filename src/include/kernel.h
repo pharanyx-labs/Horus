@@ -205,6 +205,8 @@ void users_init(void);
 #define SYS_SPAWN_IMAGE        70   /* (image, len, arg, argv, argc) -> pid; spawn a child from a caller-supplied program image */
 #define SYS_EXEC_IMAGE         71   /* (image, len, 0, argv, argc) -> replace the caller's own image with a caller-supplied one; no return on success */
 #define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's own alternate signal stack (ss_size 0 disables) */
+#define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of the last sender on `ep` (unforgeable, set at login) */
+#define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (object-store server only: uid 0 + CAP_BLOCK_DEV) */
 
 /* Minimum size of a registered alternate signal stack (SYS_SIGALTSTACK); smaller
  * requests fail closed so a handler always has room for at least a shallow frame. */

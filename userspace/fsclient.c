@@ -44,6 +44,46 @@ static int rpc(struct fs_request *rq, struct fs_response *rp) {
     return rp->rc;
 }
 
+#ifdef PERM_SELFTEST
+/* Ownership/permission test helpers. Each drives one fs_server request and
+ * returns the server's rc (>=0 / bytes on success, negative SYS_ERR_* on denial);
+ * read/stat payloads land in `pp`. The server derives the caller's identity from
+ * the kernel (SYS_IPC_SENDER), so these calls are enforced against whichever user
+ * this task last authenticated as — never anything placed in the request. */
+static struct fs_request  pq;
+static struct fs_response pp;
+static void pfail(const char *s) { put("PERM_SELFTEST: FAIL "); put(s); put("\n"); sys_exit(); }
+
+static int p_make(uint32_t dir, const char *name, int is_dir) {
+    umemset(&pq, 0, sizeof(pq)); pq.op = is_dir ? FS_OP_MKDIR : FS_OP_CREATE;
+    pq.dir_ino = dir; ucpy(pq.name, name, FS_NAME_MAX);
+    if (rpc(&pq, &pp) != 0) return -1;
+    return (int)pp.ino;
+}
+static int p_write(uint32_t ino, const char *s) {
+    unsigned n = uslen(s);
+    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_WRITE; pq.ino = ino; pq.offset = 0; pq.len = n;
+    umemcpy(pq.data, s, n);
+    return rpc(&pq, &pp);
+}
+static int p_read(uint32_t ino, unsigned n) {   /* rc = bytes (data in pp.data) or negative */
+    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_READ; pq.ino = ino; pq.offset = 0; pq.len = n;
+    return rpc(&pq, &pp);
+}
+static int p_chmod(uint32_t ino, uint32_t mode) {
+    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_CHMOD; pq.ino = ino; pq.mode = mode;
+    return rpc(&pq, &pp);
+}
+static int p_chown(uint32_t ino, uint32_t uid, uint32_t gid) {
+    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_CHOWN; pq.ino = ino; pq.arg_uid = uid; pq.arg_gid = gid;
+    return rpc(&pq, &pp);
+}
+static int content_is(const char *s, unsigned n) {
+    for (unsigned i = 0; i < n; i++) if (pp.data[i] != (uint8_t)s[i]) return 0;
+    return 1;
+}
+#endif
+
 void _start(void) {
     struct fs_request rq;
     struct fs_response rp;
@@ -97,6 +137,58 @@ void _start(void) {
         put("PERSIST_SELFTEST: WROTE\n");
         sys_exit();
     }
+#endif
+
+#ifdef PERM_SELFTEST
+    /* Zero-trust ownership & permissions. We start as root (authenticated above),
+     * build a scenario, then switch this task's identity to a non-root user and
+     * confirm the server enforces access against the kernel-attested uid: a client
+     * cannot read/modify what its real uid disallows, cannot create where it lacks
+     * write, cannot chmod files it doesn't own, cannot chown at all — and root
+     * bypasses. Crucially the client never tells the server who it is. */
+
+    /* --- as root: a private file, a world-readable file, a user-owned dir --- */
+    int s_ino = p_make(0, "secret", 0);              if (s_ino < 0) pfail("mk-secret");
+    if (p_write((uint32_t)s_ino, "topsecret") != 9)  pfail("wr-secret");
+    if (p_chmod((uint32_t)s_ino, 0600) != 0)         pfail("chmod-secret");
+
+    int pub_ino = p_make(0, "public", 0);            if (pub_ino < 0) pfail("mk-public");
+    if (p_write((uint32_t)pub_ino, "hello") != 5)    pfail("wr-public");   /* default 0644 */
+
+    int d_ino = p_make(0, "udir", 1);                if (d_ino < 0) pfail("mk-udir");
+    if (p_chown((uint32_t)d_ino, 1000, 100) != 0)    pfail("chown-udir");  /* give it to user */
+
+    /* --- become uid 1000 (gid 100): the kernel now attests this identity --- */
+    if (sys_auth("user", "password", 0) != 0)        pfail("auth-user");
+
+    /* world-readable file: allowed */
+    if (p_read((uint32_t)pub_ino, 8) != 5)           pfail("user-read-public-denied");
+    if (!content_is("hello", 5))                     pfail("public-content");
+
+    /* root's 0600 file, and writes/creates/chmod it isn't entitled to: DENIED */
+    if (p_read((uint32_t)s_ino, 8)   != SYS_ERR_PERM) pfail("secret-read-not-denied");
+    if (p_write((uint32_t)s_ino, "x") != SYS_ERR_PERM) pfail("secret-write-not-denied");
+    if (p_make(0, "nope", 0)          != -1)          pfail("root-dir-create-not-denied");
+    if (pp.rc                         != SYS_ERR_PERM) pfail("root-dir-create-wrong-rc");
+    if (p_chmod((uint32_t)s_ino, 0666) != SYS_ERR_PERM) pfail("secret-chmod-not-denied");
+
+    /* in a directory it owns: allowed to create/write/read/chmod */
+    int m_ino = p_make((uint32_t)d_ino, "mine", 0);  if (m_ino < 0) pfail("user-create-owned");
+    if (p_write((uint32_t)m_ino, "mydata") != 6)     pfail("user-write-owned");
+    if (p_read((uint32_t)m_ino, 8) != 6)             pfail("user-read-owned");
+    if (!content_is("mydata", 6))                    pfail("owned-content");
+    if (p_chmod((uint32_t)m_ino, 0600) != 0)         pfail("user-chmod-owned");
+    /* but chown is root-only, even of its own file */
+    if (p_chown((uint32_t)m_ino, 0, 0) != SYS_ERR_PERM) pfail("user-chown-not-denied");
+
+    /* --- back to root: superuser bypasses the 0600 owner-only file --- */
+    if (sys_auth("root", "rootpass", 0) != 0)        pfail("reauth-root");
+    if (p_read((uint32_t)m_ino, 8) != 6)             pfail("root-read-owned");
+    if (!content_is("mydata", 6))                    pfail("root-content");
+    if (p_chown((uint32_t)m_ino, 0, 0) != 0)         pfail("root-chown");
+
+    put("PERM_SELFTEST: PASS\n");
+    sys_exit();
 #endif
 
     /* mkdir /docs */

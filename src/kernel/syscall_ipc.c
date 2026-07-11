@@ -397,6 +397,27 @@ void h_ipc_recv(struct regs *r) {
 void h_ipc_reply(struct regs *r) {
     r->eax = sys_ipc_reply(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
 }
+
+/* SYS_IPC_SENDER (73): return the authenticated uid of the task that sent the
+ * message most recently received on endpoint `ebx`, writing its gid to *ecx.
+ * This is the zero-trust identity anchor for a server (e.g. the fs_server): the
+ * value is tasks[last_sender].uid — established only by a successful login
+ * (SYS_AUTH) and recorded by the kernel when the message was sent — NOT anything
+ * the client placed in the message, so a client cannot claim to be another user.
+ * Returns (uint32_t)-1 when there is no valid last sender (none yet, or it has
+ * since exited). Slot-3 READ is enforced by the dispatch table, so only a task
+ * that can legitimately receive on the endpoint may query its sender. */
+void h_ipc_sender(struct regs *r) {
+    uint32_t ep = r->ebx;
+    if (ep >= MAX_ENDPOINTS) { r->eax = (uint32_t)-1; return; }
+    int t = endpoints[ep].last_sender;
+    if (t <= 0 || t >= MAX_TASKS || tasks[t].state == 0) { r->eax = (uint32_t)-1; return; }
+    if (r->ecx) {
+        uint32_t g = tasks[t].gid;
+        if (copy_to_user((void *)(addr_t)r->ecx, &g, sizeof(g)) != 0) { r->eax = (uint32_t)-1; return; }
+    }
+    r->eax = tasks[t].uid;
+}
 /* SYS_NOTIFY (25): slot-3 WRITE enforced by the table. */
 void h_notify(struct regs *r) {
     r->eax = sys_notify(r->ebx, r->ecx);

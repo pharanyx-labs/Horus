@@ -10,10 +10,16 @@
  * records (16 per 512-byte block); the root directory is inode 0. Clients reach
  * the server over IPC (endpoint slot 4) using the protocol in <fs_proto.h>.
  *
+ * Access control: this server is the filesystem reference monitor. Every request
+ * is checked against the caller's KERNEL-ATTESTED identity — the uid/gid the
+ * kernel recorded for the sending task at login (SYS_IPC_SENDER), not anything
+ * the client puts in the message — using POSIX owner/group/other permission bits
+ * and ownership stamped on the creator; root (uid 0) is the only ambient
+ * authority. A client cannot forge who it is, cannot reach the store directly
+ * (only this server holds the storage capability), and cannot bypass the checks.
+ *
  * Limitations this increment (documented): one in-flight request at a time
- * (single-slot mailbox), and per-file ACLs are not yet enforced — access is
- * gated at the service boundary (a client must hold an endpoint capability to
- * reach the server, and only the server holds the storage capability).
+ * (single-slot mailbox).
  */
 
 #include "syscall.h"
@@ -130,14 +136,39 @@ static int dir_get(uint32_t dir_ino, uint32_t index, uint32_t *ino, uint32_t *ty
     return 0;
 }
 
-static void handle(const struct fs_request *rq, struct fs_response *rp) {
+/* Permission bits (owner/group/other rwx). */
+#define P_R 4u
+#define P_X 1u
+#define P_W 2u
+
+/* POSIX owner/group/other check of `want` (an rwx mask) against the caller's
+ * KERNEL-ATTESTED (cuid, cgid) — never an identity from the request. Root
+ * (uid 0) always passes; this is the only ambient authority, matching the rest
+ * of the kernel's uid==0 admin model. */
+static int perm_ok(const struct fs_stat *st, uint32_t cuid, uint32_t cgid, unsigned want) {
+    if (cuid == 0) return 1;                       /* superuser */
+    unsigned bits;
+    if      (cuid == st->uid) bits = (unsigned)(st->mode >> 6) & 7u;   /* owner */
+    else if (cgid == st->gid) bits = (unsigned)(st->mode >> 3) & 7u;   /* group */
+    else                      bits = (unsigned)(st->mode) & 7u;        /* other */
+    return (bits & want) == want;
+}
+
+/* Enforce access to an already-existing object, then dispatch. cuid/cgid are the
+ * caller's kernel-attested identity; the request body carries none. */
+static void handle(const struct fs_request *rq, struct fs_response *rp,
+                   uint32_t cuid, uint32_t cgid) {
     umemset(rp, 0, sizeof(*rp));
     rp->magic = FS_PROTO_MAGIC;
 
     if (rq->magic != FS_PROTO_MAGIC) { rp->rc = SYS_ERR_INVAL; return; }
 
+    struct fs_stat st;
+
     switch (rq->op) {
     case FS_OP_LOOKUP: {
+        if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
+        if (!perm_ok(&st, cuid, cgid, P_X))          { rp->rc = SYS_ERR_PERM;  break; }  /* search the dir */
         uint32_t ino, type;
         if (dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = 0; rp->ino = ino; rp->type = type; }
         else rp->rc = SYS_ERR_NOENT;
@@ -145,17 +176,25 @@ static void handle(const struct fs_request *rq, struct fs_response *rp) {
     }
     case FS_OP_CREATE:
     case FS_OP_MKDIR: {
+        if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
+        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
         if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
-        if (dir_find(rq->dir_ino, rq->name, 0, 0)) { rp->rc = SYS_ERR_INVAL; break; }  /* exists */
+        if (dir_find(rq->dir_ino, rq->name, 0, 0))   { rp->rc = SYS_ERR_INVAL; break; }  /* exists */
         uint32_t type = (rq->op == FS_OP_MKDIR) ? FS_TYPE_DIR : FS_TYPE_FILE;
         int ino = sys_fs_inode_alloc(type);
         if (ino < 0) { rp->rc = ino; break; }
+        /* Stamp ownership on the kernel-attested creator with default perms
+         * (dir 0755, file 0644). The inode is not yet linked into any directory,
+         * so this brief window is invisible to other clients. */
+        sys_fs_set_meta((uint32_t)ino, (type == FS_TYPE_DIR) ? 0755u : 0644u, cuid, cgid);
         int rc = dir_add(rq->dir_ino, rq->name, (uint32_t)ino, type);
         if (rc != 0) { sys_fs_inode_free((uint32_t)ino); rp->rc = rc; break; }
         rp->rc = 0; rp->ino = (uint32_t)ino; rp->type = type;
         break;
     }
     case FS_OP_DELETE: {
+        if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
+        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
         uint32_t ino, type;
         if (!dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = SYS_ERR_NOENT; break; }
         /* Refuse to delete a non-empty directory. */
@@ -169,6 +208,8 @@ static void handle(const struct fs_request *rq, struct fs_response *rp) {
         break;
     }
     case FS_OP_READDIR: {
+        if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
+        if (!perm_ok(&st, cuid, cgid, P_R))          { rp->rc = SYS_ERR_PERM;  break; }  /* read the dir */
         uint32_t ino, type; char name[FS_NAME_MAX];
         if (dir_get(rq->dir_ino, rq->offset, &ino, &type, name)) {
             rp->rc = 0; rp->ino = ino; rp->type = type;
@@ -177,14 +218,16 @@ static void handle(const struct fs_request *rq, struct fs_response *rp) {
         break;
     }
     case FS_OP_STAT: {
-        struct fs_stat st;
-        if (sys_fs_stat(rq->ino, &st) != 0) { rp->rc = SYS_ERR_NOENT; break; }
+        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        /* Metadata is visible to root, the owner, or anyone who can read it. */
+        if (!(cuid == st.uid || perm_ok(&st, cuid, cgid, P_R))) { rp->rc = SYS_ERR_PERM; break; }
         rp->rc = 0; rp->type = st.type; rp->size = (uint32_t)st.size;
+        rp->mode = st.mode & 07777u; rp->uid = st.uid; rp->gid = st.gid;
         break;
     }
     case FS_OP_READ: {
-        struct fs_stat st;
-        if (sys_fs_stat(rq->ino, &st) != 0) { rp->rc = SYS_ERR_NOENT; break; }
+        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        if (!perm_ok(&st, cuid, cgid, P_R))          { rp->rc = SYS_ERR_PERM;  break; }
         if (rq->offset >= st.size) { rp->rc = 0; rp->size = 0; break; }   /* EOF */
         uint32_t blk = rq->offset / BLK, boff = rq->offset % BLK;
         static uint8_t tmp[BLK];
@@ -199,6 +242,8 @@ static void handle(const struct fs_request *rq, struct fs_response *rp) {
         break;
     }
     case FS_OP_WRITE: {
+        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }
         uint32_t len = rq->len;
         if (len > FS_IO_MAX) len = FS_IO_MAX;
         uint32_t blk = rq->offset / BLK, boff = rq->offset % BLK;
@@ -210,10 +255,23 @@ static void handle(const struct fs_request *rq, struct fs_response *rp) {
         if (sys_fblock_write(rq->ino, blk, tmp, BLK) != (int)BLK) { rp->rc = SYS_ERR_IO; break; }
         /* Extend the logical file size if this write went past the old end
          * (the kernel only stores fixed-size blocks; size is ours to track). */
-        struct fs_stat st;
         uint32_t end = rq->offset + len;
-        if (sys_fs_stat(rq->ino, &st) == 0 && end > (uint32_t)st.size) sys_fs_set_size(rq->ino, end);
+        if (end > (uint32_t)st.size) sys_fs_set_size(rq->ino, end);
         rp->rc = (int32_t)len;
+        break;
+    }
+    case FS_OP_CHMOD: {
+        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        if (!(cuid == 0 || cuid == st.uid))          { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
+        if (sys_fs_set_meta(rq->ino, rq->mode & 07777u, st.uid, st.gid) != 0) { rp->rc = SYS_ERR_IO; break; }
+        rp->rc = 0;
+        break;
+    }
+    case FS_OP_CHOWN: {
+        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        if (cuid != 0)                               { rp->rc = SYS_ERR_PERM;  break; }  /* only root may chown */
+        if (sys_fs_set_meta(rq->ino, st.mode & 07777u, rq->arg_uid, rq->arg_gid) != 0) { rp->rc = SYS_ERR_IO; break; }
+        rp->rc = 0;
         break;
     }
     default:
@@ -239,7 +297,20 @@ void _start(void) {
     for (;;) {
         int r = sys_ipc_recv(FS_EP_REQ, (char *)&rq, sizeof(rq));
         if (r < 0) { spin_delay(); continue; }          /* no request yet */
-        handle(&rq, &rp);
+
+        /* Take the caller's identity from the kernel, not from the request: this
+         * is tasks[sender].uid, fixed at that task's login (SYS_AUTH). A client
+         * therefore cannot claim to be another user. Fail closed if the kernel
+         * reports no valid sender. */
+        uint32_t cgid = 0;
+        uint32_t cuid = sys_ipc_sender(FS_EP_REQ, &cgid);
+        if (cuid == (uint32_t)-1) {
+            umemset(&rp, 0, sizeof(rp));
+            rp.magic = FS_PROTO_MAGIC;
+            rp.rc = SYS_ERR_PERM;
+        } else {
+            handle(&rq, &rp, cuid, cgid);
+        }
         while (sys_ipc_reply(FS_EP_REP, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
     }
 }

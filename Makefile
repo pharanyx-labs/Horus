@@ -127,6 +127,19 @@ ASFLAGS += -DFS_SELFTEST
 FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
 endif
 
+# PERM_SELFTEST=1 builds the FS self-test client in ownership/permission mode: it
+# drives the fs_server's zero-trust access control end-to-end — root builds a
+# scenario, then the client re-authenticates as a non-root user and the server
+# enforces owner/group/other rwx against the caller's KERNEL-ATTESTED uid (a
+# client cannot forge who it is). Reuses the FS_SELFTEST kernel driver (spawns
+# server + client); the ephemeral RAM backend is sufficient.
+PERM_SELFTEST ?= 0
+ifeq ($(PERM_SELFTEST),1)
+CFLAGS  += -DFS_SELFTEST -DPERM_SELFTEST
+ASFLAGS += -DFS_SELFTEST
+FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -300,6 +313,9 @@ USERSPACE_CFLAGS += -DINIT_FS_SELFTEST
 endif
 ifeq ($(PERSIST_SELFTEST),1)
 USERSPACE_CFLAGS += -DPERSIST_SELFTEST
+endif
+ifeq ($(PERM_SELFTEST),1)
+USERSPACE_CFLAGS += -DPERM_SELFTEST
 endif
 
 userspace/%.o: userspace/%.c
@@ -487,6 +503,19 @@ smoke-fs-persist:
 		REQUIRE_MARKER='PERSIST_SELFTEST: PASS' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
 		tools/smoke_test.sh boot.iso
 	@echo "[persist] PASS — encrypted file survived a reboot"
+
+# Zero-trust ownership & permissions: root builds a scenario, the client then
+# re-authenticates as a non-root user and the fs_server enforces owner/group/other
+# rwx against the caller's kernel-attested uid (denied reads/writes/creates/chmod
+# it isn't entitled to; owner and root allowed). Proves a client cannot access
+# what its real uid disallows.
+.PHONY: smoke-fs-perms
+smoke-fs-perms:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PERM_SELFTEST: PASS' \
+		FAIL_MARKER='PERM_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-newlib
 smoke-newlib:

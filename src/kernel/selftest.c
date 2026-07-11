@@ -495,6 +495,60 @@ void fs_selftest(void) {
     sched_enter_user(srv);
 }
 #endif /* FS_SELFTEST */
+
+#ifdef WAL_CRASHTEST
+/* Journal crash-recovery test — two boots against one persistent disk.
+ *
+ * Boot 1 (fresh disk): create an inode, then write its first block with the
+ * commit "crash" armed — journal_commit makes the transaction durable (writes the
+ * commit header) and then halts BEFORE applying it to the home locations. So on
+ * disk the update is committed-in-journal but not-yet-applied.
+ *
+ * Boot 2 (same disk): storage_unlock's journal_recover replays that committed
+ * transaction (idempotent redo); we read the block back and confirm the write
+ * survived the crash. Proves redo recovery end-to-end. `make smoke-fs-wal` asserts
+ * "WAL_CRASHTEST: PASS" on boot 2. */
+void wal_crashtest(void) {
+    extern int g_wal_crash_armed;
+    extern int storage_fresh_format;
+    static const char MARK[16] = "WAL-REDO-OK-2468";
+
+    print("WAL_CRASHTEST: begin\n");
+    if (storage_unlock("waltestpw", 9) != 0) {
+        print("WAL_CRASHTEST: FAIL unlock\n"); for (;;) asm volatile ("hlt");
+    }
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+
+    if (storage_fresh_format) {
+        int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+        if (ino < 1) { print("WAL_CRASHTEST: FAIL alloc\n"); for (;;) asm volatile ("hlt"); }
+        on_disk_inode_t nd;
+        for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+        nd.type = 1; nd.mode = 0100600; nd.links = 1;
+        storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
+
+        uint8_t buf[512];
+        for (int i = 0; i < 512; i++) buf[i] = 0;
+        for (int i = 0; i < 16; i++)  buf[i] = (uint8_t)MARK[i];
+
+        print("WAL_CRASHTEST: boot1 armed; committing then crashing\n");
+        g_wal_crash_armed = 1;
+        storage_write_file_block(mfs, (uint64_t)ino, 0, buf);   /* commits, then halts */
+        print("WAL_CRASHTEST: FAIL no-crash\n");                /* unreachable */
+    } else {
+        uint8_t buf[512];
+        if (storage_read_file_block(mfs, 1, 0, buf) != 0) {
+            print("WAL_CRASHTEST: FAIL read\n");
+        } else {
+            int ok = 1;
+            for (int i = 0; i < 16; i++) if (buf[i] != (uint8_t)MARK[i]) ok = 0;
+            print(ok ? "WAL_CRASHTEST: PASS\n" : "WAL_CRASHTEST: FAIL content\n");
+        }
+    }
+    for (;;) asm volatile ("hlt");
+}
+#endif /* WAL_CRASHTEST */
+
 /* ---- Newlib smoke test (NEWLIB_SELFTEST builds only) ---------------------- */
 #ifdef NEWLIB_SELFTEST
 void newlib_selftest(void) {

@@ -151,6 +151,15 @@ ASFLAGS += -DFS_SELFTEST
 FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
 endif
 
+# WAL_CRASHTEST=1 builds the in-kernel journal crash-recovery test: boot 1 commits
+# a write and halts before applying it; boot 2 replays the committed transaction
+# at mount. Pure kernel (no userspace bins); driven by the two-boot smoke-fs-wal.
+WAL_CRASHTEST ?= 0
+ifeq ($(WAL_CRASHTEST),1)
+CFLAGS  += -DWAL_CRASHTEST
+ASFLAGS += -DWAL_CRASHTEST
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -534,6 +543,26 @@ smoke-fs-perms:
 # Multi-client concurrency: one fs_server, several clients hammering it at once,
 # each verifying it receives its own replies (no cross-talk, no lost replies).
 # The coordinator prints CONC_SELFTEST: PASS only after every worker completes.
+# Journal crash-recovery: boot QEMU twice against one disk image. Boot 1 commits a
+# write to the journal and halts BEFORE applying it (simulating a crash); boot 2
+# replays the committed transaction at mount and confirms the write survived —
+# proving redo recovery (and that a mid-write crash can't brick or corrupt the fs).
+.PHONY: smoke-fs-wal
+smoke-fs-wal:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@dd if=/dev/zero of=wal.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@echo "[wal] boot 1/2 — commit a write, then crash before applying it"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' FAIL_MARKER='WAL_CRASHTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[wal] boot 2/2 — recover the committed transaction, verify the data"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
+		REQUIRE_MARKER='WAL_CRASHTEST: PASS' FAIL_MARKER='WAL_CRASHTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[wal] PASS — committed transaction replayed after a crash"
+
 .PHONY: smoke-fs-conc
 smoke-fs-conc:
 	@$(MAKE) --no-print-directory clean

@@ -44,9 +44,10 @@ five runtime self-tests in CI. Already in place:
   the encrypted store (files survive a reboot, unsealed at login) when one is
   present, falling back to an in-RAM disk when it is not. Per-file ownership and
   POSIX permissions are enforced by the server against the caller's kernel-attested
-  identity, and multiple clients can use it concurrently (replies routed to each
-  caller by identity via `SYS_IPC_REPLY_TO`) (`make smoke-fs`, `smoke-fs-persist`,
-  `smoke-fs-perms`, `smoke-fs-conc`).
+  identity, multiple clients can use it concurrently (replies routed to each caller
+  by identity via `SYS_IPC_REPLY_TO`), and multi-block updates are crash-atomic via
+  an HMAC-authenticated write-ahead redo journal replayed at mount (`make smoke-fs`,
+  `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`).
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer
   (`make smoke-newlib`).
@@ -131,14 +132,26 @@ processing (a worker pool) is a later step. Proven by `make smoke-fs-conc` (thre
 clients hammer the server concurrently, each verifying it receives only its own
 replies).
 
+**Crash resilience is done** (the atomicity core): every multi-block object-store
+update runs inside a **write-ahead redo journal** (v5 on-disk layout) — the block
+bitmap, inode, per-block crypto metadata, superblock `meta_hmac` and data all
+commit together via an HMAC-authenticated journal header, then apply to their home
+locations; a crash mid-update is completed (or discarded) by replay at the next
+mount, so the filesystem is always fully before or fully after the operation. This
+also closed a latent bug where a crash between a metadata-sector write and the
+superblock write could desync `meta_hmac` and refuse to mount the whole volume.
+The mount-time `fsck` reclaims both orphaned inodes and leaked data blocks. Proven
+by `make smoke-fs-wal` (boot 1 commits a write then crashes before applying it;
+boot 2 replays it and the data survives), alongside `smoke-fs` and
+`smoke-fs-persist`.
+
 What remains:
 
 - **Per-file ACLs**: beyond the owner/group/other bits, and reconcile the legacy
   in-memory capfs (`SYS_FS_*`) with the server.
-- **Crash resilience**: a write-ahead intent log for atomic multi-block updates, a
-  directory-tree `fsck` pass to reclaim written-but-never-linked inodes,
-  multi-block allocation bitmaps, and double-indirect data blocks for larger
-  files.
+- **Larger files / bigger volumes** (capacity, not crash-safety): multi-block
+  allocation bitmaps and double-indirect data blocks, and letting a single
+  transaction span more than the current 16-sector journal for very large frees.
 
 ---
 

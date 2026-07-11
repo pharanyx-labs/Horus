@@ -207,6 +207,7 @@ void users_init(void);
 #define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's own alternate signal stack (ss_size 0 disables) */
 #define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of the last sender on `ep` (unforgeable, set at login) */
 #define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (object-store server only: uid 0 + CAP_BLOCK_DEV) */
+#define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the task that sent the last request on req_ep (routed by kernel-recorded sender, not a shared reply endpoint) — multi-client safe */
 
 /* Minimum size of a registered alternate signal stack (SYS_SIGALTSTACK); smaller
  * requests fail closed so a handler always has room for at least a shallow frame. */

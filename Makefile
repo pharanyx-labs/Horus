@@ -140,6 +140,17 @@ ASFLAGS += -DFS_SELFTEST
 FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
 endif
 
+# CONC_SELFTEST=1 builds the FS self-test in multi-client concurrency mode: the
+# kernel spawns one server and several client tasks that hammer it at once, each
+# verifying it receives its own replies (SYS_IPC_REPLY_TO routes by the request's
+# kernel-recorded sender). Reuses the FS_SELFTEST kernel driver + client binary.
+CONC_SELFTEST ?= 0
+ifeq ($(CONC_SELFTEST),1)
+CFLAGS  += -DFS_SELFTEST -DCONC_SELFTEST
+ASFLAGS += -DFS_SELFTEST
+FS_SELFTEST_DEP = userspace/fs_server.bin userspace/fsclient.bin
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -316,6 +327,9 @@ USERSPACE_CFLAGS += -DPERSIST_SELFTEST
 endif
 ifeq ($(PERM_SELFTEST),1)
 USERSPACE_CFLAGS += -DPERM_SELFTEST
+endif
+ifeq ($(CONC_SELFTEST),1)
+USERSPACE_CFLAGS += -DCONC_SELFTEST
 endif
 
 userspace/%.o: userspace/%.c
@@ -516,6 +530,17 @@ smoke-fs-perms:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PERM_SELFTEST: PASS' \
 		FAIL_MARKER='PERM_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Multi-client concurrency: one fs_server, several clients hammering it at once,
+# each verifying it receives its own replies (no cross-talk, no lost replies).
+# The coordinator prints CONC_SELFTEST: PASS only after every worker completes.
+.PHONY: smoke-fs-conc
+smoke-fs-conc:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONC_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONC_SELFTEST: PASS' \
+		FAIL_MARKER='CONC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-newlib
 smoke-newlib:

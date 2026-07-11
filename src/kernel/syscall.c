@@ -718,7 +718,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 75
+#define SYSCALL_TABLE_SIZE 76
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -781,6 +781,9 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     /* Object-store owner/mode persistence — same gate as the rest of the store
      * (CAP_BLOCK_DEV slot 7 + uid 0 in the handler): filesystem server only. */
     [SYS_FS_SET_META]              = { h_fs_set_meta,             7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    /* Reply routed to the request's kernel-recorded sender (multi-client safe).
+     * Slot-3 WRITE, same as the other send/reply paths. */
+    [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
@@ -825,13 +828,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_FS_SET_META is currently the highest syscall number. Adding a higher one
+ * SYS_IPC_REPLY_TO is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_FS_SET_META + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_IPC_REPLY_TO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

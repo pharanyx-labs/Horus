@@ -311,6 +311,11 @@ void _start(void) {
         } else {
             handle(&rq, &rp, cuid, cgid);
         }
-        while (sys_ipc_reply(FS_EP_REP, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
+        /* Reply to THIS request's sender by kernel-recorded identity, not to a
+         * shared reply endpoint — so concurrent clients never receive each other's
+         * replies. A negative return is a transient "client still blocking" race
+         * (SMP); retry until delivered. Must precede the next recv, which would
+         * overwrite last_sender. */
+        while (sys_ipc_reply_to(FS_EP_REQ, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
     }
 }

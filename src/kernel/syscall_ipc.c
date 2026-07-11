@@ -418,6 +418,83 @@ void h_ipc_sender(struct regs *r) {
     }
     r->eax = tasks[t].uid;
 }
+
+/* SYS_IPC_REPLY_TO (75): reply to the task that sent the request most recently
+ * received on `req_ep` (ebx), delivering msg (ecx, len edx) DIRECTLY into that
+ * task's blocked SYS_IPC_CALL reply buffer — routed by the kernel-recorded sender
+ * (endpoints[req_ep].last_sender), never through a shared reply endpoint. This is
+ * what makes a single server safe for concurrent clients: two clients cannot
+ * collide on one reply endpoint's single blocked_waiter, and a client cannot
+ * intercept another's reply (it can't be another request's last_sender). Slot-3
+ * WRITE is enforced by the table (same as reply/send).
+ *
+ * Return: 0 on delivery, or when the sender is gone (nothing to deliver — dropped).
+ * A negative value asks the caller (the server's reply loop) to retry: on SMP the
+ * sender may have deposited its request but not yet published its block, so it is
+ * momentarily not TASK_BLOCKED_IPC; it will be, so retry. On a single CPU the
+ * sender is always already blocked by the time the server runs, so no retry
+ * occurs. Mirrors the blocked-waiter delivery in sys_ipc_send. */
+void h_ipc_reply_to(struct regs *r) {
+    uint32_t req_ep = r->ebx;
+    const void *msg = (const void *)(addr_t)r->ecx;
+    size_t len      = (size_t)r->edx;
+    if (req_ep >= MAX_ENDPOINTS) { r->eax = (uint32_t)-1; return; }
+    if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
+
+    int t = endpoints[req_ep].last_sender;
+    if (t <= 0 || t >= MAX_TASKS || tasks[t].state == TASK_DEAD || tasks[t].state == 0) {
+        r->eax = 0; return;   /* client gone: nothing to reply to */
+    }
+
+    ipc_lock();
+    if (tasks[t].state != TASK_BLOCKED_IPC) {
+        /* Not blocked yet: racing publish (SMP) -> retry; otherwise not waiting
+         * on us (already replied / never called) -> drop. */
+        uint32_t racing = (tasks[t].pending_block == (uint32_t)TASK_BLOCKED_IPC);
+        ipc_unlock();
+        r->eax = racing ? (uint32_t)-2 : 0;
+        return;
+    }
+
+    uint8_t kbuf[IPC_MSG_MAX];
+    int copy_len = 0;
+    if (len > 0) {
+        if (copy_from_user(kbuf, msg, len) != 0) { ipc_unlock(); r->eax = (uint32_t)-1; return; }
+        copy_len = (int)len;
+    }
+
+    if (copy_len > 0 && tasks[t].ipc_reply_buf != 0) {
+        /* Deliver into the waiter's reply buffer, which resolves through the
+         * waiter's CR3 — so make it the current task across the copy (see the
+         * identical dance in sys_ipc_send). Interrupts masked so a tick can't
+         * observe the transient current-task. */
+        uint64_t fl;
+        __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
+        int sender = get_current_task();
+        set_current_task(t);
+        copy_to_user((void *)(addr_t)tasks[t].ipc_reply_buf, kbuf, (size_t)copy_len);
+        set_current_task(sender);
+        __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
+    }
+
+    struct interrupt_frame64 *wf = (struct interrupt_frame64 *)tasks[t].saved_ksp;
+    if (!wf) { ipc_unlock(); r->eax = (uint32_t)-1; return; }
+    wf->rax = (uint64_t)(uint32_t)copy_len;
+
+    /* Clear the now-stale waiter publication on the client's own reply endpoint
+     * (only if it still points to this task; a concurrent client may have
+     * overwritten it — harmless, as delivery routed by identity, not by it). */
+    int rep = tasks[t].blocked_on;
+    if (rep >= 0 && rep < MAX_ENDPOINTS && endpoints[rep].blocked_waiter == t)
+        endpoints[rep].blocked_waiter = -1;
+    tasks[t].blocked_on = -1;
+    __asm__ volatile ("" ::: "memory");
+    tasks[t].state        = TASK_RUNNABLE;
+    tasks[t].runnable_ctx = 1;
+    ipc_unlock();
+    r->eax = 0;
+}
+
 /* SYS_NOTIFY (25): slot-3 WRITE enforced by the table. */
 void h_notify(struct regs *r) {
     r->eax = sys_notify(r->ebx, r->ecx);

@@ -151,6 +151,7 @@ void h_ipc_call(struct regs *r);
 void h_ipc_recv(struct regs *r);
 void h_ipc_reply(struct regs *r);
 void h_ipc_sender(struct regs *r);
+void h_ipc_reply_to(struct regs *r);
 void h_notify(struct regs *r);
 void h_wait_notify(struct regs *r);
 /* selftest.c (test-only trace hook) */

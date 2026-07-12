@@ -146,8 +146,16 @@ int link(const char *old, const char *new) {
 }
 
 int unlink(const char *path) {
-    (void)path;
-    errno = ENOSYS;
+    posix_init();
+    if (!path) { errno = EFAULT; return -1; }
+    int rc = posix_unlink(path);
+    if (rc == 0) return 0;
+    switch (rc) {
+        case SYS_ERR_PERM:  errno = EACCES;  break;  /* no write on parent dir */
+        case SYS_ERR_NOENT: errno = ENOENT;  break;  /* no such entry */
+        case SYS_ERR_INVAL: errno = ENOTEMPTY; break; /* non-empty directory */
+        default:            errno = EIO;     break;  /* transport / other */
+    }
     return -1;
 }
 

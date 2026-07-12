@@ -12,6 +12,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+/* <sys/errno.h>, not <errno.h>: -I include precedes the newlib headers, so
+ * <errno.h> would resolve to the project's SYS_ERR_* header (no errno/ENOENT).
+ * newlib_glue.c includes it the same way for the same reason. */
+#include <sys/errno.h>
 
 /* Direct kernel write bypassing newlib stdio for tracing */
 #include "../include/syscall.h"
@@ -76,6 +82,42 @@ int main(int argc, char **argv, char **envp) {
     if (sum != 5050) {
         printf("NEWLIB_SELFTEST: FAIL sum\n");
         return 1;
+    }
+
+    /* --- filesystem: real newlib open()/write()/unlink() over the fs_server ---
+     * The kernel launched an fs_server alongside us and delegated an endpoint
+     * cap; the RAM store is auto-unlocked and we run as kernel-attested uid 0,
+     * so these libc calls exercise unlink() → posix_unlink() → FS_OP_DELETE
+     * end-to-end, plus the path-resolution and errno-mapping paths. */
+    {
+        const char *path = "/unlinkme";
+
+        int fd = open(path, O_CREAT | O_RDWR, 0644);
+        if (fd < 0)                 { printf("NEWLIB_SELFTEST: FAIL fs-open-create\n"); return 1; }
+        if (write(fd, "bye", 3) != 3) { printf("NEWLIB_SELFTEST: FAIL fs-write\n");     return 1; }
+        close(fd);
+
+        /* It exists now: a plain open must succeed. */
+        int rfd = open(path, O_RDONLY);
+        if (rfd < 0)                { printf("NEWLIB_SELFTEST: FAIL fs-precheck\n");     return 1; }
+        close(rfd);
+
+        /* Remove it: expect success. */
+        if (unlink(path) != 0)      { printf("NEWLIB_SELFTEST: FAIL unlink\n");          return 1; }
+
+        /* Gone now: open must fail. */
+        if (open(path, O_RDONLY) >= 0) { printf("NEWLIB_SELFTEST: FAIL unlink-verify\n"); return 1; }
+
+        /* Unlinking a missing name: -1 with errno ENOENT. */
+        errno = 0;
+        if (unlink(path) != -1 || errno != ENOENT) { printf("NEWLIB_SELFTEST: FAIL unlink-missing\n"); return 1; }
+
+        /* Unlinking through a missing intermediate directory exercises
+         * path_parent's intermediate-component lookup: -1 with errno ENOENT. */
+        errno = 0;
+        if (unlink("/nope/x") != -1 || errno != ENOENT) { printf("NEWLIB_SELFTEST: FAIL unlink-badpath\n"); return 1; }
+
+        printf("fs open/write/unlink OK\n");
     }
 
     printf("NEWLIB_SELFTEST: PASS\n");

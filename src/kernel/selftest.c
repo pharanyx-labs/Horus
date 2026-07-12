@@ -3,8 +3,8 @@
  * only under its -D*_SELFTEST switch, so the default build yields an (almost)
  * empty object. Split out of syscall.c. */
 #include "syscall_internal.h"
-#ifdef FS_SELFTEST
-#include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the FS self-test harness */
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
+#include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the FS self-test harnesses */
 #endif
 
 #ifdef ELF_SELFTEST
@@ -553,8 +553,22 @@ void wal_crashtest(void) {
 #ifdef NEWLIB_SELFTEST
 void newlib_selftest(void) {
     extern uint8_t embedded_hello_newlib_bin_start[], embedded_hello_newlib_bin_end[];
+    extern uint8_t embedded_fsserver_bin_start[], embedded_fsserver_bin_end[];
 
     print("NEWLIB_SELFTEST: begin\n");
+
+    /* Bring up the userspace fs_server so the client can exercise the real
+     * newlib file paths (open/write/close/unlink). Provisioned exactly as in
+     * fs_selftest: an endpoint cap for the IPC gate (slot 3) and registration
+     * (slot 4, bound to FS_EP_REQ), a CAP_USER admin cap (slot 6), and an
+     * all-rights cap (slot 7) for the object-store gate. */
+    int srv = fs_spawn_embedded(embedded_fsserver_bin_start, embedded_fsserver_bin_end, "fsserver");
+    if (srv <= 0) { print("NEWLIB_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
+    tasks[srv].uid = 0;
+    cap_install_from_root(srv, 3, 2, 0);
+    cap_install_from_root(srv, 4, 2, FS_EP_REQ);
+    cap_install_from_root(srv, 6, 6, 0);
+    cap_install_from_root(srv, 7, 8, 0);
 
     int pid = fs_spawn_embedded(embedded_hello_newlib_bin_start,
                                 embedded_hello_newlib_bin_end,
@@ -565,10 +579,16 @@ void newlib_selftest(void) {
         for (;;) asm volatile("hlt");
     }
     tasks[pid].uid = 0;
+    /* Delegate an endpoint cap into the client's slot 3 so its fs_server IPC
+     * passes the capability gate (the RAM store is auto-unlocked at boot and the
+     * client is kernel-attested uid 0, so no login is needed). */
+    cap_install_from_root(pid, 3, 2, 0);
 
+    /* Enter the server; when it blocks in IPC recv the full-context path runs
+     * the client, whose FS requests wake the server. Does not return. */
     print("NEWLIB_SELFTEST: launching\n");
     sched_enable_preemption();
-    sched_enter_user(pid);
+    sched_enter_user(srv);
 }
 #endif /* NEWLIB_SELFTEST */
 

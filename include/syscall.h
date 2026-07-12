@@ -72,14 +72,17 @@ struct audit_event {
 #define SYS_PASSWD    35
 #define SYS_ROTATE_KEYS   36  
 #define SYS_READ_AUDIT    37
-#define SYS_FS_MINT_FILE  38
-#define SYS_FS_LOOKUP     39
-#define SYS_FS_CREATE     40
-#define SYS_FS_DELETE     41
-#define SYS_FS_READDIR    42
-#define SYS_FS_GET_ROOT   43
-#define SYS_FS_READ       44
-#define SYS_FS_WRITE      45
+/* 38-45: the legacy in-memory capfs. Removed — the syscalls fail closed and the
+ * numbers are reserved (kept defined, not reused) so no future syscall silently
+ * inherits an old capfs caller. The encrypted fs_server is the only filesystem. */
+#define SYS_FS_MINT_FILE  38  /* reserved (removed) */
+#define SYS_FS_LOOKUP     39  /* reserved (removed) */
+#define SYS_FS_CREATE     40  /* reserved (removed) */
+#define SYS_FS_DELETE     41  /* reserved (removed) */
+#define SYS_FS_READDIR    42  /* reserved (removed) */
+#define SYS_FS_GET_ROOT   43  /* reserved (removed) */
+#define SYS_FS_READ       44  /* reserved (removed) */
+#define SYS_FS_WRITE      45  /* reserved (removed) */
 #define SYS_REGISTER_STORAGE_BACKEND 46
 #define SYS_BLOCK_READ   47
 #define SYS_BLOCK_WRITE  48
@@ -524,37 +527,11 @@ static inline int sys_read_audit(struct audit_event *events, uint32_t max_events
     return syscall(SYS_READ_AUDIT, (uint32_t)events, max_events, 0);
 }
 
-static inline int sys_fs_mint_file(uint32_t dir_slot, uint32_t dest_slot, uint32_t new_rights) {
-    return syscall(SYS_FS_MINT_FILE, dir_slot, dest_slot, new_rights);
-}
-
-static inline int sys_fs_lookup(uint32_t dir_slot, const char *name, uint32_t out_slot, uint32_t desired_rights) {
-    return syscall6(SYS_FS_LOOKUP, dir_slot, (uint32_t)name, out_slot, desired_rights, 0, 0);
-}
-
-static inline int sys_fs_create(uint32_t dir_slot, const char *name, int type, uint32_t out_slot, uint32_t desired_rights) {
-    return syscall6(SYS_FS_CREATE, dir_slot, (uint32_t)name, (uint32_t)type, out_slot, desired_rights, 0);
-}
-
-static inline int sys_fs_delete(uint32_t dir_slot, const char *name) {
-    return syscall(SYS_FS_DELETE, dir_slot, (uint32_t)name, 0);
-}
-
-static inline int sys_fs_readdir(uint32_t dir_slot, char *buf, uint32_t bufsize) {
-    return syscall(SYS_FS_READDIR, dir_slot, (uint32_t)buf, bufsize);
-}
-
-static inline int sys_fs_get_root(uint32_t dest_slot, uint32_t rights) {
-    return syscall(SYS_FS_GET_ROOT, dest_slot, rights, 0);
-}
-
-static inline int sys_fs_read(uint32_t file_slot, char *buf, uint32_t len) {
-    return syscall(SYS_FS_READ, file_slot, (uint32_t)buf, len);
-}
-
-static inline int sys_fs_write(uint32_t file_slot, const char *buf, uint32_t len) {
-    return syscall(SYS_FS_WRITE, file_slot, (uint32_t)buf, len);
-}
+/* The legacy in-memory capfs userspace wrappers (sys_fs_mint_file / lookup /
+ * create / delete / readdir / get_root / read / write, syscalls 38-45) were
+ * removed along with the capfs engine; those syscalls now fail closed and the
+ * encrypted fs_server is the only filesystem. The SYS_FS_* numbers stay defined
+ * but reserved so they are not reused. */
 
 /* sys_register_storage_backend() was removed: registering a userspace block
  * backend meant the kernel called ring-3 function pointers from ring 0 (an SMEP

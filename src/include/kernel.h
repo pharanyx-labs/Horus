@@ -62,7 +62,6 @@ extern uint8_t stack_top[];
 #define AUDIT_LOG_SIZE          256
 #define PASS_SALT_LEN           16
 #define PASS_HASH_LEN           32
-#define MAX_FS_OBJECTS          64
 /* On-disk inodes are 240 bytes, so only 2 fit in a 512-byte block. (The old
  * `BLOCK_SIZE/128 = 4` overran the block buffer when writing inode 2 or 3.)
  * A _Static_assert next to the struct definition pins this to sizeof. */
@@ -570,31 +569,9 @@ typedef struct mounted_fs {
     uint8_t journal_mac_key[32]; /* HKDF(disk_key, volume_key_salt, "horus-journal-mac-v1") */
 } mounted_fs_t;
 
-typedef struct fs_object {
-    int in_use;
-    uint32_t owner_uid;
-    int is_encrypted;
-    uint32_t integrity_tag;
-    uint32_t type;
-    void *data;
-    uint64_t size;
-    char child_names[8][32];
-    int num_children;
-    void *children[8];
-    /* Encryption-at-rest (ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD).
-     * enc_key/mac_key are independent HKDF-SHA256 subkeys derived from the
-     * owning task's file master key; file_nonce is a fresh CSPRNG draw on every
-     * write (so (key,nonce) never repeats) and file_tag authenticates the whole
-     * ciphertext. See efs_* helpers in ramfs.c. */
-    uint8_t enc_key[32];
-    uint8_t mac_key[32];
-    uint8_t file_nonce[12];   /* AEAD_NONCE_LEN */
-    uint8_t file_tag[16];     /* AEAD_TAG_LEN   */
-    char name[32];
-    uint32_t gen;
-} fs_object_t;
-
-extern fs_object_t *fs_objects[MAX_FS_OBJECTS];
+/* The legacy capfs object type (struct fs_object / fs_objects[]) and its
+ * at-rest AEAD were removed with the capfs engine; the encrypted fs_server is
+ * now the only filesystem. */
 extern uint8_t kernel_pepper[16];
 
 extern int fs_server_task_id;
@@ -811,7 +788,6 @@ int  storage_write_file_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block, c
 mounted_fs_t *storage_get_mounted_fs(void);
 block_device_t *storage_get_default_device(void);
 void storage_set_default_device(block_device_t *bd);
-int capfs_init(void);
 int storage_init(void);
 int64_t storage_alloc_block(block_device_t *bd, fs_superblock_t *sb);
 void storage_free_block(block_device_t *bd, fs_superblock_t *sb, uint64_t block);
@@ -841,14 +817,9 @@ char serial2_read_char(void);
 void serial_write_char(char c);
 
 
-int sys_fs_mint_file(uint32_t dir_slot, uint32_t name_slot, uint32_t out_slot);
-int sys_fs_lookup(uint32_t dir_slot, const char *name, uint32_t out_slot, uint32_t desired_rights);
-int sys_fs_create(uint32_t dir_slot, const char *name, int type, uint32_t out_slot, uint32_t desired_rights);
-int sys_fs_delete(uint32_t dir_slot, const char *name);
-int sys_fs_readdir(uint32_t dir_slot, char *buf, uint32_t sz);
-int sys_fs_get_root(uint32_t out_slot, uint32_t rights);
-int sys_fs_read(uint32_t file_slot, char *buf, uint32_t len);
-int sys_fs_write(uint32_t file_slot, const char *buf, uint32_t len);
+/* The legacy capfs syscalls (sys_fs_mint_file / lookup / create / delete /
+ * readdir / get_root / read / write) were removed; those syscall numbers now
+ * fail closed. */
 
 
 int  copy_from_user(void *kdst, const void *usrc, size_t len);
@@ -1006,12 +977,7 @@ int kernel_argon2id(const uint8_t *pwd, size_t plen,
 #define FS_MAX_CHILDREN         32
 
 
-int capfs_lookup(capability_t *dir_cap, const char *name, capability_t *out_cap, uint32_t desired_rights);
-int capfs_create(capability_t *dir_cap, const char *name, int type, capability_t *out_cap, uint32_t desired_rights);
-int capfs_delete(capability_t *dir_cap, const char *name);
-int capfs_readdir(struct capability *dir_cap, char *buf, size_t bufsize);
-int capfs_read(struct capability *file_cap, void *buf, size_t len);
-int capfs_write(struct capability *file_cap, const void *buf, size_t len);
+/* The capfs_* engine (legacy capability filesystem) was removed. */
 
 
 int  ramfs_list(char *buf, size_t buflen);

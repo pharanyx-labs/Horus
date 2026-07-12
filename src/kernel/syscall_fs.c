@@ -3,155 +3,12 @@
  * encrypted object-store handlers. Split out of syscall.c. */
 #include "syscall_internal.h"
 
-int sys_fs_mint_file(uint32_t dir_slot, uint32_t dest_slot, uint32_t new_rights) {
-    struct capability *dir_cap = cap_lookup(dir_slot, CAP_RIGHT_FS_LOOKUP | CAP_RIGHT_MINT);
-    if (!dir_cap) {
-        audit_log(AUDIT_FS, dir_slot, -1, "mint denied: no dir cap or rights");
-        return -1;
-    }
-
-    if (dest_slot < 4 || dest_slot >= 256) return -2;
-
-    if (!cap_mint(dest_slot, dir_slot, new_rights)) {
-        audit_log(AUDIT_FS, dest_slot, -2, "mint failed");
-        return -2;
-    }
-
-    /* rust_cap_mint already copied dir_cap->type (CAP_DIR or CAP_FILE) into
-     * dest->type. The old code additionally cast dir_cap->object to a raw
-     * fs_object pointer to re-derive the type; after the capfs refactor
-     * cap->object is a packed (idx|gen<<32) value, not a pointer, so the cast
-     * produced a garbage address. The cap_mint copy is both correct and safe. */
-
-    audit_log(AUDIT_CAP_MINT, dest_slot, 0, "fs mint");
-    return 0;
-}
-
-int sys_fs_lookup(uint32_t dir_slot, const char *name, uint32_t out_slot, uint32_t desired_rights) {
-    if (out_slot < 4 || out_slot >= 256) return -1;
-
-    struct capability *dir_cap = cap_lookup(dir_slot, CAP_RIGHT_FS_LOOKUP);
-    if (!dir_cap) {
-        audit_log(AUDIT_FS, dir_slot, -1, "lookup denied");
-        return -1;
-    }
-
-    struct capability *out = &tasks[get_current_task()].cspace[out_slot];
-    int rc = capfs_lookup(dir_cap, name, out, desired_rights);
-    if (rc == 0) {
-        audit_log(AUDIT_FS_LOOKUP, out_slot, 0, "lookup ok");
-    } else {
-        audit_log(AUDIT_FS_LOOKUP, dir_slot, rc, "lookup fail");
-    }
-    return rc;
-}
-
-int sys_fs_create(uint32_t dir_slot, const char *name, int type, uint32_t out_slot, uint32_t desired_rights) {
-    if (out_slot < 4 || out_slot >= 256) return -1;
-    if (type != FS_OBJ_FILE && type != FS_OBJ_DIR) return -9;
-
-    struct capability *dir_cap = cap_lookup(dir_slot, CAP_RIGHT_FS_CREATE);
-    if (!dir_cap) {
-        audit_log(AUDIT_FS, dir_slot, -1, "create denied: no cap");
-        return -1;
-    }
-
-    struct capability *out = &tasks[get_current_task()].cspace[out_slot];
-    int rc = capfs_create(dir_cap, name, type, out, desired_rights);
-    if (rc == 0) {
-        audit_log(AUDIT_FS_CREATE, out_slot, 0, "create ok");
-    } else {
-        audit_log(AUDIT_FS_CREATE, dir_slot, rc, "create fail");
-    }
-    return rc;
-}
-
-int sys_fs_delete(uint32_t dir_slot, const char *name) {
-    struct capability *dir_cap = cap_lookup(dir_slot, CAP_RIGHT_FS_DELETE);
-    if (!dir_cap) {
-        audit_log(AUDIT_FS, dir_slot, -1, "delete denied");
-        return -1;
-    }
-
-    int rc = capfs_delete(dir_cap, name);
-    audit_log(AUDIT_FS_DELETE, dir_slot, rc, rc==0 ? "delete" : "delete fail");
-    return rc;
-}
-
-int sys_fs_readdir(uint32_t dir_slot, char *buf, uint32_t bufsize) {
-    struct capability *dir_cap = cap_lookup(dir_slot, CAP_RIGHT_FS_LOOKUP);
-    if (!dir_cap) return -1;
-    if (!buf) return -1;
-
-    /* Bounce through a kernel buffer instead of letting capfs_readdir write the
-     * user pointer directly from ring 0 (that bypasses copy_to_user validation
-     * and would #PF under SMAP). capfs_readdir guarantees pos+1 <= bufsize, so
-     * copying rc+1 bytes carries the NUL terminator it writes at buf[pos]. */
-    char kbuf[512];
-    uint32_t to = bufsize > sizeof(kbuf) ? (uint32_t)sizeof(kbuf) : bufsize;
-    int rc = capfs_readdir(dir_cap, kbuf, to);
-    if (rc >= 0) {
-        if (copy_to_user(buf, kbuf, (size_t)rc + 1) != 0) return -3;
-    }
-    return rc;
-}
-
-int sys_fs_get_root(uint32_t dest_slot, uint32_t rights) {
-    struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
-    if (!admin && tasks[get_current_task()].uid != 0) {
-        audit_log(AUDIT_FS, 0, -1, "get_root denied");
-        return -1;
-    }
-
-    if (dest_slot < 4 || dest_slot >= 256) return -2;
-
-    struct fs_object *root = fs_objects[0];
-    if (!root) return -3;
-
-    if (dest_slot >= CNODE_SIZE) return -2;
-
-    struct capability *dest = &tasks[get_current_task()].cspace[dest_slot];
-    dest->type   = CAP_DIR;
-    dest->object = (addr_t)root;
-    dest->rights = rights & (CAP_RIGHT_FS_LOOKUP | CAP_RIGHT_FS_CREATE | CAP_RIGHT_FS_DELETE |
-                             CAP_RIGHT_FS_READ | CAP_RIGHT_FS_WRITE | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE);
-    dest->badge  = 0xF5000000U;
-    dest->serial = cap_alloc_fresh_serial();
-    dest->generation = 0;
-
-    audit_log(AUDIT_FS, dest_slot, 0, "get_root");
-    return 0;
-}
-
-int sys_fs_read(uint32_t file_slot, char *buf, uint32_t len) {
-    if (file_slot >= 256 || !buf) return -1;
-    struct capability *fc = cap_lookup(file_slot, CAP_RIGHT_FS_READ);
-    if (!fc || fc->type != CAP_FILE) return -2;
-
-    char kbuf[256];
-    uint32_t to = len > 255 ? 255 : len;
-    int rc = capfs_read(fc, kbuf, to);
-    if (rc > 0) {
-        if (copy_to_user(buf, kbuf, (size_t)rc) != 0) return -3;
-    }
-    audit_log(AUDIT_FS_READ, file_slot, rc >= 0 ? 0 : rc, "fs read");
-    return rc;
-}
-
-int sys_fs_write(uint32_t file_slot, const char *buf, uint32_t len) {
-    if (file_slot >= 256 || !buf) return -1;
-    struct capability *fc = cap_lookup(file_slot, CAP_RIGHT_FS_WRITE);
-    if (!fc || fc->type != CAP_FILE) return -2;
-
-    char kbuf[256];
-    uint32_t to = len > 255 ? 255 : len;
-    if (copy_from_user(kbuf, buf, to) != 0) return -3;
-
-    int rc = capfs_write(fc, kbuf, to);
-    audit_log(AUDIT_FS_WRITE, file_slot, rc >= 0 ? 0 : rc, "fs write");
-    return rc;
-}
-
+/* The legacy in-memory capfs (sys_fs_mint_file / lookup / create / delete /
+ * readdir / get_root / read / write) was a parallel capability filesystem
+ * separate from the encrypted fs_server. It has been removed: the syscalls fail
+ * closed (no dispatch-table entries) and the capfs engine is gone. h_fs_list
+ * below is unrelated — it lists the small in-memory ramfs (syscall 16) that
+ * still backs the sealed user database. */
 
 void h_fs_list(struct regs *r) {
     void *user_buf = (void*)(addr_t)r->ebx;
@@ -426,39 +283,10 @@ void h_ramfs_create(struct regs *r) {
  * If ebx is nonzero, arm the named embedded binary then spawn it.
  * If ebx is zero, spawn whatever is currently armed (legacy behaviour). */
 
-void h_fs_mint_file(struct regs *r) {
-    r->eax = sys_fs_mint_file(r->ebx, r->ecx, r->edx);
-}
-void h_fs_lookup(struct regs *r) {
-    char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
-    name[31] = 0;
-    r->eax = sys_fs_lookup(r->ebx, name, r->edx, (addr_t)r->esi);
-}
-void h_fs_create(struct regs *r) {
-    char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
-    name[31] = 0;
-    r->eax = sys_fs_create(r->ebx, name, (int)r->edx, (addr_t)r->esi, (addr_t)r->edi);
-}
-void h_fs_delete(struct regs *r) {
-    char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->ecx, 31) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
-    name[31] = 0;
-    r->eax = sys_fs_delete(r->ebx, name);
-}
-void h_fs_readdir(struct regs *r) {
-    r->eax = sys_fs_readdir(r->ebx, (char *)(addr_t)r->ecx, r->edx);
-}
-void h_fs_get_root(struct regs *r) {
-    r->eax = sys_fs_get_root(r->ebx, r->ecx);
-}
-void h_fs_read(struct regs *r) {
-    r->eax = sys_fs_read(r->ebx, (char *)(addr_t)r->ecx, r->edx);
-}
-void h_fs_write(struct regs *r) {
-    r->eax = sys_fs_write(r->ebx, (const char *)(addr_t)r->ecx, r->edx);
-}
+/* The legacy in-memory capfs handlers (h_fs_mint_file / lookup / create /
+ * delete / readdir / get_root / read / write, syscalls 38-45) were removed with
+ * the capfs engine; the dispatch-table entries are gone, so those numbers fail
+ * closed. */
 
 /* SYS_REGISTER_STORAGE_BACKEND (46): removed; ABI slot reserved, fails closed.
  * (Used to register a ring-3 fn-ptr the kernel called at CPL0 -- SMEP/TCB hole;

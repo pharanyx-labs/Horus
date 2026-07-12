@@ -793,14 +793,11 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_PASSWD]                   = { h_passwd,                  SC_NONE, 0, SC_ANYTYPE }, /* admin/self in do_passwd */
     [SYS_ROTATE_KEYS]              = { h_rotate_keys,             8, CAP_RIGHT_READ, CAP_CONSOLE },
     [SYS_READ_AUDIT]               = { h_read_audit,              7, CAP_RIGHT_READ, CAP_AUDIT },
-    [SYS_FS_MINT_FILE]             = { h_fs_mint_file,            SC_NONE, 0, SC_ANYTYPE }, /* dir cap in sys_fs_* */
-    [SYS_FS_LOOKUP]                = { h_fs_lookup,               SC_NONE, 0, SC_ANYTYPE },
-    [SYS_FS_CREATE]                = { h_fs_create,               SC_NONE, 0, SC_ANYTYPE },
-    [SYS_FS_DELETE]                = { h_fs_delete,               SC_NONE, 0, SC_ANYTYPE },
-    [SYS_FS_READDIR]               = { h_fs_readdir,              SC_NONE, 0, SC_ANYTYPE },
-    [SYS_FS_GET_ROOT]              = { h_fs_get_root,             SC_NONE, 0, SC_ANYTYPE },
-    [SYS_FS_READ]                  = { h_fs_read,                 SC_NONE, 0, SC_ANYTYPE },
-    [SYS_FS_WRITE]                 = { h_fs_write,                SC_NONE, 0, SC_ANYTYPE },
+    /* Syscalls 38-45 were the legacy in-memory capfs (a parallel, unencrypted
+     * capability-FS separate from the encrypted fs_server). Removed: the entries
+     * are absent, so the dispatcher fails them closed (SYS_ERR_NOSYS). The
+     * numbers are left reserved (not reused) so no future syscall silently
+     * inherits an old ring-3 caller. */
     [SYS_REGISTER_STORAGE_BACKEND] = { h_register_storage_backend, SC_NONE, 0, SC_ANYTYPE },
     [SYS_BLOCK_READ]               = { h_block_read,              7, CAP_BLOCK_DEV, SC_ANYTYPE }, /* + uid 0 in handler */
     [SYS_BLOCK_WRITE]              = { h_block_write,             7, CAP_BLOCK_DEV, SC_ANYTYPE }, /* + uid 0 in handler */

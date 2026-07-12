@@ -101,10 +101,11 @@ automated client end-to-end).
 
 ---
 
-## Phase 2 — A production filesystem
+## Phase 2 — A production filesystem — *complete*
 
-The filesystem now persists by default, enforces per-file ownership and
-permissions, and works end-to-end; it is still single-client.
+The filesystem persists by default, enforces per-file ownership and permissions,
+serves multiple clients, is crash-atomic, supports large files, and is the
+system's single filesystem (the legacy parallel capfs is gone).
 
 **Persistence is done:** the shipped kernel probes for an ATA disk at boot and
 uses the encrypted store when one is present (the per-block crypto metadata is
@@ -145,19 +146,34 @@ by `make smoke-fs-wal` (boot 1 commits a write then crashes before applying it;
 boot 2 replays it and the data survives), alongside `smoke-fs` and
 `smoke-fs-persist`.
 
-What remains:
+**Large files are done:** double-indirect data blocks are implemented and the
+volume is 4096 blocks (2 MiB), so a single file maps through the direct +
+single-indirect + double-indirect range (up to 12 + 64 + 64×64 = 4172 blocks).
+Proven by `make smoke-fs-large`, which also frees a ~130-block file in one journal
+transaction (every freed block clears the same block-bitmap sector, so the writes
+coalesce and the transaction stays well under the 16-sector journal limit — a
+large-file free never overflows or aborts). This pass also fixed a latent
+single-indirect fanout bug: the pointers-per-block count was 1024 instead of the
+correct 64, which would have overrun a stack buffer for any file past block 76.
 
-- **Per-file ACLs**: beyond the owner/group/other bits, and reconcile the legacy
-  in-memory capfs (`SYS_FS_*`) with the server.
-- **Larger files / bigger volumes** (capacity, not crash-safety): **double-indirect
-  data blocks are now implemented** and the volume is 4096 blocks (2 MiB), so a
-  single file can map through the direct + single-indirect + double-indirect range
-  (up to 12 + 64 + 64×64 = 4172 blocks), proven by `make smoke-fs-large`. (This also
-  fixed a latent single-indirect fanout bug — the pointer-per-block count was 1024
-  instead of the correct 64, which would have overrun a stack buffer for any file
-  past block 76.) Remaining: **multi-block allocation bitmaps** to grow past the
-  4096-block single-bitmap cap, and letting a single transaction span more than the
-  current 16-sector journal for very large frees.
+**The legacy capfs is gone:** the parallel in-memory capability filesystem
+(`SYS_FS_*` 38–45, `fs_objects[]`, the `capfs_*` engine and its own at-rest AEAD)
+has been removed — the syscalls fail closed, the numbers are reserved, and the
+encrypted `fs_server` is the system's single filesystem. This shrinks the ring-3
+attack surface to one, capability-mediated, permission-enforcing FS.
+
+### Deliberate non-goals
+
+- **Per-file ACLs — not adopted.** POSIX owner/group/other plus a `uid 0`
+  superuser, enforced by the `fs_server` against the caller's kernel-attested
+  identity, is a complete discretionary access-control model. Full ACLs would add
+  a large, security-sensitive surface (on-disk ACL storage, evaluation, new proto
+  ops) for no gain in what can be *expressed* securely with the existing model, so
+  they are intentionally out of scope.
+- **Multi-block allocation bitmaps — not adopted.** The single 512-byte bitmap
+  block caps the volume at 4096 blocks, which the allocator already enforces
+  safely (it never allocates past the cap). Growing the cap is a pure capacity
+  feature with no security value; it is deferred rather than built.
 
 ---
 
@@ -239,10 +255,10 @@ Cross-cutting work that should grow alongside every other phase.
 
 ## Contributing
 
-Phase 1 is complete. Phase 2 (a production filesystem) and Phase 4 (userspace
-ecosystem) hold the most self-contained items and are the recommended starting
-point for new contributors. If you have kernel or systems experience and want
-something more involved, Phase 3 (SMP maturity) is a good target.
+Phases 1 and 2 are complete. Phase 4 (userspace ecosystem) holds the most
+self-contained items and is the recommended starting point for new contributors.
+If you have kernel or systems experience and want something more involved, Phase
+3 (SMP maturity) is a good target.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to set up your environment and
 submit work.

@@ -591,6 +591,21 @@ void bigfile_selftest(void) {
         }
     }
 
+    /* Contiguous span deep in the double-indirect region (crosses several
+     * single-indirect blocks). This makes the free below release ~130 data
+     * blocks plus their pointer blocks in one journal transaction; every block
+     * freed clears the same single block-bitmap sector, so the writes coalesce
+     * and the transaction stays well under the 16-sector journal limit rather
+     * than overflowing (a large-file free must never abort). */
+    for (uint64_t b = 400; b < 530; b++) {
+        uint8_t buf[BLOCK_SIZE];
+        for (int j = 0; j < 8; j++) buf[j] = (uint8_t)(b >> (j * 8));   /* stamp */
+        if (storage_write_file_block(mfs, (uint64_t)ino, b, buf) != 0) {
+            print("BIGFILE_SELFTEST: FAIL span-write blk=0x"); print_hex(b); print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+    }
+
     for (unsigned i = 0; i < N; i++) {
         uint64_t b = blocks[i];
         uint8_t rb[BLOCK_SIZE];
@@ -608,6 +623,17 @@ void bigfile_selftest(void) {
             print("BIGFILE_SELFTEST: FAIL body blk=0x"); print_hex(b); print("\n");
             for (;;) asm volatile ("hlt");
         }
+    }
+
+    /* Spot-check the contiguous span read-back (stamp at a mid-span block). */
+    {
+        uint8_t rb[BLOCK_SIZE];
+        if (storage_read_file_block(mfs, (uint64_t)ino, 465, rb) != 0) {
+            print("BIGFILE_SELFTEST: FAIL span-read\n"); for (;;) asm volatile ("hlt");
+        }
+        uint64_t stamp = 0;
+        for (int j = 0; j < 8; j++) stamp |= ((uint64_t)rb[j]) << (j * 8);
+        if (stamp != 465) { print("BIGFILE_SELFTEST: FAIL span-stamp\n"); for (;;) asm volatile ("hlt"); }
     }
 
     /* A never-written hole in the double-indirect range must read as absent. */

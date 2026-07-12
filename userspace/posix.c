@@ -189,6 +189,70 @@ static int path_walk(const char *path,
     return 0;
 }
 
+/* Resolve the PARENT directory of `path` and copy the final path component
+ * into out_name (a buffer of at least FS_NAME_MAX bytes). Intermediate
+ * components are looked up; the final one is NOT (so this works whether or not
+ * the final component exists). Uses the same component/slash semantics as
+ * path_walk.
+ *
+ * On success: *out_ino is the parent inode, out_name is the final component,
+ *   return 0. A path with no final component ("/" or all slashes) yields an
+ *   empty out_name — the caller must reject that.
+ * On error (bad path, component too long, too deep, missing intermediate):
+ *   return -1.
+ */
+static int path_parent(const char *path,
+                       uint32_t   *out_ino,
+                       char       *out_name) {
+    if (!path || path[0] == '\0') return -1;
+
+    uint32_t dir_ino = 0;          /* root */
+    const char *p = path;
+    if (*p == '/') p++;            /* skip leading slash */
+
+    char comp[FS_NAME_MAX];
+    int  depth = 0;
+
+    out_name[0] = '\0';
+
+    while (*p) {
+        uint32_t clen = 0;
+        while (p[clen] && p[clen] != '/') clen++;
+
+        if (clen == 0)          { p++; continue; }   /* double slash */
+        if (clen >= FS_NAME_MAX) return -1;           /* component too long */
+        if (++depth > MAX_PATH_DEPTH) return -1;
+
+        _umemcpy(comp, p, clen);
+        comp[clen] = '\0';
+        p += clen;
+        if (*p == '/') p++;
+
+        if (*p != '\0') {
+            /* Intermediate component: look it up and descend. */
+            struct fs_request rq;
+            struct fs_response rp;
+            _umemset(&rq, 0, sizeof(rq));
+            rq.op      = FS_OP_LOOKUP;
+            rq.dir_ino = dir_ino;
+            _umemcpy(rq.name, comp, clen + 1u);
+
+            if (fss_rpc(&rq, &rp) != 0) return -1;   /* missing intermediate */
+            dir_ino = rp.ino;
+        } else {
+            /* Final component: hand back the parent and the name. */
+            _umemcpy(out_name, comp, clen + 1u);
+            *out_ino = dir_ino;
+            return 0;
+        }
+    }
+
+    /* Path was all slashes → root, no final component. */
+    *out_ino = dir_ino;
+    out_name[0] = '\0';
+    return 0;
+}
+
 /* ----- public API ------------------------------------------------------- */
 
 void posix_init(void) {
@@ -463,6 +527,36 @@ int posix_stat(const char *path, posix_stat_t *st) {
     st->blksize = 512;
     st->blocks  = (rp.size + 511u) / 512u;
     return 0;
+}
+
+int posix_unlink(const char *path) {
+    ENSURE_INIT();
+    if (!path) return -1;
+
+    uint32_t parent;
+    char     name[FS_NAME_MAX];
+    /* A path we can't resolve (bad path, missing intermediate directory, or "/"
+     * itself) is a missing target — report it as SYS_ERR_NOENT so the libc
+     * wrapper maps it to ENOENT rather than a transport error. */
+    if (path_parent(path, &parent, name) != 0) return SYS_ERR_NOENT;
+    if (name[0] == '\0') return SYS_ERR_NOENT;    /* refuse to unlink "/" */
+
+    uint32_t nlen = _ustrlen(name);
+    if (nlen == 0 || nlen >= FS_NAME_MAX) return SYS_ERR_NOENT;
+
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op      = FS_OP_DELETE;
+    rq.dir_ino = parent;
+    _umemcpy(rq.name, name, nlen + 1u);
+
+    /* Propagate the server's rc: 0 on success, a negative SYS_ERR_* on a
+     * permission / not-found / non-empty-directory refusal, or -1 on a
+     * transport failure. The server is the reference monitor — it enforces
+     * write permission on the parent directory against our kernel-attested
+     * uid, so no client-side permission check is needed (or trusted). */
+    return fss_rpc(&rq, &rp);
 }
 
 int posix_isatty(int fd) {

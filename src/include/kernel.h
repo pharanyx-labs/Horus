@@ -860,6 +860,10 @@ void signal_selftest(void);
 #endif
 #ifdef FS_SELFTEST
 void fs_selftest(void);
+#endif
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
+/* Shared by both FS harnesses: the newlib self-test also spawns + provisions
+ * the fs_server so its client can exercise the real libc file paths. */
 int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
 #endif
 #ifdef NEWLIB_SELFTEST

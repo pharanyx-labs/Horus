@@ -4,16 +4,24 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* ---- open(2) flags (skipped if fcntl.h already defined them) ---- */
+/* ---- open(2) flags ----
+ * These MUST match the newlib <fcntl.h> values, because posix.c is the fd layer
+ * *for* newlib: posix.c is compiled with -I include (not the newlib headers) and
+ * so sees these fallbacks, while its newlib callers (open() in newlib_glue.c,
+ * and application code) are compiled against newlib's <fcntl.h>. If the two
+ * disagree, a caller's O_CREAT arrives as some other bit here (newlib O_CREAT
+ * 0x200 == a stale O_TRUNC), so the flag is silently lost. Values below are
+ * newlib's sys/_default_fcntl.h. The #ifndef lets newlib's header win when it is
+ * included first (belt-and-braces — the values are identical either way). */
 #ifndef O_RDONLY
 #define O_RDONLY   0x0000
 #define O_WRONLY   0x0001
 #define O_RDWR     0x0002
 #define O_ACCMODE  0x0003
-#define O_CREAT    0x0040
-#define O_EXCL     0x0080
-#define O_TRUNC    0x0200
-#define O_APPEND   0x0400
+#define O_APPEND   0x0008
+#define O_CREAT    0x0200
+#define O_TRUNC    0x0400
+#define O_EXCL     0x0800
 #endif
 
 /* ---- lseek(2) whence ---- */
@@ -66,6 +74,9 @@ int  posix_close (int fd);
 int  posix_lseek (int fd, int32_t offset, int whence);
 int  posix_fstat (int fd, posix_stat_t *st);
 int  posix_stat  (const char *path, posix_stat_t *st);
+/* Remove a directory entry. Returns 0 on success, or a negative SYS_ERR_*
+ * (the fs_server enforces write permission on the parent directory). */
+int  posix_unlink(const char *path);
 int  posix_isatty(int fd);
 
 #endif /* HORUS_POSIX_H */

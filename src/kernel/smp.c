@@ -225,6 +225,12 @@ void smp_bringup(void) {
      * printf/sprintf/malloc/string ops all work end-to-end (prints
      * NEWLIB_SELFTEST: PASS to serial). */
     newlib_selftest();
+#elif defined(BIGFILE_SELFTEST)
+    /* Gated: write blocks across the direct / single-indirect / double-indirect
+     * mapping regions of one inode and read them back, proving large-file
+     * (double-indirect) support on the encrypted object store (prints
+     * BIGFILE_SELFTEST: PASS to serial). */
+    bigfile_selftest();
 #elif defined(SMP_SELFTEST)
     /* Gated: spawn a pool of forever-looping workers and prove the application
      * processors pull and run them concurrently (prints SMP_SELFTEST: PASS). */

@@ -549,6 +549,84 @@ void wal_crashtest(void) {
 }
 #endif /* WAL_CRASHTEST */
 
+/* ---- Large-file / double-indirect self-test (BIGFILE_SELFTEST builds only) --
+ * Single boot against the ephemeral RAM store (storage_init already formatted +
+ * mounted + unlocked it). Allocate one inode and write blocks spanning every
+ * mapping region — direct (0, 11), single-indirect boundaries (12, 75), and the
+ * point of this test, double-indirect (76 = first, then deep: 200, 1000, 3000) —
+ * then read them back. Each block is stamped with its logical block number and a
+ * number-derived body pattern, so a block that lands at the wrong physical
+ * location reads as wrong content. Also confirms an unwritten hole reads as
+ * absent (not another block's data) and that freeing the whole tree succeeds.
+ * Prints BIGFILE_SELFTEST: PASS; `make smoke-fs-large` asserts on it. */
+#ifdef BIGFILE_SELFTEST
+void bigfile_selftest(void) {
+    print("BIGFILE_SELFTEST: begin\n");
+
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || !mfs->unlocked) {
+        print("BIGFILE_SELFTEST: FAIL not-ready\n"); for (;;) asm volatile ("hlt");
+    }
+
+    int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+    if (ino < 1) { print("BIGFILE_SELFTEST: FAIL alloc-inode\n"); for (;;) asm volatile ("hlt"); }
+    {
+        on_disk_inode_t nd;
+        for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+        nd.type = 1; nd.mode = 0100644; nd.links = 1;
+        storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
+    }
+
+    static const uint64_t blocks[] = { 0, 11, 12, 75, 76, 200, 1000, 3000 };
+    const unsigned N = sizeof(blocks) / sizeof(blocks[0]);
+
+    for (unsigned i = 0; i < N; i++) {
+        uint64_t b = blocks[i];
+        uint8_t buf[BLOCK_SIZE];
+        for (int j = 0; j < BLOCK_SIZE; j++) buf[j] = (uint8_t)(b * 7u + (unsigned)j);
+        for (int j = 0; j < 8; j++)          buf[j] = (uint8_t)(b >> (j * 8));   /* stamp */
+        if (storage_write_file_block(mfs, (uint64_t)ino, b, buf) != 0) {
+            print("BIGFILE_SELFTEST: FAIL write blk=0x"); print_hex(b); print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+    }
+
+    for (unsigned i = 0; i < N; i++) {
+        uint64_t b = blocks[i];
+        uint8_t rb[BLOCK_SIZE];
+        if (storage_read_file_block(mfs, (uint64_t)ino, b, rb) != 0) {
+            print("BIGFILE_SELFTEST: FAIL read blk=0x"); print_hex(b); print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+        uint64_t stamp = 0;
+        for (int j = 0; j < 8; j++) stamp |= ((uint64_t)rb[j]) << (j * 8);
+        if (stamp != b) {
+            print("BIGFILE_SELFTEST: FAIL stamp blk=0x"); print_hex(b); print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+        if (rb[100] != (uint8_t)(b * 7u + 100u)) {
+            print("BIGFILE_SELFTEST: FAIL body blk=0x"); print_hex(b); print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+    }
+
+    /* A never-written hole in the double-indirect range must read as absent. */
+    {
+        uint8_t rb[BLOCK_SIZE];
+        if (storage_read_file_block(mfs, (uint64_t)ino, 1500, rb) == 0) {
+            print("BIGFILE_SELFTEST: FAIL hole-readable\n"); for (;;) asm volatile ("hlt");
+        }
+    }
+
+    if (storage_free_inode_blocks(mfs, (uint64_t)ino) != 0) {
+        print("BIGFILE_SELFTEST: FAIL free\n"); for (;;) asm volatile ("hlt");
+    }
+
+    print("BIGFILE_SELFTEST: PASS\n");
+    for (;;) asm volatile ("hlt");
+}
+#endif /* BIGFILE_SELFTEST */
+
 /* ---- Newlib smoke test (NEWLIB_SELFTEST builds only) ---------------------- */
 #ifdef NEWLIB_SELFTEST
 void newlib_selftest(void) {

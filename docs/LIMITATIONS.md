@@ -25,7 +25,7 @@ These subsystems are functional in the current codebase:
 - **Fault signals** — a task registers its own handler (`SYS_SIGACTION`); a ring-3 fault (page fault → `SIG_SEGV`, `#UD` → `SIG_ILL`) is delivered to it (signal # in `ebx`, fault addr in `ecx`) instead of killing it, and `SYS_SIGRETURN` resumes the exact pre-signal context. The handler address is validated in safe Rust (fail-closed); a fault *inside* a handler is not re-delivered; the handler runs at ring 3 with unchanged privileges. Proven by `make smoke-signal`.
 - **Async task-to-task signals** — `SYS_SIGNAL` (gated on a `CAP_TCB` to the target, same authority as `SYS_KILL`) queues a signal, redirected into the target's handler on its next return to ring 3, or taking the default terminate action when unhandled or for the uncatchable `SIG_KILL`. The pending set is a full 1..31 bitmask; `SYS_SIGMASK` blocks/unblocks signals (lowest unmasked delivered first, `SIG_KILL` never maskable); a signal to a `SYS_WAIT`-blocked target interrupts the wait (`SYS_ERR_INTR`) so it lands promptly; and `SYS_SIGALTSTACK` runs a handler on a registered alternate stack (`SS_ONSTACK` guard, so a corrupt or overflowed primary stack cannot stop the handler running). Proven by `make smoke-proc`.
 - **Symmetric multiprocessing (behind `SMP=1`)** — application processors are brought up (LAPIC INIT-SIPI-SIPI), each runs its own LAPIC-timer preemption tick over a shared runnable pool, IPC/notification paths lock for cross-CPU safety, and TLB-shootdown IPIs are acknowledged. Proven by `make smoke-smp`. Off by default; see the SMP note below.
-- **Filesystem server** — a ring-3 `fs_server` over the kernel's encrypted object store, reached over IPC; real `ls`/`cat`/`mkdir`/`rm`/`touch`/redirection from the shell. Proven by `make smoke-fs`.
+- **Filesystem server** — a ring-3 `fs_server` over the kernel's encrypted object store, reached over IPC; real `ls`/`cat`/`mkdir`/`rm`/`touch`/redirection from the shell, and the system's single filesystem (the legacy in-memory capfs is removed). It is the filesystem reference monitor: it enforces per-file POSIX owner/group/other rwx against the caller's *kernel-attested* uid/gid (`SYS_IPC_SENDER`, unforgeable by the client), serves multiple clients concurrently with replies routed to each caller by identity (`SYS_IPC_REPLY_TO`), makes every multi-block update crash-atomic through a write-ahead redo journal replayed by a mount-time `fsck`, and supports large files via double-indirect blocks. Proven by `make smoke-fs`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, and `smoke-fs-large`.
 - **Persistent encrypted storage (by default when a disk is present)** — at boot the kernel probes for an ATA disk (bounded probe; no hang on a diskless bus) and uses the encrypted store when one is present. Per-block crypto metadata (nonces/tags) is flushed on write and reloaded + HMAC-verified at mount, so files survive a reboot; the volume comes up mounted-but-locked and is unwrapped at login (Argon2id-derived KEK). With no disk attached the kernel falls back to an ephemeral in-RAM vdisk (auto-unlocked). Proven by `make smoke-fs-persist` (write on boot 1, verify on boot 2 against the same disk image).
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace `malloc`, and a newlib libc port over a per-process POSIX fd layer (`make smoke-newlib`).
 - **Reproducible builds** — `make reproducible-build` yields a byte-for-byte identical `kernel.elf` across clean builds (verified in CI).
@@ -42,27 +42,19 @@ The shell accepts input and dispatches commands. Several are implemented end-to-
 
 ### IPC
 
-The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated). `SYS_IPC_SEND`/`RECV` are **non-blocking** (return a would-block code `-2`; the caller polls from ring 3 where preemption interleaves it); `SYS_IPC_CALL` can block on the full-context path. Each endpoint is a **single-slot mailbox**, so it serves **one in-flight request at a time**; concurrent multi-client IPC with reply routing is a follow-up. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and return `SYS_ERR_NOSYS` (-38).
-
-### Filesystem (in-memory capfs)
-
-A legacy in-memory capability-addressed filesystem works: lookup/create/delete/read/write/readdir each enforce the relevant `CAP_RIGHT_FS_*` right, resolving capabilities through `fs_resolve_cap()` (packed `(idx | gen<<32)` value + per-slot generation, so stale caps over deleted objects fail closed). Encrypted files are sealed with the same ChaCha20 + HMAC-SHA256 AEAD as block storage. It is a single in-memory tree and coexists with the newer `fs_server`; reconciling the two is tracked work.
+The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated). `SYS_IPC_SEND`/`RECV` are **non-blocking** (return a would-block code `-2`; the caller polls from ring 3 where preemption interleaves it); `SYS_IPC_CALL` can block on the full-context path. Each endpoint is a **single-slot mailbox**, so it serves **one in-flight request at a time**. Concurrent multiple-client service is achieved above this primitive by `SYS_IPC_REPLY_TO`, which routes a server's reply to the request's kernel-recorded sender (used by `fs_server`); a richer multi-slot / parallel-worker IPC is still a follow-up. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and return `SYS_ERR_NOSYS` (-38).
 
 ### Copy-on-write paging
 
 The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault handler calls into Rust to decide demand-zero vs. COW-copy. The common cases work and the Rust logic is unit-tested, but the end-to-end paths have not been stress-tested and likely have edge cases.
 
-### Disk-backed storage (volume geometry and crash resilience)
+### Disk-backed storage (volume geometry)
 
-`storage.c` implements encrypted block storage — a ChaCha20 + HMAC-SHA256 AEAD with per-block HKDF keys, fresh per-write nonce, `(ino, block)` as AAD — over a real superblock/inode/bitmap layout, exercised end-to-end by `fs_server` via the encrypted object-store syscalls. The live backend is selected at boot: a real ATA disk (`ata.c`, 28-bit-LBA PIO) when one is present, otherwise the ephemeral RAM vdisk. Cross-reboot persistence of files *and* their per-block crypto metadata is in place on ATA. Remaining gaps are volume scale and durability under crash: single-bitmap-block geometry caps a volume at 4096 data blocks (multi-block bitmaps + double-indirect data are follow-ups), and there is not yet a write-ahead intent log or directory-tree `fsck` for atomic multi-block updates.
+`storage.c` implements encrypted block storage — a ChaCha20 + HMAC-SHA256 AEAD with per-block HKDF keys, fresh per-write nonce, `(ino, block)` as AAD — over a real superblock/inode/bitmap layout, exercised end-to-end by `fs_server` via the encrypted object-store syscalls. The live backend is selected at boot: a real ATA disk (`ata.c`, 28-bit-LBA PIO) when one is present, otherwise the ephemeral RAM vdisk. Cross-reboot persistence of files *and* their per-block crypto metadata is in place on ATA, multi-block updates are crash-atomic through a write-ahead redo journal replayed by a mount-time `fsck`, and files map through direct + single- + double-indirect blocks. The remaining limit is volume *scale*: a single 512-byte bitmap block caps a volume at 4096 data blocks (2 MiB). Growing that cap needs multi-block bitmaps, which is a pure capacity feature with no security value and is a deliberate non-goal for now (the allocator already enforces the cap safely).
 
 ---
 
 ## What does not work / is not yet present
-
-### Multi-client filesystem access
-
-`fs_server` serves **one client at a time** (single-slot mailbox), enforces access only at the service boundary (an endpoint cap to reach it) rather than **per-file ownership or ACLs**, and does not yet supersede the legacy in-memory capfs behind `SYS_FS_*`.
 
 ### SMP as default
 
@@ -84,7 +76,7 @@ These matter specifically for anyone evaluating Horus as a security system:
 
 ### Encrypted storage is persistent, but still early
 
-The block cipher is sound (ChaCha20 + HMAC-SHA256 AEAD, per-block HKDF subkeys, fresh per-write nonce), and on an attached ATA disk the store is the live backend with crypto metadata persisted across reboots (volume sealed until login). Residual limitations are operational rather than cryptographic: a diskless boot still uses the ephemeral RAM vdisk; volume size is capped by single-bitmap geometry; there is no crash-recovery intent log; and the filesystem still lacks per-file ownership/ACLs (access is gated at the server-endpoint boundary).
+The block cipher is sound (ChaCha20 + HMAC-SHA256 AEAD, per-block HKDF subkeys, fresh per-write nonce), and on an attached ATA disk the store is the live backend with crypto metadata persisted across reboots (volume sealed until login), multi-block updates crash-atomic via a write-ahead redo journal, and per-file POSIX ownership/permissions enforced by the `fs_server` against the caller's kernel-attested identity. Residual limitations are operational rather than cryptographic: a diskless boot still uses the ephemeral RAM vdisk, and volume size is capped at 2 MiB by single-bitmap geometry (a deliberate non-goal to grow). Fuller ACLs (beyond POSIX owner/group/other + a uid-0 superuser) are also a deliberate non-goal.
 
 ### Bounded load-base ASLR entropy
 
@@ -126,8 +118,8 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Memory management | ~55% |
 | Task scheduling | ~60% (preemptive; SMP behind a gate; no priorities) |
 | IPC | ~35% (send/recv + blocking call; no notifications, single-slot) |
-| Filesystem | ~60% (ring-3 server over encrypted store; persistent on ATA; single-client, no ACLs) |
+| Filesystem | ~75% (ring-3 server over encrypted store; persistent on ATA; per-file permissions, multi-client, crash-atomic journal, large files) |
 | Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD) | ~80% |
-| Storage / disk I/O | ~65% (ATA probe + persisted crypto metadata; volume-size and crash-resilience gaps) |
+| Storage / disk I/O | ~75% (ATA probe + persisted crypto metadata + crash-atomic journal; volume-size cap remains) |
 | SMP | ~55% (works behind `SMP=1`; not default, shared run queue, no priorities) |
 | Testing | ~45% (54 unit tests + 11 CI jobs + six boot self-tests; no deeper integration/fuzz) |

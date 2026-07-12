@@ -42,9 +42,9 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 ### C kernel work
 
 - **SMP maturity** (`src/kernel/scheduler.c`): multi-core works behind `SMP=1` over a shared runnable pool. Per-CPU run queues, scheduling priorities/fairness, and making it default-on are the next steps.
-- **Filesystem production hardening** (`src/kernel/storage.c`, `userspace/fs_server.c`): persistence on ATA is done; remaining work is a write-ahead intent log / `fsck`, multi-block bitmaps and double-indirect data for larger volumes, and per-file ownership/ACLs tied to the capability model.
-- **Concurrent / multi-client `fs_server`** (`userspace/fs_server.c`): the server handles one client at a time (single-slot mailbox); a proper multiplex loop would let multiple tasks use the filesystem concurrently.
-- **Notifications** (`src/kernel/syscall_ipc.c`): `SYS_NOTIFY` / `SYS_WAIT_NOTIFY` still return `SYS_ERR_NOSYS` after the capability check.
+- **Notifications** (`src/kernel/syscall_ipc.c`): `SYS_NOTIFY` / `SYS_WAIT_NOTIFY` still return `SYS_ERR_NOSYS` after the capability check — this is the main unimplemented IPC primitive.
+- **Richer IPC** (`src/kernel/syscall_ipc.c`): endpoints are single-slot mailboxes serving one in-flight request; multiple-client service is layered on top via `SYS_IPC_REPLY_TO`. A multi-slot mailbox or a worker-pool `fs_server` would allow genuine parallel request processing.
+- **Larger volumes** (`src/kernel/storage.c`): the single 512-byte bitmap block caps a volume at 4096 blocks (2 MiB). Multi-block allocation bitmaps would lift the cap — currently a deliberate non-goal, so discuss in an issue first if you want to take it on.
 
 ### Rust work
 

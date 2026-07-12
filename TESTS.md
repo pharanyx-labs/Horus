@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **54 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Six **headless QEMU boot tests** run in CI: `make smoke` boots to the ring-3 login prompt with no fault, `make smoke-elf` boots a real multi-segment static-PIE ELF at a randomised base and asserts the loader enforced W^X **and** applied its `R_386_RELATIVE` relocation, `make smoke-preempt` asserts the timer time-slices two non-yielding ring-3 tasks, `make smoke-signal` faults a task on purpose and asserts its handler runs, `make smoke-proc` drives ring-3 process control (exit/kill/spawn/exec/grant/signal/wait/fault-wait), and `make smoke-smp` asserts the application processors come online and run tasks concurrently. Two more self-tests — `make smoke-fs` (the filesystem server) and `make smoke-newlib` (the libc port) — exist as local targets but are not yet gated in CI. There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
+The Rust security core has **54 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`). Six **headless QEMU boot tests** run in CI: `make smoke` boots to the ring-3 login prompt with no fault, `make smoke-elf` boots a real multi-segment static-PIE ELF at a randomised base and asserts the loader enforced W^X **and** applied its `R_386_RELATIVE` relocation, `make smoke-preempt` asserts the timer time-slices two non-yielding ring-3 tasks, `make smoke-signal` faults a task on purpose and asserts its handler runs, `make smoke-proc` drives ring-3 process control (exit/kill/spawn/exec/grant/signal/wait/fault-wait), and `make smoke-smp` asserts the application processors come online and run tasks concurrently. A further set of self-tests exists as local targets (not yet gated in CI): the filesystem server (`make smoke-fs`, plus `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large` for persistence, per-file permissions, multi-client concurrency, the write-ahead journal, and large/double-indirect files), the delegated boot-through-`init` filesystem path (`smoke-init-fs`), and the newlib libc port (`smoke-newlib`). There is still no deeper booted-kernel integration test (driving the shell through scripted sessions) or fuzz harness; those are the highest-value remaining contributions.
 
 ---
 
@@ -45,6 +45,11 @@ Each self-test target clean-builds with the relevant flag, boots under QEMU with
 | `make smoke-proc` | `PROC_SELFTEST: PASS exit+kill+spawn+exec+grant+signal` (+ `wait OK` / `fault-wait OK`) |
 | `make smoke-smp` | `SMP_SELFTEST: PASS` |
 | `make smoke-fs` | `FS_SELFTEST: PASS` (local; `STORAGE=ata` for a real disk) |
+| `make smoke-fs-persist` | file written on boot 1 is present on boot 2 against the same disk image (local) |
+| `make smoke-fs-perms` | per-file POSIX ownership/permissions enforced against kernel-attested uid (local) |
+| `make smoke-fs-conc` | three concurrent clients each receive only their own replies (local) |
+| `make smoke-fs-wal` | a write committed then crashed pre-apply is replayed from the journal on the next mount (local) |
+| `make smoke-fs-large` | reads/writes across direct + single- + double-indirect blocks (local) |
 | `make smoke-newlib` | `NEWLIB_SELFTEST: PASS` (local) |
 
 ### Full build test

@@ -94,7 +94,7 @@ typedef struct capability {
 | `CAP_ENCRYPTED_STORAGE` | 9 | the file master key |
 | `CAP_REVOCATION` | 10 | a revocation object |
 | `CAP_BLOCK_DEV` | 11 | the raw block / encrypted object store |
-| `CAP_DIR` / `CAP_FILE` | 12 / 13 | capfs directory / file objects |
+| `CAP_DIR` / `CAP_FILE` | 12 / 13 | *reserved* — the legacy capfs directory / file objects they governed have been removed |
 
 ### Rights bitmask
 
@@ -107,7 +107,7 @@ typedef struct capability {
 | `CAP_RIGHT_MINT` | `0x010` | Derive a new capability with a subset of rights |
 | `CAP_RIGHT_REVOKE` | `0x020` | Revoke this and all derived capabilities |
 | `CAP_RIGHT_AUDIT_WRITE` | `0x040` | Append to the audit log |
-| `CAP_RIGHT_FS_*` | `0x400+` | Filesystem-specific rights (`LOOKUP`, `CREATE`, `DELETE`, `READ`, `WRITE`) |
+| `CAP_RIGHT_FS_*` | `0x400+` | *reserved* — the legacy capfs rights (`LOOKUP`, `CREATE`, `DELETE`, `READ`, `WRITE`); no longer used now that capfs is removed |
 
 ### Capability operations
 
@@ -139,8 +139,7 @@ Horus supports up to 64 concurrent tasks. Each task has:
 - A **capability node** (256 slots)
 - A dedicated **kernel stack** (32 KB) used during syscall and interrupt handling
 - A **user heap** tracked by `heap_start`, `heap_current`, `heap_end`
-- A **UID and GID** establishing its authentication context
-- A per-user **file master key** slot (when the task holds `CAP_ENCRYPTED_STORAGE`, capfs files derive their per-file AEAD subkeys via HKDF-SHA256 from it)
+- A **UID and GID** login identity establishing its authentication context, which the kernel attests to servers (via `SYS_IPC_SENDER`) so a ring-3 filesystem can enforce ownership a client cannot forge
 - A **signal handler** (`SYS_SIGACTION`) and a `pending_sig` slot for async delivery
 
 A task's state is one of `TASK_DEAD` (0), `TASK_RUNNABLE` (1), `TASK_BLOCKED_IPC` (2), `TASK_BLOCKED_NOTIF` (3), or `TASK_BLOCKED_WAIT` (4).
@@ -184,9 +183,11 @@ Each endpoint is a **single-slot mailbox**. `SYS_IPC_SEND`/`SYS_IPC_RECV` are **
 
 ### Userspace filesystem server
 
-Filesystem *semantics* run in a ring-3 server (`userspace/fs_server.c`). The kernel provides only a **persistent, encrypted object store** — inode allocation and per-(inode, block) AEAD I/O via syscalls 56–61 (`SYS_FS_INODE_ALLOC`/`_FREE`, `SYS_FBLOCK_READ`/`_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE`), gated on `CAP_BLOCK_DEV` + uid 0. Encryption keys never leave the kernel TCB. The server builds directories (as inode data; root = inode 0), path resolution, and file sizes on top, and answers clients over IPC using the protocol in `include/fs_proto.h` (requests on endpoint 4, replies on 5). The block store (`storage.c`) probes for an ATA disk at boot and uses the encrypted ATA backend when one is present (files and per-block crypto metadata survive reboot; the volume is sealed until login), falling back to an ephemeral RAM vdisk when none is attached. Proven end-to-end by `make smoke-fs` and `make smoke-fs-persist`.
+Filesystem *semantics* run in a ring-3 server (`userspace/fs_server.c`), which is the system's **single** filesystem and its reference monitor. The kernel provides only a **persistent, encrypted object store** — inode allocation and per-(inode, block) AEAD I/O via syscalls 56–61 (`SYS_FS_INODE_ALLOC`/`_FREE`, `SYS_FBLOCK_READ`/`_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE`) plus owner/mode persistence (`SYS_FS_SET_META`, 74), gated on `CAP_BLOCK_DEV` + uid 0. Encryption keys never leave the kernel TCB. The server builds directories (as inode data; root = inode 0), path resolution, and file sizes on top, and answers clients over IPC using the protocol in `include/fs_proto.h` (requests on endpoint 4, each client's reply-wait on 5). The block store (`storage.c`) probes for an ATA disk at boot and uses the encrypted ATA backend when one is present (files and per-block crypto metadata survive reboot; the volume is sealed until login), falling back to an ephemeral RAM vdisk when none is attached.
 
-A separate, legacy **in-memory capfs** (`SYS_FS_*`, syscalls 38–45) also exists; reconciling it with the server is tracked work.
+The server enforces **per-file POSIX owner/group/other rwx and ownership** against the caller's *kernel-attested* identity — `SYS_IPC_SENDER` returns the sending task's login uid/gid, which a client cannot forge or place in the request — with root (uid 0) the only ambient authority (`chmod` is owner-or-root, `chown` is root-only). It serves **multiple clients concurrently**: it replies with `SYS_IPC_REPLY_TO`, which routes each reply directly into the requesting client's blocked `SYS_IPC_CALL` by kernel-recorded sender, never via a shared reply endpoint another client could observe (requests still serialise one at a time). Every multi-block update is **crash-atomic** via a write-ahead redo journal (v5 on-disk format) with an HMAC-authenticated header, replayed at the next mount, and a mount-time `fsck` reclaims orphaned inodes and leaked blocks. Files map through direct + single-indirect + double-indirect blocks (up to 12 + 64 + 64×64 = 4172 blocks; the volume is 4096 blocks / 2 MiB). Proven end-to-end by `make smoke-fs`, `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, and `smoke-fs-large`.
+
+The earlier parallel **in-memory capfs** (`SYS_FS_*`, syscalls 38–45) has been **removed** — its engine and objects are gone, the syscall numbers fail closed and are reserved — leaving the encrypted `fs_server` as the one capability-mediated, permission-enforcing filesystem.
 
 ---
 
@@ -205,11 +206,11 @@ The BSP is never pulled out of its ring-0 idle/kernel context by the timer, pres
 
 ## Syscall interface
 
-Syscalls use `int 0x80`. The syscall number is in `eax`; arguments in `ebx, ecx, edx, esi, edi`. Numbers run `SYS_YIELD` = 0 through `SYS_SIGNAL` = 66. See [SYSCALLS.md](SYSCALLS.md) for the per-syscall reference.
+Syscalls use `int 0x80`. The syscall number is in `eax`; arguments in `ebx, ecx, edx, esi, edi`. Numbers run `SYS_YIELD` = 0 through `SYS_IPC_REPLY_TO` = 75. See [SYSCALLS.md](SYSCALLS.md) for the per-syscall reference.
 
 Dispatch is **table-driven**: `syscall_handler` indexes a `syscall_table[]` of descriptors `{ handler, slot, rights, type }`, validates the number, and — for syscalls whose authority is a single fixed capability — enforces that capability in one central place before calling the handler. A number with no entry fails closed. A `_Static_assert` pins the table size to the highest syscall number + 1, so a syscall cannot be added without a table slot. Syscalls with dynamic or self-authorising policy (the capability ops, the FS ops, auth/sudo, user management, kill/signal/grant) carry no fixed slot and authorise inside their handler.
 
-Broad categories: **core/process** (yield, exit, get_line, sbrk/brk, read/write/open, wait, get_task_info, exec); **process control** (spawn, exec_named, kill, cap_grant, signal); **IPC** (send/recv/call/reply; notify/wait_notify return `SYS_ERR_NOSYS`); **auth & audit** (getuid, auth, sudo, passwd, useradd/del, read_audit, audit_digest); **signals** (sigaction, sigreturn); **capabilities** (mint/transfer/move raw-numbered, revoke); **filesystem** (capfs 38–45, encrypted object store 56–61); **block storage & server registration** (47–50; 46 removed/fails-closed). Numbers 1/`SYS_PRINT` and 20/`SYS_GETPID` are defined but not dispatched.
+Broad categories: **core/process** (yield, exit, get_line, sbrk/brk, read/write/open, wait, get_task_info, exec); **process control** (spawn, exec_named, spawn_image/exec_image, kill, cap_grant, signal, spawn_arg/get_argv); **IPC** (send/recv/call/reply, sender, reply_to; notify/wait_notify return `SYS_ERR_NOSYS`); **auth & audit** (getuid, auth, sudo, passwd, useradd/del, read_audit, audit_digest); **signals** (sigaction, sigreturn, sigmask, sigaltstack); **capabilities** (mint/transfer/move raw-numbered, revoke); **filesystem** (encrypted object store 56–61 + set_meta 74; capfs 38–45 removed/fail-closed); **block storage & server registration** (47–50; 46 removed/fails-closed). Numbers 1/`SYS_PRINT` and 20/`SYS_GETPID` are defined but not dispatched.
 
 ---
 
@@ -242,7 +243,7 @@ The Rust crate at `rust/` compiles to a static library (`libhorus_shell.a`) link
 | `blake2b.rs` | BLAKE2b (RFC 7693) — the hash primitive under Argon2id |
 | `argon2.rs` | Argon2id (RFC 9106) memory-hard password hashing |
 | `rng.rs` | ChaCha20 fast-key-erasure CSPRNG; RDRAND + timing-jitter seeding |
-| `aead.rs` | ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (used by both the block-storage layer and the in-memory capfs per-file encryption) |
+| `aead.rs` | ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD (used by the block-storage layer for encryption-at-rest) |
 | `audit.rs` | Tamper-evident audit log: per-entry HMAC (sequence-bound) + running hash-chain head |
 | `auth.rs` | Auth/sudo lockout + anti-spray throttle; least-privilege sudo frame rights |
 | `ps.rs` | Task state-name labels for the `ps` renderers |
@@ -274,4 +275,4 @@ The build system sets `SOURCE_DATE_EPOCH=1609459200` (2021-01-01 UTC) and passes
 
 ### What the design does not yet provide
 
-See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: the filesystem is persistent on ATA but still single-client with no per-file ACLs (and no crash-recovery intent log); IPC is single-slot and lacks multi-client reply routing; SMP works behind a build gate but is not default-on and has no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks; and image-base ASLR entropy is bounded by the 32-bit low-memory window.
+See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: IPC endpoints are single-slot mailboxes (one in-flight request; `fs_server` reply routing is layered on top via `SYS_IPC_REPLY_TO`) and notifications are unimplemented; SMP works behind a build gate but is not default-on and has no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks; and image-base ASLR entropy is bounded by the 32-bit low-memory window. (The filesystem is now persistent, multi-client, permission-enforcing, and crash-atomic — see the LIMITATIONS filesystem note for the residual operational limits.)

@@ -3,7 +3,7 @@
 This directory contains host-side test code for Horus. The primary test suites live elsewhere:
 
 - **Rust unit tests** (54) in the `rust/` crate — the security core.
-- **Headless QEMU self-tests** driven by the Makefile (`make smoke`, `smoke-elf`, `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-smp`, `smoke-fs`, `smoke-newlib`) via `tools/smoke_test.sh`.
+- **Headless QEMU self-tests** driven by the Makefile via `tools/smoke_test.sh`. Six are gated in CI (`make smoke`, `smoke-elf`, `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-smp`); further filesystem/libc self-tests run locally (`smoke-fs`, `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-init-fs`, `smoke-newlib`).
 
 ## Contents
 

@@ -105,20 +105,9 @@ Signal numbers: `SIG_ILL` (4, `#UD`), `SIG_KILL` (9, uncatchable/unmaskable), `S
 | 9      | *(move)*         | Move a capability (transfer, then revoke the source) | `CAP_RIGHT_MINT` on the source    | No public macro |
 | 51     | `SYS_CAP_REVOKE` | Revoke a capability and **all** derived copies       | `CAP_RIGHT_REVOKE` on the target  | System-wide sweep + lineage generation bump |
 
-### Filesystem — in-memory capfs (capability-addressed)
+### Filesystem — legacy in-memory capfs (removed)
 
-| Number | Name               | Description                               | Required Capability            | Notes |
-|--------|--------------------|-------------------------------------------|--------------------------------|-------|
-| 38     | `SYS_FS_MINT_FILE` | Mint a reduced-rights file/dir capability | dir cap `FS_LOOKUP`\|`MINT`     | Type propagated by `rust_cap_mint` |
-| 39     | `SYS_FS_LOOKUP`    | Resolve a name in a directory capability  | dir cap `FS_LOOKUP`            | — |
-| 40     | `SYS_FS_CREATE`    | Create a file or directory                | dir cap `FS_CREATE`            | — |
-| 41     | `SYS_FS_DELETE`    | Delete a name                             | dir cap `FS_DELETE`            | Wipes key material + bumps generation |
-| 42     | `SYS_FS_READDIR`   | List a directory                          | dir cap `FS_LOOKUP`            | Bounced through a kernel buffer + `copy_to_user` |
-| 43     | `SYS_FS_GET_ROOT`  | Obtain the root directory capability      | `CAP_USER` admin (slot 6) or uid 0 | — |
-| 44     | `SYS_FS_READ`      | Read from a file capability               | file cap `FS_READ`            | Decrypt-and-verify for encrypted files |
-| 45     | `SYS_FS_WRITE`     | Write to a file capability                | file cap `FS_WRITE`           | Fresh-nonce AEAD seal for encrypted files |
-
-All capfs operations resolve capabilities through `fs_resolve_cap()`, which validates the packed `(idx | gen<<32)` object value against the per-slot generation counter, so a stale capability over a deleted object fails closed.
+Numbers **38–45** were the legacy in-memory capability-addressed filesystem (`SYS_FS_MINT_FILE`, `_LOOKUP`, `_CREATE`, `_DELETE`, `_READDIR`, `_GET_ROOT`, `_READ`, `_WRITE`). That parallel filesystem — with its own permission model, its own at-rest AEAD, and no persistence — was **removed**: the `capfs_*` engine and `fs_objects[]` are gone, the dispatch-table entries are deleted (so the numbers **fail closed** with `SYS_ERR_NOSYS`), and the numbers are reserved so a later syscall cannot silently inherit an old capfs caller. The encrypted `fs_server` (below) is the system's single filesystem. The `CAP_DIR` / `CAP_FILE` types and the `CAP_RIGHT_FS_*` rights are likewise reserved but no longer govern any live object.
 
 ### Encrypted object store (userspace filesystem-server backend)
 

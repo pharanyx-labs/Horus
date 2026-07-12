@@ -13,7 +13,13 @@ typedef uint64_t vaddr_t;
 
 
 #define BLOCK_SIZE              512
-#define BLOCKS_PER_DISK         1024
+/* 4096 blocks x 512 B = 2 MiB volume. Sized so a single file can exceed the
+ * direct+single-indirect range (12 + 64 = 76 blocks) and actually reach the
+ * double-indirect region. Bounded to one bitmap block (BLOCK_SIZE*8 = 4096 bits)
+ * for both the data and inode allocators; larger disks need multi-block bitmaps
+ * (a documented follow-up). Grows the RAM vdisk buffer + per-block crypto-meta
+ * arrays to ~2 MiB of kernel BSS. */
+#define BLOCKS_PER_DISK         4096
 #define PAGE_SIZE               4096
 #define USER_PHYS_BASE          0x01000000
 #define USER_PHYS_PAGES         16384
@@ -868,6 +874,9 @@ int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t 
 #endif
 #ifdef NEWLIB_SELFTEST
 void newlib_selftest(void);
+#endif
+#ifdef BIGFILE_SELFTEST
+void bigfile_selftest(void);
 #endif
 #ifdef SMP_SELFTEST
 void smp_selftest(void);

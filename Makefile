@@ -160,6 +160,16 @@ CFLAGS  += -DWAL_CRASHTEST
 ASFLAGS += -DWAL_CRASHTEST
 endif
 
+# BIGFILE_SELFTEST=1 builds the in-kernel large-file / double-indirect test: it
+# writes blocks across the direct, single-indirect and double-indirect mapping
+# regions of one inode and reads them back. Pure kernel (no userspace bins);
+# driven by the single-boot smoke-fs-large.
+BIGFILE_SELFTEST ?= 0
+ifeq ($(BIGFILE_SELFTEST),1)
+CFLAGS  += -DBIGFILE_SELFTEST
+ASFLAGS += -DBIGFILE_SELFTEST
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -578,6 +588,18 @@ smoke-newlib:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
 		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated large-file self-test, boot headless, and require the
+# in-kernel test to report PASS -- runtime proof that a single inode can map
+# blocks through the double-indirect region (large files) on the encrypted
+# object store, and that freeing the whole tree succeeds.
+.PHONY: smoke-fs-large
+smoke-fs-large:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory BIGFILE_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='BIGFILE_SELFTEST: PASS' \
+		FAIL_MARKER='BIGFILE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated SMP self-test, boot headless under -smp 4, and require the
 # in-kernel test to report PASS -- runtime proof that the application processors

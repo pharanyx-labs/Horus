@@ -149,9 +149,15 @@ What remains:
 
 - **Per-file ACLs**: beyond the owner/group/other bits, and reconcile the legacy
   in-memory capfs (`SYS_FS_*`) with the server.
-- **Larger files / bigger volumes** (capacity, not crash-safety): multi-block
-  allocation bitmaps and double-indirect data blocks, and letting a single
-  transaction span more than the current 16-sector journal for very large frees.
+- **Larger files / bigger volumes** (capacity, not crash-safety): **double-indirect
+  data blocks are now implemented** and the volume is 4096 blocks (2 MiB), so a
+  single file can map through the direct + single-indirect + double-indirect range
+  (up to 12 + 64 + 64×64 = 4172 blocks), proven by `make smoke-fs-large`. (This also
+  fixed a latent single-indirect fanout bug — the pointer-per-block count was 1024
+  instead of the correct 64, which would have overrun a stack buffer for any file
+  past block 76.) Remaining: **multi-block allocation bitmaps** to grow past the
+  4096-block single-bitmap cap, and letting a single transaction span more than the
+  current 16-sector journal for very large frees.
 
 ---
 

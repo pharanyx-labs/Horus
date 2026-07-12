@@ -1386,6 +1386,19 @@ int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
     return 0;
 }
 
+/* A pointer block holds this many 64-bit block pointers. At BLOCK_SIZE=512 that
+ * is 64 — NOT 1024. (An earlier single-indirect implementation used 1024 here,
+ * which indexed a 512-byte stack buffer out of bounds for any file past block
+ * 12+64; it was never hit because no test wrote a file that large.) */
+#define PTRS_PER_BLOCK   (BLOCK_SIZE / (uint64_t)sizeof(uint64_t))
+
+/* Fetch (and, when allocate!=0, lazily allocate) the physical block backing an
+ * inode's logical block. Layout: 12 direct, then one single-indirect block
+ * (PTRS_PER_BLOCK entries), then one double-indirect block (PTRS_PER_BLOCK
+ * single-indirect blocks x PTRS_PER_BLOCK entries each). Returns the physical
+ * block number, or 0 on absent/unallocatable/out-of-range. Pointer (indirect)
+ * blocks are stored unencrypted — they hold block numbers, not file data — so
+ * they use do_block_read/write directly, matching the single-indirect path. */
 static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
                                    uint64_t logical_block, int allocate) {
     struct block_device *bd = mfs->bd;
@@ -1403,7 +1416,8 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode 
 
     logical_block -= 12;
 
-    if (logical_block < 1024) {
+    /* Single-indirect: one pointer block of PTRS_PER_BLOCK data blocks. */
+    if (logical_block < PTRS_PER_BLOCK) {
         uint64_t indirect_phys = inode->indirect;
         if (indirect_phys == 0) {
             if (!allocate) return 0;
@@ -1430,9 +1444,59 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode 
         return phys;
     }
 
-    /* Double-indirect data mapping is not implemented (a documented follow-up),
-     * so fail cleanly past the single-indirect range rather than allocating a
-     * block we would then leak. Caps a file at 12 + 1024 blocks. */
+    logical_block -= PTRS_PER_BLOCK;
+
+    /* Double-indirect: a pointer block of PTRS_PER_BLOCK single-indirect blocks,
+     * each mapping PTRS_PER_BLOCK data blocks. */
+    if (logical_block < PTRS_PER_BLOCK * PTRS_PER_BLOCK) {
+        uint64_t dbl_index = logical_block / PTRS_PER_BLOCK;   /* which single-indirect block */
+        uint64_t sng_index = logical_block % PTRS_PER_BLOCK;   /* slot within it */
+
+        /* Level 1: the double-indirect block (single-indirect block pointers). */
+        uint64_t dbl_phys = inode->double_indirect;
+        if (dbl_phys == 0) {
+            if (!allocate) return 0;
+            dbl_phys = storage_alloc_block(bd, sb);
+            if (dbl_phys == (uint64_t)-1) return 0;
+            inode->double_indirect = dbl_phys;
+            uint8_t zero[BLOCK_SIZE];
+            my_memset(zero, 0, BLOCK_SIZE);
+            do_block_write(dbl_phys, zero);
+        }
+        uint8_t dbl_block[BLOCK_SIZE];
+        do_block_read(dbl_phys, dbl_block);
+        uint64_t *dptrs = (uint64_t *)dbl_block;
+
+        /* Level 2: the single-indirect block for dbl_index. */
+        uint64_t sng_phys = dptrs[dbl_index];
+        if (sng_phys == 0) {
+            if (!allocate) return 0;
+            sng_phys = storage_alloc_block(bd, sb);
+            if (sng_phys == (uint64_t)-1) return 0;
+            dptrs[dbl_index] = sng_phys;
+            do_block_write(dbl_phys, dbl_block);          /* persist the new L2 pointer */
+            uint8_t zero[BLOCK_SIZE];
+            my_memset(zero, 0, BLOCK_SIZE);
+            do_block_write(sng_phys, zero);
+        }
+        uint8_t sng_block[BLOCK_SIZE];
+        do_block_read(sng_phys, sng_block);
+        uint64_t *sptrs = (uint64_t *)sng_block;
+
+        /* Level 3: the data block. */
+        uint64_t phys = sptrs[sng_index];
+        if (phys == 0 && allocate) {
+            phys = storage_alloc_block(bd, sb);
+            if (phys == (uint64_t)-1) return 0;
+            sptrs[sng_index] = phys;
+            do_block_write(sng_phys, sng_block);
+        }
+        return phys;
+    }
+
+    /* Beyond double-indirect (12 + 64 + 64*64 = 4172 blocks): out of range.
+     * The 2 MiB volume can never reach this, so it is a hard ceiling, not a
+     * silent truncation of a reachable file. */
     return 0;
 }
 
@@ -1466,12 +1530,13 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { journal_abort(); return -1; }
 
+    /* get_physical_block updates the inode's direct/indirect/double_indirect
+     * mapping in place when it allocates, so just persist it. (The old explicit
+     * inode.direct[block] fix-up here both duplicated that and indexed direct[]
+     * out of bounds for block >= 12.) */
     uint64_t phys = get_physical_block(mfs, &inode, block, 1);
     if (phys == 0) { journal_abort(); return -1; }
 
-    if (inode.direct[block] != phys && block < 12) {
-        inode.direct[block] = phys;
-    }
     storage_write_inode(mfs->bd, &mfs->sb, ino, &inode);
 
     uint8_t temp[BLOCK_SIZE];
@@ -1483,9 +1548,9 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
     return journal_commit();
 }
 
-/* Free every data block an inode references (direct + single-indirect) and
- * release the inode, as one atomic transaction. Backs the FS server's delete
- * path via SYS_FS_INODE_FREE.
+/* Free every data block an inode references (direct + single-indirect +
+ * double-indirect) and release the inode, as one atomic transaction. Backs the
+ * FS server's delete path via SYS_FS_INODE_FREE.
  *
  * The per-block crypto metadata (nonce/tag) of freed blocks is deliberately left
  * untouched: the blocks are deallocated in the bitmap, and when one is later
@@ -1512,11 +1577,32 @@ int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
         uint8_t ib[BLOCK_SIZE];
         if (do_block_read(inode.indirect, ib) == 0) {
             uint64_t *ptrs = (uint64_t *)ib;
-            for (unsigned k = 0; k < BLOCK_SIZE / sizeof(uint64_t); k++)
+            for (unsigned k = 0; k < PTRS_PER_BLOCK; k++)
                 if (ptrs[k]) storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
         }
         storage_free_block(mfs->bd, &mfs->sb, inode.indirect);
         inode.indirect = 0;
+    }
+
+    /* Double-indirect: free every data block via each single-indirect block,
+     * then each single-indirect block, then the double-indirect block itself. */
+    if (inode.double_indirect) {
+        uint8_t db[BLOCK_SIZE];
+        if (do_block_read(inode.double_indirect, db) == 0) {
+            uint64_t *dptrs = (uint64_t *)db;
+            for (unsigned d = 0; d < PTRS_PER_BLOCK; d++) {
+                if (!dptrs[d]) continue;
+                uint8_t sb2[BLOCK_SIZE];
+                if (do_block_read(dptrs[d], sb2) == 0) {
+                    uint64_t *sptrs = (uint64_t *)sb2;
+                    for (unsigned k = 0; k < PTRS_PER_BLOCK; k++)
+                        if (sptrs[k]) storage_free_block(mfs->bd, &mfs->sb, sptrs[k]);
+                }
+                storage_free_block(mfs->bd, &mfs->sb, dptrs[d]);
+            }
+        }
+        storage_free_block(mfs->bd, &mfs->sb, inode.double_indirect);
+        inode.double_indirect = 0;
     }
 
     inode.size = 0;

@@ -250,37 +250,9 @@ static inline int sys_read_audit(struct audit_event *events, uint32_t max_events
     return syscall(SYS_READ_AUDIT, (uint32_t)events, max_events, 0);
 }
 
-static inline int sys_fs_mint_file(uint32_t dir_slot, uint32_t dest_slot, uint32_t new_rights) {
-    return syscall(SYS_FS_MINT_FILE, dir_slot, dest_slot, new_rights);
-}
-
-static inline int sys_fs_lookup(uint32_t dir_slot, const char *name, uint32_t out_slot, uint32_t desired_rights) {
-    return syscall6(SYS_FS_LOOKUP, dir_slot, (uint32_t)name, out_slot, desired_rights, 0, 0);
-}
-
-static inline int sys_fs_create(uint32_t dir_slot, const char *name, int type, uint32_t out_slot, uint32_t desired_rights) {
-    return syscall6(SYS_FS_CREATE, dir_slot, (uint32_t)name, (uint32_t)type, out_slot, desired_rights, 0);
-}
-
-static inline int sys_fs_delete(uint32_t dir_slot, const char *name) {
-    return syscall(SYS_FS_DELETE, dir_slot, (uint32_t)name, 0);
-}
-
-static inline int sys_fs_readdir(uint32_t dir_slot, char *buf, uint32_t bufsize) {
-    return syscall(SYS_FS_READDIR, dir_slot, (uint32_t)buf, bufsize);
-}
-
-static inline int sys_fs_get_root(uint32_t dest_slot, uint32_t rights) {
-    return syscall(SYS_FS_GET_ROOT, dest_slot, rights, 0);
-}
-
-static inline int sys_fs_read(uint32_t file_slot, char *buf, uint32_t len) {
-    return syscall(SYS_FS_READ, file_slot, (uint32_t)buf, len);
-}
-
-static inline int sys_fs_write(uint32_t file_slot, const char *buf, uint32_t len) {
-    return syscall(SYS_FS_WRITE, file_slot, (uint32_t)buf, len);
-}
+/* The legacy capfs userspace wrappers (sys_fs_mint_file / lookup / create /
+ * delete / readdir / get_root / read / write, syscalls 38-45) were removed with
+ * the capfs engine; those syscalls fail closed. */
 
 /* sys_register_storage_backend() was removed: registering a userspace block
  * backend meant the kernel called ring-3 function pointers from ring 0 (an SMEP

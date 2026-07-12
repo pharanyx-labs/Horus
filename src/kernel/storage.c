@@ -1338,18 +1338,9 @@ int do_rotate_keys(void)
         }
     }
 
-    
-    for (int i = 0; i < MAX_FS_OBJECTS; i++) {
-        struct fs_object *o = fs_objects[i];
-        if (o && o->in_use && o->owner_uid == uid && o->is_encrypted) {
-            /* Refresh the integrity tag with CSPRNG output (was raw TSC). */
-            uint32_t fresh = 0;
-            secure_random_bytes(&fresh, sizeof(fresh));
-            o->integrity_tag ^= fresh;
-        }
-    }
+    /* (The legacy capfs fs_objects[] integrity-tag refresh was removed with the
+     * capfs engine; only the encrypted object store above is rotated now.) */
 
-    
     spin_lock(&storage_lock);
     intent_append(4 , uid, rotated, (uint32_t)read_tsc());
     spin_unlock(&storage_lock);

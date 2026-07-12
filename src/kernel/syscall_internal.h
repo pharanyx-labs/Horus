@@ -136,14 +136,8 @@ void h_fblock_write(struct regs *r);
 void h_fs_set_size(struct regs *r);
 void h_fs_set_meta(struct regs *r);
 void h_fs_stat(struct regs *r);
-void h_fs_mint_file(struct regs *r);
-void h_fs_lookup(struct regs *r);
-void h_fs_create(struct regs *r);
-void h_fs_delete(struct regs *r);
-void h_fs_readdir(struct regs *r);
-void h_fs_get_root(struct regs *r);
-void h_fs_read(struct regs *r);
-void h_fs_write(struct regs *r);
+/* h_fs_mint_file / lookup / create / delete / readdir / get_root / read / write
+ * (legacy capfs) removed — those syscall numbers fail closed. */
 void h_register_storage_backend(struct regs *r);
 /* syscall_ipc.c */
 void h_ipc_send(struct regs *r);

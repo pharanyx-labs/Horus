@@ -130,13 +130,6 @@ static void show_general_help_us(void) {
     print_cmd("useradd <u> <name>","Create user");
     print_cmd("userdel <uid>",    "Delete user");
     println("");
-    println("Filesystem (cap-based):");
-    print_cmd("fsroot [slot] [r]", "Obtain root dir cap (admin)");
-    print_cmd("cap_ls <dslot>",   "List dir via capability");
-    print_cmd("cap_cat <fslot>",  "Read file via cap");
-    print_cmd("cap_write <f> <t>","Write text via cap");
-    print_cmd("cap_mint/revoke/create/delete", "Cap-derived FS ops");
-    println("");
     println("Process & Loader:");
     print_cmd("ps",               "List visible tasks");
     print_cmd("mem",              "Heap demo (sbrk)");
@@ -184,11 +177,11 @@ static void show_topic_help_us(const char *topic) {
         println("Description: List files and directories in the userspace encrypted filesystem.");
         println("Usage:       ls");
         println("Notes:       Requires fs_server to be running (spawn fs_server).");
-        println("             Directories shown with trailing /. For cap-based ops use cap_ls.");
+        println("             Directories shown with trailing /.");
     } else if (strcmp(t, "cat") == 0) {
         println("Description: Print the contents of a file from the userspace filesystem.");
         println("Usage:       cat <file>");
-        println("Notes:       Requires fs_server. For capability files use 'cap_cat <slot>'.");
+        println("Notes:       Requires fs_server.");
     } else if (strcmp(t, "echo") == 0) {
         println("Description: Echo the remaining text back to the console.");
         println("Usage:       echo <text>");
@@ -213,12 +206,9 @@ static void show_topic_help_us(const char *topic) {
         println("Description: Re-encrypt all storage objects the user controls (ETM layer).");
         println("Usage:       rotate_keys");
         println("Notes:       Requires an active user master key from prior auth/sudo. Reports block count.");
-    } else if (strcmp(t, "cap_ls") == 0 || strcmp(t, "cap_cat") == 0 || strcmp(t, "cap_write") == 0 ||
-               strncmp(t, "cap_", 4) == 0 || strcmp(t, "fsroot") == 0) {
-        println("Description: Capability-gated filesystem access (the primary FS model).");
-        println("Usage:       fsroot [slot] [rights] ; cap_ls <d> ; cap_cat <f> ; cap_write <f> <text>");
-        println("Notes:       All operations are mediated by caps. Root cap slot usually obtained via fsroot.");
-        println("             Attenuated rights are minted with cap_mint and revoked with cap_revoke.");
+    } else if (strncmp(t, "cap_", 4) == 0 || strcmp(t, "fsroot") == 0) {
+        println("Description: Removed. The legacy in-memory capfs (fsroot/cap_*) no longer exists.");
+        println("Usage:       use the fs_server commands instead: ls, cat, rm, mkdir, touch.");
     } else if (strcmp(t, "ipc_send") == 0 || strcmp(t, "ipc_recv") == 0 || strcmp(t, "ipc") == 0) {
         println("Description: Send or receive a message on a capability endpoint.");
         println("Usage:       ipc_send <slot> <msg>   |   ipc_recv <slot>");
@@ -516,68 +506,12 @@ static void handle_command(char *cmd) {
         int r = sys_rotate_keys();
         if (r >= 0) { print("rotate_keys: re-encrypted "); print_decimal((uint32_t)r); println(" blocks"); }
         else { println("rotate_keys: failed (no master key or no mounted FS)"); }
-    } else if (strcmp(cmd, "fsroot") == 0 || strncmp(cmd, "fsroot ", 7) == 0) {
-        uint32_t slot = 9;
-        uint32_t rights = 0x1FF;
-        const char *p = cmd + 6;
-        while (*p == ' ') p++;
-        if (*p) slot = (uint32_t)(*p - '0');
-        int r = sys_fs_get_root(slot, rights);
-        if (r == 0) {
-            print("Root dir cap installed at slot "); print_decimal(slot); println("");
-        } else {
-            println("fsroot denied (need admin cap or uid0)");
-        }
-    } else if (strncmp(cmd, "cap_ls ", 7) == 0) {
-        uint32_t slot = 0;
-        const char *p = cmd + 7;
-        while (*p == ' ') p++;
-        if (*p >= '0' && *p <= '9') slot = (uint32_t)(*p - '0');
-        char buf[256];
-        int rc = sys_fs_readdir(slot, buf, sizeof(buf)-1);
-        if (rc >= 0) {
-            buf[sizeof(buf)-1] = 0;
-            if (buf[0]) print(buf); else println("(empty)");
-        } else {
-            println("cap_ls failed (bad slot or no LOOKUP right)");
-        }
-    } else if (strncmp(cmd, "cap_cat ", 8) == 0) {
-        uint32_t slot = 0;
-        const char *p = cmd + 8;
-        while (*p == ' ') p++;
-        if (*p >= '0' && *p <= '9') slot = (uint32_t)(*p - '0');
-        char buf[512];
-        int rc = sys_fs_read(slot, buf, sizeof(buf)-1);
-        if (rc > 0) {
-            buf[rc < 511 ? rc : 511] = 0;
-            print(buf);
-            if (buf[rc-1] != '\n') println("");
-        } else if (rc == 0) {
-            println("(empty file)");
-        } else {
-            println("cap_cat failed (no READ right or bad slot)");
-        }
-    } else if (strncmp(cmd, "cap_write ", 10) == 0) {
-        uint32_t slot = 0;
-        const char *p = cmd + 10;
-        while (*p == ' ') p++;
-        if (*p >= '0' && *p <= '9') { slot = (uint32_t)(*p - '0'); p++; }
-        while (*p == ' ') p++;
-        size_t wl = 0; while (p[wl]) wl++;
-        int rc = sys_fs_write(slot, p, (uint32_t)wl);
-        println(rc >= 0 ? "write ok" : "cap_write failed (no WRITE right)");
-    } else if (strncmp(cmd, "cap_mint ", 9) == 0) {
-        println("cap_mint: implemented via direct syscall in advanced usage");
-    } else if (strncmp(cmd, "cap_revoke ", 11) == 0) {
-        const char *p = cmd + 11;
-        while (*p == ' ') p++;
-        uint32_t slot = (*p >= '0' && *p <= '9') ? (uint32_t)(*p - '0') : 0;
-        (void)slot;
-        println("cap_revoke: use kernel REVOKE or slot management for demo");
-    } else if (strncmp(cmd, "cap_create ", 11) == 0) {
-        println("cap_create <dirslot> <name> <type 0=file 1=dir>: use syscall layer");
-    } else if (strncmp(cmd, "cap_delete ", 11) == 0) {
-        println("cap_delete: syscall supported (SYS_FS_DELETE)");
+    } else if (strcmp(cmd, "fsroot") == 0 || strncmp(cmd, "fsroot ", 7) == 0 ||
+               strncmp(cmd, "cap_", 4) == 0) {
+        /* The legacy in-memory capfs (fsroot / cap_ls / cap_cat / cap_write /
+         * cap_mint / cap_revoke / cap_create / cap_delete) was removed; the
+         * encrypted fs_server is the filesystem now. */
+        println("removed: use the fs_server commands (ls, cat, rm, mkdir, touch)");
     } else if (strcmp(cmd, "receive") == 0) {
         struct program_header h;
         int r = sys_receive_program(&h);

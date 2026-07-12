@@ -56,7 +56,7 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 
 - **Integration test suite**: `make smoke` boots to userspace with no fault; extend it into a harness that drives scripted shell sessions (login, capability denials, ELF-under-W^X) and checks the output. Gating the existing `smoke-fs` and `smoke-newlib` targets in CI is low-hanging fruit.
 - **Syscall fuzzer**: coverage-guided fuzzing of the syscall interface / FFI boundary (`cargo-fuzz` on the host, or `syzkaller` under QEMU/KVM).
-- **More Rust unit tests**: the crate has 54 tests today. Gaps worth filling: serial-wrap edge cases and lineage-generation wraparound.
+- **More Rust unit tests**: the crate has 58 tests today. Gaps worth filling: property-based generators over mint/transfer/grant/revoke (see above), and serial-wrap fuzzing beyond the current boundary example.
 
 ### Documentation
 

@@ -689,4 +689,119 @@ mod tests {
             assert_eq!(rust_cap_alloc_serial(core::ptr::null_mut()), 0xC0DEFFFF);
         }
     }
+
+    /// A primordial root capability (serial prefix `0xC0DE`, sitting in a
+    /// kernel-reserved slot) must survive BOTH single-cspace and system-wide
+    /// revocation — the check refuses before any mutation, so the cap stays
+    /// intact and usable. This is what stops a userspace path from revoking a
+    /// system-critical root capability.
+    #[test]
+    fn test_primordial_root_cannot_be_revoked() {
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        // slot 2 is within KERNEL_RESERVED_CAPS (4); the serial carries the
+        // primordial 0xC0DE prefix. generation 0 == untracked, so lookups do
+        // not depend on the shared lineage table (parallel-test safe).
+        cs[2] = cap(9 /*CAP_ENCRYPTED_STORAGE*/, 0x3f, 0xA011, 0, 0xC0DE0002, 0);
+        unsafe {
+            assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 2, 0x1).is_null(),
+                "primordial cap is usable to begin with");
+
+            // Single-cspace revoke refuses and leaves the slot untouched.
+            assert!(!rust_cap_revoke(cs.as_mut_ptr(), 16, 2, core::ptr::null_mut()));
+            assert_eq!(cs[2].serial, 0xC0DE0002, "primordial cap must be untouched");
+
+            // System-wide revoke refuses too, and performs no sweep.
+            let spaces = [CSpaceDesc { caps: cs.as_mut_ptr(), size: 16, caps_in_use: core::ptr::null_mut() }];
+            assert!(!rust_cap_revoke_global(
+                cs.as_mut_ptr(), 16, 2, core::ptr::null_mut(),
+                spaces.as_ptr(), 1, core::ptr::null_mut()));
+            assert_eq!(cs[2].typ, 9);
+            assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 2, 0x1).is_null(),
+                "primordial cap remains usable after an attempted revocation");
+        }
+    }
+
+    /// `rust_cap_transfer` copies a capability with the source's full (unmasked)
+    /// rights and the parent's serial as its badge, and the copy shares the
+    /// parent's lineage: revoking the source clears the transferred copy too.
+    #[test]
+    fn test_transfer_copies_rights_and_shares_lineage() {
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        cs[4] = cap(4 /*CAP_FRAME*/, 0x3f, 0xA200, 0, 0xA201, 0);
+        let mut next = 0x20000u32;
+        unsafe {
+            assert!(rust_cap_transfer(cs.as_mut_ptr(), 16, 8, 4, &mut next));
+            let d = cs[8];
+            assert_eq!(d.typ, 4);
+            assert_eq!(d.rights, 0x3f, "transfer preserves the source's full rights");
+            assert_eq!(d.object, 0xA200);
+            assert_eq!(d.badge, 0xA201, "the copy records the source serial as its badge");
+            assert!(d.serial >= MIN_DERIVED_SERIAL && d.serial != 0xA201,
+                "the copy gets a fresh serial, distinct from the source");
+            assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 8, 0x3f).is_null());
+
+            // Revoking the source lineage clears the transferred copy as well.
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut()));
+            assert_eq!(cs[4].typ, CAP_NULL);
+            assert_eq!(cs[8].typ, CAP_NULL,
+                "a transferred copy is revoked together with its source (shared lineage)");
+        }
+    }
+
+    /// The lineage generation counter reserves 0 to mean "untracked". A bump that
+    /// wraps `u32::MAX` back to 0 must skip the reserved value and land on 1, and
+    /// a capability that recorded the pre-wrap generation must read as stale — so
+    /// use-after-revoke is prevented even across the counter wrap.
+    #[test]
+    fn test_lineage_generation_wraparound() {
+        let obj = 0xA5A5_0001u64; // unique object -> its own lineage slot
+        let idx = lineage_idx(obj);
+        // Drive the slot to the wrap boundary directly (a 4-billion-bump loop
+        // would be absurd); the store mirrors a counter about to overflow.
+        LINEAGE_GEN[idx].store(u32::MAX, core::sync::atomic::Ordering::SeqCst);
+
+        // A capability minted at the pre-wrap generation is valid right now.
+        assert!(lineage_check(obj, u32::MAX));
+
+        // Bump: u32::MAX --(wrap)--> 0 --(skip reserved)--> 1.
+        let g = bump_lineage(obj);
+        assert_ne!(g, 0, "a wrapped generation must never be the reserved 0");
+        assert_eq!(g, 1, "the wrap must land on 1");
+
+        // The pre-wrap capability is now stale.
+        assert!(!lineage_check(obj, u32::MAX),
+            "a capability recording the pre-wrap generation must be invalid");
+        // A freshly minted cap (generation 1) is valid; generation 0 always
+        // passes by design (the untracked sentinel).
+        assert!(lineage_check(obj, 1));
+        assert!(lineage_check(obj, 0));
+    }
+
+    /// `rust_cap_revoke_by_values` is the explicit-values, single-cspace revoke
+    /// behind the IPC snapshot/revalidate guard: it nulls every matching
+    /// capability AND bumps the object's lineage, so a snapshot a caller took
+    /// before the revoke fails a generation re-check at point of use (the TOCTOU
+    /// close).
+    #[test]
+    fn test_revoke_by_values_invalidates_snapshot() {
+        let obj = 0xA300u64;
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        unsafe {
+            let g = bump_lineage(obj); // establish a concrete tracked generation
+            cs[5] = cap(3 /*CAP_ENDPOINT*/, 0x3f, obj, 0, 0xA301, g);
+            // What a caller snapshotted for a later revalidate-at-use.
+            let snapshot = cs[5];
+            assert!(lineage_check(snapshot.object, snapshot.generation),
+                "snapshot is valid before the revoke");
+            assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 5, 0x1).is_null());
+
+            assert!(rust_cap_revoke_by_values(cs.as_mut_ptr(), 16, 0xA301, 0, obj));
+
+            // The live slot is nulled structurally...
+            assert_eq!(cs[5].typ, CAP_NULL);
+            // ...and the pre-revoke snapshot fails the generation re-check.
+            assert!(!lineage_check(snapshot.object, snapshot.generation),
+                "a pre-revoke snapshot must fail the generation re-check (TOCTOU guard)");
+        }
+    }
 }

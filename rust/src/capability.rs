@@ -237,20 +237,6 @@ pub unsafe extern "C" fn rust_cap_transfer(
     rust_cap_mint(cspace, cspace_size, dest_slot, src_slot, !0u32, next_serial, 0)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn rust_cap_move(
-    cspace: *mut Capability,
-    cspace_size: u32,
-    dest_slot: u32,
-    src_slot: u32,
-    next_serial: *mut u32,
-) -> bool {
-    if rust_cap_transfer(cspace, cspace_size, dest_slot, src_slot, next_serial) {
-        return rust_cap_revoke(cspace, cspace_size, src_slot, next_serial);
-    }
-    false
-}
-
 /// Clear a capability slot to the null capability.
 #[inline]
 unsafe fn nullify(c: &mut Capability) {

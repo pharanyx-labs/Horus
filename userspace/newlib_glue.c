@@ -45,6 +45,8 @@ static void _fill_stat(struct stat *st, const posix_stat_t *ps) {
     st->st_ino     = (ino_t)ps->ino;
     st->st_mode    = (mode_t)ps->mode;
     st->st_nlink   = 1;
+    st->st_uid     = (uid_t)ps->uid;
+    st->st_gid     = (gid_t)ps->gid;
     st->st_size    = (off_t)ps->size;
     st->st_blksize = (blksize_t)ps->blksize;
     st->st_blocks  = (blkcnt_t)ps->blocks;

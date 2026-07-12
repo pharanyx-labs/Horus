@@ -14,6 +14,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 /* <sys/errno.h>, not <errno.h>: -I include precedes the newlib headers, so
  * <errno.h> would resolve to the project's SYS_ERR_* header (no errno/ENOENT).
  * newlib_glue.c includes it the same way for the same reason. */
@@ -95,7 +96,24 @@ int main(int argc, char **argv, char **envp) {
         int fd = open(path, O_CREAT | O_RDWR, 0644);
         if (fd < 0)                 { printf("NEWLIB_SELFTEST: FAIL fs-open-create\n"); return 1; }
         if (write(fd, "bye", 3) != 3) { printf("NEWLIB_SELFTEST: FAIL fs-write\n");     return 1; }
+
+        /* fstat on the open fd: the fs_server reports the real inode metadata
+         * (a new file is a regular file, mode 0644, owned by our uid 0). */
+        struct stat fsb;
+        if (fstat(fd, &fsb) != 0)         { printf("NEWLIB_SELFTEST: FAIL fs-fstat\n");      return 1; }
+        if (!S_ISREG(fsb.st_mode))        { printf("NEWLIB_SELFTEST: FAIL fs-fstat-type\n"); return 1; }
+        if ((fsb.st_mode & 0777) != 0644) { printf("NEWLIB_SELFTEST: FAIL fs-fstat-mode\n"); return 1; }
+        if (fsb.st_uid != 0)              { printf("NEWLIB_SELFTEST: FAIL fs-fstat-uid\n");  return 1; }
+        if (fsb.st_size != 3)             { printf("NEWLIB_SELFTEST: FAIL fs-fstat-size\n"); return 1; }
         close(fd);
+
+        /* stat by path returns the same real metadata. */
+        struct stat sb;
+        if (stat(path, &sb) != 0)         { printf("NEWLIB_SELFTEST: FAIL fs-stat\n");       return 1; }
+        if (!S_ISREG(sb.st_mode))         { printf("NEWLIB_SELFTEST: FAIL fs-stat-type\n");  return 1; }
+        if ((sb.st_mode & 0777) != 0644)  { printf("NEWLIB_SELFTEST: FAIL fs-stat-mode\n");  return 1; }
+        if (sb.st_uid != 0)               { printf("NEWLIB_SELFTEST: FAIL fs-stat-uid\n");   return 1; }
+        if (sb.st_size != 3)              { printf("NEWLIB_SELFTEST: FAIL fs-stat-size\n");  return 1; }
 
         /* It exists now: a plain open must succeed. */
         int rfd = open(path, O_RDONLY);
@@ -117,7 +135,7 @@ int main(int argc, char **argv, char **envp) {
         errno = 0;
         if (unlink("/nope/x") != -1 || errno != ENOENT) { printf("NEWLIB_SELFTEST: FAIL unlink-badpath\n"); return 1; }
 
-        printf("fs open/write/unlink OK\n");
+        printf("fs open/write/stat/unlink OK\n");
     }
 
     printf("NEWLIB_SELFTEST: PASS\n");

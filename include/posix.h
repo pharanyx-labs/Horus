@@ -58,6 +58,8 @@ typedef struct {
     uint32_t size;
     uint32_t blksize;
     uint32_t blocks;
+    uint32_t uid;    /* owning user  (0 for console fds) */
+    uint32_t gid;    /* owning group (0 for console fds) */
 } posix_stat_t;
 
 /* ---- fd table ---- */

@@ -498,8 +498,12 @@ int posix_fstat(int fd, posix_stat_t *st) {
     _umemset(st, 0, sizeof(*st));
     st->ino  = e->ino;
     st->size = rp.size;
-    /* rp.type: 1 = FS_TYPE_FILE, 2 = FS_TYPE_DIR (from fs_server.c conventions) */
-    st->mode    = (rp.type == 2) ? (S_IFDIR | 0755u) : (S_IFREG | 0644u);
+    /* Real metadata from the server: the type bit from rp.type
+     * (1 = FS_TYPE_FILE, 2 = FS_TYPE_DIR) OR'd with the actual permission bits
+     * (rp.mode is st.mode & 07777), plus the owning uid/gid. */
+    st->mode    = ((rp.type == 2) ? S_IFDIR : S_IFREG) | (rp.mode & 07777u);
+    st->uid     = rp.uid;
+    st->gid     = rp.gid;
     st->blksize = 512;
     st->blocks  = (rp.size + 511u) / 512u;
     return 0;
@@ -523,7 +527,9 @@ int posix_stat(const char *path, posix_stat_t *st) {
     _umemset(st, 0, sizeof(*st));
     st->ino     = ino;
     st->size    = rp.size;
-    st->mode    = (rp.type == 2) ? (S_IFDIR | 0755u) : (S_IFREG | 0644u);
+    st->mode    = ((rp.type == 2) ? S_IFDIR : S_IFREG) | (rp.mode & 07777u);
+    st->uid     = rp.uid;
+    st->gid     = rp.gid;
     st->blksize = 512;
     st->blocks  = (rp.size + 511u) / 512u;
     return 0;

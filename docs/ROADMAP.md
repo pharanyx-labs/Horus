@@ -184,13 +184,15 @@ With a libc and a heap in place, grow what runs on top.
 
 - **Complete the libc surface**: `unlink()` is now wired end-to-end (libc
   `unlink` → `posix_unlink` → the `fs_server`'s permission-checked `FS_OP_DELETE`,
-  with path resolution and `errno` mapping), proven by `make smoke-newlib`. This
-  also fixed a latent `posix.h`/newlib `O_*` flag-value mismatch that had silently
-  dropped `O_CREAT` on the newlib `open()` path. Remaining: `link()` (needs
-  hard-link/refcount support in the store, currently `ENOSYS`), wiring signal
-  delivery through `kill()` onto `SYS_SIGNAL` (blocked on the capability model —
-  `SYS_SIGNAL` is `CAP_TCB`-gated, so a generic `kill(pid)` needs a pid→capability
-  broker or a descendants-only restriction), and filling remaining POSIX gaps.
+  with path resolution and `errno` mapping), and `stat()`/`fstat()` now report the
+  file's real mode, uid and gid from the server instead of hardcoded `0644`/`0755`
+  — both proven by `make smoke-newlib`. Wiring `unlink` also fixed a latent
+  `posix.h`/newlib `O_*` flag-value mismatch that had silently dropped `O_CREAT`
+  on the newlib `open()` path. Remaining: `link()` (needs hard-link/refcount
+  support in the store, currently `ENOSYS`), wiring signal delivery through
+  `kill()` onto `SYS_SIGNAL` (blocked on the capability model — `SYS_SIGNAL` is
+  `CAP_TCB`-gated, so a generic `kill(pid)` needs a pid→capability broker or a
+  descendants-only restriction), and filling remaining POSIX gaps.
 - **Port real programs**: bring up a subset of GNU coreutils/binutils against
   newlib now that `malloc`/`sbrk`/`brk` exist.
 - **More servers**: a network-stack server, a block-device driver server, and a

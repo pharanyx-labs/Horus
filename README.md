@@ -132,7 +132,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
-| Rust security-core unit tests (54) + GitHub Actions CI (11 gated jobs) | ✅ Working |
+| Rust security-core unit tests (58) + GitHub Actions CI (11 gated jobs) | ✅ Working |
 | Headless QEMU self-tests: boot, ELF/W^X, preemption, signals, process-control, SMP | ✅ Working |
 | Reproducible builds | ✅ Working |
 | Userspace shell and commands | 🟡 Partial |
@@ -168,7 +168,7 @@ Default login: `user` / `password` (or `root` / `rootpass`).
 ### Verify it
 
 ```bash
-make test               # Rust unit tests (54) + a clean full build
+make test               # Rust unit tests (58) + a clean full build
 make smoke              # headless QEMU boot to the ring-3 login prompt, no fault
 make smoke-proc         # ring-3 process control: exit/kill/spawn/exec/grant/signal/wait
 make reproducible-build # byte-for-byte deterministic kernel.elf

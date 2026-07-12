@@ -33,7 +33,7 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 - **Cryptography (safe `no_std` Rust)** — Argon2id/BLAKE2b, SHA-256/HMAC/HKDF/PBKDF2, a ChaCha20 + HMAC-SHA256 AEAD, and a ChaCha20 CSPRNG (RDRAND + timing-jitter seeded), all validated against published/reference vectors.
 - **Boot / IO** — Multiboot2 via GRUB2 into x86-64 long mode; VGA terminal + serial mirror; PS/2 keyboard.
 - **Reproducible builds** — byte-for-byte deterministic `kernel.elf`.
-- **Tests / CI** — 54 Rust unit tests; GitHub Actions runs **eleven gated jobs** (rust test + `clippy -D warnings`, kernel/ISO build, alt-config matrix, and six QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, SMP, process-control — plus a reproducible-build check and a security scan + SBOM).
+- **Tests / CI** — 58 Rust unit tests; GitHub Actions runs **eleven gated jobs** (rust test + `clippy -D warnings`, kernel/ISO build, alt-config matrix, and six QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, SMP, process-control — plus a reproducible-build check and a security scan + SBOM).
 
 ### Added — process lifecycle and control (Phase 1)
 

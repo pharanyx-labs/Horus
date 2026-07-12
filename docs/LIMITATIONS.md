@@ -102,7 +102,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are a shared, descriptive, errno-aligned `SYS_ERR_*` set (`include/errno.h`) used by both kernel and userspace, with `sys_strerror()`. The dispatcher and the auth / user-copy paths return specific codes; some deeper helpers still use ad-hoc small negatives.
 - The Rust crate is named `horus_shell` for historical reasons; it is the security core (capabilities, memory refcounting, the SHA-2/BLAKE2b/Argon2id/KDF/AEAD/RNG primitives, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stubs for the `MINIMAL_SECURE=1` build; it is build configuration, not security logic.
-- **Tests:** 54 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **11 gated jobs** (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; and six headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, SMP; a reproducible-build check; and a security scan + SBOM). There is still no *deeper* integration harness (scripted shell sessions) or fuzzing, and no automatic checking of the TLA+ specs in `docs/`.
+- **Tests:** 58 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **11 gated jobs** (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; and six headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, SMP; a reproducible-build check; and a security scan + SBOM). There is still no *deeper* integration harness (scripted shell sessions) or fuzzing, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -122,4 +122,4 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD) | ~80% |
 | Storage / disk I/O | ~75% (ATA probe + persisted crypto metadata + crash-atomic journal; volume-size cap remains) |
 | SMP | ~55% (works behind `SMP=1`; not default, shared run queue, no priorities) |
-| Testing | ~45% (54 unit tests + 11 CI jobs + six boot self-tests; no deeper integration/fuzz) |
+| Testing | ~45% (58 unit tests + 11 CI jobs + six boot self-tests; no deeper integration/fuzz) |

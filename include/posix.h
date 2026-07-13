@@ -79,6 +79,12 @@ int  posix_stat  (const char *path, posix_stat_t *st);
 /* Remove a directory entry. Returns 0 on success, or a negative SYS_ERR_*
  * (the fs_server enforces write permission on the parent directory). */
 int  posix_unlink(const char *path);
+/* Rename oldpath -> newpath (replacing an existing target file). Returns 0 or a
+ * negative SYS_ERR_* (the server enforces write on both parent directories). */
+int  posix_rename(const char *oldpath, const char *newpath);
+/* Truncate the file open on `fd` to `length` bytes. Returns 0 or a negative
+ * SYS_ERR_*. */
+int  posix_ftruncate(int fd, uint32_t length);
 int  posix_isatty(int fd);
 
 #endif /* HORUS_POSIX_H */

@@ -45,6 +45,16 @@
 #define FS_OP_STAT     8   /* ino                        -> size, type, mode, uid, gid */
 #define FS_OP_CHMOD    9   /* ino, mode                  -> 0   (owner or root) */
 #define FS_OP_CHOWN   10   /* ino, arg_uid, arg_gid      -> 0   (root only) */
+#define FS_OP_RENAME  11   /* dir_ino=old parent, name=old name, ino=new parent,
+                            * data=new name (NUL-terminated) -> 0
+                            * (needs w on BOTH parent dirs). Replaces an existing
+                            * target file; refuses a non-empty target dir; a
+                            * directory may only be renamed within its own parent
+                            * (no cross-parent dir move, so no cycle is possible). */
+#define FS_OP_TRUNCATE 12  /* ino, offset=new length     -> 0   (needs w on file).
+                            * Zeroes any already-allocated blocks in the truncated
+                            * range so a later grow reads a clean hole, then sets
+                            * the logical size. */
 
 #define FS_NAME_MAX   32   /* directory entry name field (NUL-terminated) */
 #define FS_IO_MAX    176   /* max data payload per request/response */

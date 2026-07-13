@@ -214,11 +214,21 @@ With a libc and a heap in place, grow what runs on top.
   file's real mode, uid and gid from the server instead of hardcoded `0644`/`0755`
   — both proven by `make smoke-newlib`. Wiring `unlink` also fixed a latent
   `posix.h`/newlib `O_*` flag-value mismatch that had silently dropped `O_CREAT`
-  on the newlib `open()` path. Remaining: `link()` (needs hard-link/refcount
-  support in the store, currently `ENOSYS`), wiring signal delivery through
-  `kill()` onto `SYS_SIGNAL` (blocked on the capability model — `SYS_SIGNAL` is
-  `CAP_TCB`-gated, so a generic `kill(pid)` needs a pid→capability broker or a
-  descendants-only restriction), and filling remaining POSIX gaps.
+  on the newlib `open()` path. `rename()` and `O_TRUNC`/`ftruncate()` are now
+  wired too (new `FS_OP_RENAME` / `FS_OP_TRUNCATE` protocol ops, both
+  permission-checked against the caller's attested uid; truncate zeroes the
+  freed tail so a later grow can't read stale bytes) — the two BFD-critical file
+  primitives, also proven by `make smoke-newlib`. Remaining for a real
+  coreutils/binutils port: `getcwd`/`chdir`, an (empty) `environ`/`getenv`,
+  `O_APPEND` honoured on write, `fcntl` (`F_GETFL`/`F_SETFL` no-ops), directory
+  reads (`opendir`/`readdir` over `FS_OP_READDIR`), `mkstemp`/`tmpfile`, `link()`
+  (needs hard-link/refcount support in the store, currently `ENOSYS`), and wiring
+  signal delivery through `kill()` onto `SYS_SIGNAL` (blocked on the capability
+  model — `SYS_SIGNAL` is `CAP_TCB`-gated, so a generic `kill(pid)` needs a
+  pid→capability broker or a descendants-only restriction). The binding
+  constraint beyond the libc surface is the 4 MiB userspace image window /
+  1 MiB `MAX_PROGRAM_SIZE` (see the address-separation item in Phase 5) — a real
+  binutils binary is several MB and does not fit until that is widened.
 - **Port real programs**: bring up a subset of GNU coreutils/binutils against
   newlib now that `malloc`/`sbrk`/`brk` exist.
 - **More servers**: a network-stack server, a block-device driver server, and a

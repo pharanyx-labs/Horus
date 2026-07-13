@@ -51,16 +51,16 @@ five runtime self-tests in CI. Already in place:
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer
   (`make smoke-newlib`).
-- **CI** — nineteen gated jobs: `rust` (`cargo test` + `clippy -D warnings`),
+- **CI** — twenty gated jobs: `rust` (`cargo test` + `clippy -D warnings`),
   `kernel` (build + ISO), `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE matrix), the
   headless QEMU boot `smoke`, thirteen runtime self-tests (`smoke-elf`,
   `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-notify`, `smoke-smp`,
   `smoke-fs`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`,
-  `smoke-fs-wal`, `smoke-fs-large`, `smoke-newlib`), a `reproducible` build
-  check, and a `security` SAST/SBOM scan. The whole filesystem suite
-  (persistence, permissions, concurrency, journal crash-recovery, large files),
-  the newlib libc port, and async notifications are now CI-enforced, not
-  local-only.
+  `smoke-fs-wal`, `smoke-fs-large`, `smoke-newlib`), the scripted
+  `smoke-session` integration test, a `reproducible` build check, and a
+  `security` SAST/SBOM scan. The whole filesystem suite (persistence,
+  permissions, concurrency, journal crash-recovery, large files), the newlib
+  libc port, and async notifications are now CI-enforced, not local-only.
 
 ---
 
@@ -235,8 +235,13 @@ Cross-cutting work that should grow alongside every other phase.
 
 - **Scripted integration harness**: beyond the boot smoke-test, drive scripted
   sessions (login, capability denials, W^X violations, IPC round-trips) and assert
-  on the responses. (Gating the filesystem suite and `smoke-newlib` in CI is
-  done — the remaining work is the scripted, assertion-driven session harness.)
+  on the responses. *Seeded*: `make smoke-session` (`tools/session_test.py`) boots
+  the shipped kernel and drives the **real** ring-3 shell over serial as a black
+  box — asserting that a wrong password is rejected, the right one is accepted, the
+  kernel-attested identity is what `whoami` reports, and a capability-gated admin
+  op (`useradd`) is allowed for root but denied for a standard user (no ambient
+  authority). Gated in CI. Remaining: broaden the scenarios (W^X violation, IPC/FS
+  round-trips) and grow the assertion vocabulary.
 - **Fuzzing**: coverage-guided fuzzing (libFuzzer or AFL++) of the syscall
   interface and the Rust FFI boundary.
 - **Model checking**: extend the TLA+ specifications (`docs/cap_algebra.tla`,

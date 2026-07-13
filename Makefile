@@ -646,6 +646,17 @@ smoke-notify:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NOTIFY_SELFTEST: PASS' \
 		FAIL_MARKER='NOTIFY_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
+# Scripted integration session: build the shipped kernel and drive the *real*
+# ring-3 shell over serial (login, identity, and a capability-gated admin op
+# allowed for root but denied for a standard user), asserting on the responses.
+# Unlike the marker self-tests, nothing is compiled into the kernel — it is a
+# black-box test of the actual login/shell/syscall path. Prints SESSION_TEST: PASS.
+.PHONY: smoke-session
+smoke-session:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@python3 tools/session_test.py boot.iso
+
 .PHONY: test
 test:
 	@cargo test --manifest-path rust/Cargo.toml --release || true

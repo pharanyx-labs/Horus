@@ -94,60 +94,77 @@ static void print_decimal(uint32_t n) {
     print(&buf[i]);
 }
 
+/* One command row in the general list: 3-space indent, name padded to a fixed
+ * column, then a short description. */
 static void print_cmd(const char *name, const char *desc) {
-    print("  ");
+    print("   ");
     print(name);
     int len = 0; while (name[len]) len++;
-    for (int i = len; i < 20; i++) print(" ");
-    print("- ");
+    for (int i = len; i < 22; i++) print(" ");
     println(desc);
 }
 
+/* One "Label:   text" line in detailed (help <topic>) output, label left-padded
+ * to a fixed width so the text lines up. An empty label continues a block. */
+static void help_line(const char *label, const char *text) {
+    print("  ");
+    print(label);
+    int len = 0; while (label[len]) len++;
+    for (int i = len; i < 10; i++) print(" ");   /* pad past the longest label ("See also:") */
+    println(text);
+}
+
+static void help_rule(void) {
+    println("  ==========================================================================");
+}
+
 static void show_general_help_us(void) {
-    println("=== Horus Userspace Shell - Command Reference ===");
+    help_rule();
+    println("   Horus Shell  -  capability-based, privilege-separated command reference");
+    help_rule();
     println("");
-    println("Core:");
-    print_cmd("help, man, ?",     "Show this list or 'help <cmd>' for details");
-    print_cmd("exit, logout",     "End session / return to login prompt");
-    print_cmd("yield",            "Voluntarily yield the CPU");
+    println("  FILES & TEXT   (the encrypted fs_server, mounted at / )");
+    print_cmd("ls",                "list the directory entries");
+    print_cmd("cat <file>",        "print a file's contents");
+    print_cmd("touch <file>",      "create an empty file");
+    print_cmd("mkdir <dir>",       "create a directory");
+    print_cmd("rm <name>",         "delete a file or an empty directory");
+    print_cmd("echo <text>",       "print text to the console");
+    print_cmd("echo <text> > <f>", "write text to a file (creates it if needed)");
+    print_cmd("run <file>",        "load a program image from the FS and run it");
+    print_cmd("fss, fss_ls, ...",  "low-level fs_server demo client ('help fss')");
     println("");
-    println("Files & Text (via userspace fs_server):");
-    print_cmd("ls",               "List files in the encrypted FS");
-    print_cmd("cat <file>",       "Print a file's contents");
-    print_cmd("touch <file>",     "Create an empty file");
-    print_cmd("mkdir <dir>",      "Create a directory");
-    print_cmd("rm <name>",        "Delete a file or directory");
-    print_cmd("echo <t> > <f>",   "Write text to a file (creates if needed)");
-    print_cmd("echo <text>",      "Print text to the console");
+    println("  IDENTITY & SECURITY");
+    print_cmd("whoami, id",        "show your login uid / gid");
+    print_cmd("passwd",            "change your password (secure prompt)");
+    print_cmd("sudo <password>",   "re-authenticate and spawn an elevated image");
+    print_cmd("rotate_keys",       "re-encrypt storage under a fresh key    (root)");
+    print_cmd("useradd <uid> <n>", "create a user account                   (root)");
+    print_cmd("userdel <uid>",     "delete a user account                   (root)");
     println("");
-    println("User & Security:");
-    print_cmd("whoami, id",       "Show current uid (and gid)");
-    print_cmd("sudo <password>",  "Elevate via armed image (auth path)");
-    print_cmd("passwd",           "Change password (secure input)");
-    print_cmd("rotate_keys",      "Re-encrypt storage blocks with master key");
+    println("  PROCESSES");
+    print_cmd("ps",                "list visible tasks (non-root sees only its own)");
+    print_cmd("spawn <name>",      "spawn an embedded binary (hello/captest/fs_server)");
+    print_cmd("spawn",             "spawn the last image armed via 'receive'");
+    print_cmd("mem",               "allocate a page from the heap (sbrk demo)");
+    print_cmd("yield",             "voluntarily hand the CPU to another task");
     println("");
-    println("User Management (admin):");
-    print_cmd("useradd <u> <name>","Create user");
-    print_cmd("userdel <uid>",    "Delete user");
+    println("  IPC & NOTIFICATIONS");
+    print_cmd("ipc_send <msg>",    "send a message on endpoint 4");
+    print_cmd("ipc_recv",          "receive a message on endpoint 4");
+    print_cmd("notify <badge>",    "post an async notification badge on slot 4");
+    print_cmd("wait_notify",       "block until a notification badge arrives");
     println("");
-    println("Process & Loader:");
-    print_cmd("ps",               "List visible tasks");
-    print_cmd("mem",              "Heap demo (sbrk)");
-    print_cmd("spawn <name>",     "Spawn embedded binary (hello, captest, fs_server)");
-    print_cmd("run <file>",       "Load a program image from the FS and run it (execve-from-fd)");
-    print_cmd("receive",          "Receive binary over serial (arms for spawn)");
-    print_cmd("load",             "receive + spawn (serial, one step)");
+    println("  LOADER (over serial)   and   SESSION");
+    print_cmd("receive",           "receive a program image over serial, arm it");
+    print_cmd("load",              "receive + spawn in one step");
+    print_cmd("help [topic]",      "this list, or details for a command or group");
+    print_cmd("exit, logout",      "end the session, return to the login prompt");
     println("");
-    println("IPC & Notifications:");
-    print_cmd("ipc_send/recv",    "Synchronous endpoint IPC");
-    print_cmd("notify <badge>",   "Send a notification badge (async)");
-    print_cmd("wait_notify",      "Block until a notification badge arrives");
-    println("");
-    print_cmd("fss*",             "Low-level FS ops (fss_ls fss_cat fss_write ...)");
-    println("");
-    println("Note: Privileged ops require appropriate caps (often slot 3) or uid 0.");
-    println("Type 'help <command>' for details on a topic.");
-    println("=== End of help ===");
+    println("  Legend:  <arg> required   (root) needs uid 0   / is the FS root");
+    println("  Groups:  help files | security | process | ipc | loader");
+    println("  Detail:  help <command>       e.g.   help run");
+    help_rule();
 }
 
 static void show_topic_help_us(const char *topic) {
@@ -158,94 +175,226 @@ static void show_topic_help_us(const char *topic) {
     tbuf[i] = 0;
     const char *t = tbuf;
 
-    println("=== Help: ");
-    print(t);
-    println(" ===");
-
-    if (strcmp(t, "help") == 0 || strcmp(t, "man") == 0 || t[0] == 0) {
+    /* No word, or 'help help' / 'help man' -> the full command list. */
+    if (t[0] == 0 || strcmp(t, "help") == 0 || strcmp(t, "man") == 0 || strcmp(t, "?") == 0) {
         show_general_help_us();
         return;
     }
 
-    if (strcmp(t, "ps") == 0) {
-        println("Description: List visible processes with uid, state, heap and caps.");
-        println("Usage:       ps");
-        println("Notes:       Non-root tasks see only themselves. Columns: PID UID NAME");
-        println("             STATE HEAP CAPS FLAGS. * marks your task; STATE is run/blkd;");
-        println("             FLAGS: K=in kernel, B<n>=blocked on task n, N=notify wait.");
-    } else if (strcmp(t, "ls") == 0) {
-        println("Description: List files and directories in the userspace encrypted filesystem.");
-        println("Usage:       ls");
-        println("Notes:       Requires fs_server to be running (spawn fs_server).");
-        println("             Directories shown with trailing /.");
-    } else if (strcmp(t, "cat") == 0) {
-        println("Description: Print the contents of a file from the userspace filesystem.");
-        println("Usage:       cat <file>");
-        println("Notes:       Requires fs_server.");
-    } else if (strcmp(t, "echo") == 0) {
-        println("Description: Echo the remaining text back to the console.");
-        println("Usage:       echo <text>");
-    } else if (strcmp(t, "load") == 0) {
-        println("Description: Receive a binary image then spawn it as a new task.");
-        println("Usage:       load");
-        println("Notes:       Connect to 4444 for the image, 4445 for the shell. Requires FRAME cap rights.");
-    } else if (strcmp(t, "receive") == 0) {
-        println("Description: Receive and arm a program image from the loader port.");
-        println("Usage:       receive");
-        println("Notes:       Follow with 'spawn' (or use the combined 'load' command).");
-    } else if (strcmp(t, "spawn") == 0) {
-        println("Description: Launch an embedded binary or a previously armed image.");
-        println("Usage:       spawn <name>   -- spawn a named binary (hello, captest, fs_server)");
-        println("             spawn          -- spawn whatever was last armed via 'receive'");
-        println("Notes:       Child receives a fresh 4-level address space and restricted caps.");
-    } else if (strcmp(t, "sudo") == 0) {
-        println("Description: Authenticate and spawn an elevated (armed) image as a privileged task.");
-        println("Usage:       sudo <password>");
-        println("Notes:       Password is read securely; success depends on prior arming + auth setup.");
-    } else if (strcmp(t, "rotate_keys") == 0) {
-        println("Description: Re-encrypt all storage objects the user controls (ETM layer).");
-        println("Usage:       rotate_keys");
-        println("Notes:       Requires an active user master key from prior auth/sudo. Reports block count.");
-    } else if (strncmp(t, "cap_", 4) == 0 || strcmp(t, "fsroot") == 0) {
-        println("Description: Removed. The legacy in-memory capfs (fsroot/cap_*) no longer exists.");
-        println("Usage:       use the fs_server commands instead: ls, cat, rm, mkdir, touch.");
-    } else if (strcmp(t, "ipc_send") == 0 || strcmp(t, "ipc_recv") == 0 || strcmp(t, "ipc") == 0) {
-        println("Description: Send or receive a message on a capability endpoint.");
-        println("Usage:       ipc_send <slot> <msg>   |   ipc_recv <slot>");
-        println("Notes:       Endpoints carry badges and grant rights for controlled cross-task exchange.");
-    } else if (strcmp(t, "notify") == 0 || strcmp(t, "wait_notify") == 0) {
-        println("Description: Fire or wait on an asynchronous notification (badge value).");
-        println("Usage:       notify <slot> <badge>   |   wait_notify <slot>");
-        println("Notes:       Lightweight async path; receiver parks until a matching notification arrives.");
-    } else if (strcmp(t, "exit") == 0 || strcmp(t, "logout") == 0) {
-        println("Description: Terminate the current login session and return to the login prompt.");
-        println("Usage:       exit   (or: logout)");
-    } else if (strcmp(t, "yield") == 0) {
-        println("Description: Cooperatively yield so the kernel scheduler can run another task.");
-        println("Usage:       yield");
-    } else if (strcmp(t, "mem") == 0) {
-        println("Description: Simple sbrk demo allocating from the userspace heap.");
-        println("Usage:       mem");
-    } else if (strcmp(t, "whoami") == 0 || strcmp(t, "id") == 0) {
-        println("Description: Report the current login uid (and gid). root shown for uid 0.");
-        println("Usage:       whoami   |   id");
-    } else if (strcmp(t, "passwd") == 0) {
-        println("Description: Change the password for the current uid using secure input.");
-        println("Usage:       passwd");
-    } else if (strcmp(t, "useradd") == 0 || strcmp(t, "userdel") == 0) {
-        println("Description: Admin-only user database management (uid + name).");
-        println("Usage:       useradd <uid> <name>   |   userdel <uid>");
-        println("Notes:       Requires uid 0 and appropriate capability rights.");
-    } else if (strcmp(t, "fss") == 0 || strncmp(t, "fss_", 4) == 0) {
-        println("Description: Demo client for a userspace FS server (connect, ls, cat, write, tree).");
-        println("Usage:       fss ; fss_connect ; fss_ls ; fss_cat <name> ; fss_write <f> <txt> ; fss_tree");
-        println("Notes:       Requires a running fs_server.bin (receive+spawn it first).");
-    } else {
-        println("No specific help available for that topic.");
-        println("Type 'help' to list available commands.");
+    println("");
+    print("  Help topic: "); println(t);
+    help_rule();
+
+    /* ---- category groups: 'help files', 'help security', ... ---------- */
+    if (strcmp(t,"files")==0 || strcmp(t,"file")==0 || strcmp(t,"fs")==0 || strcmp(t,"text")==0) {
+        println("  Files live in the encrypted fs_server, rooted at / (inode 0). Every op is");
+        println("  checked against your kernel-attested uid; root (uid 0) is the only bypass.");
+        println("");
+        print_cmd("ls",            "list directory entries");
+        print_cmd("cat <file>",    "print a file's contents");
+        print_cmd("touch <file>",  "create an empty file");
+        print_cmd("mkdir <dir>",   "create a directory");
+        print_cmd("rm <name>",     "delete a file or empty directory");
+        print_cmd("echo .. > <f>", "write text to a file");
+        print_cmd("run <file>",    "load and execute a program image");
+        println("");
+        println("  Detail:  help <command>    e.g.  help cat");
+        return;
+    }
+    if (strcmp(t,"security")==0 || strcmp(t,"sec")==0 || strcmp(t,"identity")==0 ||
+        strcmp(t,"user")==0 || strcmp(t,"users")==0) {
+        println("  Authority comes only from your login identity and the capabilities you");
+        println("  hold - never from what a command claims. uid 0 (root) is the sole admin.");
+        println("");
+        print_cmd("whoami, id",     "show your uid / gid");
+        print_cmd("passwd",         "change your password");
+        print_cmd("sudo <pw>",      "re-authenticate, spawn an elevated image");
+        print_cmd("rotate_keys",    "re-encrypt storage under a fresh key    (root)");
+        print_cmd("useradd/userdel","manage user accounts                    (root)");
+        println("");
+        println("  Detail:  help <command>    e.g.  help sudo");
+        return;
+    }
+    if (strcmp(t,"process")==0 || strcmp(t,"processes")==0 || strcmp(t,"proc")==0) {
+        println("  Every task runs at ring 3 in its own address space with only the caps it");
+        println("  was granted - there is no ambient authority to create or signal tasks.");
+        println("");
+        print_cmd("ps",            "list visible tasks");
+        print_cmd("spawn <name>",  "spawn an embedded binary");
+        print_cmd("run <file>",    "run a program image from the FS");
+        print_cmd("mem",           "grow the heap by a page (sbrk demo)");
+        print_cmd("yield",         "hand the CPU to another task");
+        println("");
+        println("  Detail:  help <command>    e.g.  help spawn");
+        return;
+    }
+    if (strcmp(t,"ipc")==0 || strcmp(t,"notifications")==0 || strcmp(t,"notification")==0) {
+        println("  Tasks talk over capability-gated endpoints (synchronous messages) and");
+        println("  notification slots (async single-badge signals); both need a slot-3 cap.");
+        println("");
+        print_cmd("ipc_send <msg>", "send a message on endpoint 4");
+        print_cmd("ipc_recv",       "receive a message on endpoint 4");
+        print_cmd("notify <badge>", "post an async badge on slot 4");
+        print_cmd("wait_notify",    "block for a badge on slot 4");
+        println("");
+        println("  Detail:  help ipc_send | help notify");
+        return;
+    }
+    if (strcmp(t,"loader")==0 || strcmp(t,"serial")==0) {
+        println("  Programs can be streamed in over the serial loader port, staged, and then");
+        println("  spawned - the kernel validates every image (W^X, bounds) before it runs.");
+        println("");
+        print_cmd("receive",       "receive an image over serial, arm it");
+        print_cmd("spawn",         "spawn the armed image");
+        print_cmd("load",          "receive + spawn in one step");
+        println("");
+        println("  Detail:  help receive | help load | help spawn");
+        return;
     }
 
-    println("=== End of topic help ===");
+    /* ---- individual commands ------------------------------------------ */
+    if (strcmp(t,"ls")==0) {
+        help_line("Purpose:", "List the entries in the filesystem root.");
+        help_line("Usage:",   "ls");
+        help_line("Notes:",   "Directories print with a trailing '/'. Reads go through the");
+        help_line("",         "fs_server (running by default; else: spawn fs_server).");
+        help_line("See also:","cat, mkdir, rm, files");
+    } else if (strcmp(t,"cat")==0) {
+        help_line("Purpose:", "Print a file's contents to the console.");
+        help_line("Usage:",   "cat <file>");
+        help_line("Example:", "cat /motd");
+        help_line("Notes:",   "Needs read permission on the file (checked against your uid).");
+        help_line("See also:","ls, echo, run");
+    } else if (strcmp(t,"touch")==0) {
+        help_line("Purpose:", "Create a new, empty file that you own.");
+        help_line("Usage:",   "touch <file>");
+        help_line("Example:", "touch /notes.txt");
+        help_line("Notes:",   "Fails if the name already exists.");
+        help_line("See also:","echo, mkdir, rm");
+    } else if (strcmp(t,"mkdir")==0) {
+        help_line("Purpose:", "Create a new directory.");
+        help_line("Usage:",   "mkdir <dir>");
+        help_line("Example:", "mkdir /work");
+        help_line("See also:","ls, rm, touch");
+    } else if (strcmp(t,"rm")==0) {
+        help_line("Purpose:", "Delete a file, or an empty directory.");
+        help_line("Usage:",   "rm <name>");
+        help_line("Notes:",   "Needs write permission on the parent directory; a non-empty");
+        help_line("",         "directory is refused - remove its contents first.");
+        help_line("See also:","ls, mkdir");
+    } else if (strcmp(t,"echo")==0) {
+        help_line("Purpose:", "Print text, or write it to a file with '>'.");
+        help_line("Usage:",   "echo <text>            print to the console");
+        help_line("",         "echo <text> > <file>   write to a file (creates it)");
+        help_line("Example:", "echo hello > /greeting");
+        help_line("Notes:",   "Redirection overwrites from offset 0; it does not append.");
+        help_line("See also:","cat, touch");
+    } else if (strcmp(t,"run")==0) {
+        help_line("Purpose:", "Load a program image from the FS and run it (execve-from-fd).");
+        help_line("Usage:",   "run <file>");
+        help_line("Example:", "run /bin/hello");
+        help_line("Notes:",   "The shell reads the image over the fs_server, then the kernel");
+        help_line("",         "validates it with the same loader a named binary uses (W^X,");
+        help_line("",         "bounds, fail-closed relocations) and waits for it to finish.");
+        help_line("See also:","spawn, cat");
+    } else if (strcmp(t,"ps")==0) {
+        help_line("Purpose:", "List the tasks you are allowed to see.");
+        help_line("Usage:",   "ps");
+        help_line("Notes:",   "Columns: PID UID NAME STATE HEAP CAPS FLAGS. '*' marks your");
+        help_line("",         "task; STATE is run/blkd; FLAGS: K=in kernel, B<n>=blocked on");
+        help_line("",         "task n, N=waiting on a notification. Non-root sees only itself.");
+        help_line("See also:","spawn, whoami");
+    } else if (strcmp(t,"spawn")==0) {
+        help_line("Purpose:", "Launch an embedded binary, or the last image you armed.");
+        help_line("Usage:",   "spawn <name>    hello | captest | fs_server");
+        help_line("",         "spawn           the image armed via 'receive'");
+        help_line("Example:", "spawn fs_server");
+        help_line("Notes:",   "The child gets a fresh address space and only the capabilities");
+        help_line("",         "the shell delegates - never the shell's full authority.");
+        help_line("See also:","run, receive, load, ps");
+    } else if (strcmp(t,"mem")==0) {
+        help_line("Purpose:", "Grow the heap by one page to demonstrate sbrk.");
+        help_line("Usage:",   "mem");
+        help_line("Notes:",   "The heap is demand-paged; malloc is built on the same sbrk.");
+    } else if (strcmp(t,"yield")==0) {
+        help_line("Purpose:", "Voluntarily give up the CPU to another runnable task.");
+        help_line("Usage:",   "yield");
+        help_line("Notes:",   "Scheduling is preemptive, so this is a courtesy hand-off, not");
+        help_line("",         "something other tasks depend on to run.");
+    } else if (strcmp(t,"whoami")==0 || strcmp(t,"id")==0) {
+        help_line("Purpose:", "Show your kernel-attested login identity.");
+        help_line("Usage:",   "whoami    |    id");
+        help_line("Notes:",   "This uid is fixed at login and cannot be forged; the fs_server");
+        help_line("",         "and every privileged op are checked against it.");
+        help_line("See also:","passwd, sudo, ps");
+    } else if (strcmp(t,"passwd")==0) {
+        help_line("Purpose:", "Change your own account password.");
+        help_line("Usage:",   "passwd");
+        help_line("Notes:",   "The new password is read without echo, hashed with Argon2id,");
+        help_line("",         "and persists across reboots.");
+    } else if (strcmp(t,"sudo")==0) {
+        help_line("Purpose:", "Re-authenticate and spawn a privileged (armed) image.");
+        help_line("Usage:",   "sudo <password>");
+        help_line("Notes:",   "Verifies your password (with lockout/throttle on failure);");
+        help_line("",         "success also depends on an image having been armed first.");
+        help_line("See also:","spawn, receive, rotate_keys");
+    } else if (strcmp(t,"rotate_keys")==0) {
+        help_line("Purpose:", "Re-encrypt the mounted volume's blocks under a fresh key.");
+        help_line("Usage:",   "rotate_keys");
+        help_line("Notes:",   "Root only; needs an unlocked volume (post-login). Reports the");
+        help_line("",         "number of blocks re-encrypted.");
+    } else if (strcmp(t,"useradd")==0 || strcmp(t,"userdel")==0) {
+        help_line("Purpose:", "Create or delete a user account (admin).");
+        help_line("Usage:",   "useradd <uid> <name>    |    userdel <uid>");
+        help_line("Example:", "useradd 1001 bob");
+        help_line("Notes:",   "Requires uid 0. New accounts persist across reboots.");
+        help_line("See also:","passwd, whoami");
+    } else if (strcmp(t,"ipc_send")==0 || strcmp(t,"ipc_recv")==0 || strcmp(t,"ipc")==0) {
+        help_line("Purpose:", "Exchange a message over a capability endpoint.");
+        help_line("Usage:",   "ipc_send <msg>     send on endpoint 4");
+        help_line("",         "ipc_recv           receive on endpoint 4");
+        help_line("Notes:",   "Endpoints are single-slot mailboxes; both directions need a");
+        help_line("",         "slot-3 endpoint capability. See 'help ipc' for the group.");
+        help_line("See also:","notify, wait_notify");
+    } else if (strcmp(t,"notify")==0 || strcmp(t,"wait_notify")==0) {
+        help_line("Purpose:", "Send or wait on an async notification badge.");
+        help_line("Usage:",   "notify <badge>     post a badge on notification slot 4");
+        help_line("",         "wait_notify        block until a badge arrives on slot 4");
+        help_line("Example:", "notify 42");
+        help_line("Notes:",   "Badges OR together until consumed; a waiter wakes with the");
+        help_line("",         "accumulated value. Needs a slot-3 capability.");
+        help_line("See also:","ipc_send, ipc_recv");
+    } else if (strcmp(t,"receive")==0) {
+        help_line("Purpose:", "Receive a program image over the serial loader and arm it.");
+        help_line("Usage:",   "receive");
+        help_line("Notes:",   "Follow with 'spawn' to run it, or use 'load' to do both.");
+        help_line("See also:","load, spawn");
+    } else if (strcmp(t,"load")==0) {
+        help_line("Purpose:", "Receive an image over serial and immediately spawn it.");
+        help_line("Usage:",   "load");
+        help_line("Notes:",   "Equivalent to 'receive' followed by 'spawn'.");
+        help_line("See also:","receive, spawn");
+    } else if (strcmp(t,"fss")==0 || strncmp(t,"fss_",4)==0) {
+        help_line("Purpose:", "Low-level demo client that talks to the fs_server directly.");
+        help_line("Usage:",   "fss | fss_connect | fss_ls | fss_cat <name>");
+        help_line("",         "fss_write <file> <text> | fss_tree");
+        help_line("Notes:",   "The high-level commands (ls, cat, ...) are what you normally");
+        help_line("",         "want; fss_* just exposes the raw protocol for demonstration.");
+        help_line("See also:","ls, cat, files");
+    } else if (strcmp(t,"exit")==0 || strcmp(t,"logout")==0) {
+        help_line("Purpose:", "End your session and return to the login prompt.");
+        help_line("Usage:",   "exit    |    logout");
+        help_line("Notes:",   "Your capabilities are dropped; the next user must log in.");
+    } else if (strncmp(t,"cap_",4)==0 || strcmp(t,"fsroot")==0) {
+        help_line("Purpose:", "Removed. The legacy in-memory capfs (fsroot / cap_*) is gone.");
+        help_line("Instead:", "use the fs_server commands: ls, cat, rm, mkdir, touch.");
+        help_line("See also:","files");
+    } else {
+        println("  No help entry for that word.");
+        println("");
+        println("  Groups:  help files | security | process | ipc | loader");
+        println("  All:     help");
+    }
 }
 
 static void handle_command(char *cmd) {
@@ -423,7 +572,7 @@ static void handle_command(char *cmd) {
         while (*p == ' ') p++;
         sys_ipc_send(4, p, strlen(p)+1);
         println("sent (or blocked on endpoint 4)");
-    } else if (strncmp(cmd, "ipc_recv ", 9) == 0) {
+    } else if (strcmp(cmd, "ipc_recv") == 0 || strncmp(cmd, "ipc_recv ", 9) == 0) {
         char buf[64];
         int n = sys_ipc_recv(4, buf, sizeof(buf)-1);
         if (n > 0) { buf[n]=0; print("recv: "); println(buf); }
@@ -435,7 +584,7 @@ static void handle_command(char *cmd) {
         while (*p >= '0' && *p <= '9') { badge = badge*10 + (*p-'0'); p++; }
         sys_notify(4, badge);
         println("notified");
-    } else if (strncmp(cmd, "wait_notify ", 12) == 0) {
+    } else if (strcmp(cmd, "wait_notify") == 0 || strncmp(cmd, "wait_notify ", 12) == 0) {
         uint32_t badge = 0;
         sys_wait_notify(4, &badge);
         print("wait_notify badge="); print_decimal(badge); println("");

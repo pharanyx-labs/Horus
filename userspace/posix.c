@@ -297,6 +297,18 @@ int posix_open(const char *path, int flags, int mode) {
     } else {
         /* File already exists. */
         if ((flags & O_CREAT) && (flags & O_EXCL)) return -1;  /* EEXIST */
+
+        /* O_TRUNC on an existing file opened for writing empties it to 0. The
+         * server zeroes any allocated tail so a later grow reads a clean hole. */
+        if ((flags & O_TRUNC) && (flags & O_ACCMODE) != O_RDONLY) {
+            struct fs_request rq;
+            struct fs_response rp;
+            _umemset(&rq, 0, sizeof(rq));
+            rq.op     = FS_OP_TRUNCATE;
+            rq.ino    = ino;
+            rq.offset = 0;
+            if (fss_rpc(&rq, &rp) != 0) return -1;
+        }
     }
 
     int fd = fd_alloc();
@@ -562,6 +574,47 @@ int posix_unlink(const char *path) {
      * transport failure. The server is the reference monitor — it enforces
      * write permission on the parent directory against our kernel-attested
      * uid, so no client-side permission check is needed (or trusted). */
+    return fss_rpc(&rq, &rp);
+}
+
+int posix_ftruncate(int fd, uint32_t length) {
+    ENSURE_INIT();
+    if (!fd_valid(fd))                       return -1;
+    fd_entry_t *e = &g_fdt[fd];
+    if (e->type != FD_FS)                    return -1;   /* not a regular file */
+    if ((e->flags & O_ACCMODE) == O_RDONLY)  return -1;   /* need write access */
+
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op     = FS_OP_TRUNCATE;
+    rq.ino    = e->ino;
+    rq.offset = length;
+    return fss_rpc(&rq, &rp) == 0 ? 0 : -1;
+}
+
+int posix_rename(const char *oldpath, const char *newpath) {
+    ENSURE_INIT();
+    if (!oldpath || !newpath) return SYS_ERR_INVAL;
+
+    uint32_t old_parent, new_parent;
+    char     oldname[FS_NAME_MAX], newname[FS_NAME_MAX];
+    if (path_parent(oldpath, &old_parent, oldname) != 0) return SYS_ERR_NOENT;
+    if (path_parent(newpath, &new_parent, newname) != 0) return SYS_ERR_NOENT;
+    if (oldname[0] == '\0' || newname[0] == '\0') return SYS_ERR_INVAL;   /* refuse "/" */
+
+    uint32_t olen = _ustrlen(oldname), nlen = _ustrlen(newname);
+    if (olen == 0 || olen >= FS_NAME_MAX || nlen == 0 || nlen >= FS_NAME_MAX)
+        return SYS_ERR_INVAL;
+
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op      = FS_OP_RENAME;
+    rq.dir_ino = old_parent;                 /* old parent */
+    rq.ino     = new_parent;                 /* new parent */
+    _umemcpy(rq.name, oldname, olen + 1u);   /* old name */
+    _umemcpy(rq.data, newname, nlen + 1u);   /* new name */
     return fss_rpc(&rq, &rp);
 }
 

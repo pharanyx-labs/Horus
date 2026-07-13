@@ -138,6 +138,51 @@ int main(int argc, char **argv, char **envp) {
         printf("fs open/write/stat/unlink OK\n");
     }
 
+    /* --- rename() + O_TRUNC over the fs_server ----------------------------
+     * These are the two BFD-critical primitives (ar/ld/as write to a temp file
+     * then rename it over the target, and rewrite output with O_TRUNC). The
+     * O_TRUNC case also guards a stale-data-disclosure bug: after truncating to
+     * 0 and growing the file again with a hole, the freed range must read as
+     * zeros, not the old bytes. */
+    {
+        const char *a = "/rn_a", *b = "/rn_b";
+
+        int fd = open(a, O_CREAT | O_RDWR, 0644);
+        if (fd < 0 || write(fd, "hello world", 11) != 11) { printf("NEWLIB_SELFTEST: FAIL rn-setup\n"); return 1; }
+        close(fd);
+
+        /* rename a -> b: the old name disappears, the new one holds the data. */
+        if (rename(a, b) != 0)      { printf("NEWLIB_SELFTEST: FAIL rename\n");          return 1; }
+        if (open(a, O_RDONLY) >= 0) { printf("NEWLIB_SELFTEST: FAIL rename-old-present\n"); return 1; }
+        fd = open(b, O_RDONLY);
+        char rb[16];
+        if (fd < 0 || read(fd, rb, 11) != 11 || memcmp(rb, "hello world", 11) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL rename-content\n"); return 1;
+        }
+        close(fd);
+
+        /* O_TRUNC empties the file to 0. */
+        fd = open(b, O_WRONLY | O_TRUNC);
+        if (fd < 0)                 { printf("NEWLIB_SELFTEST: FAIL trunc-open\n");  return 1; }
+        struct stat tb;
+        if (stat(b, &tb) != 0 || tb.st_size != 0) { printf("NEWLIB_SELFTEST: FAIL trunc-size\n"); return 1; }
+
+        /* Grow it with a hole: write 'Z' at offset 5. Bytes 0..4 MUST read back
+         * as zeros — if the server had only set the size and left the old block,
+         * they would still be "hello" (stale-data leak). */
+        if (lseek(fd, 5, SEEK_SET) != 5 || write(fd, "Z", 1) != 1) { printf("NEWLIB_SELFTEST: FAIL trunc-write\n"); return 1; }
+        close(fd);
+        fd = open(b, O_RDONLY);
+        char hb[8];
+        if (fd < 0 || read(fd, hb, 6) != 6) { printf("NEWLIB_SELFTEST: FAIL trunc-read\n"); return 1; }
+        for (int i = 0; i < 5; i++) if (hb[i] != 0) { printf("NEWLIB_SELFTEST: FAIL trunc-stale\n"); return 1; }
+        if (hb[5] != 'Z')           { printf("NEWLIB_SELFTEST: FAIL trunc-hole\n"); return 1; }
+        close(fd);
+
+        unlink(b);
+        printf("fs rename/O_TRUNC OK\n");
+    }
+
     printf("NEWLIB_SELFTEST: PASS\n");
     return 0;
 }

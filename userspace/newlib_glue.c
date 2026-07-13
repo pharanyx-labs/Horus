@@ -161,6 +161,30 @@ int unlink(const char *path) {
     return -1;
 }
 
+/* rename(2). We define the non-underscore name directly: it satisfies the
+ * reference so newlib's default renamer.o (which would try link()+unlink(), and
+ * link() is ENOSYS here) is never pulled from libc.a. */
+int rename(const char *oldpath, const char *newpath) {
+    posix_init();
+    if (!oldpath || !newpath) { errno = EFAULT; return -1; }
+    int rc = posix_rename(oldpath, newpath);
+    if (rc == 0) return 0;
+    switch (rc) {
+        case SYS_ERR_PERM:  errno = EACCES; break;   /* no write on a parent dir */
+        case SYS_ERR_NOENT: errno = ENOENT; break;   /* source missing / bad path */
+        case SYS_ERR_INVAL: errno = EINVAL; break;   /* bad name / illegal dir move */
+        default:            errno = EIO;    break;   /* transport / other */
+    }
+    return -1;
+}
+
+int ftruncate(int fd, off_t length) {
+    posix_init();
+    if (length < 0) { errno = EINVAL; return -1; }
+    if (posix_ftruncate(fd, (uint32_t)length) < 0) { errno = EINVAL; return -1; }
+    return 0;
+}
+
 clock_t times(struct tms *buf) {
     if (buf) {
         buf->tms_utime  = 0;

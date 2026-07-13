@@ -136,6 +136,27 @@ static int dir_get(uint32_t dir_ino, uint32_t index, uint32_t *ino, uint32_t *ty
     return 0;
 }
 
+/* Truncate file `ino` from `oldlen` to `newlen` bytes. On a shrink we must zero
+ * the truncated range in the blocks that are still allocated: h_fs_set_size only
+ * rewrites the inode's size field, so without this a later grow (a write past
+ * newlen) would read-modify-write a block still holding the old bytes and leak
+ * them back — a correctness AND stale-data-disclosure bug. Unallocated blocks
+ * (holes) are left as holes. Returns 0 or a negative SYS_ERR_*. */
+static int file_truncate(uint32_t ino, uint32_t newlen, uint32_t oldlen) {
+    if (newlen < oldlen) {
+        static uint8_t tmp[BLK];
+        uint32_t fb = newlen / BLK;              /* first block touched */
+        uint32_t lb = (oldlen - 1) / BLK;        /* last allocated block (oldlen>=1 here) */
+        for (uint32_t b = fb; b <= lb; b++) {
+            if (sys_fblock_read(ino, b, tmp) != (int)BLK) continue;   /* hole: nothing to clear */
+            uint32_t z0 = (b == fb) ? (newlen % BLK) : 0;             /* zero from here to block end */
+            umemset(tmp + z0, 0, BLK - z0);
+            if (sys_fblock_write(ino, b, tmp, BLK) != (int)BLK) return SYS_ERR_IO;
+        }
+    }
+    return sys_fs_set_size(ino, newlen) == 0 ? 0 : SYS_ERR_IO;
+}
+
 /* Permission bits (owner/group/other rwx). */
 #define P_R 4u
 #define P_X 1u
@@ -271,6 +292,64 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
         if (cuid != 0)                               { rp->rc = SYS_ERR_PERM;  break; }  /* only root may chown */
         if (sys_fs_set_meta(rq->ino, st.mode & 07777u, rq->arg_uid, rq->arg_gid) != 0) { rp->rc = SYS_ERR_IO; break; }
+        rp->rc = 0;
+        break;
+    }
+    case FS_OP_TRUNCATE: {
+        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        if (st.type == FS_TYPE_DIR)                  { rp->rc = SYS_ERR_INVAL; break; }  /* files only */
+        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }
+        rp->rc = file_truncate(rq->ino, rq->offset, (uint32_t)st.size);
+        break;
+    }
+    case FS_OP_RENAME: {
+        /* Field mapping: dir_ino = old parent, name = old name,
+         *                ino     = new parent, data = new name. */
+        uint32_t old_parent = rq->dir_ino, new_parent = rq->ino;
+        struct fs_stat sp, sq;
+        if (sys_fs_stat(old_parent, &sp) != 0)       { rp->rc = SYS_ERR_NOENT; break; }
+        if (sys_fs_stat(new_parent, &sq) != 0)       { rp->rc = SYS_ERR_NOENT; break; }
+        if (!perm_ok(&sp, cuid, cgid, P_W) ||
+            !perm_ok(&sq, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify both dirs */
+
+        /* Copy and validate the new name out of data[] (NUL-bounded). */
+        char newname[FS_DIRENT_NAME];
+        ustrncpy(newname, (const char *)rq->data, FS_DIRENT_NAME);
+        if (rq->name[0] == 0 || newname[0] == 0 ||
+            uslen((const char *)rq->data) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
+
+        uint32_t src_ino, src_type;
+        if (!dir_find(old_parent, rq->name, &src_ino, &src_type)) { rp->rc = SYS_ERR_NOENT; break; }
+
+        /* No-op: same directory, same name. */
+        if (old_parent == new_parent && ustreq(rq->name, newname)) { rp->rc = 0; break; }
+
+        /* A directory may only be renamed within its own parent — a cross-parent
+         * move could form a cycle, which the flat dirent store can't detect
+         * without a parent walk. Files may move anywhere. */
+        if (src_type == FS_TYPE_DIR && old_parent != new_parent) { rp->rc = SYS_ERR_INVAL; break; }
+
+        /* If the target name already exists, POSIX rename replaces it. */
+        uint32_t dst_ino, dst_type;
+        if (dir_find(new_parent, newname, &dst_ino, &dst_type)) {
+            if (dst_ino != src_ino) {
+                if (dst_type == FS_TYPE_DIR) {   /* refuse to clobber a non-empty dir */
+                    uint32_t cino, ctype; char cname[FS_NAME_MAX];
+                    if (dir_get(dst_ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_INVAL; break; }
+                }
+                if (dir_remove(new_parent, newname) == 0) { rp->rc = SYS_ERR_IO; break; }
+                sys_fs_inode_free(dst_ino);
+            }
+        }
+
+        /* Link the source under the new name FIRST (a crash then leaves it
+         * reachable, never orphaned), then unlink the old name. */
+        int arc = dir_add(new_parent, newname, src_ino, src_type);
+        if (arc != 0) { rp->rc = arc; break; }
+        if (dir_remove(old_parent, rq->name) == 0) {
+            dir_remove(new_parent, newname);     /* roll back: avoid two names for one inode */
+            rp->rc = SYS_ERR_IO; break;
+        }
         rp->rc = 0;
         break;
     }

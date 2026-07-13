@@ -239,6 +239,10 @@ void smp_bringup(void) {
     /* Gated: drive SYS_EXIT + SYS_KILL from ring 3 and confirm both children
      * reach the dead state (prints PROC_SELFTEST: PASS). */
     proc_selftest();
+#elif defined(NOTIFY_SELFTEST)
+    /* Gated: a waiter blocks in SYS_WAIT_NOTIFY and a sender fires a badge with
+     * SYS_NOTIFY; prove the badge round-trips to userspace (NOTIFY_SELFTEST: PASS). */
+    notify_selftest();
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the

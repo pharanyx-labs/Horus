@@ -30,7 +30,7 @@ The kernel is written in C. The security-critical core — the capability engine
 Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **six headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
 
 > ### Project status — research / early development
-> Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store — persistent when an ATA disk is present, enforcing per-file POSIX ownership/permissions against a kernel-attested identity, serving multiple clients concurrently, and crash-atomic via a write-ahead journal — a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support behind a build gate. Some subsystems (SMP default-on, IPC notifications) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
+> Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store — persistent when an ATA disk is present, enforcing per-file POSIX ownership/permissions against a kernel-attested identity, serving multiple clients concurrently, and crash-atomic via a write-ahead journal — a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support behind a build gate. Some subsystems (SMP default-on, multi-slot IPC) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
 
 ---
 
@@ -132,14 +132,14 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
-| Rust security-core unit tests (58) + GitHub Actions CI (18 gated jobs) | ✅ Working |
-| Headless QEMU self-tests: boot, ELF/W^X, preemption, signals, process-control, SMP, fs (×6), newlib | ✅ Working |
+| Rust security-core unit tests (58) + GitHub Actions CI (19 gated jobs) | ✅ Working |
+| Headless QEMU self-tests: boot, ELF/W^X, preemption, signals, process-control, notifications, SMP, fs (×6), newlib | ✅ Working |
 | Reproducible builds | ✅ Working |
 | Userspace shell and commands | 🟡 Partial |
+| Async notifications (`SYS_NOTIFY` / `SYS_WAIT_NOTIFY`, badge-carrying) | ✅ Working |
 | Endpoint-based IPC (single-slot, non-blocking) | 🟡 Partial |
 | Copy-on-write paging | 🟡 Partial |
 | SMP as default (per-CPU run queues, priorities) | ⬜ Not yet (works behind `SMP=1`) |
-| Notifications (`SYS_NOTIFY` / `SYS_WAIT_NOTIFY`) | ⬜ Not yet (`SYS_ERR_NOSYS`) |
 
 ---
 

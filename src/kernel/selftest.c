@@ -418,8 +418,8 @@ void signal_selftest(void) {
 }
 #endif /* SIGNAL_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
-/* ---- Selftest spawn helper (FS_SELFTEST / NEWLIB_SELFTEST builds only) -----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY_SELFTEST builds only) ----------
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
@@ -695,4 +695,37 @@ void newlib_selftest(void) {
     sched_enter_user(srv);
 }
 #endif /* NEWLIB_SELFTEST */
+
+#ifdef NOTIFY_SELFTEST
+/* Async-notification self-test. Spawn two copies of notifytest — a waiter (spawn
+ * arg 0) and a sender (arg 1) — each with a slot-3 endpoint cap so it passes the
+ * SYS_NOTIFY (WRITE) / SYS_WAIT_NOTIFY (READ) gate. The sender fires one known
+ * badge; the waiter blocks in SYS_WAIT_NOTIFY and must get that badge back,
+ * proving the badge round-trips to userspace (prints NOTIFY_SELFTEST: PASS). */
+void notify_selftest(void) {
+    extern uint8_t embedded_notifytest_bin_start[], embedded_notifytest_bin_end[];
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+
+    print("NOTIFY_SELFTEST: launching\n");
+
+    int waiter = fs_spawn_embedded(embedded_notifytest_bin_start,
+                                   embedded_notifytest_bin_end, "notifywaiter");
+    if (waiter <= 0) { print("NOTIFY_SELFTEST: FAIL spawn-waiter\n"); for (;;) asm volatile("hlt"); }
+    tasks[waiter].uid       = 0;
+    tasks[waiter].spawn_arg = 0;                    /* role 0 = waiter */
+    cap_install_from_root(waiter, 3, 2, 0);         /* slot 3 = CAP_ENDPOINT (READ|WRITE) */
+
+    int sender = fs_spawn_embedded(embedded_notifytest_bin_start,
+                                   embedded_notifytest_bin_end, "notifysender");
+    if (sender <= 0) { print("NOTIFY_SELFTEST: FAIL spawn-sender\n"); for (;;) asm volatile("hlt"); }
+    tasks[sender].uid       = 0;
+    tasks[sender].spawn_arg = 1;                    /* role 1 = sender */
+    cap_install_from_root(sender, 3, 2, 0);
+
+    /* Enter the waiter; it blocks in SYS_WAIT_NOTIFY and the full-context path
+     * runs the sender, whose SYS_NOTIFY wakes it with the badge. Does not return. */
+    sched_enable_preemption();
+    sched_enter_user(waiter);
+}
+#endif /* NOTIFY_SELFTEST */
 

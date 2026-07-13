@@ -42,7 +42,7 @@ The shell accepts input and dispatches commands. Several are implemented end-to-
 
 ### IPC
 
-The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated). `SYS_IPC_SEND`/`RECV` are **non-blocking** (return a would-block code `-2`; the caller polls from ring 3 where preemption interleaves it); `SYS_IPC_CALL` can block on the full-context path. Each endpoint is a **single-slot mailbox**, so it serves **one in-flight request at a time**. Concurrent multiple-client service is achieved above this primitive by `SYS_IPC_REPLY_TO`, which routes a server's reply to the request's kernel-recorded sender (used by `fs_server`); a richer multi-slot / parallel-worker IPC is still a follow-up. **Notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) are not implemented** — they perform their capability check and return `SYS_ERR_NOSYS` (-38).
+The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gated). `SYS_IPC_SEND`/`RECV` are **non-blocking** (return a would-block code `-2`; the caller polls from ring 3 where preemption interleaves it); `SYS_IPC_CALL` can block on the full-context path. Each endpoint is a **single-slot mailbox**, so it serves **one in-flight request at a time**. Concurrent multiple-client service is achieved above this primitive by `SYS_IPC_REPLY_TO`, which routes a server's reply to the request's kernel-recorded sender (used by `fs_server`); a richer multi-slot / parallel-worker IPC is still a follow-up. **Async notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) work**: `SYS_NOTIFY` ORs a 32-bit badge into a notification slot and wakes any task blocked on it (accumulating the badge otherwise); `SYS_WAIT_NOTIFY` consumes a pending badge or blocks via the same full-context path as IPC. Proven by `make smoke-notify`.
 
 ### Copy-on-write paging
 
@@ -59,10 +59,6 @@ The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault
 ### SMP as default
 
 Multi-core works behind `SMP=1`, but the shipped kernel is single-core. The multi-core scheduler shares one runnable pool with a per-CPU pull; there are no per-CPU run queues, no priorities or fairness, and no flush-on-switch. Retiring the gate and hardening the scheduler is Phase 3.
-
-### Notifications
-
-`SYS_NOTIFY` / `SYS_WAIT_NOTIFY` return `SYS_ERR_NOSYS`.
 
 ### ASLR entropy ceiling (32-bit userspace window)
 
@@ -102,7 +98,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are a shared, descriptive, errno-aligned `SYS_ERR_*` set (`include/errno.h`) used by both kernel and userspace, with `sys_strerror()`. The dispatcher and the auth / user-copy paths return specific codes; some deeper helpers still use ad-hoc small negatives.
 - The Rust crate is named `horus_shell` for historical reasons; it is the security core (capabilities, memory refcounting, the SHA-2/BLAKE2b/Argon2id/KDF/AEAD/RNG primitives, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stubs for the `MINIMAL_SECURE=1` build; it is build configuration, not security logic.
-- **Tests:** 58 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **18 gated jobs** (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; and twelve headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, SMP, and the filesystem/libc suite: fs, fs-perms, fs-conc, fs-persist, fs-wal, fs-large, newlib; a reproducible-build check; and a security scan + SBOM). There is still no *deeper* integration harness (scripted shell sessions) or fuzzing, and no automatic checking of the TLA+ specs in `docs/`.
+- **Tests:** 58 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **19 gated jobs** (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; and thirteen headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, async notifications, SMP, and the filesystem/libc suite: fs, fs-perms, fs-conc, fs-persist, fs-wal, fs-large, newlib; a reproducible-build check; and a security scan + SBOM). There is still no *deeper* integration harness (scripted shell sessions) or fuzzing, and no automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -117,7 +113,7 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Process model (spawn/exec/kill/wait/signal, init) | ~85% (Phase 1 complete; mask + altstack + image exec) |
 | Memory management | ~55% |
 | Task scheduling | ~60% (preemptive; SMP behind a gate; no priorities) |
-| IPC | ~35% (send/recv + blocking call; no notifications, single-slot) |
+| IPC | ~45% (send/recv + blocking call + async notifications; single-slot) |
 | Filesystem | ~75% (ring-3 server over encrypted store; persistent on ATA; per-file permissions, multi-client, crash-atomic journal, large files) |
 | Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD) | ~80% |
 | Storage / disk I/O | ~75% (ATA probe + persisted crypto metadata + crash-atomic journal; volume-size cap remains) |

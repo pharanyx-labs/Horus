@@ -60,8 +60,8 @@ For the capability system, revocation semantics, and memory model, see [`docs/AR
 | 24     | `SYS_IPC_REPLY`   | Reply (thin wrapper over send)               | endpoint WRITE (slot 3)    | — |
 | 73     | `SYS_IPC_SENDER`  | Kernel-attested identity of an endpoint's last sender | endpoint READ (slot 3) | Returns the sender's uid and (via `*ecx`) gid, taken from `tasks[last_sender]` — set at login, not from the message — so a server (e.g. the `fs_server`) learns who a client is without trusting the client. Returns `(uint32_t)-1` if there is no valid sender |
 | 75     | `SYS_IPC_REPLY_TO`| Reply to the sender of the last request on an endpoint | endpoint WRITE (slot 3) | Delivers the reply directly into the request sender's blocked `SYS_IPC_CALL` buffer, routed by kernel-recorded identity (`last_sender`), not a shared reply endpoint — so one server serves concurrent clients without their replies colliding. Returns 0 on delivery (or if the client has gone); a negative return means "retry" (the sender raced and hasn't finished blocking) |
-| 25     | `SYS_NOTIFY`      | Post a notification                          | endpoint WRITE (slot 3)    | **Not implemented** — cap check, then `SYS_ERR_NOSYS` (-38) |
-| 26     | `SYS_WAIT_NOTIFY` | Wait for a notification badge                | endpoint READ (slot 3)     | **Not implemented** — `SYS_ERR_NOSYS` (-38) |
+| 25     | `SYS_NOTIFY`      | Post a notification badge                    | endpoint WRITE (slot 3)    | ORs the badge into the slot; wakes a task blocked on it (accumulates if none) |
+| 26     | `SYS_WAIT_NOTIFY` | Wait for a notification badge                | endpoint READ (slot 3)     | Returns a pending badge, else blocks; badge delivered in `ebx`. Proven by `make smoke-notify` |
 
 ### Task / program loading
 

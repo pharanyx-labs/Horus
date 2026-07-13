@@ -94,7 +94,6 @@ The following are out of scope for now, because they are known and documented:
 - Bounded load-base ASLR entropy (userspace is static-PIE with a randomised base, but confined to the low 32-bit window, so ~9 bits)
 - Absence of covert-channel / cache side-channel mitigations
 - SMP scheduler maturity (works behind `SMP=1`; not default, no per-CPU queues/priorities)
-- Stub implementations that return errors (e.g. `SYS_NOTIFY`/`SYS_WAIT_NOTIFY`)
 
 ---
 

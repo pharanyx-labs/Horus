@@ -95,8 +95,8 @@ struct notification {
     int      blocked_waiter;   /* task id blocked in SYS_WAIT_NOTIFY here, -1=none */
 };
 extern struct notification notifications[MAX_NOTIFICATIONS];
-/* Canonical task_info ABI. MUST stay byte-identical to the copies in
- * include/syscall.h and src/include/syscall_userspace.h — the kernel fills this
+/* Canonical task_info ABI. MUST stay byte-identical to the copy in
+ * include/syscall.h — the kernel fills this
  * layout and ring-3 reads it across copy_to_user (SYS_GET_TASK_INFO). A prior
  * mismatch (kernel and userspace had different field orders) made `ps` read
  * garbage; keep all three in sync. */
@@ -854,6 +854,9 @@ void smp_selftest(void);
 #endif
 #ifdef PROC_SELFTEST
 void proc_selftest(void);
+#endif
+#ifdef NOTIFY_SELFTEST
+void notify_selftest(void);
 #endif
 
 

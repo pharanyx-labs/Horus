@@ -51,12 +51,15 @@ five runtime self-tests in CI. Already in place:
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer
   (`make smoke-newlib`).
-- **CI** — eleven gated jobs: `rust` (`cargo test` + `clippy -D warnings`),
+- **CI** — eighteen gated jobs: `rust` (`cargo test` + `clippy -D warnings`),
   `kernel` (build + ISO), `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE matrix), the
-  headless QEMU boot `smoke`, five runtime self-tests (`smoke-elf`,
-  `smoke-preempt`, `smoke-signal`, `smoke-smp`, `smoke-proc`), a `reproducible`
-  build check, and a `security` SAST/SBOM scan. (`smoke-fs` and `smoke-newlib`
-  are additional local targets, not yet gated in CI.)
+  headless QEMU boot `smoke`, twelve runtime self-tests (`smoke-elf`,
+  `smoke-preempt`, `smoke-signal`, `smoke-smp`, `smoke-proc`, `smoke-fs`,
+  `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`, `smoke-fs-wal`,
+  `smoke-fs-large`, `smoke-newlib`), a `reproducible` build check, and a
+  `security` SAST/SBOM scan. The whole filesystem suite (persistence,
+  permissions, concurrency, journal crash-recovery, large files) and the newlib
+  libc port are now CI-enforced, not local-only.
 
 ---
 
@@ -231,7 +234,8 @@ Cross-cutting work that should grow alongside every other phase.
 
 - **Scripted integration harness**: beyond the boot smoke-test, drive scripted
   sessions (login, capability denials, W^X violations, IPC round-trips) and assert
-  on the responses. Gate `smoke-fs` and `smoke-newlib` in CI.
+  on the responses. (Gating the filesystem suite and `smoke-newlib` in CI is
+  done — the remaining work is the scripted, assertion-driven session harness.)
 - **Fuzzing**: coverage-guided fuzzing (libFuzzer or AFL++) of the syscall
   interface and the Rust FFI boundary.
 - **Model checking**: extend the TLA+ specifications (`docs/cap_algebra.tla`,

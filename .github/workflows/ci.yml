@@ -188,6 +188,125 @@ jobs:
       - name: Boot PROC_SELFTEST kernel and assert SYS_EXIT + capability-gated SYS_KILL work
         run: make smoke-proc
 
+  smoke-fs:
+    name: QEMU filesystem self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot FS_SELFTEST kernel and assert the ring-3 fs_server serves a client end-to-end
+        run: make smoke-fs
+
+  smoke-fs-perms:
+    name: QEMU filesystem permissions self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot PERM_SELFTEST kernel and assert POSIX owner/group/other rwx is enforced against the kernel-attested uid
+        run: make smoke-fs-perms
+
+  smoke-fs-conc:
+    name: QEMU filesystem multi-client concurrency self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot CONC_SELFTEST kernel and assert concurrent clients each receive only their own replies
+        run: make smoke-fs-conc
+
+  smoke-fs-persist:
+    name: QEMU filesystem persistence self-test (two-boot, headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot twice against one ATA image and assert an encrypted file survives a reboot
+        run: make smoke-fs-persist
+
+  smoke-fs-wal:
+    name: QEMU filesystem journal crash-recovery self-test (two-boot, headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Crash after commit on boot 1 and assert the write-ahead journal replays it on boot 2
+        run: make smoke-fs-wal
+
+  smoke-fs-large:
+    name: QEMU large-file (double-indirect) self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot BIGFILE_SELFTEST kernel and assert an inode maps through the double-indirect region
+        run: make smoke-fs-large
+
+  smoke-newlib:
+    name: QEMU newlib libc self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot NEWLIB_SELFTEST kernel and assert the newlib libc port over the POSIX fd layer works
+        run: make smoke-newlib
+
   reproducible:
     name: Verify reproducible kernel build
     runs-on: ubuntu-latest

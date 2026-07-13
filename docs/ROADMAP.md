@@ -51,15 +51,16 @@ five runtime self-tests in CI. Already in place:
 - **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
   `malloc`, and a newlib libc port over a per-process POSIX fd layer
   (`make smoke-newlib`).
-- **CI** — eighteen gated jobs: `rust` (`cargo test` + `clippy -D warnings`),
+- **CI** — nineteen gated jobs: `rust` (`cargo test` + `clippy -D warnings`),
   `kernel` (build + ISO), `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE matrix), the
-  headless QEMU boot `smoke`, twelve runtime self-tests (`smoke-elf`,
-  `smoke-preempt`, `smoke-signal`, `smoke-smp`, `smoke-proc`, `smoke-fs`,
-  `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`, `smoke-fs-wal`,
-  `smoke-fs-large`, `smoke-newlib`), a `reproducible` build check, and a
-  `security` SAST/SBOM scan. The whole filesystem suite (persistence,
-  permissions, concurrency, journal crash-recovery, large files) and the newlib
-  libc port are now CI-enforced, not local-only.
+  headless QEMU boot `smoke`, thirteen runtime self-tests (`smoke-elf`,
+  `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-notify`, `smoke-smp`,
+  `smoke-fs`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`,
+  `smoke-fs-wal`, `smoke-fs-large`, `smoke-newlib`), a `reproducible` build
+  check, and a `security` SAST/SBOM scan. The whole filesystem suite
+  (persistence, permissions, concurrency, journal crash-recovery, large files),
+  the newlib libc port, and async notifications are now CI-enforced, not
+  local-only.
 
 ---
 

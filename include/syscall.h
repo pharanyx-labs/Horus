@@ -5,8 +5,8 @@
 #include <stddef.h>
 #include "errno.h"   /* shared, descriptive syscall error codes (SYS_ERR_*) */
 
-/* MUST stay byte-identical to the copies in src/include/kernel.h and
- * src/include/syscall_userspace.h (SYS_GET_TASK_INFO ABI). */
+/* MUST stay byte-identical to the copy in src/include/kernel.h
+ * (SYS_GET_TASK_INFO ABI). */
 struct task_info {
     uint32_t id;
     uint32_t state;

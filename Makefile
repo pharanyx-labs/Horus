@@ -180,6 +180,16 @@ ASFLAGS += -DNEWLIB_SELFTEST
 NEWLIB_SELFTEST_DEP = userspace/hello_newlib.bin
 endif
 
+# NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
+# a sender) to prove the async SYS_NOTIFY / SYS_WAIT_NOTIFY badge round-trip works
+# end-to-end (prints NOTIFY_SELFTEST: PASS to serial). Gated off the ship kernel.
+NOTIFY_SELFTEST ?= 0
+ifeq ($(NOTIFY_SELFTEST),1)
+CFLAGS  += -DNOTIFY_SELFTEST
+ASFLAGS += -DNOTIFY_SELFTEST
+NOTIFY_SELFTEST_DEP = userspace/notifytest.bin
+endif
+
 # PROC_SELFTEST=1 embeds the proctest driver and, at boot, drives SYS_EXIT +
 # SYS_KILL from ring 3, confirming both a self-exiting child and a killed child
 # reach the dead state (prints PROC_SELFTEST: PASS). Gated off the ship kernel.
@@ -262,7 +272,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -420,7 +430,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -624,6 +634,17 @@ smoke-proc:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: PASS exit+kill+spawn+exec+grant+image+altstack+signal' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated notification self-test, boot headless, and require the
+# in-kernel waiter to report PASS -- runtime proof that SYS_NOTIFY delivers a
+# badge to a task blocked in SYS_WAIT_NOTIFY (async notifications end-to-end).
+.PHONY: smoke-notify
+smoke-notify:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NOTIFY_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NOTIFY_SELFTEST: PASS' \
+		FAIL_MARKER='NOTIFY_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

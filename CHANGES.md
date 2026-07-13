@@ -33,7 +33,8 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 - **Cryptography (safe `no_std` Rust)** — Argon2id/BLAKE2b, SHA-256/HMAC/HKDF/PBKDF2, a ChaCha20 + HMAC-SHA256 AEAD, and a ChaCha20 CSPRNG (RDRAND + timing-jitter seeded), all validated against published/reference vectors.
 - **Boot / IO** — Multiboot2 via GRUB2 into x86-64 long mode; VGA terminal + serial mirror; PS/2 keyboard.
 - **Reproducible builds** — byte-for-byte deterministic `kernel.elf`.
-- **Tests / CI** — 58 Rust unit tests; GitHub Actions runs **eleven gated jobs** (rust test + `clippy -D warnings`, kernel/ISO build, alt-config matrix, and six QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, SMP, process-control — plus a reproducible-build check and a security scan + SBOM).
+- **Async notifications** — `SYS_NOTIFY` ORs a 32-bit badge into one of `MAX_NOTIFICATIONS` slots and wakes any task blocked on that slot (patching the accumulated badge into the waiter's saved trap frame, so no cross-address-space copy is needed); it accumulates the badge when no one is waiting. `SYS_WAIT_NOTIFY` returns a pending badge immediately or blocks via the same full-context path as IPC/`SYS_WAIT`, with the badge delivered in `ebx`. Gated by the endpoint capability in slot 3 (WRITE to notify, READ to wait). Proven by `make smoke-notify`.
+- **Tests / CI** — 58 Rust unit tests; GitHub Actions runs **nineteen gated jobs** (rust test + `clippy -D warnings`, kernel/ISO build, alt-config matrix, and thirteen QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, async notifications, SMP, and the filesystem/libc suite: fs, fs-perms, fs-conc, fs-persist, fs-wal, fs-large, newlib — plus a reproducible-build check and a security scan + SBOM).
 
 ### Added — process lifecycle and control (Phase 1)
 
@@ -86,7 +87,7 @@ Application-processor bringup, a LAPIC-timer per-CPU preemptive scheduler, IPC +
 
 ### Known incomplete
 
-- IPC: single-slot mailboxes, one in-flight request (multiple-client service is layered on top via `SYS_IPC_REPLY_TO`, but a richer multi-slot / worker-pool IPC is not built); notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) return `SYS_ERR_NOSYS`.
+- IPC: single-slot mailboxes, one in-flight request (multiple-client service is layered on top via `SYS_IPC_REPLY_TO`, but a richer multi-slot / worker-pool IPC is not built). Async notifications (`SYS_NOTIFY`/`SYS_WAIT_NOTIFY`) now work end-to-end (see above).
 - Filesystem: Phase 2 is complete (persistent, per-file permissions, multi-client, crash-atomic journal, large files, single filesystem — legacy capfs removed). Residual limits are deliberate non-goals: volume size capped at 2 MiB by single-bitmap geometry, and full ACLs beyond POSIX owner/group/other + uid-0 superuser.
 - Storage: persistent-by-default on ATA and crash-atomic journalling are done; the residual gap is larger volumes (a deferred non-goal). Diskless boots still use the ephemeral RAM vdisk.
 - SMP: works behind `SMP=1` but not default-on; shared runnable pool, no per-CPU queues/priorities, no flush-on-switch.

@@ -475,6 +475,17 @@ embedded_hello_newlib_bin_start:
 embedded_hello_newlib_bin_end:
 #endif
 
+#ifdef NOTIFY_SELFTEST
+/* PIE notifytest binary: spawned twice (waiter + sender) to exercise the
+ * async SYS_NOTIFY / SYS_WAIT_NOTIFY badge round-trip. */
+.align 16
+.global embedded_notifytest_bin_start
+embedded_notifytest_bin_start:
+.incbin "userspace/notifytest.bin"
+.global embedded_notifytest_bin_end
+embedded_notifytest_bin_end:
+#endif
+
 #ifdef FS_SELFTEST
 /* PIE userspace fs_server + a client that drives it over IPC, used by the
  * filesystem self-test (fs_selftest). Only embedded in the FS_SELFTEST build. */

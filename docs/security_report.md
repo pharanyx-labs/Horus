@@ -3,7 +3,7 @@ name: Security Report / Vulnerability
 about: Report a potential security issue in Horus (use GitHub Security Advisory for private reports when possible)
 title: "[SECURITY] "
 labels: security, bug
-assignees: yossicohenmcr-ctrl
+assignees: pharanyx-labs
 ---
 
 **⚠️ IMPORTANT: For sensitive vulnerabilities, please use GitHub Security Advisories (Settings → Security → Advisories → New draft advisory) instead of a public issue. This creates a private thread.**

@@ -4,7 +4,7 @@
 
 **A capability-based microkernel with a safe-Rust security core.**
 
-[![CI](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml/badge.svg)](https://github.com/yossicohenmcr-ctrl/Horus/actions/workflows/ci.yml)
+[![CI](https://github.com/pharanyx-labs/Horus/actions/workflows/ci.yml/badge.svg)](https://github.com/pharanyx-labs/Horus/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
 [![Platform: x86-64](https://img.shields.io/badge/platform-x86--64-blue.svg)](docs/ARCHITECTURE.md)
 [![Language: C + Rust](https://img.shields.io/badge/language-C%20%2B%20Rust-orange.svg)](docs/ARCHITECTURE.md)

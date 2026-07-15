@@ -78,9 +78,6 @@ TODO-personal.md
 private/
 personal/
 
-# Project website (kept out of the kernel tree)
-site/
-
 # ISO staging directories
 isofiles/
 iso/

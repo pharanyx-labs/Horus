@@ -379,16 +379,25 @@ NEWLIB_CFLAGS   = $(USERSPACE_CFLAGS) -I $(NEWLIB_INC)
 NEWLIB_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
                    userspace/posix.o userspace/crt0.o
 
-userspace/newlib_glue.o: userspace/newlib_glue.c
+# newlib/ is gitignored -- an upstream dependency, not project source -- so a
+# fresh checkout has no libc.a and no newlib headers. Build it on demand rather
+# than assuming it: without this, $(NEWLIB_INC) simply does not exist, -I finds
+# nothing, and #include <stdio.h> silently falls through to the host's glibc
+# headers and fails somewhere confusing. The script no-ops when already built.
+$(NEWLIB_LIB)/libc.a:
+	@tools/build_newlib.sh
+
+# Everything compiled with NEWLIB_CFLAGS needs the headers that rule installs.
+userspace/newlib_glue.o: userspace/newlib_glue.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
 
-userspace/newlib_glue64.o: userspace/newlib_glue64.c
+userspace/newlib_glue64.o: userspace/newlib_glue64.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
 
 userspace/crt0.o: userspace/crt0.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
 
-userspace/hello_newlib.o: userspace/hello_newlib.c
+userspace/hello_newlib.o: userspace/hello_newlib.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
 
 userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \

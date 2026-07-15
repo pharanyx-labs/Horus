@@ -87,8 +87,18 @@ Each of these does a clean build with the relevant `*_SELFTEST` (or `SMP`) flag,
 | `make smoke-fs` | The ring-3 `fs_server` + a client drive the full path over IPC (`FS_SELFTEST: PASS`); `make smoke-fs STORAGE=ata` runs it against a real ATA image |
 | `make smoke-fs-persist` / `-perms` / `-conc` / `-wal` / `-large` | Filesystem persistence across reboot, per-file POSIX permissions, multi-client concurrency, the write-ahead journal replay, and large/double-indirect files (local) |
 | `make smoke-init-fs` | The `init`-delegated `fs_server` driven by an automated client end-to-end (local) |
-| `make smoke-newlib` | The newlib libc port over the POSIX fd layer (`NEWLIB_SELFTEST: PASS`) |
+| `make smoke-newlib` | The newlib libc port over the POSIX fd layer (`NEWLIB_SELFTEST: PASS`). First run fetches and builds newlib — see below |
 | `make smoke-smp` | Application processors come online and concurrently run scheduled tasks (`SMP_SELFTEST: PASS`); `SMP_CPUS=<n>` sets the core count |
+
+### The newlib dependency
+
+`newlib/` is an upstream dependency, not project source, so it is gitignored and
+absent from a fresh clone. The first target that needs the libc port runs
+`tools/build_newlib.sh`, which fetches newlib 4.5.0 from sourceware (verifying a
+pinned SHA-256), builds it against `newlib/tools/i686-elf-*` — thin wrappers
+aiming the host gcc at a 32-bit freestanding target — and installs it under
+`newlib/install`. It takes well under a minute and no-ops once built; `make
+clean` does not discard it. CI caches `newlib/install` on the script's hash.
 
 ### `make reproducible-build`
 

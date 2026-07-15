@@ -55,6 +55,18 @@
                             * Zeroes any already-allocated blocks in the truncated
                             * range so a later grow reads a clean hole, then sets
                             * the logical size. */
+#define FS_OP_APPEND  13   /* ino, data[len]             -> size (needs w on file).
+                            * As FS_OP_WRITE, except the server chooses the offset:
+                            * it writes at the file's current end. `offset` in the
+                            * request is ignored. This exists so O_APPEND cannot be
+                            * implemented as a client-side stat-then-write, which
+                            * would race another client extending the file in
+                            * between; the server handles one request at a time, so
+                            * reading the size and landing the data here is atomic
+                            * against other clients. Both this and FS_OP_WRITE
+                            * return the end offset of the write in `size`, so a
+                            * client can track its file position without a
+                            * follow-up stat. */
 
 #define FS_NAME_MAX   32   /* directory entry name field (NUL-terminated) */
 #define FS_IO_MAX    176   /* max data payload per request/response */
@@ -73,7 +85,8 @@ struct fs_request {
     uint32_t op;
     uint32_t dir_ino;               /* parent dir (lookup/create/mkdir/delete/readdir) */
     uint32_t ino;                   /* target object (read/write/stat/chmod/chown) */
-    uint32_t offset;                /* byte offset (read/write); entry index (readdir) */
+    uint32_t offset;                /* byte offset (read/write); entry index (readdir);
+                                     * ignored for append (the server picks the end) */
     uint32_t len;                   /* payload length (read/write) */
     uint32_t mode;                  /* new permission bits (chmod) */
     uint32_t arg_uid;               /* new owner uid (chown) */
@@ -91,7 +104,8 @@ struct fs_response {
     int32_t  rc;                    /* 0 / bytes on success, negative SYS_ERR_* */
     uint32_t ino;                   /* result inode (lookup/create/mkdir/readdir) */
     uint32_t type;                  /* result/entry type */
-    uint32_t size;                  /* file size (stat) or bytes returned (read) */
+    uint32_t size;                  /* file size (stat), bytes returned (read), or
+                                     * end offset of the write (write/append) */
     uint32_t mode;                  /* permission bits (stat) */
     uint32_t uid;                   /* owner uid (stat) */
     uint32_t gid;                   /* owner gid (stat) */

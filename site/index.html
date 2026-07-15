@@ -10,7 +10,7 @@
      Horus — amber phosphor on warm graphite.
      Single-theme by intent: the subject is a serial console, and an
      amber monochrome CRT is the world it belongs to. Neutrals are
-     biased warm toward the accent rather than left as flat grey.
+     biased warm towards the accent rather than left as flat grey.
      --------------------------------------------------------------- */
   :root {
     --ink:        #12110f;
@@ -173,6 +173,33 @@
     background: #ffcc55;
     border-color: #ffcc55;
     color: var(--ink);
+  }
+
+  /* --- badges ---------------------------------------------------
+     CI and licence read live from GitHub rather than being hardcoded.
+     A static "passing"/"MIT" badge asserts a state nothing checks -- which is
+     precisely how this repo shipped a CI badge pointing at the wrong account,
+     and a LICENSE full of merge-conflict markers, without either being noticed.
+     A badge that can go red is the only kind worth showing. */
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 2.25rem;
+  }
+  .badges a {
+    display: inline-flex;
+    line-height: 0;
+  }
+  .badges img {
+    display: block;
+    height: 20px;
+    width: auto;
+  }
+  .badges a:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
   }
 
   /* --- terminal ------------------------------------------------- */
@@ -440,6 +467,46 @@
   }
   .callout p:last-child { margin-bottom: 0; }
 
+  /* --- support -------------------------------------------------- */
+  .support {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 2.5rem;
+    align-items: center;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 2rem;
+  }
+  @media (max-width: 720px) {
+    .support { grid-template-columns: 1fr; gap: 1.75rem; align-items: start; }
+  }
+  .support p {
+    margin: 0;
+    max-width: 58ch;
+    color: var(--muted);
+  }
+  .support p + p { margin-top: 0.9rem; }
+  .support strong { color: var(--text); font-weight: 600; }
+  .support__actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .btn--coffee {
+    background: var(--amber);
+    border-color: var(--amber);
+    color: var(--ink);
+    font-weight: 700;
+    white-space: nowrap;
+    text-align: center;
+  }
+  .btn--coffee:hover {
+    background: #ffcc55;
+    border-color: #ffcc55;
+    color: var(--ink);
+  }
+  .btn--x { text-align: center; white-space: nowrap; }
+
   /* --- footer --------------------------------------------------- */
   .footer {
     border-top: 1px solid var(--rule);
@@ -485,6 +552,29 @@
     <div class="cta-row">
       <a class="btn btn--primary" href="https://github.com/pharanyx-labs/Horus">View source</a>
       <a class="btn" href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">Read the architecture</a>
+    </div>
+
+    <div class="badges">
+      <a href="https://github.com/pharanyx-labs/Horus/actions/workflows/ci.yml">
+        <img src="https://img.shields.io/github/actions/workflow/status/pharanyx-labs/Horus/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=1b1917"
+             alt="CI build status on main">
+      </a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/LICENSE">
+        <img src="https://img.shields.io/github/license/pharanyx-labs/Horus?style=flat-square&amp;label=licence&amp;labelColor=1b1917&amp;color=a87712"
+             alt="Repository licence">
+      </a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">
+        <img src="https://img.shields.io/badge/platform-x86--64-a87712?style=flat-square&amp;labelColor=1b1917"
+             alt="Platform: x86-64">
+      </a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">
+        <img src="https://img.shields.io/badge/language-C%20%2B%20Rust-a87712?style=flat-square&amp;labelColor=1b1917"
+             alt="Language: C and Rust">
+      </a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">
+        <img src="https://img.shields.io/badge/build-reproducible-a87712?style=flat-square&amp;labelColor=1b1917"
+             alt="Build: reproducible">
+      </a>
     </div>
 
     <div class="terminal">
@@ -563,7 +653,7 @@
       <div class="principle">
         <h3>Defence in depth</h3>
         <p>
-          SMEP/SMAP and W^X/NX, a single centralized syscall-authorization choke point,
+          SMEP/SMAP and W^X/NX, a single centralised syscall-authorisation choke point,
           transitive revocation, and a tamper-evident audit log reinforce one another.
         </p>
       </div>
@@ -654,7 +744,7 @@
           </tr>
           <tr>
             <td class="sheet__status lit"><span class="cell"></span>Working</td>
-            <td>ELF loader under W^X, randomized load base</td>
+            <td>ELF loader under W^X, randomised load base</td>
             <td class="sheet__note">smoke-elf</td>
           </tr>
           <tr>
@@ -753,10 +843,39 @@
     </div>
   </section>
 
+  <section class="section">
+    <div class="section__head">
+      <div class="section__num">Support</div>
+      <div>
+        <h2>Free, and staying that way.</h2>
+      </div>
+    </div>
+    <div class="support">
+      <div>
+        <p>
+          <strong>The code is completely free and always will be</strong> — MIT licensed,
+          every line of it. Nothing here is gated, and nothing is going to be.
+        </p>
+        <p>
+          Donations aren't expected. If you'd like to contribute anyway, it goes
+          towards the running costs behind the project: server maintenance,
+          penetration testing, and the other unglamorous things that keep a
+          security kernel honest.
+        </p>
+      </div>
+      <div class="support__actions">
+        <a class="btn btn--coffee" href="https://buymeacoffee.com/DigitalVagrant">Buy me a coffee</a>
+        <a class="btn btn--x" href="https://x.com/DigitalVagrant">Follow @DigitalVagrant</a>
+      </div>
+    </div>
+  </section>
+
   <footer class="footer">
-    <div>MIT licensed · x86-64 only</div>
+    <div>MIT licensed · x86-64 only · © 2026 Pharanyx Labs</div>
     <div class="footer__links">
       <a href="https://github.com/pharanyx-labs/Horus">Source</a>
+      <a href="https://x.com/DigitalVagrant">@DigitalVagrant</a>
+      <a href="https://buymeacoffee.com/DigitalVagrant">Donate</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">Security</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ROADMAP.md">Roadmap</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/CONTRIBUTING.md">Contributing</a>

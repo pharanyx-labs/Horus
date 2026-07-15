@@ -338,6 +338,16 @@ jobs:
             qemu-system-x86
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
+      # newlib/ is gitignored, so unlike every other job this one has a
+      # dependency the checkout does not carry. Cache the built libc across
+      # runs; the key tracks the build script, which pins the newlib version.
+      - name: Cache built newlib
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: newlib/install
+          key: newlib-${{ runner.os }}-${{ hashFiles('tools/build_newlib.sh') }}
+      - name: Build newlib (no-op on cache hit)
+        run: tools/build_newlib.sh
       - name: Boot NEWLIB_SELFTEST kernel and assert the newlib libc port over the POSIX fd layer works
         run: make smoke-newlib
 

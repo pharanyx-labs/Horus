@@ -15,7 +15,7 @@ If you are planning something non-trivial, open an issue first to discuss the ap
 ## Setting up
 
 ```bash
-git clone https://github.com/yossicohenmcr-ctrl/Horus
+git clone https://github.com/pharanyx-labs/Horus
 cd Horus
 
 # Install build tools (Debian/Ubuntu)

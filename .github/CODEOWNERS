@@ -3,39 +3,39 @@
 # See CONTRIBUTING.md for invariant explanation requirements on security changes.
 
 # Core capability system (highest priority - revocation, lineage, mint/transfer)
-rust/src/capability.rs          @yossicohenmcr-ctrl
-rust/src/memory.rs              @yossicohenmcr-ctrl
-src/kernel/capability.c         @yossicohenmcr-ctrl
-src/kernel/capability.h         @yossicohenmcr-ctrl
+rust/src/capability.rs          @pharanyx-labs
+rust/src/memory.rs              @pharanyx-labs
+src/kernel/capability.c         @pharanyx-labs
+src/kernel/capability.h         @pharanyx-labs
 
 # Memory management, paging, COW, refcount FFI boundary
-src/kernel/paging.c             @yossicohenmcr-ctrl
-src/kernel/paging.h             @yossicohenmcr-ctrl
+src/kernel/paging.c             @pharanyx-labs
+src/kernel/paging.h             @pharanyx-labs
 
 # Syscall dispatch, IPC, scheduler (isolation enforcement)
-src/kernel/syscall.c            @yossicohenmcr-ctrl
-src/kernel/syscall.h            @yossicohenmcr-ctrl
-src/kernel/scheduler.c          @yossicohenmcr-ctrl
-src/kernel/scheduler.h          @yossicohenmcr-ctrl
+src/kernel/syscall.c            @pharanyx-labs
+src/kernel/syscall.h            @pharanyx-labs
+src/kernel/scheduler.c          @pharanyx-labs
+src/kernel/scheduler.h          @pharanyx-labs
 
 # Crypto, audit, auth (security primitives)
-src/kernel/crypto.c             @yossicohenmcr-ctrl
-src/kernel/crypto.h             @yossicohenmcr-ctrl
-rust/src/crypto.rs              @yossicohenmcr-ctrl
+src/kernel/crypto.c             @pharanyx-labs
+src/kernel/crypto.h             @pharanyx-labs
+rust/src/crypto.rs              @pharanyx-labs
 
 # CI/CD, workflows, and SSDLC configuration (automation is part of trusted base)
-.github/workflows/              @yossicohenmcr-ctrl
-.github/CODEOWNERS              @yossicohenmcr-ctrl
-.github/dependabot.yml          @yossicohenmcr-ctrl
-SECURITY.md                     @yossicohenmcr-ctrl
-CONTRIBUTING.md                 @yossicohenmcr-ctrl
-docs/ARCHITECTURE.md            @yossicohenmcr-ctrl
-docs/LIMITATIONS.md             @yossicohenmcr-ctrl
-docs/SECURITY.md                @yossicohenmcr-ctrl
+.github/workflows/              @pharanyx-labs
+.github/CODEOWNERS              @pharanyx-labs
+.github/dependabot.yml          @pharanyx-labs
+SECURITY.md                     @pharanyx-labs
+CONTRIBUTING.md                 @pharanyx-labs
+docs/ARCHITECTURE.md            @pharanyx-labs
+docs/LIMITATIONS.md             @pharanyx-labs
+docs/SECURITY.md                @pharanyx-labs
 
 # Build system and reproducibility
-Makefile                        @yossicohenmcr-ctrl
-linker64.ld                     @yossicohenmcr-ctrl
+Makefile                        @pharanyx-labs
+linker64.ld                     @pharanyx-labs
 
 # Default fallback for everything else (owner review)
-*                               @yossicohenmcr-ctrl
+*                               @pharanyx-labs

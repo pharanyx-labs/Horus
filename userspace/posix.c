@@ -14,6 +14,10 @@
  *  - Traversal depth is limited to prevent excessive IPC call chains.
  *  - Offset arithmetic is checked for uint32_t overflow.
  *  - IPC reply magic is verified before trusting the response.
+ *  - O_APPEND is placed by the server at the end of file (FS_OP_APPEND), so an
+ *    append cannot land on top of a concurrent writer's data. Note the limit: a
+ *    write longer than FS_IO_MAX is split into several appends, each atomic on
+ *    its own, so POSIX's atomicity-per-write() holds only up to FS_IO_MAX bytes.
  */
 
 #include "../include/posix.h"
@@ -389,8 +393,13 @@ int posix_write(int fd, const void *buf, size_t len) {
 
     if (e->type != FD_FS) return -1;
 
-    const unsigned char *src   = (const unsigned char *)buf;
-    uint32_t             total = 0;
+    const unsigned char *src    = (const unsigned char *)buf;
+    uint32_t             total  = 0;
+    /* O_APPEND sends FS_OP_APPEND, which makes the *server* pick the offset (the
+     * current end of file) under its own serialisation. Resolving the end here
+     * instead — stat, then write at what it said — would race any other client
+     * extending the file in between, and silently overwrite their data. */
+    const int            append = (e->flags & O_APPEND) != 0;
 
     while (total < (uint32_t)len) {
         uint32_t chunk = (uint32_t)len - total;
@@ -399,9 +408,9 @@ int posix_write(int fd, const void *buf, size_t len) {
         struct fs_request rq;
         struct fs_response rp;
         _umemset(&rq, 0, sizeof(rq));
-        rq.op     = FS_OP_WRITE;
+        rq.op     = append ? FS_OP_APPEND : FS_OP_WRITE;
         rq.ino    = e->ino;
-        rq.offset = e->offset;
+        rq.offset = e->offset;      /* ignored by the server when appending */
         rq.len    = chunk;
         _umemcpy(rq.data, src + total, chunk);
 
@@ -409,10 +418,17 @@ int posix_write(int fd, const void *buf, size_t len) {
         if (written <= 0) return (int)total > 0 ? (int)total : -1;
         if ((uint32_t)written > chunk) written = (int)chunk;  /* clamp */
 
-        if (e->offset > 0xFFFFFFFFu - (uint32_t)written)
+        if (append) {
+            /* Only the server knows where it appended; it reports the end of the
+             * write. Reject a nonsensical answer rather than let our position
+             * desync from the file. */
+            if (rp.size < (uint32_t)written) return (int)total > 0 ? (int)total : -1;
+            e->offset = rp.size;
+        } else if (e->offset > 0xFFFFFFFFu - (uint32_t)written) {
             e->offset = 0xFFFFFFFFu;
-        else
+        } else {
             e->offset += (uint32_t)written;
+        }
 
         total += (uint32_t)written;
         if ((uint32_t)written < chunk) break;   /* partial write */

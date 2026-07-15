@@ -1,0 +1,59 @@
+name: Pages
+
+# Publishes site/ to GitHub Pages.
+#
+# This exists because Pages can only publish a branch's root or /docs, and the
+# site lives in neither: root is the kernel tree and /docs is Markdown that
+# Jekyll would try to render. Selecting the "GitHub Actions" source lifts that
+# restriction -- a workflow decides what ships -- so site/ can stay where it is.
+#
+# Deliberately a separate workflow from ci.yml: the twenty-one gated jobs there
+# are the merge gate, and a docs deploy has no business being able to affect
+# them. It carries wider permissions than ci.yml, so it stays isolated.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Least privilege: read the tree, mint an OIDC token for the deploy, publish.
+# Nothing here needs write access to repository contents.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. Do not cancel a running one: a half-finished deploy
+# would leave the live site serving whatever it managed to upload.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy site/ to Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+
+      - name: Verify the page is actually there
+        # Cheap guard against publishing an empty site: a Pages deploy of a
+        # missing directory succeeds and silently serves a 404.
+        run: test -f site/index.html
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
+
+      - name: Upload site/ as the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: site
+
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0

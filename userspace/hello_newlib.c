@@ -183,6 +183,61 @@ int main(int argc, char **argv, char **envp) {
         printf("fs rename/O_TRUNC OK\n");
     }
 
+    /* --- O_APPEND ---------------------------------------------------------
+     * O_APPEND was previously accepted by open() and then ignored by write(),
+     * so an "append" silently overwrote the file from byte 0. The flag now
+     * sends FS_OP_APPEND and the server places the write at the end. */
+    {
+        const char *path = "/appendme";
+        char ab[16];
+
+        int fd = open(path, O_CREAT | O_WRONLY, 0644);
+        if (fd < 0 || write(fd, "AAA", 3) != 3) { printf("NEWLIB_SELFTEST: FAIL ap-setup\n"); return 1; }
+        close(fd);
+
+        /* The regression: this must extend the file, not overwrite it. */
+        fd = open(path, O_WRONLY | O_APPEND);
+        if (fd < 0)                   { printf("NEWLIB_SELFTEST: FAIL ap-open\n");  return 1; }
+        if (write(fd, "BBB", 3) != 3) { printf("NEWLIB_SELFTEST: FAIL ap-write\n"); return 1; }
+        close(fd);
+
+        fd = open(path, O_RDONLY);
+        if (fd < 0 || read(fd, ab, sizeof ab) != 6 || memcmp(ab, "AAABBB", 6) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL ap-content\n"); return 1;
+        }
+        close(fd);
+
+        /* O_APPEND must beat the file position: seeking to 0 and writing still
+         * lands at the end. This is what separates a real append from a
+         * client-side "seek to the end, then write". */
+        fd = open(path, O_WRONLY | O_APPEND);
+        if (fd < 0 || lseek(fd, 0, SEEK_SET) != 0) { printf("NEWLIB_SELFTEST: FAIL ap-seek\n");   return 1; }
+        if (write(fd, "C", 1) != 1)                { printf("NEWLIB_SELFTEST: FAIL ap-write2\n"); return 1; }
+        close(fd);
+
+        fd = open(path, O_RDONLY);
+        if (fd < 0 || read(fd, ab, sizeof ab) != 7 || memcmp(ab, "AAABBBC", 7) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL ap-seek-content\n"); return 1;
+        }
+        close(fd);
+
+        /* An append longer than one FS_IO_MAX chunk still concatenates. */
+        fd = open(path, O_WRONLY | O_APPEND);
+        char big[200];
+        memset(big, 'Z', sizeof big);
+        if (fd < 0 || write(fd, big, sizeof big) != (int)sizeof big) {
+            printf("NEWLIB_SELFTEST: FAIL ap-big\n"); return 1;
+        }
+        close(fd);
+        struct stat asb;
+        if (stat(path, &asb) != 0 || asb.st_size != 7 + (off_t)sizeof big) {
+            printf("NEWLIB_SELFTEST: FAIL ap-big-size\n"); return 1;
+        }
+
+        unlink(path);
+        printf("fs O_APPEND OK\n");
+    }
+
     printf("NEWLIB_SELFTEST: PASS\n");
     return 0;
 }

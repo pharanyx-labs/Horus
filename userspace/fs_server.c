@@ -262,12 +262,19 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         rp->rc = (int32_t)n; rp->size = n;
         break;
     }
+    case FS_OP_APPEND:
     case FS_OP_WRITE: {
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        if (st.type == FS_TYPE_DIR)                  { rp->rc = SYS_ERR_INVAL; break; }  /* files only */
         if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }
+        /* O_APPEND: the offset is the current end of file, chosen here rather
+         * than by the client. We already hold the size from the stat above and
+         * nothing else runs between it and the write, so the append cannot land
+         * on top of another client's. */
+        uint32_t off = (rq->op == FS_OP_APPEND) ? (uint32_t)st.size : rq->offset;
         uint32_t len = rq->len;
         if (len > FS_IO_MAX) len = FS_IO_MAX;
-        uint32_t blk = rq->offset / BLK, boff = rq->offset % BLK;
+        uint32_t blk = off / BLK, boff = off % BLK;
         if (boff + len > BLK) len = BLK - boff;   /* one block per request */
         static uint8_t tmp[BLK];
         /* Read-modify-write to preserve the rest of the block (hole => zeros). */
@@ -276,9 +283,10 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (sys_fblock_write(rq->ino, blk, tmp, BLK) != (int)BLK) { rp->rc = SYS_ERR_IO; break; }
         /* Extend the logical file size if this write went past the old end
          * (the kernel only stores fixed-size blocks; size is ours to track). */
-        uint32_t end = rq->offset + len;
+        uint32_t end = off + len;
         if (end > (uint32_t)st.size) sys_fs_set_size(rq->ino, end);
-        rp->rc = (int32_t)len;
+        rp->rc   = (int32_t)len;
+        rp->size = end;          /* so the client can track its offset */
         break;
     }
     case FS_OP_CHMOD: {

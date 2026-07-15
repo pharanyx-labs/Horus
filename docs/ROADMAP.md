@@ -218,9 +218,13 @@ With a libc and a heap in place, grow what runs on top.
   wired too (new `FS_OP_RENAME` / `FS_OP_TRUNCATE` protocol ops, both
   permission-checked against the caller's attested uid; truncate zeroes the
   freed tail so a later grow can't read stale bytes) — the two BFD-critical file
-  primitives, also proven by `make smoke-newlib`. Remaining for a real
-  coreutils/binutils port: `getcwd`/`chdir`, an (empty) `environ`/`getenv`,
-  `O_APPEND` honoured on write, `fcntl` (`F_GETFL`/`F_SETFL` no-ops), directory
+  primitives, also proven by `make smoke-newlib`. `O_APPEND` is honoured on
+  write as of the `FS_OP_APPEND` op — the flag had been accepted by `open()` and
+  then ignored by `write()`, so an append silently overwrote the file from byte
+  0. The offset is now chosen by the *server*, at the file's current end, which
+  a client-side stat-then-write could not do without racing another writer.
+  Remaining for a real coreutils/binutils port: `getcwd`/`chdir`, an (empty)
+  `environ`/`getenv`, `fcntl` (`F_GETFL`/`F_SETFL` no-ops), directory
   reads (`opendir`/`readdir` over `FS_OP_READDIR`), `mkstemp`/`tmpfile`, `link()`
   (needs hard-link/refcount support in the store, currently `ENOSYS`), and wiring
   signal delivery through `kill()` onto `SYS_SIGNAL` (blocked on the capability

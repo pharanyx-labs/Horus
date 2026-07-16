@@ -121,6 +121,23 @@ jobs:
       - name: Boot ELF_SELFTEST kernel and assert try_elf_load enforces W^X
         run: make smoke-elf
 
+  smoke-elf64:
+    name: QEMU ELF64 loader relocation self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot ELF64_SELFTEST kernel and assert the x86-64 RELA relocation applied
+        run: make smoke-elf64
+
   smoke-preempt:
     name: QEMU preemptive-scheduling self-test (headless)
     runs-on: ubuntu-latest

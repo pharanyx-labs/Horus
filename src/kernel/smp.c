@@ -263,6 +263,12 @@ void smp_bringup(void) {
      * so it never returns to kernel_main. */
     elf_loader_selftest();
 #endif
+#ifdef ELF64_SELFTEST
+    /* Gated: verify the loader's x86-64 RELA relocation path on a real 64-bit
+     * static-PIE. Loads and inspects only — never executed, so this is
+     * independent of the ring-3 ABI still being 32-bit. */
+    { extern void elf64_loader_selftest(void); elf64_loader_selftest(); }
+#endif
 #ifdef ASLR_SELFTEST
     /* Gated: spawn several PIE images and prove the loader randomises the image
      * base, and that every base keeps the premap inside one page table. */

@@ -308,6 +308,125 @@ static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
     return 0;
 }
 
+/* Apply x86-64 dynamic relocations for a static-PIE (ET_DYN) image. The
+ * counterpart of elf_apply_relocations_i386 above, with the same fail-closed
+ * contract, called at the same point (segments copied in and still writable,
+ * before the W^X pass). Three things differ from i386 and each is a place this
+ * would silently corrupt an image if copied over from the 32-bit version:
+ *
+ *   - RELA, not REL. Entries are 24 bytes { r_offset, r_info, r_addend } and
+ *     carry their addend explicitly, so the patch is a WRITE of (slide +
+ *     r_addend), not the i386 read-modify-write of (*target += slide): for a
+ *     RELA the addend is authoritative and the existing field contents are not
+ *     part of the result.
+ *
+ *     Worth knowing before "simplifying" this into the i386 form: GNU ld also
+ *     pre-applies the addend INTO the field, so for an ld-linked image the two
+ *     forms happen to agree and the ELF64 self-test cannot tell them apart
+ *     (this was checked, not assumed -- a deliberately RMW-broken build still
+ *     passed). They diverge for a producer that leaves the field zero, which is
+ *     lld's default (--no-apply-dynamic-relocs). Following the spec costs
+ *     nothing here and is the difference between working and silently writing a
+ *     wrong pointer if the image ever comes from a different linker.
+ *   - The type is the LOW 32 bits of r_info; for ELF32 it is the low 8 (the
+ *     symbol index occupies the high 24 there, the high 32 here). Every
+ *     currently-defined x86-64 type happens to be < 256, so the i386 mask would
+ *     coincidentally agree today -- it is still wrong per spec, and would
+ *     misclassify any future type >= 256 into a *different* type rather than
+ *     into the fail-closed path, which is the dangerous direction to be wrong in.
+ *   - The table is named by DT_RELA/DT_RELASZ/DT_RELAENT (7/8/9), not
+ *     DT_REL/DT_RELSZ/DT_RELENT (17/18/19).
+ *
+ * Only R_X86_64_RELATIVE (8) is implemented; every other type fails closed.
+ * Note R_X86_64_RELATIVE and R_386_RELATIVE happen to share the number 8 -- a
+ * coincidence, not a shared definition. */
+static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
+                                        uint16_t e_phnum, uint32_t phentsize,
+                                        uint32_t slide,
+                                        const uint32_t *seg_va, const uint32_t *seg_memsz,
+                                        int nseg) {
+    /* Locate PT_DYNAMIC (p_type == 2). Elf64_Phdr: p_type(4) p_flags(4)
+     * p_offset(8) p_vaddr(8) p_paddr(8) p_filesz(8) ... */
+    uint64_t dyn_off = 0, dyn_sz = 0;
+    for (uint16_t i = 0; i < e_phnum; i++) {
+        const uint8_t *p = ph + (uint32_t)i * phentsize;
+        if (elf_rd32(p) == 2) {                /* PT_DYNAMIC */
+            dyn_off = elf_rd64(p + 8);         /* p_offset */
+            dyn_sz  = elf_rd64(p + 32);        /* p_filesz */
+            break;
+        }
+    }
+    if (dyn_off == 0 || dyn_sz == 0) return 0;                 /* no dynamic info */
+    if (dyn_off > MAX_PROGRAM_SIZE || dyn_sz > MAX_PROGRAM_SIZE ||
+        dyn_off + dyn_sz > MAX_PROGRAM_SIZE) return -16;
+
+    /* Walk Elf64_Dyn { int64 d_tag; uint64 d_val; } for the RELA table. */
+    uint64_t rela_vaddr = 0, rela_sz = 0, rela_ent = 24;
+    for (uint64_t o = 0; o + 16 <= dyn_sz; o += 16) {
+        int64_t  tag = (int64_t)elf_rd64(st + dyn_off + o);
+        uint64_t val = elf_rd64(st + dyn_off + o + 8);
+        if (tag == 0) break;                   /* DT_NULL */
+        else if (tag == 7)  rela_vaddr = val;  /* DT_RELA    */
+        else if (tag == 8)  rela_sz    = val;  /* DT_RELASZ  */
+        else if (tag == 9)  rela_ent   = val;  /* DT_RELAENT */
+        else if (tag == 17) return -16;        /* DT_REL: x86-64 must use RELA */
+    }
+    if (rela_vaddr == 0 || rela_sz == 0) return 0;             /* no RELA relocations */
+    if (rela_ent != 24) return -16;
+
+    /* Map the RELA table's (link-time, base-0) vaddr to a file offset via the
+     * PT_LOAD segment that contains it. */
+    uint64_t rela_file_off = 0;
+    int mapped = 0;
+    for (uint16_t i = 0; i < e_phnum; i++) {
+        const uint8_t *p = ph + (uint32_t)i * phentsize;
+        if (elf_rd32(p) != 1) continue;        /* PT_LOAD */
+        uint64_t p_offset = elf_rd64(p + 8);
+        uint64_t p_vaddr  = elf_rd64(p + 16);
+        uint64_t p_filesz = elf_rd64(p + 32);
+        if (rela_vaddr >= p_vaddr && rela_vaddr < p_vaddr + p_filesz) {
+            rela_file_off = p_offset + (rela_vaddr - p_vaddr);
+            mapped = 1;
+            break;
+        }
+    }
+    if (!mapped) return -16;
+    if (rela_file_off > MAX_PROGRAM_SIZE || rela_sz > MAX_PROGRAM_SIZE ||
+        rela_file_off + rela_sz > MAX_PROGRAM_SIZE) return -16;
+
+    uint64_t nrela = rela_sz / 24;
+    if (nrela > 8192) return -16;              /* sane cap, as i386 */
+    for (uint64_t k = 0; k < nrela; k++) {
+        const uint8_t *r = st + rela_file_off + k * 24;
+        uint64_t r_offset = elf_rd64(r);
+        uint64_t r_info   = elf_rd64(r + 8);
+        int64_t  r_addend = (int64_t)elf_rd64(r + 16);
+        uint32_t r_type   = (uint32_t)(r_info & 0xFFFFFFFFu);
+        if (r_type == 0) continue;             /* R_X86_64_NONE */
+        if (r_type != 8) return -16;           /* only R_X86_64_RELATIVE (fail closed) */
+
+        /* r_offset is a link-time (base-0) vaddr; the patch site is it + slide.
+         * Bound it before truncating to the 32-bit user window the loader still
+         * uses, so a wild r_offset cannot alias a valid target. */
+        if (r_offset > USER_MAX_VADDR) return -16;
+        uint64_t target = r_offset + slide;
+        int in_seg = 0;
+        for (int s = 0; s < nseg; s++) {
+            if (target >= seg_va[s] && target + 8 <= (uint64_t)seg_va[s] + seg_memsz[s]) {
+                in_seg = 1; break;
+            }
+        }
+        if (!in_seg) return -16;
+
+        /* RELA: write slide + addend outright. The addend is the link-time
+         * value, so this is the i386 read-modify-write with the read replaced
+         * by the addend the linker already recorded. */
+        uint64_t w = (uint64_t)((int64_t)slide + r_addend);
+        if (copy_to_user((void *)(uintptr_t)target, &w, 8) != 0) return -16;
+    }
+    return 0;
+}
+
 int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
 {
     if (!out_entry) return -1;
@@ -440,14 +559,16 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
 
     /* Apply dynamic relocations for a PIE image while the pages are still
      * writable. i386 static-PIE uses R_386_RELATIVE (or, commonly, none at all
-     * thanks to GOTOFF addressing). A 64-bit PIE would need R_X86_64_RELATIVE,
-     * which is not implemented -- fail closed rather than run it unrelocated. */
-    if (ei_class == 1) {
-        int rrc = elf_apply_relocations_i386(st, ph, e_phnum, phentsize, slide,
-                                             seg_va, seg_memsz, nseg);
+     * thanks to GOTOFF addressing); x86-64 uses R_X86_64_RELATIVE in a RELA
+     * table. Both fail closed on any other relocation type rather than run an
+     * image unrelocated. */
+    {
+        int rrc = (ei_class == 1)
+            ? elf_apply_relocations_i386(st, ph, e_phnum, phentsize, slide,
+                                         seg_va, seg_memsz, nseg)
+            : elf_apply_relocations_x86_64(st, ph, e_phnum, phentsize, slide,
+                                           seg_va, seg_memsz, nseg);
         if (rrc != 0) return rrc;
-    } else if (e_type == 3) {   /* ET_DYN, 64-bit: unsupported */
-        return -16;
     }
 
     /* W^X protection pass. Every page touched by a PT_LOAD segment is set to

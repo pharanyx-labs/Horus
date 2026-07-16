@@ -452,6 +452,18 @@ embedded_elftest_start:
 embedded_elftest_end:
 #endif
 
+#ifdef ELF64_SELFTEST
+/* The same image linked as a 64-bit static-PIE, used by the ELF64 loader
+ * self-test (elf64_loader_selftest) to exercise the x86-64 RELA relocation
+ * path. Loaded and inspected, never executed. Only in the ELF64_SELFTEST build. */
+.align 16
+.global embedded_elftest64_start
+embedded_elftest64_start:
+.incbin "userspace/elftest64.elf"
+.global embedded_elftest64_end
+embedded_elftest64_end:
+#endif
+
 #if defined(PREEMPT_SELFTEST) || defined(SMP_SELFTEST) || defined(PROC_SELFTEST)
 /* Flat userspace tracer used by the preemptive-scheduling self-test
  * (preempt_selftest), reused as the worker payload by the SMP self-test

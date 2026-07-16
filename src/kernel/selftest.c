@@ -7,7 +7,7 @@
 #include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the FS self-test harnesses */
 #endif
 
-#ifdef ELF_SELFTEST
+#if defined(ELF_SELFTEST) || defined(ELF64_SELFTEST)
 /* In-kernel self-test of the ELF loader's W^X enforcement (gated; never in the
  * ship build). Loads a real multi-segment ELF (userspace/elftest.elf, embedded
  * in multiboot.S) through the production do_spawn -> try_elf_load path, then
@@ -15,7 +15,10 @@
  * PT_LOAD's p_flags: .text R+X (executable), .data R+W+NX, .rodata R(O)+NX.
  * Because EFER.NXE is asserted enabled at boot, correct NX/WRITE bits mean the
  * CPU will enforce W^X. Prints ELF_SELFTEST: PASS / FAIL <reason> to serial;
- * the headless smoke test (make smoke-elf) asserts on PASS. */
+ * the headless smoke test (make smoke-elf) asserts on PASS.
+ *
+ * The PTE defines and read helpers below are shared with the ELF64 variant
+ * (ELF64_SELFTEST), hence the wider guard. */
 #define SELFTEST_PTE_PRESENT  (1ULL << 0)
 #define SELFTEST_PTE_WRITE    (1ULL << 1)
 #define SELFTEST_PTE_USER     (1ULL << 2)
@@ -30,6 +33,7 @@ static int selftest_read_byte(uint64_t cr3, uint64_t vaddr, uint8_t *out) {
     return 0;
 }
 
+__attribute__((unused))
 static int selftest_read_u32(uint64_t cr3, uint64_t vaddr, uint32_t *out) {
     uint32_t v = 0;
     for (int i = 0; i < 4; i++) {
@@ -40,6 +44,21 @@ static int selftest_read_u32(uint64_t cr3, uint64_t vaddr, uint32_t *out) {
     *out = v;
     return 0;
 }
+
+__attribute__((unused))
+static int selftest_read_u64(uint64_t cr3, uint64_t vaddr, uint64_t *out) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) {
+        uint8_t b;
+        if (selftest_read_byte(cr3, vaddr + i, &b) != 0) return -1;
+        v |= (uint64_t)b << (i * 8);
+    }
+    *out = v;
+    return 0;
+}
+#endif /* ELF_SELFTEST || ELF64_SELFTEST */
+
+#ifdef ELF_SELFTEST
 
 void elf_loader_selftest(void) {
     extern uint8_t embedded_elftest_start[];
@@ -136,6 +155,111 @@ void elf_loader_selftest(void) {
     set_current_task(saved);
 }
 #endif /* ELF_SELFTEST */
+
+#ifdef ELF64_SELFTEST
+/* In-kernel self-test of the loader's x86-64 RELA relocation path (gated).
+ *
+ * The 64-bit sibling of elf_loader_selftest: loads userspace/elftest64.elf --
+ * the same elftest.c, linked as a 64-bit static-PIE -- through the real
+ * do_spawn -> try_elf_load path and proves elf_apply_relocations_x86_64 applied
+ * its R_X86_64_RELATIVE relocation, plus that W^X still holds for an ELF64
+ * image.
+ *
+ * This runs BEFORE the ring-3 ABI is 64-bit (Stage 3c), and that is fine: the
+ * loaded image is never executed. Relocation happens at load time, and the test
+ * verifies it by reading the task's memory through its page tables, then frees
+ * the slot so the scheduler never touches it. Loading and running are separable,
+ * which is what lets the relocator land and be gated one stage early instead of
+ * arriving as untested code underneath the ABI flip.
+ *
+ * The image's single relocation is selfptr (first quadword of .data) = &rodata
+ * marker, link vaddr 0x1000, addend 0x1000. Applied, it must read base + ro_va;
+ * skipped, it would still hold the small link-time value. */
+void elf64_loader_selftest(void) {
+    extern uint8_t embedded_elftest64_start[];
+    extern uint8_t embedded_elftest64_end[];
+    uint32_t sz = (uint32_t)(embedded_elftest64_end - embedded_elftest64_start);
+
+    print("ELF64_SELFTEST: begin\n");
+    if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ELF64_SELFTEST: FAIL embed-size\n"); return; }
+
+    for (uint32_t i = 0; i < sz; i++) loader_staging[i] = embedded_elftest64_start[i];
+    armed_hdr.entry = 0;
+    armed_hdr.size  = sz;
+    armed_hdr.name[0] = 'e'; armed_hdr.name[1] = 'l'; armed_hdr.name[2] = 'f';
+    armed_hdr.name[3] = '6'; armed_hdr.name[4] = '4'; armed_hdr.name[5] = 0;
+    program_armed = 1;
+
+    int saved = get_current_task();
+    int pid = do_spawn();                 /* the real try_elf_load + RELA + W^X */
+    if (pid <= 0) { print("ELF64_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
+
+    uint64_t cr3  = tasks[pid].cr3;
+    uint64_t base = tasks[pid].image_base;
+
+    /* Locate the three PT_LOAD segments by p_flags in the staged (base-0)
+     * Elf64 image, so the checks hold at the randomized base. Elf64_Phdr is 56
+     * bytes: p_type(0,4) p_flags(4,4) p_offset(8,8) p_vaddr(16,8). */
+    const uint8_t *est = loader_staging;
+    uint64_t e_phoff = elf_rd64(est + 32);
+    uint16_t e_phnum = (uint16_t)est[56] | ((uint16_t)est[57] << 8);
+    uint64_t text_va = ~0ULL, ro_va = ~0ULL, data_va = ~0ULL;
+    for (uint16_t i = 0; i < e_phnum && i < 16; i++) {
+        const uint8_t *p = est + e_phoff + (uint64_t)i * 56;
+        if (elf_rd32(p) != 1) continue;            /* PT_LOAD */
+        uint32_t fl = elf_rd32(p + 4);             /* p_flags */
+        uint64_t va = elf_rd64(p + 16);            /* p_vaddr */
+        if      (fl & 1u) text_va = va;            /* PF_X */
+        else if (fl & 2u) data_va = va;            /* PF_W */
+        else              ro_va   = va;            /* R only */
+    }
+
+    int ok = 1;
+    const char *why = "";
+    if (text_va == ~0ULL || ro_va == ~0ULL || data_va == ~0ULL) { ok = 0; why = "phdr-missing"; }
+
+    if (ok) {
+        uint64_t pte_text = user_lookup_pte(cr3, base + text_va);
+        uint64_t pte_data = user_lookup_pte(cr3, base + data_va);
+        uint64_t pte_ro   = user_lookup_pte(cr3, base + ro_va);
+
+        if      (!((pte_text & SELFTEST_PTE_PRESENT) && (pte_text & SELFTEST_PTE_USER))) { ok = 0; why = "text-absent"; }
+        else if (!((pte_data & SELFTEST_PTE_PRESENT) && (pte_data & SELFTEST_PTE_USER))) { ok = 0; why = "data-absent"; }
+        else if (!((pte_ro   & SELFTEST_PTE_PRESENT) && (pte_ro   & SELFTEST_PTE_USER))) { ok = 0; why = "rodata-absent"; }
+        else if (pte_text & SELFTEST_PTE_NX)       { ok = 0; why = "text-noexec"; }
+        else if (!(pte_data & SELFTEST_PTE_NX))    { ok = 0; why = "data-executable"; }
+        else if (!(pte_ro   & SELFTEST_PTE_NX))    { ok = 0; why = "rodata-executable"; }
+        else if (!(pte_data & SELFTEST_PTE_WRITE)) { ok = 0; why = "data-readonly"; }
+        else if (pte_ro & SELFTEST_PTE_WRITE)      { ok = 0; why = "rodata-writable"; }
+    }
+
+    /* Markers. selfptr is 8 bytes here (4 on i386), so the data marker sits at
+     * data_va + 8. */
+    if (ok) {
+        uint8_t b;
+        if (selftest_read_byte(cr3, base + ro_va, &b) != 0 || b != 0x5A)          { ok = 0; why = "rodata-marker"; }
+        else if (selftest_read_byte(cr3, base + data_va + 8, &b) != 0 || b != 0xD2) { ok = 0; why = "data-marker"; }
+    }
+
+    /* The relocation itself: the whole point of this test. */
+    if (ok) {
+        uint64_t selfptr = 0;
+        uint8_t b;
+        if (selftest_read_u64(cr3, base + data_va, &selfptr) != 0)  { ok = 0; why = "selfptr-read"; }
+        else if (selfptr != base + ro_va)                           { ok = 0; why = "selfptr-not-relocated"; }
+        else if (selftest_read_byte(cr3, selfptr, &b) != 0 || b != 0x5A) { ok = 0; why = "selfptr-target"; }
+    }
+
+    if (ok) {
+        print("ELF64_SELFTEST: PASS\n");
+    } else {
+        print("ELF64_SELFTEST: FAIL "); print(why); print("\n");
+    }
+
+    tasks[pid].state = 0;
+    set_current_task(saved);
+}
+#endif /* ELF64_SELFTEST */
 
 #ifdef ASLR_SELFTEST
 /* Image-base ASLR self-test (gated; never in the ship build).

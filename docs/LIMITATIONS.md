@@ -46,7 +46,9 @@ The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gate
 
 ### Copy-on-write paging
 
-The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault handler calls into Rust to decide demand-zero vs. COW-copy. The common cases work and the Rust logic is unit-tested, but the end-to-end paths have not been stress-tested and likely have edge cases.
+The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault handler calls into Rust to decide demand-zero vs. COW-copy. The demand-zero path now genuinely works — until recently it did not, and could not: the pager reached freshly allocated frames through a virtual address that a user CR3 does not map, so it faulted inside itself and deadlocked on the `page_lock` it already held, and separately the heap sat in a window that is identity-mapped supervisor and therefore cannot be demand-paged at all. Both are fixed (see CHANGES.md), and a probe walking 640 KiB of heap now completes.
+
+The COW-copy path shares that machinery and is unit-tested in Rust, but it is **not exercised end-to-end by anything**: `fork` is a deliberate non-goal (see ROADMAP Phase 1), so nothing in the tree marks a page `PAGE_COW`. Treat it as untested code.
 
 ### Disk-backed storage (volume geometry)
 
@@ -98,7 +100,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are a shared, descriptive, errno-aligned `SYS_ERR_*` set (`include/errno.h`) used by both kernel and userspace, with `sys_strerror()`. The dispatcher and the auth / user-copy paths return specific codes; some deeper helpers still use ad-hoc small negatives.
 - The Rust crate is named `horus_shell` for historical reasons; it is the security core (capabilities, memory refcounting, the SHA-2/BLAKE2b/Argon2id/KDF/AEAD/RNG primitives, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stubs for the `MINIMAL_SECURE=1` build; it is build configuration, not security logic.
-- **Tests:** 58 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **20 gated jobs** (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; thirteen headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, async notifications, SMP, and the filesystem/libc suite: fs, fs-perms, fs-conc, fs-persist, fs-wal, fs-large, newlib; a scripted `smoke-session` integration test that drives the real ring-3 shell over serial; a reproducible-build check; and a security scan + SBOM). The scripted-session harness (`tools/session_test.py`) is a first, deliberately small integration test — broader scenarios (W^X violations, IPC/FS round-trips) and fuzzing are still ahead, as is automatic checking of the TLA+ specs in `docs/`.
+- **Tests:** 58 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **20 jobs** (nineteen gating; the `security` SAST/SBOM scan is advisory and never blocks a merge) (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; thirteen headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, async notifications, SMP, and the filesystem/libc suite: fs, fs-perms, fs-conc, fs-persist, fs-wal, fs-large, newlib; a scripted `smoke-session` integration test that drives the real ring-3 shell over serial; a reproducible-build check; and a security scan + SBOM). The scripted-session harness (`tools/session_test.py`) is a first, deliberately small integration test — broader scenarios (W^X violations, IPC/FS round-trips) and fuzzing are still ahead, as is automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -118,4 +120,4 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD) | ~80% |
 | Storage / disk I/O | ~75% (ATA probe + persisted crypto metadata + crash-atomic journal; volume-size cap remains) |
 | SMP | ~55% (works behind `SMP=1`; not default, shared run queue, no priorities) |
-| Testing | ~45% (58 unit tests + 11 CI jobs + six boot self-tests; no deeper integration/fuzz) |
+| Testing | ~45% (58 unit tests + 20 CI jobs + thirteen QEMU self-tests; no deeper integration/fuzz) |

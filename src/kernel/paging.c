@@ -11,6 +11,10 @@ extern tcb_t tasks[MAX_TASKS];
 #define PAGE_ACCESSED  (1 << 5)
 #define PAGE_DIRTY     (1 << 6)
 #define PAGE_4MB       (1 << 7)
+/* Page Size bit. Set in a PDPTE it means a 1 GiB page; in a PDE, a 2 MiB page.
+ * Either way the entry's frame base is NOT a pointer to a lower-level table, so
+ * a page walker must stop rather than dereference it. */
+#define PAGE_PS        (1ULL << 7)
 #define PAGE_GLOBAL    (1 << 8)
 #define PAGE_COW       (1 << 9)
 /* No-execute (bit 63). EFER.NXE is enabled in multiboot.S, so the CPU honours
@@ -31,6 +35,25 @@ extern tcb_t tasks[MAX_TASKS];
 #define RECURSIVE_PDPT_VADDR  0xFFFFFFFFFFE00000ULL
 #define RECURSIVE_PD_VADDR64  0xFFFFFFFFC0000000ULL
 #define RECURSIVE_PT_VADDR64  0xFFFFFF8000000000ULL
+
+/* Higher-half alias of physical memory, valid in EVERY address space.
+ *
+ * multiboot.S builds pml4[511] -> high_pdpt -> high_pdpt[2] -> pd, and pd[k]
+ * identity-maps k*2MiB with a supervisor huge page, so VA(511, 2, k, off)
+ * reaches physical k*2MiB+off for the whole [0, 1 GiB) range.
+ * create_user_pagedir copies pml4[256..511] into every task's PML4, so this
+ * window resolves on a user CR3 too.
+ *
+ * This matters because the low identity map is NOT usable from a user CR3: a
+ * task's page directory only covers [0, 16 MiB), while the user page pool
+ * (USER_PHYS_BASE) starts AT 16 MiB. The demand pager runs on the faulting
+ * task's CR3 and must read page tables and zero/copy freshly allocated frames —
+ * all of which live in that pool. Reaching them through the low identity VA
+ * faulted inside the fault handler, which then re-entered the page_lock it
+ * already held with interrupts disabled and wedged the machine. Always use this
+ * macro for physical access from the pager. */
+#define PHYS_KVA_BASE  0xFFFFFF8080000000ULL
+#define PHYS_KVA(p)    ((void *)(PHYS_KVA_BASE + (uint64_t)(p)))
 
 
 
@@ -148,7 +171,7 @@ void create_user_pagedir(uint32_t task_id) {
     
     uint64_t pml4_phys = alloc_user_physical_page();
     if (pml4_phys == 0) { println("pagedir: no pml4 phys"); spin_unlock(&page_lock); return; }
-    uint64_t *pml4_tab = (uint64_t *)(uintptr_t)pml4_phys;
+    uint64_t *pml4_tab = (uint64_t *)PHYS_KVA(pml4_phys);
     for (int i = 0; i < 512; i++) pml4_tab[i] = 0;
 
     
@@ -169,12 +192,12 @@ void create_user_pagedir(uint32_t task_id) {
     
     uint64_t pdpt_phys = alloc_user_physical_page();
     if (pdpt_phys == 0) { println("pagedir: no pdpt phys"); spin_unlock(&page_lock); return; }
-    uint64_t *my_pdpt = (uint64_t *)(uintptr_t)pdpt_phys;
+    uint64_t *my_pdpt = (uint64_t *)PHYS_KVA(pdpt_phys);
     for (int j = 0; j < 512; j++) my_pdpt[j] = 0;
 
     uint64_t pd_phys = alloc_user_physical_page();
     if (pd_phys == 0) { println("pagedir: no pd phys"); spin_unlock(&page_lock); return; }
-    uint64_t *my_pd = (uint64_t *)(uintptr_t)pd_phys;
+    uint64_t *my_pd = (uint64_t *)PHYS_KVA(pd_phys);
     for (int j = 0; j < 512; j++) my_pd[j] = 0;
 
     
@@ -213,7 +236,7 @@ void create_user_pagedir(uint32_t task_id) {
          * map the image pages as USER at the randomized base offset. */
         uint64_t pt_phys = alloc_user_physical_page();
         if (pt_phys) {
-            cur_pt = (uint64_t *)pt_phys;
+            cur_pt = (uint64_t *)PHYS_KVA(pt_phys);
             uint64_t region_base = (uint64_t)pdi * 0x200000ULL;
             for (int k = 0; k < 512; k++)
                 cur_pt[k] = (region_base + (uint64_t)k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
@@ -228,7 +251,7 @@ void create_user_pagedir(uint32_t task_id) {
         uint64_t phys = alloc_user_physical_page();
         if (phys == 0) break;
 
-        uint8_t *pg = (uint8_t *)phys;
+        uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
         for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
 
         uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(vbase + (uint64_t)p * PAGE_SIZE));
@@ -242,7 +265,7 @@ void create_user_pagedir(uint32_t task_id) {
     if (hs_pdi < 512 && my_pd[hs_pdi] == 0) {
         uint64_t pt_phys = alloc_user_physical_page();
         if (pt_phys) {
-            uint64_t *pt = (uint64_t *)pt_phys;
+            uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
             for (int k = 0; k < 512; k++) pt[k] = 0;
             my_pd[hs_pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
 
@@ -250,7 +273,7 @@ void create_user_pagedir(uint32_t task_id) {
             for (int s = 0; s < 64; s++) {
                 uint64_t phys = alloc_user_physical_page();
                 if (phys == 0) break;
-                uint8_t *pg = (uint8_t *)phys; for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
+                uint8_t *pg = (uint8_t *)PHYS_KVA(phys); for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
                 int spti = ((hs_base + (uint64_t)s * PAGE_SIZE) >> 12) & 511;
                 uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(hs_base + (uint64_t)s * PAGE_SIZE));
                 uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
@@ -268,7 +291,7 @@ void create_user_pagedir(uint32_t task_id) {
         if (ls_pdi < 512) {
             uint64_t pt_phys = alloc_user_physical_page();
             if (pt_phys) {
-                uint64_t *pt = (uint64_t *)pt_phys;
+                uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
 
                 uint64_t ls_region_base = (uint64_t)ls_pdi * 0x200000ULL;
                 for (int k = 0; k < 512; k++)
@@ -343,7 +366,10 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
 
     spin_lock(&page_lock);
 
-    uint64_t *pml4v = (uint64_t *)cr3_phys;
+    /* Page tables live in the user page pool (>= USER_PHYS_BASE = 16 MiB) and we
+     * are running on the faulting task's CR3, whose low identity map only covers
+     * [0, 16 MiB). Reach every table through the higher-half alias. */
+    uint64_t *pml4v = (uint64_t *)PHYS_KVA(cr3_phys);
 
     uint64_t v = fault_addr;
     uint64_t pml4_i = (v >> 39) & 0x1FF;
@@ -353,33 +379,43 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
 
     uint64_t pml4e = pml4v[pml4_i];
     if ((pml4e & PAGE_PRESENT) == 0) { spin_unlock(&page_lock); return -1; }
-    uint64_t *pdptv = (uint64_t *)(pml4e & ~0xFFFULL);
+    uint64_t *pdptv = (uint64_t *)PHYS_KVA(pml4e & ~0xFFFULL);
 
     uint64_t pdpte = pdptv[pdpt_i];
+    /* A 1 GiB huge PDPTE has no page directory below it: its 30-bit-aligned frame
+     * base is NOT a table pointer. Walking into it would read (and then write)
+     * arbitrary memory as if it were a page table. Refuse. */
+    if ((pdpte & PAGE_PRESENT) && (pdpte & PAGE_PS)) { spin_unlock(&page_lock); return -1; }
     if ((pdpte & PAGE_PRESENT) == 0) {
-        
+
         uint64_t new_pd_phys = alloc_user_physical_page();
         if (new_pd_phys == 0) { spin_unlock(&page_lock); return -3; }
-        uint64_t *new_pd = (uint64_t *)new_pd_phys;
+        uint64_t *new_pd = (uint64_t *)PHYS_KVA(new_pd_phys);
         for (int i = 0; i < 512; i++) new_pd[i] = 0;
         pdptv[pdpt_i] = new_pd_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
         pdpte = pdptv[pdpt_i];
         asm volatile("invlpg (%0)" :: "r"(v) : "memory");
     }
-    uint64_t *pdv = (uint64_t *)(pdpte & ~0xFFFULL);
+    uint64_t *pdv = (uint64_t *)PHYS_KVA(pdpte & ~0xFFFULL);
 
     uint64_t pde = pdv[pd_i];
+    /* Same for a 2 MiB huge PDE. create_user_pagedir premaps PD[0..7] as
+     * supervisor huge pages, so without this the walker treats a 2 MiB frame base
+     * as a page table, reads kernel .bss as a PTE, and can write a user PTE over
+     * it — while the fault never resolves, so it re-faults and drains the page
+     * pool. Nothing legitimate demand-faults inside a huge mapping. */
+    if ((pde & PAGE_PRESENT) && (pde & PAGE_PS)) { spin_unlock(&page_lock); return -1; }
     if ((pde & PAGE_PRESENT) == 0) {
-        
+
         uint64_t new_pt_phys = alloc_user_physical_page();
         if (new_pt_phys == 0) { spin_unlock(&page_lock); return -3; }
-        uint64_t *new_pt = (uint64_t *)new_pt_phys;
+        uint64_t *new_pt = (uint64_t *)PHYS_KVA(new_pt_phys);
         for (int i = 0; i < 512; i++) new_pt[i] = 0;
         pdv[pd_i] = new_pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
         pde = pdv[pd_i];
         asm volatile("invlpg (%0)" :: "r"(v) : "memory");
     }
-    uint64_t *ptv = (uint64_t *)(pde & ~0xFFFULL);
+    uint64_t *ptv = (uint64_t *)PHYS_KVA(pde & ~0xFFFULL);
 
     uint64_t pte = ptv[pt_i];
 
@@ -416,8 +452,10 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
             return -3;
         }
 
-        uint8_t *src = (uint8_t *)(addr_t)old_phys;
-        uint8_t *dst = (uint8_t *)(addr_t)new_phys;
+        /* Both frames are in the user pool (>= 16 MiB), unreachable through the
+         * low identity map on this task's CR3 — copy via the higher-half alias. */
+        uint8_t *src = (uint8_t *)PHYS_KVA(old_phys);
+        uint8_t *dst = (uint8_t *)PHYS_KVA(new_phys);
         for (int i = 0; i < PAGE_SIZE; i++) dst[i] = src[i];
 
         (void)rust_page_ref_inc((uint32_t)new_phys,
@@ -449,7 +487,9 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
         return -3;
     }
 
-    uint8_t *page = (uint8_t *)(addr_t)phys;
+    /* Zero through the higher-half alias: `phys` is in the user pool at/above
+     * 16 MiB, which this task's CR3 does not identity-map. */
+    uint8_t *page = (uint8_t *)PHYS_KVA(phys);
     for (int i = 0; i < PAGE_SIZE; i++) page[i] = 0;
 
     uint32_t prot = rust_get_user_page_protection(get_current_task(), fault_addr);
@@ -508,18 +548,18 @@ static bool __attribute__((unused)) is_user_address_valid(uint64_t vaddr) {
 
 
 static uint64_t pt_walk(uint64_t cr3, uint64_t v) {
-    uint64_t *t = (uint64_t *)(uintptr_t)(cr3 & PT_PHYS_MASK);
+    uint64_t *t = (uint64_t *)PHYS_KVA(cr3 & PT_PHYS_MASK);
     uint64_t e = t[(v >> 39) & 0x1FF];
     if (!(e & PAGE_PRESENT)) return 0;
-    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    t = (uint64_t *)PHYS_KVA(e & PT_PHYS_MASK);
     e = t[(v >> 30) & 0x1FF];
     if (!(e & PAGE_PRESENT)) return 0;
     if (e & PAGE_4MB) return e;                 
-    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    t = (uint64_t *)PHYS_KVA(e & PT_PHYS_MASK);
     e = t[(v >> 21) & 0x1FF];
     if (!(e & PAGE_PRESENT)) return 0;
     if (e & PAGE_4MB) return e;                 
-    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    t = (uint64_t *)PHYS_KVA(e & PT_PHYS_MASK);
     e = t[(v >> 12) & 0x1FF];
     if (!(e & PAGE_PRESENT)) return 0;
     return e;
@@ -551,16 +591,16 @@ int user_protect_page(uint64_t vaddr, int writable, int executable) {
     uint64_t cr3 = tasks[cur].cr3;
     if (cr3 == 0) return -1;
 
-    uint64_t *t = (uint64_t *)(uintptr_t)(cr3 & PT_PHYS_MASK);
+    uint64_t *t = (uint64_t *)PHYS_KVA(cr3 & PT_PHYS_MASK);
     uint64_t e = t[(vaddr >> 39) & 0x1FF];
     if (!(e & PAGE_PRESENT)) return -1;
-    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    t = (uint64_t *)PHYS_KVA(e & PT_PHYS_MASK);
     e = t[(vaddr >> 30) & 0x1FF];
     if (!(e & PAGE_PRESENT) || (e & PAGE_4MB)) return -1;
-    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    t = (uint64_t *)PHYS_KVA(e & PT_PHYS_MASK);
     e = t[(vaddr >> 21) & 0x1FF];
     if (!(e & PAGE_PRESENT) || (e & PAGE_4MB)) return -1;
-    t = (uint64_t *)(uintptr_t)(e & PT_PHYS_MASK);
+    t = (uint64_t *)PHYS_KVA(e & PT_PHYS_MASK);
     int i = (int)((vaddr >> 12) & 0x1FF);
     uint64_t pte = t[i];
     if (!(pte & PAGE_PRESENT)) return -1;
@@ -648,11 +688,11 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
     const uint64_t PS_BIT = (1ULL << 7); 
 
     uint64_t ent = root_pml4[pml4i];
-    uint64_t *pdpt = (uint64_t *)(ent & ~0xFFFULL);
+    uint64_t *pdpt = (uint64_t *)PHYS_KVA(ent & ~0xFFFULL);
     if ((ent & PAGE_PRESENT) == 0 || !pdpt) {
         uint64_t np = alloc_user_physical_page();
         if (np == 0) return;
-        pdpt = (uint64_t *)(uintptr_t)np;
+        pdpt = (uint64_t *)PHYS_KVA(np);
         for (int k = 0; k < 512; k++) pdpt[k] = 0;
         root_pml4[pml4i] = np | PAGE_PRESENT | PAGE_WRITE;
     }
@@ -663,7 +703,7 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
         uint64_t huge_base = ent & ~0xFFFULL & ~((1ULL<<30)-1); 
         uint64_t npd_phys = alloc_user_physical_page();
         if (npd_phys == 0) return;
-        uint64_t *npd = (uint64_t *)(uintptr_t)npd_phys;
+        uint64_t *npd = (uint64_t *)PHYS_KVA(npd_phys);
         for (int j = 0; j < 512; j++) {
             
             uint64_t base2m = huge_base + ((uint64_t)j << 21);
@@ -673,11 +713,11 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
         ent = pdpt[pdpti];
     }
 
-    uint64_t *pd = (uint64_t *)(ent & ~0xFFFULL);
+    uint64_t *pd = (uint64_t *)PHYS_KVA(ent & ~0xFFFULL);
     if ((ent & PAGE_PRESENT) == 0 || !pd) {
         uint64_t np = alloc_user_physical_page();
         if (np == 0) return;
-        pd = (uint64_t *)(uintptr_t)np;
+        pd = (uint64_t *)PHYS_KVA(np);
         for (int k = 0; k < 512; k++) pd[k] = 0;
         pdpt[pdpti] = np | PAGE_PRESENT | PAGE_WRITE;
     }
@@ -688,7 +728,7 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
         uint64_t huge_base = ent & ~0xFFFULL & ~((1ULL<<21)-1);
         uint64_t npt_phys = alloc_user_physical_page();
         if (npt_phys == 0) return;
-        uint64_t *npt = (uint64_t *)(uintptr_t)npt_phys;
+        uint64_t *npt = (uint64_t *)PHYS_KVA(npt_phys);
         for (int j = 0; j < 512; j++) {
             uint64_t base4k = huge_base + ((uint64_t)j << 12);
             uint64_t flags = PAGE_PRESENT | PAGE_WRITE | PAGE_GLOBAL;
@@ -699,11 +739,11 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
         ent = pd[pdi];
     }
 
-    uint64_t *pt = (uint64_t *)(ent & ~0xFFFULL);
+    uint64_t *pt = (uint64_t *)PHYS_KVA(ent & ~0xFFFULL);
     if ((ent & PAGE_PRESENT) == 0 || !pt) {
         uint64_t np = alloc_user_physical_page();
         if (np == 0) return;
-        pt = (uint64_t *)(uintptr_t)np;
+        pt = (uint64_t *)PHYS_KVA(np);
         for (int k = 0; k < 512; k++) pt[k] = 0;
         pd[pdi] = np | PAGE_PRESENT | PAGE_WRITE;
     }

@@ -532,7 +532,13 @@ uint64_t page_fault_handler(struct regs *r) {
 
     uint32_t err = r->err_code;
     int cur = get_current_task();
-    if (cur > 0 && (fault_addr >= USER_AREA_BASE || fault_addr >= 0xA00000)) {
+    /* Only ask the pager about addresses that can legitimately be user memory.
+     * The old test was `>= USER_AREA_BASE || >= 0xA00000` — the second clause is
+     * dead (anything >= 0xA00000 is >= 0x400000) and, with no upper bound, this
+     * handed the pager every address above 4 MiB, including the kernel's own .bss
+     * (which runs to 15.37 MiB) and the [8, 16) MiB huge-page region. */
+    if (cur > 0 && fault_addr >= USER_AREA_BASE &&
+        fault_addr < (uint64_t)USER_HEAP_BASE + USER_HEAP_MAX_SIZE) {
         /* Ask the Rust handler first (CoW, etc.). action == 2 means fully handled.
          * Any other return value means "not handled"; fall through to the C demand
          * pager exactly once. The old code called handle_demand_page_fault twice:
@@ -547,42 +553,58 @@ uint64_t page_fault_handler(struct regs *r) {
         }
     }
     bool allowed = rust_validate_page_fault(cur, fault_addr, err);
+    struct interrupt_frame64 *f64 = (struct interrupt_frame64 *)r;
 
-    if (!allowed) {
-        struct interrupt_frame64 *f64 = (struct interrupt_frame64 *)r;
-        int cur = get_current_task();
-        /* Deliver SIGSEGV to a registered ring-3 handler instead of killing the
-         * task (and without printing the fault banner). */
-        if (cur > 0 && (f64->cs & 3) &&
-            try_deliver_fault_signal(f64, cur, SIG_SEGV, fault_addr)) {
-            return 0;
-        }
-        int killed = get_current_task();
-        if (killed == 0 || (f64->cs & 3) == 0) {
-            println("PAGE FAULT at ");
-            print_hex(fault_addr);
-            println(" err=");
-            print_hex(err);
-            println(" task=");
-            print_hex(killed);
-            println("Rejected by validator - killing task ");
-            print_hex(killed);
-            println("");
-        }
-        /* Same as the vector < 32 kill path: tear down (wake SYS_WAIT waiters)
-         * and resume the next runnable task via its saved trap frame. */
-        if (killed > 0) {
-            task_teardown(killed);
-            uint64_t rsp = task_exit_switch(killed);
-            if (rsp) return rsp;
-            f64->rip    = (uint64_t)resume_shell_after_fault;
-            f64->cs     = 0x08;
-            f64->rflags = 0x202;
-            f64->rsp    = tasks[0].kernel_stack_top;
-            f64->ss     = 0x10;
-            return 0;
-        }
-        asm volatile("cli; hlt");
+    /* Deliver SIGSEGV to a registered ring-3 handler instead of killing the
+     * task (and without printing the fault banner). Only for a fault the
+     * validator rejected: one it approved but the pager could not resolve is a
+     * kernel-side inconsistency, not something to hand a task's handler. */
+    if (!allowed && cur > 0 && (f64->cs & 3) &&
+        try_deliver_fault_signal(f64, cur, SIG_SEGV, fault_addr)) {
+        return 0;
+    }
+
+    int killed = get_current_task();
+    if (killed == 0 || (f64->cs & 3) == 0) {
+        println("PAGE FAULT at ");
+        print_hex(fault_addr);
+        println(" err=");
+        print_hex(err);
+        println(" task=");
+        print_hex(killed);
+        println(allowed ? "Approved by validator but unmappable - killing task "
+                        : "Rejected by validator - killing task ");
+        print_hex(killed);
+        println("");
+    }
+
+    /* Kill the task, never the machine.
+     *
+     * We land here two ways: the validator rejected the address, or it approved
+     * one the pager could not map. The second used to fall through to the
+     * `cli; hlt` below, which meant a ring-3 task could stop the kernel dead by
+     * reading an address the validator blesses but that cannot be demand-mapped —
+     * e.g. 0x570000 (kernel_page_dir), which is inside the [4, 8) MiB window
+     * rust_validate_page_fault approves but is identity-mapped supervisor, so the
+     * pager returns -2 ("already present") and declines. Both cases are fatal to
+     * the task and neither is fatal to the system.
+     *
+     * Note this is deliberately not conditioned on `f64->cs & 3`: the faulting
+     * access can be a *supervisor* one (the kernel touching a bad user address
+     * mid-syscall on this task's CR3, err bit 2 clear). Blaming only ring-3
+     * faults would leave exactly that case halting the machine.
+     *
+     * Only a fault with no task to blame (cur == 0, the kernel's own context)
+     * still halts — there is nothing to kill and continuing would be worse. */
+    if (killed > 0) {
+        task_teardown(killed);
+        uint64_t rsp = task_exit_switch(killed);
+        if (rsp) return rsp;
+        f64->rip    = (uint64_t)resume_shell_after_fault;
+        f64->cs     = 0x08;
+        f64->rflags = 0x202;
+        f64->rsp    = tasks[0].kernel_stack_top;
+        f64->ss     = 0x10;
         return 0;
     }
 

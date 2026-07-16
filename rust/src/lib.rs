@@ -42,8 +42,8 @@ impl SafeCap {
 
 /// Low user stack window that `create_user_pagedir` premaps (32 pages below
 /// `0x7ff000`). Fixed, so it is a constant here rather than a per-task bound.
-const LOW_STACK_BASE: u32 = 0x7df000;
-const LOW_STACK_TOP: u32 = 0x7ff000;
+const LOW_STACK_BASE: u64 = 0x7df000;
+const LOW_STACK_TOP: u64 = 0x7ff000;
 
 /// Is `fault_addr` a legitimate part of THIS task's user address space?
 ///
@@ -60,12 +60,12 @@ const LOW_STACK_TOP: u32 = 0x7ff000;
 /// the fault handler uses it for the SIGSEGV-vs-diagnostic decision.
 #[no_mangle]
 pub extern "C" fn rust_validate_page_fault(
-    fault_addr: u32,
+    fault_addr: u64,
     _error_code: u32,
-    image_base: u32,
-    image_end: u32,
-    heap_start: u32,
-    heap_end: u32,
+    image_base: u64,
+    image_end: u64,
+    heap_start: u64,
+    heap_end: u64,
 ) -> bool {
     // Image: code, rodata, data, bss. image_base is 0 only for an unbuilt task.
     if image_base != 0 && fault_addr >= image_base && fault_addr < image_end {
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn rust_cap_has_rights(cap: *const SafeCapability, require
 }
 
 #[no_mangle]
-pub extern "C" fn rust_get_user_page_protection(_task_id: u32, vaddr: u32) -> u32 {
+pub extern "C" fn rust_get_user_page_protection(_task_id: u32, vaddr: u64) -> u32 {
     // [0xA00000, 0xB00000) is deliberately absent. It used to be excluded because
     // the kernel was linked low and `argon2_scratch` occupied that virtual
     // address; the kernel now runs at KERNEL_VMA, so the reason is different but
@@ -239,7 +239,7 @@ mod tests {
         // heap [0x1000000, 0x1040000). Bounds come from tasks[tid] at the call site.
         let ib = 0x4a0000; let ie = 0x4b6000;
         let hs = 0x1000000; let he = 0x1040000;
-        let v = |a: u32| rust_validate_page_fault(a, 0, ib, ie, hs, he);
+        let v = |a: u64| rust_validate_page_fault(a, 0, ib, ie, hs, he);
 
         // In-region: image, heap, low stack.
         assert!(v(0x4a0000));            // image base

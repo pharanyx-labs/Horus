@@ -48,7 +48,11 @@ The endpoint-based `send`/`recv` cycle works (256-byte messages, capability-gate
 
 The `PAGE_COW` flag and refcount infrastructure are in place, and the page-fault handler calls into Rust to decide demand-zero vs. COW-copy. The demand-zero path now genuinely works — until recently it did not, and could not: the pager reached freshly allocated frames through a virtual address that a user CR3 does not map, so it faulted inside itself and deadlocked on the `page_lock` it already held, and separately the heap sat in a window that is identity-mapped supervisor and therefore cannot be demand-paged at all. Both are fixed (see CHANGES.md), and a probe walking 640 KiB of heap now completes.
 
-The COW-copy path shares that machinery and is unit-tested in Rust, but it is **not exercised end-to-end by anything**: `fork` is a deliberate non-goal (see ROADMAP Phase 1), so nothing in the tree marks a page `PAGE_COW`. Treat it as untested code.
+Demand-zero reads now resolve to a **single shared, read-only zero frame** marked `PAGE_COW`, so a task that reads a large sparse heap consumes one physical page rather than one per page touched. The first *write* breaks the sharing: the pager hands out a private zeroed frame, clears `PAGE_COW`, and preserves the address's NX bit. `make smoke-cow` exercises this from ring 3, asserting that fresh heap pages read as zero, that writing one page keeps its sibling zero, and that the two are mutually isolated afterwards. Note what that gates and what it does not: those assertions hold equally if the pager ignored the shared zero page and gave every fault a private frame, so `smoke-cow` gates the **user-visible contract**, not the sharing itself. That the sharing engages was confirmed by tracing the pager during development (one zero-page→private break per written page, and no more); gating it in CI would need kernel introspection the test deliberately does without.
+
+One branch remains untested end-to-end. Breaking the *zero* page needs no copy (the copy of an all-zero frame is zeros), so it takes a special case and returns early — the generic COW path that decrements the refcount and duplicates real page content is still reached by nothing, because `fork` is a deliberate non-goal (see ROADMAP Phase 1) and nothing else in the tree shares a **non-zero** page. That branch is unit-tested in Rust only; treat it as untested code.
+
+The shared zero frame is never freed: `free_user_physical_page` refuses it explicitly, and it is aliased by many PTEs whose refcounts are deliberately not tracked against it.
 
 ### Disk-backed storage (volume geometry)
 
@@ -64,7 +68,7 @@ Multi-core works behind `SMP=1`, but the shipped kernel is single-core. The mult
 
 ### ASLR entropy ceiling (32-bit userspace window)
 
-Per-spawn stack top, heap gap, and image load base are all randomised from the CSPRNG (userspace is static-PIE and relocated at load). The remaining limitation is *entropy*, not mechanism — userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window, so the image base has ~9 bits of entropy rather than the tens of bits a 64-bit userspace ABI would allow.
+Per-spawn stack top, heap gap, and image load base are all randomised from the CSPRNG (userspace is static-PIE and relocated at load). The remaining limitation is *entropy*, not mechanism — userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window, so the image base has 8.75 bits of entropy rather than the tens of bits a 64-bit userspace ABI would allow.
 
 ---
 
@@ -78,7 +82,7 @@ The block cipher is sound (ChaCha20 + HMAC-SHA256 AEAD, per-block HKDF subkeys, 
 
 ### Bounded load-base ASLR entropy
 
-Because userspace is confined to the low ~8 MiB 32-bit window, the load base has only ~9 bits of entropy, so a determined attacker with a memory-disclosure primitive faces a smaller search space than on a 64-bit-userspace system.
+Because userspace is confined to the low ~8 MiB 32-bit window, the load base has only 8.75 bits of entropy, so a determined attacker with a memory-disclosure primitive faces a smaller search space than on a 64-bit-userspace system.
 
 ### Audit log is tamper-evident, not tamper-proof
 
@@ -100,7 +104,7 @@ All kernel code runs at the same privilege level with access to all kernel data;
 - Error codes are a shared, descriptive, errno-aligned `SYS_ERR_*` set (`include/errno.h`) used by both kernel and userspace, with `sys_strerror()`. The dispatcher and the auth / user-copy paths return specific codes; some deeper helpers still use ad-hoc small negatives.
 - The Rust crate is named `horus_shell` for historical reasons; it is the security core (capabilities, memory refcounting, the SHA-2/BLAKE2b/Argon2id/KDF/AEAD/RNG primitives, FFI validation).
 - `src/kernel/minimal_secure_stubs.c` supplies the stubs for the `MINIMAL_SECURE=1` build; it is build configuration, not security logic.
-- **Tests:** 58 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **20 jobs** (nineteen gating; the `security` SAST/SBOM scan is advisory and never blocks a merge) (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; thirteen headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, async notifications, SMP, and the filesystem/libc suite: fs, fs-perms, fs-conc, fs-persist, fs-wal, fs-large, newlib; a scripted `smoke-session` integration test that drives the real ring-3 shell over serial; a reproducible-build check; and a security scan + SBOM). The scripted-session harness (`tools/session_test.py`) is a first, deliberately small integration test — broader scenarios (W^X violations, IPC/FS round-trips) and fuzzing are still ahead, as is automatic checking of the TLA+ specs in `docs/`.
+- **Tests:** 58 Rust unit tests (capability engine, memory/refcount trust boundary, RNG and SHA-2 family vs. published vectors, the ChaCha20+HMAC AEAD, the tamper-evident audit MAC/chain, BLAKE2b + Argon2id vs. RFC 7693 / `argon2-cffi` vectors, the W^X page policy, the signal-handler-address window, FFI validation). CI runs **21 jobs** (twenty gating; the `security` SAST/SBOM scan is advisory and never blocks a merge) (`cargo test` + `clippy -D warnings`; kernel/ISO build; alt-config matrix; fifteen headless QEMU self-tests — smoke-boot, ELF/W^X, preemption, signals, process-control, copy-on-write, async notifications, SMP, and the filesystem/libc suite: fs, fs-perms, fs-conc, fs-persist, fs-wal, fs-large, newlib; a scripted `smoke-session` integration test that drives the real ring-3 shell over serial; a reproducible-build check; and a security scan + SBOM). The scripted-session harness (`tools/session_test.py`) is a first, deliberately small integration test — broader scenarios (W^X violations, IPC/FS round-trips) and fuzzing are still ahead, as is automatic checking of the TLA+ specs in `docs/`.
 
 ---
 
@@ -120,4 +124,4 @@ Rough orientation only, not guarantees. The capability system is the most comple
 | Cryptography (Argon2id/BLAKE2b + KDF/MAC/RNG + ChaCha20/HMAC AEAD) | ~80% |
 | Storage / disk I/O | ~75% (ATA probe + persisted crypto metadata + crash-atomic journal; volume-size cap remains) |
 | SMP | ~55% (works behind `SMP=1`; not default, shared run queue, no priorities) |
-| Testing | ~45% (58 unit tests + 20 CI jobs + thirteen QEMU self-tests; no deeper integration/fuzz) |
+| Testing | ~45% (58 unit tests + 21 CI jobs + fifteen QEMU self-tests; no deeper integration/fuzz) |

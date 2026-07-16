@@ -190,6 +190,17 @@ ASFLAGS += -DNOTIFY_SELFTEST
 NOTIFY_SELFTEST_DEP = userspace/notifytest.bin
 endif
 
+# COW_SELFTEST=1 embeds cowtest and, at boot, reads two fresh heap pages (each
+# aliasing the shared zero page) then writes one, proving the write breaks
+# copy-on-write into a private page without disturbing its sibling (prints
+# COW_SELFTEST: PASS). Gated off the ship kernel.
+COW_SELFTEST ?= 0
+ifeq ($(COW_SELFTEST),1)
+CFLAGS  += -DCOW_SELFTEST
+ASFLAGS += -DCOW_SELFTEST
+COW_SELFTEST_DEP = userspace/cowtest.bin
+endif
+
 # PROC_SELFTEST=1 embeds the proctest driver and, at boot, drives SYS_EXIT +
 # SYS_KILL from ring 3, confirming both a self-exiting child and a killed child
 # reach the dead state (prints PROC_SELFTEST: PASS). Gated off the ship kernel.
@@ -272,7 +283,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -437,7 +448,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -652,6 +663,17 @@ smoke-notify:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NOTIFY_SELFTEST: PASS' \
 		FAIL_MARKER='NOTIFY_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated copy-on-write self-test, boot headless, and require that a
+# write to a read-only shared-zero page breaks COW into a private page without
+# disturbing its sibling (COW_SELFTEST: PASS).
+.PHONY: smoke-cow
+smoke-cow:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COW_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COW_SELFTEST: PASS' \
+		FAIL_MARKER='COW_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Scripted integration session: build the shipped kernel and drive the *real*
 # ring-3 shell over serial (login, identity, and a capability-gated admin op

@@ -30,14 +30,14 @@ int rust_handle_command(const uint8_t *cmd, size_t len) {
     return -1;
 }
 
-bool rust_validate_page_fault(uint32_t task_id, uint32_t fault_addr, uint32_t error_code) {
-    (void)task_id;
+/* No-Rust fallback: mirror rust/src/lib.rs's region-aware check. */
+bool rust_validate_page_fault(uint32_t fault_addr, uint32_t error_code,
+                              uint32_t image_base, uint32_t image_end,
+                              uint32_t heap_start, uint32_t heap_end) {
     (void)error_code;
-
-    if (fault_addr >= 0x7FB000 && fault_addr < 0x7FC000) return false;
-
-    if (fault_addr >= 0x400000 && fault_addr < 0x800000) return true;
-    if (fault_addr >= 0xA00000 && fault_addr < 0xB00000) return true;
+    if (image_base != 0 && fault_addr >= image_base && fault_addr < image_end) return true;
+    if (heap_start != 0 && fault_addr >= heap_start && fault_addr < heap_end) return true;
+    if (fault_addr >= 0x7df000 && fault_addr < 0x7ff000) return true;   /* low stack */
     return false;
 }
 

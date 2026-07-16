@@ -486,6 +486,18 @@ embedded_notifytest_bin_start:
 embedded_notifytest_bin_end:
 #endif
 
+#ifdef COW_SELFTEST
+/* PIE cowtest binary: reads two fresh heap pages (shared zero page) then writes
+ * one, proving copy-on-write hands out a private page without disturbing the
+ * sibling. */
+.align 16
+.global embedded_cowtest_bin_start
+embedded_cowtest_bin_start:
+.incbin "userspace/cowtest.bin"
+.global embedded_cowtest_bin_end
+embedded_cowtest_bin_end:
+#endif
+
 #ifdef FS_SELFTEST
 /* PIE userspace fs_server + a client that drives it over IPC, used by the
  * filesystem self-test (fs_selftest). Only embedded in the FS_SELFTEST build. */

@@ -86,7 +86,7 @@ Each of these does a clean build with the relevant `*_SELFTEST` (or `SMP`) flag,
 | `make smoke-proc` | Ring-3 process control: exit + kill + spawn + exec + grant + signal + wait (+ fault-wait) (`PROC_SELFTEST: PASS …`) |
 | `make smoke-fs` | The ring-3 `fs_server` + a client drive the full path over IPC (`FS_SELFTEST: PASS`); `make smoke-fs STORAGE=ata` runs it against a real ATA image |
 | `make smoke-fs-persist` / `-perms` / `-conc` / `-wal` / `-large` | Filesystem persistence across reboot, per-file POSIX permissions, multi-client concurrency, the write-ahead journal replay, and large/double-indirect files (local) |
-| `make smoke-init-fs` | The `init`-delegated `fs_server` driven by an automated client end-to-end (local) |
+| `make smoke-init-fs` | The `init`-delegated `fs_server` driven by an automated client end-to-end |
 | `make smoke-newlib` | The newlib libc port over the POSIX fd layer (`NEWLIB_SELFTEST: PASS`). First run fetches and builds newlib — see below |
 | `make smoke-smp` | Application processors come online and concurrently run scheduled tasks (`SMP_SELFTEST: PASS`); `SMP_CPUS=<n>` sets the core count |
 

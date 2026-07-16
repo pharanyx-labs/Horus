@@ -1,14 +1,5 @@
 #include "kernel.h"
 
-#define PAGE_PRESENT   (1 << 0)
-#define RECURSIVE_PD_VADDR  0xFFFFF000
-#define RECURSIVE_PT_VADDR  0xFFC00000
-
-typedef uint32_t pde_t;
-typedef uint32_t pte_t;
-
-#define PAGE_COW       (1 << 9)
-
 int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code);
 
 struct idt_ptr {

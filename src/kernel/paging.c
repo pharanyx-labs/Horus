@@ -32,37 +32,9 @@ extern tcb_t tasks[MAX_TASKS];
  * (rust_user_page_is_noexec); the kernel ORs PAGE_NX into the PTE when it
  * returns true. See rust/src/lib.rs. */
 
-#define RECURSIVE_PD_VADDR  0xFFFFF000
-#define RECURSIVE_PT_VADDR  0xFFC00000
+/* KERNEL_VMA / virt_to_phys / phys_to_virt / PHYS_KVA live in kernel.h — the
+ * self-test and SMP bringup paths need them too. */
 
-#define RECURSIVE_PML4_VADDR  0xFFFFFFFFFFFFF000ULL
-#define RECURSIVE_PDPT_VADDR  0xFFFFFFFFFFE00000ULL
-#define RECURSIVE_PD_VADDR64  0xFFFFFFFFC0000000ULL
-#define RECURSIVE_PT_VADDR64  0xFFFFFF8000000000ULL
-
-/* Higher-half alias of physical memory, valid in EVERY address space.
- *
- * multiboot.S builds pml4[511] -> high_pdpt -> high_pdpt[2] -> pd, and pd[k]
- * identity-maps k*2MiB with a supervisor huge page, so VA(511, 2, k, off)
- * reaches physical k*2MiB+off for the whole [0, 1 GiB) range.
- * create_user_pagedir copies pml4[256..511] into every task's PML4, so this
- * window resolves on a user CR3 too.
- *
- * This matters because the low identity map is NOT usable from a user CR3: a
- * task's page directory only covers [0, 16 MiB), while the user page pool
- * (USER_PHYS_BASE) starts AT 16 MiB. The demand pager runs on the faulting
- * task's CR3 and must read page tables and zero/copy freshly allocated frames —
- * all of which live in that pool. Reaching them through the low identity VA
- * faulted inside the fault handler, which then re-entered the page_lock it
- * already held with interrupts disabled and wedged the machine. Always use this
- * macro for physical access from the pager. */
-#define PHYS_KVA_BASE  0xFFFFFF8080000000ULL
-#define PHYS_KVA(p)    ((void *)(PHYS_KVA_BASE + (uint64_t)(p)))
-
-
-
-typedef uint32_t pte_t;
-typedef uint32_t pde_t;
 
 static uint32_t free_page_stack[USER_PHYS_PAGES];
 static int free_page_count = 0;
@@ -141,9 +113,6 @@ int page_ref_dec(uint32_t phys_addr) {
     return 0;
 }
 
-static pde_t kernel_page_dir[1024] __attribute__((used, aligned(4096)));
-
-
 void ensure_lapic_mapped(uint64_t *root);
 
 void paging_init(void) {
@@ -165,7 +134,10 @@ void paging_init(void) {
     }
     extern uint64_t pml4[512];
     if ((pml4[510] & 0x1) == 0) {
-        pml4[510] = ((uint64_t)pml4) | 0x3;
+        /* Self-map. The entry needs pml4's PHYSICAL address; `(uint64_t)pml4` is
+         * its virtual one and is only the same number because the kernel is
+         * linked identity-mapped. */
+        pml4[510] = virt_to_phys(pml4) | 0x3;
     }
     ensure_lapic_mapped(NULL);
     return;
@@ -199,21 +171,17 @@ void create_user_pagedir(uint32_t task_id) {
     uint64_t pml4_phys = alloc_user_physical_page();
     if (pml4_phys == 0) { println("pagedir: no pml4 phys"); spin_unlock(&page_lock); return; }
     uint64_t *pml4_tab = (uint64_t *)PHYS_KVA(pml4_phys);
+    /* User half [0..255] stays zero; the task's own mappings are built below. */
     for (int i = 0; i < 512; i++) pml4_tab[i] = 0;
-
-    
-    pml4_tab[510] = pml4_phys | PAGE_PRESENT | PAGE_WRITE;
 
     extern uint64_t pml4[512];
 
-    
-    for (int i = 0; i < 256; i++) {
-        pml4_tab[i] = 0;
-    }
-    
+    /* Kernel half: share the kernel's mappings so the kernel remains addressable
+     * on this CR3 (syscalls, ISRs, the pager), but strip PAGE_USER so ring 3
+     * cannot reach any of it. This is what carries PHYS_KVA into every task.
+     * The [510] self-map is set after this loop — it would overwrite it. */
     for (int i = 256; i < 512; i++) {
         pml4_tab[i] = pml4[i] & ~((uint64_t)PAGE_USER);
-        pml4_tab[i] &= ~(1ULL << 2);
     }
 
     
@@ -327,7 +295,7 @@ void create_user_pagedir(uint32_t task_id) {
                 for (int s = 0; s < 32; s++) {
                     uint64_t phys = alloc_user_physical_page();
                     if (phys == 0) break;
-                    uint8_t *pg = (uint8_t *)(uintptr_t)phys;
+                    uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
                     for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
                     uint64_t va = low_stack_base + (uint64_t)s * PAGE_SIZE;
                     int spti = (int)((va >> 12) & 511);
@@ -607,20 +575,6 @@ static bool is_canonical_address(uint64_t addr) {
     return (high_bits == 0) || (high_bits == 0xFFFF);
 }
 
-static bool __attribute__((unused)) is_user_address_valid(uint64_t vaddr) {
-    if (!is_canonical_address(vaddr)) return false;
-    if (vaddr >= 0x0000800000000000ULL) return false; 
-
-    
-    if (vaddr >= USER_AREA_BASE && vaddr < USER_MAX_VADDR) return true;
-
-    
-    if (vaddr >= (ASLR_HIGH_STACK_BASE - USER_HIGH_STACK_WINDOW) &&
-        vaddr < (ASLR_HIGH_STACK_BASE + 0x1000)) return true;
-
-    return false;
-}
-
 #define PT_PHYS_MASK 0x000FFFFFFFFFF000ULL
 
 
@@ -738,7 +692,12 @@ static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int n
         }
         if (chunk > n - done) chunk = n - done;
 
-        uint8_t *p = (uint8_t *)(uintptr_t)phys;
+        /* Reach the user's frame through the higher-half alias, not its low
+         * identity VA: this runs on the KERNEL CR3 (switched above), whose low
+         * map covers [0, 1 GiB) today — but the alias is the mapping that is
+         * guaranteed to exist in every address space and to survive the kernel
+         * moving out of low memory. */
+        uint8_t *p = (uint8_t *)PHYS_KVA(phys);
         if (to_user) {
             for (uint64_t i = 0; i < chunk; i++) p[i] = kbuf[done + i];
         } else {

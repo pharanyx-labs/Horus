@@ -3,7 +3,6 @@
 
 #include "kernel.h"
 
-extern uint32_t kernel_page_directory[];
 extern tcb_t tasks[MAX_TASKS];
 extern int current_task;
 extern void set_tss_kernel_stack(uintptr_t);

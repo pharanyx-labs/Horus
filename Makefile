@@ -308,13 +308,11 @@ endif
 
 run: kernel.elf
 	@$(MAKE) --no-print-directory boot.iso
-	@echo "Console on serial: connect with  nc localhost 4445  (boot waits for it)."
+	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \
-		-machine accel=kvm:tcg -display sdl -vga std \
-		-chardev socket,id=char0,port=4445,host=localhost,server=on,wait=on \
-		-serial chardev:char0 \
-		-serial tcp:localhost:4444,server,nowait,nodelay \
-		-monitor none -device isa-debug-exit,iobase=0x604,iosize=0x04 \
+		-machine accel=kvm:tcg -display none \
+		-serial mon:stdio \
+		-device isa-debug-exit,iobase=0x604,iosize=0x04 \
 		-net none -no-reboot -no-shutdown -cdrom boot.iso
 
 

@@ -88,8 +88,8 @@ static int do_spawn_inner(void) {
         return -2;
     }
 
-    uint32_t load_base = USER_AREA_BASE;
-    uint32_t stack_top = 0;
+    uint64_t load_base = USER_AREA_BASE;
+    uint64_t stack_top = 0;
     choose_image_placement(new_id, &load_base, &stack_top);
 
     create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base);
@@ -210,8 +210,8 @@ static void exec_into_armed_image(struct regs *r) {
     uint64_t kcr3 = virt_to_phys(pml4);   /* CR3 takes a physical address */
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
 
-    uint32_t load_base = USER_AREA_BASE;
-    uint32_t stack_top = 0;
+    uint64_t load_base = USER_AREA_BASE;
+    uint64_t stack_top = 0;
     choose_image_placement(cur, &load_base, &stack_top);
 
     /* Rebuild only the address space (fresh PML4 into tasks[cur].cr3); the cspace

@@ -11,17 +11,6 @@ typedef uint32_t pte_t;
 
 int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code);
 
-/* Weak stub: the real implementation is in Rust (when linked). Returns -1 so the
- * C demand-pager in page_fault_handler remains the single authoritative call site.
- * Previously this stub called handle_demand_page_fault itself, causing a double
- * invocation: the second call found the page already present (-2), fell through to
- * rust_validate_page_fault, and could kill a task whose fault was already handled. */
-__attribute__((weak))
-int rust_handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code, bool is_cow, uint16_t ref_count) {
-    (void)fault_addr; (void)err_code; (void)is_cow; (void)ref_count;
-    return -1;   /* not handled; caller will invoke handle_demand_page_fault once */
-}
-
 struct idt_ptr {
     uint16_t limit;
     addr_t   base;
@@ -544,15 +533,6 @@ uint64_t page_fault_handler(struct regs *r) {
      * (which runs to 15.37 MiB) and the [8, 16) MiB huge-page region. */
     if (cur > 0 && fault_addr >= USER_AREA_BASE &&
         fault_addr < (uint64_t)USER_HEAP_BASE + USER_HEAP_MAX_SIZE) {
-        /* Ask the Rust handler first (CoW, etc.). action == 2 means fully handled.
-         * Any other return value means "not handled"; fall through to the C demand
-         * pager exactly once. The old code called handle_demand_page_fault twice:
-         * once inside the (now-fixed) stub and once here, causing the second call to
-         * see the page already present (-2) and mis-route the fault to the kill path. */
-        int action = rust_handle_demand_page_fault(fault_addr, err, 0, 1);
-        if (action == 2) {
-            return 0;
-        }
         if (handle_demand_page_fault(fault_addr, err) == 0) {
             return 0;
         }

@@ -33,7 +33,14 @@ SECTIONS
     . = ALIGN(0x1000);
     .rodata  : { KEEP(*(.rodata.marker)) *(.rodata) *(.rodata.*) } :rodata
     .dynamic : { *(.dynamic) }             :rodata :dyn
-    .rel.dyn : { *(.rel.dyn) *(.rel.*) }   :rodata
+    /* Both reloc-table spellings: i386 emits REL (.rel.dyn), x86-64 emits RELA
+     * (.rela.dyn). This one script links the image for both (see the elftest.elf
+     * and elftest64.elf rules in the Makefile), and the names do not overlap --
+     * the glob `.rel.*` does NOT match `.rela.dyn` ("rela" is not "rel" + "."),
+     * so an unlisted .rela.dyn would be orphan-placed outside every PT_LOAD and
+     * the loader could not map its vaddr to a file offset. */
+    .rel.dyn  : { *(.rel.dyn) *(.rel.*) }    :rodata
+    .rela.dyn : { *(.rela.dyn) *(.rela.*) }  :rodata
     .dynsym  : { *(.dynsym) }              :rodata
     .dynstr  : { *(.dynstr) }              :rodata
     .hash    : { *(.hash) *(.gnu.hash) }   :rodata

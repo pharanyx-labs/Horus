@@ -71,6 +71,17 @@ static inline uint32_t elf_rd32(const uint8_t *p) {
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* Little-endian 64-bit read from an ELF byte image. Byte-at-a-time like
+ * elf_rd32: the ELF64 structures the loader walks (Elf64_Dyn, Elf64_Rela) are
+ * only 4-byte aligned within a program header, so a u64 load through a cast
+ * pointer would be misaligned. */
+static inline uint64_t elf_rd64(const uint8_t *p) {
+    return (uint64_t)p[0] | ((uint64_t)p[1] << 8) |
+           ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
+           ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) |
+           ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
+}
+
 /* ---- Debug-shell command history (defined in kshell.c) ------------------- *
  * Shared between the SYS_GET_LINE handler's line editor (syscall.c) and the
  * command loop (kshell.c). DEBUG_SHELL builds only. */

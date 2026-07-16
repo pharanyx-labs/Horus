@@ -66,6 +66,18 @@ ASFLAGS += -DELF_SELFTEST
 ELF_SELFTEST_DEP = userspace/elftest.elf
 endif
 
+# ELF64_SELFTEST=1 embeds the same elftest.c linked as a 64-bit static-PIE and
+# runs an in-kernel self-test of the loader's x86-64 RELA relocation path
+# (elf_apply_relocations_x86_64) plus W^X on an ELF64 image. The image is loaded
+# and inspected, never executed, so this does not depend on the 64-bit ring-3
+# ABI. Gated off the ship kernel.
+ELF64_SELFTEST ?= 0
+ifeq ($(ELF64_SELFTEST),1)
+CFLAGS  += -DELF64_SELFTEST
+ASFLAGS += -DELF64_SELFTEST
+ELF64_SELFTEST_DEP = userspace/elftest64.elf
+endif
+
 # ASLR_SELFTEST=1 spawns several PIE images at boot and asserts the loader
 # actually randomises the image base, and that every base keeps the premap inside
 # one page table (ASLR_SELFTEST: PASS). Reuses the ELF self-test's embedded image.
@@ -299,7 +311,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -372,6 +384,11 @@ iso: kernel.elf
 # fixed-base flat image; PIE objects link cleanly at a fixed address too.
 USERSPACE_CFLAGS = -m32 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
                    -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
+# 64-bit variant, used only by the ELF64 loader self-test image for now. The
+# shipping userspace is still -m32 until Stage 3d. -mno-red-zone matches the
+# kernel's own setting: the red zone is not safe across an interrupt frame.
+USERSPACE_CFLAGS_64 = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
+                      -mno-red-zone -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
 # init.c switches to the delegated-fs-server boot path under this flag, so the
 # userspace build of init must see it too (kernel CFLAGS alone won't reach it).
 ifeq ($(INIT_FS_SELFTEST),1)
@@ -447,6 +464,18 @@ userspace/%.elf: userspace/%.o
 userspace/elftest.elf: userspace/elftest.o userspace/elftest.ld
 	$(LD) -m elf_i386 -pie -T userspace/elftest.ld -o $@ $<
 
+# The same elftest.c, linked as a 64-bit static-PIE, to exercise the loader's
+# x86-64 RELA path (elf_apply_relocations_x86_64). One source for both bitnesses:
+# the markers and the selfptr relocation under test are identical, and only the
+# pointer width and reloc encoding differ -- which is exactly what is being
+# tested. Its _start is never executed: the ELF64 self-test loads and inspects
+# the image, then frees the slot, so this needs no 64-bit ring-3 ABI (Stage 3c).
+userspace/elftest64.o: userspace/elftest.c
+	$(CC) $(USERSPACE_CFLAGS_64) -c -o $@ $<
+
+userspace/elftest64.elf: userspace/elftest64.o userspace/elftest.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/elftest.ld -o $@ $<
+
 userspace/%.raw: userspace/%.elf
 	objcopy -O binary $< $@
 
@@ -499,6 +528,13 @@ smoke-elf:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ELF_SELFTEST: PASS' \
 		FAIL_MARKER='ELF_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+smoke-elf64:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ELF64_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='ELF64_SELFTEST: PASS' \
+		FAIL_MARKER='ELF64_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Image-base ASLR: spawn several PIE images and assert the load base actually
 # varies and stays inside the premap-containment bound (ASLR_SELFTEST: PASS).

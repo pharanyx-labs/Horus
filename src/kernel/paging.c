@@ -143,21 +143,14 @@ void paging_init(void) {
     return;
 }
 
-/* Per-task kernel stacks. Big (4 MiB) .bss array; because the kernel is linked
- * low, it lands around [1.46, 5.43) MiB — its tail overlaps the low user-image
- * window. Its top edge is also the floor of the kernel's *always-critical* global
- * data (page tables, tasks[], cspaces, locks), which is placed above it and must
- * never be shadowed by a user mapping. kernel_lowmem_critical_floor() exposes that
- * edge so the heap allocator can refuse to grow a user heap up into it. */
+/* Per-task kernel stacks (4 MiB of .bss, at KERNEL_VMA + ~1.5 MiB).
+ *
+ * This array used to sit at [1.46, 5.43) MiB — inside the user window — and its
+ * top edge was the floor of the kernel's always-critical globals, exposed as
+ * kernel_lowmem_critical_floor() so the heap allocator and image ASLR could
+ * refuse to place user pages over kernel state. With the kernel at KERNEL_VMA
+ * no kernel address is a user address, so that function and its guards are gone. */
 static uint8_t per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2] __attribute__((aligned(4096)));
-
-/* Lowest kernel virtual address whose contents the kernel reads/writes while
- * running on a *user* CR3 and that a user low-memory mapping must therefore never
- * be allowed to overlay. Everything at or above this is always-live kernel state;
- * below it (within the user window) lies only unused high-id kstack slots. */
-uint32_t kernel_lowmem_critical_floor(void) {
-    return (uint32_t)((uintptr_t)per_task_kstacks + sizeof(per_task_kstacks));
-}
 
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
@@ -655,7 +648,7 @@ static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int n
     if (!is_canonical_address(uaddr) || (uaddr + n) < uaddr) return -1;
 
     extern uint64_t pml4[512];
-    uint64_t kcr3_phys = (uint64_t)(uintptr_t)pml4;
+    uint64_t kcr3_phys = virt_to_phys(pml4);   /* CR3 takes a physical address */
 
     uint64_t fl;
     __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");

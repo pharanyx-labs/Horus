@@ -10,7 +10,7 @@ export SOURCE_DATE_EPOCH ?= 1609459200
 CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
          -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
          -I src/include -I include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
-ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c
+ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c -I src/include
 LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none
 RUST_TARGET ?= x86_64-unknown-none
 

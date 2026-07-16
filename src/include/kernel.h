@@ -25,25 +25,22 @@ typedef uint64_t vaddr_t;
 /* ---- Kernel address translation --------------------------------------------
  *
  * KERNEL_VMA is the offset between a kernel symbol's link-time virtual address
- * and its physical address. It is 0 today: the kernel is linked at 1 MiB and
- * runs identity-mapped, so a kernel VA *is* its physical address. That identity
- * is assumed all over the tree, usually silently — a `(uint64_t)&sym` handed to
- * CR3 or written into a page-table entry reads as obviously correct and is only
- * correct by accident of the link address.
+ * and its physical address. The kernel is linked at KERNEL_VMA + 1 MiB but
+ * loads at physical 1 MiB, so a kernel VA is NOT its physical address — a
+ * `(uint64_t)&sym` handed to CR3 or written into a page-table entry would
+ * install bits above 51 and take a reserved-bit fault.
  *
- * virt_to_phys/phys_to_virt name the conversion so those sites say what they
- * mean. They are no-ops while KERNEL_VMA is 0; when the kernel moves to the
- * higher half they become the real translation and every routed site follows.
- * An unrouted site would install a kernel VA as a physical frame number — bits
- * above 51 set, i.e. a reserved-bit fault or a wild frame. Route the site; do
- * not cast.
+ * virt_to_phys/phys_to_virt are the conversion. MUST match KERNEL_VMA in
+ * linker64.ld, which is the authority — the linker script explains why this
+ * value and no other (-mcmodel=kernel).
  *
  * These are for KERNEL IMAGE addresses (symbols in .text/.data/.bss), which are
- * the ones the ± KERNEL_VMA relation holds for. To reach an arbitrary physical
+ * the ones the ± KERNEL_VMA relation holds for. They do NOT apply to the low
+ * boot stage (.boot), which is linked VA == PA. To reach an arbitrary physical
  * page — a freshly allocated frame, a page table — use PHYS_KVA below. */
-#define KERNEL_VMA              0x0ULL
-#define virt_to_phys(v)         ((uint64_t)(uintptr_t)(v) - KERNEL_VMA)
-#define phys_to_virt(p)         ((void *)(uintptr_t)((uint64_t)(p) + KERNEL_VMA))
+#include "kernel_vma.h"   /* KERNEL_VMA — shared with the boot assembly */
+#define virt_to_phys(v)         ((uint64_t)(uintptr_t)(v) - (uint64_t)KERNEL_VMA)
+#define phys_to_virt(p)         ((void *)(uintptr_t)((uint64_t)(p) + (uint64_t)KERNEL_VMA))
 
 /* Higher-half alias of physical memory, valid in EVERY address space.
  *
@@ -1041,9 +1038,6 @@ int  ramfs_list(char *buf, size_t buflen);
 
 void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base);
 void create_user_pagedir(uint32_t id);
-/* Floor of always-live kernel state in low memory; a user heap must never grow
- * at or above this (it would shadow kernel data on the task's own CR3). */
-uint32_t kernel_lowmem_critical_floor(void);
 void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);
 void aslr_mix_entropy(uint64_t val);

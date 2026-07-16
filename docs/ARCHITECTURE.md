@@ -33,23 +33,46 @@ The ring-3 userspace binaries are the only 32-bit component: they are static-PIE
 
 | Region | Virtual address | Notes |
 |---|---|---|
+| Kernel image | `0xFFFFFFFF80100000` | `.text`/`.rodata`/`.data`/`.bss`, linked at `KERNEL_VMA` + 1 MiB, **loaded at physical 1 MiB** |
 | Physical alias (`PHYS_KVA`) | `0xFFFFFF8080000000` | Physical `[0, 1 GiB)` aliased read/write; present in **every** address space |
-| Low identity map | `0x0000000000000000` | Physical `[0, 1 GiB)` as 2 MiB supervisor pages; where the kernel image itself lives |
+| Low identity map | `0x0000000000000000` | Physical `[0, 1 GiB)` as 2 MiB supervisor pages. Retained: see below |
 | LAPIC | `0x00000000FEE00000` | Identity-mapped MMIO, replicated into every address space |
-| User text | `0x0000000000400000` | 4 MB initial window (PIE base randomised within the low window) |
-| User heap | `0x0000000001000000` | Grows upward via `sbrk`/`brk`, bounded below the kernel's low-memory critical data |
+| Boot stage (`.boot`) | `0x0000000000100000` | VA == PA. The 32-bit entry code and its GDT/stack; dead after long mode |
+| User text | `0x0000000000400000` | 4 MB initial window (PIE base randomised across 480 pages ≈ 8.91 bits) |
+| User heap | `0x0000000001000000` | Grows upward via `sbrk`/`brk` |
 
-The kernel installs a **page-table self-map** at PML4 slot 510 (`paging_init`, and per-task
-in `create_user_pagedir`), but **nothing reads page tables through it** — every page-table
-access goes through `PHYS_KVA` instead. It is maintained, not used. (This table previously
-listed four "recursive" windows at slot-*511* addresses, for a self-map the code installs
-at slot 510, none of which any code referenced.)
+**The kernel runs at `-2 GiB`** (`KERNEL_VMA = 0xFFFFFFFF80000000`), so no kernel address is
+a user address. That base is forced, not chosen: `-mcmodel=kernel` lets GCC emit 32-bit
+*sign-extended* symbol references (`R_X86_64_32S`), valid only in `[-2 GiB, +2 GiB)`, and
+this is the top half of that range. A "canonical higher-half" base such as
+`0xFFFF800000000000` would break every one of them and force `-mcmodel=large`. (The old
+1 MiB link satisfied `-mcmodel=kernel` only by accident — the signed-32 range is symmetric
+about zero, so the *low* 2 GiB fits too.)
 
-The kernel is linked low (1 MiB) and its BSS extends past `USER_AREA_BASE` (4 MiB) — in fact to ~15.4 MiB — so the low user window shares virtual addresses with kernel data like `tasks[]`. `create_user_pagedir` therefore identity-fills the PD entries covering the low window **present + supervisor**, so the kernel can reach its own globals while running on a user CR3, and overwrites only the `USER_ASPACE_PREMAP_PAGES` (32) entries of the image window as user pages.
+`0xFFFFFFFF80000000` decodes to PML4[511], PDPT[510] — the same `high_pdpt` that already
+held the `PHYS_KVA` window at PDPT[2]. The kernel's mapping is therefore one more entry in
+an existing table, aliasing the same `pd`. Physical placement is unchanged: each high
+section carries `AT(vma - KERNEL_VMA)`, so `p_paddr` stays low and GRUB (which honours
+`p_paddr`) loads the kernel at 1 MiB as before.
 
-A direct consequence: **the low window cannot be demand-paged**. Any fault there finds an identity-supervisor page already present, so the pager declines. This is why the heap lives at `USER_HEAP_BASE` (16 MiB), above the end of kernel `.bss` — the only region where the pager can install real user pages, and hence where the demand-paged heap actually works. A heap placed directly above the image (as it once was) ran off the end of the 128 KiB premap and faulted onto identity-supervisor memory.
+**`.boot` is linked VA == PA** because GRUB enters `_start` in 32-bit protected mode: a
+32-bit `movl $sym, %edi` cannot encode a high address, and the far jump that activates long
+mode is absolute and executes *after* `CR0.PG`. It therefore lands in a low 64-bit stub,
+which escapes to the kernel's linked addresses via `movabs` + `jmp *%rax`. The boot stage
+names kernel symbols as `sym - KERNEL_VMA`.
 
-Two guards keep user mappings off the kernel globals: image ASLR is bounded so the premap window can't reach them (`choose_image_placement`, against `kernel_lowmem_critical_floor()`), and a heap that *does* live in the low window is bounded below the same floor (`h_sbrk`/`h_brk`). The full fix — moving the user address space above the kernel image — is tracked in [ROADMAP.md](ROADMAP.md).
+**The low identity map can never be dropped**, even though the kernel no longer lives
+there: the SMP trampoline far-jumps to ~`0x8000` after enabling paging on the kernel's own
+CR3, and the LAPIC/VGA MMIO are reached at their physical addresses.
+
+`create_user_pagedir` still identity-fills the PD entries covering the low window
+**present + supervisor**, and overwrites only the `USER_ASPACE_PREMAP_PAGES` (32) entries of
+the image window as user pages. That fill is now vestigial — the kernel's globals are
+reached through the kernel half (`pml4[256..511]`), not through low memory — and removing
+it is tracked in [ROADMAP.md](ROADMAP.md). Until then, **the low window still cannot be
+demand-paged**: any fault there finds an identity-supervisor page already present, so the
+pager declines. This is why the heap lives at `USER_HEAP_BASE` (16 MiB), the only region
+where the pager can install real user pages.
 
 **Physical access from the fault handler.** A user CR3's low identity map covers only `[0, 16 MiB)`, but the user page pool starts *at* `USER_PHYS_BASE` (16 MiB). The demand pager runs on the faulting task's CR3 and must read page tables and zero/copy freshly allocated frames, all of which live in that pool, so it reaches them through the higher-half alias (`PHYS_KVA`, `VA(pml4=511, pdpt=2)` → physical `[0, 1 GiB)`) that `create_user_pagedir` replicates into every task via `pml4[256..511]`. Using the low identity address instead faults *inside* the fault handler, which then re-enters the `page_lock` it already holds with interrupts disabled — a hard hang.
 
@@ -66,13 +89,19 @@ The kernel reaches page tables through the **higher-half physical alias** (`PHYS
 Memory layout above), not through the slot-510 self-map — the self-map is installed and
 kept current, but no code reads through it.
 
-**Kernel address translation.** The kernel is linked at 1 MiB and runs identity-mapped, so
-a kernel symbol's virtual address *is* its physical address. That identity is easy to rely
-on by accident — a `(uint64_t)&sym` written into CR3 or a page-table entry looks correct
-and is only correct because of the link address. `virt_to_phys()` / `phys_to_virt()`
-(`kernel.h`) name the conversion so those sites are explicit and survive the kernel moving
-out of low memory; `KERNEL_VMA` is the offset and is `0` today. Use them for kernel image
-addresses; use `PHYS_KVA` to reach an arbitrary physical page.
+**Kernel address translation.** A kernel symbol's virtual address is `KERNEL_VMA` above its
+physical address, so a `(uint64_t)&sym` written into CR3 or a page-table entry is a bug: it
+sets bits above 51 and takes a reserved-bit fault. `virt_to_phys()` / `phys_to_virt()`
+(`kernel.h`) are the conversion — use them for kernel image addresses, and `PHYS_KVA` to
+reach an arbitrary physical page. They do **not** apply to `.boot`, which is linked VA == PA.
+
+`KERNEL_VMA` is defined twice, in `linker64.ld` (the authority on placement) and
+`src/include/kernel_vma.h` (shared by C and the boot assembly), because a linker script
+cannot include a header. They are cross-checked rather than trusted: the linker exports its
+value as `__kernel_vma_from_linker` and `kernel_main` asserts the two agree at boot, along
+with "am I executing above `KERNEL_VMA`" and a `virt_to_phys`/`phys_to_virt` round-trip.
+That check prints `HIGHHALF: PASS` on the serial console and halts on failure — a botched
+relocation is loud rather than a mystery fault later.
 
 **Copy-on-write** is implemented at the page level. Shared pages are marked `PAGE_COW` and mapped read-only; the first write faults `present|write`, and the pager gives the faulting address a private frame, clears `PAGE_COW`, and preserves the page's NX bit. Physical pages carry reference counts maintained in Rust (`rust_page_ref_inc`, `rust_page_ref_dec`), and the COW-copy-vs-demand-zero decision logic is unit-tested.
 
@@ -82,7 +111,7 @@ Two subtleties bind this together. The pager derives the old frame with `PTE_ADD
 
 **W^X**: `EFER.NXE` is enabled at boot and the kernel uses the PTE NX bit (63) to keep writable pages non-executable. User stacks (low and high ASLR) are mapped no-execute. The ELF loader honours each `PT_LOAD` segment's `p_flags`, mapping code read+execute and data/rodata read[+write]+NX; the policy decision (`rust_user_page_is_noexec`) lives in Rust and is unit-tested. The shipped userspace binaries are static-PIE ELFs and take this path; a flat-binary fallback remains for non-ELF images (loaded at the fixed base, image left executable).
 
-**ASLR**: per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG. Userspace is built static-PIE (`ET_DYN`); `do_spawn` picks a random page-aligned base and `try_elf_load` applies `R_386_RELATIVE` relocations there (failing closed on any other relocation type). Image-base entropy is bounded (430 pages ≈ 8.75 bits) because userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window; wider randomisation would require a 64-bit userspace ABI.
+**ASLR**: per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG. Userspace is built static-PIE (`ET_DYN`); `do_spawn` picks a random page-aligned base and `try_elf_load` applies `R_386_RELATIVE` relocations there (failing closed on any other relocation type). Image-base entropy is bounded (480 pages ≈ 8.91 bits) because userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window; wider randomisation would require a 64-bit userspace ABI.
 
 ---
 

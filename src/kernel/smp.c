@@ -165,17 +165,24 @@ static void smp_start_aps(void) {
      * start its periodic timer at a known ~100 Hz rate. */
     lapic_timer_calibrate();
 
-    /* Stage the trampoline at its real-mode SIPI load address. */
-    uint8_t *dst = (uint8_t *)AP_TRAMP_PHYS;
+    /* Stage the trampoline at its real-mode SIPI load address. AP_TRAMP_PHYS is
+     * a PHYSICAL address — an AP starts in real mode and can only be pointed at
+     * low memory — so write it through the higher-half alias rather than treating
+     * the number as a virtual address. (The low identity map still resolves it,
+     * but the kernel no longer lives there and should not address through it.) */
+    uint8_t *dst = (uint8_t *)PHYS_KVA(AP_TRAMP_PHYS);
     uint32_t n = (uint32_t)(ap_trampoline_end - ap_trampoline_start);
     for (uint32_t i = 0; i < n; i++) dst[i] = ap_trampoline_start[i];
 
-    /* Publish the cells the trampoline reads (CR3, entry, idle-stack base). */
+    /* Publish the cells the trampoline reads (CR3, entry, idle-stack base).
+     * CR3 is already physical. The entry and stack are kernel VAs, and stay
+     * virtual: the trampoline consumes them with 64-bit loads *after* it has
+     * enabled paging on this very CR3, so the higher half is live by then. */
     uint64_t cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    *(volatile uint64_t *)AP_CR3_CELL        = cr3;
-    *(volatile uint64_t *)AP_ENTRY_CELL      = (uint64_t)(uintptr_t)&ap_entry64;
-    *(volatile uint64_t *)AP_STACK_BASE_CELL = (uint64_t)(uintptr_t)&ap_idle_stacks[0][0];
+    *(volatile uint64_t *)PHYS_KVA(AP_CR3_CELL)        = cr3;
+    *(volatile uint64_t *)PHYS_KVA(AP_ENTRY_CELL)      = (uint64_t)(uintptr_t)&ap_entry64;
+    *(volatile uint64_t *)PHYS_KVA(AP_STACK_BASE_CELL) = (uint64_t)(uintptr_t)&ap_idle_stacks[0][0];
     __asm__ volatile ("mfence" ::: "memory");
 
     lapic_broadcast_init_sipi((uint8_t)(AP_TRAMP_PHYS >> 12));   /* vector 0x08 */

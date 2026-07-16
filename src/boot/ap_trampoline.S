@@ -21,7 +21,15 @@
  * Every AP runs this code concurrently after a broadcast SIPI, so each indexes
  * its own idle stack by LAPIC id — the stacks never collide.
  *
- * These constants MUST match the AP_* defines in src/kernel/scheduler.c.
+ * These constants MUST match the AP_* defines in src/kernel/smp.c (they moved
+ * there when the SMP code was split out of scheduler.c).
+ *
+ * This blob stays linked at 0x8000 and keeps using low addresses even though the
+ * kernel now runs at KERNEL_VMA: an AP starts in REAL MODE, and the far jump at
+ * the end of the protected-mode stage is absolute and executes with paging
+ * already enabled on the kernel's CR3. That is why the kernel's low identity map
+ * (pml4[0]) can never be dropped. The 64-bit cells above are read after paging is
+ * on, so they legitimately hold high kernel VAs.
  */
 
 #define AP_STACK_BASE_CELL 0x8FD8

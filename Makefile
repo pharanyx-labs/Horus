@@ -235,7 +235,6 @@ ASFLAGS += -DSMP
 AP_TRAMPOLINE_DEP = src/boot/ap_trampoline.bin
 endif
 
-OBJS += src/boot/entry64.o
 OBJS += src/kernel/lowlevel64.o
 
 all: kernel.elf

@@ -158,7 +158,7 @@ int do_spawn(void) {
     uint64_t caller_cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(caller_cr3));
     int caller_task = get_current_task();
-    uint64_t kcr3 = (uint64_t)(uintptr_t)pml4;
+    uint64_t kcr3 = virt_to_phys(pml4);   /* CR3 takes a physical address */
 
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
     int pid = do_spawn_inner();
@@ -207,7 +207,7 @@ static void exec_into_armed_image(struct regs *r) {
     /* Past this point the caller's image is torn down and replaced; there is no
      * clean return path. Switch to the kernel address space for the rebuild. */
     extern uint64_t pml4[];
-    uint64_t kcr3 = (uint64_t)(uintptr_t)pml4;
+    uint64_t kcr3 = virt_to_phys(pml4);   /* CR3 takes a physical address */
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
 
     uint32_t load_base = USER_AREA_BASE;

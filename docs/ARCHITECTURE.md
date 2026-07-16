@@ -33,12 +33,17 @@ The ring-3 userspace binaries are the only 32-bit component: they are static-PIE
 
 | Region | Virtual address | Notes |
 |---|---|---|
-| Recursive PML4 | `0xFFFFFFFFFFFFF000` | Page table self-map slot 510 |
-| Recursive PDPT | `0xFFFFFFFFFFE00000` | |
-| Recursive PD | `0xFFFFFFFFC0000000` | |
-| Recursive PT | `0xFFFFFF8000000000` | |
+| Physical alias (`PHYS_KVA`) | `0xFFFFFF8080000000` | Physical `[0, 1 GiB)` aliased read/write; present in **every** address space |
+| Low identity map | `0x0000000000000000` | Physical `[0, 1 GiB)` as 2 MiB supervisor pages; where the kernel image itself lives |
+| LAPIC | `0x00000000FEE00000` | Identity-mapped MMIO, replicated into every address space |
 | User text | `0x0000000000400000` | 4 MB initial window (PIE base randomised within the low window) |
 | User heap | `0x0000000001000000` | Grows upward via `sbrk`/`brk`, bounded below the kernel's low-memory critical data |
+
+The kernel installs a **page-table self-map** at PML4 slot 510 (`paging_init`, and per-task
+in `create_user_pagedir`), but **nothing reads page tables through it** — every page-table
+access goes through `PHYS_KVA` instead. It is maintained, not used. (This table previously
+listed four "recursive" windows at slot-*511* addresses, for a self-map the code installs
+at slot 510, none of which any code referenced.)
 
 The kernel is linked low (1 MiB) and its BSS extends past `USER_AREA_BASE` (4 MiB) — in fact to ~15.4 MiB — so the low user window shares virtual addresses with kernel data like `tasks[]`. `create_user_pagedir` therefore identity-fills the PD entries covering the low window **present + supervisor**, so the kernel can reach its own globals while running on a user CR3, and overwrites only the `USER_ASPACE_PREMAP_PAGES` (32) entries of the image window as user pages.
 
@@ -57,7 +62,17 @@ Two guards keep user mappings off the kernel globals: image ASLR is bounded so t
 
 ### Paging
 
-The kernel uses **recursive page table mapping**: PML4 entry 510 points back at the page table root, giving a fixed virtual window to read/write any page table entry.
+The kernel reaches page tables through the **higher-half physical alias** (`PHYS_KVA`, see
+Memory layout above), not through the slot-510 self-map — the self-map is installed and
+kept current, but no code reads through it.
+
+**Kernel address translation.** The kernel is linked at 1 MiB and runs identity-mapped, so
+a kernel symbol's virtual address *is* its physical address. That identity is easy to rely
+on by accident — a `(uint64_t)&sym` written into CR3 or a page-table entry looks correct
+and is only correct because of the link address. `virt_to_phys()` / `phys_to_virt()`
+(`kernel.h`) name the conversion so those sites are explicit and survive the kernel moving
+out of low memory; `KERNEL_VMA` is the offset and is `0` today. Use them for kernel image
+addresses; use `PHYS_KVA` to reach an arbitrary physical page.
 
 **Copy-on-write** is implemented at the page level. Shared pages are marked `PAGE_COW` and mapped read-only; the first write faults `present|write`, and the pager gives the faulting address a private frame, clears `PAGE_COW`, and preserves the page's NX bit. Physical pages carry reference counts maintained in Rust (`rust_page_ref_inc`, `rust_page_ref_dec`), and the COW-copy-vs-demand-zero decision logic is unit-tested.
 

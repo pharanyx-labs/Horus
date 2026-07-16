@@ -26,9 +26,14 @@ _start:
     movl $pml4, %edi
     movl %edi, %cr3
 
+    /* Zero the four boot page tables: [boot_tables_start, boot_tables_end).
+     * stosl stores a DWORD per iteration, so ecx is a dword count, not a byte
+     * count — this read $12288 (a byte count for three tables), which both
+     * zeroed 48 KiB instead of 16 KiB, scribbling 32 KiB past the tables into
+     * per_task_kstacks, and would have missed high_pdpt had it been right. */
     xorl %eax, %eax
-    movl $pml4, %edi
-    movl $12288, %ecx
+    movl $boot_tables_start, %edi
+    movl $(boot_tables_end - boot_tables_start) / 4, %ecx
     rep stosl
 
     movl $pdpt, %eax
@@ -295,7 +300,13 @@ early_handler_stack_bottom:
 .global early_handler_stack_top
 early_handler_stack_top:
 
+/* The four boot page tables. _start zeroes exactly [boot_tables_start,
+ * boot_tables_end) before filling them, so they must stay contiguous and this
+ * block must hold nothing else. high_pdpt is part of the range: it is aliased
+ * into pml4[511] and MUST be zeroed, or its unwritten entries are garbage. */
 .align 4096
+.global boot_tables_start
+boot_tables_start:
 .global pml4
 pml4:
     .space 4096
@@ -303,10 +314,10 @@ pdpt:
     .space 4096
 pd:
     .space 4096
-
-.align 4096
 high_pdpt:
     .space 4096
+.global boot_tables_end
+boot_tables_end:
 
 .section .rodata
 #ifdef SMP

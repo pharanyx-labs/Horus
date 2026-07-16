@@ -26,7 +26,7 @@ static int selftest_read_byte(uint64_t cr3, uint64_t vaddr, uint8_t *out) {
     uint64_t pte = user_lookup_pte(cr3, vaddr);
     if (!(pte & SELFTEST_PTE_PRESENT)) return -1;
     uint64_t phys = (pte & SELFTEST_PTE_PHYS) | (vaddr & 0xFFF);
-    *out = *(volatile uint8_t *)(uintptr_t)phys;   /* user phys is identity-mapped under the kernel pml4 */
+    *out = *(volatile uint8_t *)PHYS_KVA(phys);
     return 0;
 }
 

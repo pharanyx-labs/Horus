@@ -21,6 +21,53 @@ typedef uint64_t vaddr_t;
  * arrays to ~2 MiB of kernel BSS. */
 #define BLOCKS_PER_DISK         4096
 #define PAGE_SIZE               4096
+
+/* ---- Kernel address translation --------------------------------------------
+ *
+ * KERNEL_VMA is the offset between a kernel symbol's link-time virtual address
+ * and its physical address. It is 0 today: the kernel is linked at 1 MiB and
+ * runs identity-mapped, so a kernel VA *is* its physical address. That identity
+ * is assumed all over the tree, usually silently — a `(uint64_t)&sym` handed to
+ * CR3 or written into a page-table entry reads as obviously correct and is only
+ * correct by accident of the link address.
+ *
+ * virt_to_phys/phys_to_virt name the conversion so those sites say what they
+ * mean. They are no-ops while KERNEL_VMA is 0; when the kernel moves to the
+ * higher half they become the real translation and every routed site follows.
+ * An unrouted site would install a kernel VA as a physical frame number — bits
+ * above 51 set, i.e. a reserved-bit fault or a wild frame. Route the site; do
+ * not cast.
+ *
+ * These are for KERNEL IMAGE addresses (symbols in .text/.data/.bss), which are
+ * the ones the ± KERNEL_VMA relation holds for. To reach an arbitrary physical
+ * page — a freshly allocated frame, a page table — use PHYS_KVA below. */
+#define KERNEL_VMA              0x0ULL
+#define virt_to_phys(v)         ((uint64_t)(uintptr_t)(v) - KERNEL_VMA)
+#define phys_to_virt(p)         ((void *)(uintptr_t)((uint64_t)(p) + KERNEL_VMA))
+
+/* Higher-half alias of physical memory, valid in EVERY address space.
+ *
+ * multiboot.S builds pml4[511] -> high_pdpt -> high_pdpt[2] -> pd, and pd[k]
+ * identity-maps k*2MiB with a supervisor huge page, so VA(511, 2, k, off)
+ * reaches physical k*2MiB+off for the whole [0, 1 GiB) range.
+ * create_user_pagedir copies pml4[256..511] into every task's PML4, so this
+ * window resolves on a user CR3 too.
+ *
+ * This matters because the low identity map is NOT usable from a user CR3: a
+ * task's page directory only covers [0, 16 MiB), while the user page pool
+ * (USER_PHYS_BASE) starts AT 16 MiB. The demand pager runs on the faulting
+ * task's CR3 and must read page tables and zero/copy freshly allocated frames —
+ * all of which live in that pool. Reaching them through the low identity VA
+ * faulted inside the fault handler, which then re-entered the page_lock it
+ * already held with interrupts disabled and wedged the machine. Always use this
+ * macro for physical access from the pager.
+ *
+ * Only covers [0, 1 GiB) — the extent of the boot `pd`. The user pool tops out
+ * at 80 MiB, so every frame is reachable; a pool grown past 1 GiB would need
+ * this window extended first. */
+#define PHYS_KVA_BASE           0xFFFFFF8080000000ULL
+#define PHYS_KVA(p)             ((void *)(PHYS_KVA_BASE + (uint64_t)(p)))
+
 #define USER_PHYS_BASE          0x01000000
 #define USER_PHYS_PAGES         16384
 #define CNODE_SIZE              256

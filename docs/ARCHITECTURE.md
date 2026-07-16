@@ -40,7 +40,13 @@ The ring-3 userspace binaries are the only 32-bit component: they are static-PIE
 | User text | `0x0000000000400000` | 4 MB initial window (PIE base randomised within the low window) |
 | User heap | `0x0000000001000000` | Grows upward via `sbrk`/`brk`, bounded below the kernel's low-memory critical data |
 
-The kernel is linked low (1 MiB) and its BSS extends past `USER_AREA_BASE` (4 MiB), so a task's low-memory mappings share virtual addresses with kernel data like `tasks[]`. Two guards keep user mappings off the kernel globals: image ASLR is pinned so the premap window can't reach them (`choose_image_placement`), and the user heap is bounded below `kernel_lowmem_critical_floor()` (`h_sbrk`/`h_brk`). The full fix — moving the user address space above the kernel image — is tracked in [ROADMAP.md](ROADMAP.md).
+The kernel is linked low (1 MiB) and its BSS extends past `USER_AREA_BASE` (4 MiB) — in fact to ~15.4 MiB — so the low user window shares virtual addresses with kernel data like `tasks[]`. `create_user_pagedir` therefore identity-fills the PD entries covering the low window **present + supervisor**, so the kernel can reach its own globals while running on a user CR3, and overwrites only the `USER_ASPACE_PREMAP_PAGES` (32) entries of the image window as user pages.
+
+A direct consequence: **the low window cannot be demand-paged**. Any fault there finds an identity-supervisor page already present, so the pager declines. This is why the heap lives at `USER_HEAP_BASE` (16 MiB), above the end of kernel `.bss` — the only region where the pager can install real user pages, and hence where the demand-paged heap actually works. A heap placed directly above the image (as it once was) ran off the end of the 128 KiB premap and faulted onto identity-supervisor memory.
+
+Two guards keep user mappings off the kernel globals: image ASLR is bounded so the premap window can't reach them (`choose_image_placement`, against `kernel_lowmem_critical_floor()`), and a heap that *does* live in the low window is bounded below the same floor (`h_sbrk`/`h_brk`). The full fix — moving the user address space above the kernel image — is tracked in [ROADMAP.md](ROADMAP.md).
+
+**Physical access from the fault handler.** A user CR3's low identity map covers only `[0, 16 MiB)`, but the user page pool starts *at* `USER_PHYS_BASE` (16 MiB). The demand pager runs on the faulting task's CR3 and must read page tables and zero/copy freshly allocated frames, all of which live in that pool, so it reaches them through the higher-half alias (`PHYS_KVA`, `VA(pml4=511, pdpt=2)` → physical `[0, 1 GiB)`) that `create_user_pagedir` replicates into every task via `pml4[256..511]`. Using the low identity address instead faults *inside* the fault handler, which then re-enters the `page_lock` it already holds with interrupts disabled — a hard hang.
 
 ### Physical memory
 

@@ -80,7 +80,10 @@ help
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs **eleven jobs**, all hard gates:
+`.github/workflows/ci.yml` runs **twenty jobs**. Nineteen are hard gates; the
+`security` SAST/SBOM scan is advisory (every step is `continue-on-error`, so it
+reports but never blocks a merge). Note `altconfigs` is one job id that fans out
+into two matrix runs.
 
 1. **rust** — `cargo test --release` and `cargo clippy --all-targets -- -D warnings`
 2. **kernel** — builds `kernel.elf` and a bootable ISO (x86-64) and uploads them as artifacts

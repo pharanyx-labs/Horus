@@ -110,7 +110,7 @@ extern uint8_t stack_top[];
  * `BLOCK_SIZE/128 = 4` overran the block buffer when writing inode 2 or 3.)
  * A _Static_assert next to the struct definition pins this to sizeof. */
 #define INODES_PER_BLOCK        2
-uint32_t rust_get_user_page_protection(uint32_t t,uint32_t v);
+uint32_t rust_get_user_page_protection(uint32_t t, uint64_t v);
 bool rust_user_page_is_noexec(uint64_t vaddr);
 int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, const uint8_t *name, size_t nlen);
 #define MAX_ENDPOINTS 64
@@ -420,7 +420,11 @@ typedef struct tcb {
     capability_t *cspace;
     uint32_t cspace_size;
     uint64_t tsc_base;
-    uint32_t esp; uint32_t eip; uint32_t cr3; uint32_t priority; uint32_t cap_tcb; int auth_fail_count; int auth_lockout_until; int ipc_role; 
+    /* User addresses and CR3 are 64-bit. They were uint32_t while userspace was
+     * i386-only; anything above 4 GiB silently truncated, and the kernel-side
+     * plumbing is being widened ahead of the ring-3 ABI so the two moves are
+     * separable. `priority` and `cap_tcb` are not addresses and stay 32-bit. */
+    uint64_t esp; uint64_t eip; uint64_t cr3; uint32_t priority; uint32_t cap_tcb; int auth_fail_count; int auth_lockout_until; int ipc_role;
     
     uint32_t uid;
     uint32_t gid;
@@ -458,20 +462,19 @@ typedef struct tcb {
      * handler runs, so a fault *inside* the handler falls through to the kill
      * path (no recursion). `sig_frame` is the full trap frame captured at
      * delivery, restored by SYS_SIGRETURN. See idt.c / syscall.c. */
-    uint32_t sig_handler;
+    uint64_t sig_handler;
     uint32_t in_signal;
     struct interrupt_frame64 sig_frame;
 
     /* ASLR: per-task randomized image load base (and end), chosen at spawn for
      * PIE (ET_DYN) images. create_user_pagedir premaps the image window at
-     * `image_base`; the flat/non-PIE fallback keeps the fixed USER_AREA_BASE.
-     * Carved from padding so the struct size is unchanged. */
-    uint32_t image_base;
-    uint32_t image_end;
+     * `image_base`; the flat/non-PIE fallback keeps the fixed USER_AREA_BASE. */
+    uint64_t image_base;
+    uint64_t image_end;
 
     /* Blocking IPC: set by h_ipc_call before yielding, consumed by ipc_block_switch
      * when the reply arrives and the waiter is resumed. */
-    uint32_t ipc_reply_buf;    /* userspace ptr in the waiter's address space */
+    uint64_t ipc_reply_buf;    /* userspace ptr in the waiter's address space */
 
     /* Block intent recorded by a syscall handler *before* the frame is saved.
      * Non-zero (a TASK_BLOCKED_* value) means interrupt_handler64 must call
@@ -499,7 +502,7 @@ typedef struct tcb {
      * user vaddr of the argv[] pointer array here; the child reads them with
      * SYS_GET_ARGV. Both 0 when spawned without arguments. */
     uint32_t argc;
-    uint32_t argv_ptr;
+    uint64_t argv_ptr;
 
     /* Alternate signal stack (SYS_SIGALTSTACK). When sig_altstack_size is
      * non-zero, a signal delivered while the task is not already running on the
@@ -507,9 +510,8 @@ typedef struct tcb {
      * instead of the interrupted user stack; sig_on_stack is the SS_ONSTACK
      * guard, set on delivery to the altstack and cleared by SYS_SIGRETURN so a
      * nested signal does not re-use (and corrupt) the frame already on it. All
-     * zero => run handlers on the interrupted stack (previous behaviour). Carved
-     * from padding so the struct size is unchanged. */
-    uint32_t sig_altstack_sp;
+     * zero => run handlers on the interrupted stack (previous behaviour). */
+    uint64_t sig_altstack_sp;
     uint32_t sig_altstack_size;
     uint32_t sig_on_stack;
 
@@ -811,9 +813,9 @@ bool rust_cap_revoke_global(capability_t *target_cspace, uint32_t target_cspace_
  * space? Region-aware: the caller passes the task's image and heap bounds; the
  * fixed low-stack window is checked internally. `e` is the fault error code
  * (unused today). See rust/src/lib.rs. */
-bool rust_validate_page_fault(uint32_t a, uint32_t e,
-                              uint32_t image_base, uint32_t image_end,
-                              uint32_t heap_start, uint32_t heap_end);
+bool rust_validate_page_fault(uint64_t a, uint32_t e,
+                              uint64_t image_base, uint64_t image_end,
+                              uint64_t heap_start, uint64_t heap_end);
 int  rust_handle_command(const uint8_t *cmd, size_t len);
 
 

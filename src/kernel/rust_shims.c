@@ -31,9 +31,9 @@ int rust_handle_command(const uint8_t *cmd, size_t len) {
 }
 
 /* No-Rust fallback: mirror rust/src/lib.rs's region-aware check. */
-bool rust_validate_page_fault(uint32_t fault_addr, uint32_t error_code,
-                              uint32_t image_base, uint32_t image_end,
-                              uint32_t heap_start, uint32_t heap_end) {
+bool rust_validate_page_fault(uint64_t fault_addr, uint32_t error_code,
+                              uint64_t image_base, uint64_t image_end,
+                              uint64_t heap_start, uint64_t heap_end) {
     (void)error_code;
     if (image_base != 0 && fault_addr >= image_base && fault_addr < image_end) return true;
     if (heap_start != 0 && fault_addr >= heap_start && fault_addr < heap_end) return true;
@@ -41,7 +41,7 @@ bool rust_validate_page_fault(uint32_t fault_addr, uint32_t error_code,
     return false;
 }
 
-uint32_t rust_get_user_page_protection(uint32_t task_id, uint32_t vaddr) {
+uint32_t rust_get_user_page_protection(uint32_t task_id, uint64_t vaddr) {
     (void)task_id;
 
     if ((vaddr >= 0x400000 && vaddr < 0x800000) ||

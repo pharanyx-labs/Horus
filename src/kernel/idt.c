@@ -1,6 +1,6 @@
 #include "kernel.h"
 
-int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code);
+int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code);
 
 struct idt_ptr {
     uint16_t limit;

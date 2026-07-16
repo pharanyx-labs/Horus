@@ -485,7 +485,7 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
  * try_elf_load and get a randomized, page-aligned, bounded base; non-PIE flat
  * images keep the fixed USER_AREA_BASE (their addresses are baked in). Shared by
  * spawn (tid = a fresh slot) and exec (tid = the current task). */
-void choose_image_placement(int tid, uint32_t *out_load_base, uint32_t *out_stack_top) {
+void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stack_top) {
     uint64_t spawn_entropy = (uint64_t)armed_hdr.size;
     spawn_entropy ^= (uint64_t)armed_hdr.entry << 17;
     spawn_entropy ^= (uint64_t)tid * 0x9E3779B97F4A7C15ULL;
@@ -523,7 +523,7 @@ void choose_image_placement(int tid, uint32_t *out_load_base, uint32_t *out_stac
     }
 
     *out_load_base  = load_base;
-    *out_stack_top  = (uint32_t)aslr_random_stack_top(0x007ff000u);
+    *out_stack_top  = aslr_random_stack_top(0x007ff000u);
 }
 
 /* Load the currently-armed staged image into task `tid`'s (already-built)
@@ -532,7 +532,7 @@ void choose_image_placement(int tid, uint32_t *out_load_base, uint32_t *out_stac
  * the loader's copy_to_user writes into its address space. Shared by spawn and
  * exec; the caller is responsible for building the address space beforehand
  * (create_task for spawn, create_user_pagedir for exec). */
-void load_staged_image_into(int tid, uint32_t load_base) {
+void load_staged_image_into(int tid, uint64_t load_base) {
     set_current_task(tid);
 
     uint32_t entry_point = armed_hdr.entry;

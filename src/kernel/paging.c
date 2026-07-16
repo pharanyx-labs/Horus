@@ -243,7 +243,7 @@ void create_user_pagedir(uint32_t task_id) {
         uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
         for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
 
-        uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(vbase + (uint64_t)p * PAGE_SIZE));
+        uint32_t prot = rust_get_user_page_protection(task_id, vbase + (uint64_t)p * PAGE_SIZE);
         uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
         cur_pt[pt_idx] = phys | flags;
     }
@@ -327,7 +327,7 @@ void switch_cr3(addr_t cr3) {
      * interrupts enabled and no scheduler lock held, so its ack wait is safe.) */
 }
 
-int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
+int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
     
     uint64_t cr3_phys = tasks[get_current_task()].cr3;
     if (cr3_phys == 0) {
@@ -658,7 +658,7 @@ static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int n
          * physical alias regardless would corrupt the shared zero frame for every
          * task. Drive the pager's COW path (write fault) and re-walk. */
         if (need_write && (e & cow_present) == cow_present && !(e & PAGE_WRITE)) {
-            handle_demand_page_fault((uint32_t)v, (uint32_t)PAGE_WRITE);
+            handle_demand_page_fault(v, (uint32_t)PAGE_WRITE);
             e = pt_walk(ucr3, v);
         }
         if ((e & need) != need) { rc = -1; break; }

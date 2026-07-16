@@ -611,8 +611,23 @@ void load_staged_image_into(int tid, uint32_t load_base) {
         ? ((elf_img_end + 0xFFF) & ~0xFFFu)
         : (load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF));
     tasks[tid].image_end = img_end;
+    /* Put the heap at USER_HEAP_BASE (16 MiB), NOT immediately above the image.
+     *
+     * The image sits in [4, 8) MiB, which create_user_pagedir identity-fills
+     * PRESENT|SUPERVISOR because the kernel's own .bss lives at those virtual
+     * addresses and the kernel must reach it while on a user CR3. Only the
+     * USER_ASPACE_PREMAP_PAGES (32) entries the loader explicitly overwrites are
+     * user pages. A heap placed just above the image therefore ran off the end of
+     * that 128 KiB premap and demand-faulted onto an identity-supervisor page: the
+     * pager saw "already present", returned -2, and the fault fell through to a
+     * halt. Demand paging is impossible in that window by construction.
+     *
+     * USER_HEAP_BASE is above the kernel's .bss end (15.37 MiB), so its PD entry
+     * is untouched by the identity fill and the pager can map real user pages
+     * there — which is what makes the heap genuinely demand-paged for the first
+     * time, rather than capped at whatever the premap left over. */
     uint32_t heap_gap = aslr_random_offset(ASLR_MAX_HEAP_GAP_PAGES);
-    tasks[tid].heap_start   = img_end + 0x1000 + heap_gap;
+    tasks[tid].heap_start   = (uint32_t)USER_HEAP_BASE + heap_gap;
     tasks[tid].heap_current = tasks[tid].heap_start;
     tasks[tid].heap_end     = tasks[tid].heap_start + 0x10000;
 

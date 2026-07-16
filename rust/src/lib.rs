@@ -44,8 +44,17 @@ impl SafeCap {
 pub extern "C" fn rust_validate_page_fault(task_id: u32, fault_addr: u32, error_code: u32) -> bool {
     let _ = (task_id, error_code);
     if fault_addr >= 0x7FB000 && fault_addr < 0x7FC000 { return false; }
+    // The image premap and the low stack live here.
     if fault_addr >= 0x400000 && fault_addr < 0x800000 { return true; }
-    if fault_addr >= 0xA00000 && fault_addr < 0xB00000 { return true; }
+    // The demand-paged heap: USER_HEAP_BASE (16 MiB) .. + USER_HEAP_MAX_SIZE
+    // (64 MiB). Above the kernel's .bss end, so nothing of the kernel's is
+    // shadowed by mapping user pages here.
+    if fault_addr >= 0x1000000 && fault_addr < 0x5000000 { return true; }
+    // [0xA00000, 0xB00000) used to be approved as user memory. It is not: the
+    // kernel's `argon2_scratch` spans 0x92a7a0..0xd2a7a0, straight through it,
+    // and the whole [8, 16) MiB region is kernel .bss reached through supervisor
+    // huge pages (loader_staging, audit_mac, audit_log_buffer, kernel_pepper).
+    // Approving it meant a fault there was blessed but unmappable.
     false
 }
 
@@ -67,8 +76,11 @@ pub unsafe extern "C" fn rust_cap_has_rights(cap: *const SafeCapability, require
 
 #[no_mangle]
 pub extern "C" fn rust_get_user_page_protection(_task_id: u32, vaddr: u32) -> u32 {
+    // [0xA00000, 0xB00000) is deliberately absent: it is kernel .bss
+    // (`argon2_scratch` spans it), never user memory. See
+    // rust_validate_page_fault.
     if (vaddr >= 0x400000 && vaddr < 0x800000) ||
-       (vaddr >= 0xA00000 && vaddr < 0xB00000) ||
+       (vaddr >= 0x1000000 && vaddr < 0x5000000) ||   // demand-paged heap
        (vaddr >= 0x7FC000 && vaddr < 0x800000) ||
        (vaddr >= 0xff000000 && vaddr < 0xfff00000) {
         return 0x7;
@@ -249,13 +261,21 @@ mod tests {
         // The stack guard page is never a valid fault target.
         assert!(!rust_validate_page_fault(1, 0x7FB000, 0));
         assert!(!rust_validate_page_fault(1, 0x7FBFFF, 0));
-        // The two mapped user windows are valid.
+        // The image/stack window and the demand-paged heap window are valid.
         assert!(rust_validate_page_fault(1, 0x400000, 0));
         assert!(rust_validate_page_fault(1, 0x7FFFFF, 0));
-        assert!(rust_validate_page_fault(1, 0xA00000, 0));
+        assert!(rust_validate_page_fault(1, 0x1000000, 0));   // USER_HEAP_BASE
+        assert!(rust_validate_page_fault(1, 0x4FFFFFF, 0));   // heap top - 1
+        // [8, 16) MiB is kernel .bss reached through supervisor huge pages, not
+        // user memory: argon2_scratch spans 0x92a7a0..0xd2a7a0 and kernel_pepper
+        // sits at 0x928f00. Approving it blessed a fault that cannot be mapped.
+        assert!(!rust_validate_page_fault(1, 0x800000, 0));
+        assert!(!rust_validate_page_fault(1, 0xA00000, 0));
+        assert!(!rust_validate_page_fault(1, 0xAFFFFF, 0));
         // NULL page, kernel space, and gaps are rejected (no ambient validity).
         assert!(!rust_validate_page_fault(1, 0, 0));
         assert!(!rust_validate_page_fault(1, 0x100000, 0));
+        assert!(!rust_validate_page_fault(1, 0x5000000, 0));  // just past heap top
         assert!(!rust_validate_page_fault(1, 0xC0000000, 0));
     }
 
@@ -280,10 +300,14 @@ mod tests {
     #[test]
     fn user_page_protection_windows() {
         assert_eq!(rust_get_user_page_protection(0, 0x400000), 0x7);
-        assert_eq!(rust_get_user_page_protection(0, 0xA00000), 0x7);
+        assert_eq!(rust_get_user_page_protection(0, 0x1000000), 0x7);  // heap base
         assert_eq!(rust_get_user_page_protection(0, 0xff000000), 0x7);
         assert_eq!(rust_get_user_page_protection(0, 0), 0);
         assert_eq!(rust_get_user_page_protection(0, 0x300000), 0);
+        // Not user memory: kernel .bss behind supervisor huge pages. This used to
+        // return 0x7 and had a test asserting it did.
+        assert_eq!(rust_get_user_page_protection(0, 0xA00000), 0);
+        assert_eq!(rust_get_user_page_protection(0, 0x800000), 0);
     }
 
     #[test]

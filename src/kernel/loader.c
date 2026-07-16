@@ -505,12 +505,26 @@ void choose_image_placement(int tid, uint32_t *out_load_base, uint32_t *out_stac
      * globals. The kernel is linked low and its BSS extends above USER_AREA_BASE,
      * so an unbounded window could land over tasks[]/scheduler state; a kernel
      * read of that data on the task's CR3 would then return the task's (zeroed)
-     * user page and corrupt the scheduler. kernel_bss_floor is the link-time start
-     * of .bss (see linker64.ld). */
-    extern uint8_t kernel_bss_floor[];
+     * user page and corrupt the scheduler.
+     *
+     * The bound must be the floor of the *always-live kernel state*, which is what
+     * kernel_lowmem_critical_floor() reports (the top of per_task_kstacks, 0x570000).
+     * This used to compare against `kernel_bss_floor`, which linker64.ld defines as
+     * the link-time *start* of .bss — 0x161000, BELOW USER_AREA_BASE. The test
+     * `floor > USER_AREA_BASE + window_bytes` was therefore always false, the else
+     * branch always ran, and eff_max_pages was pinned to 0: image-base ASLR was
+     * silently disabled entirely, despite the docs advertising ~9 bits. The guard
+     * failed safe, so nothing broke — it just did nothing. There is no end-of-.bss
+     * linker symbol, which is how the wrong end came to be used.
+     *
+     * With the heap moved to USER_HEAP_BASE the low window is image-only, so the
+     * only constraint left is premap containment: the whole [base, base+PREMAP)
+     * span must stay below the floor (and, per ASLR_MAX_LOAD_RANDOM_PAGES, inside
+     * one 2 MiB PD entry, which create_user_pagedir's single-page-table premap
+     * assumes). That yields 336 pages ≈ 8.4 bits. */
     uint32_t eff_max_pages = ASLR_MAX_LOAD_RANDOM_PAGES;
     uint32_t window_bytes  = (uint32_t)USER_ASPACE_PREMAP_PAGES * PAGE_SIZE;
-    uint32_t floor         = (uint32_t)(uintptr_t)kernel_bss_floor;
+    uint32_t floor         = kernel_lowmem_critical_floor();
     if (floor > USER_AREA_BASE + window_bytes) {
         uint32_t safe_pages = (floor - window_bytes - (uint32_t)USER_AREA_BASE) / PAGE_SIZE;
         if (safe_pages < eff_max_pages) eff_max_pages = safe_pages;
@@ -611,8 +625,23 @@ void load_staged_image_into(int tid, uint32_t load_base) {
         ? ((elf_img_end + 0xFFF) & ~0xFFFu)
         : (load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF));
     tasks[tid].image_end = img_end;
+    /* Put the heap at USER_HEAP_BASE (16 MiB), NOT immediately above the image.
+     *
+     * The image sits in [4, 8) MiB, which create_user_pagedir identity-fills
+     * PRESENT|SUPERVISOR because the kernel's own .bss lives at those virtual
+     * addresses and the kernel must reach it while on a user CR3. Only the
+     * USER_ASPACE_PREMAP_PAGES (32) entries the loader explicitly overwrites are
+     * user pages. A heap placed just above the image therefore ran off the end of
+     * that 128 KiB premap and demand-faulted onto an identity-supervisor page: the
+     * pager saw "already present", returned -2, and the fault fell through to a
+     * halt. Demand paging is impossible in that window by construction.
+     *
+     * USER_HEAP_BASE is above the kernel's .bss end (15.37 MiB), so its PD entry
+     * is untouched by the identity fill and the pager can map real user pages
+     * there — which is what makes the heap genuinely demand-paged for the first
+     * time, rather than capped at whatever the premap left over. */
     uint32_t heap_gap = aslr_random_offset(ASLR_MAX_HEAP_GAP_PAGES);
-    tasks[tid].heap_start   = img_end + 0x1000 + heap_gap;
+    tasks[tid].heap_start   = (uint32_t)USER_HEAP_BASE + heap_gap;
     tasks[tid].heap_current = tasks[tid].heap_start;
     tasks[tid].heap_end     = tasks[tid].heap_start + 0x10000;
 

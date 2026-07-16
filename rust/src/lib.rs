@@ -169,56 +169,6 @@ pub unsafe extern "C" fn rust_handle_command(cmd: *const u8, len: usize) -> i32 
     -1
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum DemandAction {
-    Invalid = -1,
-    DemandZero = 0,
-    CowCopyNeeded = 1,
-    NoAction = 2,
-}
-
-#[no_mangle]
-pub extern "C" fn rust_handle_demand_page_fault(
-    fault_addr: u32,
-    err_code: u32,
-    is_cow: bool,
-    ref_count: u16,
-) -> DemandAction {
-    if fault_addr >= 0x7FB000 && fault_addr < 0x7FC000 {
-        return DemandAction::Invalid;
-    }
-
-    let in_user_window =
-        (fault_addr >= 0x400000 && fault_addr < 0x800000) ||
-        (fault_addr >= 0xA00000 && fault_addr < 0xB00000);
-
-    if !in_user_window {
-        return DemandAction::Invalid;
-    }
-
-    if fault_addr >= 0xFFC00000 {
-        return DemandAction::Invalid;
-    }
-
-    let is_write = (err_code & 2) != 0;
-    let is_user = (err_code & 4) != 0;
-
-    if is_cow && is_write && is_user {
-        if ref_count > 1 {
-            return DemandAction::CowCopyNeeded;
-        } else {
-            return DemandAction::NoAction;
-        }
-    }
-
-    if (err_code & 1) == 0 && is_user {
-        return DemandAction::DemandZero;
-    }
-
-    DemandAction::Invalid
-}
-
 #[no_mangle]
 pub extern "C" fn rust_cow_copy_required(is_cow: bool, is_write: bool, ref_count: u16) -> bool {
     is_cow && is_write && ref_count > 1
@@ -278,7 +228,6 @@ mod tests {
 
     // err_code bit layout used throughout: present=1, write=2, user=4.
     const PRESENT: u32 = 1;
-    const WRITE: u32 = 2;
     const USER: u32 = 4;
 
     #[test]
@@ -378,34 +327,6 @@ mod tests {
         assert!(!rust_signal_handler_addr_ok(0x800000)); // one past the top
         assert!(!rust_signal_handler_addr_ok(0x7d0000 + 0x400000)); // ~stack, mapped high
         assert!(!rust_signal_handler_addr_ok(0x100000)); // kernel image
-    }
-
-    #[test]
-    fn demand_fault_cow_and_zero_policy() {
-        // COW write from user on a shared page -> copy.
-        assert_eq!(
-            rust_handle_demand_page_fault(0x400000, WRITE | USER, true, 2),
-            DemandAction::CowCopyNeeded
-        );
-        // COW write but sole owner -> just map writable, no copy.
-        assert_eq!(
-            rust_handle_demand_page_fault(0x400000, WRITE | USER, true, 1),
-            DemandAction::NoAction
-        );
-        // Not-present user read -> demand zero.
-        assert_eq!(
-            rust_handle_demand_page_fault(0x400000, USER, false, 0),
-            DemandAction::DemandZero
-        );
-        // Guard page and out-of-window addresses are always invalid.
-        assert_eq!(
-            rust_handle_demand_page_fault(0x7FB000, USER, false, 0),
-            DemandAction::Invalid
-        );
-        assert_eq!(
-            rust_handle_demand_page_fault(0x100000, USER, false, 0),
-            DemandAction::Invalid
-        );
     }
 
     #[test]

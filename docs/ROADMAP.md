@@ -265,13 +265,17 @@ Cross-cutting work that should grow alongside every other phase.
   `rust/src/capability.rs`.
 - **User/kernel address separation**: the kernel is linked low (1 MiB) and its
   BSS extends past `USER_AREA_BASE` (4 MiB), so a task's low-memory mappings
-  (image, heap) share virtual addresses with kernel data like `tasks[]`. Two
-  interim guards are in place: image ASLR is pinned so the premap window can't
-  reach the kernel globals (`choose_image_placement`), and the user heap is
-  bounded below `kernel_lowmem_critical_floor()` (`h_sbrk`/`h_brk`). Residual
-  gaps a determined program could still hit — the low user stack overlaps
-  `kernel_stacks`, and a direct (non-`sbrk`) fault into the critical window isn't
-  yet refused by the demand pager. The full fix is to move the user address space
+  (image) share virtual addresses with kernel data like `tasks[]`. Three interim
+  guards are in place: the demand-paged heap has been moved to `USER_HEAP_BASE`
+  (16 MiB), clear of the kernel's `.bss` end, so it no longer sits in the
+  contested window at all; image ASLR is bounded so the premap window can't reach
+  the kernel globals (`choose_image_placement` clamps against
+  `kernel_lowmem_critical_floor()`); and the demand pager now refuses a fault
+  outside the calling task's own image/heap/stack regions
+  (`rust_validate_page_fault`), so a direct fault into the critical window is a
+  SIGSEGV rather than an allocation. The residual gap a determined program could
+  still reach is the low user stack, which is premapped `USER` and overlaps
+  `kernel_stacks` (`0x616610`–`0x816610`). The full fix is to move the user address space
   above the kernel image (or the kernel to the higher half) so no user mapping
   can ever shadow kernel state, which would also widen image-base ASLR entropy.
 

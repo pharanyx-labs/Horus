@@ -243,6 +243,11 @@ void smp_bringup(void) {
     /* Gated: a waiter blocks in SYS_WAIT_NOTIFY and a sender fires a badge with
      * SYS_NOTIFY; prove the badge round-trips to userspace (NOTIFY_SELFTEST: PASS). */
     notify_selftest();
+#elif defined(COW_SELFTEST)
+    /* Gated: read two fresh heap pages (shared zero page) then write one, and
+     * prove the write broke COW into a private page without disturbing the
+     * sibling (prints COW_SELFTEST: PASS). */
+    { extern void cow_selftest(void); cow_selftest(); }
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the

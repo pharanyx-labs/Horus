@@ -40,21 +40,46 @@ impl SafeCap {
     }
 }
 
+/// Low user stack window that `create_user_pagedir` premaps (32 pages below
+/// `0x7ff000`). Fixed, so it is a constant here rather than a per-task bound.
+const LOW_STACK_BASE: u32 = 0x7df000;
+const LOW_STACK_TOP: u32 = 0x7ff000;
+
+/// Is `fault_addr` a legitimate part of THIS task's user address space?
+///
+/// Region-aware: the caller passes the task's actual image and heap bounds
+/// (`tasks[tid]`), and the fixed low-stack window is checked directly. Only these
+/// regions are user memory; a fault anywhere else — the null page, the `[4, 16)`
+/// MiB range that is the kernel's own `.bss` reached through supervisor mappings,
+/// the gaps between regions, kernel space — is a real access violation, so it
+/// returns `false` and the fault handler routes it to the task's SIGSEGV handler
+/// (or a kill), never a blessed-but-unmappable page the pager silently declines.
+///
+/// This is the single source of truth for "valid user address": the demand pager
+/// gates a demand-zero mapping on it (so it never maps an arbitrary address), and
+/// the fault handler uses it for the SIGSEGV-vs-diagnostic decision.
 #[no_mangle]
-pub extern "C" fn rust_validate_page_fault(task_id: u32, fault_addr: u32, error_code: u32) -> bool {
-    let _ = (task_id, error_code);
-    if fault_addr >= 0x7FB000 && fault_addr < 0x7FC000 { return false; }
-    // The image premap and the low stack live here.
-    if fault_addr >= 0x400000 && fault_addr < 0x800000 { return true; }
-    // The demand-paged heap: USER_HEAP_BASE (16 MiB) .. + USER_HEAP_MAX_SIZE
-    // (64 MiB). Above the kernel's .bss end, so nothing of the kernel's is
-    // shadowed by mapping user pages here.
-    if fault_addr >= 0x1000000 && fault_addr < 0x5000000 { return true; }
-    // [0xA00000, 0xB00000) used to be approved as user memory. It is not: the
-    // kernel's `argon2_scratch` spans 0x92a7a0..0xd2a7a0, straight through it,
-    // and the whole [8, 16) MiB region is kernel .bss reached through supervisor
-    // huge pages (loader_staging, audit_mac, audit_log_buffer, kernel_pepper).
-    // Approving it meant a fault there was blessed but unmappable.
+pub extern "C" fn rust_validate_page_fault(
+    fault_addr: u32,
+    _error_code: u32,
+    image_base: u32,
+    image_end: u32,
+    heap_start: u32,
+    heap_end: u32,
+) -> bool {
+    // Image: code, rodata, data, bss. image_base is 0 only for an unbuilt task.
+    if image_base != 0 && fault_addr >= image_base && fault_addr < image_end {
+        return true;
+    }
+    // Demand-paged heap: [heap_start, heap_end), the sbrk-authorized ceiling.
+    if heap_start != 0 && fault_addr >= heap_start && fault_addr < heap_end {
+        return true;
+    }
+    // Low user stack (premapped, so it does not demand-fault; included so a
+    // protection fault on a present stack page is still classed as in-region).
+    if fault_addr >= LOW_STACK_BASE && fault_addr < LOW_STACK_TOP {
+        return true;
+    }
     false
 }
 
@@ -257,26 +282,37 @@ mod tests {
     const USER: u32 = 4;
 
     #[test]
-    fn page_fault_validation_guard_and_windows() {
-        // The stack guard page is never a valid fault target.
-        assert!(!rust_validate_page_fault(1, 0x7FB000, 0));
-        assert!(!rust_validate_page_fault(1, 0x7FBFFF, 0));
-        // The image/stack window and the demand-paged heap window are valid.
-        assert!(rust_validate_page_fault(1, 0x400000, 0));
-        assert!(rust_validate_page_fault(1, 0x7FFFFF, 0));
-        assert!(rust_validate_page_fault(1, 0x1000000, 0));   // USER_HEAP_BASE
-        assert!(rust_validate_page_fault(1, 0x4FFFFFF, 0));   // heap top - 1
-        // [8, 16) MiB is kernel .bss reached through supervisor huge pages, not
-        // user memory: argon2_scratch spans 0x92a7a0..0xd2a7a0 and kernel_pepper
-        // sits at 0x928f00. Approving it blessed a fault that cannot be mapped.
-        assert!(!rust_validate_page_fault(1, 0x800000, 0));
-        assert!(!rust_validate_page_fault(1, 0xA00000, 0));
-        assert!(!rust_validate_page_fault(1, 0xAFFFFF, 0));
-        // NULL page, kernel space, and gaps are rejected (no ambient validity).
-        assert!(!rust_validate_page_fault(1, 0, 0));
-        assert!(!rust_validate_page_fault(1, 0x100000, 0));
-        assert!(!rust_validate_page_fault(1, 0x5000000, 0));  // just past heap top
-        assert!(!rust_validate_page_fault(1, 0xC0000000, 0));
+    fn page_fault_validation_is_region_scoped() {
+        // A representative task: image at an ASLR'd base [0x4a0000, 0x4b6000),
+        // heap [0x1000000, 0x1040000). Bounds come from tasks[tid] at the call site.
+        let ib = 0x4a0000; let ie = 0x4b6000;
+        let hs = 0x1000000; let he = 0x1040000;
+        let v = |a: u32| rust_validate_page_fault(a, 0, ib, ie, hs, he);
+
+        // In-region: image, heap, low stack.
+        assert!(v(0x4a0000));            // image base
+        assert!(v(0x4b5fff));            // image end - 1
+        assert!(v(0x1000000));           // heap start
+        assert!(v(0x103ffff));           // heap end - 1
+        assert!(v(0x7df000));            // low stack base
+        assert!(v(0x7fefff));            // low stack top - 1
+
+        // Out of region: below the image, the gap between image and stack (which
+        // includes the [4,8)/[8,16) MiB kernel .bss shadow), past the heap ceiling,
+        // the null page, kernel space.
+        assert!(!v(0x49ffff));           // just below the image base
+        assert!(!v(0x4b6000));           // just past the image end
+        assert!(!v(0x570000));           // kernel_page_dir — blessed-but-unmappable before
+        assert!(!v(0x800000));           // [8,16) MiB kernel .bss
+        assert!(!v(0xA00000));           // argon2_scratch
+        assert!(!v(0xffffff));           // just below the heap base
+        assert!(!v(0x1040000));          // just past the heap ceiling
+        assert!(!v(0x0));                // null page
+        assert!(!v(0x100000));           // kernel image low
+        assert!(!v(0xC0000000));         // kernel space
+
+        // A zero image_base (unbuilt task) never validates the image window.
+        assert!(!rust_validate_page_fault(0x400000, 0, 0, 0, hs, he));
     }
 
     #[test]

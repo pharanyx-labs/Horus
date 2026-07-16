@@ -763,7 +763,13 @@ bool rust_cap_revoke_global(capability_t *target_cspace, uint32_t target_cspace_
                             const cspace_desc_t *spaces, uint32_t space_count,
                             uint32_t *next_serial);
 
-bool rust_validate_page_fault(uint32_t t, uint32_t a, uint32_t e);
+/* Is fault address `a` a legitimate part of the faulting task's user address
+ * space? Region-aware: the caller passes the task's image and heap bounds; the
+ * fixed low-stack window is checked internally. `e` is the fault error code
+ * (unused today). See rust/src/lib.rs. */
+bool rust_validate_page_fault(uint32_t a, uint32_t e,
+                              uint32_t image_base, uint32_t image_end,
+                              uint32_t heap_start, uint32_t heap_end);
 int  rust_handle_command(const uint8_t *cmd, size_t len);
 
 

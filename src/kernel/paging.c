@@ -23,6 +23,10 @@ extern tcb_t tasks[MAX_TASKS];
  * the stack. The image/heap region stays executable because the flat-binary
  * loader cannot tell code from data within it. */
 #define PAGE_NX        (1ULL << 63)
+/* Physical frame bits of a PTE (52-bit phys, 4 KiB aligned). Masks off BOTH the
+ * low 12 flag bits AND the high bits (notably NX, bit 63) — `& ~0xFFF` leaves NX
+ * set, so a noexec page's frame address would carry bit 63 and land nowhere. */
+#define PTE_ADDR_MASK  0x000FFFFFFFFFF000ULL
 
 /* The W^X "is this user page non-executable?" policy lives in Rust
  * (rust_user_page_is_noexec); the kernel ORs PAGE_NX into the PTE when it
@@ -66,6 +70,19 @@ static uint16_t page_refcounts[USER_PHYS_PAGES];
 
 uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
 
+/* Shared zero page. One immortal, pre-zeroed frame that every demand-zero READ
+ * fault maps read-only + PAGE_COW; the first WRITE turns into a copy-on-write
+ * fault that hands the task its own private page. So an allocation that is read
+ * but never written costs one shared frame across every task, instead of a fresh
+ * zeroed page each. Immortal by construction — task teardown never frees user
+ * pages (task_teardown), and free_user_physical_page refuses this frame anyway. */
+static uint64_t g_zero_page_phys = 0;
+
+/* Copy-on-write faults resolved (shared-zero private-copy + any future generic
+ * COW). Exposed for the COW self-test, which asserts it advanced. */
+static uint64_t g_cow_faults = 0;
+uint64_t get_cow_fault_count(void) { return g_cow_faults; }
+
 static void init_user_page_allocator(void) {
 
     free_page_count = 0;
@@ -96,6 +113,9 @@ uint32_t alloc_user_physical_page(void) {
 }
 
 void free_user_physical_page(uint32_t phys_addr) {
+    /* The shared zero page is immortal: many PTEs across many tasks alias it, so
+     * it must never return to the free list. */
+    if ((uint64_t)phys_addr == g_zero_page_phys) return;
     int idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
     if (idx >= 0 && idx < USER_PHYS_PAGES) {
         page_refcounts[idx] = 0;
@@ -128,6 +148,13 @@ void ensure_lapic_mapped(uint64_t *root);
 
 void paging_init(void) {
     init_user_page_allocator();
+    /* Reserve and zero the shared zero page up front, so the very first
+     * demand-zero read fault can alias it. */
+    g_zero_page_phys = alloc_user_physical_page();
+    if (g_zero_page_phys) {
+        uint8_t *z = (uint8_t *)PHYS_KVA(g_zero_page_phys);
+        for (int i = 0; i < PAGE_SIZE; i++) z[i] = 0;
+    }
     set_tss_kernel_stack(KERNEL_TSS_STACK);
     extern platform_info_t platform;
     if (platform.has_smap) {
@@ -422,14 +449,34 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
     int is_write = (err_code & 2) != 0;
 
     if (is_write && (pte & PAGE_COW) != 0) {
-        uint64_t old_phys = pte & ~0xFFFULL;
+        /* Mask with PTE_ADDR_MASK, not ~0xFFF: a noexec page has NX (bit 63) set,
+         * which ~0xFFF leaves in place — the frame address would then carry bit 63
+         * and every dereference/compare below would go wrong. */
+        uint64_t old_phys = pte & PTE_ADDR_MASK;
 
-        
+        /* Shared zero page: a write to a demand-zero page that was only read so
+         * far. Hand out a private page — the "copy" of an all-zero frame is just
+         * zeros, so there is nothing to copy and the immortal zero frame's
+         * refcount is never touched (it is aliased by many PTEs and must not move).
+         * Preserve W^X from the faulting address. */
+        if (old_phys == g_zero_page_phys) {
+            uint64_t np = alloc_user_physical_page();
+            if (np == 0) { spin_unlock(&page_lock); return -3; }
+            uint8_t *d = (uint8_t *)PHYS_KVA(np);
+            for (int i = 0; i < PAGE_SIZE; i++) d[i] = 0;
+            uint64_t nf = PAGE_PRESENT | PAGE_WRITE | PAGE_USER;   /* COW cleared */
+            if (rust_user_page_is_noexec(fault_addr)) nf |= PAGE_NX;
+            ptv[pt_i] = np | nf;
+            g_cow_faults++;
+            asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
+            spin_unlock(&page_lock);
+            return 0;
+        }
+
         int refs = rust_page_ref_dec((uint32_t)old_phys,
                                      page_refcounts,
                                      (uint32_t)USER_PHYS_PAGES);
 
-        
         int is_write_f = 1;
         if (!rust_cow_copy_required(true, is_write_f != 0, (uint16_t)((refs > 0 ? refs : 0) + 1))) {
             if (refs >= 0) {
@@ -468,6 +515,7 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
          * the NX bit (63), so re-derive it from the faulting address. */
         if (rust_user_page_is_noexec(fault_addr)) new_flags |= PAGE_NX;
         ptv[pt_i] = new_phys | new_flags;
+        g_cow_faults++;
 
         asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
         spin_unlock(&page_lock);
@@ -475,12 +523,41 @@ int handle_demand_page_fault(uint32_t fault_addr, uint32_t err_code) {
     }
 
     if ((pte & PAGE_PRESENT) != 0) {
-        
+
         spin_unlock(&page_lock);
         return -2;
     }
 
-    
+    /* Region gate: only demand-map an address that is a legitimate part of this
+     * task's user space (image, heap, or the low stack window). A fault anywhere
+     * else — a wild pointer, the kernel-.bss shadow in [4, 16) MiB, the gaps
+     * between regions — is a real access violation. Return -1 without mapping so
+     * the fault handler turns it into a SIGSEGV, rather than silently backing an
+     * arbitrary address with a fresh page. */
+    int tid_g = get_current_task();
+    if (tid_g <= 0 || tid_g >= MAX_TASKS ||
+        !rust_validate_page_fault(fault_addr, err_code,
+                                  tasks[tid_g].image_base, tasks[tid_g].image_end,
+                                  (uint32_t)tasks[tid_g].heap_start,
+                                  (uint32_t)tasks[tid_g].heap_end)) {
+        spin_unlock(&page_lock);
+        return -1;
+    }
+
+    /* A READ fault on a fresh page: alias the shared zero page read-only + COW.
+     * The page reads as zeros with no allocation; a later write takes the COW
+     * fault above and gets a private page. A WRITE fault skips this and allocates
+     * a private page directly, so the common write-first case does not pay a
+     * second fault. */
+    if (!is_write && g_zero_page_phys) {
+        uint64_t zflags = PAGE_PRESENT | PAGE_USER | PAGE_COW;   /* read-only: no PAGE_WRITE */
+        if (rust_user_page_is_noexec(fault_addr)) zflags |= PAGE_NX;
+        ptv[pt_i] = g_zero_page_phys | zflags;
+        asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
+        spin_unlock(&page_lock);
+        return 0;
+    }
+
     uint64_t phys = alloc_user_physical_page();
     if (phys == 0) {
         spin_unlock(&page_lock);
@@ -635,9 +712,20 @@ static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int n
     int rc = 0;
     size_t done = 0;
     uint64_t need = PAGE_PRESENT | PAGE_USER | (need_write ? (uint64_t)PAGE_WRITE : 0);
+    const uint64_t cow_present = PAGE_PRESENT | PAGE_USER | PAGE_COW;
     while (done < n) {
         uint64_t v = uaddr + done;
         uint64_t e = pt_walk(ucr3, v);
+        /* A kernel write into a present COW page must break COW first, exactly as
+         * a ring-3 write would. Without this, a copy_to_user into a page the task
+         * has only read — now aliasing the shared zero page, read-only — would
+         * spuriously fail the PAGE_WRITE check below; and writing through the
+         * physical alias regardless would corrupt the shared zero frame for every
+         * task. Drive the pager's COW path (write fault) and re-walk. */
+        if (need_write && (e & cow_present) == cow_present && !(e & PAGE_WRITE)) {
+            handle_demand_page_fault((uint32_t)v, (uint32_t)PAGE_WRITE);
+            e = pt_walk(ucr3, v);
+        }
         if ((e & need) != need) { rc = -1; break; }
 
         uint64_t phys, chunk;

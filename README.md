@@ -113,7 +113,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Transitive cross-task revocation + lineage (use-after-revoke prevention) | ✅ Working |
 | SMEP / SMAP hardening (when CPU advertises) | ✅ Working |
 | W^X — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
-| ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; ~9-bit entropy in the 32-bit window) | ✅ Working |
+| ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 8.75-bit entropy in the 32-bit window) | ✅ Working |
 | Table-driven syscall dispatch (central capability gate, 0–75) | ✅ Working |
 | User authentication + lockout (Argon2id memory-hard hashing) | ✅ Working |
 | Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
@@ -132,7 +132,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
-| Rust security-core unit tests (58) + GitHub Actions CI (20 gated jobs) | ✅ Working |
+| Rust security-core unit tests (58) + GitHub Actions CI (21 jobs, 20 gating) | ✅ Working |
 | Headless QEMU self-tests: boot, ELF/W^X, preemption, signals, process-control, notifications, SMP, fs (×6), newlib | ✅ Working |
 | Scripted integration session: drives the real ring-3 shell over serial (auth + least privilege) | ✅ Working |
 | Reproducible builds | ✅ Working |

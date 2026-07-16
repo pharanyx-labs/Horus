@@ -418,8 +418,8 @@ void signal_selftest(void) {
 }
 #endif /* SIGNAL_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY_SELFTEST builds only) ----------
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW_SELFTEST builds only) -------
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
@@ -728,4 +728,25 @@ void notify_selftest(void) {
     sched_enter_user(waiter);
 }
 #endif /* NOTIFY_SELFTEST */
+
+#ifdef COW_SELFTEST
+/* Copy-on-write self-test. Spawn cowtest, which reads two fresh heap pages (each
+ * aliasing the shared zero page read-only + COW), writes one, and asserts the
+ * sibling is unaffected — i.e. the write broke COW into a private page rather
+ * than mutating a shared frame. cowtest prints COW_SELFTEST: PASS/FAIL from ring 3
+ * and sched_enter_user does not return, so the assertions are all userspace-side;
+ * see the note in userspace/cowtest.c for what that does and does not prove. */
+void cow_selftest(void) {
+    extern uint8_t embedded_cowtest_bin_start[], embedded_cowtest_bin_end[];
+    print("COW_SELFTEST: begin\n");
+
+    int pid = fs_spawn_embedded(embedded_cowtest_bin_start,
+                                embedded_cowtest_bin_end, "cowtest");
+    if (pid <= 0) { print("COW_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[pid].uid = 0;
+
+    sched_enable_preemption();
+    sched_enter_user(pid);   /* cowtest prints the PASS/FAIL marker; does not return */
+}
+#endif /* COW_SELFTEST */
 

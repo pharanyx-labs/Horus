@@ -393,14 +393,14 @@ static int verify_password(const char *name, const char *pass) {
 
 
 
-void h_auth(struct regs *r) {
+void h_auth(struct interrupt_frame64 *r) {
     uint32_t now = get_system_ticks();
 
     char uname[32];
     char upass[32];
-    if (copy_from_user(uname, (void*)(addr_t)r->ebx, 31) != 0 ||
-        copy_from_user(upass, (void*)(addr_t)r->ecx, 31) != 0) {
-        r->eax = (uint32_t)SYS_ERR_FAULT;
+    if (copy_from_user(uname, (void*)(addr_t)r->rbx, 31) != 0 ||
+        copy_from_user(upass, (void*)(addr_t)r->rcx, 31) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT;
         return;
     }
     uname[31] = 0;
@@ -412,7 +412,7 @@ void h_auth(struct regs *r) {
     if (rust_auth_global_locked(now)) {
         secure_zero(uname, sizeof(uname));
         secure_zero(upass, sizeof(upass));
-        r->eax = (uint32_t)SYS_ERR_AUTH;
+        r->rax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
 
@@ -420,7 +420,7 @@ void h_auth(struct regs *r) {
     if (u && rust_auth_is_locked(u->auth_lockout_until, now)) {
         secure_zero(uname, sizeof(uname));
         secure_zero(upass, sizeof(upass));
-        r->eax = (uint32_t)SYS_ERR_AUTH;
+        r->rax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
 
@@ -445,13 +445,13 @@ void h_auth(struct regs *r) {
                 storage_unlock(mat, mlen);
             }
 
-            if (r->edx) {
+            if (r->rdx) {
                 uint32_t uid = u->uid;
-                copy_to_user((void*)(addr_t)r->edx, &uid, sizeof(uid));
+                copy_to_user((void*)(addr_t)r->rdx, &uid, sizeof(uid));
             }
             audit_log(AUDIT_AUTH, 0, 0, "login success");
         }
-        r->eax = 0;
+        r->rax = 0;
     } else {
         rust_auth_global_on_failure(now);
         if (u) {
@@ -462,7 +462,7 @@ void h_auth(struct regs *r) {
             if (new_lockout) u->auth_lockout_until = (uint32_t)new_lockout;
         }
         audit_log(AUDIT_AUTH, 0, -1, "login failure");
-        r->eax = (uint32_t)SYS_ERR_AUTH;
+        r->rax = (uint32_t)SYS_ERR_AUTH;
     }
     /* Don't leave the cleartext password (and username) sitting in the
      * kernel stack frame after authentication completes. */
@@ -471,7 +471,7 @@ void h_auth(struct regs *r) {
 }
 
 /* SYS_SUDO: re-auth the current user, then spawn an armed program as uid 0. */
-void h_sudo(struct regs *r) {
+void h_sudo(struct interrupt_frame64 *r) {
     uint32_t now = get_system_ticks();
     struct user_account *cur_user = NULL;
     uint32_t cur_uid = tasks[get_current_task()].uid;
@@ -482,18 +482,18 @@ void h_sudo(struct regs *r) {
         }
     }
     if (rust_auth_global_locked(now)) {
-        r->eax = (uint32_t)SYS_ERR_AUTH;
+        r->rax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
     if (cur_user && rust_auth_is_locked(cur_user->auth_lockout_until, now)) {
-        r->eax = (uint32_t)SYS_ERR_AUTH;
+        r->rax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
 
     char upass[32];
-    if (copy_from_user(upass, (void*)(addr_t)r->ebx, 31) != 0) {
+    if (copy_from_user(upass, (void*)(addr_t)r->rbx, 31) != 0) {
         secure_zero(upass, sizeof(upass));
-        r->eax = (uint32_t)SYS_ERR_FAULT;
+        r->rax = (uint32_t)SYS_ERR_FAULT;
         return;
     }
     upass[31] = 0;
@@ -510,7 +510,7 @@ void h_sudo(struct regs *r) {
     }
     if (!cur) {
         secure_zero(upass, sizeof(upass));
-        r->eax = (uint32_t)SYS_ERR_NOENT;
+        r->rax = (uint32_t)SYS_ERR_NOENT;
         return;
     }
 
@@ -524,7 +524,7 @@ void h_sudo(struct regs *r) {
             if (new_lockout) cur_user->auth_lockout_until = (uint32_t)new_lockout;
         }
         secure_zero(upass, sizeof(upass));
-        r->eax = (uint32_t)SYS_ERR_AUTH;
+        r->rax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
     rust_auth_global_on_success();
@@ -546,7 +546,7 @@ void h_sudo(struct regs *r) {
     audit_log(AUDIT_SUDO, 0, 0, "sudo success");
 
     if (!program_armed) {
-        r->eax = (uint32_t)SYS_ERR_INVAL;
+        r->rax = (uint32_t)SYS_ERR_INVAL;
         return;
     }
 
@@ -590,13 +590,13 @@ void h_sudo(struct regs *r) {
         tasks[pid].cspace[7].generation = 0;
         spin_unlock(&cap_lock);
     }
-    r->eax = pid;
+    r->rax = pid;
 }
 
 /* SYS_GET_PASS: read a line with masked echo; scrubs the scratch buffer. */
-void h_get_pass(struct regs *r) {
-    void *user_buf = (void *)(addr_t)r->ebx;
-    uint32_t max_len = r->ecx;
+void h_get_pass(struct interrupt_frame64 *r) {
+    void *user_buf = (void *)(addr_t)r->rbx;
+    uint32_t max_len = r->rcx;
     if (max_len > 127) max_len = 127;
 
     char line[128];
@@ -623,45 +623,45 @@ void h_get_pass(struct regs *r) {
 
     if (copy_to_user(user_buf, line, len + 1) != 0) {
         for (uint32_t i = 0; i < 128; i++) line[i] = 0;
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
 
     for (uint32_t i = 0; i < 128; i++) line[i] = 0;
 
-    r->eax = len;
+    r->rax = len;
 }
 
 /* SYS_READ_AUDIT: copy the audit ring buffer to userspace.
  * Capability (slot 7, READ, type CAP_AUDIT) is enforced centrally by the table. */
 
-void h_useradd(struct regs *r) {
-    uint32_t uid = r->ebx;
-    uint32_t gid = r->ecx;
+void h_useradd(struct interrupt_frame64 *r) {
+    uint32_t uid = r->rbx;
+    uint32_t gid = r->rcx;
     char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->edx, 31) != 0) {
-        r->eax = -1; return;
+    if (copy_from_user(name, (void*)(addr_t)r->rdx, 31) != 0) {
+        r->rax = -1; return;
     }
     name[31] = 0;
-    r->eax = do_useradd(uid, gid, name, "");
+    r->rax = do_useradd(uid, gid, name, "");
 }
-void h_userdel(struct regs *r) {
-    r->eax = do_userdel(r->ebx);
+void h_userdel(struct interrupt_frame64 *r) {
+    r->rax = do_userdel(r->rbx);
 }
-void h_passwd(struct regs *r) {
-    uint32_t target = r->ebx;
+void h_passwd(struct interrupt_frame64 *r) {
+    uint32_t target = r->rbx;
     char newpass[32];
-    if (copy_from_user(newpass, (void*)(addr_t)r->ecx, 31) != 0) {
-        r->eax = -1; return;
+    if (copy_from_user(newpass, (void*)(addr_t)r->rcx, 31) != 0) {
+        r->rax = -1; return;
     }
     newpass[31] = 0;
-    r->eax = do_passwd(target, newpass);
+    r->rax = do_passwd(target, newpass);
     secure_zero(newpass, sizeof(newpass));
 }
 
 /* SYS_ROTATE_KEYS (36): slot-8 READ, type CAP_CONSOLE enforced by the table. */
-void h_rotate_keys(struct regs *r) {
-    r->eax = (uint32_t)do_rotate_keys();
+void h_rotate_keys(struct interrupt_frame64 *r) {
+    r->rax = (uint32_t)do_rotate_keys();
 }
 
 /* FS ops (38-45): authority is the per-call dir/file capability, checked inside

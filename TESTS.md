@@ -2,7 +2,7 @@
 
 ## Current state
 
-The Rust security core has **58 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`) with **20 jobs**. The **headless QEMU boot tests** run in CI: `make smoke` boots to the ring-3 login prompt with no fault, `make smoke-elf` boots a real multi-segment static-PIE ELF at a randomised base and asserts the loader enforced W^X **and** applied its `R_386_RELATIVE` relocation, `make smoke-preempt` asserts the timer time-slices two non-yielding ring-3 tasks, `make smoke-signal` faults a task on purpose and asserts its handler runs, `make smoke-proc` drives ring-3 process control (exit/kill/spawn/exec/grant/signal/wait/fault-wait), `make smoke-notify` asserts an async `SYS_NOTIFY` badge reaches a task blocked in `SYS_WAIT_NOTIFY`, `make smoke-smp` asserts the application processors come online and run tasks concurrently, and the filesystem/libc suite (`make smoke-fs`, plus `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-newlib` for persistence, per-file permissions, multi-client concurrency, the write-ahead journal, large/double-indirect files, and the newlib libc port) is now gated too. Beyond the marker self-tests, `make smoke-session` drives the **real** ring-3 shell over serial through a scripted login/command session and asserts on the responses (`tools/session_test.py`). The delegated boot-through-`init` filesystem path (`smoke-init-fs`) remains a local target, and a coverage-guided fuzz harness is still the highest-value remaining contribution.
+The Rust security core has **58 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`) with **21 jobs**. The **headless QEMU boot tests** run in CI: `make smoke` boots to the ring-3 login prompt with no fault, `make smoke-elf` boots a real multi-segment static-PIE ELF at a randomised base and asserts the loader enforced W^X **and** applied its `R_386_RELATIVE` relocation, `make smoke-preempt` asserts the timer time-slices two non-yielding ring-3 tasks, `make smoke-signal` faults a task on purpose and asserts its handler runs, `make smoke-proc` drives ring-3 process control (exit/kill/spawn/exec/grant/signal/wait/fault-wait), `make smoke-cow` asserts fresh heap pages read as zero from one shared read-only frame and that writing one breaks it to a private page without disturbing its sibling, `make smoke-notify` asserts an async `SYS_NOTIFY` badge reaches a task blocked in `SYS_WAIT_NOTIFY`, `make smoke-smp` asserts the application processors come online and run tasks concurrently, and the filesystem/libc suite (`make smoke-fs`, plus `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-newlib` for persistence, per-file permissions, multi-client concurrency, the write-ahead journal, large/double-indirect files, and the newlib libc port) is now gated too. Beyond the marker self-tests, `make smoke-session` drives the **real** ring-3 shell over serial through a scripted login/command session and asserts on the responses (`tools/session_test.py`). The delegated boot-through-`init` filesystem path (`smoke-init-fs`) remains a local target, and a coverage-guided fuzz harness is still the highest-value remaining contribution.
 
 ---
 
@@ -80,7 +80,7 @@ help
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs **twenty jobs**. Nineteen are hard gates; the
+`.github/workflows/ci.yml` runs **twenty-one jobs**. Twenty are hard gates; the
 `security` SAST/SBOM scan is advisory (every step is `continue-on-error`, so it
 reports but never blocks a merge). Note `altconfigs` is one job id that fans out
 into two matrix runs.
@@ -93,13 +93,14 @@ into two matrix runs.
 6. **smoke-preempt** — `make smoke-preempt` (two-task timer preemption)
 7. **smoke-signal** — `make smoke-signal` (fault delivered to a registered handler)
 8. **smoke-proc** — `make smoke-proc` (ring-3 exit/kill/spawn/exec/grant/signal/wait)
-9. **smoke-notify** — `make smoke-notify` (async `SYS_NOTIFY` badge to a blocked `SYS_WAIT_NOTIFY`)
-10. **smoke-smp** — `make smoke-smp` (application processors run tasks concurrently)
-11. **smoke-fs** / **smoke-fs-perms** / **smoke-fs-conc** / **smoke-fs-persist** / **smoke-fs-wal** / **smoke-fs-large** — the encrypted filesystem suite (server round-trip, permissions, concurrency, reboot persistence, journal crash-recovery, large files)
-12. **smoke-newlib** — `make smoke-newlib` (newlib libc over the POSIX fd layer)
-13. **smoke-session** — `make smoke-session` (drives the real ring-3 shell over serial: auth + least-privilege enforcement)
-14. **reproducible** — builds `kernel.elf` twice and fails if they are not byte-for-byte identical
-15. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM (advisory)
+9. **smoke-cow** — `make smoke-cow` (demand-zero pages share one read-only zero frame; a write breaks it to a private page without disturbing its sibling)
+10. **smoke-notify** — `make smoke-notify` (async `SYS_NOTIFY` badge to a blocked `SYS_WAIT_NOTIFY`)
+11. **smoke-smp** — `make smoke-smp` (application processors run tasks concurrently)
+12. **smoke-fs** / **smoke-fs-perms** / **smoke-fs-conc** / **smoke-fs-persist** / **smoke-fs-wal** / **smoke-fs-large** — the encrypted filesystem suite (server round-trip, permissions, concurrency, reboot persistence, journal crash-recovery, large files)
+13. **smoke-newlib** — `make smoke-newlib` (newlib libc over the POSIX fd layer)
+14. **smoke-session** — `make smoke-session` (drives the real ring-3 shell over serial: auth + least-privilege enforcement)
+15. **reproducible** — builds `kernel.elf` twice and fails if they are not byte-for-byte identical
+16. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM (advisory)
 
 All but the security job use only first-party / pinned actions.
 

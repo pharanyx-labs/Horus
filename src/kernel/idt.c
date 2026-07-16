@@ -530,7 +530,12 @@ uint64_t page_fault_handler(struct regs *r) {
     addr_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
 
-    uint32_t err = r->err_code;
+    /* Read the fault error code from the ACTUAL frame layout. `r` is really a
+     * `struct interrupt_frame64` (interrupt_handler64 casts it), whose err_code is
+     * at a different offset than the legacy 32-bit `struct regs`; reading
+     * `r->err_code` returned a garbage field (always 0). Nothing depended on it
+     * until the copy-on-write path needed the write bit, so it went unnoticed. */
+    uint32_t err = (uint32_t)((struct interrupt_frame64 *)r)->err_code;
     int cur = get_current_task();
     /* Only ask the pager about addresses that can legitimately be user memory.
      * The old test was `>= USER_AREA_BASE || >= 0xA00000` — the second clause is
@@ -552,7 +557,11 @@ uint64_t page_fault_handler(struct regs *r) {
             return 0;
         }
     }
-    bool allowed = rust_validate_page_fault(cur, fault_addr, err);
+    bool allowed = (cur > 0 && cur < MAX_TASKS) &&
+        rust_validate_page_fault(fault_addr, err,
+                                 tasks[cur].image_base, tasks[cur].image_end,
+                                 (uint32_t)tasks[cur].heap_start,
+                                 (uint32_t)tasks[cur].heap_end);
     struct interrupt_frame64 *f64 = (struct interrupt_frame64 *)r;
 
     /* Deliver SIGSEGV to a registered ring-3 handler instead of killing the
@@ -580,14 +589,13 @@ uint64_t page_fault_handler(struct regs *r) {
 
     /* Kill the task, never the machine.
      *
-     * We land here two ways: the validator rejected the address, or it approved
-     * one the pager could not map. The second used to fall through to the
-     * `cli; hlt` below, which meant a ring-3 task could stop the kernel dead by
-     * reading an address the validator blesses but that cannot be demand-mapped —
-     * e.g. 0x570000 (kernel_page_dir), which is inside the [4, 8) MiB window
-     * rust_validate_page_fault approves but is identity-mapped supervisor, so the
-     * pager returns -2 ("already present") and declines. Both cases are fatal to
-     * the task and neither is fatal to the system.
+     * We land here two ways: the validator rejected the address (a real access
+     * violation — a wild pointer, a stack overflow, the kernel .bss shadow at
+     * 0x570000 that a ring-3 task could once use to halt the kernel), or it
+     * approved an in-region address the pager still could not map (out of physical
+     * pages). The first is a clean SIGSEGV (offered above); the second is fatal.
+     * Both used to be able to fall through to the `cli; hlt` below and stop the
+     * kernel dead; neither is fatal to the system now.
      *
      * Note this is deliberately not conditioned on `f64->cs & 3`: the faulting
      * access can be a *supervisor* one (the kernel touching a bad user address

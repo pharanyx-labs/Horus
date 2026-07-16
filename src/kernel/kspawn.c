@@ -200,8 +200,11 @@ int g_exec_reenter_task = -1;
  * rebuild+load runs in the kernel address space; unlike do_spawn we do NOT
  * restore the caller — on success we hand interrupt_handler64 a fresh ring-3
  * context (g_exec_reenter_task) for the new image, so this never returns. The old
- * page directory/frames leak, consistent with the kernel's non-freeing teardown. */
-static void exec_into_armed_image(struct regs *r) {
+ * page directory/frames leak, consistent with the kernel's non-freeing teardown.
+ * Takes no trap frame: it never returns to the caller, so it has no return value
+ * to write, and the frame it would write to is the one it just overwrote with
+ * the new image's fresh ring-3 context. */
+static void exec_into_armed_image(void) {
     int cur = get_current_task();
 
     /* Past this point the caller's image is torn down and replaced; there is no
@@ -251,34 +254,39 @@ static void exec_into_armed_image(struct regs *r) {
     uint64_t new_esp = tasks[cur].esp ? (uint64_t)tasks[cur].esp : 0x007ff000ULL;
     sched_prepare_user_context(cur, new_eip, new_esp);
     g_exec_reenter_task = cur;
-    r->eax = 0;
+    /* No return value is written. `r` IS the fabricated frame -- sched_prepare_
+     * user_context built the new ring-3 context over this same memory (top of
+     * the task's kernel stack), so a store to r->rax would land on the new
+     * image's initial rax rather than on a caller that no longer exists. This
+     * used to write 0 into a throwaway 32-bit copy of the frame; with the
+     * handler operating on the real frame it would be writing the new context. */
 }
 
 /* SYS_EXEC_NAMED (64): replace the caller's image with a named embedded binary.
  * Resolve+arm the name and stage argv while the caller's address space is still
  * live (a bad name fails cleanly, image intact), then hand off to the shared
  * exec tail. Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
-void h_exec_named(struct regs *r) {
+void h_exec_named(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
-    if (!r->ebx) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!r->rbx) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     char name[32];
-    uint32_t len = r->ecx ? r->ecx : 31u;
+    uint32_t len = r->rcx ? r->rcx : 31u;
     if (len > 31) len = 31;
-    if (copy_from_user(name, (void *)(addr_t)r->ebx, len) != 0) {
-        r->eax = (uint32_t)SYS_ERR_FAULT;
+    if (copy_from_user(name, (void *)(addr_t)r->rbx, len) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT;
         return;
     }
     name[len] = 0;
-    if (arm_named_binary(name) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+    if (arm_named_binary(name) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
 
     /* Stage the new argv (esi = user char* array, edi = argc) NOW, while the
      * caller's old address space is still active so copy_from_user can read the
      * strings; it is marshalled onto the fresh stack after the rebuild. */
-    stage_spawn_args(r->esi, r->edi);
+    stage_spawn_args(r->rsi, r->rdi);
 
-    exec_into_armed_image(r);   /* no clean return on success */
+    exec_into_armed_image();   /* no clean return on success */
 }
 
 /* SYS_EXEC_IMAGE (71): replace the caller's image with a program image the caller
@@ -287,17 +295,17 @@ void h_exec_named(struct regs *r) {
  * address space is still live (a bad image fails cleanly, image intact), then
  * hand off to the shared exec tail. ebx=image, ecx=len, esi=argv, edi=argc.
  * Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
-void h_exec_image(struct regs *r) {
+void h_exec_image(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
-    int rc = arm_image_from_user(r->ebx, r->ecx, 0);
-    if (rc != 0) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }   /* image intact on failure */
+    int rc = arm_image_from_user(r->rbx, r->rcx, 0);
+    if (rc != 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* image intact on failure */
 
     /* Stage argv while the caller's old address space is still active. */
-    stage_spawn_args(r->esi, r->edi);
+    stage_spawn_args(r->rsi, r->rdi);
 
-    exec_into_armed_image(r);   /* no clean return on success */
+    exec_into_armed_image();   /* no clean return on success */
 }
 
 /* SYS_SPAWN_IMAGE (70): spawn a child from a program image the caller supplies in
@@ -305,63 +313,63 @@ void h_exec_image(struct regs *r) {
  * loader from the caller's buffer instead of a named embedded binary.
  * ebx=image, ecx=len, edx=one-word spawn arg, esi=argv, edi=argc. Returns the
  * child pid, or a negative SYS_ERR_*. Slot-3 WRITE|EXEC enforced by the table. */
-void h_spawn_image(struct regs *r) {
-    int rc = arm_image_from_user(r->ebx, r->ecx, 0);
-    if (rc != 0) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+void h_spawn_image(struct interrupt_frame64 *r) {
+    int rc = arm_image_from_user(r->rbx, r->rcx, 0);
+    if (rc != 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     /* Stage the caller's argv before the child exists; do_spawn_inner marshals it
      * onto the child's stack. Read here while the caller is still current. */
-    stage_spawn_args(r->esi, r->edi);
+    stage_spawn_args(r->rsi, r->rdi);
     int pid = do_spawn();       /* consumes the armed image */
     g_args_argc = 0;            /* drop staging if the spawn failed before consuming it */
-    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->edx;
-    r->eax = (uint32_t)pid;
+    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;
+    r->rax = (uint32_t)pid;
 }
 
 
-void h_spawn(struct regs *r) {
-    if (r->ebx) {
+void h_spawn(struct interrupt_frame64 *r) {
+    if (r->rbx) {
         char name[32];
-        uint32_t len = r->ecx ? r->ecx : 31u;
+        uint32_t len = r->rcx ? r->rcx : 31u;
         if (len > 31) len = 31;
-        if (copy_from_user(name, (void *)(addr_t)r->ebx, len) != 0) {
-            r->eax = (uint32_t)SYS_ERR_FAULT;
+        if (copy_from_user(name, (void *)(addr_t)r->rbx, len) != 0) {
+            r->rax = (uint32_t)SYS_ERR_FAULT;
             return;
         }
         name[len] = 0;
         int rc = arm_named_binary(name);
         if (rc != 0) {
-            r->eax = (uint32_t)SYS_ERR_NOENT;
+            r->rax = (uint32_t)SYS_ERR_NOENT;
             return;
         }
     }
     /* Stage the caller's argv (esi = user char* array, edi = argc) before the
      * child exists; do_spawn_inner marshals it onto the child's stack. Read here
      * while the caller is still current so copy_from_user hits its memory. */
-    stage_spawn_args(r->esi, r->edi);
+    stage_spawn_args(r->rsi, r->rdi);
     int pid = do_spawn();
     g_args_argc = 0;   /* drop staging if the spawn failed before consuming it */
     /* Hand the child its one-word spawn argument (edx), retrievable via
      * SYS_SPAWN_ARG. Zero for callers that don't pass one. */
-    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->edx;
+    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;
     /* Don't switch to the child here: do_spawn returns with the caller restored
      * as the current task, and the child (runnable) is picked up by the timer.
      * The old cooperative schedule() mis-handles a ring-3 caller mid-syscall. */
-    r->eax = (uint32_t)pid;
+    r->rax = (uint32_t)pid;
 }
 
 /* SYS_SPAWN_ARG (68): return the one-word argument this task was spawned with. */
-void h_spawn_arg(struct regs *r) {
-    r->eax = tasks[get_current_task()].spawn_arg;
+void h_spawn_arg(struct interrupt_frame64 *r) {
+    r->rax = tasks[get_current_task()].spawn_arg;
 }
 
 /* SYS_GET_ARGV (69): return this task's argc and write the argv[] base (a user
  * vaddr into its own stack) to *ebx. argc 0 / argv 0 when spawned without args. */
-void h_get_argv(struct regs *r) {
+void h_get_argv(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     uint32_t argv_ptr = tasks[cur].argv_ptr;
-    if (r->ebx) copy_to_user((void *)(addr_t)r->ebx, &argv_ptr, 4);
-    r->eax = tasks[cur].argc;
+    if (r->rbx) copy_to_user((void *)(addr_t)r->rbx, &argv_ptr, 4);
+    r->rax = tasks[cur].argc;
 }
 
 /* SYS_GETUID (29). */

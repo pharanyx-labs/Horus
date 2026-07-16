@@ -91,9 +91,8 @@ extern volatile unsigned long ap_timer_ticks;   /* scheduler.c */
 extern void smp_ack_shootdown(void);            /* scheduler.c */
 #endif
 
-void interrupt_handler(struct regs *r);
 /* Returns non-zero kernel %rsp to resume on (task switch), or 0 to keep frame. */
-uint64_t page_fault_handler(struct regs *r);
+uint64_t page_fault_handler(struct interrupt_frame64 *f64);
 
 void segfault_park(void);
 
@@ -151,12 +150,12 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
 
     int cur = get_current_task();
     if ((frame->cs & 3) != 0 && cur > 0 && cur < MAX_TASKS) {
-        tasks[cur].eip = (uint32_t)frame->rip;
-        tasks[cur].esp = (uint32_t)frame->rsp;
+        tasks[cur].eip = frame->rip;
+        tasks[cur].esp = frame->rsp;
     }
 
     if (vector == 14) {
-        uint64_t pf_rsp = page_fault_handler((struct regs *)frame);
+        uint64_t pf_rsp = page_fault_handler(frame);
         if (pf_rsp) return pf_rsp;
     } else if (vector == 32) {
         /* Timer (IRQ0). EOI first so the PIC keeps delivering ticks even
@@ -201,47 +200,34 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         int scur = get_current_task();
         if ((uint32_t)frame->rax == SYS_SIGRETURN && scur > 0 && scur < MAX_TASKS
             && tasks[scur].in_signal) {
-            /* Handled here (not via the syscall table) because restoring the
-             * pre-signal context means rewriting the live trap frame -- rip,
-             * rsp and every register -- which the struct-regs dispatch cannot
-             * reach. Exact resume of the interrupted instruction. */
+            /* Handled ahead of the dispatch, not via the syscall table:
+             * restoring the pre-signal context replaces the ENTIRE live trap
+             * frame -- rip, rsp and every register -- and then returns it
+             * untouched, so it has nothing to do with the table's
+             * argument/return-value convention. Exact resume of the
+             * interrupted instruction. */
             *frame = tasks[scur].sig_frame;
             tasks[scur].in_signal = 0;
             tasks[scur].sig_on_stack = 0;   /* left the alternate signal stack */
             return (uint64_t)frame;
         }
-        struct regs r;
-        r.eax = (uint32_t)frame->rax;
-        r.ebx = (uint32_t)frame->rbx;
-        r.ecx = (uint32_t)frame->rcx;
-        r.edx = (uint32_t)frame->rdx;
-        r.esi = (uint32_t)frame->rsi;
-        r.edi = (uint32_t)frame->rdi;
-        r.ebp = (uint32_t)frame->rbp;
-        r.esp = (uint32_t)frame->rsp;
-        r.eip = (uint32_t)frame->rip;
-        r.eflags = (uint32_t)frame->rflags;
-        r.int_no = 0x80;
-        r.err_code = (uint32_t)frame->err_code;
-        r.useresp = (uint32_t)frame->rsp;
-        r.cs = (uint32_t)frame->cs;
-        r.ds = r.es = r.fs = r.gs = r.ss = 0x30;
+        /* Dispatch on the real trap frame. This used to marshal the frame into
+         * a 32-bit `struct regs`, call the handler on that copy, and write two
+         * fields back -- which silently truncated every register to 32 bits.
+         * Handlers now read arguments from, and write their return value to,
+         * the frame the CPU actually pushed. SYS_WAIT_NOTIFY still returns its
+         * badge in rbx; it just writes it directly now. */
         int ipc_caller = get_current_task();
-        syscall_handler(&r);
+        syscall_handler(frame);
         /* SYS_EXEC_NAMED replaced the caller's image in place and fabricated a
          * fresh ring-3 context for it at the top of its kernel stack — which is
          * the SAME memory as this trap `frame`. Resume that context via the
-         * saved-frame path (installs the new CR3 + kernel stack) BEFORE the
-         * frame->rax/rbx writes below, which would otherwise clobber it. */
+         * saved-frame path (installs the new CR3 + kernel stack). */
         if (g_exec_reenter_task > 0) {
             int t = g_exec_reenter_task;
             g_exec_reenter_task = -1;
             return exec_reenter_switch(t);
         }
-        frame->rax = (uint64_t)r.eax;
-        /* SYS_WAIT_NOTIFY returns the badge in ebx so the wrapper can read it
-         * from the register without needing a cross-address-space pointer copy. */
-        frame->rbx = (uint64_t)r.ebx;
         /* SYS_YIELD: voluntary full-context switch (same path as preemption). */
         if (g_want_yield == ipc_caller) {
             g_want_yield = -1;
@@ -506,16 +492,18 @@ void ap_load_idt(void) {
     __asm__ volatile ("lidt %0" :: "m"(idt64_ptr) : "memory");
 }
 
-uint64_t page_fault_handler(struct regs *r) {
+/* `f64` is the real trap frame. This used to be declared as `struct regs *`
+ * while callers passed an interrupt_frame64 and cast -- the two layouts differ,
+ * so `r->err_code` read a garbage field (always 0). That went unnoticed until
+ * the copy-on-write path needed the write bit, and was worked around by casting
+ * back to the real type to read err_code. The parameter now has the type the
+ * caller actually passes, so there is nothing left to cast and nothing left to
+ * read from the wrong offset. */
+uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
     addr_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
 
-    /* Read the fault error code from the ACTUAL frame layout. `r` is really a
-     * `struct interrupt_frame64` (interrupt_handler64 casts it), whose err_code is
-     * at a different offset than the legacy 32-bit `struct regs`; reading
-     * `r->err_code` returned a garbage field (always 0). Nothing depended on it
-     * until the copy-on-write path needed the write bit, so it went unnoticed. */
-    uint32_t err = (uint32_t)((struct interrupt_frame64 *)r)->err_code;
+    uint32_t err = (uint32_t)f64->err_code;
     int cur = get_current_task();
     /* Only ask the pager about addresses that can legitimately be user memory.
      * The old test was `>= USER_AREA_BASE || >= 0xA00000` — the second clause is
@@ -531,9 +519,8 @@ uint64_t page_fault_handler(struct regs *r) {
     bool allowed = (cur > 0 && cur < MAX_TASKS) &&
         rust_validate_page_fault(fault_addr, err,
                                  tasks[cur].image_base, tasks[cur].image_end,
-                                 (uint32_t)tasks[cur].heap_start,
-                                 (uint32_t)tasks[cur].heap_end);
-    struct interrupt_frame64 *f64 = (struct interrupt_frame64 *)r;
+                                 tasks[cur].heap_start,
+                                 tasks[cur].heap_end);
 
     /* Deliver SIGSEGV to a registered ring-3 handler instead of killing the
      * task (and without printing the fault banner). Only for a fault the
@@ -591,41 +578,3 @@ uint64_t page_fault_handler(struct regs *r) {
     return 0;
 }
 
-void interrupt_handler(struct regs *r) {
-    if (r->int_no == 0x80) {
-        syscall_handler(r);
-    } else if (r->int_no == 14) {
-        page_fault_handler(r);
-    } else if (r->int_no < 32) {
-        if (r->int_no == 1) {
-            return;
-        }
-        println("Exception! Vector: ");
-        print_hex(r->int_no);
-        println(" at EIP=");
-        print_hex(r->eip);
-        println("");
-        asm volatile("cli; hlt");
-    } else if (r->int_no >= 32 && r->int_no < 48) {
-        if (r->int_no == 32) {
-            if (get_current_task() < MAX_TASKS && !tasks[get_current_task()].in_kernel) {
-                uint32_t uesp = r->useresp;
-                if (uesp > 0x400000 && (r->cs & 3) == 3) {
-                    tasks[get_current_task()].esp = uesp;
-                    tasks[get_current_task()].eip = r->eip;
-                }
-            }
-            timer_handler();
-        } else if (r->int_no == 33) {
-            uint8_t scancode = inb(0x60);
-            char c = ps2_translate(scancode);
-            if (c) {
-                keyboard_buffer[kb_tail] = c;
-                kb_tail = (kb_tail + 1) % 256;
-                if (kb_tail == kb_head) kb_head = (kb_head + 1) % 256;
-            }
-        }
-        if (r->int_no >= 40) outb(0xA0, 0x20);
-        outb(0x20, 0x20);
-    }
-}

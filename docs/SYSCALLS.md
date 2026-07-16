@@ -32,7 +32,7 @@ For the capability system, revocation semantics, and memory model, see [`docs/AR
 | 17     | `SYS_WAIT`        | Block until another task exits                              | None                                          | Suspends the caller on the preemptive block/switch path (`TASK_BLOCKED_WAIT`); the target's teardown wakes it. Returns 0 (incl. if already dead), -1 on a bad tid, or `SYS_ERR_INTR` if a signal interrupts the wait |
 | 18     | `SYS_GET_TASK_INFO` | Read task metadata (name, state, uid, …)                  | Self always; other tasks need `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7) | Never exposes `cr3` |
 | 19     | `SYS_EXEC`        | Enter ring 3 at load-base + entry                            | endpoint WRITE\|EXEC (slot 3)                | Rejects `load_base + entry_offset ≥ USER_MAX_VADDR` (overflow guard) |
-| 62     | `SYS_BRK`         | Set the absolute heap break (`addr=0` queries current)      | None (own heap, demand-paged)                | Bounded below `kernel_lowmem_critical_floor()` so the heap can't grow into kernel data |
+| 62     | `SYS_BRK`         | Set the absolute heap break (`addr=0` queries current)      | None (own heap, demand-paged)                | Bounded by `[heap_start, heap_start + USER_HEAP_MAX_SIZE)` |
 
 > Numbers **1** (`SYS_PRINT`) and **20** (`SYS_GETPID`) are defined in `syscall.h` but **not dispatched** — console output goes through `SYS_WRITE` (fd 1) and the current UID through `SYS_GETUID`.
 

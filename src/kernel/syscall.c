@@ -170,19 +170,11 @@ static void h_sbrk(struct regs *r) {
     uint32_t new_current = tasks[tid].heap_current + (uint32_t)increment;
     uint32_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
-    /* Never let a heap that lives in the low window grow up into the kernel's
-     * always-live low-memory state: the kernel is linked low, so a user page
-     * mapped at/above this floor would shadow kernel data (tasks[], page tables,
-     * cspaces) on this task's own CR3 and corrupt the kernel.
-     *
-     * Only heaps BELOW the floor are at risk. Clamping unconditionally also
-     * clamped heaps placed above the kernel image (USER_HEAP_BASE = 16 MiB, above
-     * .bss end) down to 5.44 MiB — below their own heap_start — so every
-     * subsequent `new_current > heap_max` test failed and sbrk/brk returned -1 on
-     * every call, for every task spawned that way. */
-    uint32_t kfloor = kernel_lowmem_critical_floor();
-    if (tasks[tid].heap_start < kfloor && heap_max > kfloor) heap_max = kfloor;
-
+    /* There used to be a clamp here against kernel_lowmem_critical_floor(): the
+     * kernel was linked low, so a heap growing up the low window could shadow
+     * kernel data (tasks[], page tables, cspaces) on the task's own CR3. The
+     * kernel now lives at KERNEL_VMA — no kernel state occupies a user address —
+     * so the guard has nothing left to guard and is gone. */
     if (new_current < tasks[tid].heap_start || new_current > heap_max) {
         r->eax = (uint32_t)-1;
         return;
@@ -207,11 +199,8 @@ static void h_brk(struct regs *r) {
     uint32_t addr     = r->ebx;
     uint32_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
-    /* Keep the heap clear of the kernel's always-live low-memory state (see h_sbrk).
-     * Only heaps that live below the floor need the clamp. */
-    uint32_t kfloor = kernel_lowmem_critical_floor();
-    if (tasks[tid].heap_start < kfloor && heap_max > kfloor) heap_max = kfloor;
-
+    /* No kernel-floor clamp: the kernel lives at KERNEL_VMA, not in the user
+     * window. See h_sbrk. */
     if (addr == 0) { r->eax = tasks[tid].heap_current; return; }
 
     if (addr < tasks[tid].heap_start || addr > heap_max) {

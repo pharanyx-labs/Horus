@@ -272,15 +272,19 @@ Cross-cutting work that should grow alongside every other phase.
   image-base ASLR to its structural ceiling of 480 pages ≈ 8.91 bits, bounded now
   only by the premap fitting one 2 MiB PD entry.
 
-  **What remains.** `create_user_pagedir` still identity-fills the PD entries
-  covering the low window present+supervisor and punches USER holes for the image
-  premap. That fill is vestigial — the kernel is reached through `pml4[256..511]`
-  now, not through low memory — but until it is removed: (a) the low window still
-  cannot be demand-paged, so images stay capped at the 128 KiB premap; and (b) the
-  low user stack is premapped `USER` at `[0x7df000, 0x7ff000)`, which no longer
-  overlaps anything of the kernel's, but is still a fixed, known mapping. The
-  demand pager independently refuses any fault outside the calling task's own
-  image/heap/stack regions (`rust_validate_page_fault`).
+  **Done in full.** `create_user_pagedir` no longer identity-fills the low window:
+  a user page directory now contains *only* the task's own mappings (image premap
+  + low stack), so a user mapping cannot shadow kernel state by construction. That
+  also un-broke demand paging in the low window — a fault there reaches the pager
+  instead of finding an identity-supervisor page — and `rust_validate_page_fault`
+  independently refuses any fault outside the calling task's own image/heap/stack.
+  `make smoke-aslr` gates the entropy claim.
+
+  **What remains here.** Image size is capped at the 128 KiB premap, not by the
+  address space: `try_elf_load` writes with `copy_to_user`, which walks page tables
+  and requires a present USER page rather than faulting, so it cannot demand-page.
+  Growing loadable images needs the premap to grow or `user_copy` to demand-page.
+  The low user stack is still a fixed, known mapping at `[0x7df000, 0x7ff000)`.
 
   The remaining prize is a real physical allocator: the pool is a hardcoded
   `[16 MiB, 80 MiB)` window and **no E820/multiboot memory map is parsed at all**

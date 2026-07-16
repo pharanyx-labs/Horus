@@ -60,6 +60,17 @@ ASFLAGS += -DELF_SELFTEST
 ELF_SELFTEST_DEP = userspace/elftest.elf
 endif
 
+# ASLR_SELFTEST=1 spawns several PIE images at boot and asserts the loader
+# actually randomises the image base, and that every base keeps the premap inside
+# one page table (ASLR_SELFTEST: PASS). Reuses the ELF self-test's embedded image.
+# Gated off the ship kernel.
+ASLR_SELFTEST ?= 0
+ifeq ($(ASLR_SELFTEST),1)
+CFLAGS  += -DASLR_SELFTEST
+ASFLAGS += -DASLR_SELFTEST
+ASLR_SELFTEST_DEP = userspace/elftest.elf
+endif
+
 # PREEMPT_SELFTEST=1 embeds a flat userspace tracer and, at boot, spawns two
 # copies of it and proves the timer preempts/time-slices them (prints
 # PREEMPT_SELFTEST: PASS to serial). Gated so the default/ship kernel is
@@ -282,7 +293,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -481,6 +492,16 @@ smoke-elf:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ELF_SELFTEST: PASS' \
 		FAIL_MARKER='ELF_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Image-base ASLR: spawn several PIE images and assert the load base actually
+# varies and stays inside the premap-containment bound (ASLR_SELFTEST: PASS).
+.PHONY: smoke-aslr
+smoke-aslr:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ASLR_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='ASLR_SELFTEST: PASS' \
+		FAIL_MARKER='ASLR_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated preemption self-test, boot headless, and require the
 # in-kernel test to report PASS -- runtime proof that the timer time-slices two

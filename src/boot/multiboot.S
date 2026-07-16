@@ -1,3 +1,5 @@
+#include "kernel_vma.h"   /* KERNEL_VMA — shared with the C side */
+
 .section .multiboot, "a"
 .align 8
 
@@ -11,19 +13,29 @@ multiboot_header_start:
     .long 8
 multiboot_header_end:
 
-.section .text
+/* ---- Low boot stage (.boot: VA == PA at 1 MiB) ------------------------------
+ *
+ * The kernel is linked at KERNEL_VMA (-2 GiB) but LOADS at 1 MiB. GRUB enters
+ * here in 32-bit protected mode with paging off, so this stage runs at its
+ * physical address and cannot name a high symbol: `movl $sym, %edi` has a
+ * 32-bit immediate. Every kernel symbol referenced here is therefore written
+ * `sym - KERNEL_VMA`, which the linker folds to the low physical address.
+ *
+ * Nothing here may assume the high mapping exists — it does not, until CR0.PG
+ * is set below. */
+.section .boot, "ax"
 .code32
 .global _start
 .extern kernel_main
 
 _start:
-    movl $stack_top, %esp
+    movl $boot_stack_top, %esp     /* low scratch stack; the real one is high */
 
     movl %cr4, %eax
     orl  $(1 << 5), %eax
     movl %eax, %cr4
 
-    movl $pml4, %edi
+    movl $(pml4 - KERNEL_VMA), %edi
     movl %edi, %cr3
 
     /* Zero the four boot page tables: [boot_tables_start, boot_tables_end).
@@ -32,19 +44,25 @@ _start:
      * zeroed 48 KiB instead of 16 KiB, scribbling 32 KiB past the tables into
      * per_task_kstacks, and would have missed high_pdpt had it been right. */
     xorl %eax, %eax
-    movl $boot_tables_start, %edi
+    movl $(boot_tables_start - KERNEL_VMA), %edi
     movl $(boot_tables_end - boot_tables_start) / 4, %ecx
     rep stosl
 
-    movl $pdpt, %eax
+    /* pml4[0] -> pdpt: the low identity map. Required forever, not vestigial:
+     * the AP trampoline far-jumps to ~0x8000 *after* enabling paging on this
+     * very CR3, and the LAPIC/VGA MMIO are reached at their physical VAs. */
+    movl $(pdpt - KERNEL_VMA), %eax
     orl  $0x3, %eax
-    movl %eax, pml4
+    movl %eax, pml4 - KERNEL_VMA
 
-    movl $pd, %eax
+    movl $(pd - KERNEL_VMA), %eax
     orl  $0x3, %eax
-    movl %eax, pdpt
+    movl %eax, pdpt - KERNEL_VMA
 
-    movl $pd, %edi
+    /* pd[k] = k*2MiB | P|W|PS -> identity-map physical [0, 1 GiB). One `pd` is
+     * aliased by all three of the entries below; a write here is visible
+     * through every view. */
+    movl $(pd - KERNEL_VMA), %edi
     movl $0x00000000, %ebx
     movl $512, %ecx
 
@@ -59,13 +77,23 @@ _start:
     addl $8, %edi
     loop 1b
 
-    movl $high_pdpt, %eax
+    movl $(high_pdpt - KERNEL_VMA), %eax
     orl  $0x3, %eax
-    movl %eax, pml4 + (511 * 8)
+    movl %eax, pml4 - KERNEL_VMA + (511 * 8)
 
-    movl $pd, %eax
+    /* high_pdpt[2] -> pd: the PHYS_KVA window at 0xFFFFFF8080000000, i.e.
+     * physical [0, 1 GiB) readable from every address space. */
+    movl $(pd - KERNEL_VMA), %eax
     orl  $0x3, %eax
-    movl %eax, high_pdpt + (2 * 8)
+    movl %eax, high_pdpt - KERNEL_VMA + (2 * 8)
+
+    /* high_pdpt[510] -> pd: THE KERNEL'S OWN MAPPING. 0xFFFFFFFF80000000 is
+     * PML4[511], PDPT[510], so the kernel image at physical 1 MiB appears at
+     * 0xFFFFFFFF80100000 — the address it is linked for. This one entry is what
+     * moves the kernel to the higher half. */
+    movl $(pd - KERNEL_VMA), %eax
+    orl  $0x3, %eax
+    movl %eax, high_pdpt - KERNEL_VMA + (510 * 8)
 
     movl $0xC0000080, %ecx
     rdmsr
@@ -74,15 +102,32 @@ _start:
 
     movl %cr0, %eax
     orl  $(1 << 31), %eax
-    movl %eax, %cr0
+    movl %eax, %cr0                      /* paging on: both views now live */
 
-    lgdt gdt64_ptr32
-    ljmp $0x08, $long_mode_entry
+    /* The far jump below is absolute and executes with paging enabled, so its
+     * target must be mapped at the address encoded in the instruction — a
+     * 32-bit one. It therefore cannot go straight to the high kernel; it lands
+     * in the low stub, which then escapes via a 64-bit register.
+     *
+     * boot_gdt is a minimal GDT living down here for the same reason: `lgdt` in
+     * 32-bit mode loads a 32-bit base, and the real GDT is high. The real one is
+     * loaded on the far side of the jump. */
+    lgdt boot_gdt_ptr32
+    ljmp $0x08, $long_mode_low
+
+.code64
+long_mode_low:
+    /* 64-bit now, but still executing through the low identity map. Escape to
+     * the kernel's linked addresses: movabs takes a full 64-bit immediate, and
+     * the high mapping went live with CR0.PG above. Everything after this runs
+     * at KERNEL_VMA + phys. */
+    movabs $long_mode_entry, %rax
+    jmp *%rax
 
 .section .text
 .code64
 long_mode_entry:
-    lgdt (gdt64_ptr)
+    lgdt (gdt64_ptr)                     /* the real GDT, at its high address */
 
     movw $0x10, %ax
     movw %ax, %ds
@@ -257,10 +302,6 @@ gdt64_ptr:
     .word gdt64_end - gdt64_start - 1
     .quad gdt64_start
 
-gdt64_ptr32:
-    .word gdt64_end - gdt64_start - 1
-    .long gdt64_start
-
 .global tss64
 .align 16
 tss64:
@@ -286,6 +327,30 @@ ist2_stack_top:
 ist3_stack_bottom:
     .space 4096
 ist3_stack_top:
+
+/* ---- Low boot data (.boot.data: VA == PA) -----------------------------------
+ * Reachable by the 32-bit stage and by the far jump. Dead after long_mode_low.
+ * Separate section from the .boot code because it is writable (the stack) —
+ * one section cannot be both "ax" and "aw". linker64.ld collects .boot.* here. */
+.section .boot.data, "aw"
+.align 16
+boot_gdt:
+    .quad 0x0000000000000000   /* 0x00 null                                    */
+    .quad 0x00209A0000000000   /* 0x08 kernel code, L=1 — the ljmp target      */
+    .quad 0x0000920000000000   /* 0x10 kernel data                             */
+boot_gdt_end:
+
+/* 32-bit GDT pointer: `lgdt` in 32-bit mode takes a 32-bit base, so it can only
+ * name a GDT down here. Selectors 0x08/0x10 are byte-identical to the real
+ * GDT's, so CS/DS stay valid across the switch to it in long_mode_entry. */
+boot_gdt_ptr32:
+    .word boot_gdt_end - boot_gdt - 1
+    .long boot_gdt
+
+.align 16
+boot_stack_bottom:
+    .space 4096
+boot_stack_top:
 
 .section .bss
 .align 16

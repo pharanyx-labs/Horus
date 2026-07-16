@@ -68,7 +68,7 @@ Multi-core works behind `SMP=1`, but the shipped kernel is single-core. The mult
 
 ### ASLR entropy ceiling (32-bit userspace window)
 
-Per-spawn stack top, heap gap, and image load base are all randomised from the CSPRNG (userspace is static-PIE and relocated at load). The remaining limitation is *entropy*, not mechanism — userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window, so the image base has 8.75 bits of entropy rather than the tens of bits a 64-bit userspace ABI would allow.
+Per-spawn stack top, heap gap, and image load base are all randomised from the CSPRNG (userspace is static-PIE and relocated at load). The remaining limitation is *entropy*, not mechanism — userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window, so the image base has 8.91 bits of entropy rather than the tens of bits a 64-bit userspace ABI would allow.
 
 ---
 
@@ -82,7 +82,7 @@ The block cipher is sound (ChaCha20 + HMAC-SHA256 AEAD, per-block HKDF subkeys, 
 
 ### Bounded load-base ASLR entropy
 
-Because userspace is confined to the low ~8 MiB 32-bit window, the load base has only 8.75 bits of entropy, so a determined attacker with a memory-disclosure primitive faces a smaller search space than on a 64-bit-userspace system.
+Because userspace is confined to the low ~8 MiB 32-bit window, the load base has only 8.91 bits of entropy, so a determined attacker with a memory-disclosure primitive faces a smaller search space than on a 64-bit-userspace system.
 
 ### Audit log is tamper-evident, not tamper-proof
 

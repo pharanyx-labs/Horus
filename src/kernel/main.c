@@ -3,6 +3,8 @@
 
 #include "kernel.h"
 
+/* Absolute symbol from linker64.ld; its ADDRESS is the linker's KERNEL_VMA. */
+extern char __kernel_vma_from_linker[];
 extern tcb_t tasks[MAX_TASKS];
 extern int current_task;
 extern void set_tss_kernel_stack(uintptr_t);
@@ -54,6 +56,41 @@ void __attribute__((noreturn)) resume_shell_after_fault(void) {
 #endif
 }
 
+/* Prove the higher-half relocation actually took, before anything depends on it.
+ *
+ * Three ways it can be silently wrong, all of which produce a working-looking
+ * kernel that corrupts memory later rather than failing here:
+ *   - linker64.ld's KERNEL_VMA and kernel_vma.h's disagree (the linker script
+ *     cannot include the header, so the two are duplicated);
+ *   - the kernel is somehow still executing through the low identity map;
+ *   - virt_to_phys does not invert phys_to_virt, so a VA->PA conversion feeding
+ *     CR3 or a page-table entry is off.
+ * Checked at the top of boot, on the serial console, in the smoke-test idiom. */
+static void assert_higher_half(void) {
+    uint64_t vma_c  = (uint64_t)KERNEL_VMA;
+    uint64_t vma_ld = (uint64_t)(uintptr_t)&__kernel_vma_from_linker;
+    uint64_t here   = (uint64_t)(uintptr_t)&assert_higher_half;
+
+    if (vma_ld != vma_c) {
+        print("HIGHHALF: FAIL linker KERNEL_VMA="); print_hex64(vma_ld);
+        print(" != kernel_vma.h ");                 print_hex64(vma_c);
+        print("\n");
+        for (;;) asm volatile("cli; hlt");
+    }
+    if (here < vma_c) {
+        print("HIGHHALF: FAIL executing below KERNEL_VMA at ");
+        print_hex64(here); print("\n");
+        for (;;) asm volatile("cli; hlt");
+    }
+    if (virt_to_phys(phys_to_virt(0x1234)) != 0x1234) {
+        print("HIGHHALF: FAIL virt_to_phys/phys_to_virt do not round-trip\n");
+        for (;;) asm volatile("cli; hlt");
+    }
+    print("HIGHHALF: PASS kernel at "); print_hex64(here);
+    print(" phys ");                    print_hex64(virt_to_phys(here));
+    print("\n");
+}
+
 void kernel_main(uint32_t mb_info) {
     (void)mb_info;
 
@@ -63,6 +100,7 @@ void kernel_main(uint32_t mb_info) {
         "pushfq\n andq $~0x100,(%%rsp)\n popfq\n" ::: "rax","memory");
 
     terminal_init();
+    assert_higher_half();
 
     idt_init64();
     pic_init();

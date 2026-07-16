@@ -101,9 +101,12 @@ pub unsafe extern "C" fn rust_cap_has_rights(cap: *const SafeCapability, require
 
 #[no_mangle]
 pub extern "C" fn rust_get_user_page_protection(_task_id: u32, vaddr: u32) -> u32 {
-    // [0xA00000, 0xB00000) is deliberately absent: it is kernel .bss
-    // (`argon2_scratch` spans it), never user memory. See
-    // rust_validate_page_fault.
+    // [0xA00000, 0xB00000) is deliberately absent. It used to be excluded because
+    // the kernel was linked low and `argon2_scratch` occupied that virtual
+    // address; the kernel now runs at KERNEL_VMA, so the reason is different but
+    // the answer is the same — nothing maps it, and no task's image, heap or
+    // stack lives there. rust_validate_page_fault is the per-task authority on
+    // that; this is a coarse window check for the premap's protection bits.
     if (vaddr >= 0x400000 && vaddr < 0x800000) ||
        (vaddr >= 0x1000000 && vaddr < 0x5000000) ||   // demand-paged heap
        (vaddr >= 0x7FC000 && vaddr < 0x800000) ||
@@ -246,14 +249,15 @@ mod tests {
         assert!(v(0x7df000));            // low stack base
         assert!(v(0x7fefff));            // low stack top - 1
 
-        // Out of region: below the image, the gap between image and stack (which
-        // includes the [4,8)/[8,16) MiB kernel .bss shadow), past the heap ceiling,
-        // the null page, kernel space.
+        // Out of region: below the image, the gap between image and stack, past
+        // the heap ceiling, the null page, kernel space. (These addresses were
+        // once the kernel's own .bss, back when it was linked low; they are just
+        // unmapped user-half addresses now. Either way: not this task's memory.)
         assert!(!v(0x49ffff));           // just below the image base
         assert!(!v(0x4b6000));           // just past the image end
-        assert!(!v(0x570000));           // kernel_page_dir — blessed-but-unmappable before
-        assert!(!v(0x800000));           // [8,16) MiB kernel .bss
-        assert!(!v(0xA00000));           // argon2_scratch
+        assert!(!v(0x570000));           // was kernel_page_dir: blessed-but-unmappable
+        assert!(!v(0x800000));           // was the [8,16) MiB kernel .bss window
+        assert!(!v(0xA00000));           // was argon2_scratch
         assert!(!v(0xffffff));           // just below the heap base
         assert!(!v(0x1040000));          // just past the heap ceiling
         assert!(!v(0x0));                // null page
@@ -289,8 +293,9 @@ mod tests {
         assert_eq!(rust_get_user_page_protection(0, 0xff000000), 0x7);
         assert_eq!(rust_get_user_page_protection(0, 0), 0);
         assert_eq!(rust_get_user_page_protection(0, 0x300000), 0);
-        // Not user memory: kernel .bss behind supervisor huge pages. This used to
-        // return 0x7 and had a test asserting it did.
+        // Not user memory. (Once because kernel .bss sat at these VAs behind
+        // supervisor huge pages; now because nothing maps them at all. This used
+        // to return 0x7 and had a test asserting it did.)
         assert_eq!(rust_get_user_page_protection(0, 0xA00000), 0);
         assert_eq!(rust_get_user_page_protection(0, 0x800000), 0);
     }

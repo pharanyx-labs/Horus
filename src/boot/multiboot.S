@@ -440,9 +440,10 @@ embedded_fsserver_bin_start:
 embedded_fsserver_bin_end:
 #endif
 
-#ifdef ELF_SELFTEST
+#if defined(ELF_SELFTEST) || defined(ASLR_SELFTEST)
 /* Real multi-segment ELF used by the in-kernel ELF-loader self-test
- * (elf_loader_selftest). Only embedded in the ELF_SELFTEST build. */
+ * (elf_loader_selftest) and the image-base ASLR self-test (aslr_selftest).
+ * Only embedded in those gated builds. */
 .align 16
 .global embedded_elftest_start
 embedded_elftest_start:

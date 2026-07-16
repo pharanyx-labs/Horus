@@ -32,9 +32,6 @@ echo "[4/5] Building kernel (Rust enabled, 64-bit)..."
 SOURCE_DATE_EPOCH=1609459200 make BITS=64 MINIMAL_SECURE=${MINIMAL_SECURE:-0} -j"$(nproc 2>/dev/null || echo 4)"
 
 
-echo "[5/5] Launching QEMU..."
-
-fuser -k 4444/tcp 2>/dev/null || true
-sleep 0.4
+echo "[5/5] Launching QEMU (console on this terminal; Ctrl-A X to quit)..."
 
 DEBUG=${DEBUG:-0} make BITS=64 run || true

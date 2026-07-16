@@ -324,7 +324,7 @@ int sys_notify(uint32_t notif_slot, uint32_t badge) {
 }
 
 /* sys_wait_notify: if a badge is already pending, consume it and return 0
- * (badge written via r->ebx → frame->rbx by interrupt_handler64).  Otherwise
+ * (badge written via r->rbx → frame->rbx by interrupt_handler64).  Otherwise
  * record a pending block; ipc_block_switch saves the frame then publishes the
  * notif waiter so a concurrent sys_notify cannot race a null saved_ksp. */
 int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
@@ -343,15 +343,15 @@ int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
     int cur = get_current_task();
     tasks[cur].blocked_on_notif = (int)notif_slot;
     tasks[cur].pending_block    = TASK_BLOCKED_NOTIF;
-    /* out_badge and r->ebx will be patched by sys_notify when it wakes us. */
+    /* out_badge and r->rbx will be patched by sys_notify when it wakes us. */
     *out_badge = 0;
     ipc_unlock();
     return 0;
 }
 
 
-void h_ipc_send(struct regs *r) {
-    r->eax = sys_ipc_send(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
+void h_ipc_send(struct interrupt_frame64 *r) {
+    r->rax = sys_ipc_send(r->rbx, (const void*)(addr_t)r->rcx, r->rdx);
 }
 
 /* SYS_IPC_CALL (23): atomic send-then-block-until-reply.
@@ -364,20 +364,20 @@ void h_ipc_send(struct regs *r) {
  * reply endpoint's blocked_waiter is *not* published here. interrupt_handler64
  * calls ipc_block_switch, which saves the trap frame first and only then
  * publishes the waiter (so a cross-CPU reply cannot race a null saved_ksp). */
-void h_ipc_call(struct regs *r) {
-    uint32_t send_ep  = r->ebx;
-    uint32_t reply_ep = r->ecx;
-    const void *msg   = (const void *)(addr_t)r->edx;
-    size_t   send_len = (size_t)r->esi;
-    uint32_t reply_buf = r->edi;
+void h_ipc_call(struct interrupt_frame64 *r) {
+    uint32_t send_ep  = r->rbx;
+    uint32_t reply_ep = r->rcx;
+    const void *msg   = (const void *)(addr_t)r->rdx;
+    size_t   send_len = (size_t)r->rsi;
+    uint32_t reply_buf = r->rdi;
 
     if (send_ep >= MAX_ENDPOINTS || reply_ep >= MAX_ENDPOINTS) {
-        r->eax = (uint32_t)-1; return;
+        r->rax = (uint32_t)-1; return;
     }
 
     /* Deposit the outgoing message into send_ep. */
     int rc = sys_ipc_send(send_ep, msg, send_len);
-    if (rc < 0) { r->eax = (uint32_t)rc; return; }
+    if (rc < 0) { r->rax = (uint32_t)rc; return; }
 
     int cur = get_current_task();
 
@@ -385,17 +385,17 @@ void h_ipc_call(struct regs *r) {
     tasks[cur].ipc_reply_buf = reply_buf;
     tasks[cur].blocked_on    = (int)reply_ep;
     tasks[cur].pending_block = TASK_BLOCKED_IPC;
-    /* r->eax is set by interrupt_handler64 after we return; a wake patches
+    /* r->rax is set by interrupt_handler64 after we return; a wake patches
      * saved_ksp->rax with the reply length. */
-    r->eax = 0;
+    r->rax = 0;
 }
 /* SYS_IPC_RECV (22): slot-3 READ enforced by the table. */
-void h_ipc_recv(struct regs *r) {
-    r->eax = sys_ipc_recv(r->ebx, (void*)(addr_t)r->ecx, r->edx);
+void h_ipc_recv(struct interrupt_frame64 *r) {
+    r->rax = sys_ipc_recv(r->rbx, (void*)(addr_t)r->rcx, r->rdx);
 }
 /* SYS_IPC_REPLY (24): slot-3 WRITE enforced by the table. */
-void h_ipc_reply(struct regs *r) {
-    r->eax = sys_ipc_reply(r->ebx, (const void*)(addr_t)r->ecx, r->edx);
+void h_ipc_reply(struct interrupt_frame64 *r) {
+    r->rax = sys_ipc_reply(r->rbx, (const void*)(addr_t)r->rcx, r->rdx);
 }
 
 /* SYS_IPC_SENDER (73): return the authenticated uid of the task that sent the
@@ -407,16 +407,16 @@ void h_ipc_reply(struct regs *r) {
  * Returns (uint32_t)-1 when there is no valid last sender (none yet, or it has
  * since exited). Slot-3 READ is enforced by the dispatch table, so only a task
  * that can legitimately receive on the endpoint may query its sender. */
-void h_ipc_sender(struct regs *r) {
-    uint32_t ep = r->ebx;
-    if (ep >= MAX_ENDPOINTS) { r->eax = (uint32_t)-1; return; }
+void h_ipc_sender(struct interrupt_frame64 *r) {
+    uint32_t ep = r->rbx;
+    if (ep >= MAX_ENDPOINTS) { r->rax = (uint32_t)-1; return; }
     int t = endpoints[ep].last_sender;
-    if (t <= 0 || t >= MAX_TASKS || tasks[t].state == 0) { r->eax = (uint32_t)-1; return; }
-    if (r->ecx) {
+    if (t <= 0 || t >= MAX_TASKS || tasks[t].state == 0) { r->rax = (uint32_t)-1; return; }
+    if (r->rcx) {
         uint32_t g = tasks[t].gid;
-        if (copy_to_user((void *)(addr_t)r->ecx, &g, sizeof(g)) != 0) { r->eax = (uint32_t)-1; return; }
+        if (copy_to_user((void *)(addr_t)r->rcx, &g, sizeof(g)) != 0) { r->rax = (uint32_t)-1; return; }
     }
-    r->eax = tasks[t].uid;
+    r->rax = tasks[t].uid;
 }
 
 /* SYS_IPC_REPLY_TO (75): reply to the task that sent the request most recently
@@ -434,16 +434,16 @@ void h_ipc_sender(struct regs *r) {
  * momentarily not TASK_BLOCKED_IPC; it will be, so retry. On a single CPU the
  * sender is always already blocked by the time the server runs, so no retry
  * occurs. Mirrors the blocked-waiter delivery in sys_ipc_send. */
-void h_ipc_reply_to(struct regs *r) {
-    uint32_t req_ep = r->ebx;
-    const void *msg = (const void *)(addr_t)r->ecx;
-    size_t len      = (size_t)r->edx;
-    if (req_ep >= MAX_ENDPOINTS) { r->eax = (uint32_t)-1; return; }
+void h_ipc_reply_to(struct interrupt_frame64 *r) {
+    uint32_t req_ep = r->rbx;
+    const void *msg = (const void *)(addr_t)r->rcx;
+    size_t len      = (size_t)r->rdx;
+    if (req_ep >= MAX_ENDPOINTS) { r->rax = (uint32_t)-1; return; }
     if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
 
     int t = endpoints[req_ep].last_sender;
     if (t <= 0 || t >= MAX_TASKS || tasks[t].state == TASK_DEAD || tasks[t].state == 0) {
-        r->eax = 0; return;   /* client gone: nothing to reply to */
+        r->rax = 0; return;   /* client gone: nothing to reply to */
     }
 
     ipc_lock();
@@ -452,14 +452,14 @@ void h_ipc_reply_to(struct regs *r) {
          * on us (already replied / never called) -> drop. */
         uint32_t racing = (tasks[t].pending_block == (uint32_t)TASK_BLOCKED_IPC);
         ipc_unlock();
-        r->eax = racing ? (uint32_t)-2 : 0;
+        r->rax = racing ? (uint32_t)-2 : 0;
         return;
     }
 
     uint8_t kbuf[IPC_MSG_MAX];
     int copy_len = 0;
     if (len > 0) {
-        if (copy_from_user(kbuf, msg, len) != 0) { ipc_unlock(); r->eax = (uint32_t)-1; return; }
+        if (copy_from_user(kbuf, msg, len) != 0) { ipc_unlock(); r->rax = (uint32_t)-1; return; }
         copy_len = (int)len;
     }
 
@@ -478,7 +478,7 @@ void h_ipc_reply_to(struct regs *r) {
     }
 
     struct interrupt_frame64 *wf = (struct interrupt_frame64 *)tasks[t].saved_ksp;
-    if (!wf) { ipc_unlock(); r->eax = (uint32_t)-1; return; }
+    if (!wf) { ipc_unlock(); r->rax = (uint32_t)-1; return; }
     wf->rax = (uint64_t)(uint32_t)copy_len;
 
     /* Clear the now-stale waiter publication on the client's own reply endpoint
@@ -492,21 +492,21 @@ void h_ipc_reply_to(struct regs *r) {
     tasks[t].state        = TASK_RUNNABLE;
     tasks[t].runnable_ctx = 1;
     ipc_unlock();
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* SYS_NOTIFY (25): slot-3 WRITE enforced by the table. */
-void h_notify(struct regs *r) {
-    r->eax = sys_notify(r->ebx, r->ecx);
+void h_notify(struct interrupt_frame64 *r) {
+    r->rax = sys_notify(r->rbx, r->rcx);
 }
 /* SYS_WAIT_NOTIFY (26): slot-3 READ enforced by the table.
- * The badge is returned in r->ebx so interrupt_handler64 writes it into
+ * The badge is returned in r->rbx so interrupt_handler64 writes it into
  * frame->rbx; the userspace wrapper reads it from the ebx output constraint.
- * For the blocking path r->ebx is patched in sys_notify via saved_ksp->rbx. */
-void h_wait_notify(struct regs *r) {
+ * For the blocking path r->rbx is patched in sys_notify via saved_ksp->rbx. */
+void h_wait_notify(struct interrupt_frame64 *r) {
     uint32_t badge = 0;
-    r->eax = sys_wait_notify(r->ebx, &badge);
-    r->ebx = badge;
+    r->rax = sys_wait_notify(r->rbx, &badge);
+    r->rbx = badge;
 }
 
 /* user management (33/34/35): admin/self check lives in do_useradd/userdel/passwd. */

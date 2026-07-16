@@ -115,53 +115,53 @@ int  do_spawn(void);                                                       /* ks
 /* ---- Syscall handlers defined outside syscall.c but wired into the ------- *
  * dispatch table there. Every one has the uniform handler signature. */
 /* kaudit.c */
-void h_read_audit(struct regs *r);
-void h_audit_digest(struct regs *r);
+void h_read_audit(struct interrupt_frame64 *r);
+void h_audit_digest(struct interrupt_frame64 *r);
 /* kusers.c */
-void h_auth(struct regs *r);
-void h_sudo(struct regs *r);
-void h_get_pass(struct regs *r);
-void h_useradd(struct regs *r);
-void h_userdel(struct regs *r);
-void h_passwd(struct regs *r);
-void h_rotate_keys(struct regs *r);
+void h_auth(struct interrupt_frame64 *r);
+void h_sudo(struct interrupt_frame64 *r);
+void h_get_pass(struct interrupt_frame64 *r);
+void h_useradd(struct interrupt_frame64 *r);
+void h_userdel(struct interrupt_frame64 *r);
+void h_passwd(struct interrupt_frame64 *r);
+void h_rotate_keys(struct interrupt_frame64 *r);
 /* kspawn.c */
-void h_exec_named(struct regs *r);
-void h_exec_image(struct regs *r);
-void h_spawn(struct regs *r);
-void h_spawn_image(struct regs *r);
-void h_spawn_arg(struct regs *r);
-void h_get_argv(struct regs *r);
+void h_exec_named(struct interrupt_frame64 *r);
+void h_exec_image(struct interrupt_frame64 *r);
+void h_spawn(struct interrupt_frame64 *r);
+void h_spawn_image(struct interrupt_frame64 *r);
+void h_spawn_arg(struct interrupt_frame64 *r);
+void h_get_argv(struct interrupt_frame64 *r);
 /* syscall_fs.c */
-void h_fs_list(struct regs *r);
-void h_open(struct regs *r);
-void h_ramfs_create(struct regs *r);
-void h_block_read(struct regs *r);
-void h_block_write(struct regs *r);
-void h_register_fs_server(struct regs *r);
-void h_connect_fs_server(struct regs *r);
-void h_fs_inode_alloc(struct regs *r);
-void h_fs_inode_free(struct regs *r);
-void h_fblock_read(struct regs *r);
-void h_fblock_write(struct regs *r);
-void h_fs_set_size(struct regs *r);
-void h_fs_set_meta(struct regs *r);
-void h_fs_stat(struct regs *r);
+void h_fs_list(struct interrupt_frame64 *r);
+void h_open(struct interrupt_frame64 *r);
+void h_ramfs_create(struct interrupt_frame64 *r);
+void h_block_read(struct interrupt_frame64 *r);
+void h_block_write(struct interrupt_frame64 *r);
+void h_register_fs_server(struct interrupt_frame64 *r);
+void h_connect_fs_server(struct interrupt_frame64 *r);
+void h_fs_inode_alloc(struct interrupt_frame64 *r);
+void h_fs_inode_free(struct interrupt_frame64 *r);
+void h_fblock_read(struct interrupt_frame64 *r);
+void h_fblock_write(struct interrupt_frame64 *r);
+void h_fs_set_size(struct interrupt_frame64 *r);
+void h_fs_set_meta(struct interrupt_frame64 *r);
+void h_fs_stat(struct interrupt_frame64 *r);
 /* h_fs_mint_file / lookup / create / delete / readdir / get_root / read / write
  * (legacy capfs) removed — those syscall numbers fail closed. */
-void h_register_storage_backend(struct regs *r);
+void h_register_storage_backend(struct interrupt_frame64 *r);
 /* syscall_ipc.c */
-void h_ipc_send(struct regs *r);
-void h_ipc_call(struct regs *r);
-void h_ipc_recv(struct regs *r);
-void h_ipc_reply(struct regs *r);
-void h_ipc_sender(struct regs *r);
-void h_ipc_reply_to(struct regs *r);
-void h_notify(struct regs *r);
-void h_wait_notify(struct regs *r);
+void h_ipc_send(struct interrupt_frame64 *r);
+void h_ipc_call(struct interrupt_frame64 *r);
+void h_ipc_recv(struct interrupt_frame64 *r);
+void h_ipc_reply(struct interrupt_frame64 *r);
+void h_ipc_sender(struct interrupt_frame64 *r);
+void h_ipc_reply_to(struct interrupt_frame64 *r);
+void h_notify(struct interrupt_frame64 *r);
+void h_wait_notify(struct interrupt_frame64 *r);
 /* selftest.c (test-only trace hook) */
 #ifdef PREEMPT_SELFTEST
-void h_preempt_trace(struct regs *r);
+void h_preempt_trace(struct interrupt_frame64 *r);
 #endif
 
 #endif /* HORUS_SYSCALL_INTERNAL_H */

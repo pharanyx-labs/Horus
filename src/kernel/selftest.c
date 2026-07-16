@@ -372,7 +372,7 @@ static volatile int pt_last_id      = -1;
 static volatile int pt_transitions  = 0;
 static volatile int pt_done         = 0;
 
-void h_preempt_trace(struct regs *r) {
+void h_preempt_trace(struct interrupt_frame64 *r) {
     int id = get_current_task();
     if (pt_first_id < 0) pt_first_id = id;
     else if (pt_second_id < 0 && id != pt_first_id) pt_second_id = id;
@@ -390,7 +390,7 @@ void h_preempt_trace(struct regs *r) {
         print_decimal(pt_second_id);
         print("\n");
     }
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* Arm the embedded flat payload and spawn one instance; returns its pid. */

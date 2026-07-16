@@ -263,21 +263,30 @@ Cross-cutting work that should grow alongside every other phase.
   and wire a checker into CI.
 - **Formal verification**: apply Verus or Kani to the capability operations in
   `rust/src/capability.rs`.
-- **User/kernel address separation**: the kernel is linked low (1 MiB) and its
-  BSS extends past `USER_AREA_BASE` (4 MiB), so a task's low-memory mappings
-  (image) share virtual addresses with kernel data like `tasks[]`. Three interim
-  guards are in place: the demand-paged heap has been moved to `USER_HEAP_BASE`
-  (16 MiB), clear of the kernel's `.bss` end, so it no longer sits in the
-  contested window at all; image ASLR is bounded so the premap window can't reach
-  the kernel globals (`choose_image_placement` clamps against
-  `kernel_lowmem_critical_floor()`); and the demand pager now refuses a fault
-  outside the calling task's own image/heap/stack regions
-  (`rust_validate_page_fault`), so a direct fault into the critical window is a
-  SIGSEGV rather than an allocation. The residual gap a determined program could
-  still reach is the low user stack, which is premapped `USER` and overlaps
-  `kernel_stacks` (`0x616610`–`0x816610`). The full fix is to move the user address space
-  above the kernel image (or the kernel to the higher half) so no user mapping
-  can ever shadow kernel state, which would also widen image-base ASLR entropy.
+- **User/kernel address separation**: **the kernel now runs at `KERNEL_VMA`
+  (`0xFFFFFFFF80000000`)**, so no kernel address is a user address and nothing a
+  task maps can shadow kernel state. This was the "full fix" this item asked for.
+  It also removed the guards that existed only to work around the overlap — the
+  `h_sbrk`/`h_brk` heap clamp and the image-ASLR clamp against
+  `kernel_lowmem_critical_floor()` (the function itself is gone) — and lifted
+  image-base ASLR to its structural ceiling of 480 pages ≈ 8.91 bits, bounded now
+  only by the premap fitting one 2 MiB PD entry.
+
+  **What remains.** `create_user_pagedir` still identity-fills the PD entries
+  covering the low window present+supervisor and punches USER holes for the image
+  premap. That fill is vestigial — the kernel is reached through `pml4[256..511]`
+  now, not through low memory — but until it is removed: (a) the low window still
+  cannot be demand-paged, so images stay capped at the 128 KiB premap; and (b) the
+  low user stack is premapped `USER` at `[0x7df000, 0x7ff000)`, which no longer
+  overlaps anything of the kernel's, but is still a fixed, known mapping. The
+  demand pager independently refuses any fault outside the calling task's own
+  image/heap/stack regions (`rust_validate_page_fault`).
+
+  The remaining prize is a real physical allocator: the pool is a hardcoded
+  `[16 MiB, 80 MiB)` window and **no E820/multiboot memory map is parsed at all**
+  (`_start` clobbers the multiboot pointer in its first instruction, and
+  `kernel_main` discards its argument). That, plus `MAX_PROGRAM_SIZE` (1 MiB) and
+  the staged loader, is what caps program size today.
 
 ---
 

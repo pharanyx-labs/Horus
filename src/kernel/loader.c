@@ -500,37 +500,21 @@ void choose_image_placement(int tid, uint32_t *out_load_base, uint32_t *out_stac
                          loader_staging[0] == 0x7f && loader_staging[1] == 'E' &&
                          loader_staging[2] == 'L' && loader_staging[3] == 'F');
 
-    /* Bound the image-base ASLR so the premap window (base + PREMAP pages, mapped
-     * as USER by create_user_pagedir) can never reach the kernel's own writable
-     * globals. The kernel is linked low and its BSS extends above USER_AREA_BASE,
-     * so an unbounded window could land over tasks[]/scheduler state; a kernel
-     * read of that data on the task's CR3 would then return the task's (zeroed)
-     * user page and corrupt the scheduler.
+    /* Image-base ASLR is bounded by ONE constraint now: the premap must stay
+     * inside a single 2 MiB PD entry, because create_user_pagedir builds it from
+     * one page table. base = USER_AREA_BASE + n*4096 gives base_pti = n for
+     * n < 512 (USER_AREA_BASE >> 12 = 1024, and 1024 & 511 == 0), so the premap
+     * occupies entries [n, n + PREMAP) and fits exactly while
+     * n <= 512 - PREMAP — which is what ASLR_MAX_LOAD_RANDOM_PAGES already is.
      *
-     * The bound must be the floor of the *always-live kernel state*, which is what
-     * kernel_lowmem_critical_floor() reports (the top of per_task_kstacks, 0x570000).
-     * This used to compare against `kernel_bss_floor`, which linker64.ld defines as
-     * the link-time *start* of .bss — 0x161000, BELOW USER_AREA_BASE. The test
-     * `floor > USER_AREA_BASE + window_bytes` was therefore always false, the else
-     * branch always ran, and eff_max_pages was pinned to 0: image-base ASLR was
-     * silently disabled entirely, despite the docs advertising ~9 bits. The guard
-     * failed safe, so nothing broke — it just did nothing. There is no end-of-.bss
-     * linker symbol, which is how the wrong end came to be used.
-     *
-     * With the heap moved to USER_HEAP_BASE the low window is image-only, so the
-     * only constraint left is premap containment: the whole [base, base+PREMAP)
-     * span must stay below the floor (and, per ASLR_MAX_LOAD_RANDOM_PAGES, inside
-     * one 2 MiB PD entry, which create_user_pagedir's single-page-table premap
-     * assumes). That yields 336 pages ≈ 8.4 bits. */
+     * This used to be clamped further, against kernel_lowmem_critical_floor(),
+     * because the kernel was linked low: its .bss ran to 15.37 MiB, straight
+     * through the user window, so an unbounded premap could land over
+     * tasks[]/scheduler state and a kernel read on the task's CR3 would return
+     * the task's own (zeroed) page. That clamp cost ~144 pages. The kernel now
+     * lives at KERNEL_VMA and no kernel state occupies a user address, so the
+     * constraint is gone and the full window is available: 480 pages ~ 8.9 bits. */
     uint32_t eff_max_pages = ASLR_MAX_LOAD_RANDOM_PAGES;
-    uint32_t window_bytes  = (uint32_t)USER_ASPACE_PREMAP_PAGES * PAGE_SIZE;
-    uint32_t floor         = kernel_lowmem_critical_floor();
-    if (floor > USER_AREA_BASE + window_bytes) {
-        uint32_t safe_pages = (floor - window_bytes - (uint32_t)USER_AREA_BASE) / PAGE_SIZE;
-        if (safe_pages < eff_max_pages) eff_max_pages = safe_pages;
-    } else {
-        eff_max_pages = 0;   /* no safe room below the kernel data: pin at the base */
-    }
 
     uint32_t load_base = USER_AREA_BASE;
     if (staged_is_elf && eff_max_pages > 0) {

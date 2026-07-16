@@ -1,6 +1,11 @@
 #include "kernel.h"
 
-static volatile uint16_t* const VIDEO_MEMORY = (uint16_t*)0xB8000;
+/* VGA text buffer at physical 0xB8000, reached through the higher-half alias.
+ * Not the raw low address: the kernel prints from syscall context, i.e. while
+ * running on the faulting task's CR3, and PHYS_KVA is the mapping guaranteed to
+ * exist in every address space. The low identity map happens to resolve it today
+ * only because create_user_pagedir still replicates low memory into each task. */
+static volatile uint16_t* const VIDEO_MEMORY = (uint16_t*)PHYS_KVA(0xB8000);
 static int cursor_x = 0;
 static int cursor_y = 0;
 
@@ -154,7 +159,7 @@ static void load_8x8_font(void) {
     outb(0x3CE, 0x06); outb(0x3CF, 0x00);
 
     
-    uint8_t *dst = (uint8_t *)0xA0000;
+    uint8_t *dst = (uint8_t *)PHYS_KVA(0xA0000);   /* VGA font plane */
     for (int ch = 0; ch < 256; ch++) {
         for (int row = 0; row < 8; row++) {
             dst[(ch * 32) + row] = font_8x8[ch][row];

@@ -329,7 +329,6 @@ struct fs_stat {
 #define AUDIT_TASK_EXIT     41
 
 
-typedef struct regs {uint32_t eax;uint32_t ebx;uint32_t ecx;uint32_t edx;uint32_t esi;uint32_t edi;uint32_t ebp;uint32_t esp;uint32_t eip;uint32_t eflags;uint32_t int_no;uint32_t err_code;uint32_t useresp;uint32_t cs;uint32_t ds;uint32_t es;uint32_t fs;uint32_t gs;uint32_t ss;} regs_t;
 
 
 typedef struct user_account {
@@ -689,7 +688,7 @@ void secure_zero(void *p, size_t n);
 void spin_lock(spinlock_t *lock);
 void spin_unlock(spinlock_t *lock);
 void dump_kernel_log(void);
-void syscall_handler(struct regs *r);
+void syscall_handler(struct interrupt_frame64 *r);
 void resume_shell_after_fault(void);
 void print_hex64(uint64_t v);
 void timer_handler(void);

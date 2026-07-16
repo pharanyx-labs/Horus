@@ -27,12 +27,12 @@ void syscall_handler64(void)
  * ------------------------------------------------------------------------- */
 
 /* SYS_GET_LINE (3): read a line from the console into the caller's buffer. */
-static void h_get_line(struct regs *r) {
+static void h_get_line(struct interrupt_frame64 *r) {
     struct capability *c = cap_lookup(8, CAP_RIGHT_READ);
     if (!c) c = cap_lookup(3, CAP_RIGHT_READ);
-    if (!c) { r->eax = -1; return; }
+    if (!c) { r->rax = -1; return; }
 
-    void *user_dest = (void *)(addr_t)r->ebx;
+    void *user_dest = (void *)(addr_t)r->rbx;
     uint32_t max_len = 127;
     char line[128];
     uint32_t len = 0;
@@ -135,14 +135,14 @@ static void h_get_line(struct regs *r) {
 #endif
 
     if (copy_to_user(user_dest, line, len + 1) != 0) {
-        r->eax = -1;
+        r->rax = -1;
     } else {
-        r->eax = len;
+        r->rax = len;
     }
 }
 
 /* SYS_GET_SYSINFO (6): copy a zero-padded version string to the caller. */
-static void h_sysinfo(struct regs *r) {
+static void h_sysinfo(struct interrupt_frame64 *r) {
     const char *info = "Horus v0.4 | per-task paging + cspaces | Rust validators";
     /* Copy a zero-padded fixed-size buffer rather than 64 bytes straight
      * off the string literal: the literal is shorter than 64 bytes, so
@@ -151,10 +151,10 @@ static void h_sysinfo(struct regs *r) {
     size_t ii = 0;
     for (; ii < sizeof(infobuf) - 1 && info[ii]; ii++) infobuf[ii] = info[ii];
     for (; ii < sizeof(infobuf); ii++) infobuf[ii] = 0;
-    if (copy_to_user((void*)(addr_t)r->ebx, infobuf, sizeof(infobuf)) == 0) {
-        r->eax = 0;
+    if (copy_to_user((void*)(addr_t)r->rbx, infobuf, sizeof(infobuf)) == 0) {
+        r->rax = 0;
     } else {
-        r->eax = -1;
+        r->rax = -1;
     }
 }
 
@@ -162,10 +162,10 @@ static void h_sysinfo(struct regs *r) {
  * Returns the OLD break (pointer to start of newly allocated region) on
  * success, or (uint32_t)-1 on failure.  heap_end grows on demand up to
  * USER_HEAP_MAX_SIZE; the demand pager allocates physical pages lazily. */
-static void h_sbrk(struct regs *r) {
+static void h_sbrk(struct interrupt_frame64 *r) {
     int tid = get_current_task();
-    int32_t increment = (int32_t)r->ebx;
-    if (increment == 0) { r->eax = tasks[tid].heap_current; return; }
+    int32_t increment = (int32_t)r->rbx;
+    if (increment == 0) { r->rax = tasks[tid].heap_current; return; }
 
     uint32_t new_current = tasks[tid].heap_current + (uint32_t)increment;
     uint32_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
@@ -176,7 +176,7 @@ static void h_sbrk(struct regs *r) {
      * kernel now lives at KERNEL_VMA — no kernel state occupies a user address —
      * so the guard has nothing left to guard and is gone. */
     if (new_current < tasks[tid].heap_start || new_current > heap_max) {
-        r->eax = (uint32_t)-1;
+        r->rax = (uint32_t)-1;
         return;
     }
     /* Extend the authorised ceiling on demand; physical pages arrive lazily. */
@@ -187,57 +187,57 @@ static void h_sbrk(struct regs *r) {
     }
     uint32_t old = tasks[tid].heap_current;
     tasks[tid].heap_current = new_current;
-    r->eax = old;
+    r->rax = old;
 }
 
 /* SYS_BRK (62): set the program break to an absolute address.
  * Returns the new break on success.  On failure (addr out of range) returns
  * the unchanged current break — callers check return == addr to detect error,
  * matching the Linux brk(2) convention.  addr=0 queries without changing. */
-static void h_brk(struct regs *r) {
+static void h_brk(struct interrupt_frame64 *r) {
     int tid = get_current_task();
-    uint32_t addr     = r->ebx;
+    uint32_t addr     = r->rbx;
     uint32_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
     /* No kernel-floor clamp: the kernel lives at KERNEL_VMA, not in the user
      * window. See h_sbrk. */
-    if (addr == 0) { r->eax = tasks[tid].heap_current; return; }
+    if (addr == 0) { r->rax = tasks[tid].heap_current; return; }
 
     if (addr < tasks[tid].heap_start || addr > heap_max) {
-        r->eax = tasks[tid].heap_current;   /* failure: return unchanged break */
+        r->rax = tasks[tid].heap_current;   /* failure: return unchanged break */
         return;
     }
     uint32_t aligned = (addr + 0xFFFU) & ~0xFFFU;
     if (aligned > heap_max) aligned = heap_max;
     tasks[tid].heap_current = aligned;
     tasks[tid].heap_end     = aligned;
-    r->eax = aligned;
+    r->rax = aligned;
 }
 
 /* SYS_WRITE (11): write to fd 1 (console). Length clamped to the scratch buf. */
-static void h_write(struct regs *r) {
-    int fd = r->ebx;
-    void *buf = (void*)(addr_t)r->ecx;
-    size_t len = r->edx;
+static void h_write(struct interrupt_frame64 *r) {
+    int fd = r->rbx;
+    void *buf = (void*)(addr_t)r->rcx;
+    size_t len = r->rdx;
 
-    if (fd != 1) { r->eax = -1; return; }
+    if (fd != 1) { r->rax = -1; return; }
 
     char kbuf[256];
     size_t to_copy = len > 255 ? 255 : len;
     if (copy_from_user(kbuf, buf, to_copy) != 0) {
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
     kbuf[to_copy] = 0;
     print(kbuf);
-    r->eax = to_copy;
+    r->rax = to_copy;
 }
 
 /* SYS_READ (12): read from fd 0 (console line) or fd>=3 (ramfs, needs slot-3 read). */
-static void h_read(struct regs *r) {
-    int fd = r->ebx;
-    void *buf = (void*)(addr_t)r->ecx;
-    size_t len = r->edx;
+static void h_read(struct interrupt_frame64 *r) {
+    int fd = r->rbx;
+    void *buf = (void*)(addr_t)r->rcx;
+    size_t len = r->rdx;
 
     if (fd == 0) {
         char line[128];
@@ -250,38 +250,38 @@ static void h_read(struct regs *r) {
             line[got++] = ch;
         }
         line[got] = 0;
-        if (copy_to_user(buf, line, got + 1) != 0) r->eax = (uint32_t)SYS_ERR_FAULT;
-        else r->eax = got;
+        if (copy_to_user(buf, line, got + 1) != 0) r->rax = (uint32_t)SYS_ERR_FAULT;
+        else r->rax = got;
     } else if (fd >= 3) {
         struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
-        if (!c) { r->eax = -1; return; }
+        if (!c) { r->rax = -1; return; }
         char kbuf[256];
         size_t to_read = len > 255 ? 255 : len;
         int n = ramfs_read(fd, kbuf, to_read);
         if (n > 0) {
-            if (copy_to_user(buf, kbuf, n) == 0) r->eax = n;
-            else r->eax = -1;
+            if (copy_to_user(buf, kbuf, n) == 0) r->rax = n;
+            else r->rax = -1;
         } else {
-            r->eax = n;
+            r->rax = n;
         }
     } else {
-        r->eax = -1;
+        r->rax = -1;
     }
 }
 
 /* SYS_EXEC (14): create a task at an already-loaded image.
  * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
-static void h_exec(struct regs *r) {
-    uint32_t load_base = r->ebx;
-    uint32_t entry_offset = r->ecx;
-    (void)(r->edx);
+static void h_exec(struct interrupt_frame64 *r) {
+    uint32_t load_base = r->rbx;
+    uint32_t entry_offset = r->rcx;
+    (void)(r->rdx);
 
     /* Guard against uint32 overflow: a crafted (load_base, entry_offset) pair
      * whose sum wraps around could yield an entry point at an arbitrary address.
      * The resulting task would fault immediately (paging enforces ring separation),
      * but the overflow is confusing and could mask future bugs. */
     if ((uint64_t)load_base + entry_offset >= USER_MAX_VADDR) {
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
 
@@ -293,7 +293,7 @@ static void h_exec(struct regs *r) {
         }
     }
     if (new_id < 0) {
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
 
@@ -310,15 +310,15 @@ static void h_exec(struct regs *r) {
     tasks[new_id].name[4] = 'n'; tasks[new_id].name[5] = '0' + new_id;
     tasks[new_id].name[6] = 0;
 
-    r->eax = new_id;
+    r->rax = new_id;
 }
 
 /* SYS_FS_LIST (16): list ramfs entries, honouring the caller's buffer size.
  * Capability (slot 3, READ) is enforced centrally by the dispatch table. */
 
-static void h_exit(struct regs *r) {
+static void h_exit(struct interrupt_frame64 *r) {
     task_teardown(get_current_task());
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* Return non-zero if the current task may terminate `target`: either it holds a
@@ -347,18 +347,18 @@ static int task_kill_authorized(int target) {
  * target (or CAP_USER admin) — enforced in the handler because the target is
  * dynamic, so the central slot-based gate cannot express it. Killing yourself
  * behaves like SYS_EXIT (interrupt_handler64 redirects on the state==0 return). */
-static void h_kill(struct regs *r) {
-    int target = (int)r->ebx;
+static void h_kill(struct interrupt_frame64 *r) {
+    int target = (int)r->rbx;
     if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
-        r->eax = (uint32_t)SYS_ERR_INVAL;
+        r->rax = (uint32_t)SYS_ERR_INVAL;
         return;
     }
     if (!task_kill_authorized(target)) {
-        r->eax = (uint32_t)SYS_ERR_PERM;
+        r->rax = (uint32_t)SYS_ERR_PERM;
         return;
     }
     task_teardown(target);
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* A deliverable signal for a task blocked in SYS_WAIT must interrupt the wait so
@@ -388,14 +388,14 @@ static void signal_interrupt_wait(int t) {
  * pending until SYS_SIGMASK unblocks it. With no handler — or for the uncatchable
  * SIG_KILL — the default action applies and the target is terminated. Signalling
  * yourself is permitted (self-TCB). */
-static void h_signal(struct regs *r) {
-    int target      = (int)r->ebx;
-    uint32_t signum = r->ecx;
+static void h_signal(struct interrupt_frame64 *r) {
+    int target      = (int)r->rbx;
+    uint32_t signum = r->rcx;
     if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
-        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
-    if (signum == 0 || signum > SIG_MAX) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
-    if (!task_kill_authorized(target))   { r->eax = (uint32_t)SYS_ERR_PERM;  return; }
+    if (signum == 0 || signum > SIG_MAX) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!task_kill_authorized(target))   { r->rax = (uint32_t)SYS_ERR_PERM;  return; }
 
     if (signum == SIG_KILL || tasks[target].sig_handler == 0) {
         task_teardown(target);                 /* default action: terminate */
@@ -408,7 +408,7 @@ static void h_signal(struct regs *r) {
             signal_interrupt_wait(target);
         }
     }
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* SYS_WAIT (17): block until task `tid` exits.
@@ -416,25 +416,25 @@ static void h_signal(struct regs *r) {
  * Records a pending block only; ipc_block_switch saves the trap frame first and
  * only then sets tasks[tid].waiter + TASK_BLOCKED_WAIT so a concurrent teardown
  * cannot wake a task whose saved_ksp is not yet the SYS_WAIT frame. */
-static void h_wait(struct regs *r) {
+static void h_wait(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    int tid = r->ebx;
-    if (tid < 0 || tid >= MAX_TASKS || tid == cur) { r->eax = (uint32_t)-1; return; }
-    if (tasks[tid].state == TASK_DEAD) { r->eax = 0; return; }  /* already gone: satisfied */
+    int tid = r->rbx;
+    if (tid < 0 || tid >= MAX_TASKS || tid == cur) { r->rax = (uint32_t)-1; return; }
+    if (tasks[tid].state == TASK_DEAD) { r->rax = 0; return; }  /* already gone: satisfied */
 
     /* Intent only — not wake-visible until ipc_publish_pending_block. */
     tasks[cur].blocked_on    = tid;
     tasks[cur].pending_block = TASK_BLOCKED_WAIT;
-    r->eax = 0;   /* the value the caller sees once task_teardown wakes it */
+    r->rax = 0;   /* the value the caller sees once task_teardown wakes it */
 }
 
 /* SYS_GET_TASK_INFO (18): report task_info for `tid` (self, or any with admin/audit). */
-static void h_task_info(struct regs *r) {
-    int tid = r->ebx;
-    struct task_info *out = (struct task_info*)(addr_t)r->ecx;
+static void h_task_info(struct interrupt_frame64 *r) {
+    int tid = r->rbx;
+    struct task_info *out = (struct task_info*)(addr_t)r->rcx;
 
     if (tid < 0 || tid >= MAX_TASKS) {
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
 
@@ -452,7 +452,7 @@ static void h_task_info(struct regs *r) {
     if (!is_privileged && tasks[get_current_task()].uid == 0) is_privileged = 1;
 
     if (!is_privileged && tid != get_current_task()) {
-        r->eax = -3;
+        r->rax = -3;
         return;
     }
 
@@ -476,85 +476,85 @@ static void h_task_info(struct regs *r) {
     info.in_kernel = tasks[tid].in_kernel;
     info.caps_in_use = tasks[tid].caps_in_use;
 
-    if (copy_to_user(out, &info, sizeof(info)) == 0) r->eax = 0;
-    else r->eax = (uint32_t)SYS_ERR_FAULT;
+    if (copy_to_user(out, &info, sizeof(info)) == 0) r->rax = 0;
+    else r->rax = (uint32_t)SYS_ERR_FAULT;
 }
 
 /* SYS_RUN (19): drop the current task to ring 3 at an already-loaded image.
  * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
-static void h_run(struct regs *r) {
-    uint32_t load_base = r->ebx;
-    uint32_t entry = r->ecx;
+static void h_run(struct interrupt_frame64 *r) {
+    uint32_t load_base = r->rbx;
+    uint32_t entry = r->rcx;
 
     tasks[get_current_task()].heap_current = tasks[get_current_task()].heap_start;
 
     if (get_current_task() == 0) {
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
     /* Guard uint32 overflow same as h_exec. */
     if ((uint64_t)load_base + entry >= USER_MAX_VADDR) {
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
     drop_to_ring3(load_base + entry, tasks[get_current_task()].esp);
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* SYS_RECEIVE_PROGRAM: stage a program image and return its header.
  * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
-static void h_receive_program(struct regs *r) {
-    void *user_hdr = (void *)(addr_t)r->ebx;
+static void h_receive_program(struct interrupt_frame64 *r) {
+    void *user_hdr = (void *)(addr_t)r->rbx;
     struct program_header k_hdr;
 
     int rc = do_receive_program(&k_hdr);
     if (rc != 0) {
-        r->eax = rc;
+        r->rax = rc;
         return;
     }
 
     if (user_hdr) {
         if (copy_to_user(user_hdr, &k_hdr, sizeof(k_hdr)) != 0) {
-            r->eax = -3;
+            r->rax = -3;
             return;
         }
     }
 
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* SYS_AUTH: authenticate the calling task as a user (sets uid/gid on success). */
 
 /* SYS_YIELD: request a full-context switch; interrupt_handler64 runs
  * sched_yield_switch on the live trap frame after this returns. */
-static void h_yield(struct regs *r) {
+static void h_yield(struct interrupt_frame64 *r) {
     yield();
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* cap mint/transfer/move/revoke (4/8/9/51): authority enforced inside the
  * cap_* primitives (caller_has_authority + per-right checks). */
-static void h_cap_mint(struct regs *r) {
-    bool ok = cap_mint(r->ebx, r->ecx, r->edx);
-    r->eax = ok ? 0 : -1;
-    audit_log(AUDIT_CAP_MINT, r->ebx, ok ? 0 : -1, ok ? "cap mint" : "cap mint denied");
+static void h_cap_mint(struct interrupt_frame64 *r) {
+    bool ok = cap_mint(r->rbx, r->rcx, r->rdx);
+    r->rax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_MINT, r->rbx, ok ? 0 : -1, ok ? "cap mint" : "cap mint denied");
 }
-static void h_cap_transfer(struct regs *r) {
-    bool ok = cap_transfer(r->ebx, r->ecx);
-    r->eax = ok ? 0 : -1;
-    audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap transfer" : "cap transfer denied");
+static void h_cap_transfer(struct interrupt_frame64 *r) {
+    bool ok = cap_transfer(r->rbx, r->rcx);
+    r->rax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_TRANSFER, r->rbx, ok ? 0 : -1, ok ? "cap transfer" : "cap transfer denied");
 }
-static void h_cap_move(struct regs *r) {
-    bool ok = cap_move(r->ebx, r->ecx);
-    r->eax = ok ? 0 : -1;
-    audit_log(AUDIT_CAP_TRANSFER, r->ebx, ok ? 0 : -1, ok ? "cap move" : "cap move denied");
+static void h_cap_move(struct interrupt_frame64 *r) {
+    bool ok = cap_move(r->rbx, r->rcx);
+    r->rax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_TRANSFER, r->rbx, ok ? 0 : -1, ok ? "cap move" : "cap move denied");
 }
-static void h_cap_revoke(struct regs *r) {
+static void h_cap_revoke(struct interrupt_frame64 *r) {
     /* The authoritative rights check (CAP_RIGHT_REVOKE on the target, kernel
      * exempt) and the no-ambient-authority guard live in cap_revoke(). */
-    bool ok = cap_revoke(r->ebx);
-    r->eax = ok ? 0 : -1;
-    audit_log(AUDIT_CAP_REVOKE, r->ebx, ok ? 0 : -1, ok ? "cap revoke" : "cap revoke denied");
+    bool ok = cap_revoke(r->rbx);
+    r->rax = ok ? 0 : -1;
+    audit_log(AUDIT_CAP_REVOKE, r->rbx, ok ? 0 : -1, ok ? "cap revoke" : "cap revoke denied");
 }
 
 /* SYS_CAP_GRANT (65): delegate a capability into a supervised child's cspace.
@@ -566,30 +566,30 @@ static void h_cap_revoke(struct regs *r) {
  * exactly like SYS_KILL: a task may only push capabilities down into children it
  * supervises (no ambient authority upward). The target must be a live task other
  * than the caller. The caller can only delegate a capability it actually holds. */
-static void h_cap_grant(struct regs *r) {
+static void h_cap_grant(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    int target = (int)r->ebx;
-    uint32_t src_slot  = r->ecx;
-    uint32_t dest_slot = r->edx;
+    int target = (int)r->rbx;
+    uint32_t src_slot  = r->rcx;
+    uint32_t dest_slot = r->rdx;
 
     if (target <= 0 || target >= MAX_TASKS || target == cur || tasks[target].state == 0) {
-        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
     if (src_slot >= CNODE_SIZE || dest_slot >= CNODE_SIZE) {
-        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
     if (!tasks[cur].cspace || !tasks[target].cspace) {
-        r->eax = (uint32_t)SYS_ERR_INVAL; return;
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
     /* Same authority as SYS_KILL: a CAP_TCB to the target, or admin. */
     if (!task_kill_authorized(target)) {
         audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, -1, "cap grant denied");
-        r->eax = (uint32_t)SYS_ERR_PERM; return;
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
     /* The source must be a live capability the caller actually holds. */
     struct capability *src = cap_lookup(src_slot, 0);
     if (!src || src->type == CAP_NULL) {
-        r->eax = (uint32_t)SYS_ERR_NOENT; return;
+        r->rax = (uint32_t)SYS_ERR_NOENT; return;
     }
     capability_t granted = *src;                 /* snapshot before taking cap_lock */
     uint32_t fresh = cap_alloc_fresh_serial();   /* grabs cap_lock itself; call first */
@@ -600,34 +600,34 @@ static void h_cap_grant(struct regs *r) {
     spin_unlock(&cap_lock);
 
     audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, 0, "cap grant");
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* clear screen (5): slot-3 WRITE enforced by the table. */
-static void h_clear(struct regs *r) {
+static void h_clear(struct interrupt_frame64 *r) {
     clear_screen();
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* debug command exec (7): only meaningful under DEBUG_SHELL. */
-static void h_debug_exec(struct regs *r) {
+static void h_debug_exec(struct interrupt_frame64 *r) {
     char cmd[128];
-    if (copy_from_user(cmd, (void*)(addr_t)r->ebx, 127) != 0) {
-        r->eax = -1;
+    if (copy_from_user(cmd, (void*)(addr_t)r->rbx, 127) != 0) {
+        r->rax = -1;
         return;
     }
     cmd[127] = 0;
 #ifdef DEBUG_SHELL
-    r->eax = process_user_command(cmd);
+    r->rax = process_user_command(cmd);
 #else
-    r->eax = -1;
+    r->rax = -1;
 #endif
 }
 
 /* ramfs open (13): slot-3 READ enforced by the table. */
 
-static void h_getuid(struct regs *r) {
-    r->eax = tasks[get_current_task()].uid;
+static void h_getuid(struct interrupt_frame64 *r) {
+    r->rax = tasks[get_current_task()].uid;
 }
 
 /* SYS_SIGACTION: register (handler != 0) or clear (handler == 0) THIS task's own
@@ -636,35 +636,35 @@ static void h_getuid(struct regs *r) {
  * target's TCB, which this does not provide). The handler entry is validated
  * against the user code window in safe Rust so a fault can only ever redirect
  * ring-3 control flow to plausible user code. */
-static void h_sigaction(struct regs *r) {
-    uint32_t handler = r->ebx;
+static void h_sigaction(struct interrupt_frame64 *r) {
+    uint32_t handler = r->rbx;
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     if (handler != 0 && !rust_signal_handler_addr_ok(handler)) {
-        r->eax = (uint32_t)SYS_ERR_INVAL;   /* handler not in the user code window */
+        r->rax = (uint32_t)SYS_ERR_INVAL;   /* handler not in the user code window */
         return;
     }
     tasks[cur].sig_handler = handler;
     tasks[cur].in_signal   = 0;
-    r->eax = SYS_OK;
+    r->rax = SYS_OK;
 }
 
 /* SYS_SIGRETURN is serviced directly in interrupt_handler64 (it must rewrite the
  * live trap frame). This table stub only runs if sigreturn is called outside a
  * handler -- in which case there is nothing to resume, so it fails. */
-static void h_sigreturn_stub(struct regs *r) {
-    r->eax = (uint32_t)SYS_ERR_INVAL;   /* sigreturn called outside a handler */
+static void h_sigreturn_stub(struct interrupt_frame64 *r) {
+    r->rax = (uint32_t)SYS_ERR_INVAL;   /* sigreturn called outside a handler */
 }
 
 /* SYS_SIGMASK: block/unblock THIS task's own signals. `ebx` = how (SIG_SETMASK /
  * SIG_BLOCK / SIG_UNBLOCK), `ecx` = mask. A blocked signal that arrives stays in
  * pending_sigs and is delivered once unblocked (see deliver_pending_signal).
  * SIG_KILL can never be blocked. Returns the previous blocked mask. Self-only. */
-static void h_sigmask(struct regs *r) {
+static void h_sigmask(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint32_t how  = r->ebx;
-    uint32_t mask = r->ecx;
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint32_t how  = r->rbx;
+    uint32_t mask = r->rcx;
     uint32_t old  = tasks[cur].sig_mask;
     uint32_t nm;
     if      (how == SIG_BLOCK)   nm = old | mask;
@@ -672,7 +672,7 @@ static void h_sigmask(struct regs *r) {
     else                         nm = mask;             /* SIG_SETMASK (default) */
     nm &= ~(1u << SIG_KILL);                            /* SIG_KILL is never blockable */
     tasks[cur].sig_mask = nm;
-    r->eax = old;
+    r->rax = old;
 }
 
 /* SYS_SIGALTSTACK (72): register (ss_size != 0) or disable (ss_size == 0) THIS
@@ -683,32 +683,32 @@ static void h_sigmask(struct regs *r) {
  * must lie wholly inside the user address space and be at least SIG_ALTSTACK_MIN
  * bytes, and cannot be changed while a handler is already running on it
  * (SS_ONSTACK) — all three fail closed. Returns SYS_OK or a negative SYS_ERR_*. */
-static void h_sigaltstack(struct regs *r) {
+static void h_sigaltstack(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint32_t sp   = r->ebx;
-    uint32_t size = r->ecx;
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint32_t sp   = r->rbx;
+    uint32_t size = r->rcx;
 
     /* Re-pointing the altstack while executing on it would corrupt the running
      * handler's own frame — POSIX returns EPERM here; fail closed. */
-    if (tasks[cur].sig_on_stack) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
+    if (tasks[cur].sig_on_stack) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     if (size == 0) {                                  /* disable */
         tasks[cur].sig_altstack_sp   = 0;
         tasks[cur].sig_altstack_size = 0;
-        r->eax = SYS_OK;
+        r->rax = SYS_OK;
         return;
     }
-    if (size < SIG_ALTSTACK_MIN)                 { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
-    if (sp < USER_AREA_BASE)                     { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
-    if ((uint64_t)sp + (uint64_t)size > USER_MAX_VADDR) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (size < SIG_ALTSTACK_MIN)                 { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (sp < USER_AREA_BASE)                     { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if ((uint64_t)sp + (uint64_t)size > USER_MAX_VADDR) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     tasks[cur].sig_altstack_sp   = sp;
     tasks[cur].sig_altstack_size = size;
-    r->eax = SYS_OK;
+    r->rax = SYS_OK;
 }
 
 typedef struct {
-    void   (*fn)(struct regs *r);
+    void   (*fn)(struct interrupt_frame64 *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
     uint32_t rights;   /* rights required at `slot` */
     int      ctype;    /* required capability type, or SC_ANYTYPE */
@@ -831,23 +831,23 @@ _Static_assert(SYSCALL_TABLE_SIZE == SYS_IPC_REPLY_TO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 
-void syscall_handler(struct regs *r) {
+void syscall_handler(struct interrupt_frame64 *r) {
     if (get_current_task() < MAX_TASKS) {
         tasks[get_current_task()].in_kernel = 1;
     }
 
-    uint32_t num = r->eax;
+    uint32_t num = r->rax;
     const syscall_desc_t *d = (num < SYSCALL_TABLE_SIZE) ? &syscall_table[num] : (const syscall_desc_t *)0;
 
     if (!d || !d->fn) {
         /* Unknown, reserved, or unimplemented syscall number: fail closed. */
-        r->eax = (uint32_t)SYS_ERR_NOSYS;
+        r->rax = (uint32_t)SYS_ERR_NOSYS;
     } else if (d->slot != SC_NONE) {
         /* Central capability gate: a syscall cannot run without its declared
          * capability. Handlers no longer repeat this check. */
         struct capability *c = cap_lookup(d->slot, d->rights);
         if (!c || (d->ctype != SC_ANYTYPE && (int)c->type != d->ctype)) {
-            r->eax = (uint32_t)SYS_ERR_PERM;
+            r->rax = (uint32_t)SYS_ERR_PERM;
         } else {
             d->fn(r);
         }

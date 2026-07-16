@@ -10,9 +10,9 @@
  * below is unrelated — it lists the small in-memory ramfs (syscall 16) that
  * still backs the sealed user database. */
 
-void h_fs_list(struct regs *r) {
-    void *user_buf = (void*)(addr_t)r->ebx;
-    size_t max_len = r->ecx;
+void h_fs_list(struct interrupt_frame64 *r) {
+    void *user_buf = (void*)(addr_t)r->rbx;
+    size_t max_len = r->rcx;
     char kbuf[256];
     /* Honour the caller-supplied buffer size: format the listing into at
      * most max_len bytes (capped by the kernel scratch buffer) so the
@@ -20,11 +20,11 @@ void h_fs_list(struct regs *r) {
      * ramfs_list guarantees a NUL within the size it is given, so
      * n+1 <= cap holds. */
     size_t cap = max_len < sizeof(kbuf) ? max_len : sizeof(kbuf);
-    if (cap == 0) { r->eax = 0; return; }
+    if (cap == 0) { r->rax = 0; return; }
     int n = ramfs_list(kbuf, cap);
-    if (n < 0) { r->eax = -1; return; }
-    if (copy_to_user(user_buf, kbuf, n+1) == 0) r->eax = n;
-    else r->eax = -1;
+    if (n < 0) { r->rax = -1; return; }
+    if (copy_to_user(user_buf, kbuf, n+1) == 0) r->rax = n;
+    else r->rax = -1;
 }
 
 /* SYS_EXIT (2): terminate the calling task. Teardown runs here; the switch away
@@ -32,12 +32,12 @@ void h_fs_list(struct regs *r) {
  * state == 0 on return from the syscall and redirects to the kernel reaper
  * (exactly as the ring-3 fault-kill path does). */
 
-void h_block_read(struct regs *r) {
-    uint64_t block = ((uint64_t)r->ebx << 32) | r->ecx;
-    void *buf = (void*)(addr_t)r->edx;
-    uint32_t len = r->esi;
+void h_block_read(struct interrupt_frame64 *r) {
+    uint64_t block = ((uint64_t)r->rbx << 32) | r->rcx;
+    void *buf = (void*)(addr_t)r->rdx;
+    uint32_t len = r->rsi;
     if (tasks[get_current_task()].uid != 0) {
-        r->eax = -2;
+        r->rax = -2;
         return;
     }
     uint8_t kbuf[BLOCK_SIZE];
@@ -45,61 +45,61 @@ void h_block_read(struct regs *r) {
     int rc = storage_block_read(block, kbuf);
     if (rc == 0) {
         if (copy_to_user(buf, kbuf, to) == 0) {
-            r->eax = to;
+            r->rax = to;
         } else {
-            r->eax = -3;
+            r->rax = -3;
         }
     } else {
-        r->eax = rc;
+        r->rax = rc;
     }
 }
 
 /* SYS_BLOCK_WRITE: raw block write. The slot-7 CAP_BLOCK_DEV capability is
  * enforced centrally by the dispatch table; the uid==0 gate stays here (its
  * distinct -2 return is part of the ABI). */
-void h_block_write(struct regs *r) {
+void h_block_write(struct interrupt_frame64 *r) {
     if (tasks[get_current_task()].uid != 0) {
-        r->eax = -2;
+        r->rax = -2;
         return;
     }
-    uint64_t block = ((uint64_t)r->ebx << 32) | r->ecx;
-    const void *buf = (const void*)(addr_t)r->edx;
-    uint32_t len = r->esi;
+    uint64_t block = ((uint64_t)r->rbx << 32) | r->rcx;
+    const void *buf = (const void*)(addr_t)r->rdx;
+    uint32_t len = r->rsi;
     uint8_t kbuf[BLOCK_SIZE];
     uint32_t to = len > BLOCK_SIZE ? BLOCK_SIZE : len;
     if (copy_from_user(kbuf, buf, to) != 0) {
-        r->eax = -3;
+        r->rax = -3;
         return;
     }
     int rc = storage_block_write(block, kbuf);
-    r->eax = (rc == 0) ? (int)to : rc;
+    r->rax = (rc == 0) ? (int)to : rc;
 }
 
 /* SYS_REGISTER_FS_SERVER: register the caller as the fs server. The admin
  * capability (slot 6, ALL, type CAP_USER) is enforced centrally by the table;
  * the per-call endpoint-slot lookup stays here. */
-void h_register_fs_server(struct regs *r) {
-    uint32_t ep_slot = r->ebx;
+void h_register_fs_server(struct interrupt_frame64 *r) {
+    uint32_t ep_slot = r->rbx;
     struct capability *ep = cap_lookup(ep_slot, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
     if (!ep || ep->type != CAP_ENDPOINT) {
-        r->eax = -2;
+        r->rax = -2;
         return;
     }
     fs_server_task_id = get_current_task();
     fs_server_listen_ep_idx = ep->object;
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* SYS_CONNECT_FS_SERVER: mint an endpoint cap to the registered fs server. */
-void h_connect_fs_server(struct regs *r) {
-    uint32_t dest_slot = r->ebx;
-    uint32_t rights = r->ecx;
+void h_connect_fs_server(struct interrupt_frame64 *r) {
+    uint32_t dest_slot = r->rbx;
+    uint32_t rights = r->rcx;
     if (fs_server_task_id < 0 || fs_server_listen_ep_idx < 0) {
-        r->eax = -1;
+        r->rax = -1;
         return;
     }
     if (dest_slot < 4 || dest_slot >= 256) {
-        r->eax = -2;
+        r->rax = -2;
         return;
     }
     /* A fresh serial + generation is required or cap_lookup rejects the cap
@@ -113,7 +113,7 @@ void h_connect_fs_server(struct regs *r) {
     dest->badge  = 0xF51A0000U;
     dest->serial = serial;
     dest->generation = 0;
-    r->eax = 0;
+    r->rax = 0;
 }
 
 /* ---- Encrypted object-store API for the userspace FS server -------------- *
@@ -125,14 +125,14 @@ void h_connect_fs_server(struct regs *r) {
  * like the raw block syscalls — CAP_BLOCK_DEV in slot 7 (dispatch table) plus
  * the uid==0 check below — so only a privileged storage server can call them. */
 
-void h_fs_inode_alloc(struct regs *r) {
-    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint32_t type = r->ebx;
+void h_fs_inode_alloc(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint32_t type = r->rbx;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
-    if (ino < 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }   /* out of inodes */
+    if (ino < 0) { r->rax = (uint32_t)SYS_ERR_IO; return; }   /* out of inodes */
 
     struct on_disk_inode inode;
     for (size_t i = 0; i < sizeof(inode); i++) ((uint8_t *)&inode)[i] = 0;
@@ -143,64 +143,64 @@ void h_fs_inode_alloc(struct regs *r) {
     inode.links = 1;
     storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &inode);
 
-    r->eax = (uint32_t)(int32_t)ino;
+    r->rax = (uint32_t)(int32_t)ino;
 }
 
-void h_fs_inode_free(struct regs *r) {
-    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint64_t ino = r->ebx;
-    if (ino == 0) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }   /* never free root */
+void h_fs_inode_free(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino = r->rbx;
+    if (ino == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* never free root */
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
-    r->eax = (storage_free_inode_blocks(mfs, ino) == 0) ? 0 : (uint32_t)SYS_ERR_IO;
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    r->rax = (storage_free_inode_blocks(mfs, ino) == 0) ? 0 : (uint32_t)SYS_ERR_IO;
 }
 
-void h_fblock_read(struct regs *r) {
-    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint64_t ino   = r->ebx;
-    uint64_t block = r->ecx;
-    void    *ubuf  = (void *)(addr_t)r->edx;
+void h_fblock_read(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino   = r->rbx;
+    uint64_t block = r->rcx;
+    void    *ubuf  = (void *)(addr_t)r->rdx;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     uint8_t kbuf[BLOCK_SIZE];
     /* Fails on an unallocated hole or an authentication failure; the server
      * only reads blocks within a known size, so this is a genuine error. */
-    if (storage_read_file_block(mfs, ino, block, kbuf) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
-    if (copy_to_user(ubuf, kbuf, BLOCK_SIZE) != 0)           { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
-    r->eax = BLOCK_SIZE;
+    if (storage_read_file_block(mfs, ino, block, kbuf) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
+    if (copy_to_user(ubuf, kbuf, BLOCK_SIZE) != 0)           { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    r->rax = BLOCK_SIZE;
 }
 
-void h_fblock_write(struct regs *r) {
-    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint64_t ino   = r->ebx;
-    uint64_t block = r->ecx;
-    const void *ubuf = (const void *)(addr_t)r->edx;
-    uint32_t len   = r->esi;
+void h_fblock_write(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino   = r->rbx;
+    uint64_t block = r->rcx;
+    const void *ubuf = (const void *)(addr_t)r->rdx;
+    uint32_t len   = r->rsi;
     if (len > BLOCK_SIZE) len = BLOCK_SIZE;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     uint8_t kbuf[BLOCK_SIZE];
     for (int i = 0; i < BLOCK_SIZE; i++) kbuf[i] = 0;   /* zero-pad short writes */
-    if (len > 0 && copy_from_user(kbuf, ubuf, len) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
-    if (storage_write_file_block(mfs, ino, block, kbuf) != 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }
+    if (len > 0 && copy_from_user(kbuf, ubuf, len) != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    if (storage_write_file_block(mfs, ino, block, kbuf) != 0) { r->rax = (uint32_t)SYS_ERR_IO; return; }
     /* Logical file size is owned by the FS server (it may write full blocks for
      * read-modify-write); it sets size via SYS_FS_SET_SIZE. */
-    r->eax = len;
+    r->rax = len;
 }
 
-void h_fs_set_size(struct regs *r) {
-    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint64_t ino  = r->ebx;
-    uint64_t size = r->ecx;
+void h_fs_set_size(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino  = r->rbx;
+    uint64_t size = r->rcx;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     struct on_disk_inode inode;
-    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
     inode.size = size;
-    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }
-    r->eax = 0;
+    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_IO; return; }
+    r->rax = 0;
 }
 
 /* SYS_FS_SET_META (74): persist an inode's owner (uid/gid) and permission bits.
@@ -211,32 +211,32 @@ void h_fs_set_size(struct regs *r) {
  * attested caller), and this writes them through. Only the low 12 permission bits
  * are caller-settable; the file-type bits are preserved, so a chmod can never
  * turn a directory into a regular file. */
-void h_fs_set_meta(struct regs *r) {
-    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint64_t ino  = r->ebx;
-    uint32_t mode = r->ecx;
-    uint32_t uid  = r->edx;
-    uint32_t gid  = r->esi;
+void h_fs_set_meta(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino  = r->rbx;
+    uint32_t mode = r->rcx;
+    uint32_t uid  = r->rdx;
+    uint32_t gid  = r->rsi;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     struct on_disk_inode inode;
-    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
     inode.mode = (inode.mode & ~0007777u) | (mode & 0007777u);
     inode.uid  = uid;
     inode.gid  = gid;
-    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_IO; return; }
-    r->eax = 0;
+    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_IO; return; }
+    r->rax = 0;
 }
 
-void h_fs_stat(struct regs *r) {
-    if (tasks[get_current_task()].uid != 0) { r->eax = (uint32_t)SYS_ERR_PERM; return; }
-    uint64_t ino  = r->ebx;
-    void    *uout = (void *)(addr_t)r->ecx;
+void h_fs_stat(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino  = r->rbx;
+    void    *uout = (void *)(addr_t)r->rcx;
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->eax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     struct on_disk_inode inode;
-    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->eax = (uint32_t)SYS_ERR_NOENT; return; }
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
 
     struct fs_stat st;
     st.size  = inode.size;
@@ -245,8 +245,8 @@ void h_fs_stat(struct regs *r) {
     st.uid   = inode.uid;
     st.gid   = inode.gid;
     st.links = inode.links;
-    if (copy_to_user(uout, &st, sizeof(st)) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
-    r->eax = 0;
+    if (copy_to_user(uout, &st, sizeof(st)) != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    r->rax = 0;
 }
 
 /* ---- Handlers for the remaining syscalls -------------------------------- *
@@ -258,23 +258,23 @@ void h_fs_stat(struct regs *r) {
 
 /* SYS_YIELD (0). */
 
-void h_open(struct regs *r) {
+void h_open(struct interrupt_frame64 *r) {
     char path[64];
-    if (copy_from_user(path, (void*)(addr_t)r->ebx, 63) != 0) {
-        r->eax = -1; return;
+    if (copy_from_user(path, (void*)(addr_t)r->rbx, 63) != 0) {
+        r->rax = -1; return;
     }
     path[63] = 0;
-    r->eax = ramfs_open(path, 0);
+    r->rax = ramfs_open(path, 0);
 }
 
 /* ramfs create (15): slot-3 WRITE enforced by the table. */
-void h_ramfs_create(struct regs *r) {
+void h_ramfs_create(struct interrupt_frame64 *r) {
     char name[32];
-    if (copy_from_user(name, (void*)(addr_t)r->ebx, 31) != 0) {
-        r->eax = -1; return;
+    if (copy_from_user(name, (void*)(addr_t)r->rbx, 31) != 0) {
+        r->rax = -1; return;
     }
     name[31] = 0;
-    r->eax = ramfs_create(name, 0);
+    r->rax = ramfs_create(name, 0);
 }
 
 /* SYS_SPAWN (28): slot-3 WRITE|EXEC enforced by the table.
@@ -291,7 +291,7 @@ void h_ramfs_create(struct regs *r) {
 /* SYS_REGISTER_STORAGE_BACKEND (46): removed; ABI slot reserved, fails closed.
  * (Used to register a ring-3 fn-ptr the kernel called at CPL0 -- SMEP/TCB hole;
  * a userspace disk driver must be an IPC server, not an in-kernel callback.) */
-void h_register_storage_backend(struct regs *r) {
-    r->eax = SYS_ERR_NOSYS;
+void h_register_storage_backend(struct interrupt_frame64 *r) {
+    r->rax = SYS_ERR_NOSYS;
 }
 

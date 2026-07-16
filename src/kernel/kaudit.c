@@ -102,9 +102,9 @@ void audit_log(uint32_t type, uint32_t object, int32_t result, const char *msg) 
 }
 
 
-void h_read_audit(struct regs *r) {
-    struct audit_event *user_events = (struct audit_event *)(addr_t)r->ebx;
-    uint32_t max = r->ecx;
+void h_read_audit(struct interrupt_frame64 *r) {
+    struct audit_event *user_events = (struct audit_event *)(addr_t)r->rbx;
+    uint32_t max = r->rcx;
     if (max > AUDIT_LOG_SIZE) max = AUDIT_LOG_SIZE;
 
     uint32_t out = 0;
@@ -116,22 +116,22 @@ void h_read_audit(struct regs *r) {
             out++;
         }
     }
-    r->eax = out;
+    r->rax = out;
 }
 
 /* SYS_AUDIT_DIGEST: return the audit-log integrity digest (total event count +
  * running chain-head MAC) and the verify status of the retained window. The
  * slot-7 CAP_AUDIT capability is enforced centrally by the dispatch table. */
-void h_audit_digest(struct regs *r) {
-    void *out = (void *)(addr_t)r->ebx;
+void h_audit_digest(struct interrupt_frame64 *r) {
+    void *out = (void *)(addr_t)r->rbx;
     int vstatus = audit_verify();
 
     uint8_t blob[8 + AUDIT_MAC_LEN];
     for (int b = 0; b < 8; b++) blob[b] = (uint8_t)(audit_seq >> (b * 8));
     for (int i = 0; i < AUDIT_MAC_LEN; i++) blob[8 + i] = audit_chain_head[i];
 
-    if (copy_to_user(out, blob, sizeof(blob)) != 0) { r->eax = (uint32_t)SYS_ERR_FAULT; return; }
-    r->eax = vstatus;
+    if (copy_to_user(out, blob, sizeof(blob)) != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    r->rax = vstatus;
 }
 
 /* SYS_BLOCK_READ: raw block read. The slot-7 CAP_BLOCK_DEV capability is

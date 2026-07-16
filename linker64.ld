@@ -42,7 +42,13 @@ SECTIONS
     {
         *(.multiboot)
         *(.boot)
-        *(.boot.*)
+    }
+    /* Kept a separate output section from the .boot code: merging executable and
+     * writable input sections would emit ONE RWX LOAD segment, i.e. a W^X hole in
+     * the kernel image. Split, this is r-x and .boot.data is rw-. */
+    .boot.data : ALIGN(4K)
+    {
+        *(.boot.data)
     }
     _boot_lma_end = .;
 

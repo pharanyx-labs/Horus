@@ -137,6 +137,101 @@ void elf_loader_selftest(void) {
 }
 #endif /* ELF_SELFTEST */
 
+#ifdef ASLR_SELFTEST
+/* Image-base ASLR self-test (gated; never in the ship build).
+ *
+ * Spawns several PIE images and inspects the load base the loader chose for each.
+ * Two properties, and the first one exists because it has actually been broken:
+ * image-base ASLR was once silently disabled entirely — pinned to USER_AREA_BASE
+ * on every spawn — while the docs advertised ~9 bits, because the bound was
+ * compared against the wrong linker symbol and the guard failed safe. Nothing
+ * caught it, because nothing looked.
+ *
+ *   1. The base actually varies. A handful of spawns must not all land on the
+ *      same address.
+ *   2. The base stays inside the premap-containment bound. create_user_pagedir
+ *      builds the image premap from a SINGLE page table, so [base_pti,
+ *      base_pti + USER_ASPACE_PREMAP_PAGES) must fit in one 512-entry table.
+ *      Exceeding it would write past that table — this is the invariant that
+ *      bounds ASLR, and the reason the entropy figure is what it is.
+ *
+ * Deliberately NOT asserted: a statistical entropy estimate. With a handful of
+ * samples over 480 slots, any threshold tight enough to catch a regression is
+ * loose enough to flake. The entropy claim is structural — log2 of the bound
+ * checked in (2) — not something a few draws can evidence. */
+#define ASLR_PROBE_SPAWNS 8
+
+void aslr_selftest(void) {
+    extern uint8_t embedded_elftest_start[];
+    extern uint8_t embedded_elftest_end[];
+    uint32_t sz = (uint32_t)(embedded_elftest_end - embedded_elftest_start);
+
+    print("ASLR_SELFTEST: begin\n");
+    if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ASLR_SELFTEST: FAIL embed-size\n"); return; }
+
+    uint32_t bases[ASLR_PROBE_SPAWNS];
+    int got = 0;
+    int saved = get_current_task();
+
+    for (int i = 0; i < ASLR_PROBE_SPAWNS; i++) {
+        for (uint32_t j = 0; j < sz; j++) loader_staging[j] = embedded_elftest_start[j];
+        armed_hdr.entry = 0;
+        armed_hdr.size  = sz;
+        armed_hdr.name[0] = 'e'; armed_hdr.name[1] = 'l'; armed_hdr.name[2] = 'f';
+        armed_hdr.name[3] = 't'; armed_hdr.name[4] = 0;
+        program_armed = 1;
+
+        int pid = do_spawn();
+        if (pid <= 0) { print("ASLR_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
+        bases[got++] = tasks[pid].image_base;
+        tasks[pid].state = 0;          /* throwaway slot; never scheduled */
+        set_current_task(saved);
+    }
+
+    /* (2) Every base inside the premap-containment bound. */
+    uint32_t lo = (uint32_t)USER_AREA_BASE;
+    uint32_t hi = (uint32_t)USER_AREA_BASE +
+                  (uint32_t)ASLR_MAX_LOAD_RANDOM_PAGES * PAGE_SIZE;
+    for (int i = 0; i < got; i++) {
+        if (bases[i] < lo || bases[i] >= hi) {
+            print("ASLR_SELFTEST: FAIL base out of bound "); print_hex(bases[i]); print("\n");
+            set_current_task(saved); return;
+        }
+        uint32_t base_pti = (bases[i] >> 12) & 511;
+        if (base_pti + USER_ASPACE_PREMAP_PAGES > 512) {
+            print("ASLR_SELFTEST: FAIL premap crosses its page table at ");
+            print_hex(bases[i]); print("\n");
+            set_current_task(saved); return;
+        }
+    }
+
+    /* (1) The base varies. */
+    int distinct = 0;
+    for (int i = 0; i < got; i++) {
+        int seen = 0;
+        for (int j = 0; j < i; j++) if (bases[j] == bases[i]) { seen = 1; break; }
+        if (!seen) distinct++;
+    }
+
+    uint32_t minb = bases[0], maxb = bases[0];
+    for (int i = 1; i < got; i++) {
+        if (bases[i] < minb) minb = bases[i];
+        if (bases[i] > maxb) maxb = bases[i];
+    }
+    print("ASLR_SELFTEST: "); print_decimal(distinct); print("/");
+    print_decimal(got); print(" distinct, min="); print_hex(minb);
+    print(" max="); print_hex(maxb); print("\n");
+
+    if (distinct < 5) {
+        print("ASLR_SELFTEST: FAIL base does not vary\n");
+        set_current_task(saved); return;
+    }
+
+    print("ASLR_SELFTEST: PASS\n");
+    set_current_task(saved);
+}
+#endif /* ASLR_SELFTEST */
+
 #ifdef PREEMPT_SELFTEST
 /* ---- Preemptive-scheduling self-test (PREEMPT_SELFTEST builds only) --------
  * Spawn two independent copies of the embedded preempttest payload. Each one

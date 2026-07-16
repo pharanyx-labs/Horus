@@ -263,6 +263,11 @@ void smp_bringup(void) {
      * so it never returns to kernel_main. */
     elf_loader_selftest();
 #endif
+#ifdef ASLR_SELFTEST
+    /* Gated: spawn several PIE images and prove the loader randomises the image
+     * base, and that every base keeps the premap inside one page table. */
+    { extern void aslr_selftest(void); aslr_selftest(); }
+#endif
     spawn_initial_userspace_init();
 #endif
 }

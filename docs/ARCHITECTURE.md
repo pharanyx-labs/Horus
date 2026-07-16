@@ -65,16 +65,37 @@ names kernel symbols as `sym - KERNEL_VMA`.
 there: the SMP trampoline far-jumps to ~`0x8000` after enabling paging on the kernel's own
 CR3, and the LAPIC/VGA MMIO are reached at their physical addresses.
 
-`create_user_pagedir` still identity-fills the PD entries covering the low window
-**present + supervisor**, and overwrites only the `USER_ASPACE_PREMAP_PAGES` (32) entries of
-the image window as user pages. That fill is now vestigial — the kernel's globals are
-reached through the kernel half (`pml4[256..511]`), not through low memory — and removing
-it is tracked in [ROADMAP.md](ROADMAP.md). Until then, **the low window still cannot be
-demand-paged**: any fault there finds an identity-supervisor page already present, so the
-pager declines. This is why the heap lives at `USER_HEAP_BASE` (16 MiB), the only region
-where the pager can install real user pages.
+**A user page directory contains only the task's own mappings.** `create_user_pagedir`
+builds `pml4[0]` → PDPT → PD with nothing in it but the image premap and the low stack;
+every other entry is not-present. The kernel half (`pml4[256..511]`) is copied from the
+kernel PML4 with `PAGE_USER` stripped, which is how the kernel — and `PHYS_KVA` — remain
+addressable on a user CR3 while ring 3 cannot reach any of it.
 
-**Physical access from the fault handler.** A user CR3's low identity map covers only `[0, 16 MiB)`, but the user page pool starts *at* `USER_PHYS_BASE` (16 MiB). The demand pager runs on the faulting task's CR3 and must read page tables and zero/copy freshly allocated frames, all of which live in that pool, so it reaches them through the higher-half alias (`PHYS_KVA`, `VA(pml4=511, pdpt=2)` → physical `[0, 1 GiB)`) that `create_user_pagedir` replicates into every task via `pml4[256..511]`. Using the low identity address instead faults *inside* the fault handler, which then re-enters the `page_lock` it already holds with interrupts disabled — a hard hang.
+This is the property the whole exercise was for: a user mapping cannot shadow kernel state
+**by construction**, rather than because ASLR is bounded away from it. It used to
+identity-fill PD[0..7] — physical `[0, 16 MiB)` as supervisor huge pages — because the
+kernel was linked low and had to reach `tasks[]` and its own `.bss` while on a user CR3.
+
+Removing that fill also un-broke demand paging in the low window: a fault there now finds a
+not-present page and reaches the pager, instead of finding an identity-supervisor page and
+being declined with "already present". The pager gates every mapping on
+`rust_validate_page_fault`, which approves only the faulting task's own image, heap and
+stack regions.
+
+**Physical access from the fault handler.** The user page pool starts at `USER_PHYS_BASE`
+(16 MiB) and a user address space maps none of it directly. The demand pager runs on the
+faulting task's CR3 and must read page tables and zero/copy freshly allocated frames, so it
+reaches them through the higher-half alias (`PHYS_KVA`, `VA(pml4=511, pdpt=2)` → physical
+`[0, 1 GiB)`) that `create_user_pagedir` replicates into every task via `pml4[256..511]`.
+Using a low identity address instead faulted *inside* the fault handler, which then
+re-entered the `page_lock` it already held with interrupts disabled — a hard hang.
+
+**Image size is capped at the premap**, not by the address space: `try_elf_load` writes
+segments with `copy_to_user`, which walks the page tables and requires a present `PAGE_USER`
+page — it does not fault, so it cannot demand-page. Only the `USER_ASPACE_PREMAP_PAGES`
+(32 → 128 KiB) premapped pages are writable at load time. A task can now fault in the rest
+of its own image region at runtime, but growing the loadable image needs the premap to grow
+or `user_copy` to demand-page.
 
 ### Physical memory
 

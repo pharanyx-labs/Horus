@@ -192,18 +192,20 @@ void create_user_pagedir(uint32_t task_id) {
     uint64_t my_pd_phys = pd_phys;
     my_pdpt[0] = my_pd_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
 
-    for (int kp = 0; kp < 8; kp++) {
-        if (my_pd[kp] == 0) {
-            uint64_t base = (uint64_t)kp * 0x200000ULL;
-            my_pd[kp] = base | PAGE_PRESENT | PAGE_WRITE | (1 << 7);
-        }
-    }
-
-    
-    
-    
-    
-    
+    /* NOTHING is mapped here but the task's own pages.
+     *
+     * This used to identity-fill PD[0..7] — physical [0, 16 MiB) as supervisor
+     * 2 MiB huge pages — because the kernel was linked low and had to reach
+     * tasks[]/the page tables/its own .bss while running on this CR3. The kernel
+     * now lives at KERNEL_VMA and is reached through the pml4[256..511] copy
+     * above, so replicating low memory into a user address space has no purpose.
+     *
+     * Removing it is the point of the exercise: a user page directory can no
+     * longer contain a mapping for any address the kernel uses, so a user mapping
+     * cannot shadow kernel state *by construction* rather than by a bound on
+     * where ASLR may place things. It also un-breaks demand paging in the low
+     * window — a fault there now finds a not-present page and reaches the pager,
+     * instead of finding an identity-supervisor page and being declined. */
 
     int pages_to_map = (int)USER_ASPACE_PREMAP_PAGES;
     /* Premap the image window at the task's (possibly ASLR-randomized) base.
@@ -218,16 +220,15 @@ void create_user_pagedir(uint32_t task_id) {
 
     uint64_t *cur_pt = 0;
     if (pdi < 512) {
-        /* Replace the 2 MiB huge-page mapping installed above for this PD entry
-         * with a fine-grained page table. Identity-fill it (supervisor, as
-         * before) so the non-image pages of the 2 MiB region stay mapped, then
-         * map the image pages as USER at the randomized base offset. */
+        /* One page table for the image's 2 MiB region, left EMPTY except for the
+         * premapped image pages below. The rest of the region is not-present, so
+         * a fault there reaches the pager (which gates on the task's own region
+         * bounds) instead of finding the identity-supervisor page this used to
+         * fill in. */
         uint64_t pt_phys = alloc_user_physical_page();
         if (pt_phys) {
             cur_pt = (uint64_t *)PHYS_KVA(pt_phys);
-            uint64_t region_base = (uint64_t)pdi * 0x200000ULL;
-            for (int k = 0; k < 512; k++)
-                cur_pt[k] = (region_base + (uint64_t)k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
+            for (int k = 0; k < 512; k++) cur_pt[k] = 0;
             my_pd[pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
         }
     }
@@ -247,43 +248,30 @@ void create_user_pagedir(uint32_t task_id) {
         cur_pt[pt_idx] = phys | flags;
     }
 
-    
-    uint64_t hs_base = (ASLR_HIGH_STACK_BASE - (32 * PAGE_SIZE)) & ~0xFFFULL;
-    int hs_pdi = (int)((hs_base >> 21) & 511);
-    if (hs_pdi < 512 && my_pd[hs_pdi] == 0) {
-        uint64_t pt_phys = alloc_user_physical_page();
-        if (pt_phys) {
-            uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
-            for (int k = 0; k < 512; k++) pt[k] = 0;
-            my_pd[hs_pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-
-            
-            for (int s = 0; s < 64; s++) {
-                uint64_t phys = alloc_user_physical_page();
-                if (phys == 0) break;
-                uint8_t *pg = (uint8_t *)PHYS_KVA(phys); for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
-                int spti = ((hs_base + (uint64_t)s * PAGE_SIZE) >> 12) & 511;
-                uint32_t prot = rust_get_user_page_protection(task_id, (uint32_t)(hs_base + (uint64_t)s * PAGE_SIZE));
-                uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-                /* High ASLR stack: non-executable (W^X). */
-                pt[spti] = phys | flags | PAGE_NX;
-            }
-        }
-    }
-
-    
+    /* The low user stack: 32 pages below 0x7ff000, premapped USER + NX.
+     *
+     * Its page table is left empty apart from those 32 pages — it used to be
+     * identity-filled supervisor like the image region, for the same
+     * now-obsolete reason.
+     *
+     * (A block here also claimed to premap a 64-page "high ASLR stack" at
+     * ASLR_HIGH_STACK_BASE = 0x7ff000000000. It did not: that VA needs pml4[255],
+     * but the block indexed `my_pd`, which hangs off pml4[0] and covers only
+     * [0, 1 GiB) — hs_pdi came out 511, so the pages landed at ~0x3ffe0000 and
+     * nothing ever read them. It cost 260 KiB per task: 16.2 MiB of the 64 MiB
+     * pool across 64 slots. Deleted.) */
     {
-        uint64_t low_stack_top = 0x007ff000ULL;
+        uint64_t low_stack_top  = 0x007ff000ULL;
         uint64_t low_stack_base = low_stack_top - (32ULL * PAGE_SIZE);
         int ls_pdi = (int)((low_stack_base >> 21) & 511);
-        if (ls_pdi < 512) {
+        /* Distinct from the image's PD entry by construction (image ASLR is
+         * bounded inside PD[2]; the stack is in PD[3]). Guard anyway: sharing the
+         * entry would leak the image's page table and unmap the image. */
+        if (ls_pdi < 512 && ls_pdi != pdi) {
             uint64_t pt_phys = alloc_user_physical_page();
             if (pt_phys) {
                 uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
-
-                uint64_t ls_region_base = (uint64_t)ls_pdi * 0x200000ULL;
-                for (int k = 0; k < 512; k++)
-                    pt[k] = (ls_region_base + (uint64_t)k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
+                for (int k = 0; k < 512; k++) pt[k] = 0;
                 my_pd[ls_pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
                 for (int s = 0; s < 32; s++) {
                     uint64_t phys = alloc_user_physical_page();

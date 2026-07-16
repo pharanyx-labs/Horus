@@ -206,6 +206,23 @@ jobs:
       - name: Boot COW_SELFTEST kernel and assert shared zero page breaks to private pages in isolation
         run: make smoke-cow
 
+  smoke-aslr:
+    name: QEMU image-base ASLR self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot ASLR_SELFTEST kernel and assert the image base varies and stays inside the premap bound
+        run: make smoke-aslr
+
   smoke-notify:
     name: QEMU async-notification self-test (headless)
     runs-on: ubuntu-latest

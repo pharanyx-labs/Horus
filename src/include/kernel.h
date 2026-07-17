@@ -59,14 +59,28 @@ typedef uint64_t vaddr_t;
  * already held with interrupts disabled and wedged the machine. Always use this
  * macro for physical access from the pager.
  *
- * Only covers [0, 1 GiB) — the extent of the boot `pd`. The user pool tops out
- * at 80 MiB, so every frame is reachable; a pool grown past 1 GiB would need
- * this window extended first. */
+ * Only covers [0, 1 GiB) — the extent of the boot `pd`. The user pool is capped
+ * so its top stays inside this window (see PHYS_POOL_CEIL); every frame is
+ * therefore reachable. A pool grown past 1 GiB would need this window extended
+ * first. */
 #define PHYS_KVA_BASE           0xFFFFFF8080000000ULL
 #define PHYS_KVA(p)             ((void *)(PHYS_KVA_BASE + (uint64_t)(p)))
 
+/* Physical page pool. It runs from USER_PHYS_BASE (16 MiB, above the kernel
+ * image) upward. USER_PHYS_PAGES is the *array capacity* — the compile-time
+ * ceiling on how many frames the pool metadata (free_page_stack, page_refcounts)
+ * can track, and it fixes the .bss cost. The *actual* pool size is chosen at
+ * boot from the multiboot2 E820 memory map (mb_detect_pool_pages ->
+ * phys_set_pool_pages); on a diskless/unparsed boot it falls back to
+ * USER_PHYS_DEFAULT_PAGES, the historical 64 MiB. The cap keeps the top below
+ * PHYS_POOL_CEIL (1 GiB, the PHYS_KVA window) so every frame stays reachable. At
+ * 131072 pages the metadata is ~768 KiB of .bss, comfortably under the ceiling
+ * the linker ASSERT enforces (__bss_end <= USER_PHYS_BASE). */
 #define USER_PHYS_BASE          0x01000000
-#define USER_PHYS_PAGES         16384
+#define USER_PHYS_PAGES         131072              /* array cap: 512 MiB pool */
+#define USER_PHYS_DEFAULT_PAGES 16384               /* fallback: 64 MiB (pre-E820) */
+#define PHYS_POOL_MIN_PAGES     4096                /* floor: 16 MiB, keep the system usable */
+#define PHYS_POOL_CEIL          0x40000000ULL       /* pool top must stay < 1 GiB (PHYS_KVA) */
 #define CNODE_SIZE              256
 #define MAX_TASKS               64
 #define MAX_CAPS_PER_TASK       128
@@ -942,6 +956,17 @@ int  user_map_fresh_page_for_test(uint64_t pml4_phys, uint64_t vaddr, uint64_t f
 void create_user_pagedir(uint32_t task_id);
 #endif
 uint32_t get_free_user_pages(void);   /* paging.c — free frames in the user pool */
+/* Set the runtime physical-pool size (frames), clamped to
+ * [PHYS_POOL_MIN_PAGES, USER_PHYS_PAGES]. Must be called before paging_init,
+ * which builds the free list. Driven by the E820 memory map at boot. */
+void phys_set_pool_pages(uint32_t pages);
+/* Boot registers saved by _start (multiboot.S): the multiboot2 magic and a
+ * pointer to the boot-information structure. */
+extern volatile uint32_t saved_mb_magic;
+extern volatile uint32_t saved_mb_info;
+#ifdef E820_SELFTEST
+void e820_selftest(void);
+#endif
 #ifdef PREEMPT_SELFTEST
 void preempt_selftest(void);
 #endif

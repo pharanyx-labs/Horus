@@ -240,6 +240,23 @@ jobs:
       - name: Boot TSD_SELFTEST kernel and assert a ring-3 RDTSC faults under CR4.TSD
         run: make smoke-tsd
 
+  smoke-e820:
+    name: QEMU E820 physical-pool self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot E820_SELFTEST kernel and assert the pool was sized from the multiboot2 memory map
+        run: make smoke-e820
+
   smoke-smp:
     name: QEMU SMP self-test (headless, -smp 4)
     runs-on: ubuntu-latest

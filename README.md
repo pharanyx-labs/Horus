@@ -95,7 +95,7 @@ The only 32-bit code left is the boot on-ramp that has to be: the multiboot entr
 - **Transitive, system-wide revocation.** Revoking a capability nullifies it and every derived copy across every task's cspace *and* the kernel root cnode in a single atomic Rust sweep, then bumps a lineage generation counter — so a stale bit pattern that escaped the structural sweep still fails at point of use. Task slots are **zeroed on reuse**, so a newly spawned task cannot inherit the dead task's capabilities.
 - **Centralized authorization.** Syscall dispatch is a descriptor table that enforces each call's required capability at one choke point; an unlisted syscall number fails closed, and a compile-time assertion forbids adding a syscall without a table slot.
 - **Least-privilege delegation.** A supervisor (e.g. `init`) holds a child's `CAP_TCB` from the spawn and hands it exactly the capabilities it needs with `SYS_CAP_GRANT`; `SYS_KILL` and `SYS_SIGNAL` are gated on holding that `CAP_TCB`.
-- **Hardware isolation.** Ring 0/3 separation with per-task page tables, and the kernel in the higher half so a user mapping cannot share an address with kernel state; **SMEP** and **SMAP** engaged when advertised; **W^X** enforced via `EFER.NXE` and the PTE NX bit (non-executable stacks; ELF `PT_LOAD` segments honour their `p_flags`).
+- **Hardware isolation.** Ring 0/3 separation with per-task page tables, and the kernel in the higher half so a user mapping cannot share an address with kernel state; **SMEP**, **SMAP** and **UMIP** engaged when advertised; **W^X** enforced via `EFER.NXE` and the PTE NX bit (non-executable stacks; ELF `PT_LOAD` segments honour their `p_flags`) — and applied to the **kernel's own image** too, which maps its `.text` read-only and its `.rodata`/`.data`/`.bss` non-executable, with `CR0.WP` set so ring 0 actually honours it.
 - **Full register-file isolation.** A task's x87/SSE registers are saved and restored around every kernel entry, so no task can read what another left in `xmm` — and the kernel is built `-mno-sse`, holding no FPU state of its own to leak.
 - **Modern cryptography, safe Rust.** Argon2id (RFC 9106) memory-hard password hashing on an in-house BLAKE2b, HKDF-SHA256 key derivation, a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD for storage, and a ChaCha20 fast-key-erasure CSPRNG seeded from RDRAND and timing jitter — all validated against published/reference vectors.
 - **Tamper-evident audit log.** Each event is bound by an HMAC keyed to a per-boot secret, and a running hash-chain head commits to the entire ordered history; `SYS_AUDIT_DIGEST` exposes the digest and verify status for an external monitor.
@@ -116,7 +116,8 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Capability mint / transfer / move / revoke | ✅ Working |
 | Transitive cross-task revocation + lineage (use-after-revoke prevention) | ✅ Working |
 | SMEP / SMAP / UMIP hardening (when CPU advertises, CI-gated in CR4) | ✅ Working |
-| W^X — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
+| W^X (user) — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
+| W^X (kernel) — own image mapped `.text` r-x, `.rodata` r--, `.data`/`.bss` rw-NX, `CR0.WP` set | ✅ Working |
 | Per-task x87/SSE context (FXSAVE/FXRSTOR on the ring-3 boundary) | ✅ Working |
 | ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 8.91 bits, the structural ceiling) | ✅ Working |
 | Table-driven syscall dispatch (central capability gate, 0–75) | ✅ Working |

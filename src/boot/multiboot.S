@@ -377,8 +377,13 @@ pml4:
     .space 4096
 pdpt:
     .space 4096
+/* Exported for kernel_remap_init (paging.c), which reads `pd` to inherit the
+ * 2 MiB mappings above the kernel image and rewrites high_pdpt[510] to point at
+ * a private page directory instead of this shared one. */
+.global pd
 pd:
     .space 4096
+.global high_pdpt
 high_pdpt:
     .space 4096
 .global boot_tables_end

@@ -427,6 +427,30 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
     return 0;
 }
 
+/* Read a little-endian 8-byte ELF64 field. */
+static inline uint64_t elf64_rd(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= (uint64_t)p[i] << (i * 8);
+    return v;
+}
+
+/* Narrow an ELF64 field to the loader's 32-bit address plumbing, refusing any
+ * value that does not fit. Every address here is 32-bit — try_elf_load takes a
+ * uint32_t load_base, and USER_MAX_VADDR caps the user window at 8 MiB — while
+ * the ELF64 fields these carry (e_phoff, p_offset, p_vaddr, p_filesz, p_memsz)
+ * are 8 bytes wide.
+ *
+ * Reading only the low half does not just lose range, it defeats the bounds
+ * checks: they would validate a number that is not the one in the file. A
+ * header declaring p_offset = 0x1_0000_0000 narrows to 0 and sails through
+ * `p_offset + p_filesz > MAX_PROGRAM_SIZE`. Fail closed instead. */
+static inline int elf64_narrow(const uint8_t *p, uint32_t *out) {
+    uint64_t v = elf64_rd(p);
+    if (v > 0xFFFFFFFFu) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
 int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
 {
     if (!out_entry) return -1;
@@ -451,11 +475,10 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
         e_entry32 = (uint32_t)st[24] | ((uint32_t)st[25]<<8) | ((uint32_t)st[26]<<16) | ((uint32_t)st[27]<<24);
         e_phoff   = (uint32_t)st[28] | ((uint32_t)st[29]<<8) | ((uint32_t)st[30]<<16) | ((uint32_t)st[31]<<24);
         e_phnum   = (uint16_t)st[44] | ((uint16_t)st[45] << 8);
-    } else if (ei_class == 2) { 
+    } else if (ei_class == 2) {
         if (e_machine != 62 ) return -4;
-        e_entry64 = (uint64_t)st[24] | ((uint64_t)st[25]<<8) | ((uint64_t)st[26]<<16) | ((uint64_t)st[27]<<24) |
-                    ((uint64_t)st[28]<<32) | ((uint64_t)st[29]<<40) | ((uint64_t)st[30]<<48) | ((uint64_t)st[31]<<56);
-        e_phoff   = (uint32_t)st[32] | ((uint32_t)st[33]<<8) | ((uint32_t)st[34]<<16) | ((uint32_t)st[35]<<24);
+        e_entry64 = elf64_rd(st + 24);   /* bounds-checked against USER_MAX_VADDR below */
+        if (elf64_narrow(st + 32, &e_phoff) != 0) return -17;
         e_phnum   = (uint16_t)st[56] | ((uint16_t)st[57] << 8);
     } else {
         return -5;
@@ -479,7 +502,7 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
         if (ei_class == 1) {
             p_vaddr = (uint32_t)p[8] | ((uint32_t)p[9]<<8) | ((uint32_t)p[10]<<16) | ((uint32_t)p[11]<<24);
         } else {
-            p_vaddr = (uint32_t)p[16] | ((uint32_t)p[17]<<8) | ((uint32_t)p[18]<<16) | ((uint32_t)p[19]<<24);
+            if (elf64_narrow(p + 16, &p_vaddr) != 0) return -17;
         }
         if (p_vaddr < min_vaddr) min_vaddr = p_vaddr;
         have_load = 1;
@@ -509,10 +532,11 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
             p_memsz  = (uint32_t)p[20]| ((uint32_t)p[21]<<8)| ((uint32_t)p[22]<<16)| ((uint32_t)p[23]<<24);
             p_flags  = (uint32_t)p[24]| ((uint32_t)p[25]<<8)| ((uint32_t)p[26]<<16)| ((uint32_t)p[27]<<24);
         } else {
-            p_offset = (uint32_t)p[8] | ((uint32_t)p[9]<<8) | ((uint32_t)p[10]<<16) | ((uint32_t)p[11]<<24);
-            p_vaddr  = (uint32_t)p[16]| ((uint32_t)p[17]<<8)| ((uint32_t)p[18]<<16)| ((uint32_t)p[19]<<24);
-            p_filesz = (uint32_t)p[32]| ((uint32_t)p[33]<<8)| ((uint32_t)p[34]<<16)| ((uint32_t)p[35]<<24);
-            p_memsz  = (uint32_t)p[40]| ((uint32_t)p[41]<<8)| ((uint32_t)p[42]<<16)| ((uint32_t)p[43]<<24);
+            if (elf64_narrow(p + 8,  &p_offset) != 0) return -17;
+            if (elf64_narrow(p + 16, &p_vaddr)  != 0) return -17;
+            if (elf64_narrow(p + 32, &p_filesz) != 0) return -17;
+            if (elf64_narrow(p + 40, &p_memsz)  != 0) return -17;
+            /* p_flags is genuinely 4 bytes in ELF64, at offset 4. */
             p_flags  = (uint32_t)p[4] | ((uint32_t)p[5]<<8)| ((uint32_t)p[6]<<16)| ((uint32_t)p[7]<<24);
         }
 

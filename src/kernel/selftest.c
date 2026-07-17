@@ -60,12 +60,87 @@ static int selftest_read_u64(uint64_t cr3, uint64_t vaddr, uint64_t *out) {
 
 #ifdef ELF_SELFTEST
 
+static void elf64_wr(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (i * 8));
+}
+
+/* Stage a minimal ELF64 with one PT_LOAD, so a single 8-byte field can be
+ * driven out of 32-bit range per case. p_filesz/p_memsz of 0 mean the loader
+ * copies nothing and maps nothing even when it accepts the header. */
+static void elf64_build_min(uint64_t e_phoff, uint64_t p_offset,
+                            uint64_t p_vaddr, uint64_t p_filesz,
+                            uint64_t p_memsz) {
+    for (uint32_t i = 0; i < 256; i++) loader_staging[i] = 0;
+    uint8_t *st = loader_staging;
+    st[0] = 0x7f; st[1] = 'E'; st[2] = 'L'; st[3] = 'F';
+    st[4] = 2;                            /* ELFCLASS64  */
+    st[5] = 1;                            /* ELFDATA2LSB */
+    st[16] = 2;                           /* e_type = ET_EXEC */
+    st[18] = 62;                          /* e_machine = EM_X86_64 */
+    elf64_wr(st + 24, USER_AREA_BASE);    /* e_entry */
+    elf64_wr(st + 32, e_phoff);
+    st[56] = 1;                           /* e_phnum */
+
+    uint8_t *p = st + 64;                 /* where the baseline e_phoff points */
+    p[0] = 1;                             /* p_type = PT_LOAD */
+    p[4] = 5;                             /* p_flags = PF_R|PF_X */
+    elf64_wr(p + 8,  p_offset);
+    elf64_wr(p + 16, p_vaddr);
+    elf64_wr(p + 32, p_filesz);
+    elf64_wr(p + 40, p_memsz);
+    elf64_wr(p + 48, 4096);               /* p_align */
+}
+
+/* Every ELF64 address/size field is 8 bytes wide while the loader's plumbing is
+ * 32-bit. Reading only the low half would not just lose range, it would defeat
+ * the bounds checks — they would validate a number that is not the one in the
+ * file — so each read must fail closed (-17) instead.
+ *
+ * The control case matters as much as the rejections: the same header with
+ * every field in range must NOT return -17. Without it these cases would still
+ * pass if the loader rejected the fixture for some unrelated malformation, and
+ * the test would prove nothing. */
+static int elf64_narrow_checks_ok(const char **why) {
+    const uint64_t HIGH = 0x100000000ULL;   /* one bit above the 32-bit window */
+    uint32_t entry = 0, img_end = 0;
+
+    elf64_build_min(64, 0, USER_AREA_BASE, 0, 0);
+    if (try_elf_load(USER_AREA_BASE, &entry, &img_end) == -17) {
+        *why = "narrow-control-rejected"; return 0;
+    }
+
+    struct { uint64_t phoff, off, va, filesz, memsz; const char *name; } cases[] = {
+        { 64 | HIGH, 0,    USER_AREA_BASE,        0,    0,    "narrow-e_phoff"  },
+        { 64,        0,    USER_AREA_BASE | HIGH, 0,    0,    "narrow-p_vaddr"  },
+        { 64,        HIGH, USER_AREA_BASE,        0,    0,    "narrow-p_offset" },
+        { 64,        0,    USER_AREA_BASE,        HIGH, 0,    "narrow-p_filesz" },
+        { 64,        0,    USER_AREA_BASE,        0,    HIGH, "narrow-p_memsz"  },
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        elf64_build_min(cases[i].phoff, cases[i].off, cases[i].va,
+                        cases[i].filesz, cases[i].memsz);
+        if (try_elf_load(USER_AREA_BASE, &entry, &img_end) != -17) {
+            *why = cases[i].name; return 0;
+        }
+    }
+    return 1;
+}
+
 void elf_loader_selftest(void) {
     extern uint8_t embedded_elftest_start[];
     extern uint8_t embedded_elftest_end[];
     uint32_t sz = (uint32_t)(embedded_elftest_end - embedded_elftest_start);
 
     print("ELF_SELFTEST: begin\n");
+
+    /* Run before the real image is staged: these cases scribble on
+     * loader_staging, which the staging below then refills. */
+    const char *nwhy = "";
+    if (!elf64_narrow_checks_ok(&nwhy)) {
+        print("ELF_SELFTEST: FAIL "); print(nwhy); print("\n");
+        return;
+    }
+
     if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ELF_SELFTEST: FAIL embed-size\n"); return; }
 
     /* Stage the raw ELF and arm it; try_elf_load recomputes the real entry. */

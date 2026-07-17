@@ -916,6 +916,12 @@ void cpu_protections_selftest(void);
 #ifdef WX_SELFTEST
 void wx_selftest(void);
 #endif
+#ifdef ASPACE_SELFTEST
+void aspace_selftest(void);
+void free_user_aspace_for_test(uint64_t pml4_phys);
+void create_user_pagedir(uint32_t task_id);
+#endif
+uint32_t get_free_user_pages(void);   /* paging.c — free frames in the user pool */
 #ifdef PREEMPT_SELFTEST
 void preempt_selftest(void);
 #endif

@@ -153,6 +153,15 @@ ASFLAGS += -DTSD_SELFTEST
 TSD_SELFTEST_DEP = userspace/tsdtest.bin
 endif
 
+# E820_SELFTEST=1 makes kernel_main assert (after paging_init) that the physical
+# pool was sized from the multiboot2 memory map — the free frame count exceeds
+# the pre-E820 default under the harness's -m 512M. Pure kernel assertion, no
+# userspace payload. Gated off the ship kernel.
+E820_SELFTEST ?= 0
+ifeq ($(E820_SELFTEST),1)
+CFLAGS  += -DE820_SELFTEST
+endif
+
 # STORAGE_ATA=1 makes the filesystem's block store the ATA disk (persistent)
 # instead of the default in-RAM virtual disk. storage_init() probes the disk and
 # formats-on-first-boot. Pair with a QEMU -drive (see `make run-ata`).
@@ -698,6 +707,16 @@ smoke-tsd:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='TSD_SELFTEST: PASS' \
 		FAIL_MARKER='TSD_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated E820 self-test, boot headless, and require the marker
+# proving the physical pool was sized from the multiboot2 memory map (boots to
+# the login prompt as normal and asserts the marker along the way).
+smoke-e820:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory E820_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='E820_SELFTEST: PASS' \
+		FAIL_MARKER='E820_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated filesystem self-test, boot headless, and require the
 # client to report PASS -- runtime proof that the userspace fs_server serves a

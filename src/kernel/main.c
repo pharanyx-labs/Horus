@@ -91,8 +91,63 @@ static void assert_higher_half(void) {
     print("\n");
 }
 
+/* ---- Multiboot2 memory map -> physical pool size --------------------------
+ * GRUB passes the multiboot2 magic in eax and a pointer to the boot-information
+ * structure in ebx; _start saves both (saved_mb_magic / saved_mb_info). Walk the
+ * structure's tags for the memory-map tag (type 6), find the largest available
+ * (type 1) region that covers USER_PHYS_BASE, and return how many PAGE_SIZE
+ * frames the pool can take from [USER_PHYS_BASE, region_top), clamped to the
+ * PHYS_KVA window. Returns 0 if the map cannot be trusted (not multiboot2, no
+ * pointer, no usable region), so the caller keeps the conservative default
+ * rather than assuming RAM that may not exist. The info block is low physical
+ * RAM, read through PHYS_KVA — valid from boot, before paging_init runs. */
+#define MB2_BOOT_MAGIC     0x36d76289u
+#define MB2_TAG_END        0u
+#define MB2_TAG_MMAP       6u
+#define MB2_MEM_AVAILABLE  1u
+
+struct mb2_tag        { uint32_t type; uint32_t size; };
+struct mb2_mmap_entry { uint64_t base; uint64_t len; uint32_t type; uint32_t reserved; };
+
+static uint32_t e820_detect_pool_pages(void) {
+    if (saved_mb_magic != MB2_BOOT_MAGIC || saved_mb_info == 0) return 0;
+
+    const uint8_t *info = (const uint8_t *)PHYS_KVA((uint64_t)saved_mb_info);
+    uint32_t total = *(const uint32_t *)info;
+    if (total < 8 || total > (1u << 20)) return 0;   /* sanity: <= 1 MiB of tags */
+
+    uint64_t region_top = 0;
+    uint32_t off = 8;   /* skip total_size + reserved */
+    while ((uint64_t)off + sizeof(struct mb2_tag) <= total) {
+        const struct mb2_tag *tag = (const struct mb2_tag *)(info + off);
+        if (tag->type == MB2_TAG_END) break;
+        if (tag->size < sizeof(struct mb2_tag) || (uint64_t)off + tag->size > total) break;
+
+        if (tag->type == MB2_TAG_MMAP) {
+            uint32_t entry_size = *(const uint32_t *)(info + off + 8);
+            if (entry_size >= sizeof(struct mb2_mmap_entry)) {
+                for (uint32_t e = off + 16; (uint64_t)e + entry_size <= (uint64_t)off + tag->size;
+                     e += entry_size) {
+                    const struct mb2_mmap_entry *m = (const struct mb2_mmap_entry *)(info + e);
+                    if (m->type != MB2_MEM_AVAILABLE) continue;
+                    uint64_t end = m->base + m->len;
+                    /* The region spanning USER_PHYS_BASE (16 MiB) is where the pool lives. */
+                    if (m->base <= (uint64_t)USER_PHYS_BASE && end > (uint64_t)USER_PHYS_BASE
+                        && end > region_top)
+                        region_top = end;
+                }
+            }
+        }
+        off += (tag->size + 7u) & ~7u;   /* tags are 8-byte aligned */
+    }
+
+    if (region_top <= (uint64_t)USER_PHYS_BASE) return 0;
+    if (region_top > PHYS_POOL_CEIL) region_top = PHYS_POOL_CEIL;   /* PHYS_KVA window */
+    return (uint32_t)((region_top - (uint64_t)USER_PHYS_BASE) / PAGE_SIZE);
+}
+
 void kernel_main(uint32_t mb_info) {
-    (void)mb_info;
+    (void)mb_info;   /* the pointer is taken from saved_mb_info (see _start) */
 
     asm volatile(
         "xor %%rax,%%rax\n mov %%rax,%%dr0\n mov %%rax,%%dr1\n mov %%rax,%%dr2\n"
@@ -104,7 +159,27 @@ void kernel_main(uint32_t mb_info) {
 
     idt_init64();
     pic_init();
+
+    /* Size the physical page pool from the E820 memory map before paging_init
+     * builds its free list. On a boot we cannot parse, keep the conservative
+     * 64 MiB default (unchanged behaviour) rather than assume RAM. */
+    uint32_t e820_pages = e820_detect_pool_pages();
+    if (e820_pages) phys_set_pool_pages(e820_pages);
+    {
+        uint32_t used = e820_pages ? e820_pages : USER_PHYS_DEFAULT_PAGES;
+        print("[mem] physical pool: ");
+        print_decimal(used / 256);        /* frames * 4 KiB / 1 MiB */
+        print(" MiB (");
+        print_decimal(used);
+        print(e820_pages ? " frames, from E820)\n" : " frames, default: no E820)\n");
+    }
+
     paging_init();
+#ifdef E820_SELFTEST
+    /* Boot continues; make smoke-e820 asserts on the marker. Proves the pool
+     * grew past the pre-E820 default from the parsed memory map. */
+    e820_selftest();
+#endif
     fpu_init_template();   /* the x87/SSE image every new task starts from */
     cap_init();
     cpu_detect_features();

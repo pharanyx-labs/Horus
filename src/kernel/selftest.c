@@ -1167,6 +1167,26 @@ void tsd_selftest(void) {
 }
 #endif /* TSD_SELFTEST */
 
+#ifdef E820_SELFTEST
+/* ---- E820 physical-pool self-test (E820_SELFTEST builds only) --------------
+ * Runs after paging_init has built the free list from the E820-sized pool. The
+ * harness boots with -m 512M, so a parsed memory map must have grown the pool
+ * well past the pre-E820 64 MiB default (USER_PHYS_DEFAULT_PAGES frames). Freshly
+ * initialised, the free count is the whole pool minus the handful of frames
+ * paging_init spent on page tables and the zero page — still far above the
+ * default. Pure kernel assertion; no ring-3 payload. */
+void e820_selftest(void) {
+    uint32_t free_pages = get_free_user_pages();
+    print("E820_SELFTEST: free pool frames = ");
+    print_decimal((uint64_t)free_pages);
+    print("\n");
+    if (free_pages > USER_PHYS_DEFAULT_PAGES)
+        print("E820_SELFTEST: PASS pool sized from the multiboot2 memory map\n");
+    else
+        print("E820_SELFTEST: FAIL pool not grown past the default\n");
+}
+#endif /* E820_SELFTEST */
+
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW_SELFTEST builds only) -------
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */

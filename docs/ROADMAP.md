@@ -291,11 +291,20 @@ Cross-cutting work that should grow alongside every other phase.
   Growing loadable images needs the premap to grow or `user_copy` to demand-page.
   The low user stack is still a fixed, known mapping at `[0x7df000, 0x7ff000)`.
 
-  The remaining prize is a real physical allocator: the pool is a hardcoded
-  `[16 MiB, 80 MiB)` window and **no E820/multiboot memory map is parsed at all**
-  (`_start` clobbers the multiboot pointer in its first instruction, and
-  `kernel_main` discards its argument). That, plus `MAX_PROGRAM_SIZE` (1 MiB) and
-  the staged loader, is what caps program size today.
+  **The physical allocator now parses the E820 map** — *done*: `_start` saves the
+  multiboot2 magic and info pointer before reusing the register (`saved_mb_magic` /
+  `saved_mb_info`), and `kernel_main` walks the memory-map tag to size the pool
+  from real RAM instead of the old hardcoded `[16 MiB, 80 MiB)` window
+  (`e820_detect_pool_pages` → `phys_set_pool_pages`, before `paging_init`). Under
+  the harness's `-m 512M` the pool is ~495 MiB (up from 64 MiB); a boot that
+  cannot parse a map falls back to the conservative default. The metadata array
+  capacity (`USER_PHYS_PAGES` = 131072) bounds the pool at 512 MiB, kept below the
+  1 GiB `PHYS_KVA` window and the `.bss` ceiling. `make smoke-e820` gates it.
+  Remaining: the pool is still contiguous from `USER_PHYS_BASE` and bounded by the
+  static metadata arrays; scaling to *all* RAM (multi-GiB, fragmented maps) needs
+  the `PHYS_KVA` window widened past 1 GiB and the refcount/free-stack metadata
+  bootstrapped from the pool itself rather than sized in `.bss`. `MAX_PROGRAM_SIZE`
+  (1 MiB) and the staged loader still cap program size.
 
 ---
 

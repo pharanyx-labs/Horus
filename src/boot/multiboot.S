@@ -29,6 +29,15 @@ multiboot_header_end:
 .extern kernel_main
 
 _start:
+    /* GRUB hands us the multiboot2 magic in eax and a pointer to the boot
+     * information structure in ebx. Save both NOW, before ebx is reused as a
+     * scratch counter below and before paging is on: write through each global's
+     * physical address (VA - KERNEL_VMA), which is where it is loaded while we
+     * still run identity-mapped. kernel_main reads them (via PHYS_KVA) to parse
+     * the E820 memory map and size the physical allocator from real RAM. */
+    movl %eax, (saved_mb_magic - KERNEL_VMA)
+    movl %ebx, (saved_mb_info  - KERNEL_VMA)
+
     movl $boot_stack_top, %esp     /* low scratch stack; the real one is high */
 
     movl %cr4, %eax
@@ -277,6 +286,17 @@ early_generic_halt64:
     cli
     hlt
     jmp .
+
+.section .data
+/* Saved by _start from the boot registers. Read by kernel_main to locate and
+ * parse the multiboot2 boot-information structure (magic 0x36d76289). */
+.global saved_mb_magic
+.align 4
+saved_mb_magic:
+    .long 0
+.global saved_mb_info
+saved_mb_info:
+    .long 0
 
 .section .data
 .global gdt64_start

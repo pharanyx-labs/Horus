@@ -1,6 +1,11 @@
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-pub const USER_PHYS_PAGES: u32 = 16384;
+// Mirrors USER_PHYS_PAGES in src/include/kernel.h: the *capacity* of the C
+// refcount table (page_refcounts) and free_page_stack, i.e. the largest pool the
+// metadata can track. The runtime pool is sized from the E820 map and may be
+// smaller; this must equal the C constant or rust_page_refcounts_register refuses
+// the table and the kernel halts. Keep the two in step.
+pub const USER_PHYS_PAGES: u32 = 131072;
 pub const USER_PHYS_BASE: u32 = 0x01000000;
 pub const PAGE_SIZE: u32 = 4096;
 

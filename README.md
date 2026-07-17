@@ -115,7 +115,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Paging, per-task address spaces, memory isolation | ✅ Working |
 | Capability mint / transfer / move / revoke | ✅ Working |
 | Transitive cross-task revocation + lineage (use-after-revoke prevention) | ✅ Working |
-| SMEP / SMAP hardening (when CPU advertises) | ✅ Working |
+| SMEP / SMAP / UMIP hardening (when CPU advertises, CI-gated in CR4) | ✅ Working |
 | W^X — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
 | Per-task x87/SSE context (FXSAVE/FXRSTOR on the ring-3 boundary) | ✅ Working |
 | ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 8.91 bits, the structural ceiling) | ✅ Working |

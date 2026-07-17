@@ -40,7 +40,19 @@ static uint32_t free_page_stack[USER_PHYS_PAGES];
 static int free_page_count = 0;
 static uint16_t page_refcounts[USER_PHYS_PAGES];
 
+/* Runtime pool size in frames — how many of the USER_PHYS_PAGES-capacity arrays
+ * are actually backed by RAM and handed out. Chosen from the E820 memory map at
+ * boot (phys_set_pool_pages, before paging_init); defaults to the pre-E820
+ * 64 MiB so a boot that cannot parse a map still runs exactly as before. */
+static uint32_t g_phys_pool_pages = USER_PHYS_DEFAULT_PAGES;
+
 uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
+
+void phys_set_pool_pages(uint32_t pages) {
+    if (pages < PHYS_POOL_MIN_PAGES) pages = PHYS_POOL_MIN_PAGES;
+    if (pages > USER_PHYS_PAGES)     pages = USER_PHYS_PAGES;
+    g_phys_pool_pages = pages;
+}
 
 /* Shared zero page. One immortal, pre-zeroed frame that every demand-zero READ
  * fault maps read-only + PAGE_COW; the first WRITE turns into a copy-on-write
@@ -58,11 +70,16 @@ uint64_t get_cow_fault_count(void) { return g_cow_faults; }
 static void init_user_page_allocator(void) {
 
     free_page_count = 0;
+    /* Zero the whole refcount array: the Rust trust boundary is registered over
+     * all USER_PHYS_PAGES slots, so every slot must be initialised even though
+     * only the first g_phys_pool_pages are ever handed out. */
     for (int i = 0; i < USER_PHYS_PAGES; i++) {
         page_refcounts[i] = 0;
     }
-    for (int i = USER_PHYS_PAGES - 1; i >= 0; i--) {
-        free_page_stack[free_page_count++] = USER_PHYS_BASE + (i * PAGE_SIZE);
+    /* Push only the frames the pool actually covers (E820-sized). Frame i maps to
+     * USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps the top below PHYS_POOL_CEIL. */
+    for (int i = (int)g_phys_pool_pages - 1; i >= 0; i--) {
+        free_page_stack[free_page_count++] = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
     }
     /* Register the one true refcount table with the Rust trust boundary so any
      * later inc/dec passing a wrong pointer/size is refused rather than trusted. */

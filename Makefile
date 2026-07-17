@@ -4,16 +4,42 @@ AS     = gcc
 
 export SOURCE_DATE_EPOCH ?= 1609459200
 
-# Horus is x86-64 only. The kernel runs in 64-bit long mode; the ring-3
-# userspace binaries are the sole 32-bit component (built in compatibility
-# mode further down, USERSPACE_CFLAGS).
+# Horus is x86-64 only, kernel and userspace alike: the kernel runs in 64-bit
+# long mode and ring-3 tasks now run under a 64-bit code segment (see
+# USERSPACE_CFLAGS). The only 32-bit code left is the boot path that has to
+# exist -- the multiboot entry stage and the AP startup trampoline. An x86 CPU
+# starts in real mode, GRUB hands over in 32-bit protected mode, and an AP comes
+# out of SIPI in real mode; those .code16/.code32 blocks are how long mode is
+# reached in the first place, so they are not "leftover 32-bit", they are the
+# on-ramp. (userspace/elftest.o is also 32-bit, deliberately -- it is the test
+# image for the loader's ELFCLASS32 path. See USERSPACE_CFLAGS_32.)
 # -MMD -MP emit a .d per object listing its headers, pulled in via `-include`
 # below. Without them, editing a header rebuilt NOTHING that included it: the
 # link happily reused stale objects compiled against the old declarations, so a
 # signature change could report a clean build and then miscompile (or link an
 # object whose idea of a struct layout no longer matches). Header deps are not a
 # nicety here — they are what makes a green local build mean anything.
+# -mno-sse -mno-mmx -mno-80387: the kernel must not touch FPU/SSE/MMX state.
+#
+# Ring-3 SSE is fully supported -- each task's register file is saved/restored
+# around every kernel entry (tcb_t.fpu_state, see interrupt_handler64). What the
+# kernel must not do is participate: it has no FPU state of its own to keep, so
+# any xmm it touches is pure collateral damage to the interrupted task, and
+# anything it leaves behind is a confidentiality leak into ring 3. Left to
+# itself gcc auto-vectorises ordinary integer loops -- paging.o alone had 125 xmm
+# references and storage.o 166 -- so this is not a theoretical exposure.
+#
+# Keeping the kernel out of the FPU also keeps the save/restore cheap: it only
+# has to happen on a ring-3 boundary, never on a ring-0 -> ring-0 interrupt.
+#
+# This was invisible while userspace was i386: SSE2 is not in that baseline, so
+# the generated code never held a live xmm across a syscall. Under -m64 SSE2 IS
+# the baseline. gcc compiled a 16-byte fill in the fs client into a broadcast
+# plus one `movups`, hoisted the broadcast out of the loop, and left it live in
+# xmm0 across sys_ipc_call -- so the fs_server's leftover xmm0 got stored as file
+# data and written to disk, with every checksum agreeing (smoke-fs-conc).
 CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -MMD -MP \
+         -mno-sse -mno-mmx -mno-80387 \
          -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
          -I src/include -I include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
 ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c -I src/include
@@ -333,8 +359,13 @@ src/kernel/rust_memory_stubs.o: src/kernel/rust_memory_stubs.c
 src/kernel/storage.o: src/kernel/storage.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# No -msse2 -maes: that was for a hand-rolled AES-NI cipher this file no longer
+# has (see the comment above secure_zero — both the AES-NI and software paths
+# were removed; encryption-at-rest is ChaCha20 + HMAC-SHA256 in safe Rust).
+# Only cpu_has_aesni() survives, and reporting a CPUID bit needs no SSE. Keeping
+# the flags let gcc auto-vectorise this file into xmm the kernel never saves.
 src/kernel/crypto.o: src/kernel/crypto.c
-	$(CC) $(CFLAGS) -msse2 -maes -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 src/kernel/ata.o: src/kernel/ata.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -382,13 +413,19 @@ iso: kernel.elf
 # code position-independent (usually zero dynamic relocations). The gated flat
 # self-test payloads (preempttest/sigtest) reuse the same objects linked as a
 # fixed-base flat image; PIE objects link cleanly at a fixed address too.
-USERSPACE_CFLAGS = -m32 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
-                   -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
-# 64-bit variant, used only by the ELF64 loader self-test image for now. The
-# shipping userspace is still -m32 until Stage 3d. -mno-red-zone matches the
-# kernel's own setting: the red zone is not safe across an interrupt frame.
-USERSPACE_CFLAGS_64 = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
-                      -mno-red-zone -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
+# Userspace is 64-bit. -mno-red-zone matches the kernel's own setting: the red
+# zone is not safe across an interrupt frame, and a ring-3 task takes interrupts.
+USERSPACE_CFLAGS = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
+                   -mno-red-zone -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
+USERSPACE_CFLAGS_64 = $(USERSPACE_CFLAGS)
+# 32-bit, for the i386 ELF-loader self-test image ONLY (userspace/elftest.o ->
+# elftest.elf). Nothing shipped is 32-bit any more, but the loader still parses
+# and relocates ELFCLASS32 images, and smoke-elf is the only gate on that path.
+# Building the test image with the (now 64-bit) USERSPACE_CFLAGS would silently
+# turn smoke-elf into a duplicate of smoke-elf64 and leave the i386 relocator
+# untested. See elftest64.o for the 64-bit sibling built from the same source.
+USERSPACE_CFLAGS_32 = -m32 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
+                      -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
 # init.c switches to the delegated-fs-server boot path under this flag, so the
 # userspace build of init must see it too (kernel CFLAGS alone won't reach it).
 ifeq ($(INIT_FS_SELFTEST),1)
@@ -412,12 +449,12 @@ userspace/%.o: userspace/%.c
 # extra Makefile rules.
 MALLOC_OBJ = userspace/malloc.o
 userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) userspace/pie.ld
-	$(LD) -m elf_i386 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ)
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ)
 
 # Newlib-linked PIE ELFs: compiled with newlib headers, linked against libc.a.
 # crt0.o provides _start → posix_init() → main().
-NEWLIB_INC      = newlib/install/i686-elf/include
-NEWLIB_LIB      = newlib/install/i686-elf/lib
+NEWLIB_INC      = newlib/install/x86_64-elf/include
+NEWLIB_LIB      = newlib/install/x86_64-elf/lib
 NEWLIB_CFLAGS   = $(USERSPACE_CFLAGS) -I $(NEWLIB_INC)
 NEWLIB_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
                    userspace/posix.o userspace/crt0.o
@@ -445,7 +482,7 @@ userspace/hello_newlib.o: userspace/hello_newlib.c $(NEWLIB_LIB)/libc.a
 
 userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
                                 userspace/malloc.o userspace/pie.ld
-	$(LD) -m elf_i386 -pie -T userspace/pie.ld -o $@ \
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
 	    userspace/crt0.o userspace/hello_newlib.o userspace/newlib_glue.o \
 	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
 	    -L$(NEWLIB_LIB) -lc
@@ -456,11 +493,16 @@ userspace/hello_newlib.bin: userspace/hello_newlib.pie.elf tools/mkheadered
 # Fixed-base flat link (used by the gated selftest payloads that are embedded
 # raw and loaded at USER_AREA_BASE without relocation).
 userspace/%.elf: userspace/%.o
-	$(LD) -m elf_i386 -Ttext=0x400000 -o $@ $<
+	$(LD) -m elf_x86_64 -Ttext=0x400000 -o $@ $<
 
 # The ELF-loader self-test image is linked with a custom script that produces
 # distinct page-aligned R+X / R+W / R PT_LOAD segments (explicit rule wins over
 # the pattern rule above). It is kept as a real ELF, never objcopy-flattened.
+# 32-bit on purpose -- the i386 loader/relocator path still exists and this is
+# its only gate. See USERSPACE_CFLAGS_32.
+userspace/elftest.o: userspace/elftest.c
+	$(CC) $(USERSPACE_CFLAGS_32) -c -o $@ $<
+
 userspace/elftest.elf: userspace/elftest.o userspace/elftest.ld
 	$(LD) -m elf_i386 -pie -T userspace/elftest.ld -o $@ $<
 

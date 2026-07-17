@@ -173,8 +173,19 @@ struct fs_stat {
 #define AUDIT_TASK_CREATE   40
 #define AUDIT_TASK_EXIT     41
 
-static inline uint32_t syscall(uint32_t num, uint32_t a, uint32_t b, uint32_t c) {
-    uint32_t ret;
+/* Arguments are 64-bit: they carry user pointers, and userspace is now 64-bit,
+ * so a 32-bit argument would truncate any address above 4 GiB. Nothing reaches
+ * that today (USER_MAX_VADDR is 8 MiB), but the whole point of the higher-half
+ * move was to stop the address space being boxed in, and a 32-bit argument here
+ * would silently re-impose that bound at the ABI.
+ *
+ * The RETURN is 64-bit too, and not merely for symmetry: SYS_BRK and SYS_SBRK
+ * return an ADDRESS, so a 32-bit return would truncate the program break. The
+ * negative error codes still work: the kernel stores a (uint32_t)SYS_ERR_* into
+ * rax, which zero-extends, and every wrapper hands the result back as `int` --
+ * taking exactly the low 32 bits that hold the code. */
+static inline uint64_t syscall(uint32_t num, uint64_t a, uint64_t b, uint64_t c) {
+    uint64_t ret;
     asm volatile (
         "int $0x80"
         : "=a"(ret)
@@ -184,15 +195,18 @@ static inline uint32_t syscall(uint32_t num, uint32_t a, uint32_t b, uint32_t c)
     return ret;
 }
 
-/* Up to 5 register args (num, a..e); the kernel reads eax,ebx,ecx,edx,esi,edi.
- * Bind the high args directly to esi/edi with the "S"/"D" constraints rather
- * than moving them in and clobbering — the previous "r"-operand form ran the
- * 32-bit PIE register allocator out of registers (ebx is the GOT pointer, and
- * esi/edi were both operands and clobbers). `f` is accepted for source
- * compatibility but not passed (no sixth arg register in this ABI). */
-static inline uint32_t syscall6(uint32_t num, uint32_t a, uint32_t b, uint32_t c,
-                                 uint32_t d, uint32_t e, uint32_t f) {
-    uint32_t ret;
+/* Up to 5 register args (num, a..e); the kernel reads rax,rbx,rcx,rdx,rsi,rdi.
+ * Bind the high args directly to rsi/rdi with the "S"/"D" constraints rather
+ * than moving them in and clobbering. (This was originally a workaround for the
+ * 32-bit PIE register allocator running out of registers -- ebx being the GOT
+ * pointer, and esi/edi being both operands and clobbers. Under -m64 that
+ * pressure is gone: addressing is RIP-relative and there is no GOT register.
+ * The form is kept because binding directly is still the clearer way to say it.)
+ * `f` is accepted for source compatibility but not passed (no sixth arg
+ * register in this ABI). */
+static inline uint64_t syscall6(uint32_t num, uint64_t a, uint64_t b, uint64_t c,
+                                 uint64_t d, uint64_t e, uint64_t f) {
+    uint64_t ret;
     (void)f;
     asm volatile (
         "int $0x80"
@@ -230,7 +244,7 @@ static inline uint32_t sys_sigmask(uint32_t how, uint32_t mask) {
 }
 
 static inline int sys_print(const char *s) {
-    return syscall(SYS_PRINT, (uint32_t)s, 0, 0);
+    return syscall(SYS_PRINT, (uint64_t)(uintptr_t)s, 0, 0);
 }
 
 static inline void sys_exit(void) {
@@ -239,11 +253,11 @@ static inline void sys_exit(void) {
 }
 
 static inline int sys_get_line(char *buf, size_t max) {
-    return syscall(SYS_GET_LINE, (uint32_t)buf, max, 0);
+    return syscall(SYS_GET_LINE, (uint64_t)(uintptr_t)buf, max, 0);
 }
 
 static inline void *sys_sbrk(intptr_t increment) {
-    return (void*)syscall(SYS_SBRK, (uint32_t)increment, 0, 0);
+    return (void*)(uintptr_t)syscall(SYS_SBRK, (uint32_t)increment, 0, 0);
 }
 
 /* sys_brk(addr): set the program break to addr and return the new break.
@@ -251,19 +265,19 @@ static inline void *sys_sbrk(intptr_t increment) {
  * On failure (out of range) returns the unchanged current break — callers
  * should compare the return value to addr to detect failure, matching Linux. */
 static inline void *sys_brk(void *addr) {
-    return (void*)syscall(SYS_BRK, (uint32_t)(uintptr_t)addr, 0, 0);
+    return (void*)(uintptr_t)syscall(SYS_BRK, (uint64_t)(uintptr_t)addr, 0, 0);
 }
 
 static inline int sys_write(int fd, const void *buf, size_t len) {
-    return syscall(SYS_WRITE, (uint32_t)fd, (uint32_t)buf, (uint32_t)len);
+    return syscall(SYS_WRITE, (uint32_t)fd, (uint64_t)(uintptr_t)buf, (uint32_t)len);
 }
 
 static inline int sys_read(int fd, void *buf, size_t len) {
-    return syscall(SYS_READ, (uint32_t)fd, (uint32_t)buf, (uint32_t)len);
+    return syscall(SYS_READ, (uint32_t)fd, (uint64_t)(uintptr_t)buf, (uint32_t)len);
 }
 
 static inline int sys_open(const char* path) {
-    return syscall(SYS_OPEN, (uint32_t)path, 0, 0);
+    return syscall(SYS_OPEN, (uint64_t)(uintptr_t)path, 0, 0);
 }
 
 static inline int sys_wait(int task_id) {
@@ -278,7 +292,7 @@ static inline int sys_kill(int tid) {
 }
 
 static inline int sys_get_task_info(int id, struct task_info *out) {
-    return syscall(SYS_GET_TASK_INFO, (uint32_t)id, (uint32_t)out, 0);
+    return syscall(SYS_GET_TASK_INFO, (uint32_t)id, (uint64_t)(uintptr_t)out, 0);
 }
 
 static inline int sys_exec(uint32_t load_base, uint32_t entry) {
@@ -290,11 +304,11 @@ static inline int sys_getpid(void) {
 }
 
 static inline int sys_ipc_send(int ep_slot, const void *msg, size_t len) {
-    return syscall(SYS_IPC_SEND, (uint32_t)ep_slot, (uint32_t)msg, (uint32_t)len);
+    return syscall(SYS_IPC_SEND, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)len);
 }
 
 static inline int sys_ipc_recv(int ep_slot, void *msg, size_t max_len) {
-    return syscall(SYS_IPC_RECV, (uint32_t)ep_slot, (uint32_t)msg, (uint32_t)max_len);
+    return syscall(SYS_IPC_RECV, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)max_len);
 }
 
 /* Blocking send-then-receive: sends to send_ep, blocks until a message arrives
@@ -311,15 +325,15 @@ static inline int sys_ipc_call(int send_ep, int reply_ep,
                  : "a"((uint32_t)SYS_IPC_CALL),
                    "b"((uint32_t)send_ep),
                    "c"((uint32_t)reply_ep),
-                   "d"((uint32_t)(uintptr_t)msg),
+                   "d"((uint64_t)(uintptr_t)msg),
                    "S"(len),
-                   "D"((uint32_t)(uintptr_t)rbuf)
+                   "D"((uint64_t)(uintptr_t)rbuf)
                  : "memory");
     return (int)ret;
 }
 
 static inline int sys_ipc_reply(int ep_slot, const void *msg, size_t len) {
-    return syscall(SYS_IPC_REPLY, (uint32_t)ep_slot, (uint32_t)msg, (uint32_t)len);
+    return syscall(SYS_IPC_REPLY, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)len);
 }
 
 /* Reply to the task that sent the request most recently received on `req_ep`,
@@ -329,7 +343,7 @@ static inline int sys_ipc_reply(int ep_slot, const void *msg, size_t len) {
  * client has gone). A negative return means "retry" (the client raced and hasn't
  * finished blocking yet); a server loops until it succeeds. */
 static inline int sys_ipc_reply_to(int req_ep, const void *msg, size_t len) {
-    return syscall(SYS_IPC_REPLY_TO, (uint32_t)req_ep, (uint32_t)(uintptr_t)msg, (uint32_t)len);
+    return syscall(SYS_IPC_REPLY_TO, (uint32_t)req_ep, (uint64_t)(uintptr_t)msg, (uint32_t)len);
 }
 
 /* Kernel-attested identity of the task that last sent on endpoint `ep`: returns
@@ -338,7 +352,7 @@ static inline int sys_ipc_reply_to(int req_ep, const void *msg, size_t len) {
  * trusting any identity a client places in the message body. Returns
  * (uint32_t)-1 when there is no valid last sender. */
 static inline uint32_t sys_ipc_sender(int ep, uint32_t *out_gid) {
-    return syscall(SYS_IPC_SENDER, (uint32_t)ep, (uint32_t)(uintptr_t)out_gid, 0);
+    return syscall(SYS_IPC_SENDER, (uint32_t)ep, (uint64_t)(uintptr_t)out_gid, 0);
 }
 
 static inline int sys_notify(int notif_slot, uint32_t badge) {
@@ -360,7 +374,7 @@ static inline int sys_wait_notify(int notif_slot, uint32_t *out_badge) {
 }
 
 static inline int sys_receive_program(struct program_header *hdr_out) {
-    return syscall(SYS_RECEIVE_PROGRAM, (uint32_t)hdr_out, 0, 0);
+    return syscall(SYS_RECEIVE_PROGRAM, (uint64_t)(uintptr_t)hdr_out, 0, 0);
 }
 
 static inline int sys_spawn(void) {
@@ -372,7 +386,7 @@ static inline int sys_spawn(void) {
 static inline int sys_spawn_named(const char *name) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
-    return (int)syscall(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, 0);
+    return (int)syscall(SYS_SPAWN, (uint64_t)(uintptr_t)name, len, 0);
 }
 
 /* Spawn a named binary, handing the child a one-word argument it can retrieve
@@ -381,7 +395,7 @@ static inline int sys_spawn_named(const char *name) {
 static inline int sys_spawn_named_arg(const char *name, uint32_t arg) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
-    return (int)syscall(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, arg);
+    return (int)syscall(SYS_SPAWN, (uint64_t)(uintptr_t)name, len, arg);
 }
 
 /* Retrieve the one-word argument this task was spawned with (0 if none). */
@@ -396,15 +410,15 @@ static inline uint32_t sys_spawn_arg(void) {
 static inline int sys_spawn_named_argv(const char *name, int argc, char *const argv[]) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
-    return (int)syscall6(SYS_SPAWN, (uint32_t)(uintptr_t)name, len, 0,
-                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+    return (int)syscall6(SYS_SPAWN, (uint64_t)(uintptr_t)name, len, 0,
+                         (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }
 
 /* Retrieve this task's argument vector. Writes the argv[] base pointer to
  * *out_argv (NULL-terminated array) and returns argc (0 and NULL if none). */
 static inline int sys_get_argv(char ***out_argv) {
     char **argv = 0;
-    int argc = (int)syscall(SYS_GET_ARGV, (uint32_t)(uintptr_t)&argv, 0, 0);
+    int argc = (int)syscall(SYS_GET_ARGV, (uint64_t)(uintptr_t)&argv, 0, 0);
     if (out_argv) *out_argv = argv;
     return argc;
 }
@@ -417,7 +431,7 @@ static inline int sys_get_argv(char ***out_argv) {
 static inline int sys_exec_named(const char *name) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
-    return (int)syscall(SYS_EXEC_NAMED, (uint32_t)(uintptr_t)name, len, 0);
+    return (int)syscall(SYS_EXEC_NAMED, (uint64_t)(uintptr_t)name, len, 0);
 }
 
 /* Replace the caller's image with a named binary, passing it a full argument
@@ -427,8 +441,8 @@ static inline int sys_exec_named(const char *name) {
 static inline int sys_exec_named_argv(const char *name, int argc, char *const argv[]) {
     uint32_t len = 0;
     while (name[len] && len < 31) len++;
-    return (int)syscall6(SYS_EXEC_NAMED, (uint32_t)(uintptr_t)name, len, 0,
-                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+    return (int)syscall6(SYS_EXEC_NAMED, (uint64_t)(uintptr_t)name, len, 0,
+                         (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }
 
 /* Spawn a child from a program image the caller supplies in its own memory
@@ -439,15 +453,15 @@ static inline int sys_exec_named_argv(const char *name, int argc, char *const ar
  * sys_get_argv). Returns the child pid, or a negative SYS_ERR_* (the caller is
  * unaffected on failure). Needs slot-3 WRITE|EXEC, like sys_spawn_named. */
 static inline int sys_spawn_image(const void *image, uint32_t len, int argc, char *const argv[]) {
-    return (int)syscall6(SYS_SPAWN_IMAGE, (uint32_t)(uintptr_t)image, len, 0,
-                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+    return (int)syscall6(SYS_SPAWN_IMAGE, (uint64_t)(uintptr_t)image, len, 0,
+                         (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }
 
 /* As sys_spawn_image but also hands the child a one-word argument (sys_spawn_arg). */
 static inline int sys_spawn_image_arg(const void *image, uint32_t len, uint32_t arg,
                                       int argc, char *const argv[]) {
-    return (int)syscall6(SYS_SPAWN_IMAGE, (uint32_t)(uintptr_t)image, len, arg,
-                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+    return (int)syscall6(SYS_SPAWN_IMAGE, (uint64_t)(uintptr_t)image, len, arg,
+                         (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }
 
 /* Replace the caller's own image with a caller-supplied program image
@@ -456,8 +470,8 @@ static inline int sys_spawn_image_arg(const void *image, uint32_t len, uint32_t 
  * new image's entry. A negative return means the image was rejected and the
  * caller's image is intact. Needs slot-3 WRITE|EXEC. */
 static inline int sys_exec_image(const void *image, uint32_t len, int argc, char *const argv[]) {
-    return (int)syscall6(SYS_EXEC_IMAGE, (uint32_t)(uintptr_t)image, len, 0,
-                         (uint32_t)(uintptr_t)argv, (uint32_t)argc, 0);
+    return (int)syscall6(SYS_EXEC_IMAGE, (uint64_t)(uintptr_t)image, len, 0,
+                         (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }
 
 /* Register this task's alternate signal stack: signals delivered while the task
@@ -467,7 +481,7 @@ static inline int sys_exec_image(const void *image, uint32_t len, int argc, char
  * space. Returns 0 on success, negative on error (bad range, or called while a
  * handler is running on the altstack). */
 static inline int sys_sigaltstack(void *ss_sp, uint32_t ss_size) {
-    return syscall(SYS_SIGALTSTACK, (uint32_t)(uintptr_t)ss_sp, ss_size, 0);
+    return syscall(SYS_SIGALTSTACK, (uint64_t)(uintptr_t)ss_sp, ss_size, 0);
 }
 
 /* Delegate a capability to a child task: copy the caller's capability at
@@ -495,19 +509,19 @@ static inline uint32_t sys_getuid(void) {
 }
 
 static inline int sys_auth(const char *user, const char *pass, uint32_t *out_uid) {
-    return syscall(SYS_AUTH, (uint32_t)user, (uint32_t)pass, (uint32_t)out_uid);
+    return syscall(SYS_AUTH, (uint64_t)(uintptr_t)user, (uint64_t)(uintptr_t)pass, (uint64_t)(uintptr_t)out_uid);
 }
 
 static inline int sys_sudo(const char *pass) {
-    return syscall(SYS_SUDO, (uint32_t)pass, 0, 0);
+    return syscall(SYS_SUDO, (uint64_t)(uintptr_t)pass, 0, 0);
 }
 
 static inline int sys_get_pass(char *buf, size_t max) {
-    return syscall(SYS_GET_PASS, (uint32_t)buf, max, 0);
+    return syscall(SYS_GET_PASS, (uint64_t)(uintptr_t)buf, max, 0);
 }
 
 static inline int sys_useradd(uint32_t uid, uint32_t gid, const char *name) {
-    return syscall(SYS_USERADD, uid, gid, (uint32_t)name);
+    return syscall(SYS_USERADD, uid, gid, (uint64_t)(uintptr_t)name);
 }
 
 static inline int sys_userdel(uint32_t uid) {
@@ -515,7 +529,7 @@ static inline int sys_userdel(uint32_t uid) {
 }
 
 static inline int sys_passwd(uint32_t target_uid, const char *newpass) {
-    return syscall(SYS_PASSWD, target_uid, (uint32_t)newpass, 0);
+    return syscall(SYS_PASSWD, target_uid, (uint64_t)(uintptr_t)newpass, 0);
 }
 
 static inline int sys_rotate_keys(void) {
@@ -524,7 +538,7 @@ static inline int sys_rotate_keys(void) {
 }
 
 static inline int sys_read_audit(struct audit_event *events, uint32_t max_events) {
-    return syscall(SYS_READ_AUDIT, (uint32_t)events, max_events, 0);
+    return syscall(SYS_READ_AUDIT, (uint64_t)(uintptr_t)events, max_events, 0);
 }
 
 /* The legacy in-memory capfs userspace wrappers (sys_fs_mint_file / lookup /
@@ -539,11 +553,11 @@ static inline int sys_read_audit(struct audit_event *events, uint32_t max_events
  * #define is kept so the ABI slot stays reserved. */
 
 static inline int sys_block_read(uint64_t block, void *buf, uint32_t len) {
-    return (int)syscall6(SYS_BLOCK_READ, (uint32_t)(block >> 32), (uint32_t)block, (uint32_t)buf, len, 0, 0);
+    return (int)syscall6(SYS_BLOCK_READ, (uint32_t)(block >> 32), (uint32_t)block, (uint64_t)(uintptr_t)buf, len, 0, 0);
 }
 
 static inline int sys_block_write(uint64_t block, const void *buf, uint32_t len) {
-    return (int)syscall6(SYS_BLOCK_WRITE, (uint32_t)(block >> 32), (uint32_t)block, (uint32_t)buf, len, 0, 0);
+    return (int)syscall6(SYS_BLOCK_WRITE, (uint32_t)(block >> 32), (uint32_t)block, (uint64_t)(uintptr_t)buf, len, 0, 0);
 }
 
 static inline int sys_register_fs_server(uint32_t ep_slot) {
@@ -575,18 +589,18 @@ static inline int sys_fs_inode_free(uint32_t ino) {
 /* Read logical `block` of `ino` (decrypt-and-verify in the kernel) into `buf`
  * (must hold BLOCK_SIZE=512 bytes). Returns bytes read (512) or a negative. */
 static inline int sys_fblock_read(uint32_t ino, uint32_t block, void *buf) {
-    return syscall(SYS_FBLOCK_READ, ino, block, (uint32_t)buf);
+    return syscall(SYS_FBLOCK_READ, ino, block, (uint64_t)(uintptr_t)buf);
 }
 
 /* Write `len` (<=512) bytes to logical `block` of `ino` (kernel encrypts with a
  * fresh nonce); short writes are zero-padded to a full block. Returns len. */
 static inline int sys_fblock_write(uint32_t ino, uint32_t block, const void *buf, uint32_t len) {
-    return (int)syscall6(SYS_FBLOCK_WRITE, ino, block, (uint32_t)buf, len, 0, 0);
+    return (int)syscall6(SYS_FBLOCK_WRITE, ino, block, (uint64_t)(uintptr_t)buf, len, 0, 0);
 }
 
 /* Fill *out with the inode's metadata. Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_fs_stat(uint32_t ino, struct fs_stat *out) {
-    return syscall(SYS_FS_STAT, ino, (uint32_t)out, 0);
+    return syscall(SYS_FS_STAT, ino, (uint64_t)(uintptr_t)out, 0);
 }
 
 /* Set an inode's logical size (the FS server owns file size; the kernel only

@@ -176,7 +176,13 @@ static void h_sbrk(struct interrupt_frame64 *r) {
      * kernel now lives at KERNEL_VMA — no kernel state occupies a user address —
      * so the guard has nothing left to guard and is gone. */
     if (new_current < tasks[tid].heap_start || new_current > heap_max) {
-        r->rax = (uint32_t)-1;
+        /* (uint64_t)-1, not (uint32_t)-1. SBRK returns an ADDRESS, and its
+         * failure sentinel is the all-ones pointer: newlib's _sbrk compares the
+         * result against (void *)(intptr_t)-1, which is 64-bit now. A
+         * (uint32_t)-1 would zero-extend into rax as 0x00000000FFFFFFFF, miss
+         * that compare, and hand malloc 4 GiB-minus-one as a valid heap address.
+         * Every other syscall returns a 32-bit status code and is unaffected. */
+        r->rax = (uint64_t)-1;
         return;
     }
     /* Extend the authorised ceiling on demand; physical pages arrive lazily. */

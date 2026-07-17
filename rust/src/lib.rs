@@ -182,17 +182,29 @@ pub extern "C" fn rust_should_demand_zero(err_code: u32) -> bool {
     (err_code & 1) == 0 && (err_code & 4) != 0
 }
 
-/// Validate a would-be ring-3 signal-handler entry address. On a fault the
-/// kernel iretq's ring 3 to this address, so it must be a plausible user *code*
-/// location: inside the loader's user image window `[0x400000, 0x800000)`.
-/// Anything else (the stack, the heap, the kernel image, an unmapped address, or
-/// 0) is rejected so a task cannot register a handler that redirects control
-/// flow somewhere it should not run. Pure value predicate — no pointer deref.
+/// Validate a would-be ring-3 signal-handler entry address against *this task's*
+/// image. On a fault the kernel iretq's ring 3 to this address, so it must be a
+/// plausible user *code* location; anything else (the stack, the heap, the
+/// kernel image, an unmapped address, or 0) is rejected so a task cannot
+/// register a handler that redirects control flow somewhere it should not run.
+/// Pure value predicate — no pointer deref.
+///
+/// The bound is the caller's own `[image_base, image_end)` rather than a fixed
+/// window. It used to be a hardcoded `[0x400000, 0x800000)`, which was both too
+/// loose and too tight: too loose because a task could name any address in that
+/// 4 MiB whether or not its image reached there — image-base ASLR randomises the
+/// load address, so most of the window was *not* the task's code — and too tight
+/// because the window was `u32`, so an image loaded above 4 GiB could not
+/// express a legal handler at all. Per-task bounds are strictly stronger: the
+/// handler must be inside the code the task actually loaded.
 #[no_mangle]
-pub extern "C" fn rust_signal_handler_addr_ok(vaddr: u32) -> bool {
-    const USER_CODE_LO: u32 = 0x0040_0000;
-    const USER_CODE_HI: u32 = 0x0080_0000;
-    vaddr >= USER_CODE_LO && vaddr < USER_CODE_HI
+pub extern "C" fn rust_signal_handler_addr_ok(vaddr: u64, image_base: u64, image_end: u64) -> bool {
+    // A task with no image recorded has no code to point at. Fail closed rather
+    // than fall back to a default window.
+    if image_base == 0 || image_end <= image_base {
+        return false;
+    }
+    vaddr >= image_base && vaddr < image_end
 }
 
 #[repr(C)]
@@ -322,16 +334,49 @@ mod tests {
 
     #[test]
     fn signal_handler_addr_window() {
-        // Inside the user code window [0x400000, 0x800000) -> accepted.
-        assert!(rust_signal_handler_addr_ok(0x400000)); // window base (inclusive)
-        assert!(rust_signal_handler_addr_ok(0x401234)); // a real handler entry
-        assert!(rust_signal_handler_addr_ok(0x7fffff)); // last byte in-window
-        // Outside the window -> rejected (fail closed).
-        assert!(!rust_signal_handler_addr_ok(0));        // null
-        assert!(!rust_signal_handler_addr_ok(0x3fffff)); // just below the base
-        assert!(!rust_signal_handler_addr_ok(0x800000)); // one past the top
-        assert!(!rust_signal_handler_addr_ok(0x7d0000 + 0x400000)); // ~stack, mapped high
-        assert!(!rust_signal_handler_addr_ok(0x100000)); // kernel image
+        // A task whose image is the classic low one.
+        const LO: u64 = 0x400000;
+        const HI: u64 = 0x480000;
+        assert!(rust_signal_handler_addr_ok(LO, LO, HI)); // base (inclusive)
+        assert!(rust_signal_handler_addr_ok(0x401234, LO, HI)); // a real handler entry
+        assert!(rust_signal_handler_addr_ok(HI - 1, LO, HI)); // last byte in-image
+        // Outside this task's image -> rejected (fail closed).
+        assert!(!rust_signal_handler_addr_ok(0, LO, HI)); // null
+        assert!(!rust_signal_handler_addr_ok(LO - 1, LO, HI)); // just below the base
+        assert!(!rust_signal_handler_addr_ok(HI, LO, HI)); // one past the top
+        assert!(!rust_signal_handler_addr_ok(0x100000, LO, HI)); // kernel image
+        // The stack and heap are outside the image by construction.
+        assert!(!rust_signal_handler_addr_ok(0x7f0000, LO, HI)); // low stack
+        assert!(!rust_signal_handler_addr_ok(0x1000000, LO, HI)); // heap
+    }
+
+    #[test]
+    fn signal_handler_addr_is_per_task_not_a_fixed_window() {
+        // The point of taking the image bounds: an address inside the OLD fixed
+        // [0x400000, 0x800000) window but outside *this* task's image must be
+        // refused. Image-base ASLR means most of that window was never the
+        // task's code, and the fixed check accepted all of it.
+        const LO: u64 = 0x400000;
+        const HI: u64 = 0x480000;
+        assert!(!rust_signal_handler_addr_ok(0x7fffff, LO, HI));
+
+        // And an image above 4 GiB can express a legal handler at all, which a
+        // u32 window could not represent.
+        const HIGH_LO: u64 = 0x0000_0004_0000_0000;
+        const HIGH_HI: u64 = HIGH_LO + 0x80000;
+        assert!(rust_signal_handler_addr_ok(HIGH_LO + 0x1234, HIGH_LO, HIGH_HI));
+        assert!(!rust_signal_handler_addr_ok(0x401234, HIGH_LO, HIGH_HI));
+    }
+
+    #[test]
+    fn signal_handler_addr_fails_closed_on_a_degenerate_image() {
+        // No image recorded, or an inverted/empty range: there is no code to
+        // point at, so nothing is acceptable — including addresses that would
+        // pass under the old fixed window.
+        assert!(!rust_signal_handler_addr_ok(0x401234, 0, 0));
+        assert!(!rust_signal_handler_addr_ok(0x401234, 0, 0x800000));
+        assert!(!rust_signal_handler_addr_ok(0x401234, 0x400000, 0x400000));
+        assert!(!rust_signal_handler_addr_ok(0x401234, 0x480000, 0x400000));
     }
 
     #[test]

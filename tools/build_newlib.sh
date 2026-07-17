@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetch and build the i686-elf newlib that the libc port links against.
+# Fetch and build the x86_64-elf newlib that the libc port links against.
 #
 # newlib/ is gitignored: it is an upstream dependency, not project source, so a
 # fresh checkout -- CI included -- has no libc.a and `make smoke-newlib` cannot
@@ -7,11 +7,12 @@
 # place it exits immediately, so an existing local tree is never rebuilt or
 # clobbered.
 #
-# There is no real i686-elf cross-compiler in play. newlib/tools/ holds thin
-# wrappers that aim the target toolchain at the host gcc in 32-bit freestanding
+# There is no real x86_64-elf cross-compiler in play. newlib/tools/ holds thin
+# wrappers that aim the target toolchain at the host gcc in 64-bit freestanding
 # mode, which is all a freestanding libc needs. Keep the wrapper flags in sync
 # with USERSPACE_CFLAGS in the Makefile: objects built here get linked directly
-# against objects built with those flags.
+# against objects built with those flags. -mno-red-zone matches the kernel and
+# the userspace build: the red zone is not safe across an interrupt frame.
 
 set -eu
 
@@ -27,8 +28,8 @@ BUILD=$NEWLIB_DIR/build
 TOOLS=$NEWLIB_DIR/tools
 TARBALL=$NEWLIB_DIR/newlib-${NEWLIB_VERSION}.tar.gz
 
-if [ -f "$PREFIX/i686-elf/lib/libc.a" ]; then
-	echo "newlib: $PREFIX/i686-elf/lib/libc.a already built, nothing to do"
+if [ -f "$PREFIX/x86_64-elf/lib/libc.a" ]; then
+	echo "newlib: $PREFIX/x86_64-elf/lib/libc.a already built, nothing to do"
 	exit 0
 fi
 
@@ -58,21 +59,21 @@ if [ ! -f "$SRC/configure" ]; then
 fi
 
 # Target-toolchain wrappers. configure looks these up on PATH by target triple.
-echo "newlib: writing i686-elf toolchain wrappers"
+echo "newlib: writing x86_64-elf toolchain wrappers"
 mkdir -p "$TOOLS"
 for tool in gcc cc; do
-	cat >"$TOOLS/i686-elf-$tool" <<'EOF'
+	cat >"$TOOLS/x86_64-elf-$tool" <<'EOF'
 #!/bin/sh
-exec gcc -m32 -ffreestanding -fno-stack-protector -fno-builtin "$@"
+exec gcc -m64 -ffreestanding -fno-stack-protector -fno-builtin -mno-red-zone "$@"
 EOF
 done
 for tool in ar ranlib strip; do
-	cat >"$TOOLS/i686-elf-$tool" <<EOF
+	cat >"$TOOLS/x86_64-elf-$tool" <<EOF
 #!/bin/sh
 exec $tool "\$@"
 EOF
 done
-chmod +x "$TOOLS"/i686-elf-*
+chmod +x "$TOOLS"/x86_64-elf-*
 
 PATH=$TOOLS:$PATH
 export PATH
@@ -82,7 +83,7 @@ if [ ! -f "$BUILD/Makefile" ]; then
 	mkdir -p "$BUILD"
 	cd "$BUILD"
 	"$SRC/configure" \
-		--target=i686-elf \
+		--target=x86_64-elf \
 		--prefix="$PREFIX" \
 		--disable-multilib \
 		--disable-newlib-supplied-syscalls \
@@ -91,7 +92,7 @@ if [ ! -f "$BUILD/Makefile" ]; then
 fi
 
 # Build the newlib target only, never the full tree. libgloss is board-support
-# syscall glue for real i386 boards; this port supplies its own via
+# syscall glue for real boards; this port supplies its own via
 # newlib_glue.c/posix.c (hence --disable-newlib-supplied-syscalls), so it is
 # dead weight here -- and it does not survive gcc >= 14, which promoted
 # implicit-int/implicit-function-declaration to errors that its K&R-era sources
@@ -103,7 +104,7 @@ make -j"$(nproc 2>/dev/null || echo 2)" all-target-newlib
 
 # stdio64.o has to be added by hand, and this is the subtle part.
 #
-# The i686-elf-gcc wrapper is really the host gcc, so it defines __linux__.
+# The x86_64-elf-gcc wrapper is really the host gcc, so it defines __linux__.
 # newlib's libc/include/sys/config.h keys __LARGE64_FILES off __linux__, so a
 # bare-metal target quietly takes the Linux branch and stdio's findfp.c emits
 # references to __swrite64/__sseek64. Those live in libc/stdio64/stdio64.c --
@@ -120,14 +121,14 @@ make -j"$(nproc 2>/dev/null || echo 2)" all-target-newlib
 # path automake generates for the stdio64 directory (it never expects to build
 # it). CPPFLAGS is the one slot the generated rule leaves open, so inject it there.
 echo "newlib: building stdio64.o (see comment: __linux__ leak via the gcc wrapper)"
-make -C i686-elf/newlib libc/stdio64/libc_a-stdio64.o \
+make -C x86_64-elf/newlib libc/stdio64/libc_a-stdio64.o \
 	CPPFLAGS="-I$SRC/newlib/libc/stdio"
-ar rs i686-elf/newlib/libc.a i686-elf/newlib/libc/stdio64/libc_a-stdio64.o
+ar rs x86_64-elf/newlib/libc.a x86_64-elf/newlib/libc/stdio64/libc_a-stdio64.o
 
 make install-target-newlib
 
-test -f "$PREFIX/i686-elf/lib/libc.a" || {
-	echo "newlib: build finished but $PREFIX/i686-elf/lib/libc.a is missing" >&2
+test -f "$PREFIX/x86_64-elf/lib/libc.a" || {
+	echo "newlib: build finished but $PREFIX/x86_64-elf/lib/libc.a is missing" >&2
 	exit 1
 }
-echo "newlib: built $PREFIX/i686-elf/lib/libc.a"
+echo "newlib: built $PREFIX/x86_64-elf/lib/libc.a"

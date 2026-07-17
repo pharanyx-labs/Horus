@@ -30,10 +30,10 @@ static volatile int on_alt = 0;
 static char sig_altstk[4096];
 
 static void handler(void) {
-    uint32_t sp;
-    __asm__ volatile ("mov %%esp, %0" : "=r"(sp));
-    on_alt = (sp >= (uint32_t)(uintptr_t)sig_altstk &&
-              sp <  (uint32_t)(uintptr_t)sig_altstk + sizeof(sig_altstk));
+    uintptr_t sp;
+    __asm__ volatile ("mov %%rsp, %0" : "=r"(sp));
+    on_alt = (sp >= (uintptr_t)sig_altstk &&
+              sp <  (uintptr_t)sig_altstk + sizeof(sig_altstk));
     got = 1;
     sys_sigreturn();   /* resume the interrupted spin loop */
 }

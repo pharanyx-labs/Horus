@@ -50,7 +50,7 @@ Each self-test target clean-builds with the relevant flag, boots under QEMU with
 | `make smoke-fs` | `FS_SELFTEST: PASS` (`STORAGE=ata` for a real disk) |
 | `make smoke-fs-persist` | file written on boot 1 is present on boot 2 against the same disk image |
 | `make smoke-fs-perms` | per-file POSIX ownership/permissions enforced against kernel-attested uid |
-| `make smoke-fs-conc` | three concurrent clients each receive only their own replies |
+| `make smoke-fs-conc` | three concurrent clients each receive only their own replies — and, since the 64-bit flip, the regression test for per-task x87/SSE context (it was the only witness that a task's `xmm` was not preserved across a syscall) |
 | `make smoke-fs-wal` | a write committed then crashed pre-apply is replayed from the journal on the next mount |
 | `make smoke-fs-large` | reads/writes across direct + single- + double-indirect blocks |
 | `make smoke-newlib` | `NEWLIB_SELFTEST: PASS` |
@@ -93,7 +93,7 @@ checks list shows twenty-six.
 3. **altconfigs** — a build matrix over `DEBUG_SHELL=1`, `MINIMAL_SECURE=1` and `SMP=1` (the shipping SMP config: `smoke-smp` compiles `-DSMP` too, but only together with its selftest harness)
 4. **smoke** — `make smoke` (headless boot to the shell/login prompt, no fault)
 5. **smoke-elf** — `make smoke-elf` (ELF loader + W^X + relocation self-test)
-6. **smoke-elf64** — `make smoke-elf64` (the loader's x86-64 RELA path: loads a real 64-bit static-PIE and asserts `R_X86_64_RELATIVE` was applied, plus W^X on an ELF64 image. The image is loaded and inspected, never executed, so this gate does not depend on the ring-3 ABI — which is still 32-bit)
+6. **smoke-elf64** — `make smoke-elf64` (the loader's x86-64 RELA path: loads a real 64-bit static-PIE and asserts `R_X86_64_RELATIVE` was applied, plus W^X on an ELF64 image. The image is loaded and inspected, never executed, so this gate stays independent of the ring-3 ABI — it was written while userspace was still 32-bit, and keeping it that way means the loader's RELA path is gated on its own terms rather than implicitly via the shipped binaries)
 7. **smoke-aslr** — `make smoke-aslr` (spawns 8 PIE images; asserts the load base actually varies, and that every base keeps the premap inside one page table — the invariant that bounds the entropy)
 8. **smoke-preempt** — `make smoke-preempt` (two-task timer preemption)
 9. **smoke-signal** — `make smoke-signal` (fault delivered to a registered handler)
@@ -101,7 +101,7 @@ checks list shows twenty-six.
 11. **smoke-cow** — `make smoke-cow` (demand-zero pages share one read-only zero frame; a write breaks it to a private page without disturbing its sibling)
 12. **smoke-notify** — `make smoke-notify` (async `SYS_NOTIFY` badge to a blocked `SYS_WAIT_NOTIFY`)
 13. **smoke-smp** — `make smoke-smp` (application processors run tasks concurrently)
-14. **smoke-fs** / **smoke-fs-perms** / **smoke-fs-conc** / **smoke-fs-persist** / **smoke-fs-wal** / **smoke-fs-large** — the encrypted filesystem suite (server round-trip, permissions, concurrency, reboot persistence, journal crash-recovery, large files)
+14. **smoke-fs** / **smoke-fs-perms** / **smoke-fs-conc** / **smoke-fs-persist** / **smoke-fs-wal** / **smoke-fs-large** — the encrypted filesystem suite (server round-trip, permissions, concurrency, reboot persistence, journal crash-recovery, large files). `-conc` doubles as the x87/SSE context regression: it caught a task's `xmm0` surviving into another task and being written to disk as file data, with every checksum agreeing
 15. **smoke-init-fs** — `make smoke-init-fs` (the same `fs_server` round-trip, but with the server spawned and endowed by ring-3 `init` as the real system boots it, rather than by the kernel)
 16. **smoke-newlib** — `make smoke-newlib` (newlib libc over the POSIX fd layer)
 17. **smoke-session** — `make smoke-session` (drives the real ring-3 shell over serial: auth + least-privilege enforcement)

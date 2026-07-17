@@ -115,6 +115,7 @@ int page_ref_dec(uint32_t phys_addr) {
 
 void ensure_lapic_mapped(uint64_t *root);
 static void kstack_guards_init(void);   /* defined below per_task_kstacks */
+static void kern_fixed_stack_guards_init(void);   /* BSP boot + IST stack guards */
 
 /* ---- The kernel's own view ------------------------------------------------
  *
@@ -416,6 +417,7 @@ void paging_init(void) {
      * stay ahead of smp_bringup() for the same reason it does: the APs inherit
      * this CR3, so a guard unmapped now needs no cross-CPU shootdown. */
     kstack_guards_init();
+    kern_fixed_stack_guards_init();
     return;
 }
 
@@ -456,17 +458,60 @@ uint64_t kstack_guard_vaddr(int id) {
  * not of any task. One pass at boot, before the APs exist, means no TLB
  * shootdown and nothing to redo when a task slot is reused.
  *
- * Slot 0 is skipped: task 0 keeps the kernel_stacks[] entry create_task gave it
- * (create_user_pagedir returns early for it and never rebinds the stack), so
- * per_task_kstacks[0] is never a live stack and unmapping its guard would
- * protect nothing. Task 0's own stack has no guard slot and is only 16-byte
- * aligned — guarding it needs a layout change, not this loop. */
+ * Slot 0 is included: task 0 (the boot/idle/reaper) now runs on
+ * per_task_kstacks[0] too — create_user_pagedir binds its stack above this same
+ * guard — so its kernel stack is guarded like every other task's. It used to
+ * keep a separate, unguarded task0_kernel_stack, which is why slot 0 was skipped
+ * and its guard left mapped. The array is in the 4 KiB-mapped kernel window
+ * (KERN_SPLIT_PDES), so every slot's guard, including 0, is unmappable. */
 static void kstack_guards_init(void) {
-    for (int i = 1; i < MAX_TASKS; i++) {
+    for (int i = 0; i < MAX_TASKS; i++) {
         if (kern_page_set_absent((uint64_t)(uintptr_t)per_task_kstacks[i]) == 0)
             kstack_guards_armed++;
     }
 }
+
+/* The BSP boot stack and the three boot IST fault stacks are fixed, single
+ * purpose stacks defined in multiboot.S, outside the per_task_kstacks array.
+ * Each is laid out above a page-aligned guard page there; this unmaps those
+ * guards so an overflow of the boot/idle stack or of a fault handler's IST stack
+ * faults instead of silently corrupting adjacent .bss/.data or the TSS. They all
+ * live in the kernel image below KERN_SPLIT_PDES, so the guards are 4 KiB pages
+ * that kern_page_set_absent can clear — the same requirement per_task_kstacks
+ * meets. IST1 (#DF/#GP/#PF) is used on every demand page fault and every ring-3
+ * fault-signal delivery, so its guard is exercised constantly, not just in
+ * theory. */
+uint32_t fixed_stack_guards_armed = 0;
+
+/* Ordered exactly as the self-test enumerates them (see WX_SELFTEST accessor). */
+static uint64_t fixed_stack_guard_addr(int i) {
+    extern uint8_t bsp_stack_guard[];
+    extern uint8_t ist1_stack_guard[];
+    extern uint8_t ist2_stack_guard[];
+    extern uint8_t ist3_stack_guard[];
+    switch (i) {
+        case 0: return (uint64_t)(uintptr_t)bsp_stack_guard;
+        case 1: return (uint64_t)(uintptr_t)ist1_stack_guard;
+        case 2: return (uint64_t)(uintptr_t)ist2_stack_guard;
+        case 3: return (uint64_t)(uintptr_t)ist3_stack_guard;
+        default: return 0;
+    }
+}
+#define FIXED_STACK_GUARD_COUNT 4
+
+static void kern_fixed_stack_guards_init(void) {
+    for (int i = 0; i < FIXED_STACK_GUARD_COUNT; i++) {
+        if (kern_page_set_absent(fixed_stack_guard_addr(i)) == 0)
+            fixed_stack_guards_armed++;
+    }
+}
+
+#ifdef WX_SELFTEST
+/* Gated: expose the fixed-stack guard count and addresses so smoke-wx can assert
+ * each guard is absent and the stack just above it is still present. */
+uint32_t kern_fixed_stack_guard_count(void) { return FIXED_STACK_GUARD_COUNT; }
+uint64_t kern_fixed_stack_guard_vaddr(int i) { return fixed_stack_guard_addr(i); }
+#endif
 
 /* ---- Address-space reclaim ------------------------------------------------
  *
@@ -652,7 +697,16 @@ static int user_map_fresh_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t flag
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
     if (task_id == 0) {
+        /* Task 0 runs on the kernel's own address space (cr3 = 0 means "keep the
+         * kernel pml4"), but it still needs a kernel stack for the reaper/idle
+         * path. Bind it to per_task_kstacks[0], above the guard page
+         * kstack_guards_init unmaps, so an overflow of task 0 faults on the guard
+         * instead of running into whatever .bss follows — the same protection
+         * every other task's stack already had. */
         tasks[task_id].cr3 = 0;
+        uint8_t *stack_area = per_task_kstacks[0];
+        uint64_t stack_base = (uint64_t)stack_area + PAGE_SIZE;   /* skip the guard */
+        tasks[task_id].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
         return;
     }
 

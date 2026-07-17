@@ -277,15 +277,17 @@ void wx_selftest(void) {
      * vacuously if the stacks were never mapped in the first place. */
     extern uint32_t kstack_guards_armed;
     extern uint64_t kstack_guard_vaddr(int id);
-    if (kstack_guards_armed != (uint32_t)(MAX_TASKS - 1)) {
+    if (kstack_guards_armed != (uint32_t)MAX_TASKS) {
         print("WX_SELFTEST: FAIL armed ");
         print_decimal(kstack_guards_armed);
         print(" stack guards, expected ");
-        print_decimal((uint64_t)(MAX_TASKS - 1));
+        print_decimal((uint64_t)MAX_TASKS);
         print("\n");
         return;
     }
-    for (int i = 1; i < MAX_TASKS; i++) {
+    /* From 0: task 0 (boot/idle/reaper) now runs on a guarded per_task_kstacks[0]
+     * too, so its guard must be absent and its stack present like the rest. */
+    for (int i = 0; i < MAX_TASKS; i++) {
         uint64_t guard = kstack_guard_vaddr(i);
         if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
             print("WX_SELFTEST: FAIL stack guard still mapped for task ");
@@ -297,6 +299,37 @@ void wx_selftest(void) {
          * would take the stack with it, and every task would fault on entry. */
         if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT)) {
             print("WX_SELFTEST: FAIL stack base unmapped for task ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+    }
+
+    /* --- Fixed (non-per-task) kernel stack guards: the BSP boot stack and the
+     * three boot IST fault stacks. Same contract — guard absent, stack above it
+     * present — for stacks that live in multiboot.S rather than per_task_kstacks. */
+    extern uint32_t fixed_stack_guards_armed;
+    extern uint32_t kern_fixed_stack_guard_count(void);
+    extern uint64_t kern_fixed_stack_guard_vaddr(int i);
+    uint32_t fixed_n = kern_fixed_stack_guard_count();
+    if (fixed_stack_guards_armed != fixed_n) {
+        print("WX_SELFTEST: FAIL armed ");
+        print_decimal(fixed_stack_guards_armed);
+        print(" fixed stack guards, expected ");
+        print_decimal((uint64_t)fixed_n);
+        print("\n");
+        return;
+    }
+    for (uint32_t i = 0; i < fixed_n; i++) {
+        uint64_t guard = kern_fixed_stack_guard_vaddr((int)i);
+        if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
+            print("WX_SELFTEST: FAIL fixed stack guard still mapped, index ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+        if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT)) {
+            print("WX_SELFTEST: FAIL fixed stack base unmapped, index ");
             print_decimal((uint64_t)i);
             print("\n");
             return;
@@ -1094,6 +1127,45 @@ void signal_selftest(void) {
     sched_enter_user(a);
 }
 #endif /* SIGNAL_SELFTEST */
+
+#ifdef TSD_SELFTEST
+/* ---- RDTSC / CR4.TSD self-test (TSD_SELFTEST builds only) ------------------
+ * Spawn the tsdtest payload: it registers a ring-3 fault handler and then
+ * executes RDTSC. With CR4.TSD engaged (cpu_enable_protections) the ring-3
+ * RDTSC #GPs, and the kernel redirects the task into its handler, which prints
+ * "TSD_SELFTEST: PASS"; a timestamp instead means TSD is not in effect and the
+ * payload prints FAIL. Entry into ring 3 does not return. */
+void tsd_selftest(void) {
+    extern uint8_t embedded_tsdtest_bin_start[];
+    extern uint8_t embedded_tsdtest_bin_end[];
+    uint32_t full_sz = (uint32_t)(embedded_tsdtest_bin_end - embedded_tsdtest_bin_start);
+
+    print("TSD_SELFTEST: launch\n");
+    if (full_sz < 44) { print("TSD_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+
+    const uint8_t *bin = embedded_tsdtest_bin_start;
+    uint32_t magic   = *(const uint32_t *)bin;
+    uint32_t h_entry = *(const uint32_t *)(bin + 4);
+    uint32_t h_size  = *(const uint32_t *)(bin + 8);
+    if (magic != 0x55524F48)                     { print("TSD_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("TSD_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
+    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+
+    const uint8_t *payload = bin + 44;
+    for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
+    armed_hdr.entry = h_entry;
+    armed_hdr.size  = h_size;
+    armed_hdr.name[0] = 't'; armed_hdr.name[1] = 's'; armed_hdr.name[2] = 'd'; armed_hdr.name[3] = 0;
+    program_armed = 1;
+
+    int a = do_spawn();
+    if (a <= 0) { print("TSD_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    /* Launch into ring 3 via the fabricated full trap frame. */
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* TSD_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW_SELFTEST builds only) -------

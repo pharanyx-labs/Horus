@@ -16,27 +16,14 @@ int task_running_cpu[MAX_TASKS];
 volatile unsigned smp_cpus_ran_tasks = 0;
 #endif
 
-/* Task 0's kernel stack — one, not MAX_TASKS of them.
- *
- * This used to be [MAX_TASKS][KERNEL_STACK_SIZE], and 63 of those 64 slots were
- * dead: create_task binds tasks[id].kernel_stack_top here, and then
- * create_user_pagedir immediately rebinds it to per_task_kstacks[id] for every
- * task except 0, which it returns early for. So slots 1..63 were written once,
- * overwritten before the task ever ran, and never read again — just under 2 MiB
- * of .bss whose only purpose was to be discarded.
- *
- * That is not free: .bss ends ~600 KiB below USER_PHYS_BASE, and the ASSERT in
- * linker64.ld is all that stands between a routine MAX_TASKS bump and the page
- * allocator handing out live kernel memory. Reclaiming this quadruples that
- * headroom.
- *
- * Slot 0 stays because task 0 genuinely runs on it: create_user_pagedir returns
- * early for task 0 and never rebinds its stack, and the page-fault handler
- * resumes on tasks[0].kernel_stack_top when it kills a task and finds no
- * successor to switch to (idt.c). It is 16-byte aligned with no guard page, so
- * unlike per_task_kstacks it cannot be guarded without a layout change —
- * documented in docs/LIMITATIONS.md. */
-static uint8_t task0_kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+/* Task 0's kernel stack is per_task_kstacks[0] (paging.c), bound by
+ * create_user_pagedir(0) above a guard page like every other task's — so the
+ * boot/idle/reaper task (the page-fault handler resumes on
+ * tasks[0].kernel_stack_top when it kills a task and finds no successor, idt.c)
+ * is guarded too. Task 0 previously kept a separate, 16-byte-aligned,
+ * *unguarded* task0_kernel_stack here; per_task_kstacks[0] was allocated and
+ * never used, so moving task 0 onto it guards the stack and reclaims the
+ * duplicate. */
 
 spinlock_t scheduler_lock;
 spinlock_t page_lock;
@@ -118,18 +105,11 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     tasks[id].eip = entry;
     tasks[id].cap_tcb = id;
 
-    /* Each task owns a distinct kernel stack (shared kernel mapping, present in
-     * every address space). Pin it now so the TSS RSP0 and the preemptive
-     * scheduler's saved/fabricated trap frame agree on one address.
-     *
-     * Only task 0's is bound here. Every other task's real stack is
-     * per_task_kstacks[id], assigned by create_user_pagedir a few lines below —
-     * which is also where the guard page below it comes from. This used to bind
-     * all of them from a MAX_TASKS-sized array and have that value overwritten
-     * moments later, which cost ~2 MiB of .bss and read as though tasks ran on
-     * a stack they never touched. */
-    if (id == 0)
-        tasks[id].kernel_stack_top = (uint64_t)&task0_kernel_stack[KERNEL_STACK_SIZE - 16];
+    /* Every task's kernel stack — task 0 included — is per_task_kstacks[id],
+     * bound by create_user_pagedir (called below) above a guard page. Nothing
+     * reads tasks[id].kernel_stack_top between here and that call, so there is no
+     * bootstrap value to pin first; task_kstack_top() PANICs on a 0 stack, which
+     * only fires once a task is actually scheduled, long after this completes. */
     fpu_task_init(id);           /* start from a clean x87/SSE register file */
     tasks[id].saved_ksp = 0;
     tasks[id].runnable_ctx = 0;

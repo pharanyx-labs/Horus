@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 /* <sys/errno.h>, not <errno.h>: -I include precedes the newlib headers, so
  * <errno.h> would resolve to the project's SYS_ERR_* header (no errno/ENOENT).
  * newlib_glue.c includes it the same way for the same reason. */
@@ -236,6 +237,93 @@ int main(int argc, char **argv, char **envp) {
 
         unlink(path);
         printf("fs O_APPEND OK\n");
+    }
+
+    /* --- directory enumeration: opendir/readdir/closedir over FS_OP_READDIR ---
+     * newlib provides no dirent backend for this port; the whole API is our own
+     * (include/dirent.h + newlib_glue.c) over the fs_server. Create two files in
+     * the root, enumerate the directory, and assert both turn up. */
+    {
+        int fd = open("/dent_a", O_CREAT | O_WRONLY, 0644);
+        if (fd < 0) { printf("NEWLIB_SELFTEST: FAIL dir-setup-a\n"); return 1; }
+        close(fd);
+        fd = open("/dent_b", O_CREAT | O_WRONLY, 0644);
+        if (fd < 0) { printf("NEWLIB_SELFTEST: FAIL dir-setup-b\n"); return 1; }
+        close(fd);
+
+        DIR *dp = opendir("/");
+        if (!dp) { printf("NEWLIB_SELFTEST: FAIL opendir\n"); return 1; }
+        int saw_a = 0, saw_b = 0, count = 0;
+        struct dirent *de;
+        while ((de = readdir(dp)) != NULL) {
+            count++;
+            if (strcmp(de->d_name, "dent_a") == 0) saw_a = 1;
+            if (strcmp(de->d_name, "dent_b") == 0) saw_b = 1;
+        }
+        closedir(dp);
+        if (!saw_a || !saw_b) { printf("NEWLIB_SELFTEST: FAIL readdir-missing\n"); return 1; }
+        if (count < 2)        { printf("NEWLIB_SELFTEST: FAIL readdir-count\n");   return 1; }
+
+        /* opendir on a regular file → ENOTDIR; on a missing path → ENOENT. */
+        errno = 0;
+        if (opendir("/dent_a") != NULL || errno != ENOTDIR) {
+            printf("NEWLIB_SELFTEST: FAIL opendir-notdir\n"); return 1;
+        }
+        errno = 0;
+        if (opendir("/nope_dir") != NULL || errno != ENOENT) {
+            printf("NEWLIB_SELFTEST: FAIL opendir-noent\n"); return 1;
+        }
+
+        unlink("/dent_a");
+        unlink("/dent_b");
+        printf("fs opendir/readdir OK\n");
+    }
+
+    /* --- working directory: mkdir/chdir/getcwd + relative resolution -------
+     * mkdir/chdir/getcwd are all new to this port. Build /wd_a/wd_b, cd into it,
+     * confirm getcwd, confirm a relative create lands under the cwd, then walk
+     * back out with "..". */
+    {
+        char cwd[64];
+
+        if (!getcwd(cwd, sizeof cwd) || strcmp(cwd, "/") != 0) {
+            printf("NEWLIB_SELFTEST: FAIL getcwd-root\n"); return 1;
+        }
+        if (mkdir("/wd_a", 0755) != 0)      { printf("NEWLIB_SELFTEST: FAIL mkdir-a\n"); return 1; }
+        if (mkdir("/wd_a/wd_b", 0755) != 0) { printf("NEWLIB_SELFTEST: FAIL mkdir-b\n"); return 1; }
+
+        if (chdir("/wd_a/wd_b") != 0) { printf("NEWLIB_SELFTEST: FAIL chdir-abs\n"); return 1; }
+        if (!getcwd(cwd, sizeof cwd) || strcmp(cwd, "/wd_a/wd_b") != 0) {
+            printf("NEWLIB_SELFTEST: FAIL getcwd-abs\n"); return 1;
+        }
+
+        /* A relative create resolves under the cwd. */
+        int fd = open("rel", O_CREAT | O_WRONLY, 0644);
+        if (fd < 0 || write(fd, "x", 1) != 1) { printf("NEWLIB_SELFTEST: FAIL rel-create\n"); return 1; }
+        close(fd);
+        struct stat rsb;
+        if (stat("/wd_a/wd_b/rel", &rsb) != 0 || rsb.st_size != 1) {
+            printf("NEWLIB_SELFTEST: FAIL rel-resolve\n"); return 1;
+        }
+
+        /* ".." climbs one level. */
+        if (chdir("..") != 0) { printf("NEWLIB_SELFTEST: FAIL chdir-dotdot\n"); return 1; }
+        if (!getcwd(cwd, sizeof cwd) || strcmp(cwd, "/wd_a") != 0) {
+            printf("NEWLIB_SELFTEST: FAIL getcwd-dotdot\n"); return 1;
+        }
+
+        /* chdir to a missing path fails and leaves the cwd unchanged. */
+        if (chdir("/wd_a/nope") == 0) { printf("NEWLIB_SELFTEST: FAIL chdir-missing\n"); return 1; }
+        if (!getcwd(cwd, sizeof cwd) || strcmp(cwd, "/wd_a") != 0) {
+            printf("NEWLIB_SELFTEST: FAIL chdir-missing-cwd\n"); return 1;
+        }
+
+        /* Tidy up (leaf first: DELETE refuses a non-empty directory). */
+        chdir("/");
+        unlink("/wd_a/wd_b/rel");
+        unlink("/wd_a/wd_b");
+        unlink("/wd_a");
+        printf("fs cwd mkdir/chdir/getcwd OK\n");
     }
 
     printf("NEWLIB_SELFTEST: PASS\n");

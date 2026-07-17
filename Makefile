@@ -142,6 +142,17 @@ ASFLAGS += -DSIGNAL_SELFTEST
 SIGNAL_SELFTEST_DEP = userspace/sigtest.bin
 endif
 
+# TSD_SELFTEST=1 embeds a flat payload that registers a fault handler then
+# executes RDTSC. With CR4.TSD engaged the ring-3 RDTSC #GPs into the handler
+# (prints TSD_SELFTEST: PASS); if it returned a timestamp the payload prints
+# FAIL. Gated so the default/ship kernel is unaffected.
+TSD_SELFTEST ?= 0
+ifeq ($(TSD_SELFTEST),1)
+CFLAGS  += -DTSD_SELFTEST
+ASFLAGS += -DTSD_SELFTEST
+TSD_SELFTEST_DEP = userspace/tsdtest.bin
+endif
+
 # STORAGE_ATA=1 makes the filesystem's block store the ATA disk (persistent)
 # instead of the default in-RAM virtual disk. storage_init() probes the disk and
 # formats-on-first-boot. Pair with a QEMU -drive (see `make run-ata`).
@@ -363,7 +374,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -678,6 +689,15 @@ smoke-signal:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='SIGNAL_SELFTEST: PASS' \
 		FAIL_MARKER='SIGNAL_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated TSD self-test, boot headless, and require the marker that
+# proves a ring-3 RDTSC faulted into its handler (CR4.TSD engaged).
+smoke-tsd:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TSD_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='TSD_SELFTEST: PASS' \
+		FAIL_MARKER='TSD_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated filesystem self-test, boot headless, and require the
 # client to report PASS -- runtime proof that the userspace fs_server serves a

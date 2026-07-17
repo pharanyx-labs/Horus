@@ -948,6 +948,9 @@ void preempt_selftest(void);
 #ifdef SIGNAL_SELFTEST
 void signal_selftest(void);
 #endif
+#ifdef TSD_SELFTEST
+void tsd_selftest(void);
+#endif
 #ifdef FS_SELFTEST
 void fs_selftest(void);
 #endif

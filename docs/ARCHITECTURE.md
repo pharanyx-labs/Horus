@@ -23,7 +23,9 @@ Horus targets **x86-64** exclusively.
 - CPU features detected at runtime: SMEP, SMAP, AES-NI, SSE2/SSE4.2, TSC, RDRAND.
 - Multi-core: application processors are brought up via the LAPIC (INIT-SIPI-SIPI), each with its own LAPIC-timer preemption tick, behind the `SMP=1` build gate. The single-core PIT path is the default.
 
-The ring-3 userspace binaries are the only 32-bit component: they are static-PIE `EM_386` images run in a compatibility-mode code segment beneath the 64-bit kernel. (An earlier 32-bit kernel build target existed but was removed — the kernel has run exclusively in long mode for a long time.)
+Ring-3 userspace is 64-bit too: tasks run under the GDT's 64-bit user code segment (`cs = 0x23`, L=1/D=0/DPL=3) as static-PIE `EM_X86_64` images, relocated at load. Userspace was `EM_386` in compatibility mode until the 64-bit ABI landed.
+
+The only 32-bit code left is the boot on-ramp, and it cannot go: an x86 CPU starts in real mode, GRUB enters `_start` in 32-bit protected mode, and an application processor comes out of SIPI in real mode. The `.code32` multiboot stage and the `.code16`/`.code32` AP trampoline are how long mode is reached at all. One deliberate exception in the test tree: `userspace/elftest.o` is still built 32-bit so `smoke-elf` keeps exercising the loader's ELFCLASS32 path, which remains supported.
 
 ---
 
@@ -132,7 +134,9 @@ Two subtleties bind this together. The pager derives the old frame with `PTE_ADD
 
 **W^X**: `EFER.NXE` is enabled at boot and the kernel uses the PTE NX bit (63) to keep writable pages non-executable. User stacks (low and high ASLR) are mapped no-execute. The ELF loader honours each `PT_LOAD` segment's `p_flags`, mapping code read+execute and data/rodata read[+write]+NX; the policy decision (`rust_user_page_is_noexec`) lives in Rust and is unit-tested. The shipped userspace binaries are static-PIE ELFs and take this path; a flat-binary fallback remains for non-ELF images (loaded at the fixed base, image left executable).
 
-**ASLR**: per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG. Userspace is built static-PIE (`ET_DYN`); `do_spawn` picks a random page-aligned base and `try_elf_load` applies `R_386_RELATIVE` relocations there (failing closed on any other relocation type). Image-base entropy is bounded (480 pages ≈ 8.91 bits) because userspace runs in 32-bit compatibility mode confined to the low ~8 MiB window; wider randomisation would require a 64-bit userspace ABI.
+**ASLR**: per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG. Userspace is built static-PIE (`ET_DYN`); `do_spawn` picks a random page-aligned base and `try_elf_load` relocates there, failing closed on any relocation type it does not implement. Both forms are handled: `R_386_RELATIVE` (i386 REL — 8-byte entries, read-modify-write, type in `r_info & 0xFF`) and `R_X86_64_RELATIVE` (RELA — 24-byte entries, `*(u64*)(r_offset+slide) = slide + r_addend`, type in `r_info & 0xFFFFFFFF`). The two agree for ld-linked images because GNU ld pre-applies the addend into the field; they diverge only for a linker that does not (lld's `--no-apply-dynamic-relocs`).
+
+Image-base entropy is **480 pages ≈ 8.91 bits — the structural ceiling**, not a policy choice. The only bound left is that the premap window (`base + USER_ASPACE_PREMAP_PAGES`) must stay inside a single 2 MiB PD entry, which is exactly what `ASLR_MAX_LOAD_RANDOM_PAGES` (`512 - 32`) encodes. The old, lower figure came from clamping against kernel low memory; the higher-half move removed that constraint entirely.
 
 ---
 
@@ -213,6 +217,7 @@ Horus supports up to 64 concurrent tasks. Each task has:
 - A **Task Control Block (TCB)** with a saved trap frame / register state (`rip`, `rsp`, `cr3`, `saved_ksp`)
 - A **capability node** (256 slots)
 - A dedicated **kernel stack** (32 KB) used during syscall and interrupt handling
+- A 512-byte **FXSAVE image** (`fpu_state`) holding its x87/SSE register file across kernel entries
 - A **user heap** tracked by `heap_start`, `heap_current`, `heap_end`
 - A **UID and GID** login identity establishing its authentication context, which the kernel attests to servers (via `SYS_IPC_SENDER`) so a ring-3 filesystem can enforce ownership a client cannot forge
 - A **signal handler** (`SYS_SIGACTION`) and a `pending_sig` slot for async delivery
@@ -227,6 +232,28 @@ The scheduler is preemptive round-robin. The PIT fires at 100 Hz (BSP); under `S
 
 There is a single context-switch path: every task enters and resumes via a full interrupt trap frame on its kernel stack (`sched_prepare_user_context` at spawn, `sched_enter_user` for first entry / boot of `init`, timer preemption, `ipc_block_switch` for blocking syscalls, `sched_yield_switch` for `SYS_YIELD`). The legacy cooperative `yield()`/`schedule()` switch (which swapped CR3/current but returned on the caller's own kernel stack) has been deleted. Multi-core scheduling shares a single runnable pool with a per-CPU pull under a raw scheduler lock; per-CPU run queues and priorities are future work.
 
+### x87/SSE context
+
+The trap frame saves general-purpose registers only, so the x87/SSE register file needs its
+own handling. Each task carries a 512-byte FXSAVE image in its TCB: `interrupt_handler64`
+saves on entry from ring 3 and restores on return to ring 3, keyed on the *current* task at
+each moment — the dispatcher may have switched, so the restore loads the task actually being
+`iretq`'d into. A ring-0 → ring-0 interrupt skips both.
+
+The kernel is built `-mno-sse -mno-mmx -mno-80387` and holds no FPU state of its own. That
+is what makes the above cheap (nothing to save on a kernel-internal interrupt) and what stops
+the leak in the other direction: left to itself GCC auto-vectorises ordinary integer loops,
+and anything the kernel leaves in `xmm` would be readable by the next ring-3 task. `crypto.c`
+is not an exception — its `-msse2 -maes` was vestigial, naming an AES-NI cipher that no longer
+exists (encryption-at-rest is ChaCha20 + HMAC-SHA256 in safe Rust).
+
+This was latent for as long as userspace was i386: SSE2 is not in that baseline, so generated
+code never held a live `xmm` across a syscall. Under `-m64` SSE2 *is* the baseline, and the
+bug became data corruption — GCC compiled a 16-byte fill in the fs client into a broadcast
+plus one `movups`, hoisted the broadcast out of the loop, and left it live in `xmm0` across
+`sys_ipc_call`; the fs_server's leftover `xmm0` was stored as file data and written to disk
+with every checksum agreeing. `smoke-fs-conc` is the regression test.
+
 ### Process control (ring-3, Phase 1)
 
 Tasks are first-class from ring 3. A task can `SYS_SPAWN` a named embedded binary (the load runs in the kernel address space; the caller receives the child's `CAP_TCB`), replace its own image in place with `SYS_EXEC_NAMED` (same pid and cspace), delegate a capability into a supervised child with `SYS_CAP_GRANT`, terminate itself (`SYS_EXIT`) or a task it holds a `CAP_TCB` for (`SYS_KILL`), and block until another task exits (`SYS_WAIT`). Both spawn and exec take a full `argv`: the kernel copies the vector out of the caller's address space and lays the strings + a NULL-terminated pointer array on the child's initial stack, which the child reads back with `SYS_GET_ARGV`.
@@ -237,7 +264,7 @@ A ring-3 **`init` (PID 1)** launches at boot. The kernel endows it with `CAP_AUD
 
 A task registers its own handler with `SYS_SIGACTION`. Two delivery paths share it:
 
-- **Fault signals.** When the task faults in ring 3 (a page fault or a CPU exception such as `#UD`), `try_deliver_fault_signal` (`idt.c`) — instead of killing it — saves the full trap frame in the TCB and rewrites the live frame to enter the handler at ring 3, passing the signal number in `ebx` and the faulting address in `ecx`. `SYS_SIGRETURN` (serviced directly in `interrupt_handler64`) restores the saved context for an exact resume.
+- **Fault signals.** When the task faults in ring 3 (a page fault or a CPU exception such as `#UD`), `try_deliver_fault_signal` (`idt.c`) — instead of killing it — saves the full trap frame in the TCB and rewrites the live frame to enter the handler at ring 3, passing the signal number in `rbx` and the faulting address in `rcx`. `SYS_SIGRETURN` (serviced directly in `interrupt_handler64`) restores the saved context for an exact resume.
 - **Async task-to-task signals** (`SYS_SIGNAL`, gated on a `CAP_TCB` to the target — same authority as `SYS_KILL`). The sender queues `pending_sig`; the target is redirected into its handler on its next return to ring 3 (reusing the fault-signal path). An unhandled signal, or the uncatchable `SIG_KILL`, takes the default terminate action.
 
 Pending signals are held in a full 1..31 bitmask, and `SYS_SIGMASK` blocks/unblocks signals (`SIG_KILL` excepted); `deliver_pending_signal` delivers the lowest-numbered *unmasked* pending signal, and a masked one stays queued until unblocked. A signal to a task parked in `SYS_WAIT` interrupts the wait (it returns `SYS_ERR_INTR`) and is delivered promptly rather than waiting on the awaited task.
@@ -250,7 +277,7 @@ The handler entry is validated to the user code window in safe Rust (`rust_signa
 
 IPC is endpoint-based. The kernel maintains 64 endpoints. A sending task writes a message to an endpoint; a task waiting on that endpoint receives it. Messages carry a small payload (up to 256 bytes) and a sender badge.
 
-Each endpoint is a **single-slot mailbox**. `SYS_IPC_SEND`/`SYS_IPC_RECV` are **non-blocking** (they return a would-block code rather than spinning), so a userspace peer polls from ring 3 where the timer interleaves it with the other party. `SYS_IPC_CALL` may block the caller (`TASK_BLOCKED_IPC`) on the full-context block/switch path and is resumed when the reply arrives. This is enough for one in-flight request at a time; concurrent multi-client IPC with reply routing is future work. A snapshot + revalidate-at-use guard closes a lookup/use TOCTOU window across the send/recv paths.
+Each endpoint is a **single-slot mailbox**. `SYS_IPC_SEND`/`SYS_IPC_RECV` are **non-blocking** (they return a would-block code rather than spinning), so a userspace peer polls from ring 3 where the timer interleaves it with the other party. `SYS_IPC_CALL` may block the caller (`TASK_BLOCKED_IPC`) on the full-context block/switch path and is resumed when the reply arrives. Requests still serialise one at a time through an endpoint's single slot, but replies do **not** have to: `SYS_IPC_REPLY_TO` routes a reply straight into the requesting client's blocked call by kernel-recorded sender identity, which is what lets one server hold several clients at once (see the filesystem server below). Per-endpoint multi-slot queueing remains future work. A snapshot + revalidate-at-use guard closes a lookup/use TOCTOU window across the send/recv paths.
 
 **Block/wake publish order (SMP-safe):** the syscall handler only records a `pending_block` intent. `ipc_block_switch` then (1) stores the live trap frame in `saved_ksp`, (2) issues a full memory barrier, and (3) publishes the waiter under the IPC lock (`blocked_waiter` / `SYS_WAIT` link / notif waiter + `TASK_BLOCKED_*`). A notifier on another core therefore never patches a null or stale frame. If the event already arrived (reply in the mailbox, target already dead, badge pending), publish completes the wait immediately and resumes the same task.
 
@@ -281,7 +308,7 @@ The BSP is never pulled out of its ring-0 idle/kernel context by the timer, pres
 
 ## Syscall interface
 
-Syscalls use `int 0x80`. The syscall number is in `eax`; arguments in `ebx, ecx, edx, esi, edi`. Numbers run `SYS_YIELD` = 0 through `SYS_IPC_REPLY_TO` = 75. See [SYSCALLS.md](SYSCALLS.md) for the per-syscall reference.
+Syscalls use `int 0x80`. The syscall number is in `rax`; arguments in `rbx, rcx, rdx, rsi, rdi`. Arguments and the return value are 64-bit — they carry user pointers, and `SYS_BRK`/`SYS_SBRK` return an *address*, so a 32-bit return would truncate the program break. Numbers run `SYS_YIELD` = 0 through `SYS_IPC_REPLY_TO` = 75. See [SYSCALLS.md](SYSCALLS.md) for the per-syscall reference.
 
 Dispatch is **table-driven**: `syscall_handler` indexes a `syscall_table[]` of descriptors `{ handler, slot, rights, type }`, validates the number, and — for syscalls whose authority is a single fixed capability — enforces that capability in one central place before calling the handler. A number with no entry fails closed. A `_Static_assert` pins the table size to the highest syscall number + 1, so a syscall cannot be added without a table slot. Syscalls with dynamic or self-authorising policy (the capability ops, the FS ops, auth/sudo, user management, kill/signal/grant) carry no fixed slot and authorise inside their handler.
 
@@ -345,9 +372,11 @@ The build system sets `SOURCE_DATE_EPOCH=1609459200` (2021-01-01 UTC) and passes
 - **Primordial capability protection** — system-critical root capabilities cannot be revoked by any userspace path
 - **Hardware user/kernel isolation** — Ring 0 / Ring 3 boundary; SMEP/SMAP enabled when advertised
 - **W^X for user memory** — stacks are non-executable and ELF segments honour their `p_flags`
+- **Kernel state is unaddressable from ring 3** — the kernel lives in the higher half, so a user mapping cannot share a virtual address with kernel data by construction rather than by bounding ASLR away from it
+- **Register-file isolation** — a task's x87/SSE registers are saved/restored across the ring-3 boundary, so neither another task's values nor kernel leftovers are observable in `xmm`
 - **Centralised syscall authorisation** — one table-driven choke point; an unlisted syscall number fails closed
 - **Signals grant no new authority** — a handler runs at ring 3 with unchanged privileges; async signalling requires a `CAP_TCB` on the target
 
 ### What the design does not yet provide
 
-See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: IPC endpoints are single-slot mailboxes (one in-flight request; `fs_server` reply routing is layered on top via `SYS_IPC_REPLY_TO`) and notifications are unimplemented; SMP works behind a build gate but is not default-on and has no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks; and image-base ASLR entropy is bounded by the 32-bit low-memory window. (The filesystem is now persistent, multi-client, permission-enforcing, and crash-atomic — see the LIMITATIONS filesystem note for the residual operational limits.)
+See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: IPC endpoints are single-slot mailboxes, so requests serialise one at a time — multi-client *replies* are routed by kernel-recorded identity (`SYS_IPC_REPLY_TO`), but multi-slot queueing is not implemented; and SMP works behind a build gate but is not default-on and has no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks. Image-base ASLR now sits at its structural ceiling (8.91 bits), bounded by the premap fitting one 2 MiB PD entry rather than by the address space. (The filesystem is now persistent, multi-client, permission-enforcing, and crash-atomic — see the LIMITATIONS filesystem note for the residual operational limits.)

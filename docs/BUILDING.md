@@ -80,12 +80,17 @@ Each of these does a clean build with the relevant `*_SELFTEST` (or `SMP`) flag,
 | Target | Asserts |
 |---|---|
 | `make smoke` | Boots to the ring-3 login prompt with no fault/panic — the end-to-end boot check |
-| `make smoke-elf` | Loads a real multi-segment static-PIE ELF at a randomised base; W^X per `PT_LOAD` and correct `R_386_RELATIVE` relocation (`ELF_SELFTEST: PASS`) |
+| `make smoke-elf` | Loads a real multi-segment static-PIE ELF at a randomised base; W^X per `PT_LOAD` and correct `R_386_RELATIVE` relocation (`ELF_SELFTEST: PASS`). Deliberately an ELFCLASS32 image — this is what keeps the loader's 32-bit path gated |
+| `make smoke-elf64` | The same for an ELFCLASS64 static-PIE image: W^X per `PT_LOAD` and correct `R_X86_64_RELATIVE` (RELA) relocation (`ELF64_SELFTEST: PASS`) |
+| `make smoke-aslr` | The loader really randomises the image base across spawns, and every base keeps the premap inside one page table (`ASLR_SELFTEST: PASS`) |
 | `make smoke-preempt` | The timer preempts and time-slices two non-yielding ring-3 tasks (`PREEMPT_SELFTEST: PASS`) |
 | `make smoke-signal` | A task faults on purpose and its registered handler runs instead of being killed (`SIGNAL_SELFTEST: PASS`) |
 | `make smoke-proc` | Ring-3 process control: exit + kill + spawn + exec + grant + signal + wait (+ fault-wait) (`PROC_SELFTEST: PASS …`) |
+| `make smoke-cow` | Ring-3 copy-on-write / demand-zero contract: fresh heap reads zero, writing one page leaves its sibling zero (`COW_SELFTEST: PASS`) |
+| `make smoke-notify` | Async badge-carrying notifications, including the blocking wait (`NOTIFY_SELFTEST: PASS`) |
+| `make smoke-session` | Scripted integration: drives the real ring-3 shell over serial (`tools/session_test.py`) — auth and least privilege |
 | `make smoke-fs` | The ring-3 `fs_server` + a client drive the full path over IPC (`FS_SELFTEST: PASS`); `make smoke-fs STORAGE=ata` runs it against a real ATA image |
-| `make smoke-fs-persist` / `-perms` / `-conc` / `-wal` / `-large` | Filesystem persistence across reboot, per-file POSIX permissions, multi-client concurrency, the write-ahead journal replay, and large/double-indirect files (local) |
+| `make smoke-fs-persist` / `-perms` / `-conc` / `-wal` / `-large` | Filesystem persistence across reboot, per-file POSIX permissions, multi-client concurrency, the write-ahead journal replay, and large/double-indirect files (local). `-conc` is also the regression test for per-task x87/SSE context |
 | `make smoke-init-fs` | The `init`-delegated `fs_server` driven by an automated client end-to-end |
 | `make smoke-newlib` | The newlib libc port over the POSIX fd layer (`NEWLIB_SELFTEST: PASS`). First run fetches and builds newlib — see below |
 | `make smoke-smp` | Application processors come online and concurrently run scheduled tasks (`SMP_SELFTEST: PASS`); `SMP_CPUS=<n>` sets the core count |
@@ -95,9 +100,10 @@ Each of these does a clean build with the relevant `*_SELFTEST` (or `SMP`) flag,
 `newlib/` is an upstream dependency, not project source, so it is gitignored and
 absent from a fresh clone. The first target that needs the libc port runs
 `tools/build_newlib.sh`, which fetches newlib 4.5.0 from sourceware (verifying a
-pinned SHA-256), builds it against `newlib/tools/i686-elf-*` — thin wrappers
-aiming the host gcc at a 32-bit freestanding target — and installs it under
-`newlib/install`. It takes well under a minute and no-ops once built; `make
+pinned SHA-256), builds it against `newlib/tools/x86_64-elf-*` — thin wrappers
+aiming the host gcc at a 64-bit freestanding target, with flags kept in sync with
+`USERSPACE_CFLAGS` because objects from both are linked together — and installs it
+under `newlib/install`. It takes well under a minute and no-ops once built; `make
 clean` does not discard it. CI caches `newlib/install` on the script's hash.
 
 ### `make reproducible-build`
@@ -121,7 +127,11 @@ Pass flags as `make FLAG=VALUE`.
 | `MINIMAL_SECURE` | `0` | Strips optional kernel features for a smaller attack surface |
 | `SMP` | `0` | Brings up the application processors (multi-core). `SMP_CPUS` sets the guest core count |
 | `STORAGE_ATA` | `0` | Used by FS smoke/self-test targets to prefer the ATA path; at runtime the kernel always probes for a disk and falls back to the RAM vdisk when none is present. `BLOCKS_PER_DISK` sizes the volume |
-| `ELF_SELFTEST` | `0` | Embeds a real static-PIE ELF and runs an in-kernel loader + W^X + relocation self-test at boot |
+| `ELF_SELFTEST` | `0` | Embeds a real static-PIE ELF and runs an in-kernel loader + W^X + relocation self-test at boot (ELFCLASS32) |
+| `ELF64_SELFTEST` | `0` | Same, for an ELFCLASS64 static-PIE image — gates the x86-64 RELA relocation path. The image is loaded and inspected, never executed |
+| `ASLR_SELFTEST` | `0` | Spawns several PIE images and asserts the loader really randomises the image base |
+| `COW_SELFTEST` | `0` | Ring-3 copy-on-write / demand-zero contract |
+| `NOTIFY_SELFTEST` | `0` | Async badge-carrying notifications |
 | `PREEMPT_SELFTEST` | `0` | Runs the two-task preemption self-test at boot |
 | `SIGNAL_SELFTEST` | `0` | Runs the fault-signal self-test at boot |
 | `PROC_SELFTEST` | `0` | Runs the ring-3 process-control self-test at boot |
@@ -135,7 +145,9 @@ Pass flags as `make FLAG=VALUE`.
 
 ## Userspace programs
 
-Userspace programs (`init`, `shell`, `fs_server`, `hello`, `captest`, plus the self-test drivers) are compiled as **static-PIE** 32-bit ELF binaries (`EM_386`, `ET_DYN`, linked with `userspace/pie.ld`) and run in a compatibility-mode segment beneath the 64-bit kernel. `do_spawn` picks a random page-aligned load base and the kernel's loader applies `R_386_RELATIVE` relocations there. The `mkheadered` tool prepends a custom program header the loader consumes. A flat-binary fallback remains for non-ELF images (loaded at the fixed base). Larger userspace programs link against the newlib libc port over a per-process POSIX fd layer, with `malloc`/`sbrk`/`brk`.
+Userspace programs (`init`, `shell`, `fs_server`, `hello`, `captest`, plus the self-test drivers) are compiled as **static-PIE** 64-bit ELF binaries (`EM_X86_64`, `ET_DYN`, linked with `userspace/pie.ld`) and run under the GDT's 64-bit user code segment. `do_spawn` picks a random page-aligned load base and the kernel's loader applies `R_X86_64_RELATIVE` relocations there. The `mkheadered` tool prepends a custom program header the loader consumes. A flat-binary fallback remains for non-ELF images (loaded at the fixed base). Larger userspace programs link against the newlib libc port over a per-process POSIX fd layer, with `malloc`/`sbrk`/`brk`.
+
+The loader still supports ELFCLASS32 (`R_386_RELATIVE`), and `userspace/elftest.o` is deliberately still built 32-bit (`USERSPACE_CFLAGS_32`) so `make smoke-elf` keeps gating that path rather than silently duplicating `smoke-elf64`.
 
 ```bash
 make userspace       # build all userspace binaries

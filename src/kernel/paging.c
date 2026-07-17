@@ -114,6 +114,7 @@ int page_ref_dec(uint32_t phys_addr) {
 }
 
 void ensure_lapic_mapped(uint64_t *root);
+static void kstack_guards_init(void);   /* defined below per_task_kstacks */
 
 /* ---- The kernel's own view ------------------------------------------------
  *
@@ -184,6 +185,27 @@ static void pd_map_range(uint64_t *pdir, uint64_t start, uint64_t end,
  * No PAGE_GLOBAL anywhere, though ensure_lapic_mapped sets it on its own split
  * PDEs: a global entry survives the CR3 reload these directories are installed
  * with, so the permissions would only be half in effect. */
+/* Make one 4 KiB page of the kernel's own mapping absent, so touching it faults.
+ * Only meaningful below KERN_SPLIT_PDES, where that mapping is 4 KiB pages
+ * rather than 2 MiB — above it there is no PTE to clear and this refuses rather
+ * than silently doing nothing at the wrong granularity. Returns 0 if the page
+ * is now absent. */
+static int kern_page_set_absent(uint64_t vaddr) {
+    extern uint64_t high_pdpt[512];
+    uint64_t phys = virt_to_phys(vaddr);
+    if ((phys >> 21) >= KERN_SPLIT_PDES) return -1;
+    if ((phys & 0xFFFULL) != 0) return -1;          /* not page-aligned */
+
+    uint64_t *kern_pd = (uint64_t *)PHYS_KVA(high_pdpt[510] & PTE_ADDR_MASK);
+    uint64_t pde = kern_pd[phys >> 21];
+    if (!(pde & PAGE_PRESENT) || (pde & PAGE_PS)) return -1;
+
+    uint64_t *pt = (uint64_t *)PHYS_KVA(pde & PTE_ADDR_MASK);
+    pt[(phys >> 12) & 511] = 0;
+    __asm__ volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
+    return 0;
+}
+
 static uint64_t build_pd(uint64_t low_flags, uint64_t huge_flags) {
     uint64_t pd_phys = alloc_user_physical_page();
     if (pd_phys == 0) return 0;
@@ -390,6 +412,10 @@ void paging_init(void) {
      * it to AP_CR3_CELL), so they inherit whatever view exists at that moment
      * and need no fixup of their own. */
     kernel_remap_init();
+    /* Needs the 4 KiB kernel mapping kernel_remap_init just installed, and must
+     * stay ahead of smp_bringup() for the same reason it does: the APs inherit
+     * this CR3, so a guard unmapped now needs no cross-CPU shootdown. */
+    kstack_guards_init();
     return;
 }
 
@@ -401,6 +427,46 @@ void paging_init(void) {
  * refuse to place user pages over kernel state. With the kernel at KERNEL_VMA
  * no kernel address is a user address, so that function and its guards are gone. */
 static uint8_t per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2] __attribute__((aligned(4096)));
+
+/* Count of stack guards actually unmapped; read by the gated self-test, which
+ * would otherwise pass just as happily if this loop never ran. */
+uint32_t kstack_guards_armed = 0;
+
+#ifdef WX_SELFTEST
+/* per_task_kstacks is file-local and should stay that way; the self-test needs
+ * the guard address without the array coming with it. Gated, so the ship build
+ * does not carry an accessor into the kernel's stacks at all. */
+uint64_t kstack_guard_vaddr(int id) {
+    if (id < 0 || id >= MAX_TASKS) return 0;
+    return (uint64_t)(uintptr_t)per_task_kstacks[id];
+}
+#endif
+
+/* Unmap the guard page below every task's kernel stack.
+ *
+ * create_user_pagedir has always carved a page off the bottom of each stack
+ * area and called it a guard, but only ever used it to offset stack_base — the
+ * page stayed mapped and its present bit was never touched. So a kernel stack
+ * overflow ran straight through the "guard" into the next task's stack and
+ * corrupted it silently, which is the failure the guard exists to make loud.
+ * The name was there; the protection was not.
+ *
+ * Doing it here rather than per-task is what keeps it simple: the stacks are a
+ * static array that never moves, so their guards are a property of the image,
+ * not of any task. One pass at boot, before the APs exist, means no TLB
+ * shootdown and nothing to redo when a task slot is reused.
+ *
+ * Slot 0 is skipped: task 0 keeps the kernel_stacks[] entry create_task gave it
+ * (create_user_pagedir returns early for it and never rebinds the stack), so
+ * per_task_kstacks[0] is never a live stack and unmapping its guard would
+ * protect nothing. Task 0's own stack has no guard slot and is only 16-byte
+ * aligned — guarding it needs a layout change, not this loop. */
+static void kstack_guards_init(void) {
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (kern_page_set_absent((uint64_t)(uintptr_t)per_task_kstacks[i]) == 0)
+            kstack_guards_armed++;
+    }
+}
 
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
@@ -553,6 +619,11 @@ void create_user_pagedir(uint32_t task_id) {
      * notably the Argon2id password hash run from SYS_AUTH, which stacks several
      * 1 KiB blocks and overflowed the old 8 KiB stack (login hung). */
     uint8_t *stack_area = per_task_kstacks[task_id];
+    /* The first page of the area is the guard, unmapped once at boot by
+     * kstack_guards_init. The stack starts above it and grows down onto it, so
+     * an overflow faults on the guard instead of reaching the previous task's
+     * stack. Nothing to do per task: the guard is a property of the static
+     * array, and a reused slot inherits the same absent page. */
     uint64_t guard_vaddr = (uint64_t)stack_area;
     uint64_t stack_base = guard_vaddr + PAGE_SIZE;
     tasks[task_id].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;

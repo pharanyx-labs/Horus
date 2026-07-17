@@ -102,9 +102,13 @@ The timer preempts and switches between mutually distrusting ring-3 tasks (and, 
 
 All kernel code runs at the same privilege level with access to all kernel data; a bug in the terminal driver has the same blast radius as one in the capability system.
 
-### Kernel stacks have no guard page
+### Only ring-3 tasks' kernel stacks are guarded
 
-`create_user_pagedir` computes a `guard_vaddr` at the bottom of each task's kernel stack area and then uses it only to offset `stack_base` by one page. The page is never unmapped and its present bit is never cleared, so a kernel stack overflow writes straight through it into the neighbouring task's stack, silently. The name is there; the protection is not. Now that `.bss` is mapped at 4 KiB granularity this is a small change (clear the present bit on that PTE, plus a TLB shootdown — task slots are reused, so another CPU may hold a stale mapping for the address). Also unguarded: the BSP boot stack, the three 4 KiB IST stacks (thin for a double-fault handler), and the early-handler stack.
+Each task's kernel stack now sits above an unmapped guard page, so an overflow faults on the guard instead of running into the previous task's stack. This is gated by `make smoke-wx`, which checks the guard is absent *and* that the stack above it is still present — unmapping one page too many would take the stack with it.
+
+It covers slots 1..63, i.e. every task that runs ring-3 code. **Task 0 — the kernel's own boot/idle task — is not guarded**: it keeps the `kernel_stacks[]` entry `create_task` gives it (`create_user_pagedir` returns early for task 0 and never rebinds the stack), and that array is only 16-byte aligned with no guard slot, so guarding it needs a layout change rather than an unmap. Also unguarded: the BSP boot stack, the three 4 KiB IST stacks (thin for a double-fault handler), and the early-handler stack.
+
+There are two per-task kernel stack arrays, which is one more than the design needs: `create_task` binds `kernel_stack_top` to `kernel_stacks[id]` (2 MiB, `scheduler.c`) and then `create_user_pagedir` immediately rebinds it to `per_task_kstacks[id]` (4 MiB, `paging.c`) for every task but 0. So `kernel_stacks[1..63]` is written once and never used, and `per_task_kstacks[0]` is never used — close to 2 MiB of `.bss` that exists to be overwritten. That matters more than it looks: `.bss` ends ~600 KiB below `USER_PHYS_BASE`, and the link-time `ASSERT` guarding that collision is the only thing standing between a routine `MAX_TASKS` bump and the allocator handing out live kernel memory.
 
 ### No KASLR
 

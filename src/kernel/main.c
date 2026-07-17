@@ -113,6 +113,9 @@ void kernel_main(uint32_t mb_info) {
     cpu_protections_selftest();   /* boot continues; make smoke-cpu asserts on it */
 #endif   /* SMEP/SMAP — must follow feature detection */
     entropy_init();
+    /* Must follow entropy_init (needs the CSPRNG) and must run from a frame
+     * that never returns — kernel_main is both. See stack_protector_init. */
+    stack_protector_init();
     init_syscall_instruction_path();
 #ifndef MINIMAL_SECURE
     ramfs_init();   /* -> storage_init(): probes for an ATA disk (persistent) and

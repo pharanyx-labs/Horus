@@ -115,6 +115,133 @@ int page_ref_dec(uint32_t phys_addr) {
 
 void ensure_lapic_mapped(uint64_t *root);
 
+/* ---- The kernel's own view ------------------------------------------------
+ *
+ * multiboot.S builds ONE page directory (`pd`) covering physical [0, 1 GiB) as
+ * 2 MiB pages with P|W and no NX, then hangs it off three separate entries:
+ *
+ *     pml4[0] -> pdpt[0]  -> pd      the low identity map
+ *     high_pdpt[2]        -> pd      the PHYS_KVA window
+ *     high_pdpt[510]      -> pd      the kernel's own image mapping
+ *
+ * (multiboot.S says so itself: "One `pd` is aliased by all three of the entries
+ * below; a write here is visible through every view.")
+ *
+ * The consequence is that the kernel's .text is writable, its .rodata is
+ * writable *and* executable, and its .data/.bss are executable — via three
+ * aliases, any one of which suffices. EFER.NXE has been on the whole time; no
+ * kernel PTE has ever set the NX bit. linker64.ld already page-aligns every
+ * section and exports their bounds, so the information needed to do better is
+ * present and simply unused.
+ *
+ * Tightening `pd` in place is not an option: it is the same memory behind all
+ * three views, so NX-ing it would unmap the kernel out from under itself
+ * mid-instruction. Each consumer needs its own directory first.
+ *
+ * This function does that for high_pdpt[510] and then maps the image one
+ * section at a time, honouring what linker64.ld already laid out:
+ *
+ *     .text            r-x    read-only, executable
+ *     .rodata          r--    read-only, never executable
+ *     .data .bss       rw-    writable, never executable
+ *     everything else  ---    absent
+ *
+ * The tables start out entirely absent and each section opts back in, so the
+ * gaps — the low megabyte, the dead .boot stage, and the slack between .bss and
+ * USER_PHYS_BASE — are unmapped by construction rather than by remembering to
+ * punch them out. A stray kernel pointer into any of them faults instead of
+ * quietly hitting whatever happened to be there.
+ */
+
+/* [0, 16 MiB): the kernel image (~1..15.4 MiB) plus slack to USER_PHYS_BASE.
+ * Only PDE 0 strictly needs splitting for the section boundaries, but
+ * per_task_kstacks spans PDEs 0..2 and guard pages will need those at 4 KiB
+ * too; splitting the whole 16 MiB costs 5 extra pages and removes "which PDE is
+ * this address in" from every later question. */
+#define KERN_SPLIT_PDES  8
+
+/* Map physical [start, end) at its kernel VA with `flags`. Rounds outward to
+ * whole pages: linker64.ld page-aligns every section boundary, so this only
+ * matters if a future section stops being aligned, and covering too much is the
+ * safe direction — the alternative is silently leaving the tail page absent. */
+static void kern_map_range(uint64_t *kern_pd, uint64_t start, uint64_t end,
+                           uint64_t flags) {
+    for (uint64_t p = start & ~0xFFFULL; p < end; p += PAGE_SIZE) {
+        uint64_t pde = p >> 21;
+        if (pde >= KERN_SPLIT_PDES) return;   /* past the 4 KiB-mapped window */
+        uint64_t *pt = (uint64_t *)PHYS_KVA(kern_pd[pde] & PTE_ADDR_MASK);
+        pt[(p >> 12) & 511] = p | flags;
+    }
+}
+
+static void kernel_remap_init(void) {
+    extern uint64_t high_pdpt[512];
+    extern uint64_t pd[512];
+    /* linker64.ld exports these; every one is 4 KiB-aligned, which is what makes
+     * per-section permissions expressible at page granularity at all. */
+    extern uint8_t __text_start[],   __text_end[];
+    extern uint8_t __rodata_start[], __rodata_end[];
+    extern uint8_t __data_start[],   __bss_end[];
+
+    uint64_t kern_pd_phys = alloc_user_physical_page();
+    if (kern_pd_phys == 0) return;   /* keep the alias: a partial view is worse */
+    uint64_t *kern_pd = (uint64_t *)PHYS_KVA(kern_pd_phys);
+
+    /* Above the split, inherit `pd` verbatim. */
+    for (int i = 0; i < 512; i++) kern_pd[i] = pd[i];
+
+    /* Below it, 4 KiB page tables that start out entirely absent. */
+    for (int i = 0; i < KERN_SPLIT_PDES; i++) {
+        uint64_t pt_phys = alloc_user_physical_page();
+        if (pt_phys == 0) return;    /* nothing installed yet; the alias stands */
+        uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
+        for (int j = 0; j < 512; j++) pt[j] = 0;
+        kern_pd[i] = pt_phys | PAGE_PRESENT | PAGE_WRITE;
+    }
+
+    /* Now the image opts in, section by section. No PAGE_GLOBAL on any of these,
+     * though ensure_lapic_mapped sets it on its own split PDEs: a global entry
+     * survives the CR3 reload below, so these permissions would only be half in
+     * effect. .boot/.boot.data are deliberately absent here — they are linked
+     * VA == PA and reached through the low identity map, and are dead once
+     * long_mode_low has run. */
+    kern_map_range(kern_pd, virt_to_phys(__text_start), virt_to_phys(__text_end),
+                   PAGE_PRESENT);                                     /* r-x */
+    kern_map_range(kern_pd, virt_to_phys(__rodata_start), virt_to_phys(__rodata_end),
+                   PAGE_PRESENT | PAGE_NX);                           /* r-- */
+    kern_map_range(kern_pd, virt_to_phys(__data_start), virt_to_phys(__bss_end),
+                   PAGE_PRESENT | PAGE_WRITE | PAGE_NX);              /* rw- */
+
+    /* The swap. Everything above was written through the PHYS_KVA window, so
+     * the live tables have not been touched until this single aligned 8-byte
+     * store — which the page walker either sees or does not. There is no
+     * half-written state to be caught executing in. */
+    high_pdpt[510] = kern_pd_phys | PAGE_PRESENT | PAGE_WRITE;
+
+    /* Reload CR3 rather than invlpg: this replaced a PDPTE covering a gigabyte,
+     * and none of the entries under it are global. */
+    uint64_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
+
+    /* CR0.WP, without which everything above is decoration.
+     *
+     * With WP clear — and it has been clear since boot, CR0 reads 0x80000013 —
+     * a supervisor write IGNORES the PTE's read/write bit completely. The
+     * read-only mappings just installed would be honoured for ring 3 and
+     * silently disregarded for ring 0, which is the only ring that can reach
+     * them. Verified the hard way: with the r-x PTEs live but WP clear, a write
+     * to __text_start still landed.
+     *
+     * NX needs no such switch — EFER.NXE alone enforces it — so the executable
+     * half of W^X worked and the read-only half did not. Set it last, once the
+     * tables it applies to are actually in place. */
+    uint64_t cr0;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= (1UL << 16);
+    __asm__ volatile ("mov %0, %%cr0" :: "r"(cr0) : "memory");
+}
+
 void paging_init(void) {
     init_user_page_allocator();
     /* Reserve and zero the shared zero page up front, so the very first
@@ -138,6 +265,11 @@ void paging_init(void) {
         pml4[510] = virt_to_phys(pml4) | 0x3;
     }
     ensure_lapic_mapped(NULL);
+    /* Last: give the kernel's own mapping a page directory of its own. Must stay
+     * ahead of smp_bringup() — the APs load the BSP's live CR3 (smp.c publishes
+     * it to AP_CR3_CELL), so they inherit whatever view exists at that moment
+     * and need no fixup of their own. */
+    kernel_remap_init();
     return;
 }
 

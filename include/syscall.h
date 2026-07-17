@@ -225,8 +225,8 @@ static inline void sys_yield(void) {
  * handler. On a ring-3 fault the kernel enters the handler at ring 3 with the
  * signal number in ebx and the faulting address in ecx, instead of killing the
  * task. Returns 0 on success, -1 if the handler is not in the user code window. */
-static inline int sys_signal(uint32_t handler) {
-    return syscall(SYS_SIGACTION, handler, 0, 0);
+static inline int sys_signal(uintptr_t handler) {
+    return syscall(SYS_SIGACTION, (uint64_t)handler, 0, 0);
 }
 
 /* Called from a handler to resume the exact pre-signal context. Does not return

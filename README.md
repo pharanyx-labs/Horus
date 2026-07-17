@@ -120,7 +120,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | W^X (kernel) — own image mapped `.text` r-x, `.rodata` r--, `.data`/`.bss` rw-NX, `CR0.WP` set | ✅ Working |
 | Per-task x87/SSE context (FXSAVE/FXRSTOR on the ring-3 boundary) | ✅ Working |
 | Kernel stack protector (`-fstack-protector-strong`, CSPRNG-seeded guard) | ✅ Working |
-| ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 8.91 bits, the structural ceiling) | ✅ Working |
+| ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 30 bits, image placed in a 4 TiB window above 16 GiB) | ✅ Working |
 | Table-driven syscall dispatch (central capability gate, 0–75) | ✅ Working |
 | User authentication + lockout (Argon2id memory-hard hashing) | ✅ Working |
 | Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
@@ -139,7 +139,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
-| Rust security-core unit tests (57) + GitHub Actions CI (26 jobs, 25 gating) | ✅ Working |
+| Rust security-core unit tests (59) + GitHub Actions CI (27 jobs, 26 gating) | ✅ Working |
 | Headless QEMU self-tests (21): boot, kernel W^X sweep, CR4 protections, ELF/W^X (32- and 64-bit), ASLR, preemption, signals, process-control, COW, notifications, session, SMP, fs (×7), newlib | ✅ Working |
 | Scripted integration session: drives the real ring-3 shell over serial (auth + least privilege) | ✅ Working |
 | Reproducible builds | ✅ Working |
@@ -176,7 +176,7 @@ Default login: `user` / `password` (or `root` / `rootpass`).
 ### Verify it
 
 ```bash
-make test               # Rust unit tests (57) + a clean full build
+make test               # Rust unit tests (59) + a clean full build
 make smoke              # headless QEMU boot to the ring-3 login prompt, no fault
 make smoke-proc         # ring-3 process control: exit/kill/spawn/exec/grant/signal/wait
 make reproducible-build # byte-for-byte deterministic kernel.elf

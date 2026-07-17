@@ -179,6 +179,12 @@ typedef struct platform_info {
 } platform_info_t;
 extern platform_info_t platform;
 #define MAX_CPUS 4
+/* Physical load address of the AP trampoline blob (the SIPI vector's target).
+ * Shared because two subsystems need it: smp.c stages the blob here, and
+ * paging.c keeps exactly this page of the low identity map present and
+ * executable — an AP far-jumps into it *after* enabling paging, so it is the
+ * only low address the kernel still executes from. MUST match ap_trampoline.S. */
+#define AP_TRAMP_PHYS 0x8000UL
 void users_init(void);
 
 

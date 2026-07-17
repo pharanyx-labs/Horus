@@ -31,8 +31,9 @@ static volatile int smp_cpus_online = 1;
  * single-CPU default build. Read by gdt.c. */
 volatile int smp_active = 0;
 
-/* Low-memory cells shared with the trampoline. MUST match ap_trampoline.S. */
-#define AP_TRAMP_PHYS        0x8000UL
+/* Low-memory cells shared with the trampoline. MUST match ap_trampoline.S.
+ * (AP_TRAMP_PHYS itself lives in kernel.h — paging.c needs it too, to keep that
+ * one page of the identity map alive for the trampoline to execute from.) */
 #define AP_STACK_BASE_CELL   0x8FD8UL
 #define AP_CR3_CELL          0x8FE0UL
 #define AP_ENTRY_CELL        0x8FE8UL

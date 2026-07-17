@@ -693,55 +693,35 @@ void load_staged_image_into(int tid, uint64_t load_base) {
         entry_point = elf_entry;
     } else {
 
+        /* Flat image (no ELF header): copy it verbatim to the load base. Only
+         * the gated self-test payloads take this path — everything shipped is a
+         * static-PIE ELF and goes through try_elf_load above.
+         *
+         * This is copy_to_user for the same reasons the PT_LOAD copy above is.
+         * It used to hand-walk the task's page tables and dereference every
+         * level at its PHYSICAL address, which resolved only because the kernel
+         * kept a low identity map of [0, 1 GiB) — a writable, executable third
+         * view of the whole kernel image, kept alive for this one loop.
+         * copy_to_user does the same walk with present/user/write checks,
+         * handles huge pages, reaches the frame through the higher-half alias,
+         * and fails closed on an unmapped page instead of skipping it and
+         * loading a partial image.
+         *
+         * It also retires an inverted SMAP bracket: the old code CLEARed AC
+         * before the copy and SET it after, i.e. left SMAP disabled on the way
+         * out, which is the opposite of the intent. That was inert for as long
+         * as the SMAP feature bit was misread as absent and became live the
+         * moment the CPUID subleaf bug was fixed. Resolving the frame under the
+         * kernel mapping needs no AC window at all. */
         uint32_t copy_sz = armed_hdr.size;
         if (copy_sz > 0x200000) copy_sz = 0x200000;
-        extern platform_info_t platform;
-        uint64_t tcr30 = tasks[get_current_task()].cr3;
-        if (platform.has_smap) { asm volatile("clac" ::: "memory"); }
         for (uint32_t off = 0; off < copy_sz; ) {
-            uint32_t va = load_base + off;
-            uint64_t dphys = (uint64_t)va;
-            if (tcr30) {
-                uint64_t *p4 = (uint64_t *)tcr30;
-                uint64_t ii4 = ((uint64_t)va >> 39) & 0x1ff;
-                uint64_t ee4 = p4[ii4];
-                if (ee4 & 1) {
-                    uint64_t *pp3 = (uint64_t *)(ee4 & ~0xfffULL);
-                    uint64_t ii3 = ((uint64_t)va >> 30) & 0x1ff;
-                    uint64_t ee3 = pp3[ii3];
-                    if (ee3 & 1) {
-                        uint64_t *pp2 = (uint64_t *)(ee3 & ~0xfffULL);
-                        uint64_t ii2 = ((uint64_t)va >> 21) & 0x1ff;
-                        uint64_t ee2 = pp2[ii2];
-                        if (ee2 & 1) {
-                            if (ee2 & (1ULL << 7)) {
-                                dphys = (ee2 & ~0x1fffffULL) | ((uint64_t)va & 0x1fffffULL);
-                            } else {
-                                uint64_t *pp1 = (uint64_t *)(ee2 & ~0xfffULL);
-                                uint64_t ii1 = ((uint64_t)va >> 12) & 0x1ff;
-                                uint64_t ee1 = pp1[ii1];
-                                if (ee1 & 1) {
-                                    dphys = (ee1 & ~0xfffULL) | ((uint64_t)va & 0xfffULL);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            /* If the page walk above did not find a present mapping, dphys was
-             * left equal to va (a user virtual address). Writing to that value
-             * as a physical address would silently corrupt kernel memory at
-             * physical va. Skip the copy for unmapped pages rather than
-             * writing to the wrong physical location. */
-            if (dphys == (uint64_t)va) { off += 4096; continue; }
-            uint8_t *d = (uint8_t *)dphys;
-            uint32_t poff = va & 0xfff;
-            uint32_t chunk = 4096 - poff;
-            if (chunk > copy_sz - off) chunk = copy_sz - off;
-            for (uint32_t i = 0; i < chunk; i++) d[i] = loader_staging[off + i];
+            uint32_t chunk = copy_sz - off;
+            if (chunk > USER_MEM_MAX_COPY) chunk = USER_MEM_MAX_COPY;
+            if (copy_to_user((void *)(uintptr_t)(load_base + off),
+                             loader_staging + off, chunk) != 0) break;
             off += chunk;
         }
-        if (platform.has_smap) { asm volatile("stac" ::: "memory"); }
     }
 
 

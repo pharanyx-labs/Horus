@@ -27,9 +27,20 @@
  * This blob stays linked at 0x8000 and keeps using low addresses even though the
  * kernel now runs at KERNEL_VMA: an AP starts in REAL MODE, and the far jump at
  * the end of the protected-mode stage is absolute and executes with paging
- * already enabled on the kernel's CR3. That is why the kernel's low identity map
- * (pml4[0]) can never be dropped. The 64-bit cells above are read after paging is
- * on, so they legitimately hold high kernel VAs.
+ * already enabled on the kernel's CR3. So this page — and only this page — must
+ * stay identity-mapped once paging is on. paging_init (kernel_remap_init) keeps
+ * exactly it, read-only and executable, and drops the rest of the low map: it
+ * used to cover [0, 1 GiB) writable and executable, a third RWX view of the whole
+ * kernel image. The BSP writes this blob here through the PHYS_KVA window and the
+ * AP executes it through the identity map, so the two aliases are write-only and
+ * execute-only respectively and neither is W+X.
+ *
+ * (pml4[0] is not dropped either, but that is incidental: the LAPIC at
+ * 0xFEE00000 decodes to pml4[0]/pdpt[3], a different PDPT slot. Only pdpt[0] is
+ * replaced.)
+ *
+ * The 64-bit cells above are read after paging is on, so they legitimately hold
+ * high kernel VAs.
  */
 
 #define AP_STACK_BASE_CELL 0x8FD8

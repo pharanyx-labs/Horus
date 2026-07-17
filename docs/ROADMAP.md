@@ -15,13 +15,15 @@ effort.
 ## Where things stand
 
 The foundation is a working x86-64 capability microkernel that boots a ring-3
-`init` supervising a ring-3 shell, and passes a headless boot smoke-test plus
-five runtime self-tests in CI. Already in place:
+`init` supervising a ring-3 shell, and passes nineteen headless QEMU self-tests
+in CI. Already in place:
 
-- **Kernel core** — long-mode microkernel; capability-based access control with
-  table-driven, fail-closed syscall dispatch; preemptive scheduling; ring-3
-  fault signals delivered to a registered handler; per-spawn ASLR; W^X user
-  memory; SMEP/SMAP; a tamper-evident HMAC-chained audit log.
+- **Kernel core** — long-mode microkernel linked into the higher half at
+  `0xFFFFFFFF80000000`, so no kernel address is a user address; capability-based
+  access control with table-driven, fail-closed syscall dispatch; preemptive
+  scheduling; ring-3 fault signals delivered to a registered handler; per-spawn
+  ASLR; W^X user memory; per-task x87/SSE context; SMEP/SMAP; a tamper-evident
+  HMAC-chained audit log.
 - **Process control** — a ring-3 `init` (PID 1) launches at boot and spawns,
   capability-endows, and *blocking*-supervises the shell (`SYS_WAIT`). A task
   can spawn a child from ring 3 (`SYS_SPAWN`, which hands the caller a `CAP_TCB`
@@ -48,17 +50,20 @@ five runtime self-tests in CI. Already in place:
   by identity via `SYS_IPC_REPLY_TO`), and multi-block updates are crash-atomic via
   an HMAC-authenticated write-ahead redo journal replayed at mount (`make smoke-fs`,
   `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`).
-- **Userspace runtime** — a demand-paged heap via `sbrk`/`brk`, a userspace
-  `malloc`, and a newlib libc port over a per-process POSIX fd layer
-  (`make smoke-newlib`).
-- **CI** — twenty gated jobs: `rust` (`cargo test` + `clippy -D warnings`),
-  `kernel` (build + ISO), `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE matrix), the
-  headless QEMU boot `smoke`, thirteen runtime self-tests (`smoke-elf`,
-  `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-notify`, `smoke-smp`,
-  `smoke-fs`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`,
-  `smoke-fs-wal`, `smoke-fs-large`, `smoke-newlib`), the scripted
-  `smoke-session` integration test, a `reproducible` build check, and a
-  `security` SAST/SBOM scan. The whole filesystem suite (persistence,
+- **Userspace runtime** — ring-3 tasks run the 64-bit ABI (`EM_X86_64`
+  static-PIE, relocated at load), with a demand-paged heap via `sbrk`/`brk`, a
+  userspace `malloc`, and an `x86_64-elf` newlib libc port over a per-process
+  POSIX fd layer (`make smoke-newlib`). The only 32-bit code left is the boot
+  on-ramp that must be: the multiboot entry stage and the AP SIPI trampoline.
+- **CI** — twenty-three gated jobs (twenty-four total; the `security` SAST/SBOM
+  scan is advisory): `rust` (`cargo test` + `clippy -D warnings`), `kernel`
+  (build + ISO), `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE matrix), the headless
+  QEMU boot `smoke`, seventeen runtime self-tests (`smoke-elf`, `smoke-elf64`,
+  `smoke-aslr`, `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-cow`,
+  `smoke-notify`, `smoke-smp`, `smoke-fs`, `smoke-fs-perms`, `smoke-fs-conc`,
+  `smoke-fs-persist`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-init-fs`,
+  `smoke-newlib`), the scripted `smoke-session` integration test, and a
+  `reproducible` build check. The whole filesystem suite (persistence,
   permissions, concurrency, journal crash-recovery, large files), the newlib
   libc port, and async notifications are now CI-enforced, not local-only.
 

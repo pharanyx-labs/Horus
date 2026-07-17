@@ -125,13 +125,11 @@ void paging_init(void) {
         for (int i = 0; i < PAGE_SIZE; i++) z[i] = 0;
     }
     set_tss_kernel_stack(KERNEL_TSS_STACK);
-    extern platform_info_t platform;
-    if (platform.has_smap) {
-        uint64_t cr4;
-        asm volatile("mov %%cr4, %0" : "=r"(cr4));
-        cr4 |= (1ULL << 21);
-        asm volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
-    }
+    /* SMEP/SMAP are enabled by cpu_enable_protections(), not here. An SMAP
+     * enable block used to sit at this point, but paging_init() runs before
+     * cpu_detect_features() (see kernel_main), so it tested a platform struct
+     * that was still zeroed .bss and never once fired. It read as protection
+     * that was not there. */
     extern uint64_t pml4[512];
     if ((pml4[510] & 0x1) == 0) {
         /* Self-map. The entry needs pml4's PHYSICAL address; `(uint64_t)pml4` is

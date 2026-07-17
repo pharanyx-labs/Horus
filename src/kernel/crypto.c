@@ -46,9 +46,8 @@ void cpu_detect_features(void) {
 
 /*
  * Enable supervisor-mode execution/access prevention in CR4. MUST be called
- * after cpu_detect_features() (which fills platform.has_smep/has_smap). The
- * SMAP enable block in paging_init() runs before feature detection, so this is
- * the authoritative place that actually turns the protections on:
+ * after cpu_detect_features() (which fills platform.has_smep/has_smap), and is
+ * the only place that turns these on:
  *   SMEP (CR4.20) — ring 0 cannot execute ring-3 (user) pages, blocking a large
  *                   class of privilege-escalation exploits that redirect kernel
  *                   execution into attacker-controlled userspace code.

@@ -67,8 +67,17 @@ static void smp_busy_delay(int iters) {
 
 #ifdef SMP
 /* Per-CPU idle stacks. APs index by LAPIC id (see ap_trampoline.S), so MAX_CPUS
- * slots cover ids 0..MAX_CPUS-1; slot 0 (the BSP's) is unused on this path. */
+ * slots cover ids 0..MAX_CPUS-1; slot 0 (the BSP's) is unused on this path.
+ * An AP whose id has no slot parks in the trampoline rather than running off
+ * the end of this array. */
 static uint8_t ap_idle_stacks[MAX_CPUS][AP_IDLE_STACK_SIZE] __attribute__((aligned(16)));
+
+/* ap_trampoline.S bounds the LAPIC id against its own AP_MAX_CPUS: it is
+ * assembled with -x assembler-with-cpp and cannot include a header full of C
+ * declarations, so the value is duplicated there. Pin the two together — if
+ * this fires, update AP_MAX_CPUS in src/boot/ap_trampoline.S to match. */
+_Static_assert(MAX_CPUS == 4,
+               "MAX_CPUS changed: update AP_MAX_CPUS in src/boot/ap_trampoline.S to match");
 
 extern uint8_t ap_trampoline_start[], ap_trampoline_end[];
 extern void ap_load_kernel_segments(void);   /* lowlevel64.S */

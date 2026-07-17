@@ -39,6 +39,10 @@
 #define LAPIC_BASE         0xFEE00000
 #define LAPIC_ID_REG       0x20
 #define COM1               0x3F8
+/* Number of idle-stack slots the BSP allocated: must equal MAX_CPUS in
+ * src/include/kernel.h. A _Static_assert in smp.c pins the two together, since
+ * this file cannot include a header full of C declarations. */
+#define AP_MAX_CPUS        4
 
 .section .text
 .code16
@@ -138,6 +142,17 @@ long_mode:
     movl LAPIC_ID_REG(%rbx), %eax
     shrl $24, %eax
     andl $0xFF, %eax
+
+    /* ap_idle_stacks has exactly AP_MAX_CPUS slots, but the id just read is 8
+     * bits wide and the BSP wakes the APs with a broadcast INIT-SIPI-SIPI —
+     * "all excluding self", no enumeration — so every core on the machine
+     * arrives here regardless of how many slots exist. Without this check an id
+     * >= AP_MAX_CPUS computes a stack top past the end of the array and the
+     * first push silently corrupts whatever .bss follows it. Park instead: a
+     * core that sits out is a core fewer, not a corrupted kernel. */
+    cmpl $AP_MAX_CPUS, %eax
+    jae  ap_park
+
     incl %eax                        /* (apic_id + 1) */
     movl $AP_IDLE_STACK_SIZE, %ecx
     imulq %rcx, %rax                 /* (apic_id + 1) * size */
@@ -150,6 +165,17 @@ long_mode:
     movl $AP_ENTRY_CELL, %edi
     movq (%rdi), %rax
     jmp  *%rax
+
+/* No idle-stack slot for this core. Announce it on the serial line (the BSP's
+ * bringup wait is bounded and will proceed without us) and halt. Reached with
+ * no usable stack, so this must not call anything. */
+ap_park:
+    movw $COM1, %dx
+    movb $'X', %al
+    outb %al, %dx
+    cli
+1:  hlt
+    jmp 1b
 
 .align 16
 ap_gdt:

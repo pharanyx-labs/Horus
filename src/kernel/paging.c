@@ -138,12 +138,19 @@ void ensure_lapic_mapped(uint64_t *root);
  * three views, so NX-ing it would unmap the kernel out from under itself
  * mid-instruction. Each consumer needs its own directory first.
  *
- * This function does exactly that for high_pdpt[510], and *only* that: the new
- * tables reproduce today's permissions bit for bit. That is deliberate. It is
- * the step most likely to fail — a mistake here triple-faults with no console —
- * so it carries no policy change, and any fault it produces is a table
- * construction bug rather than a permissions one. Permissions land next, on
- * tables already proven to work.
+ * This function does that for high_pdpt[510] and then maps the image one
+ * section at a time, honouring what linker64.ld already laid out:
+ *
+ *     .text            r-x    read-only, executable
+ *     .rodata          r--    read-only, never executable
+ *     .data .bss       rw-    writable, never executable
+ *     everything else  ---    absent
+ *
+ * The tables start out entirely absent and each section opts back in, so the
+ * gaps — the low megabyte, the dead .boot stage, and the slack between .bss and
+ * USER_PHYS_BASE — are unmapped by construction rather than by remembering to
+ * punch them out. A stray kernel pointer into any of them faults instead of
+ * quietly hitting whatever happened to be there.
  */
 
 /* [0, 16 MiB): the kernel image (~1..15.4 MiB) plus slack to USER_PHYS_BASE.
@@ -153,9 +160,28 @@ void ensure_lapic_mapped(uint64_t *root);
  * this address in" from every later question. */
 #define KERN_SPLIT_PDES  8
 
+/* Map physical [start, end) at its kernel VA with `flags`. Rounds outward to
+ * whole pages: linker64.ld page-aligns every section boundary, so this only
+ * matters if a future section stops being aligned, and covering too much is the
+ * safe direction — the alternative is silently leaving the tail page absent. */
+static void kern_map_range(uint64_t *kern_pd, uint64_t start, uint64_t end,
+                           uint64_t flags) {
+    for (uint64_t p = start & ~0xFFFULL; p < end; p += PAGE_SIZE) {
+        uint64_t pde = p >> 21;
+        if (pde >= KERN_SPLIT_PDES) return;   /* past the 4 KiB-mapped window */
+        uint64_t *pt = (uint64_t *)PHYS_KVA(kern_pd[pde] & PTE_ADDR_MASK);
+        pt[(p >> 12) & 511] = p | flags;
+    }
+}
+
 static void kernel_remap_init(void) {
     extern uint64_t high_pdpt[512];
     extern uint64_t pd[512];
+    /* linker64.ld exports these; every one is 4 KiB-aligned, which is what makes
+     * per-section permissions expressible at page granularity at all. */
+    extern uint8_t __text_start[],   __text_end[];
+    extern uint8_t __rodata_start[], __rodata_end[];
+    extern uint8_t __data_start[],   __bss_end[];
 
     uint64_t kern_pd_phys = alloc_user_physical_page();
     if (kern_pd_phys == 0) return;   /* keep the alias: a partial view is worse */
@@ -164,22 +190,27 @@ static void kernel_remap_init(void) {
     /* Above the split, inherit `pd` verbatim. */
     for (int i = 0; i < 512; i++) kern_pd[i] = pd[i];
 
-    /* Below it, the same mappings re-expressed as 4 KiB PTEs — same frames,
-     * same bits, just nameable one page at a time. */
+    /* Below it, 4 KiB page tables that start out entirely absent. */
     for (int i = 0; i < KERN_SPLIT_PDES; i++) {
         uint64_t pt_phys = alloc_user_physical_page();
         if (pt_phys == 0) return;    /* nothing installed yet; the alias stands */
         uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
-        for (int j = 0; j < 512; j++) {
-            uint64_t frame = ((uint64_t)i << 21) | ((uint64_t)j << 12);
-            /* Deliberately NOT PAGE_GLOBAL, though ensure_lapic_mapped sets it
-             * on its split PDEs: a global entry survives the CR3 reload below,
-             * which would leave the later permission changes half-applied in
-             * the TLB. Also matches `pd`'s own 0x83 (no global bit). */
-            pt[j] = frame | PAGE_PRESENT | PAGE_WRITE;
-        }
+        for (int j = 0; j < 512; j++) pt[j] = 0;
         kern_pd[i] = pt_phys | PAGE_PRESENT | PAGE_WRITE;
     }
+
+    /* Now the image opts in, section by section. No PAGE_GLOBAL on any of these,
+     * though ensure_lapic_mapped sets it on its own split PDEs: a global entry
+     * survives the CR3 reload below, so these permissions would only be half in
+     * effect. .boot/.boot.data are deliberately absent here — they are linked
+     * VA == PA and reached through the low identity map, and are dead once
+     * long_mode_low has run. */
+    kern_map_range(kern_pd, virt_to_phys(__text_start), virt_to_phys(__text_end),
+                   PAGE_PRESENT);                                     /* r-x */
+    kern_map_range(kern_pd, virt_to_phys(__rodata_start), virt_to_phys(__rodata_end),
+                   PAGE_PRESENT | PAGE_NX);                           /* r-- */
+    kern_map_range(kern_pd, virt_to_phys(__data_start), virt_to_phys(__bss_end),
+                   PAGE_PRESENT | PAGE_WRITE | PAGE_NX);              /* rw- */
 
     /* The swap. Everything above was written through the PHYS_KVA window, so
      * the live tables have not been touched until this single aligned 8-byte
@@ -192,6 +223,23 @@ static void kernel_remap_init(void) {
     uint64_t cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
     __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
+
+    /* CR0.WP, without which everything above is decoration.
+     *
+     * With WP clear — and it has been clear since boot, CR0 reads 0x80000013 —
+     * a supervisor write IGNORES the PTE's read/write bit completely. The
+     * read-only mappings just installed would be honoured for ring 3 and
+     * silently disregarded for ring 0, which is the only ring that can reach
+     * them. Verified the hard way: with the r-x PTEs live but WP clear, a write
+     * to __text_start still landed.
+     *
+     * NX needs no such switch — EFER.NXE alone enforces it — so the executable
+     * half of W^X worked and the read-only half did not. Set it last, once the
+     * tables it applies to are actually in place. */
+    uint64_t cr0;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= (1UL << 16);
+    __asm__ volatile ("mov %0, %%cr0" :: "r"(cr0) : "memory");
 }
 
 void paging_init(void) {

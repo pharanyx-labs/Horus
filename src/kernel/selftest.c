@@ -468,7 +468,7 @@ static void elf64_build_min(uint64_t e_phoff, uint64_t p_offset,
  * the test would prove nothing. */
 static int elf64_narrow_checks_ok(const char **why) {
     const uint64_t HIGH = 0x100000000ULL;   /* one bit above the 32-bit window */
-    uint32_t entry = 0, img_end = 0;
+    uint64_t entry = 0, img_end = 0;
 
     elf64_build_min(64, 0, USER_AREA_BASE, 0, 0);
     if (try_elf_load(USER_AREA_BASE, &entry, &img_end) == -17) {
@@ -734,7 +734,7 @@ void aslr_selftest(void) {
     print("ASLR_SELFTEST: begin\n");
     if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ASLR_SELFTEST: FAIL embed-size\n"); return; }
 
-    uint32_t bases[ASLR_PROBE_SPAWNS];
+    uint64_t bases[ASLR_PROBE_SPAWNS];
     int got = 0;
     int saved = get_current_task();
 

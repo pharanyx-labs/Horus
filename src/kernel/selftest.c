@@ -7,6 +7,168 @@
 #include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the FS self-test harnesses */
 #endif
 
+#ifdef WX_SELFTEST
+/* Gated: prove the kernel's own image is mapped W^X — and, more importantly,
+ * that *no* mapping in the kernel half is both writable and executable.
+ *
+ * The per-section checks are the obvious half. The sweep is the half that
+ * matters: every hole found while building this policy was an ALIAS — a second
+ * mapping of the same frames with different bits. The kernel image was mapped
+ * three times over (identity, PHYS_KVA, higher-half) from one shared page
+ * directory; the physical window was RW+X across the whole image; the 2 MiB tail
+ * was a supervisor RWX alias of every page userspace owns. Each was found by
+ * hand, by guessing where to look. Checking .text's own PTE would have caught
+ * none of them — .text's own PTE was fine.
+ *
+ * So the invariant is stated over the address space rather than over the
+ * sections: walk every present leaf and assert none is simultaneously writable
+ * and executable, whatever it maps and however many times it is mapped. That is
+ * the property the policy is actually for.
+ *
+ * The walk covers ALL of pml4, not just the kernel half [256..511]. The low
+ * identity map hangs off pml4[0] — the user half — even though every page in it
+ * is a supervisor mapping the kernel installed for itself. A sweep of the kernel
+ * half alone reads as thorough and misses it: restoring the old [0, 1 GiB) RWX
+ * identity map leaves such a sweep reporting PASS on 8790 clean leaves while a
+ * gigabyte of writable, executable kernel image sits one entry to the left.
+ * Nothing has run at this point but the kernel, so everything in this CR3 —
+ * both halves — is the kernel's own.
+ *
+ * Both permissions accumulate across levels, so a leaf's own bits are not the
+ * answer:
+ *   - NX is an OR: set at any level, execute is vetoed beneath it.
+ *   - W is an AND (given CR0.WP): clear at any level, writes are refused below.
+ * Reading the leaf alone would be wrong in both directions. */
+
+#define WX_PRESENT (1ULL << 0)
+#define WX_WRITE   (1ULL << 1)
+#define WX_PS      (1ULL << 7)
+#define WX_NX      (1ULL << 63)
+#define WX_ADDR    0x000FFFFFFFFFF000ULL
+
+static uint64_t wx_leaves_seen;
+static uint64_t wx_violations;
+
+/* Recurse one level. `w` = writable so far (AND), `nx` = non-executable so far
+ * (OR). `level` counts down: 4 = PML4, 3 = PDPT, 2 = PD, 1 = PT. */
+static void wx_walk(uint64_t table_phys, int level, int w, int nx) {
+    /* An NX subtree cannot contain a W+X leaf, whatever is under it. Pruning
+     * here is not just speed: the self-map points pml4[510] back at pml4, so an
+     * unpruned walk would recurse into the page tables forever. It is NX, which
+     * is exactly why that is safe. */
+    if (nx) return;
+
+    uint64_t *t = (uint64_t *)PHYS_KVA(table_phys);
+    for (int i = 0; i < 512; i++) {
+        uint64_t e = t[i];
+        if (!(e & WX_PRESENT)) continue;
+
+        int cw  = w  && (e & WX_WRITE);
+        int cnx = nx || (e & WX_NX) != 0;
+
+        if (level == 1 || (e & WX_PS)) {        /* a leaf: 4 KiB, 2 MiB or 1 GiB */
+            wx_leaves_seen++;
+            if (cw && !cnx) wx_violations++;    /* writable AND executable */
+            continue;
+        }
+        wx_walk(e & WX_ADDR, level - 1, cw, cnx);
+    }
+}
+
+void wx_selftest(void) {
+    extern uint64_t pml4[512];
+    extern uint8_t __text_start[], __text_end[];
+    extern uint8_t __rodata_start[];
+    extern uint8_t __data_start[], __bss_start[];
+
+    int ok = 1;
+    const char *why = "";
+
+    /* --- The bits are only a policy if the CPU is applying them, and the two
+     * halves are enforced by different switches. NX needs only EFER.NXE. But a
+     * read-only bit is ignored for supervisor writes unless CR0.WP is set, and
+     * ring 0 is the only ring that can reach these pages — so with WP clear the
+     * entire r-x/r-- half of the table below is decoration, while looking
+     * perfect. It was clear for the project's whole history: every PTE checked
+     * out and a write to __text_start still landed. Check the switches before
+     * trusting the bits. */
+    uint64_t cr0;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    if (!((cr0 >> 16) & 1)) {
+        print("WX_SELFTEST: FAIL CR0.WP clear — ring 0 ignores every read-only bit below\n");
+        return;
+    }
+    uint32_t efer_lo, efer_hi;
+    __asm__ volatile ("rdmsr" : "=a"(efer_lo), "=d"(efer_hi) : "c"(0xC0000080));
+    if (!((efer_lo >> 11) & 1)) {
+        print("WX_SELFTEST: FAIL EFER.NXE clear — the NX bits below are inert\n");
+        return;
+    }
+
+    /* --- Per-section spot checks. user_lookup_pte returns the leaf entry; for these
+     * addresses every upper level is writable and executable, so the leaf's own
+     * bits are the effective ones. The sweep below is what does not assume that. */
+    uint64_t kcr3 = virt_to_phys(pml4);
+    struct { const char *name; uint64_t va; int want_w; int want_nx; } secs[] = {
+        { "text",   (uint64_t)(uintptr_t)__text_start,   0, 0 },   /* r-x */
+        { "rodata", (uint64_t)(uintptr_t)__rodata_start, 0, 1 },   /* r-- */
+        { "data",   (uint64_t)(uintptr_t)__data_start,   1, 1 },   /* rw- */
+        { "bss",    (uint64_t)(uintptr_t)__bss_start,    1, 1 },   /* rw- */
+    };
+    for (unsigned i = 0; i < sizeof(secs) / sizeof(secs[0]); i++) {
+        uint64_t e = user_lookup_pte(kcr3, secs[i].va);
+        if (!(e & WX_PRESENT))                        { ok = 0; why = secs[i].name; break; }
+        if (!!(e & WX_WRITE) != secs[i].want_w)       { ok = 0; why = secs[i].name; break; }
+        if (!!(e & WX_NX)    != secs[i].want_nx)      { ok = 0; why = secs[i].name; break; }
+    }
+    if (!ok) {
+        print("WX_SELFTEST: FAIL section bits wrong: "); print(why); print("\n");
+        return;
+    }
+
+    /* --- .text must be read-only through its PHYS_KVA alias too. This is the
+     * cross-alias hole: writable via one mapping and executable via another
+     * defeats W^X across the pair, while neither mapping is W+X by itself. The
+     * sweep cannot see it — it checks each leaf alone — so it is checked here. */
+    uint64_t tphys = virt_to_phys(__text_start);
+    uint64_t ae = user_lookup_pte(kcr3, (uint64_t)PHYS_KVA(tphys));
+    if (!(ae & WX_PRESENT) || (ae & WX_WRITE)) {
+        print("WX_SELFTEST: FAIL .text writable through its PHYS_KVA alias\n");
+        return;
+    }
+
+    /* --- The global invariant, over every entry in this CR3. */
+    wx_leaves_seen = 0;
+    wx_violations  = 0;
+    uint64_t *p4 = (uint64_t *)PHYS_KVA(kcr3);
+    for (int i = 0; i < 512; i++) {
+        uint64_t e = p4[i];
+        if (!(e & WX_PRESENT)) continue;
+        wx_walk(e & WX_ADDR, 3, (e & WX_WRITE) != 0, (e & WX_NX) != 0);
+    }
+
+    /* A sweep that walked nothing would pass every assertion above it. */
+    if (wx_leaves_seen < 1000) {
+        print("WX_SELFTEST: FAIL swept only ");
+        print_decimal(wx_leaves_seen);
+        print(" leaves — walk is not reaching the kernel mappings\n");
+        return;
+    }
+    if (wx_violations) {
+        print("WX_SELFTEST: FAIL ");
+        print_decimal(wx_violations);
+        print(" of ");
+        print_decimal(wx_leaves_seen);
+        print(" leaves are writable AND executable\n");
+        return;
+    }
+
+    print("WX_SELFTEST: PASS sections r-x/r--/rw- + no W^X violation in ");
+    print_decimal(wx_leaves_seen);
+    print(" leaves\n");
+}
+#endif /* WX_SELFTEST */
+
 #ifdef CPU_SELFTEST
 /* Gated: prove the CR4 protections are actually engaged, against a known
  * environment.

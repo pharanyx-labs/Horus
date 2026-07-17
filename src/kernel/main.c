@@ -111,6 +111,12 @@ void kernel_main(uint32_t mb_info) {
     cpu_enable_protections();
 #ifdef CPU_SELFTEST
     cpu_protections_selftest();   /* boot continues; make smoke-cpu asserts on it */
+#endif
+#ifdef WX_SELFTEST
+    /* After paging_init (which installs the W^X tables) and after
+     * cpu_enable_protections, so CR0.WP is set and the bits it inspects are the
+     * ones actually in force. Boot continues; make smoke-wx asserts on it. */
+    wx_selftest();
 #endif   /* SMEP/SMAP — must follow feature detection */
     entropy_init();
     /* Must follow entropy_init (needs the CSPRNG) and must run from a frame

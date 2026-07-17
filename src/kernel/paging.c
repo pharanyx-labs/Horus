@@ -115,6 +115,85 @@ int page_ref_dec(uint32_t phys_addr) {
 
 void ensure_lapic_mapped(uint64_t *root);
 
+/* ---- The kernel's own view ------------------------------------------------
+ *
+ * multiboot.S builds ONE page directory (`pd`) covering physical [0, 1 GiB) as
+ * 2 MiB pages with P|W and no NX, then hangs it off three separate entries:
+ *
+ *     pml4[0] -> pdpt[0]  -> pd      the low identity map
+ *     high_pdpt[2]        -> pd      the PHYS_KVA window
+ *     high_pdpt[510]      -> pd      the kernel's own image mapping
+ *
+ * (multiboot.S says so itself: "One `pd` is aliased by all three of the entries
+ * below; a write here is visible through every view.")
+ *
+ * The consequence is that the kernel's .text is writable, its .rodata is
+ * writable *and* executable, and its .data/.bss are executable — via three
+ * aliases, any one of which suffices. EFER.NXE has been on the whole time; no
+ * kernel PTE has ever set the NX bit. linker64.ld already page-aligns every
+ * section and exports their bounds, so the information needed to do better is
+ * present and simply unused.
+ *
+ * Tightening `pd` in place is not an option: it is the same memory behind all
+ * three views, so NX-ing it would unmap the kernel out from under itself
+ * mid-instruction. Each consumer needs its own directory first.
+ *
+ * This function does exactly that for high_pdpt[510], and *only* that: the new
+ * tables reproduce today's permissions bit for bit. That is deliberate. It is
+ * the step most likely to fail — a mistake here triple-faults with no console —
+ * so it carries no policy change, and any fault it produces is a table
+ * construction bug rather than a permissions one. Permissions land next, on
+ * tables already proven to work.
+ */
+
+/* [0, 16 MiB): the kernel image (~1..15.4 MiB) plus slack to USER_PHYS_BASE.
+ * Only PDE 0 strictly needs splitting for the section boundaries, but
+ * per_task_kstacks spans PDEs 0..2 and guard pages will need those at 4 KiB
+ * too; splitting the whole 16 MiB costs 5 extra pages and removes "which PDE is
+ * this address in" from every later question. */
+#define KERN_SPLIT_PDES  8
+
+static void kernel_remap_init(void) {
+    extern uint64_t high_pdpt[512];
+    extern uint64_t pd[512];
+
+    uint64_t kern_pd_phys = alloc_user_physical_page();
+    if (kern_pd_phys == 0) return;   /* keep the alias: a partial view is worse */
+    uint64_t *kern_pd = (uint64_t *)PHYS_KVA(kern_pd_phys);
+
+    /* Above the split, inherit `pd` verbatim. */
+    for (int i = 0; i < 512; i++) kern_pd[i] = pd[i];
+
+    /* Below it, the same mappings re-expressed as 4 KiB PTEs — same frames,
+     * same bits, just nameable one page at a time. */
+    for (int i = 0; i < KERN_SPLIT_PDES; i++) {
+        uint64_t pt_phys = alloc_user_physical_page();
+        if (pt_phys == 0) return;    /* nothing installed yet; the alias stands */
+        uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
+        for (int j = 0; j < 512; j++) {
+            uint64_t frame = ((uint64_t)i << 21) | ((uint64_t)j << 12);
+            /* Deliberately NOT PAGE_GLOBAL, though ensure_lapic_mapped sets it
+             * on its split PDEs: a global entry survives the CR3 reload below,
+             * which would leave the later permission changes half-applied in
+             * the TLB. Also matches `pd`'s own 0x83 (no global bit). */
+            pt[j] = frame | PAGE_PRESENT | PAGE_WRITE;
+        }
+        kern_pd[i] = pt_phys | PAGE_PRESENT | PAGE_WRITE;
+    }
+
+    /* The swap. Everything above was written through the PHYS_KVA window, so
+     * the live tables have not been touched until this single aligned 8-byte
+     * store — which the page walker either sees or does not. There is no
+     * half-written state to be caught executing in. */
+    high_pdpt[510] = kern_pd_phys | PAGE_PRESENT | PAGE_WRITE;
+
+    /* Reload CR3 rather than invlpg: this replaced a PDPTE covering a gigabyte,
+     * and none of the entries under it are global. */
+    uint64_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
 void paging_init(void) {
     init_user_page_allocator();
     /* Reserve and zero the shared zero page up front, so the very first
@@ -138,6 +217,11 @@ void paging_init(void) {
         pml4[510] = virt_to_phys(pml4) | 0x3;
     }
     ensure_lapic_mapped(NULL);
+    /* Last: give the kernel's own mapping a page directory of its own. Must stay
+     * ahead of smp_bringup() — the APs load the BSP's live CR3 (smp.c publishes
+     * it to AP_CR3_CELL), so they inherit whatever view exists at that moment
+     * and need no fixup of their own. */
+    kernel_remap_init();
     return;
 }
 

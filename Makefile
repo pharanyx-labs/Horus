@@ -38,7 +38,12 @@ export SOURCE_DATE_EPOCH ?= 1609459200
 # plus one `movups`, hoisted the broadcast out of the loop, and left it live in
 # xmm0 across sys_ipc_call -- so the fs_server's leftover xmm0 got stored as file
 # data and written to disk, with every checksum agreeing (smoke-fs-conc).
-CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -MMD -MP \
+# -mstack-protector-guard=global is not optional company for -fstack-protector-*:
+# GCC's x86-64 default reads the canary from %gs:0x28, which in a kernel with no
+# per-CPU GS base is a garbage address, and __stack_chk_guard would go entirely
+# unreferenced. See the stack-protector block in src/kernel/crypto.c.
+CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -MMD -MP \
+         -fstack-protector-strong -mstack-protector-guard=global \
          -mno-sse -mno-mmx -mno-80387 \
          -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
          -I src/include -I include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus

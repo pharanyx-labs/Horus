@@ -252,6 +252,54 @@ void entropy_init(void) {
     }
 }
 
+/* ---- Stack protector ------------------------------------------------------
+ *
+ * GCC reads __stack_chk_guard on entry to a protected function, stores a copy
+ * below the return address, and re-reads the global on exit to compare. That
+ * read-back is the constraint that shapes everything here: the guard cannot be
+ * changed while any protected frame is live, or that frame would compare a
+ * fresh global against the stale copy it saved and kill itself on the way out.
+ *
+ * Note this only reaches the symbol at all because CFLAGS carries
+ * -mstack-protector-guard=global. GCC's default on x86-64 reads the canary from
+ * %gs:0x28, which in a kernel with no per-CPU GS base is a garbage address —
+ * and defining this variable would have had no effect whatsoever, because
+ * nothing would reference it. */
+uintptr_t __stack_chk_guard = 0x9c2f5a1e7b40d3e6ULL;
+
+/* GCC's callback when a canary check fails. By definition the calling frame's
+ * return address is already corrupt, so returning is not an option. Fail closed
+ * the same way entropy_init does — and "PANIC" is in the smoke harness's
+ * FAULT_RE, so a smash anywhere turns CI red rather than scrolling past. */
+void __attribute__((noreturn)) __stack_chk_fail(void) {
+    print("PANIC: stack smashing detected; halting\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
+/* Swap the compile-time guard for a CSPRNG draw. The build is reproducible, so
+ * the constant above is a published value: it catches accidents but not anyone
+ * who has read the binary. A random guard catches both.
+ *
+ * Two constraints pin where this may be called from:
+ *   - after entropy_init(), since the CSPRNG must be seeded; and
+ *   - from a frame that never returns, per the read-back note above.
+ * kernel_main is the one site satisfying both — it calls this immediately after
+ * entropy_init() and never returns (smp_bringup enters ring 3, and the fallback
+ * ends in kernel_idle). Every frame that ran before this point has already
+ * returned against the old guard, and every frame after sees only the new one.
+ *
+ * This function must carry no canary itself, for exactly the reason it exists:
+ * it would load the old guard on entry and check the new one on exit. */
+__attribute__((no_stack_protector))
+void stack_protector_init(void) {
+    uintptr_t g = 0;
+    secure_random_bytes(&g, sizeof(g));
+    /* A zero guard is indistinguishable from an uninitialised one and would
+     * quietly weaken every check, so keep the compile-time value instead. */
+    if (g == 0) return;
+    __stack_chk_guard = g;
+}
+
 void entropy_add_sample(uint64_t s) {
     uint8_t b[8];
     for (int i = 0; i < 8; i++) b[i] = (uint8_t)(s >> (i * 8));

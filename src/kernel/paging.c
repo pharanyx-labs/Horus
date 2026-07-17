@@ -160,18 +160,49 @@ void ensure_lapic_mapped(uint64_t *root);
  * this address in" from every later question. */
 #define KERN_SPLIT_PDES  8
 
-/* Map physical [start, end) at its kernel VA with `flags`. Rounds outward to
- * whole pages: linker64.ld page-aligns every section boundary, so this only
- * matters if a future section stops being aligned, and covering too much is the
- * safe direction — the alternative is silently leaving the tail page absent. */
-static void kern_map_range(uint64_t *kern_pd, uint64_t start, uint64_t end,
-                           uint64_t flags) {
+/* Map physical [start, end) with `flags` in a directory built by build_pd().
+ * Rounds outward to whole pages: linker64.ld page-aligns every section
+ * boundary, so this only matters if a future section stops being aligned, and
+ * covering too much is the safe direction — the alternative is silently leaving
+ * the tail page absent. */
+static void pd_map_range(uint64_t *pdir, uint64_t start, uint64_t end,
+                         uint64_t flags) {
     for (uint64_t p = start & ~0xFFFULL; p < end; p += PAGE_SIZE) {
         uint64_t pde = p >> 21;
         if (pde >= KERN_SPLIT_PDES) return;   /* past the 4 KiB-mapped window */
-        uint64_t *pt = (uint64_t *)PHYS_KVA(kern_pd[pde] & PTE_ADDR_MASK);
+        uint64_t *pt = (uint64_t *)PHYS_KVA(pdir[pde] & PTE_ADDR_MASK);
         pt[(p >> 12) & 511] = p | flags;
     }
+}
+
+/* Build a page directory over physical [0, 1 GiB): PDEs 0..KERN_SPLIT_PDES-1 as
+ * 4 KiB page tables so the kernel image's section boundaries are expressible,
+ * the rest as 2 MiB pages. `low_flags` is applied to every 4 KiB page (0 =
+ * absent) and `huge_flags` to the 2 MiB tail; callers then override the ranges
+ * they care about with pd_map_range(). Returns 0 on allocation failure.
+ *
+ * No PAGE_GLOBAL anywhere, though ensure_lapic_mapped sets it on its own split
+ * PDEs: a global entry survives the CR3 reload these directories are installed
+ * with, so the permissions would only be half in effect. */
+static uint64_t build_pd(uint64_t low_flags, uint64_t huge_flags) {
+    uint64_t pd_phys = alloc_user_physical_page();
+    if (pd_phys == 0) return 0;
+    uint64_t *pdir = (uint64_t *)PHYS_KVA(pd_phys);
+
+    for (int i = 0; i < KERN_SPLIT_PDES; i++) {
+        uint64_t pt_phys = alloc_user_physical_page();
+        if (pt_phys == 0) return 0;
+        uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
+        for (int j = 0; j < 512; j++) {
+            uint64_t frame = ((uint64_t)i << 21) | ((uint64_t)j << 12);
+            pt[j] = low_flags ? (frame | low_flags) : 0;
+        }
+        pdir[i] = pt_phys | PAGE_PRESENT | PAGE_WRITE;
+    }
+    for (int i = KERN_SPLIT_PDES; i < 512; i++) {
+        pdir[i] = ((uint64_t)i << 21) | huge_flags;
+    }
+    return pd_phys;
 }
 
 static void kernel_remap_init(void) {
@@ -183,40 +214,80 @@ static void kernel_remap_init(void) {
     extern uint8_t __rodata_start[], __rodata_end[];
     extern uint8_t __data_start[],   __bss_end[];
 
-    uint64_t kern_pd_phys = alloc_user_physical_page();
+    (void)pd;   /* the shared boot directory; both views below replace it */
+
+    const uint64_t text_start = virt_to_phys(__text_start);
+    const uint64_t text_end   = virt_to_phys(__text_end);
+    const uint64_t ro_start   = virt_to_phys(__rodata_start);
+    const uint64_t ro_end     = virt_to_phys(__rodata_end);
+    const uint64_t data_start = virt_to_phys(__data_start);
+    const uint64_t bss_end    = virt_to_phys(__bss_end);
+
+    /* ---- View 1: the kernel's own mapping, high_pdpt[510] -----------------
+     * Starts absent; the image opts back in section by section, so the low
+     * megabyte, the dead .boot stage (linked VA == PA, reached through the low
+     * identity map, and finished once long_mode_low has run) and the slack
+     * between .bss and USER_PHYS_BASE are unmapped by construction rather than
+     * by remembering to punch them out.
+     *
+     * The 2 MiB tail is [16 MiB, 1 GiB) — the physical page pool at its kernel
+     * alias. It inherited `pd`'s P|W and no NX, which made it a supervisor RWX
+     * alias of every page userspace owns: ring 3 writes its own page, and the
+     * same frame is executable at KERNEL_VMA+phys, where SMEP does not apply
+     * because the mapping is supervisor rather than user. It is data to the
+     * kernel; NX it. */
+    uint64_t kern_pd_phys = build_pd(0 /* absent */,
+                                     PAGE_PRESENT | PAGE_WRITE | PAGE_PS | PAGE_NX);
     if (kern_pd_phys == 0) return;   /* keep the alias: a partial view is worse */
     uint64_t *kern_pd = (uint64_t *)PHYS_KVA(kern_pd_phys);
 
-    /* Above the split, inherit `pd` verbatim. */
-    for (int i = 0; i < 512; i++) kern_pd[i] = pd[i];
+    pd_map_range(kern_pd, text_start, text_end, PAGE_PRESENT);                          /* r-x */
+    pd_map_range(kern_pd, ro_start,   ro_end,   PAGE_PRESENT | PAGE_NX);                /* r-- */
+    pd_map_range(kern_pd, data_start, bss_end,  PAGE_PRESENT | PAGE_WRITE | PAGE_NX);   /* rw- */
 
-    /* Below it, 4 KiB page tables that start out entirely absent. */
-    for (int i = 0; i < KERN_SPLIT_PDES; i++) {
-        uint64_t pt_phys = alloc_user_physical_page();
-        if (pt_phys == 0) return;    /* nothing installed yet; the alias stands */
-        uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
-        for (int j = 0; j < 512; j++) pt[j] = 0;
-        kern_pd[i] = pt_phys | PAGE_PRESENT | PAGE_WRITE;
-    }
+    /* ---- View 2: the PHYS_KVA window, high_pdpt[2] ------------------------
+     * This is where the policy above leaks away if it is left alone. The window
+     * aliases the same `pd`, mapping physical [0, 1 GiB) writable AND
+     * executable — and that gigabyte contains the kernel's own .text. Marking
+     * .text read-only at its kernel address while an RW+X alias of the same
+     * frames stays open is not a weaker policy, it is no policy.
+     *
+     * Two separate holes, and NX alone only closes one of them:
+     *
+     *   - execute through the window. Nothing needs it: every user derefences
+     *     this window as data — page tables, the zero page, VGA text and the
+     *     font plane, freshly allocated frames, and the AP trampoline blob,
+     *     which is copied here and then executed through the identity map at
+     *     0x8000, not through this alias. So the whole window is NX.
+     *
+     *   - write .text through the window, execute it at its kernel address.
+     *     NX does not touch this one: the frame is writable here and executable
+     *     there, so W^X is defeated across the pair even though neither view is
+     *     W+X by itself. Nothing writes .text or .rodata through the window
+     *     either, so those frames are read-only here too, which closes it.
+     *
+     * Everything else keeps W, because the window is how the kernel legitimately
+     * writes: VGA and the trampoline below 1 MiB, the boot page tables in .bss
+     * (ensure_lapic_mapped walks pml4[0]'s pdpt through PHYS_KVA), and the
+     * allocator pool above 16 MiB. */
+    uint64_t phys_pd_phys = build_pd(PAGE_PRESENT | PAGE_WRITE | PAGE_NX,
+                                     PAGE_PRESENT | PAGE_WRITE | PAGE_PS | PAGE_NX);
+    if (phys_pd_phys == 0) return;   /* nothing installed yet; the alias stands */
+    uint64_t *phys_pd = (uint64_t *)PHYS_KVA(phys_pd_phys);
 
-    /* Now the image opts in, section by section. No PAGE_GLOBAL on any of these,
-     * though ensure_lapic_mapped sets it on its own split PDEs: a global entry
-     * survives the CR3 reload below, so these permissions would only be half in
-     * effect. .boot/.boot.data are deliberately absent here — they are linked
-     * VA == PA and reached through the low identity map, and are dead once
-     * long_mode_low has run. */
-    kern_map_range(kern_pd, virt_to_phys(__text_start), virt_to_phys(__text_end),
-                   PAGE_PRESENT);                                     /* r-x */
-    kern_map_range(kern_pd, virt_to_phys(__rodata_start), virt_to_phys(__rodata_end),
-                   PAGE_PRESENT | PAGE_NX);                           /* r-- */
-    kern_map_range(kern_pd, virt_to_phys(__data_start), virt_to_phys(__bss_end),
-                   PAGE_PRESENT | PAGE_WRITE | PAGE_NX);              /* rw- */
+    pd_map_range(phys_pd, text_start, ro_end, PAGE_PRESENT | PAGE_NX);   /* r-- */
 
     /* The swap. Everything above was written through the PHYS_KVA window, so
-     * the live tables have not been touched until this single aligned 8-byte
-     * store — which the page walker either sees or does not. There is no
-     * half-written state to be caught executing in. */
+     * the live tables have not been touched until these single aligned 8-byte
+     * stores — which the page walker either sees or does not. There is no
+     * half-written state to be caught executing in.
+     *
+     * high_pdpt[2] last: every write above reached its table *through* it, so
+     * it has to stay as it is until there is nothing left to write. It only
+     * gains NX, never loses present or write, so the writes already issued
+     * remain valid afterwards. */
     high_pdpt[510] = kern_pd_phys | PAGE_PRESENT | PAGE_WRITE;
+    high_pdpt[2]   = phys_pd_phys | PAGE_PRESENT | PAGE_WRITE;
 
     /* Reload CR3 rather than invlpg: this replaced a PDPTE covering a gigabyte,
      * and none of the entries under it are global. */

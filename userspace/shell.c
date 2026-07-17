@@ -621,12 +621,30 @@ static void handle_command(char *cmd) {
         int long_fmt = (cmd[2] != '\0');   /* "ls -l" carries a 3rd char */
         struct fs_request  rq = {0};
         struct fs_response rp;
-        int n = 0;
+        int n = 0, failed = 0;
         for (uint32_t idx = 0; idx < 4096; idx++) {
             rq.op = FS_OP_READDIR; rq.dir_ino = sh_cwd_ino; rq.offset = idx;
-            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
-                if (idx == 0 && !fss_connected)
-                    println("ls: spawn fs_server first");
+            /* Every way this loop can stop used to break into the same silence,
+             * and the caller then printed "(empty)" — so a broken IPC path, a
+             * directory you cannot read, and an empty directory were one
+             * indistinguishable (reassuring) answer. Separate them: only running
+             * off the end is a normal stop. */
+            int rc = fss_call(&rq, &rp);
+            if (rc < 0) {
+                if (!fss_connected) println("ls: spawn fs_server first");
+                else { print("ls: fs_server call failed ("); print(sys_strerror(rc)); println(")"); }
+                failed = 1;
+                break;
+            }
+            /* NOENT here means the server walked past the last entry, which is
+             * how a readdir ends. The server also returns NOENT for a directory
+             * that does not exist — the two are not distinguishable over the
+             * wire — but sh_cwd_ino is a directory `cd` already verified exists,
+             * so for this caller it can only be end-of-directory. */
+            if (rp.rc == SYS_ERR_NOENT) break;
+            if (rp.rc < 0) {
+                print("ls: "); print(sys_strerror(rp.rc)); println("");
+                failed = 1;
                 break;
             }
             /* rp is reused by the per-entry STAT below, so keep the name/type. */
@@ -650,7 +668,10 @@ static void handle_command(char *cmd) {
             print(type == FS_TYPE_DIR ? "/\n" : "\n");
             n++;
         }
-        if (n == 0 && fss_connected) println("(empty)");
+        /* Only claim emptiness when the directory was actually read to its end;
+         * after a failure the count is zero too, which is the confusion this
+         * used to produce. */
+        if (n == 0 && !failed && fss_connected) println("(empty)");
     } else if (strncmp(cmd, "cat ", 4) == 0) {
         const char *name = cmd + 4;
         struct fs_request  rq = {0};

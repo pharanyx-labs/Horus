@@ -913,6 +913,9 @@ void elf_loader_selftest(void);
 #ifdef CPU_SELFTEST
 void cpu_protections_selftest(void);
 #endif
+#ifdef WX_SELFTEST
+void wx_selftest(void);
+#endif
 #ifdef PREEMPT_SELFTEST
 void preempt_selftest(void);
 #endif

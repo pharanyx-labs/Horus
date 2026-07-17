@@ -324,7 +324,10 @@ else
 RUST_EXTRA_OBJS := src/kernel/rust_shims.o
 endif
 
-kernel.elf: $(RUST_LIB) $(OBJS) $(RUST_EXTRA_OBJS)
+# linker64.ld is a real input to this link (LDFLAGS carries -T linker64.ld), so
+# it belongs in the prerequisites: without it, editing the script leaves a stale
+# kernel.elf sitting on disk and make reports "up to date".
+kernel.elf: $(RUST_LIB) $(OBJS) $(RUST_EXTRA_OBJS) linker64.ld
 ifeq ($(RUST_ENABLED),1)
 	$(LD) $(LDFLAGS) -o $@ --whole-archive $(RUST_LIB) --no-whole-archive $(OBJS) $(RUST_EXTRA_OBJS)
 else

@@ -292,6 +292,12 @@ CFLAGS  += -DWX_SELFTEST
 ASFLAGS += -DWX_SELFTEST
 endif
 
+ASPACE_SELFTEST ?= 0
+ifeq ($(ASPACE_SELFTEST),1)
+CFLAGS  += -DASPACE_SELFTEST
+ASFLAGS += -DASPACE_SELFTEST
+endif
+
 SMP_SELFTEST ?= 0
 ifeq ($(SMP_SELFTEST),1)
 SMP := 1
@@ -595,6 +601,18 @@ userspace-clean:
 # closed was an alias — a second mapping of the same frames — and checking
 # .text's own PTE would have caught none of them. No MARKER_ONLY: the run must
 # print PASS *and* still reach the login prompt.
+# Build with the gated address-space reclaim self-test and require the kernel to
+# report that rebuilding a task slot returns the pages the previous occupant
+# held. Asserts on the pool count, not on the code path: a reclaim that frees
+# only part of the tree still fails.
+.PHONY: smoke-aspace
+smoke-aspace:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ASPACE_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ASPACE_SELFTEST: PASS' \
+		FAIL_MARKER='ASPACE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-wx
 smoke-wx:
 	@$(MAKE) --no-print-directory clean

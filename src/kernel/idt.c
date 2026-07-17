@@ -117,8 +117,11 @@ int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
     if (cur <= 0 || cur >= MAX_TASKS) return 0;
     if ((frame->cs & 3) == 0)         return 0;   /* ring-0 fault: never */
     if (tasks[cur].in_signal)         return 0;   /* fault inside handler -> kill */
-    uint32_t h = tasks[cur].sig_handler;
-    if (h == 0 || !rust_signal_handler_addr_ok(h)) return 0;
+    /* uint64_t: sig_handler is a full user code address, and narrowing it here
+     * would compare a truncated value against the task's real image bounds. */
+    uint64_t h = tasks[cur].sig_handler;
+    if (h == 0 || !rust_signal_handler_addr_ok(h, tasks[cur].image_base,
+                                                  tasks[cur].image_end)) return 0;
 
     /* Pick the handler's stack before saving the frame, so sig_frame keeps the
      * interrupted rsp for an exact SYS_SIGRETURN. Align the altstack top to 16

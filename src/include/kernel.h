@@ -756,7 +756,7 @@ bool     rust_cow_copy_required(bool is_cow, bool is_write, uint16_t ref_count);
 /* Validate a would-be ring-3 signal-handler entry: it must lie in the user code
  * window so the kernel never iretq's ring 3 to the stack, the kernel image, or
  * an unmapped address. Pure value predicate (no pointer deref); fails closed. */
-bool     rust_signal_handler_addr_ok(uint32_t vaddr);
+bool     rust_signal_handler_addr_ok(uint64_t vaddr, uint64_t image_base, uint64_t image_end);
 
 /* Centralized capability serial allocation (wrap logic lives in Rust). */
 uint32_t rust_cap_alloc_serial(uint32_t *next_serial);

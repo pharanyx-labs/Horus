@@ -56,6 +56,8 @@ Demand-zero reads now resolve to a **single shared, read-only zero frame** marke
 
 One branch remains untested end-to-end. Breaking the *zero* page needs no copy (the copy of an all-zero frame is zeros), so it takes a special case and returns early — the generic COW path that decrements the refcount and duplicates real page content is still reached by nothing, because `fork` is a deliberate non-goal (see ROADMAP Phase 1) and nothing else in the tree shares a **non-zero** page. That branch is unit-tested in Rust only; treat it as untested code.
 
+A dead task's address space is reclaimed when its slot is reused, not when it dies: `task_teardown` runs *before* `task_exit_switch`, so at teardown the dying task's CR3 may still be the one a CPU is walking, and freeing there would be a use-after-free of live page tables. The consequence is that a dead task's ~284 KiB is held until something spawns into its slot, which bounds the pool at `MAX_TASKS` x the per-task footprint (~18 MiB of 64) rather than releasing eagerly. Before this existed nothing was reclaimed at all — `free_user_physical_page` had no callers — and ~230 spawns exhausted the pool.
+
 The shared zero frame is never freed: `free_user_physical_page` refuses it explicitly, and it is aliased by many PTEs whose refcounts are deliberately not tracked against it.
 
 ### Disk-backed storage (volume geometry)

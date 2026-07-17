@@ -468,6 +468,92 @@ static void kstack_guards_init(void) {
     }
 }
 
+/* ---- Address-space reclaim ------------------------------------------------
+ *
+ * Every spawn allocated a page-directory tree plus the task's premapped image
+ * and stack pages — 71 frames, 284 KiB, measured — and nothing ever gave them
+ * back. task_teardown only marks the slot dead, and free_user_physical_page was
+ * defined and never called from anywhere in the tree. With a 16384-frame pool
+ * that is ~230 spawns to exhaustion, and init relaunches the shell every time it
+ * exits or faults, so logging out repeatedly is enough to reach it. No attacker
+ * required; it is a normal-usage bug.
+ *
+ * Reclaimed at slot reuse rather than at teardown, and that is not an
+ * implementation detail. task_teardown runs BEFORE task_exit_switch, so the
+ * dying task's CR3 can still be the one the CPU is walking — freeing there is a
+ * use-after-free of the page tables in active use, and it would be a rare,
+ * timing-dependent one. By the time create_user_pagedir builds a new task in
+ * this slot, do_spawn and exec_into_armed_image have already switched to the
+ * kernel address space, so nothing is standing on the old tree.
+ *
+ * The cost is that a dead task's memory is held until its slot is reused, which
+ * bounds the pool at MAX_TASKS x the per-task footprint (~18 MiB of 64) instead
+ * of letting it run to zero. Bounded is the property worth having.
+ */
+
+/* Drop one reference to a leaf frame, returning it only when the last goes.
+ *
+ * Leaves are refcounted because they are aliased: the shared zero page backs
+ * every demand-zero read in every task, and a COW pair shares the original
+ * frame until someone writes. Freeing on sight would pull a live page out from
+ * under another task. rust_page_ref_dec fails closed — negative for an
+ * out-of-range frame or one already at zero — and only an exact 0 means the
+ * reference this address space held was the last one. */
+static void user_leaf_release(uint64_t phys) {
+    int32_t refs = rust_page_ref_dec((uint32_t)phys, page_refcounts,
+                                     (uint32_t)USER_PHYS_PAGES);
+    if (refs == 0) free_user_physical_page((uint32_t)phys);
+}
+
+/* Free one level of a user page-table tree, then the table itself.
+ * `level`: 4 = PML4, 3 = PDPT, 2 = PD, 1 = PT.
+ *
+ * Recursive rather than a hand-unrolled four-deep walk, so it frees whatever
+ * shape it is handed — including the deeper trees a wider user address space
+ * will build. Tables are never aliased (each is allocated for exactly one
+ * address space), so they are freed outright; only leaves go through the
+ * refcount. */
+static void free_user_table(uint64_t table_phys, int level) {
+    uint64_t *t = (uint64_t *)PHYS_KVA(table_phys);
+    for (int i = 0; i < 512; i++) {
+        uint64_t e = t[i];
+        if (!(e & PAGE_PRESENT)) continue;
+        uint64_t child = e & PTE_ADDR_MASK;
+        if (level == 1 || (e & PAGE_PS)) {
+            user_leaf_release(child);        /* 4 KiB, 2 MiB or 1 GiB leaf */
+        } else {
+            free_user_table(child, level - 1);
+        }
+    }
+    free_user_physical_page((uint32_t)table_phys);
+}
+
+/* Release the address space a previous task left behind in this slot. Walks the
+ * USER half only: pml4[256..511] is the kernel's own mapping, shared by every
+ * task and by the kernel itself, and pml4[510] is the self-map pointing back at
+ * this very table — freeing either would take the kernel down rather than the
+ * task. */
+static void free_user_aspace(uint64_t pml4_phys);
+
+#ifdef ASPACE_SELFTEST
+/* Gated: the self-test releases a space it built, to prove the pool comes back.
+ * Not exported in the ship build — nothing outside this file should be able to
+ * tear down an address space out of band. */
+void free_user_aspace_for_test(uint64_t pml4_phys) { free_user_aspace(pml4_phys); }
+#endif
+
+static void free_user_aspace(uint64_t pml4_phys) {
+    if (pml4_phys == 0) return;
+    uint64_t *p4 = (uint64_t *)PHYS_KVA(pml4_phys);
+    for (int i = 0; i < 256; i++) {
+        uint64_t e = p4[i];
+        if (!(e & PAGE_PRESENT)) continue;
+        free_user_table(e & PTE_ADDR_MASK, 3);
+        p4[i] = 0;
+    }
+    free_user_physical_page((uint32_t)pml4_phys);
+}
+
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
     if (task_id == 0) {
@@ -476,6 +562,14 @@ void create_user_pagedir(uint32_t task_id) {
     }
 
     spin_lock(&page_lock);
+
+    /* Reclaim the previous occupant of this slot before building the new one.
+     * Safe here and nowhere earlier: the caller is on the kernel CR3, so the
+     * tree about to be freed is not the one any CPU is walking. */
+    if (tasks[task_id].cr3) {
+        free_user_aspace(tasks[task_id].cr3);
+        tasks[task_id].cr3 = 0;
+    }
     
     uint64_t pml4_phys = alloc_user_physical_page();
     if (pml4_phys == 0) { println("pagedir: no pml4 phys"); spin_unlock(&page_lock); return; }

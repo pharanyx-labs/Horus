@@ -128,6 +128,11 @@ void kernel_main(uint32_t mb_info) {
                      * falls back to the ephemeral RAM vdisk when none is present */
 #endif
     scheduler_init();
+#ifdef ASPACE_SELFTEST
+    /* After scheduler_init: it zeroes tasks[], which would wipe the cr3 the test
+     * installs. Boot continues; make smoke-aspace asserts on the marker. */
+    aspace_selftest();
+#endif
     smp_bringup();
     __asm__ volatile ("sti" ::: "memory");
     aslr_init_seed();

@@ -275,6 +275,12 @@ endif
 # SMP_SELFTEST=1 implies SMP=1 and, at boot, spawns a pool of forever-looping
 # workers and proves the application processors pull and run them concurrently
 # (prints SMP_SELFTEST: PASS to serial). Drives `make smoke-smp`.
+CPU_SELFTEST ?= 0
+ifeq ($(CPU_SELFTEST),1)
+CFLAGS  += -DCPU_SELFTEST
+ASFLAGS += -DCPU_SELFTEST
+endif
+
 SMP_SELFTEST ?= 0
 ifeq ($(SMP_SELFTEST),1)
 SMP := 1
@@ -562,6 +568,23 @@ userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
 	rm -f userspace/*.o userspace/*.elf userspace/*.pie.elf userspace/*.raw userspace/*.bin userspace/*_image.h tools/mkheadered
+
+# Build with the gated CPU-protection self-test and require the kernel to report
+# SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with
+# -cpu qemu64,+smep,+smap, so the features are advertised and "not detected" is a
+# bug rather than an honest answer. Runtime proof, because a detection bug reads
+# as correct in source and is indistinguishable from a CPU without the feature:
+# leaf 7 was queried with a stale ECX for the project's whole history and both
+# protections were silently off. No MARKER_ONLY -- the run must print PASS *and*
+# still reach the login prompt, so this proves the hardening is on and that
+# having it on does not break the boot.
+.PHONY: smoke-cpu
+smoke-cpu:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CPU_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CPU_SELFTEST: PASS' \
+		FAIL_MARKER='CPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build the kernel with the gated ELF-loader self-test, boot it headless, and
 # require the in-kernel self-test to report PASS on serial (in addition to the

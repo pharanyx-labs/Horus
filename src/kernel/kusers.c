@@ -543,10 +543,21 @@ void h_sudo(struct interrupt_frame64 *r) {
     /* Password material is no longer needed past key derivation; clear it
      * from the kernel stack frame on every remaining exit path. */
     secure_zero(upass, sizeof(upass));
-    audit_log(AUDIT_SUDO, 0, 0, "sudo success");
 
+    /* Nothing to elevate. NOENT ("no such object") rather than INVAL: the
+     * argument was not invalid, it was correct — the caller authenticated. What
+     * is missing is an armed image to spawn. Reporting that as "invalid
+     * argument" told a user who had just typed the right password that their
+     * password was the problem.
+     *
+     * Audited separately, and NOT as a success. The audit entry used to be
+     * written above this check, so a sudo that granted no privilege at all —
+     * because there was nothing to spawn — still logged "sudo success". An
+     * auditor would read a successful elevation that never happened. The
+     * credential use is worth recording either way, so record what it was. */
     if (!program_armed) {
-        r->rax = (uint32_t)SYS_ERR_INVAL;
+        audit_log(AUDIT_SUDO, 0, 0, "sudo auth ok, no image armed (nothing elevated)");
+        r->rax = (uint32_t)SYS_ERR_NOENT;
         return;
     }
 
@@ -589,6 +600,9 @@ void h_sudo(struct interrupt_frame64 *r) {
         tasks[pid].cspace[7].serial = s7;
         tasks[pid].cspace[7].generation = 0;
         spin_unlock(&cap_lock);
+        audit_log(AUDIT_SUDO, 0, (uint32_t)pid, "sudo success: spawned uid 0");
+    } else {
+        audit_log(AUDIT_SUDO, 0, 0, "sudo auth ok, spawn failed (nothing elevated)");
     }
     r->rax = pid;
 }

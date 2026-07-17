@@ -2,6 +2,16 @@
 #include "fs_proto.h"
 #include "malloc.h"
 
+/* Wipe a password buffer so it does not outlive its use on the stack. Volatile,
+ * because the plain `for (i) buf[i] = 0` this replaces is a dead store to a
+ * local that is never read again — exactly what -O2 is entitled to delete. The
+ * kernel has secure_zero for the same reason; freestanding userspace has no
+ * libc to borrow one from. */
+static void scrub(char *buf, size_t n) {
+    volatile char *p = (volatile char *)buf;
+    while (n--) *p++ = 0;
+}
+
 static void print(const char *s) {
     size_t l = 0; while (s[l]) l++;
     sys_write(1, s, l);
@@ -137,7 +147,7 @@ static void show_general_help_us(void) {
     println("  IDENTITY & SECURITY");
     print_cmd("whoami, id",        "show your login uid / gid");
     print_cmd("passwd",            "change your password (secure prompt)");
-    print_cmd("sudo <password>",   "re-authenticate and spawn an elevated image");
+    print_cmd("sudo",              "re-authenticate (secure prompt), spawn elevated");
     print_cmd("rotate_keys",       "re-encrypt storage under a fresh key    (root)");
     print_cmd("useradd <uid> <n>", "create a user account                   (root)");
     print_cmd("userdel <uid>",     "delete a user account                   (root)");
@@ -334,9 +344,12 @@ static void show_topic_help_us(const char *topic) {
         help_line("",         "and persists across reboots.");
     } else if (strcmp(t,"sudo")==0) {
         help_line("Purpose:", "Re-authenticate and spawn a privileged (armed) image.");
-        help_line("Usage:",   "sudo <password>");
-        help_line("Notes:",   "Verifies your password (with lockout/throttle on failure);");
-        help_line("",         "success also depends on an image having been armed first.");
+        help_line("Usage:",   "sudo            (prompts for your password, masked)");
+        help_line("Notes:",   "Takes no argument: a password on the command line would be");
+        help_line("",         "echoed to the console and the serial log. Verifies your");
+        help_line("",         "password (lockout/throttle on failure), then spawns the");
+        help_line("",         "armed image as uid 0 — so arm one first, or it has nothing");
+        help_line("",         "to elevate and will say so.");
         help_line("See also:","spawn, receive, rotate_keys");
     } else if (strcmp(t,"rotate_keys")==0) {
         help_line("Purpose:", "Re-encrypt the mounted volume's blocks under a fresh key.");
@@ -599,19 +612,44 @@ static void handle_command(char *cmd) {
         print("uid="); print_decimal(uid);
         print(" gid=100");
         println("");
-    } else if (strncmp(cmd, "sudo ", 5) == 0) {
-        const char *pass = cmd + 5;
-        int r = sys_sudo(pass);
-        if (r > 0) {
-            println("sudo: elevated spawn successful (pid ");
-            print_decimal(r);
-            println(")");
-        } else if (r == SYS_ERR_AUTH) {
-            println("sudo: incorrect password or locked out");
+    } else if (strcmp(cmd, "sudo") == 0 || strncmp(cmd, "sudo ", 5) == 0) {
+        /* The password is PROMPTED for, never taken from the command line.
+         * `sudo <password>` used to be the interface, which put the password on
+         * a line the terminal echoes to VGA *and mirrors to the serial log* —
+         * so the one credential that grants uid 0 was written, in cleartext, to
+         * the log of every session that used it. login and passwd have always
+         * read passwords through sys_get_pass (masked echo); sudo was the odd
+         * one out. Anything after "sudo" is now refused rather than silently
+         * accepted, so a habitual `sudo hunter2` fails loudly instead of
+         * leaking and working. */
+        if (cmd[4] != 0) {
+            println("sudo: takes no argument — it prompts for your password");
+            println("      (passing it on the command line would echo it to the log)");
         } else {
-            print("sudo: failed (");
-            print(sys_strerror(r));
-            println(")");
+            char sudopass[32];
+            print("Password: ");
+            int plen = sys_get_pass(sudopass, sizeof(sudopass) - 1);
+            if (plen < 0) {
+                println("sudo: input error");
+            } else {
+                sudopass[plen] = 0;
+                int r = sys_sudo(sudopass);
+                scrub(sudopass, sizeof(sudopass));
+                if (r > 0) {
+                    print("sudo: elevated spawn successful (pid ");
+                    print_decimal(r);
+                    println(")");
+                } else if (r == SYS_ERR_AUTH) {
+                    println("sudo: incorrect password or locked out");
+                } else if (r == SYS_ERR_NOENT) {
+                    println("sudo: authenticated, but no image is armed to elevate");
+                    println("      arm one first (see 'help receive' / 'help spawn')");
+                } else {
+                    print("sudo: failed (");
+                    print(sys_strerror(r));
+                    println(")");
+                }
+            }
         }
     } else if (strncmp(cmd, "useradd ", 8) == 0) {
         const char *p = cmd + 8;
@@ -886,7 +924,7 @@ static void do_login(void) {
         uint32_t got_uid = 0;
         int auth_ok = sys_auth(username, password, &got_uid);
 
-        for (int i = 0; i < 128; i++) password[i] = 0;
+        scrub(password, sizeof(password));   /* not a plain loop: -O2 elides dead stores */
 
         if (auth_ok == 0) {
             current_login_uid = got_uid;

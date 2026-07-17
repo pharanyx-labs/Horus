@@ -26,7 +26,7 @@ static void spin(int n) { for (volatile int d = 0; d < n; d++) { } }
 
 void _start(void) {
     uint32_t target = sys_spawn_arg();                /* immortal task id to wait on */
-    sys_signal((unsigned)(unsigned long)&handler);    /* register a handler */
+    sys_signal((uintptr_t)&handler);    /* register a handler */
     report("sigwaiter: waiting\n");
 
     int rc = sys_wait((int)target);                   /* blocks; a signal must interrupt this */

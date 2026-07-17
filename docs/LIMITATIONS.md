@@ -18,6 +18,7 @@ These subsystems are functional in the current codebase:
 - **W^X for the kernel's own image** — `.text` is mapped read-only + executable, `.rodata` read-only + NX, `.data`/`.bss` writable + NX, and the low megabyte, the dead `.boot` stage and the slack above `.bss` are absent outright. `CR0.WP` is set, without which the read-only half would be advisory: a supervisor write ignores the PTE write bit when WP is clear, and ring 0 is the only ring that can reach those pages. Gated by `make smoke-wx`, which asserts the per-section bits, checks `CR0.WP`/`EFER.NXE` are actually engaged, and then **sweeps every present leaf in the address space** asserting none is simultaneously writable and executable (~8,800 leaves; both permissions accumulated across page-table levels).
 
   The sweep, rather than a per-section check, because every hole this kernel had was an **alias** — a second mapping of the same frames with different bits — and `.text`'s own PTE was correct throughout. `multiboot.S` built one page directory of 2 MiB `P|W` pages with no NX and hung it off three entries at once (the identity map, the PHYS_KVA window, and the kernel's own mapping), so tightening any view tightened all three and none could be. Each of the four holes was found by hand, by guessing where to look; the sweep found the fifth on its own (the LAPIC's MMIO registers were mapped writable *and* executable, outside the image where no per-section check would have looked).
+- **Image-base ASLR** — a PIE image's load base is drawn from the CSPRNG across a 4 TiB window above 16 GiB: 30 bits of entropy (2^30 page-aligned positions), up from the 8.91 bits the old single-page-table premap allowed. That old ceiling was the page-table shape, not a policy — `ASLR_MAX_LOAD_RANDOM_PAGES` was literally the slots left in one 2 MiB PD entry. The multi-level page-table walk lifted it; the image, stack and heap sit in separate regions so the window can be wide. Per-spawn stack top and heap gap are randomised too. `make smoke-aslr` asserts 8 spawns land at 8 distinct high bases spanning more than 1 GiB.
 - **Capability mint, transfer, grant, and revoke** — the core operations work, including transitive revocation across every task's cspace and the kernel root cnode. Revocation requires `CAP_RIGHT_REVOKE`; mint/transfer require `CAP_RIGHT_MINT`; a "no ambient authority" guard refuses cap operations from any non-kernel task lacking its own cspace. `SYS_CAP_GRANT` delegates one slot from a supervisor into a child it spawned.
 - **Lineage tracking** — use-after-revoke is prevented via per-lineage generation counters; a looked-up capability can be snapshotted and re-validated at point of use (wired into the IPC paths to close a lookup/use TOCTOU window).
 - **Capability/FFI integrity** — the C `capability_t` and Rust `Capability` layouts are pinned by mirrored compile-time assertions; the refcount table is registered once and every later inc/dec must present the exact (pointer, length) or is refused.
@@ -72,12 +73,6 @@ The shared zero frame is never freed: `free_user_physical_page` refuses it expli
 
 Multi-core works behind `SMP=1`, but the shipped kernel is single-core. The multi-core scheduler shares one runnable pool with a per-CPU pull; there are no per-CPU run queues, no priorities or fairness, and no flush-on-switch. Retiring the gate and hardening the scheduler is Phase 3.
 
-### ASLR entropy ceiling (page-table geometry)
-
-Per-spawn stack top, heap gap, and image load base are all randomised from the CSPRNG (userspace is static-PIE and relocated at load). The remaining limitation is *entropy*, not mechanism: the image base has 8.91 bits (480 pages).
-
-Note the reason has changed, even though the number has not. This used to be a consequence of the ABI — userspace ran in 32-bit compatibility mode — and the figure was lower still, clamped away from kernel low memory. Userspace is now 64-bit and the kernel is in the higher half, so neither bound applies; 8.91 bits is the *structural* ceiling of the current design, where `create_user_pagedir` premaps the image window into a single 2 MiB PD entry and `ASLR_MAX_LOAD_RANDOM_PAGES` (`512 - 32`) is exactly what fits. The user image window itself is still `[4 MiB, 8 MiB)`. Reaching the tens of bits a 64-bit address space allows is no longer an ABI question — it needs the premap and the user window to be restructured.
-
 ---
 
 ## Security limitations
@@ -87,10 +82,6 @@ These matter specifically for anyone evaluating Horus as a security system:
 ### Encrypted storage is persistent, but still early
 
 The block cipher is sound (ChaCha20 + HMAC-SHA256 AEAD, per-block HKDF subkeys, fresh per-write nonce), and on an attached ATA disk the store is the live backend with crypto metadata persisted across reboots (volume sealed until login), multi-block updates crash-atomic via a write-ahead redo journal, and per-file POSIX ownership/permissions enforced by the `fs_server` against the caller's kernel-attested identity. Residual limitations are operational rather than cryptographic: a diskless boot still uses the ephemeral RAM vdisk, and volume size is capped at 2 MiB by single-bitmap geometry (a deliberate non-goal to grow). Fuller ACLs (beyond POSIX owner/group/other + a uid-0 superuser) are also a deliberate non-goal.
-
-### Bounded load-base ASLR entropy
-
-The load base has 8.91 bits of entropy — bounded by page-table geometry rather than the ABI (see above) — so a determined attacker with a memory-disclosure primitive faces a smaller search space than a full 64-bit randomisation would impose.
 
 ### Audit log is tamper-evident, not tamper-proof
 

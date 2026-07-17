@@ -369,7 +369,7 @@ void h_ipc_call(struct interrupt_frame64 *r) {
     uint32_t reply_ep = r->rcx;
     const void *msg   = (const void *)(addr_t)r->rdx;
     size_t   send_len = (size_t)r->rsi;
-    uint32_t reply_buf = r->rdi;
+    uint64_t reply_buf = r->rdi;   /* waiter's reply buffer: a user address, may be high */
 
     if (send_ep >= MAX_ENDPOINTS || reply_ep >= MAX_ENDPOINTS) {
         r->rax = (uint32_t)-1; return;

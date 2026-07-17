@@ -452,10 +452,9 @@ embedded_fsserver_bin_start:
 embedded_fsserver_bin_end:
 #endif
 
-#if defined(ELF_SELFTEST) || defined(ASLR_SELFTEST)
+#if defined(ELF_SELFTEST)
 /* Real multi-segment ELF used by the in-kernel ELF-loader self-test
- * (elf_loader_selftest) and the image-base ASLR self-test (aslr_selftest).
- * Only embedded in those gated builds. */
+ * (elf_loader_selftest). ELF_SELFTEST build only. */
 .align 16
 .global embedded_elftest_start
 embedded_elftest_start:
@@ -464,10 +463,10 @@ embedded_elftest_start:
 embedded_elftest_end:
 #endif
 
-#ifdef ELF64_SELFTEST
-/* The same image linked as a 64-bit static-PIE, used by the ELF64 loader
- * self-test (elf64_loader_selftest) to exercise the x86-64 RELA relocation
- * path. Loaded and inspected, never executed. Only in the ELF64_SELFTEST build. */
+#if defined(ELF64_SELFTEST) || defined(ASLR_SELFTEST)
+/* The same image linked as a 64-bit static-PIE. Used by the ELF64 loader
+ * self-test to exercise the x86-64 RELA path, and by the image-base ASLR test,
+ * which needs a 64-bit image because only those take the high ASLR window. */
 .align 16
 .global embedded_elftest64_start
 embedded_elftest64_start:

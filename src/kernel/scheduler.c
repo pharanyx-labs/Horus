@@ -16,7 +16,27 @@ int task_running_cpu[MAX_TASKS];
 volatile unsigned smp_cpus_ran_tasks = 0;
 #endif
 
-static uint8_t kernel_stacks[MAX_TASKS][KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+/* Task 0's kernel stack — one, not MAX_TASKS of them.
+ *
+ * This used to be [MAX_TASKS][KERNEL_STACK_SIZE], and 63 of those 64 slots were
+ * dead: create_task binds tasks[id].kernel_stack_top here, and then
+ * create_user_pagedir immediately rebinds it to per_task_kstacks[id] for every
+ * task except 0, which it returns early for. So slots 1..63 were written once,
+ * overwritten before the task ever ran, and never read again — just under 2 MiB
+ * of .bss whose only purpose was to be discarded.
+ *
+ * That is not free: .bss ends ~600 KiB below USER_PHYS_BASE, and the ASSERT in
+ * linker64.ld is all that stands between a routine MAX_TASKS bump and the page
+ * allocator handing out live kernel memory. Reclaiming this quadruples that
+ * headroom.
+ *
+ * Slot 0 stays because task 0 genuinely runs on it: create_user_pagedir returns
+ * early for task 0 and never rebinds its stack, and the page-fault handler
+ * resumes on tasks[0].kernel_stack_top when it kills a task and finds no
+ * successor to switch to (idt.c). It is 16-byte aligned with no guard page, so
+ * unlike per_task_kstacks it cannot be guarded without a layout change —
+ * documented in docs/LIMITATIONS.md. */
+static uint8_t task0_kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 
 spinlock_t scheduler_lock;
 spinlock_t page_lock;
@@ -100,8 +120,16 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
 
     /* Each task owns a distinct kernel stack (shared kernel mapping, present in
      * every address space). Pin it now so the TSS RSP0 and the preemptive
-     * scheduler's saved/fabricated trap frame agree on one address. */
-    tasks[id].kernel_stack_top = (uint64_t)&kernel_stacks[id][KERNEL_STACK_SIZE - 16];
+     * scheduler's saved/fabricated trap frame agree on one address.
+     *
+     * Only task 0's is bound here. Every other task's real stack is
+     * per_task_kstacks[id], assigned by create_user_pagedir a few lines below —
+     * which is also where the guard page below it comes from. This used to bind
+     * all of them from a MAX_TASKS-sized array and have that value overwritten
+     * moments later, which cost ~2 MiB of .bss and read as though tasks ran on
+     * a stack they never touched. */
+    if (id == 0)
+        tasks[id].kernel_stack_top = (uint64_t)&task0_kernel_stack[KERNEL_STACK_SIZE - 16];
     fpu_task_init(id);           /* start from a clean x87/SSE register file */
     tasks[id].saved_ksp = 0;
     tasks[id].runnable_ctx = 0;
@@ -220,9 +248,20 @@ void sched_enable_preemption(void) {
     preempt_enabled = 1;
 }
 
+/* Every task that can reach the scheduler has a stack: create_task binds task
+ * 0's, and create_user_pagedir binds every other task's before it is runnable.
+ * There used to be a fallback here that returned kernel_stacks[id] when
+ * kernel_stack_top was 0 — unreachable for that reason, and dangerous if it
+ * ever had fired, because it would have handed back a *different* stack from
+ * the one the TSS RSP0 and the task's saved trap frame agree on. A scheduler
+ * running a task on the wrong kernel stack is not something to paper over with
+ * a plausible-looking address. */
 static inline uint64_t task_kstack_top(int id) {
-    if (tasks[id].kernel_stack_top) return tasks[id].kernel_stack_top;
-    return (uint64_t)&kernel_stacks[id][KERNEL_STACK_SIZE - 16];
+    if (!tasks[id].kernel_stack_top) {
+        println("PANIC: task has no kernel stack");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    return tasks[id].kernel_stack_top;
 }
 
 /* Fabricate an initial, resumable interrupt trap frame at the top of task

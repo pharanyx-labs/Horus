@@ -108,7 +108,7 @@ Each task's kernel stack now sits above an unmapped guard page, so an overflow f
 
 It covers slots 1..63, i.e. every task that runs ring-3 code. **Task 0 — the kernel's own boot/idle task — is not guarded**: it keeps the `kernel_stacks[]` entry `create_task` gives it (`create_user_pagedir` returns early for task 0 and never rebinds the stack), and that array is only 16-byte aligned with no guard slot, so guarding it needs a layout change rather than an unmap. Also unguarded: the BSP boot stack, the three 4 KiB IST stacks (thin for a double-fault handler), and the early-handler stack.
 
-There are two per-task kernel stack arrays, which is one more than the design needs: `create_task` binds `kernel_stack_top` to `kernel_stacks[id]` (2 MiB, `scheduler.c`) and then `create_user_pagedir` immediately rebinds it to `per_task_kstacks[id]` (4 MiB, `paging.c`) for every task but 0. So `kernel_stacks[1..63]` is written once and never used, and `per_task_kstacks[0]` is never used — close to 2 MiB of `.bss` that exists to be overwritten. That matters more than it looks: `.bss` ends ~600 KiB below `USER_PHYS_BASE`, and the link-time `ASSERT` guarding that collision is the only thing standing between a routine `MAX_TASKS` bump and the allocator handing out live kernel memory.
+`per_task_kstacks[0]` is allocated but never used, since task 0 keeps its own stack — one slot (64 KiB) of slack, left in place so every other index still maps directly to a task id.
 
 ### No KASLR
 

@@ -186,6 +186,27 @@ def run():
         s.send("useradd 1235 eve"); s.expect("useradd failed", STEP_TIMEOUT)
         step("useradd denied for standard user (least privilege enforced)")
 
+        # --- 7. sudo refuses to take the password on the command line ----
+        #        It would be echoed to the console and mirrored to the serial
+        #        log, which is where this was found: the password was legible
+        #        in a pasted session transcript.
+        s.send("sudo password"); s.expect("takes no argument", STEP_TIMEOUT)
+        step("sudo rejects a command-line password")
+
+        # --- 8. a wrong password at the sudo prompt is rejected -----------
+        s.send("sudo"); s.expect("Password:", STEP_TIMEOUT)
+        s.send("wrongpass"); s.expect("incorrect password or locked out", STEP_TIMEOUT)
+        step("sudo rejects a wrong password")
+
+        # --- 9. the CORRECT password does not report "invalid argument" ---
+        #        The regression this encodes: sudo authenticated, then failed
+        #        the armed-image check and reported SYS_ERR_INVAL — so typing
+        #        the right password blamed the password. Nothing is armed here,
+        #        so the honest answer is "nothing to elevate".
+        s.send("sudo"); s.expect("Password:", STEP_TIMEOUT)
+        s.send("password"); s.expect("no image is armed", STEP_TIMEOUT)
+        step("sudo with the correct password reports the real reason")
+
     finally:
         transcript = s.buf
         s.close()

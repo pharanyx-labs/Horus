@@ -167,6 +167,37 @@ def run():
         s.send("useradd 1234 alice"); s.expect("user added", STEP_TIMEOUT)
         step("useradd allowed for root")
 
+        # --- 4b. filesystem coreutils drive the real shell + fs_server ----
+        #        cd/pwd/mkdir/ls -l/echo/cat/wc/cp/mv/stat over the encrypted
+        #        fs_server, all relative to a working directory. Each step first
+        #        consumes the prompt left by the previous command so the next
+        #        command's output can't be confused with a stale prompt.
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("mkdir sess_d"); s.expect("mkdir: created sess_d", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("cd sess_d")                       # no output; next prompt confirms
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("pwd"); s.expect("/sess_d", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("echo hello > note")               # no output on success
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("wc note"); s.expect("5  note", STEP_TIMEOUT)   # 0 lines, 1 word, 5 bytes
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("cp note note2"); s.expect("cp: copied to note2", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("cat note2"); s.expect("hello", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("mv note2 note3"); s.expect("mv: note2 -> note3", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("ls -l"); s.expect("note3", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("stat note"); s.expect("Type: file", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("cd /")                            # back to root for the logout below
+        step("filesystem coreutils (cd/pwd/ls -l/cp/mv/wc/stat) work as root")
+
         # --- 5. log out and log back in as a standard user ---------------
         s.send("logout"); s.expect("Logging out", STEP_TIMEOUT)
         s.expect("horus login:", STEP_TIMEOUT)

@@ -8,6 +8,22 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — ring-3 `RDTSC` is disabled via `CR4.TSD` (this pass)
+
+- **The timestamp counter was readable from ring 3**, giving mutually distrusting tasks a cycle-accurate timer — the highest-resolution primitive a cache/covert-channel attack leans on. `CR4.TSD` is now set alongside SMEP/SMAP/UMIP in `cpu_enable_protections()` (`crypto.c`), so a ring-3 `RDTSC`/`RDTSCP` raises `#GP`. The existing ring-3 trap path already routes such a fault into the task's registered handler (delivered as a fault signal), so `RDTSC` now traps rather than returning a count. Ring 0 keeps `RDTSC` — TSD gates CPL>0 only — so the kernel's own jitter-entropy source is untouched, and Horus exposes no userspace timing API, so nothing legitimate is lost.
+- **This is deliberately partial.** Coarser timers and a counting-thread construction remain, and it does nothing about cache *state*; flush-on-switch / partitioning is still open (tracked in `SECURITY.md`). `make smoke-tsd` gates it: a payload registers a fault handler, executes `RDTSC`, and passes only if the handler runs instead of a timestamp coming back. `SECURITY.md` had listed TSD as a *possible future* mitigation; it is now implemented.
+
+### Added — task 0's kernel stack is guarded (this pass)
+
+- **Every ring-3 task's kernel stack already sat above an unmapped guard page, but task 0 — the kernel's own boot/idle/reaper task — did not.** It kept a separate, 16-byte-aligned, unguarded `task0_kernel_stack`, so an overflow of the reaper (which the page-fault handler resumes on when it kills a task and finds no successor) ran silently into whatever `.bss` followed. Meanwhile `per_task_kstacks[0]` sat allocated and never used.
+- **Task 0 now runs on `per_task_kstacks[0]`**, bound by `create_user_pagedir(0)` above the same guard page `kstack_guards_init` unmaps for every other slot — which works precisely because that array lives in the 4 KiB-mapped kernel window (`KERN_SPLIT_PDES`), where a single guard page *can* be made absent (a separate `.bss` array is not guaranteed to). The duplicate `task0_kernel_stack` is gone. `make smoke-wx` now asserts `MAX_TASKS` guards (was `MAX_TASKS - 1`) and verifies slot 0 specifically. The BSP boot stack and the IST/early-handler stacks remain unguarded — a linker-layout change, left as future work.
+
+### Added — a real directory/coreutils surface on the userspace shell and libc (this pass)
+
+- **Directory enumeration end-to-end.** The `fs_server`'s `FS_OP_READDIR` op existed but nothing above it did: newlib shipped no `<dirent.h>` backend (its own is a `#error` stub) and the shell could not stat entries. `opendir`/`readdir`/`closedir` are now provided in `newlib_glue.c` over new `posix_diropen`/`posix_readdir` (`posix.c`) with a project `include/dirent.h` that shadows newlib's stub, and the shell's `ls` gained a real `-l` long format (mode string, owning uid, size per entry).
+- **A working directory.** `posix.c` gained cwd state; `path_walk`/`path_parent` now resolve relative paths against it, with `getcwd`/`chdir`/`mkdir` wired through newlib and `cd`/`pwd` builtins (plus cwd-relative `ls`/`cat`/`touch`/`mkdir`/`rm`) in the shell. `..`/`.` are folded by pure string normalization, so it never depends on on-disk `.`/`..` entries the store does not keep.
+- **A coreutils command pack** built on the above — `cp`, `mv` (over `FS_OP_RENAME`), `wc`, `stat` — all riding existing syscalls, no new kernel surface. Gated: `make smoke-newlib` exercises `opendir`/`readdir` and `mkdir`/`chdir`/`getcwd` + relative resolution end-to-end, and `make smoke-session` drives `cd`/`pwd`/`ls -l`/`cp`/`mv`/`wc`/`stat` through the real ring-3 shell over serial.
+
 ### Fixed — SMEP and SMAP were never enabled (this pass)
 
 - **Both were off on every boot the project had ever done**, while three documents described them as engaged when advertised. `ECX` is an *input* to `CPUID` as well as an output — on leaf 7 it selects the subleaf — and the helper declared it output-only, so the leaf-7 query inherited whatever the previous `CPUID` left there. The previous call is `cpuid(0)`, which returns the vendor string. Leaf 7 was therefore asked for subleaf `0x444D4163` (`"cAMD"`). Its max subleaf is 0, an out-of-range subleaf reads back as all zeros, and so `has_smep`/`has_smap` were both computed from `0`. `cpu_enable_protections()` then dutifully enabled nothing.

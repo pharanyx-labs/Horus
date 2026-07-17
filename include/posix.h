@@ -76,6 +76,18 @@ int  posix_close (int fd);
 int  posix_lseek (int fd, int32_t offset, int whence);
 int  posix_fstat (int fd, posix_stat_t *st);
 int  posix_stat  (const char *path, posix_stat_t *st);
+/* Resolve a path to a directory inode for enumeration. Returns 0 (and sets
+ * *out_ino), -1 (not found), or -2 (not a directory). */
+int  posix_diropen (const char *path, uint32_t *out_ino);
+/* Read directory entry `index` of `dir_ino`. Returns 1 (entry filled), or 0 at
+ * end / on error. name_out must be >= FS_NAME_MAX bytes. */
+int  posix_readdir (uint32_t dir_ino, uint32_t index,
+                    char *name_out, uint32_t *ino_out, uint32_t *type_out);
+/* Working directory. chdir returns 0 / -1; getcwd returns 0 / -1 (ERANGE). */
+int  posix_chdir (const char *path);
+int  posix_getcwd(char *buf, uint32_t size);
+/* Create a directory (relative to cwd or absolute). 0 or negative SYS_ERR_*. */
+int  posix_mkdir (const char *path, int mode);
 /* Remove a directory entry. Returns 0 on success, or a negative SYS_ERR_*
  * (the fs_server enforces write permission on the parent directory). */
 int  posix_unlink(const char *path);

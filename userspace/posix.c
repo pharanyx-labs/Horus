@@ -111,6 +111,15 @@ static int fss_rpc(struct fs_request *rq, struct fs_response *rp) {
     return rp->rc;
 }
 
+/* ----- current working directory -------------------------------------- */
+
+#define POSIX_PATH_MAX 256
+
+/* The process cwd: its inode (for relative-path resolution) and its canonical
+ * absolute path string (for getcwd). Initialised to the root, "/". */
+static uint32_t g_cwd_ino  = 0;
+static char     g_cwd_path[POSIX_PATH_MAX] = "/";
+
 /* ----- path resolution ------------------------------------------------- */
 
 #define MAX_PATH_DEPTH 16
@@ -129,7 +138,8 @@ static int path_walk(const char *path,
                      char       *out_name) {
     if (!path || path[0] == '\0') return -1;
 
-    uint32_t dir_ino = 0;          /* root */
+    /* Absolute paths start at the root; relative paths start at the cwd. */
+    uint32_t dir_ino = (path[0] == '/') ? 0u : g_cwd_ino;
     const char *p = path;
     if (*p == '/') p++;            /* skip leading slash */
 
@@ -210,7 +220,8 @@ static int path_parent(const char *path,
                        char       *out_name) {
     if (!path || path[0] == '\0') return -1;
 
-    uint32_t dir_ino = 0;          /* root */
+    /* Absolute paths start at the root; relative paths start at the cwd. */
+    uint32_t dir_ino = (path[0] == '/') ? 0u : g_cwd_ino;
     const char *p = path;
     if (*p == '/') p++;            /* skip leading slash */
 
@@ -561,6 +572,171 @@ int posix_stat(const char *path, posix_stat_t *st) {
     st->blksize = 512;
     st->blocks  = (rp.size + 511u) / 512u;
     return 0;
+}
+
+/* Resolve `path` to a directory inode for enumeration.
+ * Returns 0 and sets *out_ino on success, -1 if the path does not resolve,
+ * -2 if it resolves to something that is not a directory (ENOTDIR). */
+int posix_diropen(const char *path, uint32_t *out_ino) {
+    ENSURE_INIT();
+    if (!path || !out_ino) return -1;
+
+    uint32_t ino;
+    char     last[FS_NAME_MAX];
+    if (path_walk(path, &ino, last) != 0) return -1;   /* not found */
+
+    /* Confirm it is a directory before handing back an inode the caller will
+     * readdir — a READDIR on a regular file would just error per entry. */
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op  = FS_OP_STAT;
+    rq.ino = ino;
+    if (fss_rpc(&rq, &rp) != 0) return -1;
+    if (rp.type != 2 /* FS_TYPE_DIR */) return -2;
+
+    *out_ino = ino;
+    return 0;
+}
+
+/* Read the directory entry at `index` (0-based) of directory inode `dir_ino`.
+ * Returns 1 and fills the non-NULL out params on success, 0 at/after the end of
+ * the directory (or on any error — readdir(3) reports end-of-dir as a NULL
+ * return with errno unchanged, so the two are indistinguishable to the caller,
+ * which matches POSIX). The name is copied NUL-terminated into name_out, which
+ * must be at least FS_NAME_MAX bytes. */
+int posix_readdir(uint32_t dir_ino, uint32_t index,
+                  char *name_out, uint32_t *ino_out, uint32_t *type_out) {
+    ENSURE_INIT();
+
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op      = FS_OP_READDIR;
+    rq.dir_ino = dir_ino;
+    rq.offset  = index;                 /* entry index, per fs_proto.h */
+
+    /* Server returns rc 0 with the entry, or a negative SYS_ERR_* past the end
+     * (NOENT) or on a permission/transport failure — all "no more entries". */
+    if (fss_rpc(&rq, &rp) != 0) return 0;
+
+    if (name_out) {
+        uint32_t i = 0;
+        for (; rp.name[i] && i < FS_NAME_MAX - 1u; i++) name_out[i] = rp.name[i];
+        name_out[i] = '\0';
+    }
+    if (ino_out)  *ino_out  = rp.ino;
+    if (type_out) *type_out = rp.type;
+    return 1;
+}
+
+/* Compose `arg` against the current cwd into a normalized ABSOLUTE path in
+ * out[POSIX_PATH_MAX]. Resolves ".", "..", a leading "/", and collapses
+ * repeated slashes — pure string work, so it never depends on on-disk "."/".."
+ * entries (the object store has none). Returns 0 on success, -1 on overflow. */
+static int cwd_normalize(const char *arg, char *out) {
+    char comps[MAX_PATH_DEPTH][FS_NAME_MAX];
+    int  ncomp = 0;
+
+    /* Relative arg inherits the cwd's components as a starting stack. */
+    if (arg[0] != '/') {
+        const char *q = g_cwd_path;
+        while (*q == '/') q++;
+        while (*q) {
+            int c = 0;
+            while (*q && *q != '/' && c < FS_NAME_MAX - 1) comps[ncomp][c++] = *q++;
+            comps[ncomp][c] = '\0';
+            while (*q == '/') q++;
+            if (c > 0) { if (ncomp >= MAX_PATH_DEPTH) return -1; ncomp++; }
+        }
+    }
+
+    /* Fold in the argument's components. */
+    const char *p = arg;
+    while (*p == '/') p++;
+    while (*p) {
+        char comp[FS_NAME_MAX];
+        int  c = 0;
+        while (*p && *p != '/' && c < FS_NAME_MAX - 1) comp[c++] = *p++;
+        comp[c] = '\0';
+        while (*p == '/') p++;
+        if (c == 0) continue;
+        if (comp[0] == '.' && comp[1] == '\0') continue;                    /* "."  */
+        if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {         /* ".." */
+            if (ncomp > 0) ncomp--;
+            continue;
+        }
+        if (ncomp >= MAX_PATH_DEPTH) return -1;
+        _umemcpy(comps[ncomp], comp, (uint32_t)c + 1u);
+        ncomp++;
+    }
+
+    /* Rebuild "/a/b/c" (or "/" when the stack is empty). */
+    int o = 0;
+    if (ncomp == 0) { out[0] = '/'; out[1] = '\0'; return 0; }
+    for (int i = 0; i < ncomp; i++) {
+        int l = (int)_ustrlen(comps[i]);
+        if (o + 1 + l >= POSIX_PATH_MAX) return -1;
+        out[o++] = '/';
+        _umemcpy(out + o, comps[i], (uint32_t)l);
+        o += l;
+    }
+    out[o] = '\0';
+    return 0;
+}
+
+/* Change the cwd to `path` (relative to the current cwd, or absolute). Verifies
+ * the target exists and is a directory. Returns 0 on success, -1 otherwise. */
+int posix_chdir(const char *path) {
+    ENSURE_INIT();
+    if (!path || path[0] == '\0') return -1;
+
+    char norm[POSIX_PATH_MAX];
+    if (cwd_normalize(path, norm) != 0) return -1;
+
+    uint32_t ino;
+    if (posix_diropen(norm, &ino) < 0) return -1;   /* missing or not a dir */
+
+    g_cwd_ino = ino;
+    uint32_t i = 0;
+    for (; norm[i] && i < POSIX_PATH_MAX - 1u; i++) g_cwd_path[i] = norm[i];
+    g_cwd_path[i] = '\0';
+    return 0;
+}
+
+/* Copy the canonical cwd path into buf. Returns 0 on success, -1 if it does not
+ * fit (ERANGE) or on bad args. */
+int posix_getcwd(char *buf, uint32_t size) {
+    ENSURE_INIT();
+    if (!buf || size == 0) return -1;
+    uint32_t n = _ustrlen(g_cwd_path);
+    if (n + 1u > size) return -1;                   /* ERANGE */
+    _umemcpy(buf, g_cwd_path, n + 1u);
+    return 0;
+}
+
+/* Create a directory at `path` (relative to the cwd, or absolute). Returns 0 or
+ * a negative SYS_ERR_* (the server enforces write on the parent directory). */
+int posix_mkdir(const char *path, int mode) {
+    ENSURE_INIT();
+    (void)mode;
+    if (!path) return SYS_ERR_INVAL;
+
+    uint32_t parent;
+    char     name[FS_NAME_MAX];
+    if (path_parent(path, &parent, name) != 0) return SYS_ERR_NOENT;
+    if (name[0] == '\0') return SYS_ERR_INVAL;      /* refuse "/" */
+
+    uint32_t nlen = _ustrlen(name);
+    if (nlen == 0 || nlen >= FS_NAME_MAX) return SYS_ERR_INVAL;
+
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op      = FS_OP_MKDIR;
+    rq.dir_ino = parent;
+    _umemcpy(rq.name, name, nlen + 1u);
+    return fss_rpc(&rq, &rp);
 }
 
 int posix_unlink(const char *path) {

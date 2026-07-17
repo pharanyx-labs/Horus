@@ -226,6 +226,11 @@ void smp_bringup(void) {
     /* Gated: spawn a task that faults on purpose and prove its registered
      * handler runs instead of the task being killed (SIGNAL_SELFTEST: PASS). */
     signal_selftest();
+#elif defined(TSD_SELFTEST)
+    /* Gated: spawn a task that executes RDTSC and prove it #GPs under CR4.TSD,
+     * landing in its fault handler instead of returning a timestamp
+     * (TSD_SELFTEST: PASS). */
+    tsd_selftest();
 #elif defined(FS_SELFTEST)
     /* Gated: spawn the userspace fs_server plus a client that drives it over
      * IPC (mkdir/create/write/read/readdir/lookup/delete) against the kernel's

@@ -456,13 +456,14 @@ uint64_t kstack_guard_vaddr(int id) {
  * not of any task. One pass at boot, before the APs exist, means no TLB
  * shootdown and nothing to redo when a task slot is reused.
  *
- * Slot 0 is skipped: task 0 keeps the kernel_stacks[] entry create_task gave it
- * (create_user_pagedir returns early for it and never rebinds the stack), so
- * per_task_kstacks[0] is never a live stack and unmapping its guard would
- * protect nothing. Task 0's own stack has no guard slot and is only 16-byte
- * aligned — guarding it needs a layout change, not this loop. */
+ * Slot 0 is included: task 0 (the boot/idle/reaper) now runs on
+ * per_task_kstacks[0] too — create_user_pagedir binds its stack above this same
+ * guard — so its kernel stack is guarded like every other task's. It used to
+ * keep a separate, unguarded task0_kernel_stack, which is why slot 0 was skipped
+ * and its guard left mapped. The array is in the 4 KiB-mapped kernel window
+ * (KERN_SPLIT_PDES), so every slot's guard, including 0, is unmappable. */
 static void kstack_guards_init(void) {
-    for (int i = 1; i < MAX_TASKS; i++) {
+    for (int i = 0; i < MAX_TASKS; i++) {
         if (kern_page_set_absent((uint64_t)(uintptr_t)per_task_kstacks[i]) == 0)
             kstack_guards_armed++;
     }
@@ -652,7 +653,16 @@ static int user_map_fresh_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t flag
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
     if (task_id == 0) {
+        /* Task 0 runs on the kernel's own address space (cr3 = 0 means "keep the
+         * kernel pml4"), but it still needs a kernel stack for the reaper/idle
+         * path. Bind it to per_task_kstacks[0], above the guard page
+         * kstack_guards_init unmaps, so an overflow of task 0 faults on the guard
+         * instead of running into whatever .bss follows — the same protection
+         * every other task's stack already had. */
         tasks[task_id].cr3 = 0;
+        uint8_t *stack_area = per_task_kstacks[0];
+        uint64_t stack_base = (uint64_t)stack_area + PAGE_SIZE;   /* skip the guard */
+        tasks[task_id].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
         return;
     }
 

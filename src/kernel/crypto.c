@@ -75,6 +75,16 @@ void cpu_detect_features(void) {
  *                   GDT, IDT, LDT and TSS, which is exactly the leak that turns
  *                   a corruption primitive into a targeted one. Ring 0 is
  *                   unaffected; nothing in ring 3 has any business asking.
+ *   TSD  (CR4.2)  — ring 3 cannot execute RDTSC/RDTSCP; both #GP instead. This
+ *                   is a PARTIAL side-channel mitigation: it removes the
+ *                   cycle-accurate timer that cache/covert-channel attacks
+ *                   between mutually distrusting ring-3 tasks lean on. It is not
+ *                   complete — coarser timers and a counting thread remain — but
+ *                   it closes the easiest, highest-resolution source. Always set
+ *                   (the TSC and its disable bit are architectural on x86-64);
+ *                   ring 0 keeps RDTSC (TSD gates CPL>0 only), so the kernel's
+ *                   RDTSC jitter entropy still works. A ring-3 RDTSC now takes a
+ *                   #GP, delivered as a fault signal like any other ring-3 trap.
  */
 void cpu_enable_protections(void) {
     unsigned long cr4;
@@ -82,6 +92,7 @@ void cpu_enable_protections(void) {
     if (platform.has_umip) cr4 |= (1UL << 11);
     if (platform.has_smep) cr4 |= (1UL << 20);
     if (platform.has_smap) cr4 |= (1UL << 21);
+    cr4 |= (1UL << 2);     /* TSD: block ring-3 RDTSC/RDTSCP (timing side channel) */
     __asm__ volatile ("mov %0, %%cr4" :: "r"(cr4) : "memory");
 }
 

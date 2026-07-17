@@ -120,7 +120,7 @@ int arm_named_binary(const char *name) {
  * negative return) on a bad pointer, an over-long/short image, or an
  * unrecognised container. `name_hint` (may be NULL) names a bare-ELF image and
  * backfills an empty Horus name. Returns 0 on success, negative on error. */
-int arm_image_from_user(uint32_t ubuf, uint32_t len, const char *name_hint) {
+int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
     program_armed = 0;
     if (ubuf == 0)                             return -1;
     if (len < 4 || len > MAX_PROGRAM_SIZE)     return -2;
@@ -231,8 +231,8 @@ int do_receive_program(struct program_header *hdr_out) {
  * Returns 0 on success (including "no dynamic relocations"), negative on error. */
 static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
                                       uint16_t e_phnum, uint32_t phentsize,
-                                      uint32_t slide,
-                                      const uint32_t *seg_va, const uint32_t *seg_memsz,
+                                      uint64_t slide,
+                                      const uint64_t *seg_va, const uint64_t *seg_memsz,
                                       int nseg) {
     /* Locate PT_DYNAMIC (p_type == 2). */
     uint32_t dyn_off = 0, dyn_sz = 0;
@@ -293,7 +293,7 @@ static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
         if (r_type == 0) continue;         /* R_386_NONE */
         if (r_type != 8) return -16;       /* only R_386_RELATIVE (fail closed) */
 
-        uint32_t target = r_offset + slide;
+        uint64_t target = (uint64_t)r_offset + slide;
         int in_seg = 0;
         for (int s = 0; s < nseg; s++) {
             if (target >= seg_va[s] && target + 4 <= seg_va[s] + seg_memsz[s]) { in_seg = 1; break; }
@@ -342,8 +342,8 @@ static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
  * coincidence, not a shared definition. */
 static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
                                         uint16_t e_phnum, uint32_t phentsize,
-                                        uint32_t slide,
-                                        const uint32_t *seg_va, const uint32_t *seg_memsz,
+                                        uint64_t slide,
+                                        const uint64_t *seg_va, const uint64_t *seg_memsz,
                                         int nseg) {
     /* Locate PT_DYNAMIC (p_type == 2). Elf64_Phdr: p_type(4) p_flags(4)
      * p_offset(8) p_vaddr(8) p_paddr(8) p_filesz(8) ... */
@@ -451,7 +451,7 @@ static inline int elf64_narrow(const uint8_t *p, uint32_t *out) {
     return 0;
 }
 
-int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
+int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
 {
     if (!out_entry) return -1;
     const uint8_t *st = loader_staging;
@@ -509,15 +509,16 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
     }
     if (!have_load) return -9;
 
-    uint32_t slide = load_base - (min_vaddr & ~0xFFFU);
+    uint64_t slide = load_base - (uint64_t)(min_vaddr & ~0xFFFU);
 
     /* Record each loaded segment's mapped range and ELF p_flags so that, after
      * the bytes are copied in (which needs the pages writable), we can apply
      * W^X per page: code becomes read+execute, data/rodata read[+write]+NX.
      * e_phnum is capped at 8 above, so PT_LOAD segments fit in these arrays. */
-    uint32_t seg_va[8], seg_memsz[8], seg_flags[8];
+    uint64_t seg_va[8], seg_memsz[8];
+    uint32_t seg_flags[8];
     int nseg = 0;
-    uint32_t max_va_end = 0;
+    uint64_t max_va_end = 0;
 
     for (uint16_t i = 0; i < e_phnum; i++) {
         const uint8_t *p = ph + (uint32_t)i * phentsize;
@@ -542,8 +543,8 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
 
         if (p_memsz < p_filesz) return -10;
         if (p_offset + p_filesz > MAX_PROGRAM_SIZE) return -11;
-        uint32_t dest_va = p_vaddr + slide;
-        uint32_t va_end = dest_va + p_memsz;
+        uint64_t dest_va = (uint64_t)p_vaddr + slide;
+        uint64_t va_end = dest_va + p_memsz;
         if (va_end > max_va_end) max_va_end = va_end;
         if (dest_va < USER_AREA_BASE || dest_va >= USER_MAX_VADDR) return -12;
         if (dest_va + p_memsz < dest_va) return -13; 
@@ -602,25 +603,25 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
      * absence of PF_X sets NX. The pages were just written via copy_to_user so
      * they are present; user_protect_page only downgrades permission bits. */
     for (int s = 0; s < nseg; s++) {
-        uint32_t pstart = seg_va[s] & ~0xFFFu;
-        uint32_t pend   = seg_va[s] + seg_memsz[s];
-        for (uint32_t va = pstart; va < pend; va += 0x1000) {
+        uint64_t pstart = seg_va[s] & ~0xFFFULL;
+        uint64_t pend   = seg_va[s] + seg_memsz[s];
+        for (uint64_t va = pstart; va < pend; va += 0x1000) {
             int writable = 0, executable = 0;
             for (int k = 0; k < nseg; k++) {
-                uint32_t kstart = seg_va[k] & ~0xFFFu;
-                uint32_t kend   = seg_va[k] + seg_memsz[k];
+                uint64_t kstart = seg_va[k] & ~0xFFFULL;
+                uint64_t kend   = seg_va[k] + seg_memsz[k];
                 if (va < kend && va + 0x1000u > kstart) {   /* page overlaps seg k */
                     if (seg_flags[k] & 0x2u) writable = 1;  /* PF_W */
                     if (seg_flags[k] & 0x1u) executable = 1;/* PF_X */
                 }
             }
-            user_protect_page((uint64_t)va, writable, executable);
+            user_protect_page(va, writable, executable);
         }
     }
 
     uint64_t final_entry = (ei_class == 1) ? ((uint64_t)e_entry32 + slide) : (e_entry64 + slide);
     if (final_entry >= USER_MAX_VADDR) return -14;
-    *out_entry = (uint32_t)final_entry;
+    *out_entry = final_entry;
     if (out_img_end) *out_img_end = max_va_end;
     return 0;
 }
@@ -644,27 +645,28 @@ void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stac
     int staged_is_elf = (armed_hdr.size >= 4 &&
                          loader_staging[0] == 0x7f && loader_staging[1] == 'E' &&
                          loader_staging[2] == 'L' && loader_staging[3] == 'F');
+    /* Only a 64-bit ELF may live in the high window. An i386 image's addresses
+     * and its R_386_RELATIVE slots are 32-bit and cannot represent a base above
+     * 4 GiB — placing one high silently truncates every relocated pointer. i386
+     * images (only the ELFCLASS32 loader-test fixture ships as one) and flat
+     * images keep the fixed low base. */
+    int staged_is_elf64 = staged_is_elf && armed_hdr.size >= 5 && loader_staging[4] == 2;
 
-    /* Image-base ASLR is bounded by ONE constraint now: the premap must stay
-     * inside a single 2 MiB PD entry, because create_user_pagedir builds it from
-     * one page table. base = USER_AREA_BASE + n*4096 gives base_pti = n for
-     * n < 512 (USER_AREA_BASE >> 12 = 1024, and 1024 & 511 == 0), so the premap
-     * occupies entries [n, n + PREMAP) and fits exactly while
-     * n <= 512 - PREMAP — which is what ASLR_MAX_LOAD_RANDOM_PAGES already is.
-     *
-     * This used to be clamped further, against kernel_lowmem_critical_floor(),
-     * because the kernel was linked low: its .bss ran to 15.37 MiB, straight
-     * through the user window, so an unbounded premap could land over
-     * tasks[]/scheduler state and a kernel read on the task's CR3 would return
-     * the task's own (zeroed) page. That clamp cost ~144 pages. The kernel now
-     * lives at KERNEL_VMA and no kernel state occupies a user address, so the
-     * constraint is gone and the full window is available: 480 pages ~ 8.9 bits. */
-    uint32_t eff_max_pages = ASLR_MAX_LOAD_RANDOM_PAGES;
+    /* Image-base ASLR: a 64-bit ELF is placed at USER_IMAGE_ASLR_BASE plus a
+     * random page-aligned offset spanning ASLR_MAX_LOAD_RANDOM_PAGES (30 bits).
+     * The multi-level page-table walk in create_user_pagedir maps the premap at
+     * whatever base this yields, so the only bound is the window size, not the
+     * old single-2-MiB-PD-entry constraint that fixed the entropy at ~8.9 bits. */
+    uint64_t eff_max_pages = ASLR_MAX_LOAD_RANDOM_PAGES;
 
-    uint32_t load_base = USER_AREA_BASE;
-    if (staged_is_elf && eff_max_pages > 0) {
-        load_base = (uint32_t)(USER_AREA_BASE + aslr_random_offset(eff_max_pages));
-        load_base &= ~0xFFFu;
+    /* A flat/non-PIE image keeps the fixed low base — its addresses are baked
+     * in and cannot be relocated. A PIE image is placed at the high ASLR base
+     * plus a random offset; the walk in create_user_pagedir maps it there
+     * regardless of level, which is what lifted the old single-PD ceiling. */
+    uint64_t load_base = USER_AREA_BASE;
+    if (staged_is_elf64 && eff_max_pages > 0) {
+        load_base = USER_IMAGE_ASLR_BASE + aslr_random_offset(eff_max_pages);
+        load_base &= ~0xFFFULL;
     }
 
     *out_load_base  = load_base;
@@ -680,9 +682,9 @@ void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stac
 void load_staged_image_into(int tid, uint64_t load_base) {
     set_current_task(tid);
 
-    uint32_t entry_point = armed_hdr.entry;
-    uint32_t elf_entry = 0;
-    uint32_t elf_img_end = 0;
+    uint64_t entry_point = armed_hdr.entry;
+    uint64_t elf_entry = 0;
+    uint64_t elf_img_end = 0;
     int elf_rc = try_elf_load(load_base, &elf_entry, &elf_img_end);
     int elf_loaded = (elf_rc == 0);
 #ifdef NEWLIB_SELFTEST
@@ -730,8 +732,8 @@ void load_staged_image_into(int tid, uint64_t load_base) {
     /* For ELF loads, image_end must come from the actual highest PT_LOAD
      * vaddr+memsz (accounts for ASLR slide and .bss extending past filesz);
      * armed_hdr.size is the raw staged file size and undercounts .bss. */
-    uint32_t img_end = elf_loaded
-        ? ((elf_img_end + 0xFFF) & ~0xFFFu)
+    uint64_t img_end = elf_loaded
+        ? ((elf_img_end + 0xFFF) & ~0xFFFULL)
         : (load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF));
     tasks[tid].image_end = img_end;
     /* Put the heap at USER_HEAP_BASE (16 MiB), NOT immediately above the image.
@@ -749,8 +751,8 @@ void load_staged_image_into(int tid, uint64_t load_base) {
      * is untouched by the identity fill and the pager can map real user pages
      * there — which is what makes the heap genuinely demand-paged for the first
      * time, rather than capped at whatever the premap left over. */
-    uint32_t heap_gap = aslr_random_offset(ASLR_MAX_HEAP_GAP_PAGES);
-    tasks[tid].heap_start   = (uint32_t)USER_HEAP_BASE + heap_gap;
+    addr_t heap_gap = aslr_random_offset(ASLR_MAX_HEAP_GAP_PAGES);
+    tasks[tid].heap_start   = (uint64_t)USER_HEAP_BASE + heap_gap;
     tasks[tid].heap_current = tasks[tid].heap_start;
     tasks[tid].heap_end     = tasks[tid].heap_start + 0x10000;
 

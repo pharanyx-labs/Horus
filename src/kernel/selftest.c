@@ -468,7 +468,7 @@ static void elf64_build_min(uint64_t e_phoff, uint64_t p_offset,
  * the test would prove nothing. */
 static int elf64_narrow_checks_ok(const char **why) {
     const uint64_t HIGH = 0x100000000ULL;   /* one bit above the 32-bit window */
-    uint32_t entry = 0, img_end = 0;
+    uint64_t entry = 0, img_end = 0;
 
     elf64_build_min(64, 0, USER_AREA_BASE, 0, 0);
     if (try_elf_load(USER_AREA_BASE, &entry, &img_end) == -17) {
@@ -522,7 +522,7 @@ void elf_loader_selftest(void) {
     if (pid <= 0) { print("ELF_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
 
     uint64_t cr3  = tasks[pid].cr3;
-    uint32_t base = tasks[pid].image_base;   /* ASLR-randomized load base */
+    uint64_t base = tasks[pid].image_base;   /* ASLR-randomized load base */
 
     /* Parse the three PT_LOAD program headers from the staged (base-0) ELF to
      * locate each segment by its permission flags, so the checks hold at the
@@ -727,14 +727,18 @@ void elf64_loader_selftest(void) {
 #define ASLR_PROBE_SPAWNS 8
 
 void aslr_selftest(void) {
-    extern uint8_t embedded_elftest_start[];
-    extern uint8_t embedded_elftest_end[];
+    /* The 64-bit fixture: only ELFCLASS64 images take the high ASLR window this
+     * test asserts on. */
+    extern uint8_t embedded_elftest64_start[];
+    extern uint8_t embedded_elftest64_end[];
+    uint8_t *embedded_elftest_start = embedded_elftest64_start;
+    uint8_t *embedded_elftest_end   = embedded_elftest64_end;
     uint32_t sz = (uint32_t)(embedded_elftest_end - embedded_elftest_start);
 
     print("ASLR_SELFTEST: begin\n");
     if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ASLR_SELFTEST: FAIL embed-size\n"); return; }
 
-    uint32_t bases[ASLR_PROBE_SPAWNS];
+    uint64_t bases[ASLR_PROBE_SPAWNS];
     int got = 0;
     int saved = get_current_task();
 
@@ -753,19 +757,17 @@ void aslr_selftest(void) {
         set_current_task(saved);
     }
 
-    /* (2) Every base inside the premap-containment bound. */
-    uint32_t lo = (uint32_t)USER_AREA_BASE;
-    uint32_t hi = (uint32_t)USER_AREA_BASE +
-                  (uint32_t)ASLR_MAX_LOAD_RANDOM_PAGES * PAGE_SIZE;
+    /* (2) Every base inside the high ASLR window. A regression to the old low
+     * window (anchored at USER_AREA_BASE, 4 MiB) fails this outright. The
+     * "premap must not cross its page table" check that used to sit here is
+     * gone: the multi-level walk allocates whatever levels a base needs, so a
+     * window-crossing premap is now correct, not a bug. */
+    uint64_t lo = USER_IMAGE_ASLR_BASE;
+    uint64_t hi = USER_IMAGE_ASLR_BASE +
+                  (uint64_t)ASLR_MAX_LOAD_RANDOM_PAGES * PAGE_SIZE;
     for (int i = 0; i < got; i++) {
         if (bases[i] < lo || bases[i] >= hi) {
-            print("ASLR_SELFTEST: FAIL base out of bound "); print_hex(bases[i]); print("\n");
-            set_current_task(saved); return;
-        }
-        uint32_t base_pti = (bases[i] >> 12) & 511;
-        if (base_pti + USER_ASPACE_PREMAP_PAGES > 512) {
-            print("ASLR_SELFTEST: FAIL premap crosses its page table at ");
-            print_hex(bases[i]); print("\n");
+            print("ASLR_SELFTEST: FAIL base out of window "); print_hex(bases[i]); print("\n");
             set_current_task(saved); return;
         }
     }
@@ -778,7 +780,7 @@ void aslr_selftest(void) {
         if (!seen) distinct++;
     }
 
-    uint32_t minb = bases[0], maxb = bases[0];
+    uint64_t minb = bases[0], maxb = bases[0];
     for (int i = 1; i < got; i++) {
         if (bases[i] < minb) minb = bases[i];
         if (bases[i] > maxb) maxb = bases[i];
@@ -787,8 +789,23 @@ void aslr_selftest(void) {
     print_decimal(got); print(" distinct, min="); print_hex(minb);
     print(" max="); print_hex(maxb); print("\n");
 
-    if (distinct < 5) {
-        print("ASLR_SELFTEST: FAIL base does not vary\n");
+    if (distinct < got) {
+        /* 30 bits over a 4 TiB window: a collision among 8 draws is ~2^-25, so
+         * anything short of all-distinct means the entropy is not what the
+         * window claims. The old test tolerated 5/8 because 8.91 bits made
+         * collisions plausible; they are not any more. */
+        print("ASLR_SELFTEST: FAIL bases collide (entropy below the window)\n");
+        set_current_task(saved); return;
+    }
+
+    /* The spread across 8 draws must dwarf the entire OLD window. Eight uniform
+     * samples in a 4 TiB span cover a few TiB; a regression that quietly shrank
+     * the window back toward the old ~2 MiB would leave them bunched. Requiring
+     * > 1 GiB of spread fails such a regression loudly, while the chance of 8
+     * genuine 30-bit draws all landing within 1 GiB is ~2^-84 — it will not
+     * flake. */
+    if (maxb - minb < 0x40000000ULL) {
+        print("ASLR_SELFTEST: FAIL spread too small (window collapsed)\n");
         set_current_task(saved); return;
     }
 

@@ -168,7 +168,7 @@ static void h_sbrk(struct interrupt_frame64 *r) {
     if (increment == 0) { r->rax = tasks[tid].heap_current; return; }
 
     uint32_t new_current = tasks[tid].heap_current + (uint32_t)increment;
-    uint32_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+    uint64_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
     /* There used to be a clamp here against kernel_lowmem_critical_floor(): the
      * kernel was linked low, so a heap growing up the low window could shadow
@@ -202,8 +202,8 @@ static void h_sbrk(struct interrupt_frame64 *r) {
  * matching the Linux brk(2) convention.  addr=0 queries without changing. */
 static void h_brk(struct interrupt_frame64 *r) {
     int tid = get_current_task();
-    uint32_t addr     = r->rbx;
-    uint32_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+    uint64_t addr     = r->rbx;
+    uint64_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
     /* No kernel-floor clamp: the kernel lives at KERNEL_VMA, not in the user
      * window. See h_sbrk. */
@@ -643,11 +643,16 @@ static void h_getuid(struct interrupt_frame64 *r) {
  * against the user code window in safe Rust so a fault can only ever redirect
  * ring-3 control flow to plausible user code. */
 static void h_sigaction(struct interrupt_frame64 *r) {
-    uint32_t handler = r->rbx;
+    /* uint64_t: sig_handler is a full user code address. This was uint32_t,
+     * which silently truncated one — harmless only while every image lived
+     * below 4 GiB. */
+    uint64_t handler = r->rbx;
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
-    if (handler != 0 && !rust_signal_handler_addr_ok(handler)) {
-        r->rax = (uint32_t)SYS_ERR_INVAL;   /* handler not in the user code window */
+    if (handler != 0 && !rust_signal_handler_addr_ok(handler,
+                                                     tasks[cur].image_base,
+                                                     tasks[cur].image_end)) {
+        r->rax = (uint32_t)SYS_ERR_INVAL;   /* handler is not inside this task's image */
         return;
     }
     tasks[cur].sig_handler = handler;
@@ -692,7 +697,7 @@ static void h_sigmask(struct interrupt_frame64 *r) {
 static void h_sigaltstack(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
-    uint32_t sp   = r->rbx;
+    uint64_t sp   = r->rbx;   /* the altstack pointer; a user address, now possibly high */
     uint32_t size = r->rcx;
 
     /* Re-pointing the altstack while executing on it would corrupt the running

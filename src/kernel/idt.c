@@ -117,8 +117,11 @@ int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
     if (cur <= 0 || cur >= MAX_TASKS) return 0;
     if ((frame->cs & 3) == 0)         return 0;   /* ring-0 fault: never */
     if (tasks[cur].in_signal)         return 0;   /* fault inside handler -> kill */
-    uint32_t h = tasks[cur].sig_handler;
-    if (h == 0 || !rust_signal_handler_addr_ok(h)) return 0;
+    /* uint64_t: sig_handler is a full user code address, and narrowing it here
+     * would compare a truncated value against the task's real image bounds. */
+    uint64_t h = tasks[cur].sig_handler;
+    if (h == 0 || !rust_signal_handler_addr_ok(h, tasks[cur].image_base,
+                                                  tasks[cur].image_end)) return 0;
 
     /* Pick the handler's stack before saving the frame, so sig_frame keeps the
      * interrupted rsp for an exact SYS_SIGRETURN. Align the altstack top to 16
@@ -541,22 +544,28 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
 
     uint32_t err = (uint32_t)f64->err_code;
     int cur = get_current_task();
-    /* Only ask the pager about addresses that can legitimately be user memory.
-     * The old test was `>= USER_AREA_BASE || >= 0xA00000` — the second clause is
-     * dead (anything >= 0xA00000 is >= 0x400000) and, with no upper bound, this
-     * handed the pager every address above 4 MiB, including the kernel's own .bss
-     * (which runs to 15.37 MiB) and the [8, 16) MiB huge-page region. */
-    if (cur > 0 && fault_addr >= USER_AREA_BASE &&
-        fault_addr < (uint64_t)USER_HEAP_BASE + USER_HEAP_MAX_SIZE) {
-        if (handle_demand_page_fault(fault_addr, err) == 0) {
-            return 0;
-        }
-    }
+    /* Gate the pager on the per-task validator, not a fixed address window.
+     *
+     * This used to be a hardcoded `[USER_AREA_BASE, USER_HEAP_BASE + max)` —
+     * [4 MiB, 80 MiB) — which was fine only while every image lived down there.
+     * With image-base ASLR placing the image anywhere in the user half, a
+     * legitimate fault in a high image fell outside the window, the pager was
+     * never asked, and the task was torn down as if it had jumped somewhere
+     * wild. And silently: a ring-3 fault prints nothing (only ring-0 / task-0
+     * faults do), so the whole system just wedged with no init.
+     *
+     * rust_validate_page_fault already knows exactly what is pageable for this
+     * task — its own image, heap and stack — so it is both the correct gate and
+     * the value `allowed` needs below. It cannot over-admit the way an address
+     * window could: the kernel's .bss is not in any task's user regions. */
     bool allowed = (cur > 0 && cur < MAX_TASKS) &&
         rust_validate_page_fault(fault_addr, err,
                                  tasks[cur].image_base, tasks[cur].image_end,
                                  tasks[cur].heap_start,
                                  tasks[cur].heap_end);
+    if (allowed && handle_demand_page_fault(fault_addr, err) == 0) {
+        return 0;
+    }
 
     /* Deliver SIGSEGV to a registered ring-3 handler instead of killing the
      * task (and without printing the fault banner). Only for a fault the

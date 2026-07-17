@@ -117,7 +117,7 @@ ASLR_SELFTEST ?= 0
 ifeq ($(ASLR_SELFTEST),1)
 CFLAGS  += -DASLR_SELFTEST
 ASFLAGS += -DASLR_SELFTEST
-ASLR_SELFTEST_DEP = userspace/elftest.elf
+ASLR_SELFTEST_DEP = userspace/elftest64.elf
 endif
 
 # PREEMPT_SELFTEST=1 embeds a flat userspace tracer and, at boot, spawns two

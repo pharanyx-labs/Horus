@@ -55,14 +55,23 @@ SECTIONS
     /* ---- Everything else: linked high, loaded low --------------------------- */
     . += KERNEL_VMA;
 
+    /* The __*_start/__*_end pairs below bound each section for the page-table
+     * code, which maps the kernel image with per-section permissions (.text
+     * r-x, .rodata r--, .data/.bss rw-). The ALIGN(4K) on every section is what
+     * makes that expressible at page granularity; without these symbols the C
+     * side has no way to name the boundaries. */
     .text ALIGN(4K) : AT(ADDR(.text) - KERNEL_VMA)
     {
+        __text_start = .;
         *(.text)
         *(.text.*)
+        . = ALIGN(4K);
+        __text_end = .;
     }
 
     .rodata ALIGN(4K) : AT(ADDR(.rodata) - KERNEL_VMA)
     {
+        __rodata_start = .;
         *(.rodata)
         *(.rodata.*)
         /* Placed explicitly: these were orphan sections, and orphan placement
@@ -70,22 +79,44 @@ SECTIONS
          * in play, is not necessarily the view we want them in. */
         *(.eh_frame)
         *(.eh_frame.*)
+        . = ALIGN(4K);
+        __rodata_end = .;
     }
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VMA)
     {
+        __data_start = .;
         *(.data)
         *(.data.*)
         *(.got)
         *(.got.plt)
+        . = ALIGN(4K);
+        __data_end = .;
     }
 
     .bss ALIGN(4K) : AT(ADDR(.bss) - KERNEL_VMA)
     {
+        __bss_start = .;
         *(COMMON)
         *(.bss)
         *(.bss.*)
+        . = ALIGN(4K);
+        __bss_end = .;
     }
 
     /DISCARD/ : { *(.comment) *(.note.*) }
+
+    /* The kernel image loads at 1 MiB and grows upward through .bss; the
+     * physical page allocator hands out frames from USER_PHYS_BASE upward.
+     * Nothing else enforces that the two never meet, and .bss is mostly static
+     * arrays sized by compile-time constants (per_task_kstacks, the vdisk
+     * buffer, cspace_pool), so a routine bump to MAX_TASKS or BLOCKS_PER_DISK
+     * is all it takes to overrun. The failure is silent and catastrophic: the
+     * allocator starts issuing pages that are already live kernel .bss.
+     *
+     * 0x1000000 duplicates USER_PHYS_BASE from src/include/kernel.h (a linker
+     * script cannot include a header — the same reason KERNEL_VMA is duplicated
+     * above). Keep the two in step; if you raise USER_PHYS_BASE, raise this. */
+    ASSERT(__bss_end - KERNEL_VMA <= 0x1000000,
+           "kernel .bss overruns USER_PHYS_BASE: the image now collides with the physical page pool. Shrink a static array or raise USER_PHYS_BASE in src/include/kernel.h (and here).")
 }

@@ -1015,6 +1015,7 @@ int  cpu_has_rdrand(void);
 void entropy_init(void);            /* gather hardware/timing entropy, seed CSPRNG */
 void entropy_add_sample(uint64_t s);/* mix an opportunistic entropy sample */
 void secure_random_bytes(void *out, size_t n);
+void stack_protector_init(void);   /* crypto.c — call once, after entropy_init */
 
 /* Password KDF cost (PBKDF2-HMAC-SHA256 iterations). */
 #define PASSWORD_KDF_ITERATIONS 120000U   /* legacy PBKDF2 cost (no longer used) */

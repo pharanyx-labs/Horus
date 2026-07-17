@@ -467,46 +467,6 @@
   }
   .callout p:last-child { margin-bottom: 0; }
 
-  /* --- support -------------------------------------------------- */
-  .support {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 2.5rem;
-    align-items: center;
-    border: 1px solid var(--rule);
-    background: var(--panel);
-    padding: 2rem;
-  }
-  @media (max-width: 720px) {
-    .support { grid-template-columns: 1fr; gap: 1.75rem; align-items: start; }
-  }
-  .support p {
-    margin: 0;
-    max-width: 58ch;
-    color: var(--muted);
-  }
-  .support p + p { margin-top: 0.9rem; }
-  .support strong { color: var(--text); font-weight: 600; }
-  .support__actions {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-  .btn--coffee {
-    background: var(--amber);
-    border-color: var(--amber);
-    color: var(--ink);
-    font-weight: 700;
-    white-space: nowrap;
-    text-align: center;
-  }
-  .btn--coffee:hover {
-    background: #ffcc55;
-    border-color: #ffcc55;
-    color: var(--ink);
-  }
-  .btn--x { text-align: center; white-space: nowrap; }
-
   /* --- footer --------------------------------------------------- */
   .footer {
     border-top: 1px solid var(--rule);
@@ -843,39 +803,10 @@
     </div>
   </section>
 
-  <section class="section">
-    <div class="section__head">
-      <div class="section__num">Support</div>
-      <div>
-        <h2>Free, and staying that way.</h2>
-      </div>
-    </div>
-    <div class="support">
-      <div>
-        <p>
-          <strong>The code is completely free and always will be</strong> — MIT licensed,
-          every line of it. Nothing here is gated, and nothing is going to be.
-        </p>
-        <p>
-          Donations aren't expected. If you'd like to contribute anyway, it goes
-          towards the running costs behind the project: server maintenance,
-          penetration testing, and the other unglamorous things that keep a
-          security kernel honest.
-        </p>
-      </div>
-      <div class="support__actions">
-        <a class="btn btn--coffee" href="https://buymeacoffee.com/DigitalVagrant">Buy me a coffee</a>
-        <a class="btn btn--x" href="https://x.com/DigitalVagrant">Follow @DigitalVagrant</a>
-      </div>
-    </div>
-  </section>
-
   <footer class="footer">
     <div>MIT licensed · x86-64 only · © 2026 Pharanyx Labs</div>
     <div class="footer__links">
       <a href="https://github.com/pharanyx-labs/Horus">Source</a>
-      <a href="https://x.com/DigitalVagrant">@DigitalVagrant</a>
-      <a href="https://buymeacoffee.com/DigitalVagrant">Donate</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">Security</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ROADMAP.md">Roadmap</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/CONTRIBUTING.md">Contributing</a>

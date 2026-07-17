@@ -540,6 +540,14 @@ static void free_user_aspace(uint64_t pml4_phys);
  * Not exported in the ship build — nothing outside this file should be able to
  * tear down an address space out of band. */
 void free_user_aspace_for_test(uint64_t pml4_phys) { free_user_aspace(pml4_phys); }
+
+/* Gated: map a page at an arbitrary VA, so the self-test can show the walker
+ * reaches addresses the old fixed three-table shape could not express, and
+ * refuses the ones it must. */
+static int user_map_fresh_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t flags);
+int user_map_fresh_page_for_test(uint64_t pml4_phys, uint64_t vaddr, uint64_t flags) {
+    return user_map_fresh_page((uint64_t *)PHYS_KVA(pml4_phys), vaddr, flags);
+}
 #endif
 
 static void free_user_aspace(uint64_t pml4_phys) {
@@ -552,6 +560,93 @@ static void free_user_aspace(uint64_t pml4_phys) {
         p4[i] = 0;
     }
     free_user_physical_page((uint32_t)pml4_phys);
+}
+
+/* ---- Building a user address space ----------------------------------------
+ *
+ * The premap used to be hand-rolled around one fixed shape: pml4[0] -> pdpt[0]
+ * -> pd -> two page tables, everything reachable only inside [0, 1 GiB). That
+ * shape *was* the ASLR ceiling. ASLR_MAX_LOAD_RANDOM_PAGES is literally
+ * `512 - USER_ASPACE_PREMAP_PAGES` — the number of 4 KiB slots left in one 2 MiB
+ * PD entry once the premap is subtracted — so the entropy figure was a
+ * restatement of the page-table layout, not a security decision. Nothing above
+ * 1 GiB could be mapped at all.
+ *
+ * These walk to a page and allocate whatever levels are missing, so a mapping
+ * costs the same code at 4 MiB as at 0x7fff_0000_0000. */
+
+static bool is_canonical_address(uint64_t addr);   /* defined below */
+
+/* Follow `tab[idx]` down a level, allocating the next table if absent.
+ * Intermediate entries carry PAGE_USER because the CPU ANDs U across every
+ * level: a user page under a supervisor table is unreachable from ring 3, and
+ * the leaf's own bits are what actually restrict it. */
+static uint64_t *user_table_next(uint64_t *tab, uint64_t idx) {
+    uint64_t e = tab[idx];
+    if (e & PAGE_PRESENT) {
+        /* A huge page here means someone already mapped this range at a coarser
+         * granularity. Splitting it under a caller that asked for 4 KiB would
+         * silently change what every other address in the range maps to, so
+         * refuse rather than guess. */
+        if (e & PAGE_PS) return 0;
+        return (uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK);
+    }
+    uint64_t phys = alloc_user_physical_page();
+    if (phys == 0) return 0;
+    uint64_t *t = (uint64_t *)PHYS_KVA(phys);
+    for (int i = 0; i < 512; i++) t[i] = 0;
+    tab[idx] = phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+    return t;
+}
+
+/* Resolve `vaddr` to its 4 KiB PTE slot, building the path down to it.
+ * Returns 0 for an address this must never map, or if a table could not be
+ * allocated. */
+static uint64_t *user_pte_slot(uint64_t *pml4_tab, uint64_t vaddr) {
+    /* Non-canonical addresses are not merely invalid to the CPU — the shift
+     * below would index a table from bits the hardware ignores, so a rejected
+     * address and an accepted one could land on the same slot. */
+    if (!is_canonical_address(vaddr)) return 0;
+
+    uint64_t i4 = (vaddr >> 39) & 511;
+    /* The hard line: pml4[256..511] is the kernel's own half, shared into every
+     * task, and pml4[510] is the self-map. A user mapping installed there would
+     * be a user-writable alias of kernel page tables — the whole point of the
+     * higher-half split. Nothing this function is asked to map belongs there,
+     * so treat any such request as a bug and refuse it rather than trusting the
+     * caller's bounds. */
+    if (i4 >= 256) return 0;
+
+    uint64_t *pdpt = user_table_next(pml4_tab, i4);
+    if (!pdpt) return 0;
+    uint64_t *pd = user_table_next(pdpt, (vaddr >> 30) & 511);
+    if (!pd) return 0;
+    uint64_t *pt = user_table_next(pd, (vaddr >> 21) & 511);
+    if (!pt) return 0;
+    return &pt[(vaddr >> 12) & 511];
+}
+
+/* Map one 4 KiB user page. Returns 0 on success. */
+static int user_map_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t phys,
+                         uint64_t flags) {
+    uint64_t *slot = user_pte_slot(pml4_tab, vaddr);
+    if (!slot) return -1;
+    *slot = phys | flags;
+    return 0;
+}
+
+/* Allocate a zeroed frame and map it at `vaddr`. Returns 0 on success; on
+ * failure nothing is left half-mapped and the frame is returned to the pool. */
+static int user_map_fresh_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t flags) {
+    uint64_t phys = alloc_user_physical_page();
+    if (phys == 0) return -1;
+    uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
+    for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
+    if (user_map_page(pml4_tab, vaddr, phys, flags) != 0) {
+        free_user_physical_page((uint32_t)phys);
+        return -1;
+    }
+    return 0;
 }
 
 void create_user_pagedir(uint32_t task_id) {
@@ -587,122 +682,80 @@ void create_user_pagedir(uint32_t task_id) {
         pml4_tab[i] = pml4[i] & ~((uint64_t)PAGE_USER);
     }
 
-    
-    uint64_t pdpt_phys = alloc_user_physical_page();
-    if (pdpt_phys == 0) { println("pagedir: no pdpt phys"); spin_unlock(&page_lock); return; }
-    uint64_t *my_pdpt = (uint64_t *)PHYS_KVA(pdpt_phys);
-    for (int j = 0; j < 512; j++) my_pdpt[j] = 0;
-
-    uint64_t pd_phys = alloc_user_physical_page();
-    if (pd_phys == 0) { println("pagedir: no pd phys"); spin_unlock(&page_lock); return; }
-    uint64_t *my_pd = (uint64_t *)PHYS_KVA(pd_phys);
-    for (int j = 0; j < 512; j++) my_pd[j] = 0;
-
-    
-    uint64_t my_pd_phys = pd_phys;
-    my_pdpt[0] = my_pd_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-
-    /* NOTHING is mapped here but the task's own pages.
+    /* NOTHING is mapped in the user half but the task's own pages.
      *
      * This used to identity-fill PD[0..7] — physical [0, 16 MiB) as supervisor
      * 2 MiB huge pages — because the kernel was linked low and had to reach
      * tasks[]/the page tables/its own .bss while running on this CR3. The kernel
      * now lives at KERNEL_VMA and is reached through the pml4[256..511] copy
      * above, so replicating low memory into a user address space has no purpose.
+     * A user page directory can no longer contain a mapping for any address the
+     * kernel uses, so a user mapping cannot shadow kernel state *by
+     * construction* rather than by a bound on where ASLR may place things.
      *
-     * Removing it is the point of the exercise: a user page directory can no
-     * longer contain a mapping for any address the kernel uses, so a user mapping
-     * cannot shadow kernel state *by construction* rather than by a bound on
-     * where ASLR may place things. It also un-breaks demand paging in the low
-     * window — a fault there now finds a not-present page and reaches the pager,
-     * instead of finding an identity-supervisor page and being declined. */
+     * The premap below no longer builds the page-table path by hand either. It
+     * used to allocate exactly one PDPT, one PD and one PT and index them
+     * directly, which is why the image had to fit inside a single 2 MiB PD entry
+     * and why nothing above 1 GiB was addressable at all. user_map_fresh_page
+     * walks to whatever address it is given and allocates the levels it needs,
+     * so the base is now bounded by policy (ASLR_MAX_LOAD_RANDOM_PAGES) rather
+     * than by the shape of the tables. */
 
-    int pages_to_map = (int)USER_ASPACE_PREMAP_PAGES;
-    /* Premap the image window at the task's (possibly ASLR-randomized) base.
-     * ASLR_MAX_LOAD_RANDOM_PAGES bounds the base so [base, base+premap) lies
-     * within a single 2 MiB PD entry, so a single page table covers the image
-     * and the PT index is derived from the real virtual address (not the loop
-     * counter, which would only be correct for a 2 MiB-aligned base). */
     uint64_t vbase = tasks[task_id].image_base ? (uint64_t)tasks[task_id].image_base
                                                : (uint64_t)USER_AREA_BASE;
-    int pdi      = (int)((vbase >> 21) & 511);
-    int base_pti = (int)((vbase >> 12) & 511);
 
-    uint64_t *cur_pt = 0;
-    if (pdi < 512) {
-        /* One page table for the image's 2 MiB region, left EMPTY except for the
-         * premapped image pages below. The rest of the region is not-present, so
-         * a fault there reaches the pager (which gates on the task's own region
-         * bounds) instead of finding the identity-supervisor page this used to
-         * fill in. */
-        uint64_t pt_phys = alloc_user_physical_page();
-        if (pt_phys) {
-            cur_pt = (uint64_t *)PHYS_KVA(pt_phys);
-            for (int k = 0; k < 512; k++) cur_pt[k] = 0;
-            my_pd[pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-        }
-    }
-
-    for (int p = 0; p < pages_to_map && cur_pt; p++) {
-        int pt_idx = base_pti + p;
-        if (pt_idx >= 512) break;   /* window stays within one PD (base is bounded) */
-
-        uint64_t phys = alloc_user_physical_page();
-        if (phys == 0) break;
-
-        uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
-        for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
-
-        uint32_t prot = rust_get_user_page_protection(task_id, vbase + (uint64_t)p * PAGE_SIZE);
+    /* The image window. Left not-present outside the premap, so a fault there
+     * reaches the pager (which gates on the task's own region bounds) instead of
+     * finding the identity-supervisor page this used to fill in. */
+    int build_failed = 0;
+    for (uint64_t p = 0; p < USER_ASPACE_PREMAP_PAGES; p++) {
+        uint64_t va   = vbase + p * PAGE_SIZE;
+        uint32_t prot = rust_get_user_page_protection(task_id, va);
         uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-        cur_pt[pt_idx] = phys | flags;
+        if (user_map_fresh_page(pml4_tab, va, flags) != 0) { build_failed = 1; break; }
     }
 
-    /* The low user stack: 32 pages below 0x7ff000, premapped USER + NX.
-     *
-     * Its page table is left empty apart from those 32 pages — it used to be
-     * identity-filled supervisor like the image region, for the same
-     * now-obsolete reason.
-     *
-     * (A block here also claimed to premap a 64-page "high ASLR stack" at
-     * ASLR_HIGH_STACK_BASE = 0x7ff000000000. It did not: that VA needs pml4[255],
-     * but the block indexed `my_pd`, which hangs off pml4[0] and covers only
-     * [0, 1 GiB) — hs_pdi came out 511, so the pages landed at ~0x3ffe0000 and
-     * nothing ever read them. It cost 260 KiB per task: 16.2 MiB of the 64 MiB
-     * pool across 64 slots. Deleted.) */
-    {
+    /* The low user stack: 32 pages below 0x7ff000, USER + NX (W^X: a stack is
+     * data). No longer needs a "different PD entry from the image" guard — the
+     * walker shares a level correctly when two regions land in one, and
+     * allocates a fresh one when they do not. */
+    if (!build_failed) {
         uint64_t low_stack_top  = 0x007ff000ULL;
         uint64_t low_stack_base = low_stack_top - (32ULL * PAGE_SIZE);
-        int ls_pdi = (int)((low_stack_base >> 21) & 511);
-        /* Distinct from the image's PD entry by construction (image ASLR is
-         * bounded inside PD[2]; the stack is in PD[3]). Guard anyway: sharing the
-         * entry would leak the image's page table and unmap the image. */
-        if (ls_pdi < 512 && ls_pdi != pdi) {
-            uint64_t pt_phys = alloc_user_physical_page();
-            if (pt_phys) {
-                uint64_t *pt = (uint64_t *)PHYS_KVA(pt_phys);
-                for (int k = 0; k < 512; k++) pt[k] = 0;
-                my_pd[ls_pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-                for (int s = 0; s < 32; s++) {
-                    uint64_t phys = alloc_user_physical_page();
-                    if (phys == 0) break;
-                    uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
-                    for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
-                    uint64_t va = low_stack_base + (uint64_t)s * PAGE_SIZE;
-                    int spti = (int)((va >> 12) & 511);
-                    /* Low user stack: non-executable (W^X). */
-                    pt[spti] = phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER | PAGE_NX;
-                }
+        for (uint64_t s = 0; s < 32; s++) {
+            uint64_t va = low_stack_base + s * PAGE_SIZE;
+            if (user_map_fresh_page(pml4_tab, va,
+                                    PAGE_PRESENT | PAGE_WRITE | PAGE_USER | PAGE_NX) != 0) {
+                build_failed = 1;
+                break;
             }
         }
     }
 
-    uint64_t my_pdpt_phys = pdpt_phys;
-    
-    pml4_tab[0] = my_pdpt_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+    /* A half-built address space must never run: the task would fault on the
+     * first unmapped page of its own image. Give the pages back and leave cr3 at
+     * 0 so the slot is plainly unusable rather than subtly wrong. Freeing here is
+     * only possible because the reclaim exists — this path used to leak
+     * everything it had allocated before failing. */
+    if (build_failed) {
+        println("pagedir: out of physical pages");
+        free_user_aspace(pml4_phys);
+        tasks[task_id].cr3 = 0;
+        spin_unlock(&page_lock);
+        return;
+    }
 
-    
-    pml4_tab[510] = pml4_phys | PAGE_PRESENT | PAGE_WRITE;
+    /* pml4[0] is not installed here any more: the walker installs whichever
+     * PML4 entries the mapped addresses actually need, which for a low image is
+     * still [0] and for a high one is not.
+     *
+     * The self-map. Index 510 is in the kernel half, so the walker refuses it by
+     * design and it is written directly — it points at pml4_phys itself, which is
+     * a kernel structure, not one of the task's pages. NX because nothing
+     * executes through a page-table alias (see paging_init's kernel self-map).
+     * It must come after the pml4[256..511] copy above, which would overwrite
+     * it with the kernel's own. */
+    pml4_tab[510] = pml4_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_NX;
 
     ensure_lapic_mapped(pml4_tab);
 

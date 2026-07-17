@@ -305,6 +305,37 @@ void wx_selftest(void) {
         }
     }
 
+    /* --- Fixed (non-per-task) kernel stack guards: the BSP boot stack and the
+     * three boot IST fault stacks. Same contract — guard absent, stack above it
+     * present — for stacks that live in multiboot.S rather than per_task_kstacks. */
+    extern uint32_t fixed_stack_guards_armed;
+    extern uint32_t kern_fixed_stack_guard_count(void);
+    extern uint64_t kern_fixed_stack_guard_vaddr(int i);
+    uint32_t fixed_n = kern_fixed_stack_guard_count();
+    if (fixed_stack_guards_armed != fixed_n) {
+        print("WX_SELFTEST: FAIL armed ");
+        print_decimal(fixed_stack_guards_armed);
+        print(" fixed stack guards, expected ");
+        print_decimal((uint64_t)fixed_n);
+        print("\n");
+        return;
+    }
+    for (uint32_t i = 0; i < fixed_n; i++) {
+        uint64_t guard = kern_fixed_stack_guard_vaddr((int)i);
+        if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
+            print("WX_SELFTEST: FAIL fixed stack guard still mapped, index ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+        if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT)) {
+            print("WX_SELFTEST: FAIL fixed stack base unmapped, index ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+    }
+
     /* --- The global invariant, over every entry in this CR3. */
     wx_leaves_seen = 0;
     wx_violations  = 0;

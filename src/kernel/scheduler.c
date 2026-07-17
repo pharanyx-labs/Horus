@@ -90,7 +90,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
     /* Record the (possibly ASLR-randomized) image base before create_user_pagedir
      * runs, so it premaps the image window at the right virtual address. Default
      * to the fixed low base for task 0 / callers that don't relocate. */
-    tasks[id].image_base = image_base ? (uint32_t)image_base : (uint32_t)USER_AREA_BASE;
+    tasks[id].image_base = image_base ? image_base : (uint64_t)USER_AREA_BASE;
     tasks[id].image_end  = tasks[id].image_base;   /* refined by the loader once the image size is known */
 
     tasks[id].state = 1;
@@ -102,6 +102,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
      * every address space). Pin it now so the TSS RSP0 and the preemptive
      * scheduler's saved/fabricated trap frame agree on one address. */
     tasks[id].kernel_stack_top = (uint64_t)&kernel_stacks[id][KERNEL_STACK_SIZE - 16];
+    fpu_task_init(id);           /* start from a clean x87/SSE register file */
     tasks[id].saved_ksp = 0;
     tasks[id].runnable_ctx = 0;
     tasks[id].pending_block = 0;
@@ -227,8 +228,8 @@ static inline uint64_t task_kstack_top(int id) {
 /* Fabricate an initial, resumable interrupt trap frame at the top of task
  * `id`'s kernel stack, so the timer switch can iretq into a freshly spawned
  * user task exactly as if it had just been preempted at its entry point. cs/ss
- * are the 32-bit user segments (userspace is compatibility-mode), IF is set so
- * the task is itself preemptible, and all GP registers start zeroed. */
+ * are the 64-bit user segments, IF is set so the task is itself preemptible,
+ * and all GP registers start zeroed. */
 void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
     if (id < 0 || id >= MAX_TASKS) return;
     uint64_t top = task_kstack_top(id) & ~0xFULL;
@@ -240,10 +241,30 @@ void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
     f->int_no   = 0;
     f->err_code = 0;
     f->rip      = entry;
-    f->cs       = 0x2b;          /* 32-bit user code (GDT 0x28 | RPL 3) */
+    /* 64-bit user code (GDT 0x20 | RPL 3). Selector 0x20 already described a
+     * 64-bit user code segment (L=1, D=0, DPL=3) long before anything used it,
+     * so the ABI flip needs no GDT change -- only this selector. */
+    f->cs       = 0x23;
     f->rflags   = 0x202;         /* IF set, reserved bit 1 */
-    f->rsp      = user_rsp;
-    f->ss       = 0x33;          /* 32-bit user data (GDT 0x30 | RPL 3) */
+    /* Enter the task's entry point under the SAME stack alignment a `call` would
+     * have produced. The System V AMD64 ABI guarantees rsp+8 is 16-byte aligned
+     * at a function's first instruction -- i.e. rsp % 16 == 8, because call just
+     * pushed an 8-byte return address. Every _start here is an ordinary C
+     * function, so GCC compiles it against that guarantee and freely emits
+     * 16-byte SSE accesses (movaps) on stack slots it computed from entry rsp.
+     *
+     * iretq pushes no return address, so handing over a 16-byte-aligned rsp puts
+     * every one of those slots 8 bytes out and the first movaps raises #GP. That
+     * is not hypothetical: it is what this got wrong. Simple flat test binaries
+     * never touch SSE and ran fine, while newlib faulted inside the first puts()
+     * -- and because a ring-3 exception tears the task down silently, it looked
+     * like a hang rather than a crash.
+     *
+     * Bias by 8 so the entry point sees what it was compiled to expect. */
+    f->rsp      = (user_rsp & ~0xFULL) - 8;
+    /* User data (GDT 0x30 | RPL 3). Unchanged: in long mode SS base/limit are
+     * ignored, so the same descriptor serves both modes. */
+    f->ss       = 0x33;
 
     tasks[id].saved_ksp     = (uint64_t)f;
     tasks[id].runnable_ctx  = 1;
@@ -496,6 +517,44 @@ void print_boot_timestamp(void) {
     print(" ] ");
 }
 
+/* ---- x87/SSE context ---------------------------------------------------
+ *
+ * The kernel itself is built -mno-sse -mno-mmx -mno-80387 and so never touches
+ * these registers; they belong entirely to ring 3, and the only job here is to
+ * stop one task's register file leaking into (or being clobbered by) another's.
+ * FXSAVE/FXRSTOR are inline asm precisely because the compiler is not allowed to
+ * emit SSE -- the flags bind codegen, not the assembler.
+ *
+ * CR4.OSFXSR is already set by the boot path (multiboot.S), which is what makes
+ * both these instructions and ring-3 SSE legal in the first place. */
+static uint8_t g_fpu_template[512] __attribute__((aligned(16)));
+
+/* The register file a brand-new task starts with: x87 reset, MXCSR at its
+ * architectural default (0x1F80 = all SIMD exceptions masked). A zeroed FXSAVE
+ * image would be wrong -- MXCSR=0 unmasks every SIMD exception, so the first
+ * ring-3 divide would trap. */
+void fpu_init_template(void) {
+    uint32_t mxcsr = 0x1F80;
+    __asm__ volatile ("fninit");
+    __asm__ volatile ("ldmxcsr %0" :: "m"(mxcsr));
+    __asm__ volatile ("fxsave (%0)" :: "r"(g_fpu_template) : "memory");
+}
+
+void fpu_task_init(int id) {
+    if (id < 0 || id >= MAX_TASKS) return;
+    for (int i = 0; i < 512; i++) tasks[id].fpu_state[i] = g_fpu_template[i];
+}
+
+void fpu_save(int id) {
+    if (id <= 0 || id >= MAX_TASKS) return;
+    __asm__ volatile ("fxsave (%0)" :: "r"(tasks[id].fpu_state) : "memory");
+}
+
+void fpu_restore(int id) {
+    if (id <= 0 || id >= MAX_TASKS) return;
+    __asm__ volatile ("fxrstor (%0)" :: "r"(tasks[id].fpu_state) : "memory");
+}
+
 /* Request a voluntary yield from a syscall handler. interrupt_handler64 sees
  * g_want_yield matching the caller and performs sched_yield_switch on the live
  * trap frame — the same full-context path as preemption and blocking IPC.
@@ -536,6 +595,10 @@ void __attribute__((noreturn)) sched_enter_user(int tid) {
     current_kernel_stack_top = kstop;
 #endif
     set_current_task(tid);
+    /* First entry does not come through interrupt_handler64, so load this task's
+     * register file here -- otherwise it would start on whatever the previous
+     * task left in xmm. */
+    fpu_restore(tid);
     uint64_t ksp = tasks[tid].saved_ksp;
 #ifdef SMP
     sched_raw_unlock();

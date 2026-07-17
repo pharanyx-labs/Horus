@@ -32,7 +32,13 @@ SECTIONS
     . = ALIGN(0x1000);
     .rodata  : { *(.rodata) *(.rodata.*) } :rodata
     .dynamic : { *(.dynamic) }             :rodata :dyn
-    .rel.dyn : { *(.rel.dyn) *(.rel.*) }   :rodata
+    /* x86-64 emits RELA (.rela.dyn); the glob `.rel.*` does NOT match it
+     * ("rela" is not "rel" + "."), so leaving it unlisted would orphan-place the
+     * reloc table outside every PT_LOAD and the loader could not map its vaddr
+     * to a file offset. Both spellings are listed so this script keeps working
+     * for the i386 REL form too. */
+    .rel.dyn  : { *(.rel.dyn) *(.rel.*) }    :rodata
+    .rela.dyn : { *(.rela.dyn) *(.rela.*) }  :rodata
     .dynsym  : { *(.dynsym) }              :rodata
     .dynstr  : { *(.dynstr) }              :rodata
     .hash    : { *(.hash) *(.gnu.hash) }   :rodata

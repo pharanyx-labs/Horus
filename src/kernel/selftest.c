@@ -8,13 +8,14 @@
 #endif
 
 #ifdef CPU_SELFTEST
-/* Gated: prove SMEP and SMAP are actually engaged, against a known environment.
+/* Gated: prove the CR4 protections are actually engaged, against a known
+ * environment.
  *
- * tools/smoke_test.sh boots QEMU with -cpu qemu64,+smep,+smap, so both features
- * ARE advertised here. That is what makes "the kernel reports them absent" a
- * failure rather than an honest answer about the hardware, and it is why this
- * test knows something a code read cannot: a detection bug looks like a CPU
- * without the feature.
+ * tools/smoke_test.sh boots QEMU with -cpu qemu64,+smep,+smap,+umip, so all
+ * three ARE advertised here. That is what makes "the kernel reports them
+ * absent" a failure rather than an honest answer about the hardware, and it is
+ * why this test knows something a code read cannot: a detection bug looks like
+ * a CPU without the feature.
  *
  * Written after exactly that bug. cpu_detect_features read CPUID leaf 7 with
  * whatever ECX the previous CPUID had left behind (the tail of the vendor
@@ -33,9 +34,11 @@ void cpu_protections_selftest(void) {
     else if (!((cr4 >> 20) & 1))      { ok = 0; why = "smep-detected-but-not-in-cr4"; }
     else if (!platform.has_smap)      { ok = 0; why = "smap-advertised-but-not-detected"; }
     else if (!((cr4 >> 21) & 1))      { ok = 0; why = "smap-detected-but-not-in-cr4"; }
+    else if (!platform.has_umip)      { ok = 0; why = "umip-advertised-but-not-detected"; }
+    else if (!((cr4 >> 11) & 1))      { ok = 0; why = "umip-detected-but-not-in-cr4"; }
 
     if (ok) {
-        print("CPU_SELFTEST: PASS smep+smap detected and enabled in CR4\n");
+        print("CPU_SELFTEST: PASS smep+smap+umip detected and enabled in CR4\n");
     } else {
         print("CPU_SELFTEST: FAIL "); print(why); print("\n");
     }

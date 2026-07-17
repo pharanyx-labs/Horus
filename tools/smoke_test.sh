@@ -74,7 +74,7 @@ if [ -n "${SMP_CPUS:-}" ]; then
 fi
 
 qemu-system-x86_64 \
-    -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap -accel tcg \
+    -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap,+umip -accel tcg \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -net none \

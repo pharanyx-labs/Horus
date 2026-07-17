@@ -154,12 +154,13 @@ static void grant_child_tcb_cap(int spawner, int pid) {
 }
 
 /* do_spawn must run in the kernel address space: create_user_pagedir and the
- * image loader reach freshly-allocated physical pages through the kernel's low
- * identity map, which a ring-3 caller's CR3 does not provide, and do_spawn_inner
- * installs the child as the current task. This wrapper switches to the kernel
- * page tables for the duration and restores the caller's address space + current
- * task on return, so SYS_SPAWN works from ring 3 and the caller continues. The
- * caller is also granted a CAP_TCB to the new child. */
+ * image loader reach freshly-allocated physical pages through PHYS_KVA, which
+ * lives in the kernel half and is therefore absent from a ring-3 caller's CR3
+ * until the child's pml4[256..511] is populated; and do_spawn_inner installs the
+ * child as the current task. This wrapper switches to the kernel page tables for
+ * the duration and restores the caller's address space + current task on return,
+ * so SYS_SPAWN works from ring 3 and the caller continues. The caller is also
+ * granted a CAP_TCB to the new child. */
 int do_spawn(void) {
     extern uint64_t pml4[];
     uint64_t caller_cr3;

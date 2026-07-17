@@ -465,6 +465,21 @@ typedef struct tcb {
     uint32_t in_signal;
     struct interrupt_frame64 sig_frame;
 
+    /* FXSAVE image: this task's x87/SSE register file (xmm0-15, MXCSR, ...).
+     *
+     * The trap frame saves general-purpose registers only, so without this a
+     * task's xmm state was simply destroyed by whatever ran next -- another task
+     * or the kernel itself. That was invisible while userspace was i386 (no SSE2
+     * in the baseline), but under -m64 SSE2 IS the baseline and gcc keeps live
+     * values in xmm across calls: the fs client held a broadcast byte in xmm0
+     * across sys_ipc_call and stored the fs_server's leftover xmm0 as file data
+     * -- silent on-disk corruption that every checksum agreed with
+     * (smoke-fs-conc). It is also a confidentiality leak in the other direction:
+     * one task's register file must not be readable by the next.
+     *
+     * 16-byte aligned because FXSAVE/FXRSTOR #GP on a misaligned operand. */
+    uint8_t fpu_state[512] __attribute__((aligned(16)));
+
     /* ASLR: per-task randomized image load base (and end), chosen at spawn for
      * PIE (ET_DYN) images. create_user_pagedir premaps the image window at
      * `image_base`; the flat/non-PIE fallback keeps the fixed USER_AREA_BASE. */
@@ -741,6 +756,14 @@ uint32_t rust_cap_alloc_serial(uint32_t *next_serial);
 
 void terminal_init(void);
 void clear_screen(void);
+/* x87/SSE context (scheduler.c). The kernel is built -mno-sse and owns no FPU
+ * state; these exist purely to keep each ring-3 task's register file private to
+ * it across switches. */
+void fpu_init_template(void);
+void fpu_task_init(int id);
+void fpu_save(int id);
+void fpu_restore(int id);
+
 void print_blanks(int n);
 void print_boot_timestamp(void);
 void print_section(const char *title, uint8_t color);

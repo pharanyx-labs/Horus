@@ -13,7 +13,7 @@ static uint16_t g_args_len[SPAWN_MAX_ARGS];    /* length incl NUL of each arg */
 
 /* Copy a NUL-terminated string from user vaddr `usrc` into `dst` (cap bytes incl
  * NUL). Returns length excluding NUL, or -1 on fault / no NUL within cap. */
-static int copy_user_cstr(char *dst, uint32_t usrc, uint32_t cap) {
+static int copy_user_cstr(char *dst, uint64_t usrc, uint32_t cap) {
     for (uint32_t i = 0; i < cap; i++) {
         char c;
         if (copy_from_user(&c, (const void *)(addr_t)(usrc + i), 1) != 0) return -1;
@@ -24,12 +24,15 @@ static int copy_user_cstr(char *dst, uint32_t usrc, uint32_t cap) {
 }
 
 /* Stage the spawner's argv (argc strings at user array `uargv`) for the next
- * spawn. Clears the staging on any error so a partial vector is never applied. */
-static void stage_spawn_args(uint32_t uargv, uint32_t uargc) {
+ * spawn. Clears the staging on any error so a partial vector is never applied.
+ * `uargv` points at the caller's `char *argv[]`, whose entries are 8 bytes now
+ * that userspace is 64-bit -- reading them as 4 would pair each low half with
+ * the next pointer's high half and stage garbage. */
+static void stage_spawn_args(uint64_t uargv, uint32_t uargc) {
     g_args_argc = 0; g_args_total = 0;
     if (uargc == 0 || uargv == 0 || uargc > SPAWN_MAX_ARGS) return;
-    uint32_t ptrs[SPAWN_MAX_ARGS];
-    if (copy_from_user(ptrs, (const void *)(addr_t)uargv, uargc * 4) != 0) return;
+    uint64_t ptrs[SPAWN_MAX_ARGS];
+    if (copy_from_user(ptrs, (const void *)(addr_t)uargv, uargc * sizeof(uint64_t)) != 0) return;
     uint32_t total = 0;
     for (uint32_t i = 0; i < uargc; i++) {
         if (total >= SPAWN_ARGS_BYTES) return;
@@ -49,8 +52,8 @@ static void stage_spawn_args(uint32_t uargv, uint32_t uargc) {
 static void build_child_argv(int tid) {
     if (g_args_argc == 0) return;
     uint32_t argc = g_args_argc;
-    uint32_t sp   = (tasks[tid].esp ? tasks[tid].esp : 0x007ff000u) & ~0xFu;
-    uint32_t str_vaddr[SPAWN_MAX_ARGS];
+    uint64_t sp   = (tasks[tid].esp ? tasks[tid].esp : 0x007ff000ULL) & ~0xFULL;
+    uint64_t str_vaddr[SPAWN_MAX_ARGS];
     uint32_t off = 0;
     for (uint32_t i = 0; i < argc; i++) {
         uint32_t len = g_args_len[i];
@@ -59,16 +62,20 @@ static void build_child_argv(int tid) {
         str_vaddr[i] = sp;
         off += len;
     }
-    sp &= ~3u;
-    sp -= (argc + 1) * 4;                     /* argv[] array, NULL-terminated */
-    uint32_t argv_base = sp;
+    /* The child reads this as `char *argv[]`, so entries are 8 bytes wide and
+     * 8-byte aligned now that userspace is 64-bit. */
+    sp &= ~7ULL;
+    sp -= (uint64_t)(argc + 1) * sizeof(uint64_t);   /* argv[], NULL-terminated */
+    uint64_t argv_base = sp;
     for (uint32_t i = 0; i < argc; i++)
-        copy_to_user((void *)(addr_t)(argv_base + i * 4), &str_vaddr[i], 4);
-    uint32_t nullp = 0;
-    copy_to_user((void *)(addr_t)(argv_base + argc * 4), &nullp, 4);
+        copy_to_user((void *)(addr_t)(argv_base + i * sizeof(uint64_t)),
+                     &str_vaddr[i], sizeof(uint64_t));
+    uint64_t nullp = 0;
+    copy_to_user((void *)(addr_t)(argv_base + (uint64_t)argc * sizeof(uint64_t)),
+                 &nullp, sizeof(uint64_t));
     tasks[tid].argc     = argc;
     tasks[tid].argv_ptr = argv_base;
-    tasks[tid].esp      = (argv_base - 16) & ~0xFu;
+    tasks[tid].esp      = (argv_base - 16) & ~0xFULL;
     g_args_argc = 0; g_args_total = 0;
 }
 

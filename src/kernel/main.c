@@ -105,6 +105,7 @@ void kernel_main(uint32_t mb_info) {
     idt_init64();
     pic_init();
     paging_init();
+    fpu_init_template();   /* the x87/SSE image every new task starts from */
     cap_init();
     cpu_detect_features();
     cpu_enable_protections();   /* SMEP/SMAP — must follow feature detection */

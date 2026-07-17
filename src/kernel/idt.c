@@ -142,7 +142,7 @@ int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
     return 1;
 }
 
-uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
+static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
     uint64_t *g = (uint64_t *)frame;
@@ -271,6 +271,19 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
                  * SYS_EXIT path does. The old code raw-set state=0 and spun the
                  * cooperative schedule(), which never woke a blocked waiter, so
                  * a faulting shell left a blocking init asleep forever. */
+                /* Say something before the task disappears. A ring-3 fault with
+                 * no handler used to kill the task in total silence, which made a
+                 * crashed init/shell look like a hang and cost real debugging time.
+                 * Deliberately worded to avoid the smoke suite's failure regex
+                 * (PAGE FAULT / Exception! Vector / PANIC / Rejected by validator):
+                 * the faulter and signal tests fault ON PURPOSE and must stay green,
+                 * so this is a diagnostic, not a failure marker. */
+                print("[task "); print_decimal((uint64_t)killed);
+                print(" '"); print(tasks[killed].name);
+                print("' killed: ring-3 trap vector "); print_decimal(vector);
+                print(" at rip="); print_hex64(frame->rip);
+                print(" rsp="); print_hex64(frame->rsp);
+                print("]\n");
                 task_teardown(killed);
                 uint64_t rsp = task_exit_switch(killed);
                 if (rsp) return rsp;
@@ -305,6 +318,29 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
     /* Default (non-timer, non-switching) path: resume on the same trap frame,
      * i.e. return exactly into the interrupted context. */
     return (uint64_t)frame;
+}
+
+/* FPU/SSE context switch. Wraps the dispatcher rather than living inside it
+ * because the dispatcher has many exit points (timer switch, IPC block, yield,
+ * exec re-enter, exit switch) and every one of them can resume a DIFFERENT task
+ * than the one that trapped; doing it here means there is exactly one place that
+ * has to be right.
+ *
+ * Save on entry from ring 3, restore on return to ring 3 -- keyed on the CURRENT
+ * task at each moment, which is what makes a switch work: the handler may have
+ * changed it, so the restore reads the task we are actually about to iretq into.
+ * A ring-0 -> ring-0 interrupt is skipped entirely: the kernel owns no FPU state
+ * (it is built -mno-sse), so there is nothing to save and nothing to restore. */
+uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
+{
+    int from_user = (frame->cs & 3) != 0;
+    if (from_user) fpu_save(get_current_task());
+
+    uint64_t rsp = interrupt_handler64_inner(frame);
+
+    struct interrupt_frame64 *out = (struct interrupt_frame64 *)rsp;
+    if (out && (out->cs & 3) != 0) fpu_restore(get_current_task());
+    return rsp;
 }
 
 void segfault_park(void) {

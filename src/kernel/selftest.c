@@ -137,6 +137,39 @@ void wx_selftest(void) {
         return;
     }
 
+    /* --- Kernel stack guards. These were computed and then never unmapped, so
+     * the check that matters is that the page is ABSENT — a mapped guard is the
+     * bug, and it looks identical from any angle except this one. The armed
+     * count is checked too: an empty loop would satisfy the absence test
+     * vacuously if the stacks were never mapped in the first place. */
+    extern uint32_t kstack_guards_armed;
+    extern uint64_t kstack_guard_vaddr(int id);
+    if (kstack_guards_armed != (uint32_t)(MAX_TASKS - 1)) {
+        print("WX_SELFTEST: FAIL armed ");
+        print_decimal(kstack_guards_armed);
+        print(" stack guards, expected ");
+        print_decimal((uint64_t)(MAX_TASKS - 1));
+        print("\n");
+        return;
+    }
+    for (int i = 1; i < MAX_TASKS; i++) {
+        uint64_t guard = kstack_guard_vaddr(i);
+        if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
+            print("WX_SELFTEST: FAIL stack guard still mapped for task ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+        /* The stack itself must still be there — unmapping one page too many
+         * would take the stack with it, and every task would fault on entry. */
+        if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT)) {
+            print("WX_SELFTEST: FAIL stack base unmapped for task ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+    }
+
     /* --- The global invariant, over every entry in this CR3. */
     wx_leaves_seen = 0;
     wx_violations  = 0;

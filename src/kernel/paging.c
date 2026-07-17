@@ -206,6 +206,7 @@ static uint64_t build_pd(uint64_t low_flags, uint64_t huge_flags) {
 }
 
 static void kernel_remap_init(void) {
+    extern uint64_t pml4[512];
     extern uint64_t high_pdpt[512];
     extern uint64_t pd[512];
     /* linker64.ld exports these; every one is 4 KiB-aligned, which is what makes
@@ -277,6 +278,40 @@ static void kernel_remap_init(void) {
 
     pd_map_range(phys_pd, text_start, ro_end, PAGE_PRESENT | PAGE_NX);   /* r-- */
 
+    /* ---- View 3: the low identity map, pdpt[0] ----------------------------
+     * The last alias, and the one whose necessity is overstated in three
+     * comments. It maps physical [0, 1 GiB) RWX at its own address, which is a
+     * third writable+executable view of the kernel image and of every page in
+     * the allocator pool.
+     *
+     * Almost none of it is needed. Every symbol linked low is boot-stage —
+     * _start, long_mode_low, boot_gdt, boot_stack_top ("low scratch stack; the
+     * real one is high") — and all of it is finished before paging_init runs.
+     * The AP trampoline is the single exception: it far-jumps to `long_mode` at
+     * ~0x8000 *after* enabling paging on this CR3, and then reads the cells at
+     * 0x8FD8/0x8FE8. Blob and cells share one page (the blob is 286 bytes at
+     * 0x8000; the cells sit at offset 0xFD8), so one page covers it.
+     *
+     * That page is R+X, not RWX. The BSP writes the blob through the PHYS_KVA
+     * window (smp.c copies to PHYS_KVA(AP_TRAMP_PHYS)) and the AP executes it
+     * here, so the write alias and the execute alias are different mappings and
+     * neither is W+X on its own.
+     *
+     * It stays mapped for the life of the kernel rather than being dropped
+     * after bringup: the BSP's wait for the APs is bounded (smp.c gives up
+     * after a fixed spin count and continues), so a straggler can still be
+     * inside the trampoline when bringup "finishes". Unmapping on that basis
+     * would be a race whose loser executes unmapped memory. One R+X page,
+     * writable through no alias but PHYS_KVA, is the cheaper trade.
+     *
+     * pml4[0] itself must survive regardless — 0xFEE00000 decodes to
+     * pml4[0]/pdpt[3], so the LAPIC hangs off the same PML4 entry through a
+     * *different* PDPT slot. Only pdpt[0] is replaced. */
+    uint64_t ident_pd_phys = build_pd(0 /* absent */, 0 /* absent */);
+    if (ident_pd_phys == 0) return;
+    uint64_t *ident_pd = (uint64_t *)PHYS_KVA(ident_pd_phys);
+    pd_map_range(ident_pd, AP_TRAMP_PHYS, AP_TRAMP_PHYS + PAGE_SIZE, PAGE_PRESENT); /* r-x */
+
     /* The swap. Everything above was written through the PHYS_KVA window, so
      * the live tables have not been touched until these single aligned 8-byte
      * stores — which the page walker either sees or does not. There is no
@@ -285,9 +320,15 @@ static void kernel_remap_init(void) {
      * high_pdpt[2] last: every write above reached its table *through* it, so
      * it has to stay as it is until there is nothing left to write. It only
      * gains NX, never loses present or write, so the writes already issued
-     * remain valid afterwards. */
-    high_pdpt[510] = kern_pd_phys | PAGE_PRESENT | PAGE_WRITE;
-    high_pdpt[2]   = phys_pd_phys | PAGE_PRESENT | PAGE_WRITE;
+     * remain valid afterwards.
+     *
+     * pdpt is reached through pml4[0] rather than by naming the symbol: that
+     * follows the tables the CPU is actually walking instead of assuming the
+     * boot layout, and it keeps pml4 the only page-table global C needs. */
+    uint64_t *pdpt = (uint64_t *)PHYS_KVA(pml4[0] & PTE_ADDR_MASK);
+    pdpt[0]        = ident_pd_phys | PAGE_PRESENT | PAGE_WRITE;
+    high_pdpt[510] = kern_pd_phys  | PAGE_PRESENT | PAGE_WRITE;
+    high_pdpt[2]   = phys_pd_phys  | PAGE_PRESENT | PAGE_WRITE;
 
     /* Reload CR3 rather than invlpg: this replaced a PDPTE covering a gigabyte,
      * and none of the entries under it are global. */
@@ -332,8 +373,16 @@ void paging_init(void) {
     if ((pml4[510] & 0x1) == 0) {
         /* Self-map. The entry needs pml4's PHYSICAL address; `(uint64_t)pml4` is
          * its virtual one and is only the same number because the kernel is
-         * linked identity-mapped. */
-        pml4[510] = virt_to_phys(pml4) | 0x3;
+         * linked identity-mapped.
+         *
+         * NX, because a recursive map is 512 GiB of page tables addressable as
+         * ordinary memory, and page-table entries are full of attacker-influenced
+         * physical addresses — a classic surface for spraying bytes that happen to
+         * decode as instructions. Nothing executes through the self-map; it exists
+         * to read and write table entries. NX on an upper-level entry vetoes
+         * execute for everything beneath it, so this one bit covers the whole
+         * region. */
+        pml4[510] = virt_to_phys(pml4) | 0x3 | PAGE_NX;
     }
     ensure_lapic_mapped(NULL);
     /* Last: give the kernel's own mapping a page directory of its own. Must stay
@@ -793,11 +842,13 @@ uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr) {
  * the bytes in, then calls this per page to honour the segment's p_flags so code
  * ends up read+execute and data ends up read+write+no-execute.
  *
- * Walks the page tables by physical address with a present-bit check at every
- * level (low memory is identity-mapped in the active address space during spawn,
- * exactly as create_user_pagedir relies on). No TLB shootdown is needed: the
- * target task is not yet scheduled, so its CR3 is loaded fresh when it first
- * runs. Returns 0 on success, -1 if the page is absent or not a 4 KiB leaf. */
+ * Walks the page tables through PHYS_KVA with a present-bit check at every
+ * level, exactly as create_user_pagedir does. (This comment used to say the walk
+ * relied on low memory being identity-mapped; the body has used PHYS_KVA for
+ * some time, and the low map is now a single page for the AP trampoline.) No TLB
+ * shootdown is needed: the target task is not yet scheduled, so its CR3 is
+ * loaded fresh when it first runs. Returns 0 on success, -1 if the page is
+ * absent or not a 4 KiB leaf. */
 int user_protect_page(uint64_t vaddr, int writable, int executable) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) return -1;

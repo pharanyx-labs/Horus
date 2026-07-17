@@ -48,9 +48,12 @@ _start:
     movl $(boot_tables_end - boot_tables_start) / 4, %ecx
     rep stosl
 
-    /* pml4[0] -> pdpt: the low identity map. Required forever, not vestigial:
-     * the AP trampoline far-jumps to ~0x8000 *after* enabling paging on this
-     * very CR3, and the LAPIC/VGA MMIO are reached at their physical VAs. */
+    /* pml4[0] -> pdpt: the low identity map, needed while this boot stage runs
+     * with VA == PA. paging_init later replaces pdpt[0] with a directory that
+     * maps ONE page — 0x8000, read-only + executable — because the AP trampoline
+     * far-jumps there *after* enabling paging on this CR3. Nothing else survives:
+     * VGA and the LAPIC are reached through PHYS_KVA and pdpt[3] respectively,
+     * not through this map. pml4[0] itself stays (the LAPIC hangs off it). */
     movl $(pdpt - KERNEL_VMA), %eax
     orl  $0x3, %eax
     movl %eax, pml4 - KERNEL_VMA
@@ -61,7 +64,11 @@ _start:
 
     /* pd[k] = k*2MiB | P|W|PS -> identity-map physical [0, 1 GiB). One `pd` is
      * aliased by all three of the entries below; a write here is visible
-     * through every view. */
+     * through every view. That aliasing is why the kernel's own .text was
+     * writable and its .bss executable — tightening any view tightened all
+     * three, so none could be. paging_init (kernel_remap_init) gives each of the
+     * three consumers a directory of its own and retires this one; `pd` is only
+     * the bootstrap view now, live between here and the end of paging_init. */
     movl $(pd - KERNEL_VMA), %edi
     movl $0x00000000, %ebx
     movl $512, %ecx

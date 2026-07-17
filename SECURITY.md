@@ -7,7 +7,7 @@ Horus is a **research microkernel** in early development. It is not suitable for
 Known weaknesses include:
 
 - SMP works behind the `SMP=1` build gate but is not default-on; the multi-core scheduler shares a single runnable pool (no per-CPU run queues, no priorities), and there is no flush-on-switch between mutually distrusting tasks
-- Load-base ASLR is applied (userspace is static-PIE, relocated at a random base), but image-base entropy is bounded (~9 bits) by the 32-bit low-memory window userspace runs in
+- Load-base ASLR is applied (userspace is static-PIE, relocated at a random base), but image-base entropy is bounded (~9 bits) — now by page-table geometry (the premap must fit one 2 MiB PD entry), not by the ABI: userspace is 64-bit and the kernel is in the higher half
 - Encrypted storage is persistent by default when an ATA disk is present (crypto metadata survives reboot; volume sealed until login; multi-block updates crash-atomic via a write-ahead journal; per-file POSIX ownership/permissions enforced by the `fs_server`), but diskless boots still use the ephemeral RAM vdisk and volumes are size-capped at 2 MiB by single-bitmap geometry
 - The audit log is tamper-*evident* (an HMAC chain detects modification), not tamper-*proof* — an attacker who can read the per-boot key can recompute a consistent chain (see the audit-log note below)
 
@@ -31,7 +31,7 @@ The following are implemented and enforced today:
 - **Capability space zeroed on task-slot reuse:** `cspace_pool` is a static array; when a task exits and its slot is reused, `create_task` zeroes all 256 capability slots before installing the new task's initial capabilities, preventing an inheriting task from acquiring the dead task's `CAP_USER`, `CAP_CONSOLE`, or `CAP_ENCRYPTED_STORAGE`.
 - **Filesystem reference monitor (zero-trust ownership):** the ring-3 `fs_server` is the single filesystem and enforces per-file POSIX owner/group/other rwx and ownership against the caller's *kernel-attested* identity. `SYS_IPC_SENDER` returns the sending task's login uid/gid taken from `tasks[]` — set at login, never from anything the client puts in the request — so a client cannot forge who it is; root (uid 0) is the only ambient authority (`chmod` owner-or-root, `chown` root-only). Only the server holds the object-store capability, so a client cannot reach the store directly or bypass the checks. The earlier parallel in-memory capfs (with its own weaker permission model and no persistence) has been **removed** — its syscalls fail closed — shrinking the ring-3 filesystem attack surface to one.
 - **Account and password hygiene:** accounts created without an explicit initial password get a CSPRNG-random `pass_hash` that no Argon2id invocation can match (locked until `SYS_PASSWD`); password changes persist across reboots; `h_passwd`/`h_auth` scrub their cleartext buffers with `secure_zero` before returning.
-- **Supply chain / CI:** every change is gated by a pipeline of eleven jobs — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), a headless QEMU smoke-boot, five runtime self-tests (ELF-loader + W^X, preemption, signals, SMP, process-control), a byte-for-byte reproducible-build check, and a security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
+- **Supply chain / CI:** every change is gated by a pipeline of 24 jobs (23 gating) — `cargo test`, `clippy` with all warnings denied, a kernel + ISO build, an alt-config build matrix (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`), nineteen headless QEMU self-tests (boot, ELF-loader + W^X for both ELF classes, image-base ASLR, preemption, signals, process-control, copy-on-write, notifications, SMP, a scripted ring-3 shell session, and the filesystem/libc suite), a byte-for-byte reproducible-build check, and an advisory security-scan job (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) that also emits a CycloneDX SBOM.
 
 The security-critical primitives (capabilities, memory refcounting, hashing, RNG, FFI validation) live in safe `no_std` Rust and carry unit tests; the rest of the kernel is C and has **not** undergone systematic fuzzing or third-party review.
 
@@ -52,7 +52,11 @@ The security-sensitive primitives are audited-standard algorithms implemented in
 
 ## Side-channel threat model
 
-Horus preempts and switches between mutually distrusting ring-3 tasks on a single core, and — under `SMP=1` — across cores. It does **not** claim resistance to microarchitectural side channels:
+Horus preempts and switches between mutually distrusting ring-3 tasks on a single core, and — under `SMP=1` — across cores.
+
+**Architectural** state is isolated across that switch: general-purpose registers live in the per-task trap frame, and the x87/SSE register file is saved/restored around every ring-3 kernel entry (`FXSAVE`/`FXRSTOR` into the TCB), so one task cannot read what another left in `xmm`. The kernel itself is built `-mno-sse -mno-mmx -mno-80387`, so it has no FPU state of its own to leak into ring 3 either. (This was not always true — see CHANGES.md; it was latent for as long as userspace was i386 and could not hold a live `xmm` across a syscall.)
+
+**Microarchitectural** state is a different matter, and Horus makes no claim of resistance:
 
 - **Timestamp counter (TSC):** `rdtsc` is readable from ring 3, so the kernel treats it as *public* and never uses it as a source of secret randomness — only as one whitened input to the CSPRNG. Disabling ring-3 `rdtsc` via `CR4.TSD` is a possible future mitigation but breaks userspace timing APIs.
 - **Constant-time comparisons:** password-hash and MAC/tag comparisons use a data-independent accumulating compare (`constant_time_compare`) to avoid early-exit timing oracles.
@@ -91,7 +95,7 @@ Given the project's status, the following are in scope for responsible disclosur
 
 The following are out of scope for now, because they are known and documented:
 
-- Bounded load-base ASLR entropy (userspace is static-PIE with a randomised base, but confined to the low 32-bit window, so ~9 bits)
+- Bounded load-base ASLR entropy (userspace is static-PIE with a randomised base, but the premap must fit one 2 MiB PD entry, so ~9 bits)
 - Absence of covert-channel / cache side-channel mitigations
 - SMP scheduler maturity (works behind `SMP=1`; not default, no per-CPU queues/priorities)
 

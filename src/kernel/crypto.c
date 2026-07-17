@@ -57,22 +57,29 @@ void cpu_detect_features(void) {
     cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
     platform.has_smap = (ebx & (1 << 20)) != 0;
     platform.has_smep = (ebx & (1 << 7))  != 0;
+    platform.has_umip = (ecx & (1 << 2))  != 0;
 }
 
 /*
- * Enable supervisor-mode execution/access prevention in CR4. MUST be called
- * after cpu_detect_features() (which fills platform.has_smep/has_smap), and is
- * the only place that turns these on:
+ * Enable the CR4 user/supervisor protections. MUST be called after
+ * cpu_detect_features() (which fills platform.has_smep/has_smap/has_umip), and
+ * is the only place that turns these on:
  *   SMEP (CR4.20) — ring 0 cannot execute ring-3 (user) pages, blocking a large
  *                   class of privilege-escalation exploits that redirect kernel
  *                   execution into attacker-controlled userspace code.
  *   SMAP (CR4.21) — ring 0 cannot read/write user pages except inside an
  *                   explicit stac/clac window (the kernel already brackets user
  *                   copies with clac/stac).
+ *   UMIP (CR4.11) — ring 3 cannot execute SGDT/SIDT/SLDT/STR/SMSW. Those five
+ *                   need no privilege but hand out the linear addresses of the
+ *                   GDT, IDT, LDT and TSS, which is exactly the leak that turns
+ *                   a corruption primitive into a targeted one. Ring 0 is
+ *                   unaffected; nothing in ring 3 has any business asking.
  */
 void cpu_enable_protections(void) {
     unsigned long cr4;
     __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+    if (platform.has_umip) cr4 |= (1UL << 11);
     if (platform.has_smep) cr4 |= (1UL << 20);
     if (platform.has_smap) cr4 |= (1UL << 21);
     __asm__ volatile ("mov %0, %%cr4" :: "r"(cr4) : "memory");

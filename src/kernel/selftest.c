@@ -7,6 +7,41 @@
 #include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the FS self-test harnesses */
 #endif
 
+#ifdef CPU_SELFTEST
+/* Gated: prove SMEP and SMAP are actually engaged, against a known environment.
+ *
+ * tools/smoke_test.sh boots QEMU with -cpu qemu64,+smep,+smap, so both features
+ * ARE advertised here. That is what makes "the kernel reports them absent" a
+ * failure rather than an honest answer about the hardware, and it is why this
+ * test knows something a code read cannot: a detection bug looks like a CPU
+ * without the feature.
+ *
+ * Written after exactly that bug. cpu_detect_features read CPUID leaf 7 with
+ * whatever ECX the previous CPUID had left behind (the tail of the vendor
+ * string), which is far past leaf 7's max_subleaf of 0, so EBX read back as
+ * zero. Both features looked absent on every boot, cpu_enable_protections had
+ * nothing to turn on, and the kernel ran with SMEP and SMAP off while
+ * documenting them as enabled. Asking the kernel what it detected would have
+ * agreed with the kernel; this pins it to the harness's -cpu line instead. */
+void cpu_protections_selftest(void) {
+    uint64_t cr4;
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+
+    int ok = 1;
+    const char *why = "";
+    if      (!platform.has_smep)      { ok = 0; why = "smep-advertised-but-not-detected"; }
+    else if (!((cr4 >> 20) & 1))      { ok = 0; why = "smep-detected-but-not-in-cr4"; }
+    else if (!platform.has_smap)      { ok = 0; why = "smap-advertised-but-not-detected"; }
+    else if (!((cr4 >> 21) & 1))      { ok = 0; why = "smap-detected-but-not-in-cr4"; }
+
+    if (ok) {
+        print("CPU_SELFTEST: PASS smep+smap detected and enabled in CR4\n");
+    } else {
+        print("CPU_SELFTEST: FAIL "); print(why); print("\n");
+    }
+}
+#endif /* CPU_SELFTEST */
+
 #if defined(ELF_SELFTEST) || defined(ELF64_SELFTEST)
 /* In-kernel self-test of the ELF loader's W^X enforcement (gated; never in the
  * ship build). Loads a real multi-segment ELF (userspace/elftest.elf, embedded

@@ -7,12 +7,23 @@ static uint32_t ext_features_edx = 0;
 
 platform_info_t platform;
 
-static void cpuid(uint32_t leaf, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
+/* ECX is an *input* to CPUID as well as an output: on subleaf-bearing leaves
+ * (7, 0xD, 0x1F...) it selects the subleaf. Binding it here rather than letting
+ * it carry over is not a tidy-up — leaf 7 reports max_subleaf = 0, and an
+ * out-of-range subleaf reads back as all zeros, so a stale ECX silently turns
+ * a feature query into "this CPU has nothing". Every leaf that ignores ECX is
+ * unaffected by pinning it to 0. */
+static void cpuid_count(uint32_t leaf, uint32_t subleaf,
+                        uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
     __asm__ volatile (
         "cpuid"
         : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
-        : "a"(leaf)
+        : "a"(leaf), "c"(subleaf)
     );
+}
+
+static void cpuid(uint32_t leaf, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
+    cpuid_count(leaf, 0, eax, ebx, ecx, edx);
 }
 
 void cpu_detect_features(void) {
@@ -39,7 +50,11 @@ void cpu_detect_features(void) {
     *(uint32_t*)p = v[2]; p += 4;
     *p = 0;
 
-    cpuid(7, &eax, &ebx, &ecx, &edx);
+    /* Subleaf spelled out: leaf 7 is subleaf-bearing, and this call previously
+     * inherited whatever ECX the cpuid(0) above returned — the tail of the
+     * vendor string ("cAMD"/"ntel"). That is far past max_subleaf, so EBX read
+     * back as 0 and both features looked absent on every boot. */
+    cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
     platform.has_smap = (ebx & (1 << 20)) != 0;
     platform.has_smep = (ebx & (1 << 7))  != 0;
 }

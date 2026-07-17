@@ -320,17 +320,31 @@ tss64:
     .word 0
     .word 0
 
-.align 16
+/* Each IST fault stack (IST1: #DF/#GP/#PF, IST2: NMI, IST3: #SS) sits above a
+ * page-aligned guard page that kern_fixed_stack_guards_init() unmaps at boot, so
+ * an overflow of a fault handler's own stack faults on the guard instead of
+ * silently running into the TSS or the adjacent IST stack. Page-aligned because
+ * the guard is unmapped a whole 4 KiB page at a time. */
+.align 4096
+.global ist1_stack_guard
+ist1_stack_guard:
+    .space 4096
 ist1_stack_bottom:
     .space 4096
 ist1_stack_top:
 
-.align 16
+.align 4096
+.global ist2_stack_guard
+ist2_stack_guard:
+    .space 4096
 ist2_stack_bottom:
     .space 4096
 ist2_stack_top:
 
-.align 16
+.align 4096
+.global ist3_stack_guard
+ist3_stack_guard:
+    .space 4096
 ist3_stack_bottom:
     .space 4096
 ist3_stack_top:
@@ -360,7 +374,24 @@ boot_stack_bottom:
 boot_stack_top:
 
 .section .bss
+/* Keep the very first .bss page present. __bss_start lands here, and the W^X
+ * per-section spot check reads it expecting a present rw- page; the BSP stack's
+ * guard below is unmapped, so it must not be the first .bss page. (rust
+ * contributes no .bss, so multiboot's is first in the image.) */
 .align 16
+bss_head_anchor:
+    .space 16
+
+/* The BSP's kernel stack (RSP0 for the boot CPU, and the stack kernel_main and
+ * all early init run on). It sits above a page-aligned guard page unmapped by
+ * kern_fixed_stack_guards_init() at boot; the stack is 16 KiB and boot-time use
+ * stays near the top, so unmapping the guard far below the live rsp is safe. An
+ * overflow now faults on the guard instead of running into whatever .bss
+ * precedes it. */
+.align 4096
+.global bsp_stack_guard
+bsp_stack_guard:
+    .space 4096
 stack_bottom:
     .space 16384
 .global stack_top

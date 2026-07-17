@@ -165,6 +165,7 @@ typedef struct platform_info {
     char vendor[13];
     int has_smap;
     int has_smep;
+    int has_umip;
     int has_aesni;
     int has_tsc;
     int has_sse;

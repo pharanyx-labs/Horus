@@ -143,6 +143,14 @@ void ap_entry64(void) {
     ap_load_kernel_segments();    /* shared kernel GDT: CS=0x08, data=0x10 */
     ap_load_idt();                /* shared kernel IDT */
 
+    /* CR4 protection bits are per-CPU: the BSP set SMEP/SMAP/UMIP/TSD in its own
+     * CR4 (cpu_enable_protections, from kernel_main), but an AP comes out of the
+     * trampoline with none of them. Without this an AP would run ring-3 tasks
+     * with SMEP/SMAP off and ring-3 RDTSC allowed — a silent hole that only opens
+     * under SMP. platform.has_* was filled by the BSP's feature detection before
+     * any AP started, so this sets the same bits the BSP has. */
+    cpu_enable_protections();
+
     int cpu = this_cpu();
     uintptr_t idle_top = (uintptr_t)&ap_idle_stacks[0][0]
                        + (uintptr_t)(cpu + 1) * AP_IDLE_STACK_SIZE;
@@ -226,6 +234,11 @@ void smp_bringup(void) {
     /* Gated: spawn a task that faults on purpose and prove its registered
      * handler runs instead of the task being killed (SIGNAL_SELFTEST: PASS). */
     signal_selftest();
+#elif defined(TSD_SELFTEST)
+    /* Gated: spawn a task that executes RDTSC and prove it #GPs under CR4.TSD,
+     * landing in its fault handler instead of returning a timestamp
+     * (TSD_SELFTEST: PASS). */
+    tsd_selftest();
 #elif defined(FS_SELFTEST)
     /* Gated: spawn the userspace fs_server plus a client that drives it over
      * IPC (mkdir/create/write/read/readdir/lookup/delete) against the kernel's

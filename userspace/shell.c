@@ -104,6 +104,123 @@ static void print_decimal(uint32_t n) {
     print(&buf[i]);
 }
 
+/* ----- working directory (shell-side) ---------------------------------
+ * The shell does its own path handling (it does not link posix.c). It tracks a
+ * cwd inode for relative fs ops and a canonical absolute path string for `pwd`.
+ * Directory ops below (ls/cat/mkdir/rm/touch) resolve names within sh_cwd_ino. */
+#define SH_PATH_MAX 256
+static uint32_t sh_cwd_ino = 0;
+static char     sh_cwd_path[SH_PATH_MAX] = "/";
+
+/* Normalize `arg` against sh_cwd_path into `out` (absolute). Resolves ".", "..",
+ * a leading "/", and repeated slashes — pure string work (mirrors posix.c's
+ * cwd_normalize). Returns 0 or -1 on overflow. */
+static int sh_normalize(const char *arg, char *out) {
+    char comps[16][FS_NAME_MAX];
+    int  ncomp = 0;
+
+    if (arg[0] != '/') {
+        const char *q = sh_cwd_path;
+        while (*q == '/') q++;
+        while (*q) {
+            int c = 0;
+            while (*q && *q != '/' && c < FS_NAME_MAX - 1) comps[ncomp][c++] = *q++;
+            comps[ncomp][c] = '\0';
+            while (*q == '/') q++;
+            if (c > 0) { if (ncomp >= 16) return -1; ncomp++; }
+        }
+    }
+
+    const char *p = arg;
+    while (*p == '/') p++;
+    while (*p) {
+        char comp[FS_NAME_MAX];
+        int  c = 0;
+        while (*p && *p != '/' && c < FS_NAME_MAX - 1) comp[c++] = *p++;
+        comp[c] = '\0';
+        while (*p == '/') p++;
+        if (c == 0) continue;
+        if (comp[0] == '.' && comp[1] == '\0') continue;
+        if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') { if (ncomp > 0) ncomp--; continue; }
+        if (ncomp >= 16) return -1;
+        memcpy(comps[ncomp], comp, (size_t)c + 1);
+        ncomp++;
+    }
+
+    int o = 0;
+    if (ncomp == 0) { out[0] = '/'; out[1] = '\0'; return 0; }
+    for (int i = 0; i < ncomp; i++) {
+        int l = fss_strlen(comps[i]);
+        if (o + 1 + l >= SH_PATH_MAX) return -1;
+        out[o++] = '/';
+        memcpy(out + o, comps[i], (size_t)l);
+        o += l;
+    }
+    out[o] = '\0';
+    return 0;
+}
+
+/* Walk an absolute path from the root; every component must resolve to a
+ * directory. Returns the final inode, or (uint32_t)-1 on any failure. */
+static uint32_t sh_walk_abs_dir(const char *abspath) {
+    uint32_t ino = 0;                 /* root */
+    const char *p = abspath;
+    while (*p == '/') p++;
+    while (*p) {
+        char comp[FS_NAME_MAX];
+        int  c = 0;
+        while (*p && *p != '/' && c < FS_NAME_MAX - 1) comp[c++] = *p++;
+        comp[c] = '\0';
+        while (*p == '/') p++;
+        if (c == 0) continue;
+        struct fs_request  rq = {0};
+        struct fs_response rp;
+        rq.op = FS_OP_LOOKUP; rq.dir_ino = ino; fss_strcpy(rq.name, comp);
+        if (fss_call(&rq, &rp) < 0 || rp.rc < 0) return (uint32_t)-1;
+        if (rp.type != FS_TYPE_DIR) return (uint32_t)-1;
+        ino = rp.ino;
+    }
+    return ino;
+}
+
+/* Render a 10-char `ls -l`-style mode string (type char + rwxrwxrwx) from a
+ * directory flag and the low 9 permission bits, e.g. "drwxr-xr-x". */
+static void print_perms(int is_dir, uint32_t mode) {
+    static const char rwx[3] = { 'r', 'w', 'x' };
+    char s[11];
+    s[0] = is_dir ? 'd' : '-';
+    for (int i = 0; i < 9; i++)
+        s[1 + i] = (mode & (1u << (8 - i))) ? rwx[i % 3] : '-';
+    s[10] = '\0';
+    print(s);
+}
+
+/* Split the argument tail `s` into up to two space-separated tokens, copied
+ * NUL-terminated into a[amax]/b[bmax] (truncated to fit). Returns the token
+ * count (0/1/2). */
+static int split2(const char *s, char *a, int amax, char *b, int bmax) {
+    while (*s == ' ') s++;
+    int n = 0, i = 0;
+    if (*s) { n = 1; while (*s && *s != ' ' && i < amax - 1) a[i++] = *s++; }
+    a[i] = '\0';
+    while (*s == ' ') s++;
+    i = 0;
+    if (*s) { n = 2; while (*s && *s != ' ' && i < bmax - 1) b[i++] = *s++; }
+    b[i] = '\0';
+    return n;
+}
+
+/* Look up `name` in the current directory. Returns its inode and (if type is
+ * non-NULL) its FS_TYPE_*; returns (uint32_t)-1 if it does not exist. */
+static uint32_t sh_lookup(const char *name, uint32_t *type) {
+    struct fs_request  rq = {0};
+    struct fs_response rp;
+    rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino; fss_strcpy(rq.name, name);
+    if (fss_call(&rq, &rp) < 0 || rp.rc < 0) return (uint32_t)-1;
+    if (type) *type = rp.type;
+    return rp.ino;
+}
+
 /* One command row in the general list: 3-space indent, name padded to a fixed
  * column, then a short description. */
 static void print_cmd(const char *name, const char *desc) {
@@ -134,11 +251,17 @@ static void show_general_help_us(void) {
     help_rule();
     println("");
     println("  FILES & TEXT   (the encrypted fs_server, mounted at / )");
-    print_cmd("ls",                "list the directory entries");
+    print_cmd("pwd",               "print the current directory");
+    print_cmd("cd [dir]",          "change directory (cd with no arg goes to /)");
+    print_cmd("ls [-l]",           "list the directory entries (-l: long format)");
     print_cmd("cat <file>",        "print a file's contents");
     print_cmd("touch <file>",      "create an empty file");
     print_cmd("mkdir <dir>",       "create a directory");
     print_cmd("rm <name>",         "delete a file or an empty directory");
+    print_cmd("cp <src> <dst>",    "copy a file within the current directory");
+    print_cmd("mv <src> <dst>",    "rename a file within the current directory");
+    print_cmd("stat <file>",       "show type, mode, owner and size");
+    print_cmd("wc <file>",         "count lines, words and bytes");
     print_cmd("echo <text>",       "print text to the console");
     print_cmd("echo <text> > <f>", "write text to a file (creates it if needed)");
     print_cmd("run <file>",        "load a program image from the FS and run it");
@@ -265,9 +388,10 @@ static void show_topic_help_us(const char *topic) {
     /* ---- individual commands ------------------------------------------ */
     if (strcmp(t,"ls")==0) {
         help_line("Purpose:", "List the entries in the filesystem root.");
-        help_line("Usage:",   "ls");
-        help_line("Notes:",   "Directories print with a trailing '/'. Reads go through the");
-        help_line("",         "fs_server (running by default; else: spawn fs_server).");
+        help_line("Usage:",   "ls | ls -l");
+        help_line("Notes:",   "Directories print with a trailing '/'. '-l' adds the mode");
+        help_line("",         "(drwxr-xr-x), owning uid and size per entry. Reads go through");
+        help_line("",         "the fs_server (running by default; else: spawn fs_server).");
         help_line("See also:","cat, mkdir, rm, files");
     } else if (strcmp(t,"cat")==0) {
         help_line("Purpose:", "Print a file's contents to the console.");
@@ -475,19 +599,55 @@ static void handle_command(char *cmd) {
         if (!saw_any) {
             println("(limited visibility - only own task shown for non-admin)");
         }
-    } else if (strcmp(cmd, "ls") == 0) {
+    } else if (strcmp(cmd, "pwd") == 0) {
+        println(sh_cwd_path);
+    } else if (strcmp(cmd, "cd") == 0 || strncmp(cmd, "cd ", 3) == 0) {
+        const char *arg = (cmd[2] == '\0') ? "/" : cmd + 3;
+        while (*arg == ' ') arg++;
+        if (*arg == '\0') arg = "/";
+        char norm[SH_PATH_MAX];
+        if (sh_normalize(arg, norm) != 0) {
+            println("cd: path too long");
+        } else {
+            uint32_t ino = sh_walk_abs_dir(norm);
+            if (ino == (uint32_t)-1) {
+                print("cd: not a directory: "); println(arg);
+            } else {
+                sh_cwd_ino = ino;
+                fss_strcpy(sh_cwd_path, norm);
+            }
+        }
+    } else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "ls -l") == 0) {
+        int long_fmt = (cmd[2] != '\0');   /* "ls -l" carries a 3rd char */
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_READDIR; rq.dir_ino = 0;
         int n = 0;
-        for (rq.offset = 0; rq.offset < 4096; rq.offset++) {
+        for (uint32_t idx = 0; idx < 4096; idx++) {
+            rq.op = FS_OP_READDIR; rq.dir_ino = sh_cwd_ino; rq.offset = idx;
             if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
-                if (rq.offset == 0 && !fss_connected)
+                if (idx == 0 && !fss_connected)
                     println("ls: spawn fs_server first");
                 break;
             }
-            print(rp.name);
-            print(rp.type == FS_TYPE_DIR ? "/\n" : "\n");
+            /* rp is reused by the per-entry STAT below, so keep the name/type. */
+            char name[FS_NAME_MAX];
+            fss_strcpy(name, rp.name);
+            uint32_t ino = rp.ino, type = rp.type;
+            if (long_fmt) {
+                struct fs_request  sq = {0};
+                struct fs_response sp;
+                sq.op = FS_OP_STAT; sq.ino = ino;
+                if (fss_call(&sq, &sp) == 0 && sp.rc == 0) {
+                    print_perms(type == FS_TYPE_DIR, sp.mode);
+                    print("  uid="); print_decimal(sp.uid);
+                    print("  "); print_decimal(sp.size);
+                    print("  ");
+                } else {
+                    print("??????????  ");   /* stat denied/failed */
+                }
+            }
+            print(name);
+            print(type == FS_TYPE_DIR ? "/\n" : "\n");
             n++;
         }
         if (n == 0 && fss_connected) println("(empty)");
@@ -495,7 +655,7 @@ static void handle_command(char *cmd) {
         const char *name = cmd + 4;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
+        rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
         if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
             println("cat: file not found");
@@ -515,7 +675,7 @@ static void handle_command(char *cmd) {
         const char *name = cmd + 6;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_MKDIR; rq.dir_ino = 0;
+        rq.op = FS_OP_MKDIR; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
         if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
             println("mkdir: failed (name exists or server not running)");
@@ -524,7 +684,7 @@ static void handle_command(char *cmd) {
         const char *name = cmd + 3;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_DELETE; rq.dir_ino = 0;
+        rq.op = FS_OP_DELETE; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
         if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
             println("rm: failed (not found or server not running)");
@@ -533,11 +693,114 @@ static void handle_command(char *cmd) {
         const char *name = cmd + 6;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_CREATE; rq.dir_ino = 0;
+        rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
         if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
             println("touch: failed (already exists or server not running)");
         else { print("touch: created "); println(name); }
+    } else if (strncmp(cmd, "stat ", 5) == 0) {
+        const char *name = cmd + 5; while (*name == ' ') name++;
+        uint32_t type, ino = sh_lookup(name, &type);
+        if (ino == (uint32_t)-1) { println("stat: not found"); }
+        else {
+            struct fs_request  sq = {0};
+            struct fs_response sp;
+            sq.op = FS_OP_STAT; sq.ino = ino;
+            if (fss_call(&sq, &sp) < 0 || sp.rc < 0) println("stat: failed");
+            else {
+                print("  File: "); println(name);
+                print("  Type: "); println(type == FS_TYPE_DIR ? "directory" : "file");
+                print("  Mode: "); print_perms(type == FS_TYPE_DIR, sp.mode); println("");
+                print("  Uid:  "); print_decimal(sp.uid);
+                print("   Gid: "); print_decimal(sp.gid); println("");
+                print("  Size: "); print_decimal(sp.size); println(" bytes");
+            }
+        }
+    } else if (strncmp(cmd, "wc ", 3) == 0) {
+        const char *name = cmd + 3; while (*name == ' ') name++;
+        uint32_t type, ino = sh_lookup(name, &type);
+        if (ino == (uint32_t)-1 || type != FS_TYPE_FILE) { println("wc: not a file"); }
+        else {
+            uint32_t off = 0, lines = 0, words = 0, bytes = 0;
+            int inword = 0, ok = 1;
+            for (;;) {
+                struct fs_request  rq = {0};
+                struct fs_response rp;
+                rq.op = FS_OP_READ; rq.ino = ino; rq.offset = off; rq.len = FS_IO_MAX;
+                if (fss_call(&rq, &rp) < 0 || rp.rc < 0) { ok = 0; break; }
+                uint32_t got = (uint32_t)rp.rc;
+                if (got > FS_IO_MAX) got = FS_IO_MAX;
+                if (got == 0) break;
+                for (uint32_t i = 0; i < got; i++) {
+                    char c = (char)rp.data[i];
+                    bytes++;
+                    if (c == '\n') lines++;
+                    if (c == ' ' || c == '\t' || c == '\n') inword = 0;
+                    else if (!inword) { words++; inword = 1; }
+                }
+                off += got;
+            }
+            if (!ok) println("wc: read failed");
+            else {
+                print("  "); print_decimal(lines);
+                print("  "); print_decimal(words);
+                print("  "); print_decimal(bytes);
+                print("  "); println(name);
+            }
+        }
+    } else if (strncmp(cmd, "cp ", 3) == 0) {
+        char src[FS_NAME_MAX], dst[FS_NAME_MAX];
+        if (split2(cmd + 3, src, sizeof src, dst, sizeof dst) != 2) {
+            println("cp: usage: cp <src> <dst>");
+        } else {
+            uint32_t stype, sino = sh_lookup(src, &stype);
+            if (sino == (uint32_t)-1 || stype != FS_TYPE_FILE) { println("cp: source not a file"); }
+            else {
+                struct fs_request  cq = {0};
+                struct fs_response cprp;
+                cq.op = FS_OP_CREATE; cq.dir_ino = sh_cwd_ino; fss_strcpy(cq.name, dst);
+                if (fss_call(&cq, &cprp) < 0 || cprp.rc < 0) { println("cp: cannot create dest (exists?)"); }
+                else {
+                    uint32_t dino = cprp.ino, off = 0;
+                    int ok = 1;
+                    for (;;) {
+                        struct fs_request  rq = {0};
+                        struct fs_response rp;
+                        rq.op = FS_OP_READ; rq.ino = sino; rq.offset = off; rq.len = FS_IO_MAX;
+                        if (fss_call(&rq, &rp) < 0 || rp.rc < 0) { ok = 0; break; }
+                        uint32_t got = (uint32_t)rp.rc;
+                        if (got > FS_IO_MAX) got = FS_IO_MAX;
+                        if (got == 0) break;
+                        struct fs_request  wq = {0};
+                        struct fs_response wp;
+                        wq.op = FS_OP_WRITE; wq.ino = dino; wq.offset = off; wq.len = got;
+                        memcpy(wq.data, rp.data, got);
+                        if (fss_call(&wq, &wp) < 0 || wp.rc < 0) { ok = 0; break; }
+                        /* WRITE writes at most one block per call, so it may store
+                         * fewer bytes than offered; advance by what it took and
+                         * re-read the tail on the next pass. */
+                        off += (uint32_t)wp.rc;
+                    }
+                    if (ok) { print("cp: copied to "); println(dst); }
+                    else    { println("cp: copy failed"); }
+                }
+            }
+        }
+    } else if (strncmp(cmd, "mv ", 3) == 0) {
+        char src[FS_NAME_MAX], dst[FS_NAME_MAX];
+        if (split2(cmd + 3, src, sizeof src, dst, sizeof dst) != 2) {
+            println("mv: usage: mv <src> <dst>");
+        } else {
+            struct fs_request  rq = {0};
+            struct fs_response rp;
+            rq.op = FS_OP_RENAME;
+            rq.dir_ino = sh_cwd_ino;   /* old parent */
+            rq.ino     = sh_cwd_ino;   /* new parent (same directory) */
+            fss_strcpy(rq.name, src);
+            fss_strcpy((char *)rq.data, dst);
+            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) println("mv: failed");
+            else { print("mv: "); print(src); print(" -> "); println(dst); }
+        }
     } else if (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ') {
         const char* rest = cmd + 5;
         const char* redirect = strstr(rest, " > ");
@@ -556,11 +819,11 @@ static void handle_command(char *cmd) {
 
             struct fs_request  rq = {0};
             struct fs_response rp;
-            rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
+            rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino;
             fss_strcpy(rq.name, fname);
             if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
                 /* file doesn't exist yet — create it */
-                rq.op = FS_OP_CREATE; rq.dir_ino = 0;
+                rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd_ino;
                 fss_strcpy(rq.name, fname);
                 if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
                     println("echo: cannot create file"); goto echo_done;
@@ -764,7 +1027,7 @@ static void handle_command(char *cmd) {
         while (*name == ' ') name++;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
+        rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
         if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) {
             println("run: file not found (is fs_server running? try: spawn fs_server)");

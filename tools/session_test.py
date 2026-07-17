@@ -172,8 +172,20 @@ def run():
         #        fs_server, all relative to a working directory. Each step first
         #        consumes the prompt left by the previous command so the next
         #        command's output can't be confused with a stale prompt.
+        #
+        #        ls reports "(empty)" only when it read a directory to its end,
+        #        never as the silent answer to a failed/denied readdir. A fresh
+        #        volume is really empty; after mkdir, ls lists the entry and
+        #        terminates at end-of-directory (the load-bearing NOENT stop:
+        #        drop it and ls either lists nothing or spins to its 4096 cap).
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("ls"); s.expect("(empty)", STEP_TIMEOUT)
+        step("ls reports (empty) on a fresh volume")
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("mkdir sess_d"); s.expect("mkdir: created sess_d", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("ls"); s.expect("sess_d/", STEP_TIMEOUT)
+        step("ls lists a real entry and stops at end-of-directory")
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("cd sess_d")                       # no output; next prompt confirms
         s.expect("root@horus#", STEP_TIMEOUT)

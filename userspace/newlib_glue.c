@@ -31,6 +31,7 @@
 
 #include "../include/posix.h"
 #include "../include/syscall.h"
+#include "../include/dirent.h"
 
 /* errno is a macro defined in <sys/errno.h> as (*__errno()).
  * newlib's libc.a provides __errno() backed by the reent struct; we must not
@@ -112,6 +113,105 @@ int stat(const char *path, struct stat *st) {
     if (posix_stat(path, &ps) < 0) { errno = ENOENT; return -1; }
     _fill_stat(st, &ps);
     return 0;
+}
+
+/* ---- directory streams (opendir/readdir/closedir) --------------------
+ * newlib ships no dirent implementation for this port (its <sys/dirent.h> is
+ * the "#error not supported" stub), so we provide the whole API here over the
+ * fs_server's FS_OP_READDIR (via posix_diropen / posix_readdir). A small static
+ * pool avoids depending on malloc from inside the glue; DIR is opaque to
+ * callers (declared in include/dirent.h). */
+#define HORUS_NDIRS 8
+
+struct __horus_dir {
+    int           inuse;
+    uint32_t      ino;      /* directory inode */
+    uint32_t      index;    /* next entry to read */
+    struct dirent ent;      /* storage returned by readdir() */
+};
+
+static struct __horus_dir g_dirs[HORUS_NDIRS];
+
+DIR *opendir(const char *path) {
+    posix_init();
+    if (!path) { errno = EFAULT; return (DIR *)0; }
+
+    uint32_t ino;
+    int r = posix_diropen(path, &ino);
+    if (r == -2) { errno = ENOTDIR; return (DIR *)0; }
+    if (r < 0)   { errno = ENOENT;  return (DIR *)0; }
+
+    for (int i = 0; i < HORUS_NDIRS; i++) {
+        if (!g_dirs[i].inuse) {
+            g_dirs[i].inuse = 1;
+            g_dirs[i].ino   = ino;
+            g_dirs[i].index = 0;
+            return (DIR *)&g_dirs[i];
+        }
+    }
+    errno = EMFILE;             /* directory-stream pool exhausted */
+    return (DIR *)0;
+}
+
+struct dirent *readdir(DIR *dirp) {
+    posix_init();
+    struct __horus_dir *d = (struct __horus_dir *)dirp;
+    if (!d || !d->inuse) { errno = EBADF; return (struct dirent *)0; }
+
+    char     name[32];
+    uint32_t eino, etype;
+    if (posix_readdir(d->ino, d->index, name, &eino, &etype) != 1)
+        return (struct dirent *)0;   /* end of directory (errno unchanged) */
+
+    d->index++;
+    d->ent.d_ino  = eino;
+    d->ent.d_type = (etype == 2 /* FS_TYPE_DIR */) ? DT_DIR : DT_REG;
+    size_t i = 0;
+    for (; name[i] && i < sizeof(d->ent.d_name) - 1; i++) d->ent.d_name[i] = name[i];
+    d->ent.d_name[i] = '\0';
+    return &d->ent;
+}
+
+void rewinddir(DIR *dirp) {
+    struct __horus_dir *d = (struct __horus_dir *)dirp;
+    if (d && d->inuse) d->index = 0;
+}
+
+int closedir(DIR *dirp) {
+    struct __horus_dir *d = (struct __horus_dir *)dirp;
+    if (!d || !d->inuse) { errno = EBADF; return -1; }
+    d->inuse = 0;
+    return 0;
+}
+
+/* ---- working directory ------------------------------------------------ */
+
+int chdir(const char *path) {
+    posix_init();
+    if (!path) { errno = EFAULT; return -1; }
+    if (posix_chdir(path) < 0) { errno = ENOENT; return -1; }  /* missing / not a dir */
+    return 0;
+}
+
+char *getcwd(char *buf, size_t size) {
+    posix_init();
+    if (!buf || size == 0) { errno = EINVAL; return (char *)0; }
+    if (posix_getcwd(buf, (uint32_t)size) < 0) { errno = ERANGE; return (char *)0; }
+    return buf;
+}
+
+int mkdir(const char *path, mode_t mode) {
+    posix_init();
+    if (!path) { errno = EFAULT; return -1; }
+    int rc = posix_mkdir(path, (int)mode);
+    if (rc == 0) return 0;
+    switch (rc) {
+        case SYS_ERR_PERM:  errno = EACCES; break;   /* no write on parent dir */
+        case SYS_ERR_NOENT: errno = ENOENT; break;   /* bad path / missing parent */
+        case SYS_ERR_INVAL: errno = EEXIST; break;   /* name exists / bad name */
+        default:            errno = EIO;    break;   /* transport / other */
+    }
+    return -1;
 }
 
 void _exit(int code) {

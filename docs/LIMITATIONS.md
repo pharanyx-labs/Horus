@@ -87,21 +87,21 @@ The block cipher is sound (ChaCha20 + HMAC-SHA256 AEAD, per-block HKDF subkeys, 
 
 Edits, ring-slot swaps, replays, drops, and rollbacks are all *detectable* (including by an external monitor recording the chain head via `SYS_AUDIT_DIGEST`). The residual limitation is that this is a **detector**: an attacker who fully compromises the kernel and reads the per-boot pepper can recompute a self-consistent chain — the same accepted trust boundary as the user-database tag.
 
-### No covert / cache side-channel mitigation
+### Cache side-channel mitigation is partial
 
-The timer preempts and switches between mutually distrusting ring-3 tasks (and, under `SMP=1`, across cores), but there is no flush-on-switch or cache partitioning to limit microarchitectural leakage. Tracked in `SECURITY.md`.
+The timer preempts and switches between mutually distrusting ring-3 tasks (and, under `SMP=1`, across cores), but there is no flush-on-switch or cache partitioning to limit microarchitectural leakage. What *is* mitigated: `CR4.TSD` is set (`cpu_enable_protections`, `crypto.c`), so a ring-3 `RDTSC`/`RDTSCP` — the highest-resolution timer a cache/covert-channel attack leans on — raises `#GP` and is delivered as a fault signal rather than returning a cycle count (ring 0 keeps `RDTSC`; TSD gates CPL>0 only, so the kernel's own jitter entropy is unaffected). This is deliberately *partial*: coarser timers and a counting-thread construction remain, and it does nothing about the cache state itself. `make smoke-tsd` gates that a ring-3 `RDTSC` faults into its handler. Flush-on-switch / partitioning is still open; tracked in `SECURITY.md`.
 
 ### No privilege separation within the kernel
 
 All kernel code runs at the same privilege level with access to all kernel data; a bug in the terminal driver has the same blast radius as one in the capability system.
 
-### Only ring-3 tasks' kernel stacks are guarded
+### Task kernel stacks are guarded; a few boot/IST stacks are not
 
-Each task's kernel stack now sits above an unmapped guard page, so an overflow faults on the guard instead of running into the previous task's stack. This is gated by `make smoke-wx`, which checks the guard is absent *and* that the stack above it is still present — unmapping one page too many would take the stack with it.
+Each task's kernel stack sits above an unmapped guard page, so an overflow faults on the guard instead of running into the previous task's stack. This is gated by `make smoke-wx`, which checks the guard is absent *and* that the stack above it is still present — unmapping one page too many would take the stack with it.
 
-It covers slots 1..63, i.e. every task that runs ring-3 code. **Task 0 — the kernel's own boot/idle task — is not guarded**: it keeps the `kernel_stacks[]` entry `create_task` gives it (`create_user_pagedir` returns early for task 0 and never rebinds the stack), and that array is only 16-byte aligned with no guard slot, so guarding it needs a layout change rather than an unmap. Also unguarded: the BSP boot stack, the three 4 KiB IST stacks (thin for a double-fault handler), and the early-handler stack.
+It now covers **all `MAX_TASKS` slots, task 0 included**. Task 0 — the kernel's own boot/idle/reaper task — was previously the exception: it kept a separate, 16-byte-aligned, unguarded `task0_kernel_stack`, while `per_task_kstacks[0]` sat allocated and unused. Task 0 now runs on that `per_task_kstacks[0]` (bound by `create_user_pagedir(0)`), so its stack has the same guard page every other task's does — the array lives in the 4 KiB-mapped kernel window, so slot 0's guard is unmappable like the rest. `smoke-wx` asserts `MAX_TASKS` guards and verifies slot 0 specifically.
 
-`per_task_kstacks[0]` is allocated but never used, since task 0 keeps its own stack — one slot (64 KiB) of slack, left in place so every other index still maps directly to a task id.
+Still unguarded: the BSP boot stack, the three 4 KiB IST stacks (thin, for a double-fault handler), and the early-handler stack. These are fixed, single-purpose stacks outside the `per_task_kstacks` array; guarding them needs a linker-layout change rather than an unmap, and is left as future hardening.
 
 ### No KASLR
 

@@ -62,7 +62,7 @@ Horus preempts and switches between mutually distrusting ring-3 tasks on a singl
 
 **Microarchitectural** state is a different matter, and Horus makes no claim of resistance:
 
-- **Timestamp counter (TSC):** `rdtsc` is readable from ring 3, so the kernel treats it as *public* and never uses it as a source of secret randomness — only as one whitened input to the CSPRNG. Disabling ring-3 `rdtsc` via `CR4.TSD` is a possible future mitigation but breaks userspace timing APIs.
+- **Timestamp counter (TSC):** ring-3 `rdtsc`/`rdtscp` is now **disabled** via `CR4.TSD` (`cpu_enable_protections`), so the cycle-accurate timer a cache/covert-channel attack leans on raises `#GP` at ring 3 and is delivered as a fault signal instead of returning a count. Horus exposes no userspace timing API, so nothing legitimate is lost; ring 0 keeps `rdtsc` (TSD gates CPL>0 only), and the kernel still treats the TSC as *public* — never a source of secret randomness, only one whitened input to the CSPRNG. This is a partial mitigation: coarser timers and a counting-thread construction remain. Gated by `make smoke-tsd`.
 - **Constant-time comparisons:** password-hash and MAC/tag comparisons use a data-independent accumulating compare (`constant_time_compare`) to avoid early-exit timing oracles.
 - **Secret zeroization:** derived keys and intermediate key material are wiped with `secure_zero` (volatile, non-elidable) after use.
 - **Cache partitioning / flush-on-context-switch:** not implemented. A context switch between distrusting tasks (single-core time-slicing or cross-core under SMP) should ideally flush or partition shared microarchitectural state (L1D, BTB); this is not yet done and is tracked as future hardening.

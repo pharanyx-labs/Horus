@@ -565,6 +565,18 @@ embedded_sigtest_bin_start:
 embedded_sigtest_bin_end:
 #endif
 
+#ifdef TSD_SELFTEST
+/* Flat userspace payload for the RDTSC/TSD self-test (tsd_selftest): registers a
+ * fault handler, then executes RDTSC, which #GPs under CR4.TSD. Only in
+ * TSD_SELFTEST. */
+.align 16
+.global embedded_tsdtest_bin_start
+embedded_tsdtest_bin_start:
+.incbin "userspace/tsdtest.bin"
+.global embedded_tsdtest_bin_end
+embedded_tsdtest_bin_end:
+#endif
+
 #ifdef NEWLIB_SELFTEST
 /* PIE hello_newlib binary: newlib printf/malloc/string smoke test. */
 .align 16

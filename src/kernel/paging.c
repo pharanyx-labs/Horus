@@ -1011,8 +1011,10 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
         uint64_t *npt = (uint64_t *)PHYS_KVA(npt_phys);
         for (int j = 0; j < 512; j++) {
             uint64_t base4k = huge_base + ((uint64_t)j << 12);
-            uint64_t flags = PAGE_PRESENT | PAGE_WRITE | PAGE_GLOBAL;
-            if (base4k == paddr) flags |= PAGE_CD; 
+            /* NX for the same reason as the leaf below: this splits a 2 MiB page
+             * of the MMIO hole into 4 KiB, and none of it is code. */
+            uint64_t flags = PAGE_PRESENT | PAGE_WRITE | PAGE_GLOBAL | PAGE_NX;
+            if (base4k == paddr) flags |= PAGE_CD;
             npt[j] = base4k | flags;
         }
         pd[pdi] = npt_phys | PAGE_PRESENT | PAGE_WRITE; 
@@ -1029,7 +1031,14 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
     }
 
     
-    pt[pti] = paddr | PAGE_PRESENT | PAGE_WRITE | PAGE_CD;
+    /* NX: this is the LAPIC's MMIO registers. The kernel reads and writes them;
+     * nothing executes them, and a writable+executable mapping is a W^X hole
+     * wherever it is — the register file is as good a place to land shellcode as
+     * any other. (Found by the WX_SELFTEST sweep, which flagged it as the one
+     * writable-and-executable leaf left in the address space once the kernel
+     * image itself was clean. It sits outside the image, so none of the
+     * per-section checks would ever have looked at it.) */
+    pt[pti] = paddr | PAGE_PRESENT | PAGE_WRITE | PAGE_CD | PAGE_NX;
 
     asm volatile("invlpg (%0)" :: "r"(vaddr) : "memory");
 }

@@ -286,6 +286,12 @@ CFLAGS  += -DCPU_SELFTEST
 ASFLAGS += -DCPU_SELFTEST
 endif
 
+WX_SELFTEST ?= 0
+ifeq ($(WX_SELFTEST),1)
+CFLAGS  += -DWX_SELFTEST
+ASFLAGS += -DWX_SELFTEST
+endif
+
 SMP_SELFTEST ?= 0
 ifeq ($(SMP_SELFTEST),1)
 SMP := 1
@@ -583,6 +589,20 @@ userspace-clean:
 # protections were silently off. No MARKER_ONLY -- the run must print PASS *and*
 # still reach the login prompt, so this proves the hardening is on and that
 # having it on does not break the boot.
+# Build with the gated W^X self-test and require the kernel to report that its
+# own image is mapped r-x/r--/rw- AND that no leaf anywhere in the kernel half is
+# both writable and executable. The sweep is the point: every hole this policy
+# closed was an alias — a second mapping of the same frames — and checking
+# .text's own PTE would have caught none of them. No MARKER_ONLY: the run must
+# print PASS *and* still reach the login prompt.
+.PHONY: smoke-wx
+smoke-wx:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory WX_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='WX_SELFTEST: PASS' \
+		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-cpu
 smoke-cpu:
 	@$(MAKE) --no-print-directory clean

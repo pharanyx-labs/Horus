@@ -27,7 +27,7 @@ Horus is an x86-64 microkernel that treats the **capability token** as its singl
 
 The kernel is written in C. The security-critical core — the capability engine, physical-memory reference counting, the cryptographic primitives, the W^X page policy, and every FFI validation boundary — is implemented in **safe, `no_std` Rust**, where the type system statically rules out entire classes of memory-safety defects.
 
-Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **nineteen headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
+Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **twenty-one headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
 
 > ### Project status — research / early development
 > Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store — persistent when an ATA disk is present, enforcing per-file POSIX ownership/permissions against a kernel-attested identity, serving multiple clients concurrently, and crash-atomic via a write-ahead journal — a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support behind a build gate. Some subsystems (SMP default-on, multi-slot IPC) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
@@ -119,6 +119,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | W^X (user) — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
 | W^X (kernel) — own image mapped `.text` r-x, `.rodata` r--, `.data`/`.bss` rw-NX, `CR0.WP` set | ✅ Working |
 | Per-task x87/SSE context (FXSAVE/FXRSTOR on the ring-3 boundary) | ✅ Working |
+| Kernel stack protector (`-fstack-protector-strong`, CSPRNG-seeded guard) | ✅ Working |
 | ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 8.91 bits, the structural ceiling) | ✅ Working |
 | Table-driven syscall dispatch (central capability gate, 0–75) | ✅ Working |
 | User authentication + lockout (Argon2id memory-hard hashing) | ✅ Working |
@@ -138,8 +139,8 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
-| Rust security-core unit tests (57) + GitHub Actions CI (24 jobs, 23 gating) | ✅ Working |
-| Headless QEMU self-tests (19): boot, ELF/W^X (32- and 64-bit), ASLR, preemption, signals, process-control, COW, notifications, session, SMP, fs (×7), newlib | ✅ Working |
+| Rust security-core unit tests (57) + GitHub Actions CI (26 jobs, 25 gating) | ✅ Working |
+| Headless QEMU self-tests (21): boot, kernel W^X sweep, CR4 protections, ELF/W^X (32- and 64-bit), ASLR, preemption, signals, process-control, COW, notifications, session, SMP, fs (×7), newlib | ✅ Working |
 | Scripted integration session: drives the real ring-3 shell over serial (auth + least privilege) | ✅ Working |
 | Reproducible builds | ✅ Working |
 | Userspace shell and commands | 🟡 Partial |

@@ -40,7 +40,7 @@ Each self-test target clean-builds with the relevant flag, boots under QEMU with
 |---|---|
 | `make smoke` | reaches the ring-3 shell banner + login prompt |
 | `make smoke-cpu` | `CPU_SELFTEST: PASS` (SMEP+SMAP+UMIP advertised by the `-cpu` line are detected *and* set in CR4) |
-| `make smoke-aspace` | `ASPACE_SELFTEST: PASS` (rebuilding a task slot returns every page the previous occupant held; asserts on the pool count, so a partial reclaim still fails) |
+| `make smoke-aspace` | `ASPACE_SELFTEST: PASS` (rebuilding a task slot returns every page the previous occupant held — asserts on the pool count, so a partial reclaim still fails; and the page-table walker maps at 2 GiB and at `pml4[255]` while refusing the kernel half and non-canonical addresses) |
 | `make smoke-wx` | `WX_SELFTEST: PASS` (kernel image r-x/r--/rw-, `.text` read-only through its PHYS_KVA alias too, every task's kernel-stack guard page absent while its stack stays mapped, and **no leaf anywhere in the address space is both writable and executable**) |
 | `make smoke-elf` | `ELF_SELFTEST: PASS` |
 | `make smoke-elf64` | `ELF64_SELFTEST: PASS` (x86-64 `R_X86_64_RELATIVE` applied to a real 64-bit static-PIE, + W^X) |

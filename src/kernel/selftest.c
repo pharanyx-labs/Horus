@@ -68,9 +68,75 @@ void aspace_selftest(void) {
         return;
     }
 
+    /* --- The walker reaches what the old fixed shape could not, and refuses
+     * what it must.
+     *
+     * The premap used to allocate exactly one PDPT, one PD and one PT and index
+     * them directly, so every user mapping lived under pml4[0]/pdpt[0] — inside
+     * [0, 1 GiB). That shape *was* the ASLR ceiling: ASLR_MAX_LOAD_RANDOM_PAGES
+     * is literally `512 - USER_ASPACE_PREMAP_PAGES`, the slots left in one 2 MiB
+     * PD entry. Mapping above 1 GiB is the whole point of the restructure, so it
+     * is worth proving rather than assuming — a refactor that kept the ceiling
+     * would pass every test above this one.
+     *
+     * The rejections matter as much as the mappings. A user page installed in
+     * the kernel half would be a ring-3-writable alias of kernel page tables,
+     * and a non-canonical address would index a table from bits the CPU ignores
+     * — so two different addresses could land on one slot. */
+    tasks[slot].image_base = USER_AREA_BASE;
+    tasks[slot].cr3        = 0;
+    create_user_pagedir((uint32_t)slot);
+    if (tasks[slot].cr3 == 0) {
+        print("ASPACE_SELFTEST: FAIL rebuild for reach test\n");
+        return;
+    }
+    uint64_t cr3 = tasks[slot].cr3;
+    const uint64_t uflags = 0x7ULL | (1ULL << 63);   /* P|W|U|NX */
+
+    struct { const char *name; uint64_t va; int want_ok; } reach[] = {
+        /* Inside pml4[0] but past pdpt[0]: 2 GiB needed a second PDPT entry, and
+         * the old code only ever allocated pdpt[0]. */
+        { "2GiB",        0x0000000080000000ULL,             1 },
+        /* pml4[255] — exactly where ASLR_HIGH_STACK_BASE claimed to premap a
+         * high stack and never did: the old block indexed a PD hanging off
+         * pml4[0], so its pages landed near 0x3ffe0000 and nothing read them. */
+        { "high-stack",  ASLR_HIGH_STACK_BASE,              1 },
+        /* Kernel half: must be refused. */
+        { "kernel-half", 0xFFFF800000000000ULL,             0 },
+        /* Non-canonical, and chosen so it reaches the canonical check rather
+         * than the guard above: bit 48 set with bit 47 clear puts every level
+         * index at 0, so pml4 idx is 0 and the kernel-half guard waves it
+         * through. Unchecked, the walker would map it at VA 0 — the caller asks
+         * for 2^48 and silently gets page zero, and now two addresses alias one
+         * slot. (2^47 does not test this: its pml4 idx is exactly 256, so the
+         * kernel-half guard catches it first and the canonical check could be
+         * deleted with the test still green. It was, until this was fixed.) */
+        { "noncanon",    0x0001000000000000ULL,             0 },
+    };
+    for (unsigned i = 0; i < sizeof(reach) / sizeof(reach[0]); i++) {
+        int rc = user_map_fresh_page_for_test(cr3, reach[i].va, uflags);
+        if ((rc == 0) != (reach[i].want_ok != 0)) {
+            print("ASPACE_SELFTEST: FAIL ");
+            print(reach[i].name);
+            print(reach[i].want_ok ? " should map but did not\n"
+                                   : " mapped but must be refused\n");
+            return;
+        }
+        /* A map that reported success must actually resolve — the page-table
+         * path is what is under test, so take the CPU's own view of it. */
+        if (reach[i].want_ok && !(user_lookup_pte(cr3, reach[i].va) & 1)) {
+            print("ASPACE_SELFTEST: FAIL ");
+            print(reach[i].name);
+            print(" mapped but does not resolve\n");
+            return;
+        }
+    }
+    free_user_aspace_for_test(cr3);
+    tasks[slot].cr3 = 0;
+
     print("ASPACE_SELFTEST: PASS aspace = ");
     print_decimal((uint64_t)per_aspace);
-    print(" pages, 8 rebuilds leaked 0, free returned all\n");
+    print(" pages, 8 rebuilds leaked 0, free returned all, maps at 2GiB + pml4[255], refuses kernel-half + noncanon\n");
 }
 #endif /* ASPACE_SELFTEST */
 

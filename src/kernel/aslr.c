@@ -27,13 +27,35 @@ static uint64_t aslr_rand(void) {
     uint64_t combined = x + y;
     combined ^= combined >> 17;
     combined *= 0x2545F4914F6CDD1DULL;
+    /* The final xorshift folds the high bits down, so the low half is as mixed
+     * as the high. This used to `return combined >> 32`, discarding half the
+     * output and capping every offset derived from it below 4 GiB — invisible
+     * while the whole user window was 8 MiB. */
+    combined ^= combined >> 31;
 
-    return (addr_t)(combined >> 32);
+    return (addr_t)combined;
 }
 
-uint32_t aslr_random_offset(uint32_t max_pages) {
+/* A page-aligned random offset in [0, max_pages) pages.
+ *
+ * Rejection-sampled rather than `rand() % max_pages`. Modulo folds 2^64 onto
+ * max_pages, and unless max_pages divides 2^64 the low residues get one extra
+ * value each — so the bottom of the window is fractionally likelier than the
+ * top. At the old 480 the skew was ~2^-55 and irrelevant; the point is that it
+ * scales with max_pages, and the window this now feeds is millions of pages
+ * wide. Discarding the unfair tail costs one extra draw with probability
+ * (2^64 mod max_pages)/2^64 — unmeasurable, and it makes the distribution exact
+ * rather than nearly-exact-at-this-size. */
+addr_t aslr_random_offset(uint64_t max_pages) {
     if (max_pages == 0) return 0;
-    return (aslr_rand() % max_pages) * PAGE_SIZE;
+    /* Largest multiple of max_pages that fits in 2^64; draws at or above it are
+     * the short tail that would bias the fold. */
+    uint64_t limit = UINT64_MAX - (UINT64_MAX % max_pages);
+    uint64_t r;
+    do {
+        r = aslr_rand();
+    } while (r >= limit);
+    return (addr_t)((r % max_pages) * PAGE_SIZE);
 }
 
 void aslr_mix_entropy(uint64_t val) {

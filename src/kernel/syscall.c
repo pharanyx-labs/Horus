@@ -168,7 +168,7 @@ static void h_sbrk(struct interrupt_frame64 *r) {
     if (increment == 0) { r->rax = tasks[tid].heap_current; return; }
 
     uint32_t new_current = tasks[tid].heap_current + (uint32_t)increment;
-    uint32_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+    uint64_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
     /* There used to be a clamp here against kernel_lowmem_critical_floor(): the
      * kernel was linked low, so a heap growing up the low window could shadow
@@ -202,8 +202,8 @@ static void h_sbrk(struct interrupt_frame64 *r) {
  * matching the Linux brk(2) convention.  addr=0 queries without changing. */
 static void h_brk(struct interrupt_frame64 *r) {
     int tid = get_current_task();
-    uint32_t addr     = r->rbx;
-    uint32_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+    uint64_t addr     = r->rbx;
+    uint64_t heap_max = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
 
     /* No kernel-floor clamp: the kernel lives at KERNEL_VMA, not in the user
      * window. See h_sbrk. */

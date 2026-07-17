@@ -1086,7 +1086,7 @@ void create_user_pagedir(uint32_t id);
 void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);
 void aslr_mix_entropy(uint64_t val);
-uint32_t aslr_random_offset(uint32_t max);
+addr_t   aslr_random_offset(uint64_t max_pages);
 addr_t aslr_random_stack_top(addr_t top);
 
 #endif

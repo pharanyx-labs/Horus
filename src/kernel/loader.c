@@ -231,8 +231,8 @@ int do_receive_program(struct program_header *hdr_out) {
  * Returns 0 on success (including "no dynamic relocations"), negative on error. */
 static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
                                       uint16_t e_phnum, uint32_t phentsize,
-                                      uint32_t slide,
-                                      const uint32_t *seg_va, const uint32_t *seg_memsz,
+                                      uint64_t slide,
+                                      const uint64_t *seg_va, const uint64_t *seg_memsz,
                                       int nseg) {
     /* Locate PT_DYNAMIC (p_type == 2). */
     uint32_t dyn_off = 0, dyn_sz = 0;
@@ -342,8 +342,8 @@ static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
  * coincidence, not a shared definition. */
 static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
                                         uint16_t e_phnum, uint32_t phentsize,
-                                        uint32_t slide,
-                                        const uint32_t *seg_va, const uint32_t *seg_memsz,
+                                        uint64_t slide,
+                                        const uint64_t *seg_va, const uint64_t *seg_memsz,
                                         int nseg) {
     /* Locate PT_DYNAMIC (p_type == 2). Elf64_Phdr: p_type(4) p_flags(4)
      * p_offset(8) p_vaddr(8) p_paddr(8) p_filesz(8) ... */
@@ -451,7 +451,7 @@ static inline int elf64_narrow(const uint8_t *p, uint32_t *out) {
     return 0;
 }
 
-int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
+int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
 {
     if (!out_entry) return -1;
     const uint8_t *st = loader_staging;
@@ -509,13 +509,14 @@ int try_elf_load(uint32_t load_base, uint32_t *out_entry, uint32_t *out_img_end)
     }
     if (!have_load) return -9;
 
-    uint32_t slide = load_base - (min_vaddr & ~0xFFFU);
+    uint64_t slide = load_base - (uint64_t)(min_vaddr & ~0xFFFU);
 
     /* Record each loaded segment's mapped range and ELF p_flags so that, after
      * the bytes are copied in (which needs the pages writable), we can apply
      * W^X per page: code becomes read+execute, data/rodata read[+write]+NX.
      * e_phnum is capped at 8 above, so PT_LOAD segments fit in these arrays. */
-    uint32_t seg_va[8], seg_memsz[8], seg_flags[8];
+    uint64_t seg_va[8], seg_memsz[8];
+    uint32_t seg_flags[8];
     int nseg = 0;
     uint32_t max_va_end = 0;
 
@@ -659,12 +660,12 @@ void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stac
      * the task's own (zeroed) page. That clamp cost ~144 pages. The kernel now
      * lives at KERNEL_VMA and no kernel state occupies a user address, so the
      * constraint is gone and the full window is available: 480 pages ~ 8.9 bits. */
-    uint32_t eff_max_pages = ASLR_MAX_LOAD_RANDOM_PAGES;
+    uint64_t eff_max_pages = ASLR_MAX_LOAD_RANDOM_PAGES;
 
-    uint32_t load_base = USER_AREA_BASE;
+    uint64_t load_base = USER_AREA_BASE;
     if (staged_is_elf && eff_max_pages > 0) {
-        load_base = (uint32_t)(USER_AREA_BASE + aslr_random_offset(eff_max_pages));
-        load_base &= ~0xFFFu;
+        load_base = (uint64_t)USER_AREA_BASE + aslr_random_offset(eff_max_pages);
+        load_base &= ~0xFFFULL;
     }
 
     *out_load_base  = load_base;
@@ -680,9 +681,9 @@ void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stac
 void load_staged_image_into(int tid, uint64_t load_base) {
     set_current_task(tid);
 
-    uint32_t entry_point = armed_hdr.entry;
-    uint32_t elf_entry = 0;
-    uint32_t elf_img_end = 0;
+    uint64_t entry_point = armed_hdr.entry;
+    uint64_t elf_entry = 0;
+    uint64_t elf_img_end = 0;
     int elf_rc = try_elf_load(load_base, &elf_entry, &elf_img_end);
     int elf_loaded = (elf_rc == 0);
 #ifdef NEWLIB_SELFTEST
@@ -730,7 +731,7 @@ void load_staged_image_into(int tid, uint64_t load_base) {
     /* For ELF loads, image_end must come from the actual highest PT_LOAD
      * vaddr+memsz (accounts for ASLR slide and .bss extending past filesz);
      * armed_hdr.size is the raw staged file size and undercounts .bss. */
-    uint32_t img_end = elf_loaded
+    uint64_t img_end = elf_loaded
         ? ((elf_img_end + 0xFFF) & ~0xFFFu)
         : (load_base + ((armed_hdr.size + 0xFFF) & ~0xFFF));
     tasks[tid].image_end = img_end;

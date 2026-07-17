@@ -919,6 +919,7 @@ void wx_selftest(void);
 #ifdef ASPACE_SELFTEST
 void aspace_selftest(void);
 void free_user_aspace_for_test(uint64_t pml4_phys);
+int  user_map_fresh_page_for_test(uint64_t pml4_phys, uint64_t vaddr, uint64_t flags);
 void create_user_pagedir(uint32_t task_id);
 #endif
 uint32_t get_free_user_pages(void);   /* paging.c — free frames in the user pool */

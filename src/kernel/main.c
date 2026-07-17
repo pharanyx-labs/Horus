@@ -108,7 +108,10 @@ void kernel_main(uint32_t mb_info) {
     fpu_init_template();   /* the x87/SSE image every new task starts from */
     cap_init();
     cpu_detect_features();
-    cpu_enable_protections();   /* SMEP/SMAP — must follow feature detection */
+    cpu_enable_protections();
+#ifdef CPU_SELFTEST
+    cpu_protections_selftest();   /* boot continues; make smoke-cpu asserts on it */
+#endif   /* SMEP/SMAP — must follow feature detection */
     entropy_init();
     init_syscall_instruction_path();
 #ifndef MINIMAL_SECURE

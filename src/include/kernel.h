@@ -903,6 +903,9 @@ uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr);
 #ifdef ELF_SELFTEST
 void elf_loader_selftest(void);
 #endif
+#ifdef CPU_SELFTEST
+void cpu_protections_selftest(void);
+#endif
 #ifdef PREEMPT_SELFTEST
 void preempt_selftest(void);
 #endif

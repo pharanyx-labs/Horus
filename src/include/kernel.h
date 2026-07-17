@@ -77,8 +77,25 @@ typedef uint64_t vaddr_t;
  * which is the authoritative table; keep these two in sync. */
 #define MAX_LINEAGES            4096
 #define USER_VIRT_BASE          0x0000000000400000ULL
-#define USER_MAX_VADDR          0x0000000000800000ULL
+/* Loader ceiling: the exclusive top of the user half. A user segment must map
+ * below this — the first address at or above it is the kernel half. This used
+ * to be 0x800000 (8 MiB), a ceiling that WAS the ASLR window: an image had to
+ * fit in [USER_AREA_BASE, USER_MAX_VADDR). The multi-level page-table walk lifts
+ * that, so the loader's job here is only "is this a user address, not a kernel
+ * one"; placement is decided by USER_IMAGE_ASLR_BASE + the entropy below. */
+#define USER_MAX_VADDR          0x0000800000000000ULL
+/* Fixed low base: the flat/non-PIE image fallback loads here (its addresses are
+ * baked in), and it is the loader's floor — nothing maps below it. */
 #define USER_AREA_BASE          0x400000ULL
+/* PIE image-base ASLR window. The base is USER_IMAGE_ASLR_BASE + a random,
+ * page-aligned offset in [0, ASLR_MAX_LOAD_RANDOM_PAGES) pages.
+ *
+ * It sits at 16 GiB, deliberately clear of the fixed low regions — the user
+ * stack at ~8 MiB and the heap at USER_HEAP_BASE (16 MiB) — so the window can be
+ * huge without colliding with them. That separation is why the image moved to
+ * its own base rather than growing [USER_AREA_BASE, ...) in place: a wide window
+ * anchored at 4 MiB would have swallowed the stack and heap. */
+#define USER_IMAGE_ASLR_BASE    0x0000000400000000ULL
 /* Fallback/initial kernel stack for the TSS RSP0/ESP0: the real boot stack,
  * which the boot code installs as the initial RSP/ESP and which is therefore
  * always mapped. Using the linker symbol instead of a magic high address keeps
@@ -95,11 +112,13 @@ extern uint8_t stack_top[];
 #define USER_MEM_MAX_COPY           (64*1024)
 #define ASLR_HIGH_STACK_BASE        0x00007ff000000000ULL
 #define USER_HIGH_STACK_WINDOW      (16*1024*1024ULL)
-/* Image-base ASLR window (pages). The randomized base is USER_AREA_BASE +
- * [0, ASLR_MAX_LOAD_RANDOM_PAGES) pages. Bounded so the whole premap window
- * (base + USER_ASPACE_PREMAP_PAGES) stays within a single 2 MiB PD entry, which
- * lets create_user_pagedir map the image into one page table. */
-#define ASLR_MAX_LOAD_RANDOM_PAGES  (512 - USER_ASPACE_PREMAP_PAGES)
+/* Image-base ASLR entropy: 2^30 page-aligned positions = 30 bits, up from the
+ * 8.91 (log2 480) the single-page-table premap allowed. 2^30 pages is a 4 TiB
+ * span above USER_IMAGE_ASLR_BASE, well inside the user half. The old value was
+ * `512 - USER_ASPACE_PREMAP_PAGES` — the slots left in one 2 MiB PD entry — so
+ * the entropy figure was a restatement of the page-table layout, not a choice.
+ * It is a choice now. */
+#define ASLR_MAX_LOAD_RANDOM_PAGES  (1ULL << 30)
 #define ASLR_MAX_STACK_RANDOM_PAGES 4
 #define ASLR_MAX_HEAP_GAP_PAGES     8
 #define DEMO_TASK_STACK_TOP         0x00007fffe0000000ULL

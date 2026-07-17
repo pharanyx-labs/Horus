@@ -697,7 +697,7 @@ static void h_sigmask(struct interrupt_frame64 *r) {
 static void h_sigaltstack(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
-    uint32_t sp   = r->rbx;
+    uint64_t sp   = r->rbx;   /* the altstack pointer; a user address, now possibly high */
     uint32_t size = r->rcx;
 
     /* Re-pointing the altstack while executing on it would corrupt the running

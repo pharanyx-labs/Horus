@@ -105,7 +105,7 @@ void audit_chain_start(void);   /* seed the tamper-evident MAC chain (boot) */
 
 /* ---- Cross-module loader / spawn helpers --------------------------------- */
 int  arm_named_binary(const char *name);                                   /* loader.c */
-int  arm_image_from_user(uint32_t ubuf, uint32_t len, const char *name_hint); /* loader.c */
+int  arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint); /* loader.c */
 int  try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end); /* loader.c */
 void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stack_top); /* loader.c */
 void load_staged_image_into(int tid, uint64_t load_base);                  /* loader.c */

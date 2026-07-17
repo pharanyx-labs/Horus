@@ -21,7 +21,7 @@ static void handler(void) {
 }
 
 void _start(void) {
-    if (sys_signal((unsigned)(unsigned long)&handler) != 0) {
+    if (sys_signal((uintptr_t)&handler) != 0) {
         wr("SIGNAL_SELFTEST: FAIL register\n");
         for (;;) { sys_yield(); }
     }

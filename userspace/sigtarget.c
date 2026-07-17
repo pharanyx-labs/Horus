@@ -41,7 +41,7 @@ static void handler(void) {
 static void spin(int n) { for (volatile int d = 0; d < n; d++) { } }
 
 void _start(void) {
-    sys_signal((unsigned)(unsigned long)&handler);   /* register (SYS_SIGACTION) */
+    sys_signal((uintptr_t)&handler);   /* register (SYS_SIGACTION) */
     sys_sigaltstack(sig_altstk, sizeof(sig_altstk));  /* handler runs on this stack */
     sys_sigmask(SIG_BLOCK, 1u << SIG_USR1);           /* block SIG_USR1 */
     report("sigtarget: masked\n");

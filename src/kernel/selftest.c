@@ -7,6 +7,73 @@
 #include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the FS self-test harnesses */
 #endif
 
+#ifdef ASPACE_SELFTEST
+/* Gated: prove a rebuilt address space returns the pages the old one held.
+ *
+ * Every spawn allocates ~71 frames for a task's page tables and its premapped
+ * image and stack. Nothing used to give them back — task_teardown only marks the
+ * slot dead, and free_user_physical_page had no callers at all — so the pool
+ * fell by 284 KiB per spawn until it ran out, ~230 spawns later, and init
+ * relaunches the shell on every exit or fault.
+ *
+ * Building the same slot repeatedly is the test, because slot reuse is exactly
+ * when the reclaim runs. The first build has nothing to free and is expected to
+ * consume; every one after it must be free-neutral. Asserting on the pool count
+ * rather than on the code path means a reclaim that frees only *some* of the
+ * tree still fails — which a "did we call free" check would not catch. */
+void aspace_selftest(void) {
+    const int slot = MAX_TASKS - 1;   /* never spawned into during a normal boot */
+
+    print("ASPACE_SELFTEST: begin\n");
+
+    tasks[slot].image_base = USER_AREA_BASE;
+    tasks[slot].image_end  = USER_AREA_BASE;
+    tasks[slot].cr3        = 0;
+
+    uint32_t before_first = get_free_user_pages();
+    create_user_pagedir((uint32_t)slot);
+    uint32_t after_first = get_free_user_pages();
+
+    if (tasks[slot].cr3 == 0 || after_first >= before_first) {
+        print("ASPACE_SELFTEST: FAIL first build consumed nothing\n");
+        return;
+    }
+    uint32_t per_aspace = before_first - after_first;
+
+    /* Rebuild the same slot: each pass frees the previous tree and builds a new
+     * one, so the count must land back where it started every time. */
+    for (int i = 0; i < 8; i++) {
+        create_user_pagedir((uint32_t)slot);
+        uint32_t now = get_free_user_pages();
+        if (now != after_first) {
+            print("ASPACE_SELFTEST: FAIL rebuild ");
+            print_decimal((uint64_t)i);
+            print(" leaked ");
+            print_decimal((uint64_t)(after_first - now));
+            print(" pages\n");
+            return;
+        }
+    }
+
+    /* And releasing it outright must return everything the first build took. */
+    free_user_aspace_for_test(tasks[slot].cr3);
+    tasks[slot].cr3 = 0;
+    uint32_t after_free = get_free_user_pages();
+    if (after_free != before_first) {
+        print("ASPACE_SELFTEST: FAIL free returned ");
+        print_decimal((uint64_t)(after_free - after_first));
+        print(" of ");
+        print_decimal((uint64_t)per_aspace);
+        print(" pages\n");
+        return;
+    }
+
+    print("ASPACE_SELFTEST: PASS aspace = ");
+    print_decimal((uint64_t)per_aspace);
+    print(" pages, 8 rebuilds leaked 0, free returned all\n");
+}
+#endif /* ASPACE_SELFTEST */
+
 #ifdef WX_SELFTEST
 /* Gated: prove the kernel's own image is mapped W^X — and, more importantly,
  * that *no* mapping in the kernel half is both writable and executable.

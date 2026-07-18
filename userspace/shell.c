@@ -183,16 +183,99 @@ static uint32_t sh_walk_abs_dir(const char *abspath) {
     return ino;
 }
 
-/* Render a 10-char `ls -l`-style mode string (type char + rwxrwxrwx) from a
- * directory flag and the low 9 permission bits, e.g. "drwxr-xr-x". */
-static void print_perms(int is_dir, uint32_t mode) {
+/* ---- output typography -------------------------------------------------
+ *
+ * Horus's console is a fixed-width VGA text grid mirrored to serial, and the
+ * terminal driver does not interpret ANSI escapes -- emitting them would print
+ * literal garbage on the VGA side. So alignment and column discipline carry the
+ * whole visual weight here; nothing below depends on colour. */
+
+#define TERM_COLS 80
+
+/* Print `s`, then pad with spaces to `width`. Over-long strings are printed in
+ * full rather than truncated -- a name is more useful than a tidy column. */
+static void print_pad(const char *s, int width) {
+    print(s);
+    int len = 0; while (s[len]) len++;
+    for (int i = len; i < width; i++) print(" ");
+}
+
+/* Print `s` right-aligned in `width`, for numeric columns where the digits
+ * should line up on their last character. */
+static void print_rpad(const char *s, int width) {
+    int len = 0; while (s[len]) len++;
+    for (int i = len; i < width; i++) print(" ");
+    print(s);
+}
+
+/* Render a byte count the way a person reads it: exact below 1000, then one
+ * decimal place with a unit suffix ("1.2K", "403K", "2.7M"). The point is that a
+ * column of these is comparable at a glance, which a column of raw byte counts
+ * is not. `out` needs 8 bytes. */
+static void human_size(uint32_t bytes, char *out) {
+    static const char unit[] = { 'B', 'K', 'M', 'G' };
+    int u = 0;
+    uint32_t whole = bytes, frac = 0;
+
+    while (whole >= 1000 && u < 3) {
+        frac  = ((whole % 1024) * 10) / 1024;   /* one decimal, truncated */
+        whole = whole / 1024;
+        u++;
+    }
+
+    int i = 0;
+    if (u == 0) {                                /* plain byte count, no suffix */
+        if (whole == 0) { out[i++] = '0'; }
+        else {
+            char tmp[12]; int t = 0;
+            while (whole) { tmp[t++] = (char)('0' + whole % 10); whole /= 10; }
+            while (t) out[i++] = tmp[--t];
+        }
+        out[i] = '\0';
+        return;
+    }
+
+    char tmp[12]; int t = 0;
+    if (whole == 0) tmp[t++] = '0';
+    while (whole) { tmp[t++] = (char)('0' + whole % 10); whole /= 10; }
+    while (t) out[i++] = tmp[--t];
+    if (frac) { out[i++] = '.'; out[i++] = (char)('0' + frac); }
+    out[i++] = unit[u];
+    out[i] = '\0';
+}
+
+/* Octal renderer for a mode word, so `stat` can show 0644 alongside the
+ * symbolic form. `print_decimal` cannot express a permission word usefully. */
+static void print_octal(uint32_t v) {
+    char tmp[12]; int t = 0;
+    if (v == 0) tmp[t++] = '0';
+    while (v) { tmp[t++] = (char)('0' + (v & 7)); v >>= 3; }
+    char out[13]; int i = 0;
+    while (t) out[i++] = tmp[--t];
+    out[i] = '\0';
+    print(out);
+}
+
+/* uid -> display name. Only uid 0 has a name every Horus system agrees on; the
+ * rest are shown numerically rather than guessed at, since resolving them would
+ * mean trusting a name the shell cannot verify. `out` needs 12 bytes. */
+static void owner_name(uint32_t uid, char *out) {
+    if (uid == 0) { out[0]='r'; out[1]='o'; out[2]='o'; out[3]='t'; out[4]='\0'; return; }
+    int i = 0; char tmp[12]; int t = 0;
+    if (uid == 0) tmp[t++] = '0';
+    while (uid) { tmp[t++] = (char)('0' + uid % 10); uid /= 10; }
+    while (t) out[i++] = tmp[--t];
+    out[i] = '\0';
+}
+
+/* Mode string into a caller buffer (11 bytes), rather than straight to the
+ * console, so it can be placed in an aligned column. */
+static void fmt_perms(int is_dir, uint32_t mode, char *s) {
     static const char rwx[3] = { 'r', 'w', 'x' };
-    char s[11];
     s[0] = is_dir ? 'd' : '-';
     for (int i = 0; i < 9; i++)
         s[1 + i] = (mode & (1u << (8 - i))) ? rwx[i % 3] : '-';
     s[10] = '\0';
-    print(s);
 }
 
 /* Split the argument tail `s` into up to two space-separated tokens, copied
@@ -245,6 +328,338 @@ static void help_rule(void) {
     println("  ==========================================================================");
 }
 
+
+/* ---- man pages ---------------------------------------------------------
+ *
+ * `help` is the categorised index; `man` is the reference. Pages follow the
+ * usual section order (NAME / SYNOPSIS / DESCRIPTION / OPTIONS / EXIT STATUS /
+ * SEE ALSO) so the shape is familiar, and the DESCRIPTION text says what is
+ * actually true on Horus rather than repeating Unix folklore -- where an
+ * operation is capability-gated or enforced by the fs_server against a
+ * kernel-attested uid, the page says so, because that is the part a reader
+ * cannot infer from the name.
+ *
+ * Section 1 is a user command, section 8 needs uid 0.
+ */
+struct man_page {
+    const char *name;
+    const char *sect;
+    const char *summary;                 /* the whatis(1) one-liner */
+    const char *synopsis;
+    const char *const *desc;             /* NULL-terminated */
+    const char *const *opts;             /* NULL-terminated, or NULL */
+    const char *exit_status;             /* or NULL */
+    const char *see_also;
+};
+
+static const char *const d_ls[] = {
+    "List the entries of the current directory, sorted by name.",
+    "Directories are shown with a trailing '/' and executables with a '*',",
+    "so the type of an entry is visible without colour -- the console is a",
+    "VGA text grid that does not interpret ANSI escapes.",
+    "",
+    "Entries you cannot stat are listed with their metadata shown as '?'",
+    "rather than as zeroes, so an unreadable entry is never mistaken for an",
+    "empty root-owned file.",
+    0 };
+static const char *const o_ls[] = {
+    "-l    long format: mode, owner, size and name in aligned columns",
+    0 };
+
+static const char *const d_cat[] = {
+    "Copy each FILE to standard output.",
+    "",
+    "The shell builtin reads through the fs_server, which checks read",
+    "permission against your kernel-attested uid. A ported GNU coreutils",
+    "cat(1) is also available in builds carrying the coreutils port; it is",
+    "the real upstream implementation and supports its full option set.",
+    0 };
+
+static const char *const d_cd[] = {
+    "Change the working directory. With no argument, go to the root (/).",
+    "",
+    "The shell resolves the path through the fs_server and only updates the",
+    "working directory if the target exists and is a directory, so a failed",
+    "cd leaves you where you were.",
+    0 };
+
+static const char *const d_pwd[] = { "Print the working directory.", 0 };
+
+static const char *const d_mkdir[] = {
+    "Create a directory.",
+    "",
+    "Requires write permission on the parent directory. The new directory is",
+    "owned by your uid with mode 0755.",
+    0 };
+
+static const char *const d_rm[] = {
+    "Remove a file, or an empty directory.",
+    "",
+    "Requires write permission on the parent directory. A non-empty directory",
+    "is refused. Removing a name drops one link: a file with another name",
+    "still exists until its last link goes (see link counts in stat(1)).",
+    0 };
+
+static const char *const d_touch[] = {
+    "Create an empty file if it does not exist.",
+    "The new file is owned by your uid with mode 0644.",
+    0 };
+
+static const char *const d_stat[] = {
+    "Show a file's type, permissions, owner, size, link count and inode.",
+    "",
+    "The mode is printed both symbolically and in octal. The link count is",
+    "the number of names referring to the inode; it is greater than one when",
+    "hard links exist, and the data survives until the count reaches zero.",
+    0 };
+
+static const char *const d_cp[] = {
+    "Copy a file. Reads the source and writes a new file at the destination,",
+    "so the copy is owned by you regardless of who owned the original.",
+    0 };
+static const char *const d_mv[] = {
+    "Rename a file. Both parent directories must be writable by you.",
+    0 };
+static const char *const d_wc[] = {
+    "Count the lines, words and bytes in a file.",
+    0 };
+static const char *const d_echo[] = {
+    "Print the arguments, separated by spaces, followed by a newline.",
+    "",
+    "With '>' the text is written to a file instead, creating it if needed.",
+    "A ported GNU coreutils echo(1) is also available in builds carrying the",
+    "coreutils port, with the full -n/-e/-E option set and backslash escapes.",
+    0 };
+
+static const char *const d_run[] = {
+    "Load a program image from a file and execute it.",
+    "",
+    "The image is read through the fs_server and handed to the kernel, which",
+    "validates it with the same ELF loader a named binary goes through: W^X",
+    "is enforced per segment, bounds are checked, and relocations fail closed.",
+    "Gated on the slot-3 WRITE|EXEC capability -- being able to read a file is",
+    "not authority to execute it.",
+    0 };
+
+static const char *const d_spawn[] = {
+    "Spawn an embedded binary by name, or the last image armed by receive(1).",
+    "",
+    "The child inherits your uid, and only the capabilities the spawner passes",
+    "down. There is no ambient authority: a spawned task can do nothing its",
+    "cspace does not name.",
+    0 };
+
+static const char *const d_ps[] = {
+    "List visible tasks: pid, owner, name, state, heap use, capability count",
+    "and flags. Your own task is marked with '*'.",
+    "",
+    "Visibility is authority-scoped. Without uid 0 you see only your own task",
+    "-- task listings are an information leak like any other, so they are",
+    "gated rather than shown in full to everyone.",
+    0 };
+
+static const char *const d_whoami[] = {
+    "Print the uid and gid the kernel attests for this session.",
+    "",
+    "This is the identity established at login, reported by the kernel -- not",
+    "a value the shell chose or a client can claim. Every permission check in",
+    "the fs_server is made against it.",
+    0 };
+
+static const char *const d_sudo[] = {
+    "Re-authenticate at a secure prompt and spawn an elevated image.",
+    "",
+    "The password is read by the kernel, never echoed, and never passes",
+    "through the shell's input buffer.",
+    0 };
+static const char *const d_passwd[] = {
+    "Change your password at a secure prompt.",
+    "",
+    "Passwords are stored as Argon2id hashes -- memory-hard, so an attacker",
+    "who obtains the database cannot cheaply brute-force it -- and the change",
+    "persists across reboots.",
+    0 };
+static const char *const d_useradd[] = {
+    "Create a user account with the given uid and name. Requires uid 0.",
+    0 };
+static const char *const d_userdel[] = {
+    "Delete a user account. Requires uid 0.",
+    0 };
+static const char *const d_rotate[] = {
+    "Re-encrypt the storage volume under a freshly derived key. Requires uid 0.",
+    0 };
+
+static const char *const d_mem[] = {
+    "Grow the heap by one page and touch it, demonstrating sbrk(2) and the",
+    "demand pager: the page is not backed by physical memory until written.",
+    0 };
+static const char *const d_yield[] = {
+    "Hand the CPU to another runnable task. Scheduling is preemptive, so this",
+    "is a courtesy rather than a requirement.",
+    0 };
+static const char *const d_help[] = {
+    "Without an argument, print the categorised command index.",
+    "With one, print details for a command or a group (files, security,",
+    "process, ipc, loader).",
+    "",
+    "For a full reference page on a single command, use man(1).",
+    0 };
+static const char *const d_man[] = {
+    "Display the reference page for a command.",
+    "",
+    "Pages are held in the shell itself -- there is no /usr/share/man to read",
+    "and nothing to load from disk, so man works before any filesystem is",
+    "mounted. Use apropos(1) to search them by keyword and whatis(1) for the",
+    "one-line summary.",
+    0 };
+static const char *const d_apropos[] = {
+    "Search the manual page names and summaries for a keyword and list every",
+    "match with its one-line description.",
+    0 };
+static const char *const d_whatis[] = {
+    "Print the one-line summary of a command, as shown by apropos(1).",
+    0 };
+static const char *const d_exit[] = {
+    "End the session and return to the login prompt.",
+    0 };
+
+static const struct man_page man_pages[] = {
+ { "ls","1","list directory entries","ls [-l]",d_ls,o_ls,
+   "0 on success; non-zero if the directory could not be read.","cat(1), stat(1), cd(1)" },
+ { "cat","1","print a file's contents","cat FILE",d_cat,0,
+   "0 on success; non-zero if a file could not be read.","ls(1), wc(1), echo(1)" },
+ { "cd","1","change the working directory","cd [DIR]",d_cd,0,0,"pwd(1), ls(1)" },
+ { "pwd","1","print the working directory","pwd",d_pwd,0,0,"cd(1)" },
+ { "mkdir","1","create a directory","mkdir DIR",d_mkdir,0,
+   "0 on success; non-zero if the name exists or the parent is not writable.","rm(1), ls(1)" },
+ { "rm","1","remove a file or empty directory","rm NAME",d_rm,0,
+   "0 on success; non-zero if the name is missing, or a directory is not empty.","mkdir(1), stat(1)" },
+ { "touch","1","create an empty file","touch FILE",d_touch,0,0,"echo(1), stat(1)" },
+ { "stat","1","show a file's metadata","stat FILE",d_stat,0,0,"ls(1)" },
+ { "cp","1","copy a file","cp SRC DST",d_cp,0,0,"mv(1)" },
+ { "mv","1","rename a file","mv SRC DST",d_mv,0,0,"cp(1), rm(1)" },
+ { "wc","1","count lines, words and bytes","wc FILE",d_wc,0,0,"cat(1)" },
+ { "echo","1","print text, or write it to a file","echo TEXT [> FILE]",d_echo,0,0,"cat(1), touch(1)" },
+ { "run","1","execute a program image from a file","run FILE",d_run,0,0,"spawn(1), ps(1)" },
+ { "spawn","1","spawn an embedded binary","spawn [NAME]",d_spawn,0,0,"run(1), ps(1)" },
+ { "ps","1","list visible tasks","ps",d_ps,0,0,"spawn(1), whoami(1)" },
+ { "mem","1","grow the heap by one page","mem",d_mem,0,0,"ps(1)" },
+ { "yield","1","hand the CPU to another task","yield",d_yield,0,0,"ps(1)" },
+ { "whoami","1","show your attested uid and gid","whoami",d_whoami,0,0,"id(1), sudo(1), ps(1)" },
+ { "id","1","show your attested uid and gid","id",d_whoami,0,0,"whoami(1)" },
+ { "sudo","1","re-authenticate and elevate","sudo",d_sudo,0,0,"passwd(1), whoami(1)" },
+ { "passwd","1","change your password","passwd",d_passwd,0,0,"sudo(1)" },
+ { "useradd","8","create a user account","useradd UID NAME",d_useradd,0,0,"userdel(8), passwd(1)" },
+ { "userdel","8","delete a user account","userdel UID",d_userdel,0,0,"useradd(8)" },
+ { "rotate_keys","8","re-encrypt storage under a fresh key","rotate_keys",d_rotate,0,0,"passwd(1)" },
+ { "help","1","print the command index","help [TOPIC]",d_help,0,0,"man(1), apropos(1)" },
+ { "man","1","display a command's reference page","man COMMAND",d_man,0,0,"help(1), apropos(1), whatis(1)" },
+ { "apropos","1","search the manual by keyword","apropos KEYWORD",d_apropos,0,0,"man(1), whatis(1)" },
+ { "whatis","1","print a command's one-line summary","whatis COMMAND",d_whatis,0,0,"man(1), apropos(1)" },
+ { "exit","1","end the session","exit",d_exit,0,0,"help(1)" },
+};
+#define MAN_COUNT ((int)(sizeof(man_pages)/sizeof(man_pages[0])))
+
+static const struct man_page *man_find(const char *name) {
+    for (int i = 0; i < MAN_COUNT; i++)
+        if (strcmp(man_pages[i].name, name) == 0) return &man_pages[i];
+    return 0;
+}
+
+/* Section heading, then an indented body -- the two-level indent is what makes
+ * a man page scannable, so it is kept rather than flattened. */
+static void man_section(const char *head) { println(""); println(head); }
+static void man_body(const char *text)    { print("       "); println(text); }
+
+static void man_render(const struct man_page *m) {
+    println("");
+    print(m->name); print("("); print(m->sect); print(")");
+    for (int i = fss_strlen(m->name) + fss_strlen(m->sect) + 2; i < 62; i++) print(" ");
+    print("HORUS"); println("");
+
+    man_section("NAME");
+    { char line[96]; int i = 0;
+      for (const char *p = m->name; *p && i < 60; p++) line[i++] = *p;
+      line[i++] = ' '; line[i++] = '-'; line[i++] = ' ';
+      for (const char *p = m->summary; *p && i < 92; p++) line[i++] = *p;
+      line[i] = 0; man_body(line); }
+
+    man_section("SYNOPSIS");
+    man_body(m->synopsis);
+
+    man_section("DESCRIPTION");
+    for (int i = 0; m->desc[i]; i++) man_body(m->desc[i]);
+
+    if (m->opts) {
+        man_section("OPTIONS");
+        for (int i = 0; m->opts[i]; i++) man_body(m->opts[i]);
+    }
+    if (m->exit_status) {
+        man_section("EXIT STATUS");
+        man_body(m->exit_status);
+    }
+    man_section("SEE ALSO");
+    man_body(m->see_also);
+    println("");
+}
+
+/* Case-insensitive substring search, for apropos. */
+static int man_contains(const char *hay, const char *needle) {
+    if (!needle[0]) return 0;
+    for (int i = 0; hay[i]; i++) {
+        int j = 0;
+        while (hay[i + j] && needle[j]) {
+            char a = hay[i + j], b = needle[j];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) break;
+            j++;
+        }
+        if (!needle[j]) return 1;
+    }
+    return 0;
+}
+
+static void man_whatis(const char *name) {
+    const struct man_page *m = man_find(name);
+    if (!m) { print(name); println(": nothing appropriate."); return; }
+    print("  "); print_pad(m->name, 14);
+    print("("); print(m->sect); print(")  ");
+    println(m->summary);
+}
+
+static void man_apropos(const char *kw) {
+    int hits = 0;
+    for (int i = 0; i < MAN_COUNT; i++) {
+        if (man_contains(man_pages[i].name, kw) ||
+            man_contains(man_pages[i].summary, kw)) {
+            if (!hits) println("");
+            print("  "); print_pad(man_pages[i].name, 14);
+            print("("); print(man_pages[i].sect); print(")  ");
+            println(man_pages[i].summary);
+            hits++;
+        }
+    }
+    if (!hits) { print(kw); println(": nothing appropriate."); }
+    else println("");
+}
+
+/* The whole index, as whatis lines -- what `man -k .` would give you. */
+static void man_index(void) {
+    println("");
+    println("  Manual pages (man <command> for the full page)");
+    help_rule();
+    for (int i = 0; i < MAN_COUNT; i++) {
+        print("  "); print_pad(man_pages[i].name, 14);
+        print("("); print(man_pages[i].sect); print(")  ");
+        println(man_pages[i].summary);
+    }
+    println("");
+    println("  Section 1 = user command, 8 = requires uid 0.");
+    println("  apropos <keyword> searches these summaries; help shows them grouped.");
+    println("");
+}
+
 static void show_general_help_us(void) {
     help_rule();
     println("   Horus Shell  -  capability-based, privilege-separated command reference");
@@ -292,11 +707,15 @@ static void show_general_help_us(void) {
     print_cmd("receive",           "receive a program image over serial, arm it");
     print_cmd("load",              "receive + spawn in one step");
     print_cmd("help [topic]",      "this list, or details for a command or group");
+    print_cmd("man <command>",     "full reference page for one command");
+    print_cmd("apropos <keyword>", "search the manual pages by keyword");
+    print_cmd("whatis <command>",  "one-line summary of a command");
     print_cmd("exit, logout",      "end the session, return to the login prompt");
     println("");
     println("  Legend:  <arg> required   (root) needs uid 0   / is the FS root");
     println("  Groups:  help files | security | process | ipc | loader");
     println("  Detail:  help <command>       e.g.   help run");
+    println("  Manual:  man <command>        e.g.   man ls        (man = index)");
     help_rule();
 }
 
@@ -309,7 +728,7 @@ static void show_topic_help_us(const char *topic) {
     const char *t = tbuf;
 
     /* No word, or 'help help' / 'help man' -> the full command list. */
-    if (t[0] == 0 || strcmp(t, "help") == 0 || strcmp(t, "man") == 0 || strcmp(t, "?") == 0) {
+    if (t[0] == 0 || strcmp(t, "help") == 0 || strcmp(t, "?") == 0) {
         show_general_help_us();
         return;
     }
@@ -536,7 +955,27 @@ static void show_topic_help_us(const char *topic) {
 
 static void handle_command(char *cmd) {
     
-    if (strcmp(cmd, "help") == 0 || strcmp(cmd, "man") == 0 || strcmp(cmd, "?") == 0) {
+    if (strcmp(cmd, "man") == 0) {
+        man_index();
+    } else if (strncmp(cmd, "man ", 4) == 0) {
+        const char *t = cmd + 4; while (*t == ' ') t++;
+        const struct man_page *m = man_find(t);
+        if (m) man_render(m);
+        else {
+            print("No manual entry for "); print(t); println("");
+            println("Try: apropos <keyword>   or   help   for the command index.");
+        }
+    } else if (strncmp(cmd, "whatis ", 7) == 0) {
+        const char *t = cmd + 7; while (*t == ' ') t++;
+        man_whatis(t);
+    } else if (strcmp(cmd, "whatis") == 0) {
+        println("whatis: usage: whatis <command>");
+    } else if (strncmp(cmd, "apropos ", 8) == 0) {
+        const char *t = cmd + 8; while (*t == ' ') t++;
+        man_apropos(t);
+    } else if (strcmp(cmd, "apropos") == 0) {
+        println("apropos: usage: apropos <keyword>");
+    } else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         show_general_help_us();
     } else if (strncmp(cmd, "help ", 5) == 0 || strncmp(cmd, "man ", 4) == 0 ||
                (cmd[0] == '?' && (cmd[1] == ' ' || cmd[1] == 0))) {
@@ -560,7 +999,13 @@ static void handle_command(char *cmd) {
             println("sbrk failed");
         }
     } else if (strcmp(cmd, "ps") == 0) {
-        println("PID  UID    NAME            STATE  HEAP      CAPS  FLAGS");
+        /* Same column discipline as ls -l: fixed widths via the shared padding
+         * helpers rather than hand-counted spaces, which is what let the old
+         * header drift out of line with its rows. */
+        print("  "); print_pad("PID", 6); print_pad("OWNER", 8); print_pad("NAME", 16);
+        print_pad("STATE", 7); print_rpad("HEAP", 7); print_rpad("CAPS", 6);
+        print("  "); println("FLAGS");
+
         int mypid = sys_getpid();
         int saw_any = 0;
         for (int i = 0; i < 16; i++) {
@@ -568,31 +1013,50 @@ static void handle_command(char *cmd) {
             int r = sys_get_task_info(i, &info);
             if (r == 0 && info.state != 0) {
                 saw_any = 1;
-                if (info.id < 10) print(" ");
-                print_decimal(info.id);
-                if ((int)info.id == mypid) print("* "); else print("  ");
-                /* UID column (root for 0), padded to 7 cols. */
-                if (info.uid == 0) { print("root   "); }
-                else {
-                    print_decimal(info.uid);
-                    int ulen = info.uid < 10 ? 1 : (info.uid < 100 ? 2 : (info.uid < 1000 ? 3 : 4));
-                    for (int sp = ulen; sp < 7; sp++) print(" ");
-                }
-                print(info.name);
-                int nlen = 0; while (info.name[nlen]) nlen++;
-                for (int sp = nlen; sp < 16; sp++) print(" ");
-                /* Named state (mirrors rust/src/ps.rs state_cstr). */
-                const char *sn = info.state == 1 ? "run" : (info.state == 2 ? "blkd" : "?");
-                print(sn);
-                int snlen = 0; while (sn[snlen]) snlen++;
-                for (int sp = snlen; sp < 7; sp++) print(" ");
-                print_decimal(info.heap_used);
-                print("      ");
-                print_decimal(info.caps_in_use);
-                print("    ");
-                if (info.in_kernel) print("K ");
-                if (info.blocked_on >= 0) { print("B"); print_decimal(info.blocked_on); }
-                else if (info.blocked_on_notif >= 0) print("N");
+
+                /* The current task is marked so a listing read out of context
+                 * still says which line is you. */
+                char pid[10]; int pi = 0;
+                { uint32_t v = info.id; char t[10]; int ti = 0;
+                  if (!v) t[ti++] = '0';
+                  while (v) { t[ti++] = (char)('0' + v % 10); v /= 10; }
+                  while (ti) pid[pi++] = t[--ti]; }
+                if ((int)info.id == mypid) pid[pi++] = '*';
+                pid[pi] = '\0';
+
+                char owner[12], heap[8];
+                owner_name(info.uid, owner);
+                human_size(info.heap_used, heap);
+
+                /* All four live states are named. The old code knew only two
+                 * and printed "?" for the rest, so a task blocked on a
+                 * notification or in SYS_WAIT looked like a kernel bug rather
+                 * than a task doing exactly what it was told to. */
+                const char *sn = info.state == TASK_RUNNABLE      ? "run"
+                               : info.state == TASK_BLOCKED_IPC   ? "ipc"
+                               : info.state == TASK_BLOCKED_NOTIF ? "notify"
+                               : info.state == TASK_BLOCKED_WAIT  ? "wait"
+                               : "?";
+
+                print("  ");
+                print_pad(pid, 6);
+                print_pad(owner, 8);
+                print_pad(info.name, 16);
+                print_pad(sn, 7);
+                print_rpad(heap, 7);
+                { char caps[10]; int ci = 0; uint32_t v = info.caps_in_use; char t[10]; int ti = 0;
+                  if (!v) t[ti++] = '0';
+                  while (v) { t[ti++] = (char)('0' + v % 10); v /= 10; }
+                  while (ti) caps[ci++] = t[--ti];
+                  caps[ci] = '\0';
+                  print_rpad(caps, 6); }
+
+                /* Flags spell out what they mean rather than using bare letters:
+                 * the listing is read by people, and "wait:3" beats "B3". */
+                print("  ");
+                if (info.in_kernel) print("kernel ");
+                if (info.blocked_on >= 0) { print("wait:"); print_decimal((uint32_t)info.blocked_on); }
+                else if (info.blocked_on_notif >= 0) print("notify");
                 println("");
             }
         }
@@ -619,13 +1083,25 @@ static void handle_command(char *cmd) {
         }
     } else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "ls -l") == 0) {
         int long_fmt = (cmd[2] != '\0');   /* "ls -l" carries a 3rd char */
+
+        /* Entries are collected before anything is printed. Column widths are a
+         * property of the whole listing -- the widest name decides the layout --
+         * so a streaming printer cannot align them, which is why the old one
+         * emitted a ragged entry per line. */
+        #define LS_MAX 128
+        static struct {
+            char     name[FS_NAME_MAX];
+            uint32_t type, mode, uid, size;
+            int      stat_ok;
+        } ent[LS_MAX];
+        int n = 0, failed = 0, truncated = 0;
+
         struct fs_request  rq = {0};
         struct fs_response rp;
-        int n = 0, failed = 0;
         for (uint32_t idx = 0; idx < 4096; idx++) {
             rq.op = FS_OP_READDIR; rq.dir_ino = sh_cwd_ino; rq.offset = idx;
             /* Every way this loop can stop used to break into the same silence,
-             * and the caller then printed "(empty)" — so a broken IPC path, a
+             * and the caller then printed "(empty)" -- so a broken IPC path, a
              * directory you cannot read, and an empty directory were one
              * indistinguishable (reassuring) answer. Separate them: only running
              * off the end is a normal stop. */
@@ -638,8 +1114,8 @@ static void handle_command(char *cmd) {
             }
             /* NOENT here means the server walked past the last entry, which is
              * how a readdir ends. The server also returns NOENT for a directory
-             * that does not exist — the two are not distinguishable over the
-             * wire — but sh_cwd_ino is a directory `cd` already verified exists,
+             * that does not exist -- the two are not distinguishable over the
+             * wire -- but sh_cwd_ino is a directory `cd` already verified exists,
              * so for this caller it can only be end-of-directory. */
             if (rp.rc == SYS_ERR_NOENT) break;
             if (rp.rc < 0) {
@@ -647,31 +1123,125 @@ static void handle_command(char *cmd) {
                 failed = 1;
                 break;
             }
-            /* rp is reused by the per-entry STAT below, so keep the name/type. */
-            char name[FS_NAME_MAX];
-            fss_strcpy(name, rp.name);
-            uint32_t ino = rp.ino, type = rp.type;
-            if (long_fmt) {
-                struct fs_request  sq = {0};
-                struct fs_response sp;
-                sq.op = FS_OP_STAT; sq.ino = ino;
-                if (fss_call(&sq, &sp) == 0 && sp.rc == 0) {
-                    print_perms(type == FS_TYPE_DIR, sp.mode);
-                    print("  uid="); print_decimal(sp.uid);
-                    print("  "); print_decimal(sp.size);
-                    print("  ");
-                } else {
-                    print("??????????  ");   /* stat denied/failed */
-                }
+            if (n >= LS_MAX) { truncated = 1; break; }
+
+            fss_strcpy(ent[n].name, rp.name);
+            ent[n].type    = rp.type;
+            ent[n].mode    = 0;
+            ent[n].uid     = 0;
+            ent[n].size    = 0;
+            ent[n].stat_ok = 0;
+
+            /* Stat every entry, not just in -l: the plain listing marks
+             * directories and executables, which needs the mode. A denied stat
+             * is recorded, not fatal -- you may list a directory whose entries
+             * you cannot stat. */
+            struct fs_request  sq = {0};
+            struct fs_response sp;
+            sq.op = FS_OP_STAT; sq.ino = rp.ino;
+            if (fss_call(&sq, &sp) == 0 && sp.rc == 0) {
+                ent[n].mode    = sp.mode;
+                ent[n].uid     = sp.uid;
+                ent[n].size    = sp.size;
+                ent[n].stat_ok = 1;
             }
-            print(name);
-            print(type == FS_TYPE_DIR ? "/\n" : "\n");
             n++;
         }
-        /* Only claim emptiness when the directory was actually read to its end;
-         * after a failure the count is zero too, which is the confusion this
-         * used to produce. */
-        if (n == 0 && !failed && fss_connected) println("(empty)");
+
+        /* Alphabetical, so a listing is reproducible and scannable rather than
+         * ordered by whatever the directory happens to hold. Insertion sort:
+         * bounded at LS_MAX and this is not a hot path. */
+        for (int i = 1; i < n; i++) {
+            for (int j = i; j > 0; j--) {
+                const char *a = ent[j - 1].name, *b = ent[j].name;
+                int k = 0;
+                while (a[k] && a[k] == b[k]) k++;
+                if ((unsigned char)a[k] <= (unsigned char)b[k]) break;
+                for (unsigned t = 0; t < sizeof(ent[0]); t++) {
+                    char *pa = (char *)&ent[j - 1], *pb = (char *)&ent[j];
+                    char tmp = pa[t]; pa[t] = pb[t]; pb[t] = tmp;
+                }
+            }
+        }
+
+        if (n == 0) {
+            /* Only claim emptiness when the directory was actually read to its
+             * end; after a failure the count is zero too, which is the confusion
+             * this used to produce. */
+            if (!failed && fss_connected) println("(empty)");
+        } else if (long_fmt) {
+            /* Size column is sized to its widest value so the numbers line up. */
+            int wsize = 4;   /* at least as wide as the "Size" heading */
+            for (int i = 0; i < n; i++) {
+                char hb[8]; human_size(ent[i].size, hb);
+                int l = 0; while (hb[l]) l++;
+                if (l > wsize) wsize = l;
+            }
+
+            print("  "); print_pad("Mode", 12); print_pad("Owner", 8);
+            print_rpad("Size", wsize); print("  "); println("Name");
+
+            for (int i = 0; i < n; i++) {
+                int is_dir = (ent[i].type == FS_TYPE_DIR);
+                char perms[11], owner[12], hb[8];
+
+                if (ent[i].stat_ok) {
+                    fmt_perms(is_dir, ent[i].mode, perms);
+                    owner_name(ent[i].uid, owner);
+                    human_size(ent[i].size, hb);
+                } else {
+                    /* Unreadable metadata is shown as unknown rather than as
+                     * zeroes, which would read as a real (empty, root-owned)
+                     * file. */
+                    for (int k = 0; k < 10; k++) perms[k] = '?';
+                    perms[10] = '\0';
+                    owner[0] = '?'; owner[1] = '\0';
+                    hb[0] = '-'; hb[1] = '\0';
+                }
+
+                print("  ");
+                print_pad(perms, 12);
+                print_pad(owner, 8);
+                if (is_dir) { hb[0] = '-'; hb[1] = '\0'; }   /* a directory has no useful size here */
+                print_rpad(hb, wsize);
+                print("  ");
+                print(ent[i].name);
+                /* Trailing marker instead of colour: '/' directory, '*' executable. */
+                if (is_dir) println("/");
+                else if (ent[i].stat_ok && (ent[i].mode & 0111u)) println("*");
+                else println("");
+            }
+        } else {
+            /* Plain listing: pack names into as many columns as fit the console,
+             * row-major, each padded to the widest name plus its type marker. */
+            int w = 1;
+            for (int i = 0; i < n; i++) {
+                int l = 0; while (ent[i].name[l]) l++;
+                l++;                                  /* room for the / or * marker */
+                if (l > w) w = l;
+            }
+            int colw = w + 2;
+            int cols = (TERM_COLS - 2) / colw;
+            if (cols < 1) cols = 1;
+
+            for (int i = 0; i < n; i++) {
+                if (i % cols == 0) print("  ");
+                char cell[FS_NAME_MAX + 2];
+                int l = 0;
+                while (ent[i].name[l] && l < FS_NAME_MAX) { cell[l] = ent[i].name[l]; l++; }
+                if (ent[i].type == FS_TYPE_DIR) cell[l++] = '/';
+                else if (ent[i].stat_ok && (ent[i].mode & 0111u)) cell[l++] = '*';
+                cell[l] = '\0';
+
+                int last_in_row = ((i % cols) == cols - 1) || (i == n - 1);
+                if (last_in_row) println(cell);
+                else print_pad(cell, colw);
+            }
+        }
+
+        if (truncated) {
+            print("  ... listing truncated at "); print_decimal(LS_MAX); println(" entries");
+        }
     } else if (strncmp(cmd, "cat ", 4) == 0) {
         const char *name = cmd + 4;
         struct fs_request  rq = {0};
@@ -729,12 +1299,33 @@ static void handle_command(char *cmd) {
             sq.op = FS_OP_STAT; sq.ino = ino;
             if (fss_call(&sq, &sp) < 0 || sp.rc < 0) println("stat: failed");
             else {
-                print("  File: "); println(name);
-                print("  Type: "); println(type == FS_TYPE_DIR ? "directory" : "file");
-                print("  Mode: "); print_perms(type == FS_TYPE_DIR, sp.mode); println("");
-                print("  Uid:  "); print_decimal(sp.uid);
-                print("   Gid: "); print_decimal(sp.gid); println("");
-                print("  Size: "); print_decimal(sp.size); println(" bytes");
+                /* Labels padded to a common width so the values form a
+                 * column, and the mode shown both symbolically and in octal --
+                 * the two spellings answer different questions and printing one
+                 * always means mentally converting it. */
+                char perms[11], owner[12], hb[8];
+                fmt_perms(type == FS_TYPE_DIR, sp.mode, perms);
+                owner_name(sp.uid, owner);
+                human_size(sp.size, hb);
+
+                print("  "); print_pad("File:", 8); println(name);
+                print("  "); print_pad("Type:", 8);
+                println(type == FS_TYPE_DIR ? "directory" : "regular file");
+                print("  "); print_pad("Mode:", 8); print(perms);
+                print("  (0"); print_octal(sp.mode & 07777u); println(")");
+                print("  "); print_pad("Owner:", 8); print(owner);
+                print("  uid="); print_decimal(sp.uid);
+                print(" gid="); print_decimal(sp.gid); println("");
+                print("  "); print_pad("Size:", 8); print(hb);
+                /* The exact count only adds something once the human form has
+                 * rounded; below 1000 bytes they are the same number. */
+                if (sp.size >= 1000) { print("  ("); print_decimal(sp.size); print(" bytes)"); }
+                else if (sp.size != 1) print(" bytes");
+                else print(" byte");
+                println("");
+                print("  "); print_pad("Links:", 8); print_decimal(sp.links ? sp.links : 1);
+                println("");
+                print("  "); print_pad("Inode:", 8); print_decimal(ino); println("");
             }
         }
     } else if (strncmp(cmd, "wc ", 3) == 0) {

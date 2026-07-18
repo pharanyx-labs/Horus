@@ -639,16 +639,46 @@ embedded_hello_newlib_bin_end:
 #endif
 
 #ifdef COREUTILS_SELFTEST
-/* PIE binary of the vendored GNU coreutils echo(1) (GPLv3 upstream source built
- * against the Horus port shim; see userspace/ports/coreutils/README.md).
- * Embedded only in COREUTILS_SELFTEST builds -- the shipped kernel does not
- * carry it, so the ISO stays free of the ~400 KiB newlib-linked image. */
+/* PIE binaries of the vendored GNU coreutils utilities (GPLv3 upstream source
+ * built against the Horus port shim; see userspace/ports/coreutils/README.md).
+ * Embedded only in COREUTILS_SELFTEST builds -- the shipped kernel carries
+ * none of them, so the ISO stays free of any GPLv3-derived binary. */
 .align 16
 .global embedded_coreutils_echo_bin_start
 embedded_coreutils_echo_bin_start:
 .incbin "userspace/coreutils_echo.bin"
 .global embedded_coreutils_echo_bin_end
 embedded_coreutils_echo_bin_end:
+.align 16
+.global embedded_coreutils_true_bin_start
+embedded_coreutils_true_bin_start:
+.incbin "userspace/coreutils_true.bin"
+.global embedded_coreutils_true_bin_end
+embedded_coreutils_true_bin_end:
+.align 16
+.global embedded_coreutils_false_bin_start
+embedded_coreutils_false_bin_start:
+.incbin "userspace/coreutils_false.bin"
+.global embedded_coreutils_false_bin_end
+embedded_coreutils_false_bin_end:
+.align 16
+.global embedded_coreutils_basename_bin_start
+embedded_coreutils_basename_bin_start:
+.incbin "userspace/coreutils_basename.bin"
+.global embedded_coreutils_basename_bin_end
+embedded_coreutils_basename_bin_end:
+.align 16
+.global embedded_coreutils_dirname_bin_start
+embedded_coreutils_dirname_bin_start:
+.incbin "userspace/coreutils_dirname.bin"
+.global embedded_coreutils_dirname_bin_end
+embedded_coreutils_dirname_bin_end:
+.align 16
+.global embedded_coreutils_cat_bin_start
+embedded_coreutils_cat_bin_start:
+.incbin "userspace/coreutils_cat.bin"
+.global embedded_coreutils_cat_bin_end
+embedded_coreutils_cat_bin_end:
 #endif
 
 #ifdef NOTIFY_SELFTEST

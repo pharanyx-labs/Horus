@@ -11,7 +11,7 @@ version 3 or later, whose text is in [COPYING](COPYING) here.
 
 | File | Origin | Licence |
 |---|---|---|
-| `echo.c` | coreutils 9.5, `src/echo.c`, **byte-identical** | GPLv3+ |
+| `echo.c` `true.c` `false.c` `basename.c` `dirname.c` `cat.c` | coreutils 9.5 `src/`, **byte-identical** | GPLv3+ |
 | `COPYING` | coreutils 9.5 | GPLv3 text |
 | `port/*` | written for Horus | MIT (as the rest of the tree) |
 
@@ -63,9 +63,18 @@ Gated, so the shipped kernel does not carry it:
 make smoke-coreutils    # builds COREUTILS_SELFTEST=1 and asserts on the output
 ```
 
-That embeds `echo` as a spawn-by-name binary and runs a self-test that drives it
-through `argv` — plain arguments, `-n`, and `-e` with escape sequences — checking
-what it writes to the console.
+That embeds every ported utility as a spawn-by-name binary and runs a self-test
+that drives them through `argv`: `echo -e` with escape sequences, `basename` with
+a suffix to strip, and `dirname`. Each assertion is made by upstream's own code —
+the marker only appears if echo really joins its argv and expands `\x20`/`\x21`,
+and `cat`/`dirname` only print what they do because their real parsing ran.
+
+Adding another utility is a matter of dropping its unmodified `.c` here, adding
+its name to `COREUTILS_PROGS` in the Makefile, and extending `port/` with
+whatever gnulib surface it needs — the shim now covers `error`, `quote`/`quotef`/
+`quoteaf`, the `dirname` module, `full_read`/`full_write`/`safe_read`,
+`xalignalloc`, the checked-arithmetic `ckd_*` macros, and the getopt
+`--help`/`--version` boilerplate.
 
 ## Updating
 

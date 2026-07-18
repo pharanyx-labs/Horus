@@ -7,6 +7,15 @@
 
 /* MUST stay byte-identical to the copy in src/include/kernel.h
  * (SYS_GET_TASK_INFO ABI). */
+/* Task states, as reported in struct task_info.state below. Mirrors the
+ * TASK_* set in src/include/kernel.h -- state is part of the syscall ABI, so a
+ * ring-3 caller needs the names rather than bare numbers. */
+#define TASK_DEAD           0
+#define TASK_RUNNABLE       1
+#define TASK_BLOCKED_IPC    2   /* in SYS_IPC_CALL, waiting for a reply */
+#define TASK_BLOCKED_NOTIF  3   /* in SYS_WAIT_NOTIFY, waiting for a badge */
+#define TASK_BLOCKED_WAIT   4   /* in SYS_WAIT, until the target task exits */
+
 struct task_info {
     uint32_t id;
     uint32_t state;

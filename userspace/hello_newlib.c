@@ -391,11 +391,74 @@ int main(int argc, char **argv, char **envp) {
         close(tfd);
         unlink(tmpl);                     /* mkstemp leaves the name behind */
 
-        errno = 0;
-        if (tmpfile() != NULL || errno != ENOSYS) {
-            printf("NEWLIB_SELFTEST: FAIL tmpfile-not-enosys\n"); return 1;
+        /* tmpfile: a working read/write stream that is removed on fclose. */
+        FILE *tf = tmpfile();
+        if (!tf) { printf("NEWLIB_SELFTEST: FAIL tmpfile-open\n"); return 1; }
+        if (fwrite("xyz", 1, 3, tf) != 3) {
+            printf("NEWLIB_SELFTEST: FAIL tmpfile-write\n"); return 1;
         }
-        printf("libc mkstemp OK, tmpfile deferred (ENOSYS)\n");
+        rewind(tf);
+        char tb[4] = { 0 };
+        if (fread(tb, 1, 3, tf) != 3 || memcmp(tb, "xyz", 3) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL tmpfile-readback\n"); return 1;
+        }
+        fclose(tf);                       /* removes the temp file */
+        printf("libc mkstemp + tmpfile OK\n");
+    }
+
+    /* --- hard links: link() gives a file a second name; unlinking one name
+     * leaves the file (and its data) reachable through the other until the last
+     * name goes, and the link count reflects both. */
+    {
+        int fd = open("/ln_a", O_CREAT | O_RDWR, 0644);
+        if (fd < 0) { printf("NEWLIB_SELFTEST: FAIL link-create\n"); return 1; }
+        write(fd, "hard", 4);
+        close(fd);
+
+        if (link("/ln_a", "/ln_b") != 0) {
+            printf("NEWLIB_SELFTEST: FAIL link\n"); return 1;
+        }
+
+        /* Both names refer to one inode, now with link count 2. */
+        struct stat sa, sb;
+        if (stat("/ln_a", &sa) != 0 || stat("/ln_b", &sb) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL link-stat\n"); return 1;
+        }
+        if (sa.st_ino != sb.st_ino) {
+            printf("NEWLIB_SELFTEST: FAIL link-ino\n"); return 1;
+        }
+        if (sa.st_nlink != 2) {
+            printf("NEWLIB_SELFTEST: FAIL link-nlink2\n"); return 1;
+        }
+
+        /* Unlink the first name: the file survives under the second, and its
+         * data is intact; the link count drops to 1. */
+        if (unlink("/ln_a") != 0) {
+            printf("NEWLIB_SELFTEST: FAIL link-unlink1\n"); return 1;
+        }
+        int rfd = open("/ln_b", O_RDONLY);
+        if (rfd < 0) { printf("NEWLIB_SELFTEST: FAIL link-survive\n"); return 1; }
+        char lb[4] = { 0 };
+        if (read(rfd, lb, 4) != 4 || memcmp(lb, "hard", 4) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL link-data\n"); return 1;
+        }
+        close(rfd);
+        if (stat("/ln_b", &sb) != 0 || sb.st_nlink != 1) {
+            printf("NEWLIB_SELFTEST: FAIL link-nlink1\n"); return 1;
+        }
+
+        /* A hard link to a directory is refused. */
+        mkdir("/ln_dir", 0755);
+        if (link("/ln_dir", "/ln_dir2") == 0) {
+            printf("NEWLIB_SELFTEST: FAIL link-dir-allowed\n"); return 1;
+        }
+
+        /* Removing the last name frees the inode. */
+        if (unlink("/ln_b") != 0) {
+            printf("NEWLIB_SELFTEST: FAIL link-unlink2\n"); return 1;
+        }
+        unlink("/ln_dir");
+        printf("fs hard links OK\n");
     }
 
     printf("NEWLIB_SELFTEST: PASS\n");

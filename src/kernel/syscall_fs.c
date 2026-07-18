@@ -146,13 +146,54 @@ void h_fs_inode_alloc(struct interrupt_frame64 *r) {
     r->rax = (uint32_t)(int32_t)ino;
 }
 
+/* SYS_FS_INODE_FREE (57): drop one hard-link reference to an inode.
+ *
+ * A regular file may have several names (see h_fs_inode_link), so removing one
+ * name must not free the inode while others remain: decrement `links` and free
+ * the inode + its data blocks only when the count reaches zero. A directory is
+ * never hard-linked, so it is freed outright (its `links` is a fixed 1 the store
+ * does not maintain as a dirent count). This is also the create-rollback path a
+ * freshly allocated (links == 1) inode takes, which decrements straight to zero
+ * and frees, exactly as before. A stored count of 0 or 1 frees, so a corrupt or
+ * legacy inode can never be pinned unfreeable. */
 void h_fs_inode_free(struct interrupt_frame64 *r) {
     if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino = r->rbx;
     if (ino == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* never free root */
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
+
+    if (inode.type != 2 /* dir */ && inode.links > 1) {
+        inode.links--;
+        r->rax = (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) == 0)
+                     ? 0 : (uint32_t)SYS_ERR_IO;
+        return;
+    }
     r->rax = (storage_free_inode_blocks(mfs, ino) == 0) ? 0 : (uint32_t)SYS_ERR_IO;
+}
+
+/* SYS_FS_INODE_LINK (76): add one hard-link reference to an inode (increment its
+ * on-disk link count), so a second directory entry can name the same file. Same
+ * gate as the rest of the object-store API. A directory is refused — hard links
+ * to directories would let a client build a cycle the tree walk cannot bound. */
+void h_fs_inode_link(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t ino = r->rbx;
+    if (ino == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* root is not hard-linked */
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
+    if (inode.type == 2 /* dir */ || inode.type == 0)            { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (inode.links == 0xFFFFFFFFu)                              { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    inode.links++;
+    r->rax = (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) == 0)
+                 ? 0 : (uint32_t)SYS_ERR_IO;
 }
 
 void h_fblock_read(struct interrupt_frame64 *r) {

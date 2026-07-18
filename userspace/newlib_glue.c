@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -48,12 +49,47 @@ static void _fill_stat(struct stat *st, const posix_stat_t *ps) {
 
     st->st_ino     = (ino_t)ps->ino;
     st->st_mode    = (mode_t)ps->mode;
-    st->st_nlink   = 1;
+    st->st_nlink   = (nlink_t)(ps->links ? ps->links : 1u);
     st->st_uid     = (uid_t)ps->uid;
     st->st_gid     = (gid_t)ps->gid;
     st->st_size    = (off_t)ps->size;
     st->st_blksize = (blksize_t)ps->blksize;
     st->st_blocks  = (blkcnt_t)ps->blocks;
+}
+
+/* ---- tmpfile bookkeeping ---------------------------------------------- *
+ * tmpfile() creates a *named* temp file and records (fd -> path) here; close()
+ * unlinks that path when the fd is closed, so the file is removed on fclose —
+ * the observable tmpfile(3) contract — without needing unlinked-but-open inode
+ * semantics the object store does not provide. A tmpfile abandoned without
+ * fclose (e.g. a hard _exit) leaves its named file behind until removed; that is
+ * the one deviation, documented in newlib_glue's tmpfile() below. */
+#define TMPFILE_MAX 8
+static struct { int used; int fd; char path[24]; } g_tmpfiles[TMPFILE_MAX];
+
+static void tmpfile_register(int fd, const char *path) {
+    for (int i = 0; i < TMPFILE_MAX; i++) {
+        if (g_tmpfiles[i].used) continue;
+        g_tmpfiles[i].used = 1;
+        g_tmpfiles[i].fd   = fd;
+        size_t j = 0;
+        for (; path[j] && j < sizeof(g_tmpfiles[i].path) - 1; j++)
+            g_tmpfiles[i].path[j] = path[j];
+        g_tmpfiles[i].path[j] = '\0';
+        return;
+    }
+    /* Registry full: the file persists until removed — no correctness loss. */
+}
+
+/* Called from close(): unlink the temp file this fd named, if any. */
+static void tmpfile_on_close(int fd) {
+    for (int i = 0; i < TMPFILE_MAX; i++) {
+        if (g_tmpfiles[i].used && g_tmpfiles[i].fd == fd) {
+            g_tmpfiles[i].used = 0;
+            unlink(g_tmpfiles[i].path);       /* prototype from <unistd.h> */
+            return;
+        }
+    }
 }
 
 /* ---- OS syscall stubs called by newlib reentrant wrappers ------------- */
@@ -85,6 +121,7 @@ int close(int fd) {
     posix_init();
     if (fd < 3) { errno = EBADF; return -1; }
     if (posix_close(fd) < 0) { errno = EBADF; return -1; }
+    tmpfile_on_close(fd);   /* if this fd named a tmpfile, remove it now */
     return 0;
 }
 
@@ -297,25 +334,45 @@ int fcntl(int fd, int cmd, ...) {
 static char *__horus_environ[1] = { NULL };
 char **environ = __horus_environ;
 
+/* link(2) — hard-link `new` to the existing regular file `old`, over the
+ * fs_server's FS_OP_LINK. The server enforces write on the new name's parent
+ * directory and owner-or-root on the source, refuses directories, and bumps the
+ * inode's on-disk link count; a later unlink of either name only frees the file
+ * once the last name is gone. */
 int link(const char *old, const char *new) {
-    (void)old; (void)new;
-    errno = ENOSYS;
+    posix_init();
+    if (!old || !new) { errno = EFAULT; return -1; }
+    int rc = posix_link(old, new);
+    if (rc == 0) return 0;
+    switch (rc) {
+        case SYS_ERR_PERM:  errno = EACCES; break;   /* no write on parent dir / not owner */
+        case SYS_ERR_NOENT: errno = ENOENT; break;   /* source missing / bad path */
+        case SYS_ERR_INVAL: errno = EEXIST; break;   /* new name exists, or source is a directory */
+        default:            errno = EIO;    break;   /* transport / other */
+    }
     return -1;
 }
 
-/* tmpfile(3) — not implementable on the current object store. newlib's tmpfile
- * opens a file under P_tmpdir and immediately unlink()s it, relying on Unix
- * "unlinked-but-open" semantics: the inode survives, reachable through the open
- * fd, until the last close. Horus's fs_server frees an inode and its data blocks
- * the moment its link count reaches zero (FS_OP_DELETE -> sys_fs_inode_free),
- * with no open-fd refcount, so a write after that unlink would hit a freed inode.
- * This needs the same open-inode refcount link() is blocked on (ROADMAP Phase 4),
- * so fail cleanly here rather than ship libc's version and hand back a silently
- * broken stream. mkstemp(), which returns a *named* fd and never unlinks while
- * open, works and is the portable substitute. */
+/* tmpfile(3) — a temporary stream removed when closed.
+ *
+ * newlib's own tmpfile opens a file and immediately unlink()s it, relying on
+ * Unix "unlinked-but-open" semantics (the inode survives through the open fd
+ * until the last close). Horus's fs_server frees an inode the moment its link
+ * count reaches zero, with no open-fd refcount, so that would hand back a broken
+ * stream. Instead we keep the file *named* for its lifetime and unlink it when
+ * its fd is closed (see tmpfile_on_close in close()): the observable contract —
+ * a read/write stream that vanishes on fclose — holds. The one deviation is that
+ * the file is briefly visible by name, and a stream abandoned without fclose
+ * (a hard _exit) leaves that name behind until removed. */
 FILE *tmpfile(void) {
-    errno = ENOSYS;
-    return NULL;
+    posix_init();
+    char path[] = "/.tmpfileXXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) return NULL;               /* mkstemp set errno */
+    FILE *f = fdopen(fd, "wb+");
+    if (!f) { int e = errno; close(fd); unlink(path); errno = e; return NULL; }
+    tmpfile_register(fd, path);
+    return f;
 }
 
 int unlink(const char *path) {

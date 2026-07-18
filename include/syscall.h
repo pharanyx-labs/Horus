@@ -120,6 +120,7 @@ struct audit_event {
 #define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of an endpoint's last sender */
 #define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (fs server only) */
 #define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the last sender on req_ep (multi-client safe routing) */
+#define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (fs server only) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -582,9 +583,18 @@ static inline int sys_fs_inode_alloc(uint32_t type) {
     return syscall(SYS_FS_INODE_ALLOC, type, 0, 0);
 }
 
-/* Free an inode and all of its data blocks. Returns 0 or a negative SYS_ERR_*. */
+/* Drop one hard-link reference to an inode. The kernel decrements the on-disk
+ * link count and frees the inode and all its data blocks only when the count
+ * reaches zero (a directory is always freed outright — no hard links to dirs).
+ * Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_fs_inode_free(uint32_t ino) {
     return syscall(SYS_FS_INODE_FREE, ino, 0, 0);
+}
+
+/* Add one hard-link reference to an inode (increment its on-disk link count).
+ * Refuses a directory. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_fs_inode_link(uint32_t ino) {
+    return syscall(SYS_FS_INODE_LINK, ino, 0, 0);
 }
 
 /* Read logical `block` of `ino` (decrypt-and-verify in the kernel) into `buf`

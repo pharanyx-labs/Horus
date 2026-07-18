@@ -224,8 +224,30 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
             if (dir_get(ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_INVAL; break; }
         }
         if (dir_remove(rq->dir_ino, rq->name) == 0) { rp->rc = SYS_ERR_NOENT; break; }
-        sys_fs_inode_free(ino);
+        sys_fs_inode_free(ino);     /* drops one link; frees only when the last name is gone */
         rp->rc = 0;
+        break;
+    }
+    case FS_OP_LINK: {
+        /* Hard-link: give the existing regular file `rq->ino` a second name
+         * `rq->name` in dir `rq->dir_ino`. Needs write on the new parent dir; the
+         * caller must own the source (or be root), since a link bumps the file's
+         * on-disk link count — an owner-or-root gate keeps a client from pinning
+         * or exposing an inode it has no claim to by guessing its number. A later
+         * unlink of either name only frees the file once the last name is gone. */
+        if (sys_fs_stat(rq->dir_ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+        if (st.type != FS_TYPE_DIR)                      { rp->rc = SYS_ERR_INVAL; break; }
+        if (!perm_ok(&st, cuid, cgid, P_W))              { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
+        if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
+        if (dir_find(rq->dir_ino, rq->name, 0, 0))       { rp->rc = SYS_ERR_INVAL; break; }  /* name exists */
+        struct fs_stat sst;
+        if (sys_fs_stat(rq->ino, &sst) != 0)             { rp->rc = SYS_ERR_NOENT; break; }  /* source inode */
+        if (sst.type != FS_TYPE_FILE)                    { rp->rc = SYS_ERR_INVAL; break; }  /* no dir/other links */
+        if (!(cuid == 0 || cuid == sst.uid))             { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
+        if (sys_fs_inode_link(rq->ino) != 0)             { rp->rc = SYS_ERR_IO;    break; }  /* ++links */
+        int rc = dir_add(rq->dir_ino, rq->name, rq->ino, FS_TYPE_FILE);
+        if (rc != 0) { sys_fs_inode_free(rq->ino); rp->rc = rc; break; }   /* undo the ++links */
+        rp->rc = 0; rp->ino = rq->ino; rp->type = FS_TYPE_FILE;
         break;
     }
     case FS_OP_READDIR: {
@@ -244,6 +266,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (!(cuid == st.uid || perm_ok(&st, cuid, cgid, P_R))) { rp->rc = SYS_ERR_PERM; break; }
         rp->rc = 0; rp->type = st.type; rp->size = (uint32_t)st.size;
         rp->mode = st.mode & 07777u; rp->uid = st.uid; rp->gid = st.gid;
+        rp->links = st.links;
         break;
     }
     case FS_OP_READ: {

@@ -266,6 +266,17 @@ endif
 # and -e backslash-escape handling produce the marker (prints
 # "COREUTILS_SELFTEST: PASS echo ran!" to serial). Gated off the ship kernel, so
 # the ISO carries neither the ~400 KiB image nor any GPLv3-derived binary.
+# CAPTEST_SELFTEST=1 spawns captest at boot: a ring-3 conformance exerciser for
+# the syscall surface and the capability model, asserting mostly on the REFUSALS
+# (unheld caps, post-revoke use, grants outside the descendants rule, bad input)
+# -- prints "CAPTEST: PASS <n> checks" to serial. captest is embedded in every
+# build already, so this only gates the boot-time run.
+CAPTEST_SELFTEST ?= 0
+ifeq ($(CAPTEST_SELFTEST),1)
+CFLAGS  += -DCAPTEST_SELFTEST
+ASFLAGS += -DCAPTEST_SELFTEST
+endif
+
 COREUTILS_SELFTEST ?= 0
 ifeq ($(COREUTILS_SELFTEST),1)
 CFLAGS  += -DCOREUTILS_SELFTEST
@@ -890,6 +901,17 @@ smoke-newlib:
 # its argv with spaces and expands the -e escapes (\x20 -> space, \x21 -> '!') --
 # so a pass means real third-party source ran correctly on Horus, not that we
 # printed a string. See userspace/ports/coreutils/README.md.
+# Build with the gated capability/syscall conformance test and require its
+# marker. The checks are overwhelmingly negative -- a kernel that granted
+# everything would fail this, which a "does the call work" test would not catch.
+.PHONY: smoke-captest
+smoke-captest:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
+		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-coreutils
 smoke-coreutils:
 	@$(MAKE) --no-print-directory clean

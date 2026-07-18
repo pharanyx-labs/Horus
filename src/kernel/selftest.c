@@ -1223,7 +1223,7 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(COREUTILS_SELFTEST)
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(COREUTILS_SELFTEST) || defined(CAPTEST_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/COREUTILS_SELFTEST only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
@@ -1247,7 +1247,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
     program_armed = 1;
     return do_spawn();
 }
-#endif /* FS_SELFTEST || NEWLIB_SELFTEST || NOTIFY_SELFTEST || COW_SELFTEST || COREUTILS_SELFTEST */
+#endif /* FS_SELFTEST || NEWLIB_SELFTEST || NOTIFY_SELFTEST || COW_SELFTEST || COREUTILS_SELFTEST || CAPTEST_SELFTEST */
 
 #ifdef FS_SELFTEST
 void fs_selftest(void) {
@@ -1599,3 +1599,33 @@ void coreutils_selftest(void) {
     sched_enter_user(pid);   /* echo prints the marker and exits; does not return */
 }
 #endif /* COREUTILS_SELFTEST */
+
+#ifdef CAPTEST_SELFTEST
+/* ---- Capability/syscall conformance self-test (CAPTEST_SELFTEST only) -------
+ *
+ * Spawns userspace/captest, which drives the syscall surface and the capability
+ * model from ring 3 and asserts on the results -- mostly on the REFUSALS, since
+ * that is what a capability system has to get right (see userspace/captest.c).
+ *
+ * It is spawned with the default cspace an ordinary task gets (CAP_TCB for
+ * itself, a frame, two endpoints) and deliberately NOT given CAP_BLOCK_DEV or
+ * admin, so the negative probes are probing a real absence of authority rather
+ * than a capability we quietly removed for the test.
+ */
+void captest_selftest(void) {
+    extern uint8_t embedded_captest_bin_start[], embedded_captest_bin_end[];
+
+    print("CAPTEST_SELFTEST: begin\n");
+
+    int pid = fs_spawn_embedded(embedded_captest_bin_start,
+                                embedded_captest_bin_end, "captest");
+    if (pid <= 0) {
+        print("CAPTEST: FAIL spawn\n");
+        for (;;) asm volatile("hlt");
+    }
+
+    print("CAPTEST_SELFTEST: launching\n");
+    sched_enable_preemption();
+    sched_enter_user(pid);   /* captest prints the PASS/FAIL marker; does not return */
+}
+#endif /* CAPTEST_SELFTEST */

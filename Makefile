@@ -277,11 +277,17 @@ CFLAGS  += -DCAPTEST_SELFTEST
 ASFLAGS += -DCAPTEST_SELFTEST
 endif
 
+# The set of utilities ported so far. Each is an unmodified upstream .c in
+# $(COREUTILS_DIR) built into its own spawn-by-name binary; adding one is a
+# matter of extending this list once its gnulib surface is covered by port/.
+COREUTILS_PROGS = echo true false basename dirname cat
+COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_PROGS)))
+
 COREUTILS_SELFTEST ?= 0
 ifeq ($(COREUTILS_SELFTEST),1)
 CFLAGS  += -DCOREUTILS_SELFTEST
 ASFLAGS += -DCOREUTILS_SELFTEST
-COREUTILS_SELFTEST_DEP = userspace/coreutils_echo.bin
+COREUTILS_SELFTEST_DEP = $(COREUTILS_BINS)
 endif
 
 # NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
@@ -577,18 +583,20 @@ $(COREUTILS_DIR)/port/port.o: $(COREUTILS_DIR)/port/port.c $(NEWLIB_LIB)/libc.a
 # Vendored upstream: compiled as-is. -Wno-unused-parameter because upstream is
 # built with its own warning set, and a port must not have to edit the source to
 # stay quiet under ours.
-$(COREUTILS_DIR)/echo.o: $(COREUTILS_DIR)/echo.c $(NEWLIB_LIB)/libc.a
+$(COREUTILS_DIR)/%.o: $(COREUTILS_DIR)/%.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(COREUTILS_CFLAGS) -Wno-unused-parameter -c $< -o $@
 
-userspace/coreutils_echo.pie.elf: $(COREUTILS_DIR)/echo.o $(COREUTILS_DIR)/port/port.o \
-                                  $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
+userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_DIR)/port/port.o \
+                               $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
-	    userspace/crt0.o $(COREUTILS_DIR)/echo.o $(COREUTILS_DIR)/port/port.o \
+	    userspace/crt0.o $< $(COREUTILS_DIR)/port/port.o \
 	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
 	    userspace/malloc.o -L$(NEWLIB_LIB) -lc
 
-userspace/coreutils_echo.bin: userspace/coreutils_echo.pie.elf tools/mkheadered
-	@./tools/mkheadered $< $@ "echo"
+# The header's embedded name is what spawn-by-name matches, so it is the plain
+# utility name ("cat"), not the coreutils_ file prefix.
+userspace/coreutils_%.bin: userspace/coreutils_%.pie.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "$*"
 
 # Fixed-base flat link (used by the gated selftest payloads that are embedded
 # raw and loaded at USER_AREA_BASE without relocation).
@@ -896,10 +904,11 @@ smoke-newlib:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
 		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
-# Build with the vendored GNU coreutils echo(1) and run it at boot as a ring-3
-# task. The required marker is produced by UPSTREAM's own code path -- echo joins
-# its argv with spaces and expands the -e escapes (\x20 -> space, \x21 -> '!') --
-# so a pass means real third-party source ran correctly on Horus, not that we
+# Build with the vendored GNU coreutils utilities and run them at boot as ring-3
+# tasks. The required marker is produced by UPSTREAM's own code path -- echo
+# joins its argv with spaces and expands the -e escapes (\x20 -> space,
+# \x21 -> '!'), while basename/dirname exercise their real path splitting -- so a
+# pass means genuine third-party source ran correctly on Horus, not that we
 # printed a string. See userspace/ports/coreutils/README.md.
 # Build with the gated capability/syscall conformance test and require its
 # marker. The checks are overwhelmingly negative -- a kernel that granted
@@ -917,7 +926,7 @@ smoke-coreutils:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_SELFTEST=1
 	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COREUTILS_SELFTEST: PASS echo ran!' \
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COREUTILS_SELFTEST: PASS coreutils ran!' \
 		FAIL_MARKER='COREUTILS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated large-file self-test, boot headless, and require the

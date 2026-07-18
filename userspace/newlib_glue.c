@@ -413,6 +413,33 @@ int ftruncate(int fd, off_t length) {
     return 0;
 }
 
+/* getpagesize(3). Horus's page size is fixed at 4 KiB by the x86-64 paging the
+ * kernel builds; there is no runtime way for it to differ, so this is exact
+ * rather than a guess. Programs use it to size buffers and align allocations. */
+int getpagesize(void) {
+    return 4096;
+}
+
+/* ioctl(2) — Horus has no ioctl mechanism at all: the console is reached through
+ * the fd layer's read/write, and the fs_server exposes its operations as
+ * explicit, permission-checked protocol ops rather than an open-ended request
+ * number. Returning ENOTTY is the honest answer and the one callers handle: it
+ * is exactly what a POSIX system reports for a device that does not implement
+ * the request, so a program probing for terminal geometry or FIONREAD takes its
+ * normal fallback path.
+ *
+ * Deliberately not a catch-all pass-through: an ioctl surface would be a wide,
+ * weakly-typed channel into the kernel, which is the opposite of how every other
+ * Horus operation is gated. */
+int ioctl(int fd, unsigned long request, ...) {
+    posix_init();
+    posix_stat_t st;
+    if (posix_fstat(fd, &st) < 0) { errno = EBADF; return -1; }
+    (void)request;
+    errno = ENOTTY;
+    return -1;
+}
+
 clock_t times(struct tms *buf) {
     if (buf) {
         buf->tms_utime  = 0;

@@ -336,6 +336,40 @@ void wx_selftest(void) {
         }
     }
 
+#ifdef SMP
+    /* --- Per-CPU AP IST fault stacks (SMP builds only). Same contract as the
+     * fixed IST stacks above — guard absent, stack page above it present — for
+     * the per-core IST stacks in gdt.c. Only reachable when built WX_SELFTEST=1
+     * SMP=1 (make smoke-wx-smp); the default WX build has no ap_ist. */
+    extern uint32_t ap_ist_guards_armed;
+    extern uint32_t ap_ist_guard_count(void);
+    extern uint64_t ap_ist_guard_vaddr(int i);
+    uint32_t ap_n = ap_ist_guard_count();
+    if (ap_ist_guards_armed != ap_n) {
+        print("WX_SELFTEST: FAIL armed ");
+        print_decimal(ap_ist_guards_armed);
+        print(" AP IST guards, expected ");
+        print_decimal((uint64_t)ap_n);
+        print("\n");
+        return;
+    }
+    for (uint32_t i = 0; i < ap_n; i++) {
+        uint64_t guard = ap_ist_guard_vaddr((int)i);
+        if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
+            print("WX_SELFTEST: FAIL AP IST guard still mapped, index ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+        if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT)) {
+            print("WX_SELFTEST: FAIL AP IST stack unmapped, index ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+    }
+#endif /* SMP */
+
     /* --- The global invariant, over every entry in this CR3. */
     wx_leaves_seen = 0;
     wx_violations  = 0;

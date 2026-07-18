@@ -641,6 +641,18 @@ smoke-wx:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='WX_SELFTEST: PASS' \
 		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
+# The W^X self-test built SMP=1, booted on multiple cores: the same PASS marker,
+# plus the per-CPU AP IST fault-stack guard assertions that only exist (and only
+# have an ap_ist array to check) under SMP. The default smoke-wx is single-core
+# and does not carry those stacks.
+.PHONY: smoke-wx-smp
+smoke-wx-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory WX_SELFTEST=1 SMP=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='WX_SELFTEST: PASS' \
+		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-cpu
 smoke-cpu:
 	@$(MAKE) --no-print-directory clean

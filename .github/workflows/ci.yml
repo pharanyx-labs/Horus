@@ -138,6 +138,23 @@ jobs:
       - name: Assert the kernel image is r-x/r--/rw- and sweep every leaf for W+X
         run: make smoke-wx
 
+  smoke-wx-smp:
+    name: QEMU kernel W^X self-test, SMP (per-CPU AP IST stack guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot multi-core and assert every AP IST fault stack sits above an unmapped guard
+        run: make smoke-wx-smp
+
   smoke-cpu:
     name: QEMU CPU-protection self-test (SMEP/SMAP actually in CR4)
     runs-on: ubuntu-latest

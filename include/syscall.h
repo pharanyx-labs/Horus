@@ -127,6 +127,7 @@ struct audit_event {
 #define SIG_USR1               10
 #define SIG_USR2               12
 #define SIG_TERM               15
+#define SIG_MAX                31   /* signal numbers are 1..31 (mirrors kernel.h) */
 
 /* sys_sigmask() `how`: combine the supplied mask with the current blocked set. */
 #define SIG_SETMASK             0   /* replace the blocked set */

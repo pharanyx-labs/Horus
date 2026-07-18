@@ -26,6 +26,9 @@
 #include <reent.h>
 #include <sys/errno.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -233,18 +236,86 @@ void *sbrk(ptrdiff_t incr) {
     return p;
 }
 
-/* ---- stubs for syscalls Horus doesn't implement yet ------------------- */
+/* ---- process control, fcntl, environment, and remaining stubs --------- */
 
+/* kill(2) — deliver signal `sig` to task `pid`, wired onto SYS_SIGNAL.
+ *
+ * The authority is the capability model's, not POSIX's ambient one. SYS_SIGNAL
+ * requires the caller to hold a CAP_TCB for the target — the per-child cap every
+ * spawner receives — or CAP_USER admin, and signalling yourself is always
+ * allowed. So kill() reaches your own descendants and yourself; a pid you have
+ * no capability for is EPERM, never delivered. This is the "descendants-only"
+ * answer to the pid->capability question: no ambient pid namespace is exposed,
+ * so there is nothing to broker.
+ *
+ * Signal numbers already agree with newlib's <sys/signal.h> for the set that
+ * matters (SIGKILL=9, SIGSEGV=11, SIGTERM=15, SIGILL=4), so `sig` passes through
+ * unchanged; SIGKILL is uncatchable and always terminates. The null signal
+ * (sig 0) is POSIX's existence/permission probe — Horus has no syscall that
+ * checks reachability without delivering, so it is a documented best-effort
+ * success rather than a fabricated answer about one pid. */
 int kill(int pid, int sig) {
-    (void)pid; (void)sig;
-    errno = EINVAL;
+    if (sig < 0 || sig > SIG_MAX) { errno = EINVAL; return -1; }
+    if (sig == 0) return 0;                       /* null signal: no probe syscall */
+    int rc = sys_send_signal(pid, (uint32_t)sig);
+    if (rc == 0) return 0;
+    switch (rc) {
+        case SYS_ERR_PERM:  errno = EPERM; break; /* no CAP_TCB for the target */
+        case SYS_ERR_INVAL: errno = ESRCH; break; /* no such task (sig pre-checked) */
+        default:            errno = EIO;   break;
+    }
     return -1;
 }
+
+/* fcntl(2) — only the flag-word commands are meaningful on Horus's fd layer,
+ * which has no O_NONBLOCK, close-on-exec, or advisory-lock machinery. The fd is
+ * validated (EBADF otherwise); F_GETFL/F_GETFD report no flags set and their
+ * setters accept-and-ignore, which keeps the common get-modify-set idiom
+ * harmless. Any other command is EINVAL rather than a silent success, so a
+ * caller that actually depends on fcntl behaviour finds out instead of being
+ * lied to. */
+int fcntl(int fd, int cmd, ...) {
+    posix_init();
+    posix_stat_t st;
+    if (posix_fstat(fd, &st) < 0) { errno = EBADF; return -1; }
+    switch (cmd) {
+        case F_GETFL:
+        case F_SETFL:
+        case F_GETFD:
+        case F_SETFD:
+            return 0;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+}
+
+/* environ — Horus passes no environment to a task, so this is a valid but empty
+ * vector (just the NULL terminator). newlib's getenv()/setenv() in libc.a walk
+ * this global; providing the symbol is what lets them link and return "not
+ * found" rather than dereference a null environ. */
+static char *__horus_environ[1] = { NULL };
+char **environ = __horus_environ;
 
 int link(const char *old, const char *new) {
     (void)old; (void)new;
     errno = ENOSYS;
     return -1;
+}
+
+/* tmpfile(3) — not implementable on the current object store. newlib's tmpfile
+ * opens a file under P_tmpdir and immediately unlink()s it, relying on Unix
+ * "unlinked-but-open" semantics: the inode survives, reachable through the open
+ * fd, until the last close. Horus's fs_server frees an inode and its data blocks
+ * the moment its link count reaches zero (FS_OP_DELETE -> sys_fs_inode_free),
+ * with no open-fd refcount, so a write after that unlink would hit a freed inode.
+ * This needs the same open-inode refcount link() is blocked on (ROADMAP Phase 4),
+ * so fail cleanly here rather than ship libc's version and hand back a silently
+ * broken stream. mkstemp(), which returns a *named* fd and never unlinks while
+ * open, works and is the portable substitute. */
+FILE *tmpfile(void) {
+    errno = ENOSYS;
+    return NULL;
 }
 
 int unlink(const char *path) {

@@ -33,9 +33,33 @@ extern volatile int smp_active;   /* scheduler.c: 1 once the LAPIC is up */
 
 /* Per-CPU TSS + IST fault stacks for the APs (indices 1..MAX_CPUS-1; the BSP
  * uses the boot tss64). IST stacks must be per-CPU because #PF/#DF/#GP gates
- * switch to them via the TSS, and AP-run user tasks demand-page (a #PF). */
+ * switch to them via the TSS, and AP-run user tasks demand-page (a #PF).
+ *
+ * Each IST stack is laid out above a page-aligned guard page, exactly as the
+ * BSP's boot IST stacks are in multiboot.S: a fault handler that runs its IST
+ * stack off the bottom (IST1 takes #DF/#GP/#PF, so it is on the path of every
+ * demand page fault an AP-run task takes) then faults on the guard instead of
+ * silently corrupting the IST stack below it or adjacent .bss. Each block is two
+ * 4 KiB pages — [guard][stack] — and the whole array is page-aligned so every
+ * guard is a whole page kern_arm_guard_page() can clear. ap_ist_guards_init()
+ * unmaps the guards at boot; the IST pointer installed in the TSS is the top of
+ * the stack page. */
+#define AP_IST_COUNT       3            /* IST1/IST2/IST3 */
+#define AP_IST_BLOCK_PAGES 2            /* one guard page + one stack page */
 static uint8_t ap_tss[MAX_CPUS][TSS64_SIZE] __attribute__((aligned(16)));
-static uint8_t ap_ist[MAX_CPUS][3][4096]    __attribute__((aligned(16)));
+static uint8_t ap_ist[MAX_CPUS][AP_IST_COUNT][AP_IST_BLOCK_PAGES * 4096]
+    __attribute__((aligned(4096)));
+
+/* Top of CPU `cpu`'s IST stack `k` (0..2): the block's high page, which the
+ * stack grows down from onto the guard page just below it. */
+static inline uintptr_t ap_ist_top(int cpu, int k) {
+    return (uintptr_t)&ap_ist[cpu][k][AP_IST_BLOCK_PAGES * 4096];
+}
+
+/* Guard page (block low page) below CPU `cpu`'s IST stack `k`. */
+static inline uintptr_t ap_ist_guard(int cpu, int k) {
+    return (uintptr_t)&ap_ist[cpu][k][0];
+}
 
 /* Selector of CPU c's TSS descriptor (two GDT slots each, starting at 0x48). */
 static inline uint16_t ap_tss_selector(int cpu) {
@@ -63,14 +87,45 @@ void setup_ap_tss(int cpu, uintptr_t rsp0) {
     uint8_t *tss = ap_tss[cpu];
     for (int i = 0; i < TSS64_SIZE; i++) tss[i] = 0;
     *(uint64_t *)(tss + TSS_RSP0_OFF) = (uint64_t)rsp0;
-    *(uint64_t *)(tss + TSS_IST1_OFF) = (uint64_t)(uintptr_t)&ap_ist[cpu][0][4096];
-    *(uint64_t *)(tss + TSS_IST2_OFF) = (uint64_t)(uintptr_t)&ap_ist[cpu][1][4096];
-    *(uint64_t *)(tss + TSS_IST3_OFF) = (uint64_t)(uintptr_t)&ap_ist[cpu][2][4096];
+    *(uint64_t *)(tss + TSS_IST1_OFF) = (uint64_t)ap_ist_top(cpu, 0);
+    *(uint64_t *)(tss + TSS_IST2_OFF) = (uint64_t)ap_ist_top(cpu, 1);
+    *(uint64_t *)(tss + TSS_IST3_OFF) = (uint64_t)ap_ist_top(cpu, 2);
 
     uint16_t sel = ap_tss_selector(cpu);
     encode_tss_desc(gdt64_start + sel, (uint64_t)(uintptr_t)tss, TSS64_SIZE - 1);
     __asm__ volatile ("ltr %0" :: "r"(sel) : "memory");
 }
+
+/* Count of AP IST guard pages actually unmapped; read by the gated self-test,
+ * which would pass just as happily on an empty loop. */
+uint32_t ap_ist_guards_armed = 0;
+
+/* Unmap the guard page below every AP IST stack. Called once at boot from
+ * paging_init(), before smp_bringup(), so the cleared entries are inherited into
+ * each AP's CR3 with no shootdown — the same one-pass arming kstack_guards_init()
+ * and kern_fixed_stack_guards_init() do. All MAX_CPUS-1 AP slots are armed even
+ * though not every core comes up; an unused slot's guard is simply absent .bss,
+ * which is harmless. */
+void ap_ist_guards_init(void) {
+    extern int kern_arm_guard_page(uint64_t vaddr);
+    for (int c = 1; c < MAX_CPUS; c++)
+        for (int k = 0; k < AP_IST_COUNT; k++)
+            if (kern_arm_guard_page((uint64_t)ap_ist_guard(c, k)) == 0)
+                ap_ist_guards_armed++;
+}
+
+#ifdef WX_SELFTEST
+/* Gated: enumerate the AP IST guards so smoke-wx (built WX_SELFTEST=1 SMP=1) can
+ * assert each is absent while the stack page just above it stays present. The
+ * APs are CPUs 1..MAX_CPUS-1, three IST stacks each, flattened row-major. */
+uint32_t ap_ist_guard_count(void) { return (uint32_t)((MAX_CPUS - 1) * AP_IST_COUNT); }
+uint64_t ap_ist_guard_vaddr(int i) {
+    int c = i / AP_IST_COUNT + 1;
+    int k = i % AP_IST_COUNT;
+    if (i < 0 || c < 1 || c >= MAX_CPUS) return 0;
+    return (uint64_t)ap_ist_guard(c, k);
+}
+#endif
 #endif /* SMP */
 
 void set_tss_kernel_stack(uintptr_t rsp0) {

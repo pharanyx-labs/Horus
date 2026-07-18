@@ -638,41 +638,52 @@ embedded_hello_newlib_bin_start:
 embedded_hello_newlib_bin_end:
 #endif
 
-#ifdef COREUTILS_SELFTEST
-/* PIE binaries of the vendored GNU coreutils utilities (GPLv3 upstream source
- * built against the Horus port shim; see userspace/ports/coreutils/README.md).
- * Embedded only in COREUTILS_SELFTEST builds -- the shipped kernel carries
- * none of them, so the ISO stays free of any GPLv3-derived binary. */
+/* Vendored GNU coreutils utility binaries (GPLv3 upstream built against the
+ * Horus port shim; see userspace/ports/coreutils/README.md). Each is embedded
+ * independently -- CU_EMBED_<name> -- so a given build carries only the subset
+ * its test needs, keeping the kernel image within its 16 MiB budget. None are
+ * in the shipped kernel, so the ISO holds no GPLv3-derived binary. */
+#ifdef CU_EMBED_echo
 .align 16
 .global embedded_coreutils_echo_bin_start
 embedded_coreutils_echo_bin_start:
 .incbin "userspace/coreutils_echo.bin"
 .global embedded_coreutils_echo_bin_end
 embedded_coreutils_echo_bin_end:
+#endif
+#ifdef CU_EMBED_true
 .align 16
 .global embedded_coreutils_true_bin_start
 embedded_coreutils_true_bin_start:
 .incbin "userspace/coreutils_true.bin"
 .global embedded_coreutils_true_bin_end
 embedded_coreutils_true_bin_end:
+#endif
+#ifdef CU_EMBED_false
 .align 16
 .global embedded_coreutils_false_bin_start
 embedded_coreutils_false_bin_start:
 .incbin "userspace/coreutils_false.bin"
 .global embedded_coreutils_false_bin_end
 embedded_coreutils_false_bin_end:
+#endif
+#ifdef CU_EMBED_basename
 .align 16
 .global embedded_coreutils_basename_bin_start
 embedded_coreutils_basename_bin_start:
 .incbin "userspace/coreutils_basename.bin"
 .global embedded_coreutils_basename_bin_end
 embedded_coreutils_basename_bin_end:
+#endif
+#ifdef CU_EMBED_dirname
 .align 16
 .global embedded_coreutils_dirname_bin_start
 embedded_coreutils_dirname_bin_start:
 .incbin "userspace/coreutils_dirname.bin"
 .global embedded_coreutils_dirname_bin_end
 embedded_coreutils_dirname_bin_end:
+#endif
+#ifdef CU_EMBED_cat
 .align 16
 .global embedded_coreutils_cat_bin_start
 embedded_coreutils_cat_bin_start:
@@ -680,6 +691,31 @@ embedded_coreutils_cat_bin_start:
 .global embedded_coreutils_cat_bin_end
 embedded_coreutils_cat_bin_end:
 #endif
+#ifdef CU_EMBED_head
+.align 16
+.global embedded_coreutils_head_bin_start
+embedded_coreutils_head_bin_start:
+.incbin "userspace/coreutils_head.bin"
+.global embedded_coreutils_head_bin_end
+embedded_coreutils_head_bin_end:
+#endif
+#ifdef CU_EMBED_seq
+.align 16
+.global embedded_coreutils_seq_bin_start
+embedded_coreutils_seq_bin_start:
+.incbin "userspace/coreutils_seq.bin"
+.global embedded_coreutils_seq_bin_end
+embedded_coreutils_seq_bin_end:
+#endif
+#ifdef CU_EMBED_wc
+.align 16
+.global embedded_coreutils_wc_bin_start
+embedded_coreutils_wc_bin_start:
+.incbin "userspace/coreutils_wc.bin"
+.global embedded_coreutils_wc_bin_end
+embedded_coreutils_wc_bin_end:
+#endif
+
 
 #ifdef NOTIFY_SELFTEST
 /* PIE notifytest binary: spawned twice (waiter + sender) to exercise the

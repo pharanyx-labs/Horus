@@ -12,6 +12,14 @@
 #ifndef HORUS_COREUTILS_CONFIG_H
 #define HORUS_COREUTILS_CONFIG_H
 
+/* config.h is the first include in every coreutils source, so defining this
+ * here exposes newlib's GNU extensions (mempcpy, memrchr, rawmemchr, strchrnul)
+ * before <string.h> is pulled in. The utilities use them, and newlib already
+ * implements them -- they are just guarded behind __GNU_VISIBLE. */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE 1
+#endif
+
 /* Identity strings normally supplied by configure. */
 #define PACKAGE            "coreutils"
 #define PACKAGE_NAME       "GNU coreutils"

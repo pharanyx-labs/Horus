@@ -4,7 +4,11 @@
  * (declared extern in syscall_internal.h). Split out of syscall.c. */
 #include "syscall_internal.h"
 
-uint8_t loader_staging[MAX_PROGRAM_SIZE];
+/* The staged-image buffer is no longer a static .bss array — it is a fixed
+ * LOADER_STAGING_BYTES region reserved at the base of the physical pool, which
+ * init_user_page_allocator points this at (PHYS_KVA(USER_PHYS_BASE)) before any
+ * image is armed. 0 until then; nothing arms an image that early. */
+uint8_t *loader_staging = 0;
 struct program_header armed_hdr;
 int program_armed = 0;
 
@@ -449,6 +453,85 @@ static inline int elf64_narrow(const uint8_t *p, uint32_t *out) {
     if (v > 0xFFFFFFFFu) return -1;
     *out = (uint32_t)v;
     return 0;
+}
+
+/* Pages the currently-armed staged image will occupy once loaded.
+ *
+ * create_user_pagedir premaps the image window before the loader runs, and
+ * try_elf_load writes every PT_LOAD segment with copy_to_user, which requires
+ * the target pages already present (it walks the tables, it does not fault a
+ * page in). So the premap must cover the image's whole loaded span, or a load
+ * larger than the premap fails on the first unmapped page. This returns that
+ * span in pages: max(p_vaddr + p_memsz) - page_floor(min_vaddr), rounded up.
+ *
+ * It mirrors the PT_LOAD extent walk in try_elf_load below, but only to *size*
+ * the premap. try_elf_load re-parses and is the authoritative, fail-closed
+ * validator; an over-estimate here just premaps a few unused pages, and an
+ * under-estimate makes that one load fail closed rather than run under-mapped —
+ * neither is a safety problem. The result is independent of the ASLR load base
+ * (the slide cancels: dest_va - load_base == p_vaddr - page_floor(min_vaddr)).
+ * Clamped to USER_IMAGE_MAX_PAGES so a crafted header claiming a huge p_memsz
+ * cannot ask the premap to allocate the whole physical pool. On anything this
+ * cannot parse it returns a safe value (the default, or the clamp) and lets
+ * try_elf_load do the real rejection. */
+uint32_t staged_image_span_pages(void) {
+    const uint8_t *st = loader_staging;
+    uint32_t size = armed_hdr.size;
+
+    /* Flat (non-ELF) self-test payload: the whole staged blob is the image. */
+    int is_elf = (size >= 5 && st[0] == 0x7f && st[1] == 'E' &&
+                  st[2] == 'L' && st[3] == 'F');
+    if (!is_elf) {
+        uint32_t pages = (size + 0xFFFu) / 0x1000u;
+        if (pages == 0) pages = 1;
+        if (pages > USER_IMAGE_MAX_PAGES) pages = USER_IMAGE_MAX_PAGES;
+        return pages;
+    }
+
+    uint8_t ei_class = st[4];
+    uint32_t e_phoff = 0;
+    uint16_t e_phnum = 0;
+    if (ei_class == 1) {
+        e_phoff = (uint32_t)st[28] | ((uint32_t)st[29]<<8) | ((uint32_t)st[30]<<16) | ((uint32_t)st[31]<<24);
+        e_phnum = (uint16_t)st[44] | ((uint16_t)st[45]<<8);
+    } else if (ei_class == 2) {
+        if (elf64_narrow(st + 32, &e_phoff) != 0) return USER_IMAGE_MAX_PAGES;
+        e_phnum = (uint16_t)st[56] | ((uint16_t)st[57]<<8);
+    } else {
+        return USER_ASPACE_PREMAP_PAGES;   /* bad class: try_elf_load rejects it */
+    }
+    if (e_phnum == 0 || e_phnum > 8)                  return USER_ASPACE_PREMAP_PAGES;
+    if (e_phoff == 0 || e_phoff > (MAX_PROGRAM_SIZE - 64)) return USER_ASPACE_PREMAP_PAGES;
+
+    uint32_t phentsize = (ei_class == 1) ? 32 : 56;
+    const uint8_t *ph = st + e_phoff;
+    uint32_t min_vaddr = 0xFFFFFFFFu;
+    uint64_t max_end   = 0;
+    int have = 0;
+    for (uint16_t i = 0; i < e_phnum; i++) {
+        const uint8_t *p = ph + (uint32_t)i * phentsize;
+        uint32_t p_type = p[0] | (p[1]<<8) | (p[2]<<16) | (p[3]<<24);
+        if (p_type != 1) continue;   /* PT_LOAD */
+        uint32_t p_vaddr = 0, p_memsz = 0;
+        if (ei_class == 1) {
+            p_vaddr = (uint32_t)p[8]  | ((uint32_t)p[9]<<8)  | ((uint32_t)p[10]<<16) | ((uint32_t)p[11]<<24);
+            p_memsz = (uint32_t)p[20] | ((uint32_t)p[21]<<8) | ((uint32_t)p[22]<<16) | ((uint32_t)p[23]<<24);
+        } else {
+            if (elf64_narrow(p + 16, &p_vaddr) != 0) return USER_IMAGE_MAX_PAGES;
+            if (elf64_narrow(p + 40, &p_memsz) != 0) return USER_IMAGE_MAX_PAGES;
+        }
+        if (p_vaddr < min_vaddr) min_vaddr = p_vaddr;
+        uint64_t end = (uint64_t)p_vaddr + p_memsz;
+        if (end > max_end) max_end = end;
+        have = 1;
+    }
+    if (!have) return USER_ASPACE_PREMAP_PAGES;
+
+    uint64_t span  = max_end - (uint64_t)(min_vaddr & ~0xFFFu);
+    uint64_t pages = (span + 0xFFFu) / 0x1000u;
+    if (pages < 1) pages = 1;
+    if (pages > USER_IMAGE_MAX_PAGES) pages = USER_IMAGE_MAX_PAGES;
+    return (uint32_t)pages;
 }
 
 int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)

@@ -28,6 +28,7 @@ void aspace_selftest(void) {
 
     tasks[slot].image_base = USER_AREA_BASE;
     tasks[slot].image_end  = USER_AREA_BASE;
+    tasks[slot].image_premap_pages = 0;   /* default 32-page premap, constant across the rebuilds below */
     tasks[slot].cr3        = 0;
 
     uint32_t before_first = get_free_user_pages();
@@ -84,6 +85,7 @@ void aspace_selftest(void) {
      * and a non-canonical address would index a table from bits the CPU ignores
      * — so two different addresses could land on one slot. */
     tasks[slot].image_base = USER_AREA_BASE;
+    tasks[slot].image_premap_pages = 0;   /* default 32-page premap; this test checks reach, not size */
     tasks[slot].cr3        = 0;
     create_user_pagedir((uint32_t)slot);
     if (tasks[slot].cr3 == 0) {

@@ -76,9 +76,22 @@ static void init_user_page_allocator(void) {
     for (int i = 0; i < USER_PHYS_PAGES; i++) {
         page_refcounts[i] = 0;
     }
-    /* Push only the frames the pool actually covers (E820-sized). Frame i maps to
-     * USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps the top below PHYS_POOL_CEIL. */
-    for (int i = (int)g_phys_pool_pages - 1; i >= 0; i--) {
+    /* Reserve the staged-image buffer at the base of the pool:
+     * [USER_PHYS_BASE, USER_PHYS_BASE + LOADER_STAGING_BYTES) is held back from
+     * the free list and never handed out, and loader_staging points at it through
+     * the PHYS_KVA window (mapped rw+NX for the whole pool, from boot). This is
+     * why the staged-image cap no longer costs .bss — it is pool RAM, not a static
+     * array. The PHYS_POOL_MIN_PAGES floor guarantees g_phys_pool_pages exceeds
+     * the reserve, so usable frames remain; assert it rather than trust it. */
+    loader_staging = (uint8_t *)PHYS_KVA(USER_PHYS_BASE);
+    if (g_phys_pool_pages <= LOADER_STAGING_PAGES) {
+        for (;;) { __asm__ volatile("cli; hlt"); }   /* pool too small for staging: refuse to run */
+    }
+
+    /* Push only the frames the pool actually covers (E820-sized) above the
+     * staging reserve. Frame i maps to USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps
+     * the top below PHYS_POOL_CEIL. */
+    for (int i = (int)g_phys_pool_pages - 1; i >= (int)LOADER_STAGING_PAGES; i--) {
         free_page_stack[free_page_count++] = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
     }
     /* Register the one true refcount table with the Rust trust boundary so any
@@ -792,11 +805,21 @@ void create_user_pagedir(uint32_t task_id) {
     uint64_t vbase = tasks[task_id].image_base ? (uint64_t)tasks[task_id].image_base
                                                : (uint64_t)USER_AREA_BASE;
 
-    /* The image window. Left not-present outside the premap, so a fault there
-     * reaches the pager (which gates on the task's own region bounds) instead of
-     * finding the identity-supervisor page this used to fill in. */
+    /* The image window. Premap the staged image's whole loaded span
+     * (image_premap_pages, set by the spawn/exec path from staged_image_span_pages;
+     * 0 for task 0 / flat demos falls back to the fixed default), clamped to
+     * USER_IMAGE_MAX_PAGES. The loader writes each PT_LOAD segment with
+     * copy_to_user, which needs the target pages present, so this must cover the
+     * image or a load larger than the premap fails on its first unmapped page.
+     * Left not-present outside the premap, so a fault there reaches the pager
+     * (which gates on the task's own region bounds) instead of finding the
+     * identity-supervisor page this used to fill in. */
+    uint64_t premap_pages = tasks[task_id].image_premap_pages
+                                ? tasks[task_id].image_premap_pages
+                                : (uint64_t)USER_ASPACE_PREMAP_PAGES;
+    if (premap_pages > USER_IMAGE_MAX_PAGES) premap_pages = USER_IMAGE_MAX_PAGES;
     int build_failed = 0;
-    for (uint64_t p = 0; p < USER_ASPACE_PREMAP_PAGES; p++) {
+    for (uint64_t p = 0; p < premap_pages; p++) {
         uint64_t va   = vbase + p * PAGE_SIZE;
         uint32_t prot = rust_get_user_page_protection(task_id, va);
         uint64_t flags = prot ? (prot & 0x7) : (PAGE_PRESENT | PAGE_WRITE | PAGE_USER);

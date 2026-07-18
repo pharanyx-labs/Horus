@@ -91,6 +91,25 @@ void _start(void) {
     report("INIT_FS_SELFTEST: init supervised fs client to exit\n");
     for (;;) settle();
 #else
+    /* Wait until fs_server has finished startup provisioning (it copies the boot
+     * modules into /bin, then fires a badge with SYS_NOTIFY). Blocking here — off
+     * the run queue — gives fs_server the whole CPU for that block-by-block copy
+     * into the encrypted store, instead of it being starved by the shell's
+     * unpreemptible ring-0 console read once the shell exists. The badge is
+     * accumulated if fs_server signalled first, so this never hangs; a sealed ATA
+     * volume simply has nothing to provision yet and signals at once.
+     *
+     * Notifications are indexed by the notification slot NUMBER (a global badge
+     * accumulator), not by an endpoint object, and both syscalls are gated on a
+     * slot-3 capability — which every task holds as its default endpoint. So the
+     * rendezvous uses slot 3 on both sides (fs_server's FS_GATE_SLOT), the same
+     * convention notifytest uses. */
+    {
+        uint32_t ready_badge = 0;
+        sys_wait_notify(3, &ready_badge);
+        report("init: fs_server ready\n");
+    }
+
     report("init: starting, launching shell\n");
 
     /* Launch the shell, then block in SYS_WAIT until it exits or faults, and

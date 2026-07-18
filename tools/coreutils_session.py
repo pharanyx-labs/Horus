@@ -56,9 +56,10 @@ def run():
         step("logged in")
 
         # fs_server must be up for the utilities to read files. The default boot
-        # launches it via init; confirm by listing the (empty) root.
-        cmd("ls", "(empty)")
-        step("fs_server serving an empty root")
+        # launches it via init and provisions the utilities into /bin, so the root
+        # now lists that directory; confirm the server is serving by seeing it.
+        cmd("ls", "bin")
+        step("fs_server serving; /bin present")
 
         # Create a fixture with the shell's own echo+redirect. It writes the text
         # verbatim with no trailing newline, so "one two three four five six" is

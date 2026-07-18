@@ -11,7 +11,7 @@ version 3 or later, whose text is in [COPYING](COPYING) here.
 
 | File | Origin | Licence |
 |---|---|---|
-| `echo.c` `true.c` `false.c` `basename.c` `dirname.c` `cat.c` `head.c` `seq.c` `wc.c` | coreutils 9.5 `src/`, **byte-identical** | GPLv3+ |
+| `echo.c` `true.c` `false.c` `basename.c` `dirname.c` `cat.c` `head.c` `seq.c` `wc.c` `printf.c` `tail.c` | coreutils 9.5 `src/`, **byte-identical** | GPLv3+ |
 | `wc.h` | coreutils 9.5 `src/` | GPLv3+ |
 | `COPYING` | coreutils 9.5 | GPLv3 text |
 | `port/*` | written for Horus | MIT (as the rest of the tree) |
@@ -50,12 +50,23 @@ So the port supplies what upstream would have generated or linked:
   `dirname` module, `full_read`/`full_write`/`safe_read`, `xalignalloc`).
 - `port/gnulib.c` — the larger gnulib *modules* the text/number utilities need:
   the `xalloc` family, `inttostr`, `xstrtol`/`xstrtoumax`, `xdectoint`,
-  `cl-strtod`/`xstrtod`, `argmatch`, `argv-iter`, `readtokens0`, `physmem`, and
-  C-locale `mbrtoc32`/`c32width`. Where a check is security-relevant it is real,
-  not elided — the `x*alloc` size multiply is overflow-checked (`ckd_mul`), and a
-  malformed numeric argument is rejected rather than guessed.
+  `cl-strtod`/`xstrtod`, `argmatch`, `argv-iter`, `readtokens0`, `physmem`,
+  C-locale `mbrtoc32`/`c32width`, `xprintf` (printf(1)'s error-checked output),
+  `unicodeio` (its `\u` UTF-8 escapes), and tail(1)'s follow shims (`isapipe`,
+  `posix2_version`, `iopoll`, `xnanosleep`). Where a check is security-relevant it
+  is real, not elided — the `x*alloc` size multiply is overflow-checked
+  (`ckd_mul`), and a malformed numeric argument is rejected rather than guessed.
 - `port/*.h` — the matching gnulib headers, plus `assure.h`, `c-ctype.h`,
-  `stat-size.h`, `uchar.h`, and the getopt `--help`/`--version` boilerplate.
+  `stat-size.h`, `uchar.h`, `quotearg.h`, `xprintf.h`, `unicodeio.h`,
+  `stat-time.h`, and tail's `fcntl--.h`/`iopoll.h`/`isapipe.h`/`posixver.h`/
+  `xnanosleep.h`/`fs.h`/`fs-is-local.h` stubs, and the getopt `--help`/`--version`
+  boilerplate.
+
+**tail's follow (`-f`) is best-effort.** Horus has no inotify, no `poll(2)`, no
+pipes and no wall-clock sleep exposed to ring 3, so `tail -f` falls back to a
+stat-polling loop paced by a bounded busy-spin rather than a real timer. `tail`
+by line/byte (`-n`, `-c`) is fully upstream behaviour; the follow path runs but
+does not pace to a clock.
 
 **The upstream `.c` files are never edited.** Each is byte-identical to the 9.5
 tarball, which is what makes this a port rather than a rewrite: `wc`'s real
@@ -65,34 +76,46 @@ loader.
 
 ## Building and running
 
-Two gated build+test paths (the shipped kernel carries neither the binaries nor
-any GPLv3-derived code):
+The utilities are **not baked into the kernel image**. They ship as GRUB
+multiboot2 *modules* (`module2` lines the `boot.iso` rule writes onto the ISO),
+which GRUB loads into RAM outside the kernel. At boot the kernel records each
+module from the multiboot2 tags, the `fs_server` copies it into `/bin` on the
+encrypted store (`provision_boot_modules()`), and the shell runs it from there:
+typing a bare name resolves `/bin/<name>`, the shell loads the ~400–610 KiB image
+over the `fs_server`, and spawns it. A `/bin/<name>` shadows the shell's lighter
+builtin of the same name. Because a module costs nothing against the kernel
+image's 16 MiB budget, that budget no longer limits the utilities — a full build
+can ship every one. The shipped default carries no module, so the default ISO
+holds no GPLv3-derived binary.
+
+Two gated build+test paths (`COREUTILS_MODULES=1`, with a `COREUTILS_MODULE_SET`
+kept small enough to fit the 2 MiB store volume — see the note below):
 
 ```sh
-make smoke-coreutils        # COREUTILS_SELFTEST=1: spawn utilities directly
-                            #   with a staged argv and assert on their output
-make smoke-coreutils-shell  # COREUTILS_SHELL=1: drive head/seq/wc through the
-                            #   REAL shell over serial, on real files
+make smoke-modules          # ship printf/tail as modules; log in, and drive them
+                            #   from /bin over the real shell (the transport gate,
+                            #   and the coverage for the two newest utilities)
+make smoke-coreutils-shell  # ship head/seq/wc as modules; create a file with the
+                            #   shell's echo, then run head/wc/seq on it
 ```
 
-`smoke-coreutils` embeds `echo`/`basename`/`dirname`/`seq` and asserts on output
-made by upstream's own code — the marker only appears if `echo` joins its argv
-and expands `\x20`/`\x21`, and `seq 1 2 5` prints `1 3 5` only because its real
-long-double generator ran. `smoke-coreutils-shell` embeds `head`/`seq`/`wc`, then
-logs into the shell, creates a file with `echo > file`, and runs `head`/`wc`/`seq`
-on it — exercising the full user path (the shell parsing a line, spawning the
-utility with argv, the utility opening the file over its own fs_server
-connection). A ported utility shadows the shell's lighter builtin of the same
-name when it is embedded.
+Both drive the full user path — the kernel recording the module, the fs_server
+provisioning it into `/bin`, the shell resolving `/bin/<name>`, loading the image
+over the fs_server, spawning it with argv, the utility opening files over its own
+fs_server connection — and assert on output produced by upstream's own code
+(`printf`'s format engine, `tail`'s byte/line selection, `seq`'s long-double
+generator, `wc`'s counting).
 
-Only a subset is embedded per build: nine newlib-linked binaries at once overrun
-the kernel image's 16 MiB budget, so `CU_EMBED_<name>` (driven by the Makefile)
-selects the ones a given test drives. `--gc-sections` at link time keeps each
-binary to what it actually references.
+**Residency is bounded by the store volume, not the kernel image.** The encrypted
+volume is 2 MiB (a single-block allocation bitmap; growing it is a deferred FS
+feature), so only ~3–4 of the ~450 KiB newlib-linked binaries fit in `/bin` at
+once. The `fs_server` installs modules in order until the volume fills and skips
+the rest gracefully. The two test sets above are disjoint and each fits.
 
 Adding another utility is a matter of dropping its unmodified `.c` here, adding
-its name to `COREUTILS_PROGS` (and the relevant `CU_EMBED` set) in the Makefile,
-and extending `port/` with whatever gnulib surface it still needs.
+its name to `COREUTILS_PROGS` in the Makefile, and extending `port/` with whatever
+gnulib surface it still needs. `--gc-sections` at link time keeps each binary to
+what it actually references.
 
 ## Updating
 

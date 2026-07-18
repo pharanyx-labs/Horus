@@ -15,8 +15,8 @@ effort.
 ## Where things stand
 
 The foundation is a working x86-64 capability microkernel that boots a ring-3
-`init` supervising a ring-3 shell, and passes nineteen headless QEMU self-tests
-in CI. Already in place:
+`init` supervising a ring-3 shell, and passes a broad suite of headless QEMU
+self-tests in CI (28 `smoke-*` targets, all gated). Already in place:
 
 - **Kernel core** — long-mode microkernel linked into the higher half at
   `0xFFFFFFFF80000000`, so no kernel address is a user address; capability-based
@@ -55,17 +55,21 @@ in CI. Already in place:
   userspace `malloc`, and an `x86_64-elf` newlib libc port over a per-process
   POSIX fd layer (`make smoke-newlib`). The only 32-bit code left is the boot
   on-ramp that must be: the multiboot entry stage and the AP SIPI trampoline.
-- **CI** — twenty-three gated jobs (twenty-four total; the `security` SAST/SBOM
-  scan is advisory): `rust` (`cargo test` + `clippy -D warnings`), `kernel`
+- **CI** — every `smoke-*` target is gated (the `security` SAST/SBOM scan is the
+  only advisory job): `rust` (`cargo test` + `clippy -D warnings`), `kernel`
   (build + ISO), `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE matrix), the headless
-  QEMU boot `smoke`, seventeen runtime self-tests (`smoke-elf`, `smoke-elf64`,
-  `smoke-aslr`, `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-cow`,
-  `smoke-notify`, `smoke-smp`, `smoke-fs`, `smoke-fs-perms`, `smoke-fs-conc`,
-  `smoke-fs-persist`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-init-fs`,
-  `smoke-newlib`), the scripted `smoke-session` integration test, and a
+  QEMU boot `smoke`, the runtime self-tests (`smoke-elf`, `smoke-elf64`,
+  `smoke-aslr`, `smoke-preempt`, `smoke-signal`, `smoke-tsd`, `smoke-cpu`,
+  `smoke-e820`, `smoke-wx`, `smoke-wx-smp`, `smoke-aspace`, `smoke-captest`,
+  `smoke-proc`, `smoke-cow`, `smoke-notify`, `smoke-smp`, `smoke-fs`,
+  `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`, `smoke-fs-wal`,
+  `smoke-fs-large`, `smoke-init-fs`, `smoke-newlib`), the shell-driven session
+  tests (`smoke-session`, `smoke-modules`, `smoke-coreutils-shell`), and a
   `reproducible` build check. The whole filesystem suite (persistence,
   permissions, concurrency, journal crash-recovery, large files), the newlib
-  libc port, and async notifications are now CI-enforced, not local-only.
+  libc port, async notifications, the CPU-protection and W^X sweeps, and loading
+  programs from the filesystem via boot modules are all CI-enforced, not
+  local-only.
 
 ---
 
@@ -272,35 +276,49 @@ With a libc and a heap in place, grow what runs on top.
   `MAX_PROGRAM_SIZE` is now 8 MiB and trivially raisable. `make smoke-newlib`
   loads a ~1.5 MiB image end-to-end. What is left for the port itself is bringing
   up the coreutils/binutils sources against newlib.
-- **Port real programs** — *nine coreutils ported*: `echo`, `true`, `false`,
-  `basename`, `dirname`, `cat`, `head`, `seq` and `wc` (coreutils 9.5, each
-  vendored byte-identical and never edited) build against the newlib port and run
-  as ring-3 tasks. Two gated test paths: `make smoke-coreutils` spawns them
-  directly with a staged argv, and `make smoke-coreutils-shell` drives
-  `head`/`wc`/`seq` through the **real shell** over serial on real files —
-  `head` printing a file's contents, `wc -w`/`-c` counting it, `seq` generating a
-  sequence, all asserted on output produced by upstream's own code. A ported
-  utility shadows the shell's lighter builtin of the same name when embedded.
-  Upstream's autoconf + gnulib build does not survive the trip to a freestanding
-  target (no `x86_64-elf` cross toolchain, `configure` runs target probes, and
-  every utility pulls `src/system.h` → ~25 headers → 478 gnulib `.c` files), so
-  the port supplies what those would have: `config.h`, a trimmed `system.h`, and
-  a shim (`port.c` + `gnulib.c`) implementing the gnulib modules the text/number
-  utilities need — the `xalloc` family (with overflow-checked size multiplies),
-  `inttostr`, `xstrtol`, `argmatch`, `argv-iter`, `readtokens0`, `cl-strtod`, and
-  C-locale multibyte. The vendored sources are **GPLv3** and isolated in
-  `userspace/ports/coreutils/` with their own `COPYING`; the port glue is MIT (see
-  that directory's `README.md`), and neither the binaries nor any GPLv3 code is in
-  the shipped kernel. Porting real software found five real bugs — `crt0` never
-  passed `argv` and exited without running `atexit` (so stdio never flushed),
-  `SYS_GET_ARGV` truncated its pointer to 32 bits, the ELF loader refused
-  `R_X86_64_GLOB_DAT` (which every libc program reaching `exit()` emits), and
-  `SYS_GETPID` was declared and wrapped but never implemented. **Known limit:**
-  each newlib-linked binary is ~400–600 KiB, so all nine cannot be embedded at
-  once without overrunning the kernel image's 16 MiB budget — a given build
-  embeds only the subset its test drives (`CU_EMBED_<name>`). Next: `printf`,
-  `tail` (its `-f` follow needs polling the store), then binutils (blocked on the
-  same image-size budget for a several-MB binary).
+- **Port real programs** — *eleven coreutils ported*: `echo`, `true`, `false`,
+  `basename`, `dirname`, `cat`, `head`, `seq`, `wc`, `printf` and `tail`
+  (coreutils 9.5, each vendored byte-identical and never edited) build against the
+  newlib port and run as ring-3 tasks. Upstream's autoconf + gnulib build does not
+  survive the trip to a freestanding target (no `x86_64-elf` cross toolchain,
+  `configure` runs target probes, and every utility pulls `src/system.h` → ~25
+  headers → 478 gnulib `.c` files), so the port supplies what those would have:
+  `config.h`, a trimmed `system.h`, and a shim (`port.c` + `gnulib.c`)
+  implementing the gnulib modules the utilities need — the `xalloc` family (with
+  overflow-checked size multiplies), `inttostr`, `xstrtol`, `argmatch`,
+  `argv-iter`, `readtokens0`, `cl-strtod`, C-locale multibyte, `printf`'s `xprintf`
+  and `unicodeio`, and `tail`'s follow shims (`isapipe`, `posix2_version`,
+  `iopoll`, `xnanosleep`, `stat-time`). `tail -f` follow is best-effort — Horus has
+  no inotify/`poll`/pipes/wall-clock sleep, so it degrades to a stat-polling loop;
+  `-n`/`-c` are full upstream behaviour. The vendored sources are **GPLv3** and
+  isolated in `userspace/ports/coreutils/` with their own `COPYING`; the port glue
+  is MIT (see that directory's `README.md`), and no GPLv3 code is in the shipped
+  kernel. Porting real software found five real bugs — `crt0` never passed `argv`
+  and exited without running `atexit` (so stdio never flushed), `SYS_GET_ARGV`
+  truncated its pointer to 32 bits, the ELF loader refused `R_X86_64_GLOB_DAT`
+  (which every libc program reaching `exit()` emits), and `SYS_GETPID` was declared
+  and wrapped but never implemented.
+
+  **The utilities load from the filesystem, not the kernel image.** Each
+  newlib-linked binary is ~400–610 KiB, and the old `incbin`/`CU_EMBED_<name>`
+  embedding meant a build could only carry the subset its test drove before
+  overrunning the kernel image's 16 MiB budget. They now ship as **GRUB
+  multiboot2 modules**: the kernel records them from the boot tags, the
+  `fs_server` copies each into `/bin` on the encrypted store at boot
+  (`provision_boot_modules`, gated on `SYS_BOOT_MODULE_INFO`/`READ` = 77/78), and
+  the shell runs them from there (`try_run_from_bin` resolves `/bin/<name>`, loads
+  the image over the `fs_server`, spawns it). The kernel-image budget no longer
+  limits them — a full build can ship every utility. Two gated shell-driven tests:
+  `make smoke-modules` (ships `printf`/`tail`, provisions and runs them) and `make
+  smoke-coreutils-shell` (`head`/`wc`/`seq`), each asserting on output produced by
+  upstream's own code. A `/bin/<name>` shadows the shell's lighter builtin.
+  **Residency is now bounded by the 2 MiB store volume, not the kernel image:**
+  only ~3–4 binaries fit in `/bin` at once (a single-block allocation bitmap caps
+  the volume — see the deferred multi-block-bitmap non-goal in Phase 2), so
+  provisioning installs what fits and skips the rest gracefully. Next: growing the
+  store volume so more utilities are resident at once, then binutils (now shippable
+  as a module — the image budget no longer blocks it — but a several-MB binary
+  wants the larger volume and faster provisioning first).
 - **More servers**: a network-stack server, a block-device driver server, and a
   name server, each following the capability-delegation model.
 - **`captest` expansion** — *done*: it was a seven-line stub of raw `int $0x80`

@@ -202,21 +202,43 @@ static void print_pad(const char *s, int width) {
 
 /* ---- running ported coreutils programs ---------------------------------
  *
- * The vendored GNU coreutils utilities (head, seq, wc, ...) are embedded as
- * spawn-by-name binaries. A command whose first word names one is run as a
- * child: its argv is marshalled onto the child's stack, the shell blocks in
- * SYS_WAIT until it exits, and its stdout goes to the shared console so the
- * output appears inline. The child reaches the fs_server on its own (its libc
- * fd layer connects on the first open()), so `wc file` and `head file` read
- * real files without the shell delegating anything.
+ * Real programs live as files in /bin, provisioned there from GRUB boot modules
+ * (the ported GNU coreutils among them) — they are NOT baked into the kernel
+ * image. A command whose first word names a file in /bin is loaded over the
+ * fs_server and run as a child: its argv is marshalled onto the child's stack,
+ * the shell blocks in SYS_WAIT until it exits, and its stdout goes to the shared
+ * console so the output appears inline. The child reaches the fs_server on its
+ * own (its libc fd layer connects on the first open()), so `wc file` and `head
+ * file` read real files without the shell delegating anything.
  *
- * Only utilities NOT already provided as a builtin are routed here, so a name
- * like `echo` keeps the shell's own redirection-aware version. */
-static const char *const coreutils_progs[] = { "head", "seq", "wc", 0 };
+ * This is checked before the builtins, so a real /bin/<name> shadows a lighter
+ * shell builtin of the same name; a name with no /bin file falls through to the
+ * builtin (or an "unknown command"). */
 
-static int is_coreutils_prog(const char *name) {
-    for (int i = 0; coreutils_progs[i]; i++)
-        if (strcmp(name, coreutils_progs[i]) == 0) return 1;
+/* An image must fit the kernel's staged-image cap (MAX_PROGRAM_SIZE, 8 MiB); the
+ * newlib-linked coreutils binaries are ~400–600 KiB, well under it. */
+#define SH_MAX_IMAGE (8u * 1024u * 1024u)
+
+/* Read the whole file `ino` (`size` bytes) into `buf` via the fs_server, one
+ * FS_IO_MAX chunk at a time. Returns 0 on success, -1 on a short read or error. */
+static int sh_read_file(uint32_t ino, unsigned char *buf, uint32_t size) {
+    uint32_t off = 0;
+    struct fs_response rp;
+    while (off < size) {
+        uint32_t chunk = size - off;
+        if (chunk > FS_IO_MAX) chunk = FS_IO_MAX;
+        struct fs_request dq = {0};
+        dq.op = FS_OP_READ; dq.ino = ino; dq.offset = off; dq.len = chunk;
+        /* rc <= 0 is a real error or premature EOF (no progress); a rc SHORTER
+         * than chunk is normal — FS_OP_READ never crosses a 512-byte block, so a
+         * request that straddles one comes back partial. Keep reading from the new
+         * offset rather than treating it as truncation. */
+        if (fss_call(&dq, &rp) < 0 || rp.rc <= 0) return -1;
+        uint32_t got = (uint32_t)rp.rc;
+        if (got > chunk) got = chunk;
+        memcpy(buf + off, rp.data, got);
+        off += got;
+    }
     return 0;
 }
 
@@ -238,25 +260,43 @@ static int tokenize(const char *cmd, char *store, int store_sz, char *argv[]) {
     return argc;
 }
 
-/* If `cmd`'s first word names a ported coreutils program AND that binary is
- * embedded in this build, run it as a child and return 1. Returns 0 when the
- * word is not a coreutils name, or names one that is not embedded (spawn returns
- * NOENT) -- in the latter case the caller falls through to the shell's own
- * builtin of the same name (the shipped kernel carries no coreutils binary, so a
- * plain `wc` there uses the builtin). Checked before the builtins precisely so
- * the real GNU utility shadows the lighter builtin whenever it is present. */
-static int try_run_coreutils(const char *cmd) {
+/* If `cmd`'s first bare word names an executable file in /bin, load it and run it
+ * as a child with the full argv, blocking until it exits; return 1. Returns 0
+ * when the word is not a /bin file (or /bin does not exist yet, or the word
+ * carries a path), so the caller falls through to the shell's own builtin of the
+ * same name. Checked before the builtins precisely so a real /bin/<name> shadows
+ * the lighter builtin whenever it is present. */
+static int try_run_from_bin(const char *cmd) {
     char store[256];
     char *argv[CU_MAXARGS];
     int argc = tokenize(cmd, store, sizeof(store), argv);
-    if (argc == 0 || !is_coreutils_prog(argv[0])) return 0;
+    if (argc == 0) return 0;
+    /* Only bare names resolve against /bin; an explicit path (./x, /bin/x) is for
+     * `run`, and a builtin like `cd` must not be shadowed by a stray /bin file. */
+    for (const char *q = argv[0]; *q; q++) if (*q == '/') return 0;
 
-    int pid = sys_spawn_named_argv(argv[0], argc, argv);
-    if (pid == SYS_ERR_NOENT) return 0;   /* not embedded: let the builtin handle it */
-    if (pid < 0) {
-        print(argv[0]); println(": failed to spawn");
-        return 1;
-    }
+    uint32_t bin = sh_walk_abs_dir("/bin");
+    if (bin == (uint32_t)-1) return 0;                    /* no /bin yet: use builtins */
+
+    struct fs_request  rq = {0};
+    struct fs_response rp;
+    rq.op = FS_OP_LOOKUP; rq.dir_ino = bin; fss_strcpy(rq.name, argv[0]);
+    if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) return 0;  /* not in /bin */
+    uint32_t ino = rp.ino;
+
+    struct fs_request sq = {0};
+    sq.op = FS_OP_STAT; sq.ino = ino;
+    if (fss_call(&sq, &rp) < 0 || rp.rc < 0) { print(argv[0]); println(": stat failed"); return 1; }
+    uint32_t size = rp.size;
+    if (size == 0 || size > SH_MAX_IMAGE) { print(argv[0]); println(": bad image size"); return 1; }
+
+    unsigned char *buf = malloc(size);
+    if (!buf) { print(argv[0]); println(": out of memory"); return 1; }
+    if (sh_read_file(ino, buf, size) != 0) { print(argv[0]); println(": read failed"); free(buf); return 1; }
+
+    int pid = sys_spawn_image(buf, size, argc, argv);
+    free(buf);                                            /* kernel already staged the image */
+    if (pid < 0) { print(argv[0]); println(": failed to spawn"); return 1; }
     /* Block until the child finishes so its output lands before the next prompt.
      * SYS_ERR_INTR (a signal interrupted the wait) is retried; any other return
      * means the child is already gone. */
@@ -1019,11 +1059,11 @@ static void show_topic_help_us(const char *topic) {
 
 static void handle_command(char *cmd) {
 
-    /* A ported GNU coreutils program shadows the shell's own builtin of the same
+    /* A real /bin/<name> shadows the shell's own builtin of the same
      * name when it is embedded in this build (e.g. the real `wc` over the shell's
      * lighter one). Checked first; when the binary is absent this is a no-op and
      * the builtins below run as before. */
-    if (try_run_coreutils(cmd)) return;
+    if (try_run_from_bin(cmd)) return;
 
     if (strcmp(cmd, "man") == 0) {
         man_index();
@@ -1709,8 +1749,27 @@ static void handle_command(char *cmd) {
         while (*name == ' ') name++;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino;
-        fss_strcpy(rq.name, name);
+
+        /* Resolve the file's parent directory and final component. A name with a
+         * '/' is a path: the parent is everything up to the last '/', walked from
+         * the root for an absolute path (so `run /bin/hello` works), and the
+         * component is the tail. A bare name resolves in the cwd. */
+        const char *slash = 0;
+        for (const char *q = name; *q; q++) if (*q == '/') slash = q;
+        uint32_t dir_ino = sh_cwd_ino;
+        const char *leaf = name;
+        if (slash) {
+            char parent[FS_NAME_MAX * 4];
+            int  n = 0;
+            if (slash == name) { parent[n++] = '/'; }          /* "/hello" -> parent "/" */
+            else for (const char *q = name; q < slash && n < (int)sizeof(parent) - 1; q++) parent[n++] = *q;
+            parent[n] = '\0';
+            dir_ino = sh_walk_abs_dir(parent);
+            if (dir_ino == (uint32_t)-1) { println("run: directory not found"); return; }
+            leaf = slash + 1;
+        }
+        rq.op = FS_OP_LOOKUP; rq.dir_ino = dir_ino;
+        fss_strcpy(rq.name, leaf);
         if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) {
             println("run: file not found (is fs_server running? try: spawn fs_server)");
             return;
@@ -1721,26 +1780,11 @@ static void handle_command(char *cmd) {
         sq.op = FS_OP_STAT; sq.ino = ino;
         if (fss_call(&sq, &rp) < 0 || rp.rc < 0) { println("run: stat failed"); return; }
         uint32_t size = rp.size;
-        if (size == 0 || size > (256u * 1024u)) { println("run: bad image size"); return; }
+        if (size == 0 || size > SH_MAX_IMAGE) { println("run: bad image size"); return; }
 
         unsigned char *buf = malloc(size);
         if (!buf) { println("run: out of memory"); return; }
-
-        uint32_t off = 0;
-        int ok = 1;
-        while (off < size) {
-            uint32_t chunk = size - off;
-            if (chunk > FS_IO_MAX) chunk = FS_IO_MAX;
-            struct fs_request dq = {0};
-            dq.op = FS_OP_READ; dq.ino = ino; dq.offset = off; dq.len = chunk;
-            if (fss_call(&dq, &rp) < 0 || rp.rc <= 0) { ok = 0; break; }
-            uint32_t got = (uint32_t)rp.rc;
-            if (got > chunk) got = chunk;
-            memcpy(buf + off, rp.data, got);
-            off += got;
-            if (got < chunk) { ok = 0; break; }   /* short read: image truncated */
-        }
-        if (!ok) { println("run: read failed"); free(buf); return; }
+        if (sh_read_file(ino, buf, size) != 0) { println("run: read failed"); free(buf); return; }
 
         int pid = sys_spawn_image(buf, size, 0, 0);
         free(buf);                                 /* kernel already staged the image */

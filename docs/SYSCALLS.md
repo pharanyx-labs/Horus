@@ -123,6 +123,15 @@ The kernel exposes only an encrypted inode/block API; the ring-3 `fs_server` bui
 | 61     | `SYS_FS_SET_SIZE`   | Set an inode's logical size                   | `CAP_BLOCK_DEV` + uid 0        | Server owns logical file size |
 | 74     | `SYS_FS_SET_META`   | Persist an inode's owner (uid/gid) + mode     | `CAP_BLOCK_DEV` + uid 0        | Only the low 12 permission bits are settable (file-type bits preserved); the `fs_server` uses it to stamp the creator as owner and to apply chmod/chown after authorising the caller |
 
+### Boot modules
+
+Program images GRUB loaded as multiboot2 modules — read-only, at the same trust tier as the block store (both are TCB-supplied), so gated on the same authority. The `fs_server` uses these to copy each module into `/bin` at boot; nothing executes a module in place.
+
+| Number | Name                   | Description                                   | Required Capability      | Notes |
+|--------|------------------------|-----------------------------------------------|--------------------------|-------|
+| 77     | `SYS_BOOT_MODULE_INFO` | Count boot modules; read one's size + name    | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Returns the module count; fills a `struct boot_module_info` for a valid index |
+| 78     | `SYS_BOOT_MODULE_READ` | Copy a byte range out of a module's payload   | `CAP_BLOCK_DEV` + uid 0        | Offset/length bounded to the module extent; source is reached through the `PHYS_KVA` window |
+
 ### Block storage & server registration
 
 | Number | Name                          | Description                              | Required Capability      | Notes |

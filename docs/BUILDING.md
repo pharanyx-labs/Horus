@@ -94,6 +94,8 @@ Each of these does a clean build with the relevant `*_SELFTEST` (or `SMP`) flag,
 | `make smoke-init-fs` | The `init`-delegated `fs_server` driven by an automated client end-to-end |
 | `make smoke-newlib` | The newlib libc port over the POSIX fd layer (`NEWLIB_SELFTEST: PASS`). First run fetches and builds newlib — see below |
 | `make smoke-smp` | Application processors come online and concurrently run scheduled tasks (`SMP_SELFTEST: PASS`); `SMP_CPUS=<n>` sets the core count |
+| `make smoke-modules` | Ships the ported `printf`/`tail` as GRUB boot modules; asserts the `fs_server` provisioned them into `/bin` and both run from the store through the real shell (`MODULES_SESSION: PASS`) — a program image reaching the filesystem without living in the kernel image |
+| `make smoke-coreutils-shell` | The same, for `head`/`wc`/`seq` on real files (`COREUTILS_SESSION: PASS`) |
 
 ### The newlib dependency
 
@@ -127,6 +129,7 @@ Pass flags as `make FLAG=VALUE`.
 | `MINIMAL_SECURE` | `0` | Strips optional kernel features for a smaller attack surface |
 | `SMP` | `0` | Brings up the application processors (multi-core). `SMP_CPUS` sets the guest core count |
 | `STORAGE_ATA` | `0` | Used by FS smoke/self-test targets to prefer the ATA path; at runtime the kernel always probes for a disk and falls back to the RAM vdisk when none is present. `BLOCKS_PER_DISK` sizes the volume |
+| `COREUTILS_MODULES` | `0` | Ships the ported GNU coreutils as GRUB multiboot2 modules on the ISO (not baked into the kernel image); the `fs_server` provisions them into `/bin` at boot. `COREUTILS_MODULE_SET` selects which utilities (default: all), kept small enough to fit the 2 MiB store volume by the smoke targets |
 | `ELF_SELFTEST` | `0` | Embeds a real static-PIE ELF and runs an in-kernel loader + W^X + relocation self-test at boot (ELFCLASS32) |
 | `ELF64_SELFTEST` | `0` | Same, for an ELFCLASS64 static-PIE image — gates the x86-64 RELA relocation path. The image is loaded and inspected, never executed |
 | `ASLR_SELFTEST` | `0` | Spawns several PIE images and asserts the loader really randomises the image base |
@@ -153,7 +156,7 @@ The loader still supports ELFCLASS32 (`R_386_RELATIVE`), and `userspace/elftest.
 make userspace       # build all userspace binaries
 ```
 
-The kernel image bundles the compiled userspace binaries, so rebuilding after changing userspace requires re-running `make` from the top level.
+The kernel image bundles the core userspace binaries (`init`, `shell`, `fs_server`, `hello`, `captest`), so rebuilding after changing one requires re-running `make` from the top level. The **ported GNU coreutils are not bundled** — they are shipped as GRUB multiboot2 modules (`COREUTILS_MODULES=1`) that GRUB loads into RAM outside the kernel image, and the `fs_server` provisions each into `/bin` on the encrypted store at boot; the shell then runs them from the filesystem. See `userspace/ports/coreutils/README.md`.
 
 ---
 

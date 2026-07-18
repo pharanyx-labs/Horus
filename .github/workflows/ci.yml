@@ -172,8 +172,8 @@ jobs:
       - name: Assert unheld capabilities, post-revoke use and bad input are all refused
         run: make smoke-captest
 
-  smoke-coreutils:
-    name: QEMU GNU coreutils port self-test (real echo(1) runs)
+  smoke-modules:
+    name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
@@ -186,8 +186,8 @@ jobs:
             qemu-system-x86
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
-      - name: Run unmodified coreutils echo(1) and assert its own escape handling
-        run: make smoke-coreutils
+      - name: Ship printf/tail as GRUB modules, provision into /bin, run from the FS
+        run: make smoke-modules
 
   smoke-coreutils-shell:
     name: QEMU GNU coreutils via the shell (head / wc / seq on real files)

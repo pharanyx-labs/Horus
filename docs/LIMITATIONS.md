@@ -95,7 +95,7 @@ The timer preempts and switches between mutually distrusting ring-3 tasks (and, 
 
 All kernel code runs at the same privilege level with access to all kernel data; a bug in the terminal driver has the same blast radius as one in the capability system.
 
-### Task kernel stacks are guarded; a few boot/IST stacks are not
+### Task kernel stacks and every IST fault stack are guarded
 
 Each task's kernel stack sits above an unmapped guard page, so an overflow faults on the guard instead of running into the previous task's stack. This is gated by `make smoke-wx`, which checks the guard is absent *and* that the stack above it is still present — unmapping one page too many would take the stack with it.
 
@@ -103,7 +103,9 @@ It now covers **all `MAX_TASKS` task slots (task 0 included), plus the fixed BSP
 
 The BSP boot stack (`stack_top`, the stack `kernel_main` and all early init run on) and the three IST fault stacks (`ist1`/`ist2`/`ist3` in `multiboot.S` — IST1 takes `#DF`/`#GP`/`#PF`, so it is on the path of every demand page fault and every ring-3 fault-signal delivery) are now each laid out above a page-aligned guard page that `kern_fixed_stack_guards_init()` unmaps at boot. `smoke-wx` asserts `MAX_TASKS` per-task guards, the four fixed-stack guards, and — for each — that the guard is absent while the stack just above it stays present.
 
-Still unguarded: the per-CPU **AP** IST stacks (`ap_ist`, SMP-only) and the dead early 32-bit boot stack (in the `.boot` stage, which is unmapped outright after boot). The AP IST guards are the same technique applied per-core and are left as a small follow-up; the always-active stacks (the BSP boot stack and every task's kernel stack) are covered.
+The per-CPU **AP** IST fault stacks (`ap_ist` in `gdt.c`, SMP-only) are now guarded too: each of the three IST stacks per AP is laid out as a `[guard][stack]` two-page block, and `ap_ist_guards_init()` unmaps the guard at boot via the same `kern_arm_guard_page()` kernel-window clear the per-task and fixed guards use — armed before `smp_bringup()`, so each AP inherits the absent guard in its CR3 with no shootdown. `make smoke-wx-smp` (a `WX_SELFTEST=1 SMP=1` multi-core boot) asserts, for all `(MAX_CPUS-1) × 3` AP IST guards, that the guard is absent while the stack page above it is present. IST1 (#DF/#GP/#PF) is on the path of every demand page fault an AP-run task takes, so this is exercised, not just latent.
+
+Still unguarded: only the dead early 32-bit boot stack (in the `.boot` stage, which is unmapped outright after boot). Every always-active stack — the BSP boot stack, the boot IST stacks, every task's kernel stack, and every AP's IST stacks — is now covered.
 
 ### No KASLR
 

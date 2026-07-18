@@ -224,6 +224,16 @@ static int kern_page_set_absent(uint64_t vaddr) {
     return 0;
 }
 
+/* Public wrapper: unmap one page of the kernel's own mapping, returning 0 when
+ * it is now absent. Exists so the SMP AP IST-stack guards (whose stacks live in
+ * gdt.c, out of this file's reach) arm through the exact same kernel-window
+ * unmap the per-task and fixed stack guards use, rather than a second copy of
+ * the walk. Like those, it must run before smp_bringup() so the cleared entry is
+ * inherited into every AP's CR3 with no shootdown. */
+int kern_arm_guard_page(uint64_t vaddr) {
+    return kern_page_set_absent(vaddr);
+}
+
 static uint64_t build_pd(uint64_t low_flags, uint64_t huge_flags) {
     uint64_t pd_phys = alloc_user_physical_page();
     if (pd_phys == 0) return 0;
@@ -435,6 +445,13 @@ void paging_init(void) {
      * this CR3, so a guard unmapped now needs no cross-CPU shootdown. */
     kstack_guards_init();
     kern_fixed_stack_guards_init();
+#ifdef SMP
+    /* Same boot-time, pre-smp_bringup() arming for the per-CPU AP IST fault
+     * stacks (defined in gdt.c). The APs inherit this CR3, so their guards are
+     * absent from the first fault they take on an IST stack. */
+    extern void ap_ist_guards_init(void);
+    ap_ist_guards_init();
+#endif
     return;
 }
 

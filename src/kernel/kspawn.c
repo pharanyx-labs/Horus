@@ -99,7 +99,12 @@ static int do_spawn_inner(void) {
     uint64_t stack_top = 0;
     choose_image_placement(new_id, &load_base, &stack_top);
 
-    create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base);
+    /* Premap the image window to the staged image's whole loaded span, so the
+     * loader's copy_to_user can write every PT_LOAD segment (it needs the pages
+     * present). Computed from the still-armed staged image, before the address
+     * space is built. */
+    create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base,
+                staged_image_span_pages());
 
     load_staged_image_into(new_id, load_base);
 
@@ -230,6 +235,9 @@ static void exec_into_armed_image(void) {
      * exec. create_user_pagedir reads image_base for the premap, so set it first. */
     tasks[cur].image_base  = load_base;
     tasks[cur].image_end   = load_base;
+    /* Size the image-window premap to the new image's loaded span (still armed),
+     * so create_user_pagedir maps enough for the loader's copy_to_user below. */
+    tasks[cur].image_premap_pages = staged_image_span_pages();
     tasks[cur].esp         = stack_top ? (stack_top - 256) : 0;
     tasks[cur].sig_handler  = 0;
     tasks[cur].in_signal    = 0;

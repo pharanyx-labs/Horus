@@ -272,23 +272,35 @@ With a libc and a heap in place, grow what runs on top.
   `MAX_PROGRAM_SIZE` is now 8 MiB and trivially raisable. `make smoke-newlib`
   loads a ~1.5 MiB image end-to-end. What is left for the port itself is bringing
   up the coreutils/binutils sources against newlib.
-- **Port real programs** — *started*: GNU coreutils `echo(1)` (coreutils 9.5
-  `src/echo.c`, vendored byte-identical and never edited) builds against the
-  newlib port and runs as a ring-3 task, gated by `make smoke-coreutils`. The
-  marker is produced by upstream's own code path — argv joined with spaces and
-  `-e` escapes expanded — so a pass means real third-party source ran correctly.
+- **Port real programs** — *nine coreutils ported*: `echo`, `true`, `false`,
+  `basename`, `dirname`, `cat`, `head`, `seq` and `wc` (coreutils 9.5, each
+  vendored byte-identical and never edited) build against the newlib port and run
+  as ring-3 tasks. Two gated test paths: `make smoke-coreutils` spawns them
+  directly with a staged argv, and `make smoke-coreutils-shell` drives
+  `head`/`wc`/`seq` through the **real shell** over serial on real files —
+  `head` printing a file's contents, `wc -w`/`-c` counting it, `seq` generating a
+  sequence, all asserted on output produced by upstream's own code. A ported
+  utility shadows the shell's lighter builtin of the same name when embedded.
   Upstream's autoconf + gnulib build does not survive the trip to a freestanding
   target (no `x86_64-elf` cross toolchain, `configure` runs target probes, and
   every utility pulls `src/system.h` → ~25 headers → 478 gnulib `.c` files), so
-  the port supplies what those would have: `config.h`, a trimmed `system.h`,
-  `assure.h`, `c-ctype.h` and a small `port.c`. The vendored sources are **GPLv3**
-  and isolated in `userspace/ports/coreutils/` with their own `COPYING`; the port
-  glue is MIT like the rest of the tree (see that directory's `README.md`).
-  Doing this found four real bugs — `crt0` never passed `argv` and exited without
-  running `atexit` (so stdio never flushed), `SYS_GET_ARGV` truncated its pointer
-  to 32 bits, and the ELF loader refused `R_X86_64_GLOB_DAT`, which every libc
-  program reaching `exit()` emits. Next: more utilities (`cat`, `wc`), then
-  binutils.
+  the port supplies what those would have: `config.h`, a trimmed `system.h`, and
+  a shim (`port.c` + `gnulib.c`) implementing the gnulib modules the text/number
+  utilities need — the `xalloc` family (with overflow-checked size multiplies),
+  `inttostr`, `xstrtol`, `argmatch`, `argv-iter`, `readtokens0`, `cl-strtod`, and
+  C-locale multibyte. The vendored sources are **GPLv3** and isolated in
+  `userspace/ports/coreutils/` with their own `COPYING`; the port glue is MIT (see
+  that directory's `README.md`), and neither the binaries nor any GPLv3 code is in
+  the shipped kernel. Porting real software found five real bugs — `crt0` never
+  passed `argv` and exited without running `atexit` (so stdio never flushed),
+  `SYS_GET_ARGV` truncated its pointer to 32 bits, the ELF loader refused
+  `R_X86_64_GLOB_DAT` (which every libc program reaching `exit()` emits), and
+  `SYS_GETPID` was declared and wrapped but never implemented. **Known limit:**
+  each newlib-linked binary is ~400–600 KiB, so all nine cannot be embedded at
+  once without overrunning the kernel image's 16 MiB budget — a given build
+  embeds only the subset its test drives (`CU_EMBED_<name>`). Next: `printf`,
+  `tail` (its `-f` follow needs polling the store), then binutils (blocked on the
+  same image-size budget for a several-MB binary).
 - **More servers**: a network-stack server, a block-device driver server, and a
   name server, each following the capability-delegation model.
 - **`captest` expansion** — *done*: it was a seven-line stub of raw `int $0x80`

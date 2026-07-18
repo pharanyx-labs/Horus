@@ -15,8 +15,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   /* bzero, used by wc's multibyte path */
 #include <stdbool.h>
 #include <locale.h>
+#include <wctype.h>    /* iswspace / iswprint, used (C-locale-unreached) by wc */
 #include <unistd.h>
 /* <sys/errno.h>, NOT <errno.h>: the userspace build puts Horus's own include/
  * ahead of newlib's, and Horus has an errno.h of its own carrying the SYS_ERR_*
@@ -32,6 +34,46 @@
  * silently wrapping to a huge positive length, so the compiler's overflow checks
  * can see it and a wrapped value cannot become an enormous allocation or copy. */
 typedef ptrdiff_t idx_t;
+
+/* ---- gnulib's attribute.h, mapped onto GCC's __attribute__ ----------------
+ * These are optimisation/diagnostic hints, so mapping an unknown one to nothing
+ * only loses a hint, never correctness. The ones defined map to their real GCC
+ * form so the hint is kept. */
+#define ATTRIBUTE_PURE        __attribute__ ((__pure__))
+#define ATTRIBUTE_CONST       __attribute__ ((__const__))
+#define ATTRIBUTE_MALLOC      __attribute__ ((__malloc__))
+#define ATTRIBUTE_UNUSED      __attribute__ ((__unused__))
+#define MAYBE_UNUSED          __attribute__ ((__unused__))
+#define _GL_ATTRIBUTE_PURE    __attribute__ ((__pure__))
+#define _GL_ATTRIBUTE_CONST   __attribute__ ((__const__))
+#define _GL_ATTRIBUTE_MALLOC  __attribute__ ((__malloc__))
+#define _GL_UNUSED            __attribute__ ((__unused__))
+#define _GL_ATTRIBUTE_FORMAT(spec) __attribute__ ((__format__ spec))
+#define ATTRIBUTE_NONNULL(...)
+#define _GL_ATTRIBUTE_NONNULL(...)
+
+/* C11 static_assert under gnu99: GCC provides _Static_assert as an extension. */
+#ifndef static_assert
+# define static_assert _Static_assert
+#endif
+
+/* gnulib wraps a utility's final exit so a build can hook it; plain exit here. */
+#ifndef main_exit
+# define main_exit(status) exit (status)
+#endif
+
+/* C23's unreachable() marks a point the program can never reach, letting the
+ * compiler drop the impossible path. GCC's builtin is the real thing; a plain
+ * fallback would still be correct (it just would not optimise). */
+#ifndef unreachable
+# define unreachable() __builtin_unreachable ()
+#endif
+
+/* Zero an mbstate_t (gnulib's mbszero). A fresh state is the C-locale initial
+ * conversion state, so memset to zero is exactly right. */
+#ifndef mbszero
+# define mbszero(ps) memset ((ps), 0, sizeof *(ps))
+#endif
 
 /* ---- gettext: Horus ships no message catalogues, so translation is identity.
  * N_() marks a string for extraction without translating it; _() would look one
@@ -207,5 +249,53 @@ static inline bool is_ENOTSUP (int err) {
 #ifndef MAX
 # define MAX(a, b) ((a) > (b) ? (a) : (b))
 #endif
+
+/* ---- small classification / type-bound helpers upstream's system.h carries.
+ *
+ * ISDIGIT is locale-independent by construction (a range test on the byte),
+ * which is the point: option and count parsing must not change meaning under a
+ * different LC_CTYPE. to_uchar avoids the sign-extension trap of passing a
+ * possibly-negative char straight to a <ctype.h> function or an array index. */
+#define ISDIGIT(c) ((unsigned int) (c) - '0' <= 9)
+#define to_uchar(c) ((unsigned char) (c))
+
+/* Maximum / minimum value of an integer TYPE, computed from its width without
+ * assuming a specific size. TYPE_SIGNED is true for a signed type. */
+#define TYPE_SIGNED(t)  (! ((t) 0 < (t) -1))
+#define TYPE_MAXIMUM(t) \
+  ((t) (TYPE_SIGNED (t) \
+        ? (((((t) 1 << (sizeof (t) * CHAR_BIT - 2)) - 1) * 2) + 1) \
+        : (t) -1))
+#define TYPE_MINIMUM(t) ((t) (TYPE_SIGNED (t) ? - TYPE_MAXIMUM (t) - 1 : (t) 0))
+
+#ifndef OFF_T_MAX
+# define OFF_T_MAX TYPE_MAXIMUM (off_t)
+#endif
+#ifndef OFF_T_MIN
+# define OFF_T_MIN TYPE_MINIMUM (off_t)
+#endif
+#ifndef UINTMAX_MAX
+# define UINTMAX_MAX TYPE_MAXIMUM (uintmax_t)
+#endif
+
+/* st_size is only meaningful for a regular file (or a symlink's target length);
+ * for anything else -- a pipe, a device -- it says nothing, and a utility that
+ * trusted it would compute a wrong length. */
+#define usable_st_size(sb) (S_ISREG ((sb)->st_mode) || S_ISLNK ((sb)->st_mode))
+
+/* STP_BLKSIZE takes a *pointer* to a struct stat (the "p" is for pointer),
+ * unlike ST_BLKSIZE which takes the struct by value. head passes a pointer. */
+#ifndef STP_BLKSIZE
+# define STP_BLKSIZE(sbp) \
+    (((sbp)->st_blksize > 0 && (sbp)->st_blksize <= 1024 * 1024) \
+     ? (size_t) (sbp)->st_blksize : (size_t) 512)
+#endif
+
+/* The x*alloc family and inttostr, which upstream's system.h pulls in for every
+ * utility -- so a source that uses xmalloc()/umaxtostr() without including them
+ * directly (head does) still resolves. Placed at the end so the types and
+ * xalloc_die() they reference above are already declared. */
+#include "xalloc.h"
+#include "inttostr.h"
 
 #endif /* HORUS_COREUTILS_SYSTEM_H */

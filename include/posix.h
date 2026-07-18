@@ -60,6 +60,7 @@ typedef struct {
     uint32_t blocks;
     uint32_t uid;    /* owning user  (0 for console fds) */
     uint32_t gid;    /* owning group (0 for console fds) */
+    uint32_t links;  /* hard-link count (1 for console fds) */
 } posix_stat_t;
 
 /* ---- fd table ---- */
@@ -94,6 +95,10 @@ int  posix_unlink(const char *path);
 /* Rename oldpath -> newpath (replacing an existing target file). Returns 0 or a
  * negative SYS_ERR_* (the server enforces write on both parent directories). */
 int  posix_rename(const char *oldpath, const char *newpath);
+/* Hard-link newpath to the existing regular file oldpath. Returns 0 or a
+ * negative SYS_ERR_* (the server enforces write on newpath's parent and
+ * owner-or-root on the source; directories are refused). */
+int  posix_link  (const char *oldpath, const char *newpath);
 /* Truncate the file open on `fd` to `length` bytes. Returns 0 or a negative
  * SYS_ERR_*. */
 int  posix_ftruncate(int fd, uint32_t length);

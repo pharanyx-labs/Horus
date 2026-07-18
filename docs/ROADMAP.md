@@ -249,12 +249,22 @@ With a libc and a heap in place, grow what runs on top.
   matters (`SIGKILL`/`SIGTERM`/`SIGSEGV`/`SIGILL`); the null signal (sig 0) is a
   best-effort success since Horus has no reachability-probe syscall. All proven by
   `make smoke-newlib`.
-  Remaining for a real coreutils/binutils port: `link()` (hard links) and
-  `tmpfile()` — both blocked on the *same* store feature, an open-inode refcount:
-  `link` needs multiple names for one inode, and `tmpfile` needs an inode to
-  survive being unlinked while an fd holds it open (the `fs_server` frees an inode
-  the instant its link count hits zero, so both currently `ENOSYS`, `tmpfile`
-  failing cleanly rather than handing back a broken stream). The binding
+  **`link()` and `tmpfile()` are wired too, completing the libc surface.**
+  `link()` is a genuine store-level hard link: a new `FS_OP_LINK` op (write on the
+  new name's parent dir, owner-or-root on the source, directories refused) adds a
+  second directory entry for a file and increments its on-disk link count via a
+  new `SYS_FS_INODE_LINK`; `unlink` (`SYS_FS_INODE_FREE`) now *decrements* that
+  count and frees the inode and its blocks only when the last name is gone. `stat`
+  reports the real count (`st_nlink`), plumbed through `FS_OP_STAT`. `tmpfile()`
+  did **not** need the harder unlinked-but-open inode semantics: it keeps the temp
+  file *named* for its lifetime and unlinks it when the fd is closed (a `close()`
+  hook), which meets the observable contract — a stream removed on `fclose` —
+  without making the security-critical `fs_server` track open fds; the one
+  deviation is a briefly-visible name, and a stream abandoned without `fclose`
+  leaves that name until removed. Both proven by `make smoke-newlib` (link:
+  two names → one inode with `nlink==2`, unlink one and the data survives under
+  the other at `nlink==1`, a hard link to a directory is refused, the last unlink
+  frees; tmpfile: a write/rewind/read round-trip then `fclose`). The binding
   constraint beyond the libc surface is the 4 MiB userspace image window /
   1 MiB `MAX_PROGRAM_SIZE` (see the address-separation item in Phase 5) — a real
   binutils binary is several MB and does not fit until that is widened.

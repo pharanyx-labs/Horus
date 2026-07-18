@@ -67,6 +67,13 @@
                             * return the end offset of the write in `size`, so a
                             * client can track its file position without a
                             * follow-up stat. */
+#define FS_OP_LINK    14   /* ino=source file, dir_ino=new parent, name=new name
+                            * -> 0. Hard-link: add a second directory entry naming
+                            * an existing regular file and bump its link count
+                            * (needs w on the new parent dir, and owner-or-root on
+                            * the source; directories are refused). unlink of
+                            * either name then only frees the file once the last
+                            * name is gone (FS_OP_DELETE drops one reference). */
 
 #define FS_NAME_MAX   32   /* directory entry name field (NUL-terminated) */
 #define FS_IO_MAX    176   /* max data payload per request/response */
@@ -109,8 +116,9 @@ struct fs_response {
     uint32_t mode;                  /* permission bits (stat) */
     uint32_t uid;                   /* owner uid (stat) */
     uint32_t gid;                   /* owner gid (stat) */
+    uint32_t links;                 /* hard-link count (stat) */
     char     name[FS_NAME_MAX];     /* readdir entry name */
     uint8_t  data[FS_IO_MAX];       /* read payload */
-};                                  /* 32 + 32 + 176 = 240 <= 256 */
+};                                  /* 36 + 32 + 176 = 244 <= 256 */
 
 #endif /* HORUS_FS_PROTO_H */

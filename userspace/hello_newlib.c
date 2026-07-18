@@ -31,6 +31,17 @@ static void kwrite(const char *s) {
     sys_write(1, s, (size_t)len);
 }
 
+/* A large .bss array that pushes this image's loaded span well past the old
+ * fixed 128 KiB (32-page) image-window premap: the newlib image is already ~115
+ * KiB of PT_LOAD, and this adds ~160 KiB of zeroed BSS, taking the span to ~275
+ * KiB (~68 pages). The ELF loader zero-fills every BSS page via copy_to_user,
+ * which needs the page premapped, so before the premap was sized to the image's
+ * actual span this image would fail to load (copy_to_user hits the 33rd,
+ * unmapped, page) and NEWLIB_SELFTEST: PASS never prints. `volatile` and the
+ * end-to-end touch below keep the array (and the pages behind it) real. */
+#define BIG_BSS_SIZE (160u * 1024u)
+static volatile unsigned char big_bss[BIG_BSS_SIZE];
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -459,6 +470,28 @@ int main(int argc, char **argv, char **envp) {
         }
         unlink("/ln_dir");
         printf("fs hard links OK\n");
+    }
+
+    /* --- large image: the whole ~275 KiB image loaded, not just 128 KiB ----
+     * Touch big_bss at its start, past the old 32-page premap boundary
+     * (0x20000), and at its very end. Every byte must read back zero (the loader
+     * zero-filled it) and survive a write — proving the pages beyond the old
+     * premap are present and writable, i.e. the premap was sized to the image. */
+    {
+        size_t probes[] = { 0, 0x20000, BIG_BSS_SIZE / 2, BIG_BSS_SIZE - 1 };
+        for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+            size_t off = probes[i];
+            if (big_bss[off] != 0) {
+                printf("NEWLIB_SELFTEST: FAIL bigbss-nonzero at %u\n", (unsigned)off);
+                return 1;
+            }
+            big_bss[off] = (unsigned char)(0xA5 ^ (off & 0xFF));
+            if (big_bss[off] != (unsigned char)(0xA5 ^ (off & 0xFF))) {
+                printf("NEWLIB_SELFTEST: FAIL bigbss-write at %u\n", (unsigned)off);
+                return 1;
+            }
+        }
+        printf("large image (~275 KiB) loaded OK\n");
     }
 
     printf("NEWLIB_SELFTEST: PASS\n");

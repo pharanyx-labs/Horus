@@ -264,10 +264,14 @@ With a libc and a heap in place, grow what runs on top.
   leaves that name until removed. Both proven by `make smoke-newlib` (link:
   two names → one inode with `nlink==2`, unlink one and the data survives under
   the other at `nlink==1`, a hard link to a directory is refused, the last unlink
-  frees; tmpfile: a write/rewind/read round-trip then `fclose`). The binding
-  constraint beyond the libc surface is the 4 MiB userspace image window /
-  1 MiB `MAX_PROGRAM_SIZE` (see the address-separation item in Phase 5) — a real
-  binutils binary is several MB and does not fit until that is widened.
+  frees; tmpfile: a write/rewind/read round-trip then `fclose`). The libc surface
+  itself is complete; the remaining constraint on a real binutils port is program
+  *size*: the image-window premap is now sized to the whole image (so an image is
+  no longer capped at 128 KiB — see the address-separation item in Phase 5), which
+  leaves the `MAX_PROGRAM_SIZE` (1 MiB) staged-loader cap as the binding limit, and
+  a real binutils binary is several MB. Widening that is a boot-critical memory
+  layout change (the staging buffer is a static `.bss` array against a tight `.bss`
+  ceiling), tracked in Phase 5.
 - **Port real programs**: bring up a subset of GNU coreutils/binutils against
   newlib now that `malloc`/`sbrk`/`brk` exist.
 - **More servers**: a network-stack server, a block-device driver server, and a
@@ -315,11 +319,28 @@ Cross-cutting work that should grow alongside every other phase.
   independently refuses any fault outside the calling task's own image/heap/stack.
   `make smoke-aslr` gates the entropy claim.
 
-  **What remains here.** Image size is capped at the 128 KiB premap, not by the
-  address space: `try_elf_load` writes with `copy_to_user`, which walks page tables
-  and requires a present USER page rather than faulting, so it cannot demand-page.
-  Growing loadable images needs the premap to grow or `user_copy` to demand-page.
+  **The image-window premap is now sized to the image** — *done*: it used to be a
+  fixed 128 KiB (32 pages), and since `try_elf_load` writes each `PT_LOAD` segment
+  with `copy_to_user` — which walks the page tables and needs a present USER page
+  rather than faulting one in — that 128 KiB was the hard cap on a loadable image,
+  regardless of the address space. `create_user_pagedir` now premaps the staged
+  image's actual loaded span (`staged_image_span_pages()`: `max(p_vaddr+p_memsz) −
+  page_floor(min_vaddr)`, set on the TCB by the spawn/exec path before the address
+  space is built, clamped to `USER_IMAGE_MAX_PAGES` = 16 MiB so a crafted `p_memsz`
+  cannot request the whole pool). A loadable image is now bounded by
+  `MAX_PROGRAM_SIZE`, not by the premap. `make smoke-newlib` gates it: the newlib
+  self-test image carries a ~160 KiB `.bss` array taking its loaded span to ~275
+  KiB (~69 pages), touched end-to-end past the old 32-page boundary; with the premap
+  forced back to 32 pages the image fails to load and the test fails.
   The low user stack is still a fixed, known mapping at `[0x7df000, 0x7ff000)`.
+
+  **What remains here.** The staged loader still caps a program *file* at
+  `MAX_PROGRAM_SIZE` (1 MiB), because `loader_staging[]` is a static `.bss` buffer
+  and the `.bss` ceiling (`__bss_end` must stay below `USER_PHYS_BASE` = 16 MiB)
+  leaves only ~1.9 MiB of headroom. Raising it to hold a several-MB binutils binary
+  needs the staging buffer moved off `.bss` (or `USER_PHYS_BASE` raised, which
+  interacts with the 16 MiB `KERN_SPLIT_PDES` 4 KiB-mapped kernel window) — a
+  boot-critical memory-layout change, tracked separately.
 
   **The physical allocator now parses the E820 map** — *done*: `_start` saves the
   multiboot2 magic and info pointer before reusing the register (`saved_mb_magic` /

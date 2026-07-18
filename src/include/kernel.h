@@ -79,7 +79,24 @@ typedef uint64_t vaddr_t;
 #define USER_PHYS_BASE          0x01000000
 #define USER_PHYS_PAGES         131072              /* array cap: 512 MiB pool */
 #define USER_PHYS_DEFAULT_PAGES 16384               /* fallback: 64 MiB (pre-E820) */
-#define PHYS_POOL_MIN_PAGES     4096                /* floor: 16 MiB, keep the system usable */
+
+/* Staged-program-image buffer. The loader stages a whole program file here
+ * before validating and mapping it into a new address space. It used to be a
+ * static .bss array (`loader_staging[MAX_PROGRAM_SIZE]`), which pinned the image
+ * cap at ~1 MiB: .bss must end below USER_PHYS_BASE and only ~1.9 MiB of headroom
+ * was left. Instead it is now a fixed region reserved at the *base of the
+ * physical pool* — [USER_PHYS_BASE, USER_PHYS_BASE + LOADER_STAGING_BYTES) — that
+ * init_user_page_allocator holds back from the free list and points
+ * `loader_staging` at through the PHYS_KVA window. That decouples the image cap
+ * from the .bss ceiling entirely: raising it just reserves a few more pool
+ * frames (of the ~495 MiB E820 pool), costing no .bss. */
+#define LOADER_STAGING_BYTES    (8u * 1024u * 1024u)          /* 8 MiB staged-image cap */
+#define LOADER_STAGING_PAGES    (LOADER_STAGING_BYTES / PAGE_SIZE)
+extern uint8_t *loader_staging;                               /* set at boot -> PHYS_KVA(USER_PHYS_BASE) */
+
+/* Floor keeps 16 MiB *usable* after the staging reserve, so even a tiny E820 pool
+ * still boots with the historical headroom. */
+#define PHYS_POOL_MIN_PAGES     (4096 + LOADER_STAGING_PAGES)  /* floor: 16 MiB usable + staging */
 #define PHYS_POOL_CEIL          0x40000000ULL       /* pool top must stay < 1 GiB (PHYS_KVA) */
 #define CNODE_SIZE              256
 #define MAX_TASKS               64
@@ -120,6 +137,11 @@ typedef uint64_t vaddr_t;
 extern uint8_t stack_top[];
 #define KERNEL_TSS_STACK        ((uintptr_t)stack_top)
 #define USER_ASPACE_PREMAP_PAGES 32
+/* Upper bound on the image-window premap (staged_image_span_pages clamps to it).
+ * 16 MiB is far above any real loaded span (MAX_PROGRAM_SIZE caps the file at
+ * 1 MiB; only .bss extends memsz past that), and it bounds a crafted ELF header
+ * claiming a huge p_memsz from asking the premap to allocate the whole pool. */
+#define USER_IMAGE_MAX_PAGES     4096
 #define KERNEL_STACK_SIZE 32768
 #define MAX_USERS               32
 #define USER_HEAP_BASE              0x0000000001000000ULL
@@ -526,6 +548,11 @@ typedef struct tcb {
      * `image_base`; the flat/non-PIE fallback keeps the fixed USER_AREA_BASE. */
     uint64_t image_base;
     uint64_t image_end;
+    /* Number of pages create_user_pagedir premaps for the image window — the
+     * loaded span of the staged image (staged_image_span_pages), so the whole
+     * image, not just a fixed 128 KiB, is present for the loader's copy_to_user.
+     * 0 means "use the USER_ASPACE_PREMAP_PAGES default" (task 0, flat demos). */
+    uint32_t image_premap_pages;
 
     /* Blocking IPC: set by h_ipc_call before yielding, consumed by ipc_block_switch
      * when the reply arrives and the waiter is resumed. */
@@ -1129,8 +1156,13 @@ int kernel_argon2id(const uint8_t *pwd, size_t plen,
 int  ramfs_list(char *buf, size_t buflen);
 
 
-void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base);
+void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base,
+                 uint32_t premap_pages);
 void create_user_pagedir(uint32_t id);
+/* Pages the currently-armed staged image will occupy once loaded (its PT_LOAD
+ * span), so the image-window premap can be sized to the whole image. 0 callers
+ * with no armed image pass 0 to create_task for the default. */
+uint32_t staged_image_span_pages(void);
 void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);
 void aslr_mix_entropy(uint64_t val);

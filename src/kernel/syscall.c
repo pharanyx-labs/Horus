@@ -303,9 +303,10 @@ static void h_exec(struct interrupt_frame64 *r) {
         return;
     }
 
-    /* Premap stays at the fixed base (this path loads a non-relocated image);
-     * the user-supplied load_base only drives the entry/eip, as before. */
-    create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP, USER_AREA_BASE);
+    /* Premap stays at the fixed base and the default size (this path loads a
+     * small non-relocated image); the user-supplied load_base only drives the
+     * entry/eip, as before. */
+    create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP, USER_AREA_BASE, 0);
 
     tasks[new_id].heap_start = USER_HEAP_BASE + new_id * 0x10000;
     tasks[new_id].heap_current = tasks[new_id].heap_start;

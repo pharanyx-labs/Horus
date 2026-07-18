@@ -17,9 +17,11 @@
 
 /* ---- Loader staging state (defined in loader.c) -------------------------- *
  * The staging buffer + armed program header are shared by the loader, the
- * spawn/exec paths, the boot shell launcher, and the gated self-tests. */
-#define MAX_PROGRAM_SIZE (1024 * 1024)
-extern uint8_t loader_staging[MAX_PROGRAM_SIZE];
+ * spawn/exec paths, the boot shell launcher, and the gated self-tests.
+ * `loader_staging` (a pointer into the reserved pool region) and its size cap
+ * LOADER_STAGING_BYTES are declared in kernel.h; MAX_PROGRAM_SIZE is the loader's
+ * name for that cap and bounds every staged-image offset. */
+#define MAX_PROGRAM_SIZE LOADER_STAGING_BYTES
 extern struct program_header armed_hdr;
 extern int program_armed;
 

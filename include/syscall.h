@@ -130,6 +130,8 @@ struct audit_event {
 #define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (fs server only) */
 #define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the last sender on req_ep (multi-client safe routing) */
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (fs server only) */
+#define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> total module count; fills *info for a valid index (store owner only) */
+#define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module's payload (store owner only) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -604,6 +606,29 @@ static inline int sys_fs_inode_free(uint32_t ino) {
  * Refuses a directory. Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_fs_inode_link(uint32_t ino) {
     return syscall(SYS_FS_INODE_LINK, ino, 0, 0);
+}
+
+/* Description of one boot module (a program image GRUB loaded into RAM and the
+ * kernel recorded from the multiboot2 tags). Filled by sys_boot_module_info. */
+#define BOOT_MODULE_INFO_NAME_MAX 32
+struct boot_module_info {
+    uint32_t size;                              /* payload byte count */
+    char     name[BOOT_MODULE_INFO_NAME_MAX];   /* the module2 cmdline (utility name) */
+};
+
+/* Return the number of boot modules the kernel recorded. If `index` is valid and
+ * `info` is non-NULL, also fill *info with that module's size and name. Gated on
+ * the object-store capability — only the trusted filesystem server may read boot
+ * modules, which are TCB-supplied images at the same trust tier as the store. */
+static inline int sys_boot_module_info(uint32_t index, struct boot_module_info *info) {
+    return syscall(SYS_BOOT_MODULE_INFO, index, (uint64_t)(uintptr_t)info, 0);
+}
+
+/* Copy up to `len` bytes from boot module `index`, starting at byte `offset`,
+ * into `buf`. Returns the number of bytes copied (0 at/after end of module) or a
+ * negative SYS_ERR_*. Same gate as sys_boot_module_info. */
+static inline int sys_boot_module_read(uint32_t index, uint32_t offset, void *buf, uint32_t len) {
+    return (int)syscall6(SYS_BOOT_MODULE_READ, index, offset, (uint64_t)(uintptr_t)buf, len, 0, 0);
 }
 
 /* Read logical `block` of `ino` (decrypt-and-verify in the kernel) into `buf`

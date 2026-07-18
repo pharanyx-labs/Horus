@@ -731,6 +731,54 @@ static void h_sigaltstack(struct interrupt_frame64 *r) {
     r->rax = SYS_OK;
 }
 
+/* SYS_BOOT_MODULE_INFO (77): return the recorded boot-module count, and fill the
+ * caller's struct boot_module_info for a valid index. Gated centrally on
+ * CAP_BLOCK_DEV (the store-owner authority); the uid==0 check here mirrors the
+ * rest of the object-store API, so only the trusted FS server reaches it. Boot
+ * modules are bootloader-supplied images at the same trust tier as the block
+ * store, so read-only exposure to that owner is not an escalation. */
+static void h_boot_module_info(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint32_t index = (uint32_t)r->rbx;
+    void    *uout  = (void *)(addr_t)r->rcx;
+    uint32_t count = boot_module_count();
+
+    if (uout && index < count) {
+        const struct boot_module *m = boot_module_get(index);
+        struct boot_module_info info;
+        info.size = (uint32_t)(m->end - m->start);
+        for (int i = 0; i < BOOT_MODULE_INFO_NAME_MAX; i++) info.name[i] = m->name[i];
+        info.name[BOOT_MODULE_INFO_NAME_MAX - 1] = 0;
+        if (copy_to_user(uout, &info, sizeof(info)) != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    }
+    r->rax = count;
+}
+
+/* SYS_BOOT_MODULE_READ (78): copy a byte range out of a boot module's payload
+ * into a user buffer. The payload lives in physical RAM outside the kernel image
+ * (where GRUB dropped it), reached through the PHYS_KVA window. Same gate as
+ * SYS_BOOT_MODULE_INFO. offset/len are bounded to the module extent, so a crafted
+ * request cannot read past it. */
+static void h_boot_module_read(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint32_t index  = (uint32_t)r->rbx;
+    uint32_t offset = (uint32_t)r->rcx;
+    void    *ubuf   = (void *)(addr_t)r->rdx;
+    uint32_t len    = (uint32_t)r->rsi;
+
+    const struct boot_module *m = boot_module_get(index);
+    if (!m) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    uint32_t size = (uint32_t)(m->end - m->start);
+    if (offset >= size) { r->rax = 0; return; }          /* at/after end: 0 bytes */
+    uint32_t avail = size - offset;
+    if (len > avail) len = avail;
+    if (len == 0) { r->rax = 0; return; }
+
+    const void *src = PHYS_KVA(m->start + offset);
+    if (copy_to_user(ubuf, src, len) != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    r->rax = len;
+}
+
 typedef struct {
     void   (*fn)(struct interrupt_frame64 *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
@@ -738,7 +786,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 77
+#define SYSCALL_TABLE_SIZE 79
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -842,6 +890,10 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FS_STAT]                  = { h_fs_stat,                 7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_FS_SET_SIZE]              = { h_fs_set_size,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_BRK]                     = { h_brk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, demand-paged */
+    /* Boot-module read surface — same gate as the object store (CAP_BLOCK_DEV
+     * slot 7 here + uid 0 in the handler), so only the FS server reaches it. */
+    [SYS_BOOT_MODULE_INFO]        = { h_boot_module_info,        7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_BOOT_MODULE_READ]        = { h_boot_module_read,        7, CAP_BLOCK_DEV, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -853,7 +905,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_FS_INODE_LINK + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_BOOT_MODULE_READ + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

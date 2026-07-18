@@ -239,6 +239,7 @@ static inline bool is_ENOTSUP (int err) {
  * <limits.h> POSIX addition it does not carry. Derive it from ssize_t's width
  * rather than assuming 64-bit. */
 #include <stdint.h>
+#include <inttypes.h>   /* strtoimax / strtoumax, used by printf(1) */
 #ifndef SSIZE_MAX
 # define SSIZE_MAX ((ssize_t) (SIZE_MAX / 2))
 #endif
@@ -297,5 +298,18 @@ static inline bool is_ENOTSUP (int err) {
  * xalloc_die() they reference above are already declared. */
 #include "xalloc.h"
 #include "inttostr.h"
+#include "quotearg.h"   /* quotearg_style, used by printf(1) for bad-argument diagnostics */
+
+/* PID_T_MAX: gnulib derives this from intprops; tail(1) uses it to range-check a
+ * --pid argument. pid_t is a signed int on this newlib, so its maximum is
+ * INT_MAX. */
+#ifndef PID_T_MAX
+# define PID_T_MAX INT_MAX
+#endif
+
+/* lstat: Horus has no symbolic links, so lstat and stat are identical (a name
+ * always refers to the file itself). newlib declares stat but not lstat; provide
+ * it so tail(1)'s follow-by-name path links. */
+int lstat (const char *path, struct stat *st);
 
 #endif /* HORUS_COREUTILS_SYSTEM_H */

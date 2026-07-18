@@ -94,6 +94,31 @@ typedef uint64_t vaddr_t;
 #define LOADER_STAGING_PAGES    (LOADER_STAGING_BYTES / PAGE_SIZE)
 extern uint8_t *loader_staging;                               /* set at boot -> PHYS_KVA(USER_PHYS_BASE) */
 
+/* Boot modules. GRUB loads each `module2` line in grub.cfg into physical RAM and
+ * describes it with a multiboot2 type-3 tag; mb_scan_boot_info() records them
+ * here at boot. This is how program images reach the system WITHOUT being
+ * incbin'd into kernel.elf: a module is ordinary RAM outside the image, so it
+ * costs nothing against the 16 MiB budget the linker ASSERT enforces
+ * (__bss_end <= USER_PHYS_BASE). init reads them over SYS_BOOT_MODULE and writes
+ * them into the encrypted store; nothing executes a module in place.
+ *
+ * Module frames are held back from the physical pool's free list
+ * (init_user_page_allocator), because GRUB places modules wherever it likes —
+ * in practice just above the kernel image, i.e. inside the pool — and handing
+ * one out as an anonymous user page would corrupt the image before init reads
+ * it. Their extent also pushes the staged-image reserve upward. */
+#define MAX_BOOT_MODULES        24
+#define BOOT_MODULE_NAME_MAX    32
+struct boot_module {
+    uint64_t start;                        /* physical, inclusive */
+    uint64_t end;                          /* physical, exclusive */
+    char     name[BOOT_MODULE_NAME_MAX];   /* the module2 cmdline, truncated */
+};
+uint32_t boot_module_count(void);
+const struct boot_module *boot_module_get(uint32_t index);
+/* Highest physical address any module occupies, page-rounded (0 if none). */
+uint64_t boot_module_top(void);
+
 /* Floor keeps 16 MiB *usable* after the staging reserve, so even a tiny E820 pool
  * still boots with the historical headroom. */
 #define PHYS_POOL_MIN_PAGES     (4096 + LOADER_STAGING_PAGES)  /* floor: 16 MiB usable + staging */
@@ -320,6 +345,8 @@ void users_init(void);
 #define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (object-store server only: uid 0 + CAP_BLOCK_DEV) */
 #define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the task that sent the last request on req_ep (routed by kernel-recorded sender, not a shared reply endpoint) — multi-client safe */
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (object-store server only: uid 0 + CAP_BLOCK_DEV) */
+#define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> module count; store owner only (uid 0 + CAP_BLOCK_DEV) */
+#define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module; store owner only (uid 0 + CAP_BLOCK_DEV) */
 
 /* Minimum size of a registered alternate signal stack (SYS_SIGALTSTACK); smaller
  * requests fail closed so a handler always has room for at least a shallow frame. */
@@ -333,6 +360,15 @@ struct fs_stat {
     uint32_t uid;
     uint32_t gid;
     uint32_t links;
+};
+
+/* Boot-module descriptor returned by SYS_BOOT_MODULE_INFO (mirrors struct
+ * boot_module_info in include/syscall.h — keep byte-identical). Distinct from the
+ * kernel-internal struct boot_module above, which also carries physical extent. */
+#define BOOT_MODULE_INFO_NAME_MAX 32
+struct boot_module_info {
+    uint32_t size;
+    char     name[BOOT_MODULE_INFO_NAME_MAX];
 };
 
 /* Signal numbers delivered to a registered handler on a ring-3 fault. */

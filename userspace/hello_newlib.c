@@ -14,6 +14,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <dirent.h>
 /* <sys/errno.h>, not <errno.h>: -I include precedes the newlib headers, so
@@ -324,6 +325,77 @@ int main(int argc, char **argv, char **envp) {
         unlink("/wd_a/wd_b");
         unlink("/wd_a");
         printf("fs cwd mkdir/chdir/getcwd OK\n");
+    }
+
+    /* --- environment, fcntl, and kill: the last libc-surface items ---------
+     * environ is an empty vector (Horus passes no environment) so getenv finds
+     * nothing; fcntl validates the fd and no-ops the flag words; kill() forwards
+     * to SYS_SIGNAL under the capability model — a pid we hold no CAP_TCB for (or
+     * that does not exist) is refused rather than delivered. */
+    {
+        extern char **environ;
+        if (environ == NULL || environ[0] != NULL) {
+            printf("NEWLIB_SELFTEST: FAIL environ-not-empty\n"); return 1;
+        }
+        if (getenv("PATH") != NULL) {
+            printf("NEWLIB_SELFTEST: FAIL getenv-nonempty\n"); return 1;
+        }
+
+        /* A valid fd's flag words no-op to 0; a bad fd is EBADF; an unsupported
+         * command is EINVAL rather than a silent success. */
+        if (fcntl(1, F_GETFL) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL fcntl-getfl\n"); return 1;
+        }
+        errno = 0;
+        if (fcntl(-1, F_GETFL) != -1 || errno != EBADF) {
+            printf("NEWLIB_SELFTEST: FAIL fcntl-badfd\n"); return 1;
+        }
+        errno = 0;
+        if (fcntl(1, F_DUPFD, 10) != -1 || errno != EINVAL) {
+            printf("NEWLIB_SELFTEST: FAIL fcntl-badcmd\n"); return 1;
+        }
+
+        /* The null signal is a best-effort success; a signal to a task we cannot
+         * name (a pid far out of range) is refused with ESRCH, never delivered. */
+        if (kill(getpid(), 0) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL kill-null\n"); return 1;
+        }
+        errno = 0;
+        if (kill(1 << 20, SIGTERM) != -1 || errno != ESRCH) {
+            printf("NEWLIB_SELFTEST: FAIL kill-nosuch\n"); return 1;
+        }
+        printf("libc environ/fcntl/kill OK\n");
+    }
+
+    /* --- temp files: mkstemp works; tmpfile is deferred --------------------
+     * mkstemp creates and opens a uniquely-named file we can round-trip; it
+     * never unlinks while open, so it needs nothing the object store lacks.
+     * tmpfile does need unlinked-but-open inodes (blocked on store refcounts,
+     * like link()), so it fails cleanly with ENOSYS rather than returning a
+     * silently broken stream. */
+    {
+        char tmpl[] = "/tmp_mkstempXXXXXX";
+        int tfd = mkstemp(tmpl);
+        if (tfd < 0) { printf("NEWLIB_SELFTEST: FAIL mkstemp-open\n"); return 1; }
+        const char *msg = "tmp!";
+        if (write(tfd, msg, 4) != 4) {
+            printf("NEWLIB_SELFTEST: FAIL mkstemp-write\n"); return 1;
+        }
+        if (lseek(tfd, 0, SEEK_SET) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL mkstemp-seek\n"); return 1;
+        }
+        char rb[4] = { 0 };
+        if (read(tfd, rb, 4) != 4 || memcmp(rb, msg, 4) != 0) {
+            printf("NEWLIB_SELFTEST: FAIL mkstemp-readback\n"); return 1;
+        }
+        close(tfd);
+        unlink(tmpl);                     /* mkstemp leaves the name behind */
+
+        errno = 0;
+        if (tmpfile() != NULL || errno != ENOSYS) {
+            printf("NEWLIB_SELFTEST: FAIL tmpfile-not-enosys\n"); return 1;
+        }
+        printf("libc mkstemp OK, tmpfile deferred (ENOSYS)\n");
     }
 
     printf("NEWLIB_SELFTEST: PASS\n");

@@ -280,14 +280,35 @@ endif
 # The set of utilities ported so far. Each is an unmodified upstream .c in
 # $(COREUTILS_DIR) built into its own spawn-by-name binary; adding one is a
 # matter of extending this list once its gnulib surface is covered by port/.
-COREUTILS_PROGS = echo true false basename dirname cat
+COREUTILS_PROGS = echo true false basename dirname cat head seq wc
 COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_PROGS)))
 
+# Two gates. COREUTILS_EMBED just incbin's the utility binaries into the image
+# and lists them in the spawn-by-name table (so the shell can run them);
+# COREUTILS_SELFTEST additionally diverts the boot into the marker self-test.
+# Either way the binaries are absent from the shipped kernel, so the ISO carries
+# no GPLv3-derived binary.
+#
+#   COREUTILS_SELFTEST=1  -> embed + boot the marker test (make smoke-coreutils)
+#   COREUTILS_SHELL=1     -> embed + boot the normal shell  (make smoke-coreutils-shell)
+# Each build embeds only the subset of utilities its test drives -- nine
+# newlib-linked binaries at once overrun the kernel image's 16 MiB budget, so
+# CU_EMBED_<name> gates each one independently (see src/boot/multiboot.S).
+#   COREUTILS_SELFTEST=1 -> echo/basename/dirname/seq + boot the marker test
+#   COREUTILS_SHELL=1    -> head/seq/wc + boot the normal shell (session test)
+COREUTILS_MARKER_SET = echo basename dirname seq
+COREUTILS_SHELL_SET  = head seq wc
 COREUTILS_SELFTEST ?= 0
+COREUTILS_SHELL    ?= 0
 ifeq ($(COREUTILS_SELFTEST),1)
-CFLAGS  += -DCOREUTILS_SELFTEST
-ASFLAGS += -DCOREUTILS_SELFTEST
-COREUTILS_SELFTEST_DEP = $(COREUTILS_BINS)
+CFLAGS  += -DCOREUTILS_SELFTEST $(addprefix -DCU_EMBED_,$(COREUTILS_MARKER_SET))
+ASFLAGS += -DCOREUTILS_SELFTEST $(addprefix -DCU_EMBED_,$(COREUTILS_MARKER_SET))
+COREUTILS_SELFTEST_DEP = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_MARKER_SET)))
+endif
+ifeq ($(COREUTILS_SHELL),1)
+CFLAGS  += $(addprefix -DCU_EMBED_,$(COREUTILS_SHELL_SET))
+ASFLAGS += $(addprefix -DCU_EMBED_,$(COREUTILS_SHELL_SET))
+COREUTILS_SELFTEST_DEP = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_SHELL_SET)))
 endif
 
 # NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
@@ -575,21 +596,37 @@ userspace/hello_newlib.bin: userspace/hello_newlib.pie.elf tools/mkheadered
 # The shim's include dir comes FIRST so its config.h/system.h win over anything
 # of the same name, then the newlib headers.
 COREUTILS_DIR    = userspace/ports/coreutils
-COREUTILS_CFLAGS = $(USERSPACE_CFLAGS) -I $(COREUTILS_DIR)/port -I $(NEWLIB_INC)
+# -ffunction-sections/-fdata-sections + --gc-sections at link time: the shared
+# port objects (gnulib.o especially) define far more than any one utility uses
+# -- argmatch, xstrtol, the argv iterator, ... -- and without dead-code
+# elimination all of it lands in every binary, bloating each by ~150 KiB and
+# blowing the kernel image's 16 MiB budget once several are embedded. With it,
+# each binary carries only the functions it actually references.
+COREUTILS_CFLAGS = $(USERSPACE_CFLAGS) -ffunction-sections -fdata-sections \
+                   -I $(COREUTILS_DIR)/port -I $(NEWLIB_INC)
+
+# The port shim: runtime glue (port.o) plus the gnulib-module implementations
+# (gnulib.o -- xalloc, inttostr, xstrtol, xdectoint, ...). Both are Horus code
+# and compile warning-clean under the full warning set, unlike the vendored
+# upstream .c below.
+COREUTILS_PORT_OBJS = $(COREUTILS_DIR)/port/port.o $(COREUTILS_DIR)/port/gnulib.o
 
 $(COREUTILS_DIR)/port/port.o: $(COREUTILS_DIR)/port/port.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(COREUTILS_CFLAGS) -c $< -o $@
+
+$(COREUTILS_DIR)/port/gnulib.o: $(COREUTILS_DIR)/port/gnulib.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(COREUTILS_CFLAGS) -c $< -o $@
 
 # Vendored upstream: compiled as-is. -Wno-unused-parameter because upstream is
 # built with its own warning set, and a port must not have to edit the source to
 # stay quiet under ours.
 $(COREUTILS_DIR)/%.o: $(COREUTILS_DIR)/%.c $(NEWLIB_LIB)/libc.a
-	$(CC) $(COREUTILS_CFLAGS) -Wno-unused-parameter -c $< -o $@
+	$(CC) $(COREUTILS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare -Wno-type-limits -c $< -o $@
 
-userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_DIR)/port/port.o \
+userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
                                $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
-	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
-	    userspace/crt0.o $< $(COREUTILS_DIR)/port/port.o \
+	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o $< $(COREUTILS_PORT_OBJS) \
 	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
 	    userspace/malloc.o -L$(NEWLIB_LIB) -lc
 
@@ -928,6 +965,19 @@ smoke-coreutils:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COREUTILS_SELFTEST: PASS coreutils ran!' \
 		FAIL_MARKER='COREUTILS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Embed head/seq/wc into a normal-boot kernel and drive them through the REAL
+# ring-3 shell over serial: create a file, run wc/head on it and seq standalone,
+# and assert the counts and lines. Unlike smoke-coreutils (which spawns the
+# utilities directly), this exercises the whole path a user takes -- the shell
+# parsing a command line, spawning the utility with argv, the utility opening a
+# file through its own fs_server connection, and waiting for it to finish.
+.PHONY: smoke-coreutils-shell
+smoke-coreutils-shell:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_SHELL=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/coreutils_session.py boot.iso
 
 # Build with the gated large-file self-test, boot headless, and require the
 # in-kernel test to report PASS -- runtime proof that a single inode can map

@@ -64,7 +64,7 @@ void scheduler_init(void) {
         tasks[i].auth_lockout_until = 0;
     }
 
-    create_task(0, 0, 0, 0);
+    create_task(0, 0, 0, 0, 0);   /* task 0: no image, default premap */
 
     tasks[0].uid = 0;
     tasks[0].gid = 0;
@@ -91,7 +91,8 @@ void scheduler_init(void) {
     current_kernel_stack_top = KERNEL_TSS_STACK;
 }
 
-void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
+void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
+                 uint32_t premap_pages) {
     if (id >= MAX_TASKS) return;
 
     /* Record the (possibly ASLR-randomized) image base before create_user_pagedir
@@ -99,6 +100,13 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base) {
      * to the fixed low base for task 0 / callers that don't relocate. */
     tasks[id].image_base = image_base ? image_base : (uint64_t)USER_AREA_BASE;
     tasks[id].image_end  = tasks[id].image_base;   /* refined by the loader once the image size is known */
+
+    /* How many image-window pages create_user_pagedir premaps. The spawn path
+     * passes staged_image_span_pages() so the whole image is present for the
+     * loader's copy_to_user; task 0 and the flat demo paths pass 0, which
+     * create_user_pagedir reads as the USER_ASPACE_PREMAP_PAGES default. Set here
+     * (not left to slot-reuse staleness) so every rebuild of a slot is explicit. */
+    tasks[id].image_premap_pages = premap_pages;
 
     tasks[id].state = 1;
     tasks[id].esp = (addr_t)(stack_top ? (stack_top - 256) : 0);
@@ -191,7 +199,7 @@ create_user_pagedir(id);
 }
 
 void create_user_task(int id, addr_t entry, addr_t stack_top) {
-    create_task(id, entry, stack_top, USER_AREA_BASE);
+    create_task(id, entry, stack_top, USER_AREA_BASE, 0);   /* flat: default premap */
 }
 
 

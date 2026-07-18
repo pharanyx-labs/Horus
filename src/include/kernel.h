@@ -120,6 +120,11 @@ typedef uint64_t vaddr_t;
 extern uint8_t stack_top[];
 #define KERNEL_TSS_STACK        ((uintptr_t)stack_top)
 #define USER_ASPACE_PREMAP_PAGES 32
+/* Upper bound on the image-window premap (staged_image_span_pages clamps to it).
+ * 16 MiB is far above any real loaded span (MAX_PROGRAM_SIZE caps the file at
+ * 1 MiB; only .bss extends memsz past that), and it bounds a crafted ELF header
+ * claiming a huge p_memsz from asking the premap to allocate the whole pool. */
+#define USER_IMAGE_MAX_PAGES     4096
 #define KERNEL_STACK_SIZE 32768
 #define MAX_USERS               32
 #define USER_HEAP_BASE              0x0000000001000000ULL
@@ -526,6 +531,11 @@ typedef struct tcb {
      * `image_base`; the flat/non-PIE fallback keeps the fixed USER_AREA_BASE. */
     uint64_t image_base;
     uint64_t image_end;
+    /* Number of pages create_user_pagedir premaps for the image window — the
+     * loaded span of the staged image (staged_image_span_pages), so the whole
+     * image, not just a fixed 128 KiB, is present for the loader's copy_to_user.
+     * 0 means "use the USER_ASPACE_PREMAP_PAGES default" (task 0, flat demos). */
+    uint32_t image_premap_pages;
 
     /* Blocking IPC: set by h_ipc_call before yielding, consumed by ipc_block_switch
      * when the reply arrives and the waiter is resumed. */
@@ -1129,8 +1139,13 @@ int kernel_argon2id(const uint8_t *pwd, size_t plen,
 int  ramfs_list(char *buf, size_t buflen);
 
 
-void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base);
+void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base,
+                 uint32_t premap_pages);
 void create_user_pagedir(uint32_t id);
+/* Pages the currently-armed staged image will occupy once loaded (its PT_LOAD
+ * span), so the image-window premap can be sized to the whole image. 0 callers
+ * with no armed image pass 0 to create_task for the default. */
+uint32_t staged_image_span_pages(void);
 void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);
 void aslr_mix_entropy(uint64_t val);

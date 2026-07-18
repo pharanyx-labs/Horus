@@ -364,8 +364,10 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
     if (dyn_off > MAX_PROGRAM_SIZE || dyn_sz > MAX_PROGRAM_SIZE ||
         dyn_off + dyn_sz > MAX_PROGRAM_SIZE) return -16;
 
-    /* Walk Elf64_Dyn { int64 d_tag; uint64 d_val; } for the RELA table. */
+    /* Walk Elf64_Dyn { int64 d_tag; uint64 d_val; } for the RELA table, plus the
+     * dynamic symbol table that R_X86_64_GLOB_DAT entries index into. */
     uint64_t rela_vaddr = 0, rela_sz = 0, rela_ent = 24;
+    uint64_t sym_vaddr = 0, sym_ent = 24;
     for (uint64_t o = 0; o + 16 <= dyn_sz; o += 16) {
         int64_t  tag = (int64_t)elf_rd64(st + dyn_off + o);
         uint64_t val = elf_rd64(st + dyn_off + o + 8);
@@ -373,8 +375,11 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
         else if (tag == 7)  rela_vaddr = val;  /* DT_RELA    */
         else if (tag == 8)  rela_sz    = val;  /* DT_RELASZ  */
         else if (tag == 9)  rela_ent   = val;  /* DT_RELAENT */
+        else if (tag == 6)  sym_vaddr  = val;  /* DT_SYMTAB  */
+        else if (tag == 11) sym_ent    = val;  /* DT_SYMENT  */
         else if (tag == 17) return -16;        /* DT_REL: x86-64 must use RELA */
     }
+    if (sym_vaddr != 0 && sym_ent != 24) return -16;   /* Elf64_Sym is 24 bytes */
     if (rela_vaddr == 0 || rela_sz == 0) return 0;             /* no RELA relocations */
     if (rela_ent != 24) return -16;
 
@@ -398,6 +403,27 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
     if (rela_file_off > MAX_PROGRAM_SIZE || rela_sz > MAX_PROGRAM_SIZE ||
         rela_file_off + rela_sz > MAX_PROGRAM_SIZE) return -16;
 
+    /* Same link-time-vaddr -> file-offset mapping for the dynamic symbol table.
+     * Only its base is resolved here; each entry is bounds-checked at use, since
+     * the table has no length in the dynamic section (DT_SYMTAB carries no size).
+     * sym_file_off == 0 means "no symbol table", which makes any GLOB_DAT below
+     * fail closed rather than read from offset 0. */
+    uint64_t sym_file_off = 0;
+    if (sym_vaddr != 0) {
+        for (uint16_t i = 0; i < e_phnum; i++) {
+            const uint8_t *p = ph + (uint32_t)i * phentsize;
+            if (elf_rd32(p) != 1) continue;        /* PT_LOAD */
+            uint64_t p_offset = elf_rd64(p + 8);
+            uint64_t p_vaddr  = elf_rd64(p + 16);
+            uint64_t p_filesz = elf_rd64(p + 32);
+            if (sym_vaddr >= p_vaddr && sym_vaddr < p_vaddr + p_filesz) {
+                sym_file_off = p_offset + (sym_vaddr - p_vaddr);
+                break;
+            }
+        }
+        if (sym_file_off == 0 || sym_file_off > MAX_PROGRAM_SIZE) return -16;
+    }
+
     uint64_t nrela = rela_sz / 24;
     if (nrela > 8192) return -16;              /* sane cap, as i386 */
     for (uint64_t k = 0; k < nrela; k++) {
@@ -407,7 +433,9 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
         int64_t  r_addend = (int64_t)elf_rd64(r + 16);
         uint32_t r_type   = (uint32_t)(r_info & 0xFFFFFFFFu);
         if (r_type == 0) continue;             /* R_X86_64_NONE */
-        if (r_type != 8) return -16;           /* only R_X86_64_RELATIVE (fail closed) */
+        /* Accepted: R_X86_64_RELATIVE (8) and R_X86_64_GLOB_DAT (6). Anything
+         * else still fails closed rather than running an image half-relocated. */
+        if (r_type != 8 && r_type != 6) return -16;
 
         /* r_offset is a link-time (base-0) vaddr; the patch site is it + slide.
          * Bound it before truncating to the 32-bit user window the loader still
@@ -426,6 +454,42 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
          * value, so this is the i386 read-modify-write with the read replaced
          * by the addend the linker already recorded. */
         uint64_t w = (uint64_t)((int64_t)slide + r_addend);
+
+        if (r_type == 6) {
+            /* R_X86_64_GLOB_DAT: patch a GOT slot with a symbol's address.
+             *
+             * A static PIE has no interpreter and no other object to resolve
+             * against, so the only two outcomes are: the symbol is defined in
+             * this image (relocate it like anything else — st_value + slide), or
+             * it is an undefined *weak* symbol, which the ABI says resolves to
+             * zero. newlib's exit()/atexit() machinery emits exactly the latter
+             * (a weak __on_exit_args), which is why a libc program that returns
+             * from main through exit() carries one of these and used to be
+             * refused outright.
+             *
+             * An undefined *strong* symbol is a genuinely unresolved external:
+             * nothing here can supply it, so refuse rather than quietly writing
+             * a null the program will call through. */
+            uint64_t sym_idx = r_info >> 32;
+            if (sym_file_off == 0) return -16;                 /* GLOB_DAT with no symtab */
+            if (sym_idx > (MAX_PROGRAM_SIZE / 24)) return -16; /* index overflow */
+            uint64_t sym_off = sym_file_off + sym_idx * 24;
+            if (sym_off + 24 > MAX_PROGRAM_SIZE) return -16;   /* entry out of the staged image */
+
+            const uint8_t *sym = st + sym_off;
+            uint8_t  st_info  = sym[4];
+            uint16_t st_shndx = (uint16_t)(sym[6] | ((uint16_t)sym[7] << 8));
+            uint64_t st_value = elf_rd64(sym + 8);
+
+            if (st_shndx == 0) {                               /* SHN_UNDEF */
+                if ((st_info >> 4) != 2) return -16;           /* not STB_WEAK: unresolved */
+                w = 0;                                         /* weak undefined -> NULL */
+            } else {
+                if (st_value > USER_MAX_VADDR) return -16;
+                w = (uint64_t)((int64_t)st_value + (int64_t)slide + r_addend);
+            }
+        }
+
         if (copy_to_user((void *)(uintptr_t)target, &w, 8) != 0) return -16;
     }
     return 0;

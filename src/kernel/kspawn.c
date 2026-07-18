@@ -45,6 +45,32 @@ static void stage_spawn_args(uint64_t uargv, uint32_t uargc) {
     g_args_total = total;
 }
 
+#ifdef COREUTILS_SELFTEST
+/* Stage an argv the KERNEL already holds, for a gated self-test that spawns a
+ * ported program with arguments. stage_spawn_args above reads the vector out of
+ * a ring-3 caller's address space (copy_user_cstr); a kernel-side driver has the
+ * strings in its own, so it needs this variant rather than a fake user pointer.
+ * Same staging, same consumption by build_child_argv. Gated: the ship kernel has
+ * no in-kernel argv source and should not carry one. */
+void stage_spawn_args_kernel(const char *const *argv, uint32_t argc) {
+    g_args_argc = 0; g_args_total = 0;
+    if (argc == 0 || !argv || argc > SPAWN_MAX_ARGS) return;
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < argc; i++) {
+        const char *s = argv[i];
+        if (!s) return;
+        uint32_t len = 0;
+        while (s[len] && total + len + 1 < SPAWN_ARGS_BYTES) len++;
+        if (s[len]) return;                   /* over-long: abort, no args */
+        for (uint32_t j = 0; j <= len; j++) g_args_strbuf[total + j] = s[j];
+        g_args_len[i] = (uint16_t)(len + 1);
+        total += len + 1;
+    }
+    g_args_argc  = argc;
+    g_args_total = total;
+}
+#endif /* COREUTILS_SELFTEST */
+
 /* Marshal the staged argv onto child `tid`'s initial stack and record argc + the
  * argv[] base on its TCB. Must run with `tid` current (so copy_to_user targets
  * its address space) and before sched_prepare_user_context reads esp. Consumes
@@ -383,8 +409,14 @@ void h_spawn_arg(struct interrupt_frame64 *r) {
  * vaddr into its own stack) to *ebx. argc 0 / argv 0 when spawned without args. */
 void h_get_argv(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    uint32_t argv_ptr = tasks[cur].argv_ptr;
-    if (r->rbx) copy_to_user((void *)(addr_t)r->rbx, &argv_ptr, 4);
+    /* 8 bytes, and a uint64_t to hold it: the caller's out-parameter is a
+     * `char **`, which is 8 bytes wide in 64-bit userspace. Narrowing this to
+     * uint32_t and copying 4 wrote only the low half of the pointer and left the
+     * caller's high half untouched — correct only while the argv block happened
+     * to sit below 4 GiB (it is built on the low stack), and silently wrong for
+     * any argv placed higher. */
+    uint64_t argv_ptr = tasks[cur].argv_ptr;
+    if (r->rbx) copy_to_user((void *)(addr_t)r->rbx, &argv_ptr, sizeof(argv_ptr));
     r->rax = tasks[cur].argc;
 }
 

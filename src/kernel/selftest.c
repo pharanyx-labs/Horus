@@ -1223,8 +1223,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW_SELFTEST builds only) -------
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(COREUTILS_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/COREUTILS_SELFTEST only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
@@ -1247,7 +1247,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
     program_armed = 1;
     return do_spawn();
 }
-#endif /* FS_SELFTEST || NEWLIB_SELFTEST */
+#endif /* FS_SELFTEST || NEWLIB_SELFTEST || NOTIFY_SELFTEST || COW_SELFTEST || COREUTILS_SELFTEST */
 
 #ifdef FS_SELFTEST
 void fs_selftest(void) {
@@ -1555,3 +1555,47 @@ void cow_selftest(void) {
 }
 #endif /* COW_SELFTEST */
 
+
+#ifdef COREUTILS_SELFTEST
+/* ---- GNU coreutils port self-test (COREUTILS_SELFTEST builds only) ----------
+ *
+ * Runs the *real*, unmodified GNU coreutils echo(1) — coreutils 9.5 src/echo.c,
+ * byte-identical to the upstream tarball — as a ring-3 task on Horus, compiled
+ * against the newlib libc and a small port shim in place of autoconf + gnulib
+ * (see userspace/ports/coreutils/README.md).
+ *
+ * The assertion is deliberately made by upstream's own logic rather than by us:
+ * the marker only appears if echo joins its argument vector with spaces AND
+ * interprets the -e backslash escapes (\x20 -> space, \x21 -> '!'). If argv
+ * marshalling were broken the words would be missing; if escape handling were
+ * broken the literal "\x20" would appear and the marker would not match. So a
+ * passing run exercises SYS_SPAWN argv, the ELF loader, the newlib port, the
+ * POSIX fd layer and stdio, and echo's real option/escape parser end to end.
+ */
+void coreutils_selftest(void) {
+    extern uint8_t embedded_coreutils_echo_bin_start[], embedded_coreutils_echo_bin_end[];
+    extern void stage_spawn_args_kernel(const char *const *argv, uint32_t argc);
+
+    print("COREUTILS_SELFTEST: begin\n");
+
+    /* Stage argv BEFORE the spawn: do_spawn consumes the staging while building
+     * the child's stack. Upstream echo joins these with single spaces and, under
+     * -e, expands the escapes -- producing exactly the marker asserted below. */
+    static const char *const echo_argv[] = {
+        "echo", "-e", "COREUTILS_SELFTEST:", "PASS\\x20echo", "ran\\x21"
+    };
+    stage_spawn_args_kernel(echo_argv, (uint32_t)(sizeof(echo_argv) / sizeof(echo_argv[0])));
+
+    int pid = fs_spawn_embedded(embedded_coreutils_echo_bin_start,
+                                embedded_coreutils_echo_bin_end, "echo");
+    if (pid <= 0) {
+        print("COREUTILS_SELFTEST: FAIL spawn\n");
+        for (;;) asm volatile("hlt");
+    }
+    tasks[pid].uid = 0;
+
+    print("COREUTILS_SELFTEST: launching\n");
+    sched_enable_preemption();
+    sched_enter_user(pid);   /* echo prints the marker and exits; does not return */
+}
+#endif /* COREUTILS_SELFTEST */

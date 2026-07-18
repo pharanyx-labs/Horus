@@ -278,6 +278,15 @@ void smp_bringup(void) {
      * prove the write broke COW into a private page without disturbing the
      * sibling (prints COW_SELFTEST: PASS). */
     { extern void cow_selftest(void); cow_selftest(); }
+#elif defined(CAPTEST_SELFTEST)
+    /* Gated: drive the syscall surface and the capability model from ring 3,
+     * asserting mostly on the refusals (prints CAPTEST: PASS <n> checks). */
+    { extern void captest_selftest(void); captest_selftest(); }
+#elif defined(COREUTILS_SELFTEST)
+    /* Gated: run the real, unmodified GNU coreutils echo(1) as a ring-3 task and
+     * let its own argv joining + backslash-escape handling produce the marker
+     * (prints COREUTILS_SELFTEST: PASS ... to serial). */
+    { extern void coreutils_selftest(void); coreutils_selftest(); }
 #else
 #ifdef ELF_SELFTEST
     /* Gated: verify try_elf_load's W^X enforcement on a real ELF before the

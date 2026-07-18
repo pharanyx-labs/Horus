@@ -272,13 +272,38 @@ With a libc and a heap in place, grow what runs on top.
   `MAX_PROGRAM_SIZE` is now 8 MiB and trivially raisable. `make smoke-newlib`
   loads a ~1.5 MiB image end-to-end. What is left for the port itself is bringing
   up the coreutils/binutils sources against newlib.
-- **Port real programs**: bring up a subset of GNU coreutils/binutils against
-  newlib now that `malloc`/`sbrk`/`brk` exist.
+- **Port real programs** — *started*: GNU coreutils `echo(1)` (coreutils 9.5
+  `src/echo.c`, vendored byte-identical and never edited) builds against the
+  newlib port and runs as a ring-3 task, gated by `make smoke-coreutils`. The
+  marker is produced by upstream's own code path — argv joined with spaces and
+  `-e` escapes expanded — so a pass means real third-party source ran correctly.
+  Upstream's autoconf + gnulib build does not survive the trip to a freestanding
+  target (no `x86_64-elf` cross toolchain, `configure` runs target probes, and
+  every utility pulls `src/system.h` → ~25 headers → 478 gnulib `.c` files), so
+  the port supplies what those would have: `config.h`, a trimmed `system.h`,
+  `assure.h`, `c-ctype.h` and a small `port.c`. The vendored sources are **GPLv3**
+  and isolated in `userspace/ports/coreutils/` with their own `COPYING`; the port
+  glue is MIT like the rest of the tree (see that directory's `README.md`).
+  Doing this found four real bugs — `crt0` never passed `argv` and exited without
+  running `atexit` (so stdio never flushed), `SYS_GET_ARGV` truncated its pointer
+  to 32 bits, and the ELF loader refused `R_X86_64_GLOB_DAT`, which every libc
+  program reaching `exit()` emits. Next: more utilities (`cat`, `wc`), then
+  binutils.
 - **More servers**: a network-stack server, a block-device driver server, and a
   name server, each following the capability-delegation model.
-- **`captest` expansion**: grow it into a comprehensive program exercising every
-  syscall and every capability operation — usable as both a regression test and a
-  demonstration.
+- **`captest` expansion** — *done*: it was a seven-line stub of raw `int $0x80`
+  calls with no assertions; it is now a conformance exerciser that drives the
+  syscall surface and the capability model from ring 3 and asserts on the
+  results, gated by `make smoke-captest` (29 checks). The emphasis is on the
+  **refusals**, since that is what a capability system has to get right: syscalls
+  gated on capabilities the task does not hold (block device, audit log), IPC on
+  an unheld slot, revoking without `CAP_RIGHT_REVOKE` (possession is not
+  authority) and confirming the refused revoke had no side effects, `SYS_CAP_GRANT`
+  outside the descendants rule, an unmaskable `SIG_KILL`, signalling/killing a
+  task no `CAP_TCB` names, an undersized alternate signal stack, unknown syscall
+  numbers, and bad user pointers. It also caught `SYS_GETPID` being declared in
+  both headers and wrapped for libc but never implemented — every call had been
+  silently taking the fail-closed deny path.
 
 ---
 

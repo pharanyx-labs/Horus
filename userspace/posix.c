@@ -522,6 +522,7 @@ int posix_fstat(int fd, posix_stat_t *st) {
         _umemset(st, 0, sizeof(*st));
         st->mode    = S_IFCHR | S_IRWXU;
         st->blksize = 1;
+        st->links   = 1;
         return 0;
     }
 
@@ -543,6 +544,7 @@ int posix_fstat(int fd, posix_stat_t *st) {
     st->mode    = ((rp.type == 2) ? S_IFDIR : S_IFREG) | (rp.mode & 07777u);
     st->uid     = rp.uid;
     st->gid     = rp.gid;
+    st->links   = rp.links ? rp.links : 1u;
     st->blksize = 512;
     st->blocks  = (rp.size + 511u) / 512u;
     return 0;
@@ -569,6 +571,7 @@ int posix_stat(const char *path, posix_stat_t *st) {
     st->mode    = ((rp.type == 2) ? S_IFDIR : S_IFREG) | (rp.mode & 07777u);
     st->uid     = rp.uid;
     st->gid     = rp.gid;
+    st->links   = rp.links ? rp.links : 1u;
     st->blksize = 512;
     st->blocks  = (rp.size + 511u) / 512u;
     return 0;
@@ -807,6 +810,34 @@ int posix_rename(const char *oldpath, const char *newpath) {
     rq.ino     = new_parent;                 /* new parent */
     _umemcpy(rq.name, oldname, olen + 1u);   /* old name */
     _umemcpy(rq.data, newname, nlen + 1u);   /* new name */
+    return fss_rpc(&rq, &rp);
+}
+
+int posix_link(const char *oldpath, const char *newpath) {
+    ENSURE_INIT();
+    if (!oldpath || !newpath) return SYS_ERR_INVAL;
+
+    /* Resolve the source to an existing inode (path_walk returns 0 only when the
+     * final component is found). The server re-checks it is a regular file. */
+    uint32_t src_ino;
+    char     src_leaf[FS_NAME_MAX];
+    if (path_walk(oldpath, &src_ino, src_leaf) != 0) return SYS_ERR_NOENT;
+
+    /* Resolve the new name's parent directory + leaf. */
+    uint32_t new_parent;
+    char     newname[FS_NAME_MAX];
+    if (path_parent(newpath, &new_parent, newname) != 0) return SYS_ERR_NOENT;
+    if (newname[0] == '\0') return SYS_ERR_INVAL;        /* refuse "/" as a target */
+    uint32_t nlen = _ustrlen(newname);
+    if (nlen == 0 || nlen >= FS_NAME_MAX) return SYS_ERR_INVAL;
+
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op      = FS_OP_LINK;
+    rq.ino     = src_ino;                    /* source file inode */
+    rq.dir_ino = new_parent;                 /* new parent dir */
+    _umemcpy(rq.name, newname, nlen + 1u);   /* new name */
     return fss_rpc(&rq, &rp);
 }
 

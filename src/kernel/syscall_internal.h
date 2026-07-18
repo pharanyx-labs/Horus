@@ -142,6 +142,7 @@ void h_register_fs_server(struct interrupt_frame64 *r);
 void h_connect_fs_server(struct interrupt_frame64 *r);
 void h_fs_inode_alloc(struct interrupt_frame64 *r);
 void h_fs_inode_free(struct interrupt_frame64 *r);
+void h_fs_inode_link(struct interrupt_frame64 *r);
 void h_fblock_read(struct interrupt_frame64 *r);
 void h_fblock_write(struct interrupt_frame64 *r);
 void h_fs_set_size(struct interrupt_frame64 *r);

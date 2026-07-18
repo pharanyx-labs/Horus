@@ -725,7 +725,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 76
+#define SYSCALL_TABLE_SIZE 77
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -822,6 +822,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * (CAP_BLOCK_DEV slot 7 here + uid 0 in the handler). */
     [SYS_FS_INODE_ALLOC]           = { h_fs_inode_alloc,          7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_FS_INODE_FREE]            = { h_fs_inode_free,           7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_FS_INODE_LINK]            = { h_fs_inode_link,           7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_FBLOCK_READ]              = { h_fblock_read,             7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_FBLOCK_WRITE]             = { h_fblock_write,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_FS_STAT]                  = { h_fs_stat,                 7, CAP_BLOCK_DEV, SC_ANYTYPE },
@@ -832,13 +833,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_IPC_REPLY_TO is currently the highest syscall number. Adding a higher one
+ * SYS_FS_INODE_LINK is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_IPC_REPLY_TO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_FS_INODE_LINK + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

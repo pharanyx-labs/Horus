@@ -200,6 +200,70 @@ static void print_pad(const char *s, int width) {
     for (int i = len; i < width; i++) print(" ");
 }
 
+/* ---- running ported coreutils programs ---------------------------------
+ *
+ * The vendored GNU coreutils utilities (head, seq, wc, ...) are embedded as
+ * spawn-by-name binaries. A command whose first word names one is run as a
+ * child: its argv is marshalled onto the child's stack, the shell blocks in
+ * SYS_WAIT until it exits, and its stdout goes to the shared console so the
+ * output appears inline. The child reaches the fs_server on its own (its libc
+ * fd layer connects on the first open()), so `wc file` and `head file` read
+ * real files without the shell delegating anything.
+ *
+ * Only utilities NOT already provided as a builtin are routed here, so a name
+ * like `echo` keeps the shell's own redirection-aware version. */
+static const char *const coreutils_progs[] = { "head", "seq", "wc", 0 };
+
+static int is_coreutils_prog(const char *name) {
+    for (int i = 0; coreutils_progs[i]; i++)
+        if (strcmp(name, coreutils_progs[i]) == 0) return 1;
+    return 0;
+}
+
+/* Tokenise `cmd` on spaces into argv (pointers into the caller-owned `store`,
+ * which is overwritten with NUL-separated tokens). Returns argc (capped). */
+#define CU_MAXARGS 16
+static int tokenize(const char *cmd, char *store, int store_sz, char *argv[]) {
+    int argc = 0, si = 0;
+    const char *p = cmd;
+    while (*p && argc < CU_MAXARGS - 1) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        argv[argc++] = &store[si];
+        while (*p && *p != ' ' && si < store_sz - 1) store[si++] = *p++;
+        store[si++] = '\0';
+        while (*p && *p != ' ') p++;   /* skip any tail that overran the store */
+    }
+    argv[argc] = 0;
+    return argc;
+}
+
+/* If `cmd`'s first word names a ported coreutils program AND that binary is
+ * embedded in this build, run it as a child and return 1. Returns 0 when the
+ * word is not a coreutils name, or names one that is not embedded (spawn returns
+ * NOENT) -- in the latter case the caller falls through to the shell's own
+ * builtin of the same name (the shipped kernel carries no coreutils binary, so a
+ * plain `wc` there uses the builtin). Checked before the builtins precisely so
+ * the real GNU utility shadows the lighter builtin whenever it is present. */
+static int try_run_coreutils(const char *cmd) {
+    char store[256];
+    char *argv[CU_MAXARGS];
+    int argc = tokenize(cmd, store, sizeof(store), argv);
+    if (argc == 0 || !is_coreutils_prog(argv[0])) return 0;
+
+    int pid = sys_spawn_named_argv(argv[0], argc, argv);
+    if (pid == SYS_ERR_NOENT) return 0;   /* not embedded: let the builtin handle it */
+    if (pid < 0) {
+        print(argv[0]); println(": failed to spawn");
+        return 1;
+    }
+    /* Block until the child finishes so its output lands before the next prompt.
+     * SYS_ERR_INTR (a signal interrupted the wait) is retried; any other return
+     * means the child is already gone. */
+    while (sys_wait(pid) == SYS_ERR_INTR) { }
+    return 1;
+}
+
 /* Print `s` right-aligned in `width`, for numeric columns where the digits
  * should line up on their last character. */
 static void print_rpad(const char *s, int width) {
@@ -954,7 +1018,13 @@ static void show_topic_help_us(const char *topic) {
 }
 
 static void handle_command(char *cmd) {
-    
+
+    /* A ported GNU coreutils program shadows the shell's own builtin of the same
+     * name when it is embedded in this build (e.g. the real `wc` over the shell's
+     * lighter one). Checked first; when the binary is absent this is a no-op and
+     * the builtins below run as before. */
+    if (try_run_coreutils(cmd)) return;
+
     if (strcmp(cmd, "man") == 0) {
         man_index();
     } else if (strncmp(cmd, "man ", 4) == 0) {

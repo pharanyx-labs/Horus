@@ -1587,16 +1587,19 @@ void coreutils_selftest(void) {
     extern uint8_t embedded_coreutils_echo_bin_start[], embedded_coreutils_echo_bin_end[];
     extern uint8_t embedded_coreutils_basename_bin_start[], embedded_coreutils_basename_bin_end[];
     extern uint8_t embedded_coreutils_dirname_bin_start[], embedded_coreutils_dirname_bin_end[];
-    extern uint8_t embedded_coreutils_true_bin_start[], embedded_coreutils_true_bin_end[];
+    extern uint8_t embedded_coreutils_seq_bin_start[], embedded_coreutils_seq_bin_end[];
 
     print("COREUTILS_SELFTEST: begin\n");
 
     /* basename /horus/ports/cat.c .c  ->  "cat"
      * dirname  /horus/ports/cat.c     ->  "/horus/ports"
-     * Both are upstream's own path splitting, not ours. */
+     * seq 1 2 5                       ->  1 3 5   (start, step, last)
+     * All three are upstream's own logic -- path splitting and the long-double
+     * sequence generator -- not ours. seq in particular exercises the whole
+     * foundation: xstrtold / cl_strtod float parsing and %Lf formatting. */
     static const char *const bn_argv[] = { "basename", "/horus/ports/cat.c", ".c" };
     static const char *const dn_argv[] = { "dirname",  "/horus/ports/cat.c" };
-    static const char *const tr_argv[] = { "true" };
+    static const char *const sq_argv[] = { "seq", "1", "2", "5" };
     static const char *const ec_argv[] = {
         "echo", "-e", "COREUTILS_SELFTEST:", "PASS\\x20coreutils", "ran\\x21"
     };
@@ -1611,10 +1614,10 @@ void coreutils_selftest(void) {
                         embedded_coreutils_dirname_bin_end) <= 0) {
         print("COREUTILS_SELFTEST: FAIL spawn-dirname\n"); for (;;) asm volatile("hlt");
     }
-    if (coreutils_spawn("true", tr_argv, 1,
-                        embedded_coreutils_true_bin_start,
-                        embedded_coreutils_true_bin_end) <= 0) {
-        print("COREUTILS_SELFTEST: FAIL spawn-true\n"); for (;;) asm volatile("hlt");
+    if (coreutils_spawn("seq", sq_argv, 4,
+                        embedded_coreutils_seq_bin_start,
+                        embedded_coreutils_seq_bin_end) <= 0) {
+        print("COREUTILS_SELFTEST: FAIL spawn-seq\n"); for (;;) asm volatile("hlt");
     }
 
     /* echo goes last: its marker is what the smoke test requires, so seeing it

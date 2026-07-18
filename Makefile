@@ -278,37 +278,34 @@ ASFLAGS += -DCAPTEST_SELFTEST
 endif
 
 # The set of utilities ported so far. Each is an unmodified upstream .c in
-# $(COREUTILS_DIR) built into its own spawn-by-name binary; adding one is a
-# matter of extending this list once its gnulib surface is covered by port/.
-COREUTILS_PROGS = echo true false basename dirname cat head seq wc
+# $(COREUTILS_DIR) built into its own static-PIE binary; adding one is a matter of
+# extending this list once its gnulib surface is covered by port/.
+COREUTILS_PROGS = echo true false basename dirname cat head seq wc printf tail
 COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_PROGS)))
 
-# Two gates. COREUTILS_EMBED just incbin's the utility binaries into the image
-# and lists them in the spawn-by-name table (so the shell can run them);
-# COREUTILS_SELFTEST additionally diverts the boot into the marker self-test.
-# Either way the binaries are absent from the shipped kernel, so the ISO carries
-# no GPLv3-derived binary.
+# The utilities are NOT baked into the kernel image. COREUTILS_MODULES=1 ships
+# them as GRUB multiboot2 modules: the boot.iso rule copies each utility .bin onto
+# the ISO and emits a `module2` line, GRUB loads them into RAM outside the kernel
+# image (so the 16 MiB image budget stops applying and ALL of them fit at once),
+# the fs_server provisions each into /bin at boot, and the shell runs them from
+# there (see boot.iso below, provision_boot_modules() in userspace/fs_server.c,
+# and try_run_from_bin() in userspace/shell.c). Off by default, so the shipped ISO
+# carries no GPLv3-derived binary; the coreutils smoke tests turn it on.
 #
-#   COREUTILS_SELFTEST=1  -> embed + boot the marker test (make smoke-coreutils)
-#   COREUTILS_SHELL=1     -> embed + boot the normal shell  (make smoke-coreutils-shell)
-# Each build embeds only the subset of utilities its test drives -- nine
-# newlib-linked binaries at once overrun the kernel image's 16 MiB budget, so
-# CU_EMBED_<name> gates each one independently (see src/boot/multiboot.S).
-#   COREUTILS_SELFTEST=1 -> echo/basename/dirname/seq + boot the marker test
-#   COREUTILS_SHELL=1    -> head/seq/wc + boot the normal shell (session test)
-COREUTILS_MARKER_SET = echo basename dirname seq
-COREUTILS_SHELL_SET  = head seq wc
-COREUTILS_SELFTEST ?= 0
-COREUTILS_SHELL    ?= 0
-ifeq ($(COREUTILS_SELFTEST),1)
-CFLAGS  += -DCOREUTILS_SELFTEST $(addprefix -DCU_EMBED_,$(COREUTILS_MARKER_SET))
-ASFLAGS += -DCOREUTILS_SELFTEST $(addprefix -DCU_EMBED_,$(COREUTILS_MARKER_SET))
-COREUTILS_SELFTEST_DEP = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_MARKER_SET)))
-endif
-ifeq ($(COREUTILS_SHELL),1)
-CFLAGS  += $(addprefix -DCU_EMBED_,$(COREUTILS_SHELL_SET))
-ASFLAGS += $(addprefix -DCU_EMBED_,$(COREUTILS_SHELL_SET))
-COREUTILS_SELFTEST_DEP = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_SHELL_SET)))
+# BOOT_MODULES is a space-separated list of `<file>:<module-name>` pairs the
+# boot.iso rule consumes; the module-name becomes the /bin filename.
+#
+# COREUTILS_MODULE_SET picks which utilities to ship as modules (default: all of
+# them). The tests override it with a smaller set, because the 2 MiB store volume
+# only holds ~3-4 of the ~450 KiB newlib-linked binaries at once (a single-block
+# allocation bitmap caps the volume; growing it is a deferred FS feature). The
+# kernel-image budget no longer limits them — that is the point of the modules —
+# so a full build can ship every utility; residency in /bin is bounded by the FS.
+COREUTILS_MODULE_SET ?= $(COREUTILS_PROGS)
+COREUTILS_MODULES    ?= 0
+ifeq ($(COREUTILS_MODULES),1)
+BOOT_MODULES        += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin:$(p))
+BOOT_MODULE_DEP     += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin)
 endif
 
 # NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
@@ -434,7 +431,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(COREUTILS_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -483,12 +480,24 @@ run: kernel.elf
 		-net none -no-reboot -no-shutdown -cdrom boot.iso
 
 
-boot.iso: kernel.elf grub.cfg
+# The @HORUS_MODULES@ marker in grub.cfg is replaced with a `module2` line per
+# BOOT_MODULES entry (empty when none), so GRUB loads each utility image into RAM
+# alongside the kernel. Modules live outside kernel.elf — the kernel records them
+# from the multiboot2 tags and the fs_server installs them into /bin.
+boot.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 	@rm -rf isofiles
 	@mkdir -p isofiles/boot/grub
 	@cp kernel.elf isofiles/boot/kernel.elf
 	@cp kernel.elf isofiles/kernel.elf
-	@cp grub.cfg isofiles/boot/grub/grub.cfg
+	@: > isofiles/mods.txt
+	@for pair in $(BOOT_MODULES); do \
+	    f=$${pair%%:*}; name=$${pair##*:}; base=$$(basename $$f); \
+	    cp $$f isofiles/boot/$$base; \
+	    printf '    module2 /boot/%s %s\n' "$$base" "$$name" >> isofiles/mods.txt; \
+	 done
+	@awk '/@HORUS_MODULES@/{while((getline l < "isofiles/mods.txt")>0) print l; next} {print}' \
+	    grub.cfg > isofiles/boot/grub/grub.cfg
+	@rm -f isofiles/mods.txt
 	@grub-mkrescue -o $@ isofiles 2>&1 || (echo "grub-mkrescue failed (install grub-pc-bin xorriso)" && exit 1)
 	@rm -rf isofiles
 
@@ -619,9 +628,13 @@ $(COREUTILS_DIR)/port/gnulib.o: $(COREUTILS_DIR)/port/gnulib.c $(NEWLIB_LIB)/lib
 
 # Vendored upstream: compiled as-is. -Wno-unused-parameter because upstream is
 # built with its own warning set, and a port must not have to edit the source to
-# stay quiet under ours.
+# stay quiet under ours. -Wno-implicit-fallthrough / -Wno-return-type quiet tail.c,
+# whose control flow ends functions with error(EXIT_FAILURE, …): gnulib marks that
+# path _Noreturn, but the MIT shim's error() cannot be unconditionally noreturn (it
+# returns for status 0), so GCC cannot prove the source is unreachable.
 $(COREUTILS_DIR)/%.o: $(COREUTILS_DIR)/%.c $(NEWLIB_LIB)/libc.a
-	$(CC) $(COREUTILS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare -Wno-type-limits -c $< -o $@
+	$(CC) $(COREUTILS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare -Wno-type-limits \
+	    -Wno-implicit-fallthrough -Wno-return-type -c $< -o $@
 
 userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
                                $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
@@ -958,25 +971,33 @@ smoke-captest:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh boot.iso
 
-.PHONY: smoke-coreutils
-smoke-coreutils:
+# Modules gate: ship the two newly ported utilities (printf, tail) as GRUB boot
+# modules, boot normally, and prove they are provisioned into /bin FROM the
+# modules (not baked into the kernel image) and run through the real shell. This
+# is the transport proof — a ~530 KiB program image reaching the filesystem
+# without living in the 16 MiB kernel image (well over the old per-image embedding
+# limit) — and the coverage for printf and tail. The set is kept to the two new
+# utilities (and disjoint from smoke-coreutils-shell's) so it stays within the
+# 2 MiB store volume and leaves the shell's echo builtin unshadowed for creating
+# the tail fixture. See tools/modules_session.py.
+.PHONY: smoke-modules
+smoke-modules:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory COREUTILS_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COREUTILS_SELFTEST: PASS coreutils ran!' \
-		FAIL_MARKER='COREUTILS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="printf tail"
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="printf tail" boot.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/modules_session.py boot.iso
 
-# Embed head/seq/wc into a normal-boot kernel and drive them through the REAL
-# ring-3 shell over serial: create a file, run wc/head on it and seq standalone,
-# and assert the counts and lines. Unlike smoke-coreutils (which spawns the
-# utilities directly), this exercises the whole path a user takes -- the shell
-# parsing a command line, spawning the utility with argv, the utility opening a
-# file through its own fs_server connection, and waiting for it to finish.
+# Ship head/seq/wc as GRUB modules and drive them through the REAL ring-3 shell
+# over serial: create a file, run head/wc/seq on it and assert the counts and
+# lines. This exercises the whole path a user takes -- the shell resolving
+# /bin/<name>, loading the ~450-610 KiB image over the fs_server, spawning it with
+# argv, the utility opening a file through its own fs_server connection, and
+# waiting for it to finish -- all from a filesystem, not the kernel image.
 .PHONY: smoke-coreutils-shell
 smoke-coreutils-shell:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory COREUTILS_SHELL=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc"
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc" boot.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/coreutils_session.py boot.iso
 
 # Build with the gated large-file self-test, boot headless, and require the

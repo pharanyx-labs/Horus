@@ -390,8 +390,110 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     }
 }
 
+/* Ensure /bin exists as a root-owned 0755 directory; return its inode, or -1.
+ * Idempotent — reuses the directory if it already exists. */
+static int ensure_bin_dir(void) {
+    uint32_t ino, type;
+    if (dir_find(0, "bin", &ino, &type)) return (type == FS_TYPE_DIR) ? (int)ino : -1;
+    int nino = sys_fs_inode_alloc(FS_TYPE_DIR);
+    if (nino < 0) return -1;
+    sys_fs_set_meta((uint32_t)nino, 0755u, 0, 0);            /* root-owned */
+    if (dir_add(0, "bin", (uint32_t)nino, FS_TYPE_DIR) != 0) { sys_fs_inode_free((uint32_t)nino); return -1; }
+    return nino;
+}
+
+/* Copy boot module `mod_index` (size bytes) into a fresh root-owned 0755 file
+ * `name` under directory `bin_ino`. Runs entirely inside the server, so the store
+ * primitives are called directly rather than over IPC. Returns 0 or negative. */
+static int install_module(uint32_t bin_ino, const char *name, uint32_t mod_index, uint32_t size) {
+    int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
+    if (ino < 0) return -1;
+    sys_fs_set_meta((uint32_t)ino, 0755u, 0, 0);            /* root-owned, executable */
+    static uint8_t buf[BLK];
+    uint32_t off = 0, blk = 0;
+    while (off < size) {
+        uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
+        int got = sys_boot_module_read(mod_index, off, buf, chunk);
+        if (got <= 0) { sys_fs_inode_free((uint32_t)ino); return -1; }
+        /* sys_fblock_write returns the byte count it stored (== got); it zero-pads
+         * a short final block internally, so compare against got, not BLK. A write
+         * failure here is typically the 2 MiB volume filling up (a large binary is
+         * ~800 blocks) — free the partial inode and let the caller skip this one. */
+        if (sys_fblock_write((uint32_t)ino, blk, buf, (uint32_t)got) != got) {
+            sys_fs_inode_free((uint32_t)ino); return -1;
+        }
+        off += (uint32_t)got; blk++;
+    }
+    sys_fs_set_size((uint32_t)ino, size);
+    if (dir_add(bin_ino, name, (uint32_t)ino, FS_TYPE_FILE) != 0) {
+        sys_fs_inode_free((uint32_t)ino); return -1;
+    }
+    return 0;
+}
+
+/* Install every boot module GRUB loaded into /bin as a runnable file. Called once
+ * per boot, after the store is readable (unlocked). Idempotent: a module already
+ * present at the right size is left alone, so a persistent disk is written only on
+ * the first boot that sees a new/changed module; a stale or partial entry is
+ * replaced. This is how the coreutils binaries reach the filesystem WITHOUT being
+ * baked into the kernel image.
+ *
+ * Capacity note: the store volume is 2 MiB (BLOCKS_PER_DISK), so only ~3-4 of the
+ * ~450 KiB newlib-linked binaries fit in /bin at once. Modules are installed in
+ * order until the volume fills; a module that does not fit is skipped (its partial
+ * inode freed) and provisioning continues, so the system always comes up with as
+ * many utilities as fit rather than failing. Growing the volume past 2 MiB needs a
+ * multi-block allocation bitmap (a deferred FS feature), independent of the
+ * kernel-image budget this transport removes. */
+static void provision_boot_modules(void) {
+    int n = sys_boot_module_info(0, 0);
+    if (n <= 0) return;                                     /* no modules: no /bin needed */
+    int bin = ensure_bin_dir();
+    if (bin < 0) { println("[fs_server] /bin provisioning failed"); return; }
+    int installed = 0, skipped = 0;
+    for (int i = 0; i < n; i++) {
+        struct boot_module_info info;
+        if (sys_boot_module_info((uint32_t)i, &info) < 0) continue;
+        if (info.name[0] == 0 || info.size == 0) continue;
+        uint32_t eino, etype;
+        if (dir_find((uint32_t)bin, info.name, &eino, &etype)) {
+            struct fs_stat es;
+            if (sys_fs_stat(eino, &es) == 0 && (uint32_t)es.size == info.size) continue; /* up to date */
+            dir_remove((uint32_t)bin, info.name);            /* stale/partial: replace */
+            sys_fs_inode_free(eino);
+        }
+        if (install_module((uint32_t)bin, info.name, (uint32_t)i, info.size) == 0) installed++;
+        else skipped++;                                      /* did not fit: keep going */
+    }
+    if (installed > 0) println("[fs_server] provisioned boot modules into /bin");
+    if (skipped  > 0) println("[fs_server] some boot modules did not fit the 2 MiB volume");
+}
+
+/* The gate endpoint init shares with us (slot 3, object 0), and the badge we
+ * fire on it once startup provisioning is done, so init can launch the shell.
+ * init blocks in SYS_WAIT_NOTIFY on the same endpoint object until this arrives. */
+#define FS_GATE_SLOT   3
+#define FS_READY_BADGE 0x5D0Eu
+
 void _start(void) {
     println("[fs_server] userspace FS server starting (encrypted object store).");
+
+    /* Provision /bin from the boot modules with the CPU to ourselves, BEFORE the
+     * shell exists. The shell reads the console with an unpreemptible ring-0 spin
+     * (console_getc), which would otherwise starve this block-by-block copy on a
+     * single core. This only runs when the store is already unlocked — the
+     * ephemeral RAM disk, which comes up unlocked; a sealed ATA volume stays
+     * locked until login, so there we fall back to the lazy in-loop provisioning
+     * below (post-login, once, idempotent). Then notify init we are ready. */
+    int provisioned = 0;
+    {
+        struct fs_stat root_st;
+        if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
+    }
+    /* Always signal, even if there was nothing to provision or the store is still
+     * locked, so init never waits forever. init consumes the badge on the shared
+     * gate endpoint whether it fires before or after init blocks. */
+    sys_notify(FS_GATE_SLOT, FS_READY_BADGE);
 
     /* Registration is best-effort: it publishes the service for clients that
      * discover it via sys_connect_fs_server, but the request/reply endpoints
@@ -405,6 +507,13 @@ void _start(void) {
     struct fs_request  rq;
     struct fs_response rp;
     for (;;) {
+        /* Fallback for the sealed-ATA case: the volume was locked at startup, so
+         * provision on the first loop after login unlocks it (a stat of the root
+         * inode fails while locked). On the RAM disk this already ran above. */
+        if (!provisioned) {
+            struct fs_stat root_st;
+            if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
+        }
         int r = sys_ipc_recv(FS_EP_REQ, (char *)&rq, sizeof(rq));
         if (r < 0) { spin_delay(); continue; }          /* no request yet */
 

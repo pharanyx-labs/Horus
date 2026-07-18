@@ -666,3 +666,155 @@ btoc32 (int c)
 {
   return (c == EOF) ? (char32_t) -1 : (char32_t) (unsigned char) c;
 }
+
+/* ---- xprintf (gnulib xprintf module) --------------------------------------
+ * printf/fprintf with the write-error check hoisted in: on a stdio error the
+ * utility reports it and exits, matching gnulib's behaviour, so a failed write
+ * to a full pipe or disk is never silently dropped. coreutils printf(1) routes
+ * every conversion through xprintf(). */
+#include <stdarg.h>
+#include "xprintf.h"
+#include "unicodeio.h"
+
+int
+xvfprintf (FILE *stream, char const *format, va_list args)
+{
+  int retval = vfprintf (stream, format, args);
+  if (retval < 0 && ! ferror (stream))
+    error (EXIT_FAILURE, errno, "cannot perform formatted output");
+  return retval;
+}
+
+int
+xfprintf (FILE *stream, char const *format, ...)
+{
+  va_list args;
+  va_start (args, format);
+  int retval = xvfprintf (stream, format, args);
+  va_end (args);
+  return retval;
+}
+
+int
+xvprintf (char const *format, va_list args)
+{
+  return xvfprintf (stdout, format, args);
+}
+
+int
+xprintf (char const *format, ...)
+{
+  va_list args;
+  va_start (args, format);
+  int retval = xvfprintf (stdout, format, args);
+  va_end (args);
+  return retval;
+}
+
+/* ---- unicodeio (gnulib unicodeio module) ----------------------------------
+ * Encode a Unicode code point as UTF-8 and write it. Horus runs a UTF-8-capable
+ * C locale, so there is no unrepresentable-character fallback to a \uXXXX form:
+ * every scalar value encodes directly. */
+static int
+utf8_encode (unsigned int code, char out[4])
+{
+  if (code < 0x80)     { out[0] = (char) code; return 1; }
+  if (code < 0x800)    { out[0] = (char) (0xC0 | (code >> 6));
+                         out[1] = (char) (0x80 | (code & 0x3F)); return 2; }
+  if (code < 0x10000)  { out[0] = (char) (0xE0 | (code >> 12));
+                         out[1] = (char) (0x80 | ((code >> 6) & 0x3F));
+                         out[2] = (char) (0x80 | (code & 0x3F)); return 3; }
+  if (code < 0x110000) { out[0] = (char) (0xF0 | (code >> 18));
+                         out[1] = (char) (0x80 | ((code >> 12) & 0x3F));
+                         out[2] = (char) (0x80 | ((code >> 6) & 0x3F));
+                         out[3] = (char) (0x80 | (code & 0x3F)); return 4; }
+  return 0;                                       /* out of range */
+}
+
+long
+fwrite_success_callback (const char *buf, size_t buflen, void *callback_arg)
+{
+  fwrite (buf, 1, buflen, (FILE *) callback_arg);
+  return 0;
+}
+
+long
+unicode_to_mb (unsigned int code,
+               long (*success) (const char *buf, size_t buflen, void *callback_arg),
+               long (*failure) (unsigned int code, const char *msg, void *callback_arg),
+               void *callback_arg)
+{
+  char buf[4];
+  int n = utf8_encode (code, buf);
+  if (n == 0)
+    return failure (code, "code out of range", callback_arg);
+  return success (buf, (size_t) n, callback_arg);
+}
+
+void
+print_unicode_char (FILE *stream, unsigned int code, int quote)
+{
+  (void) quote;
+  char buf[4];
+  int n = utf8_encode (code, buf);
+  if (n > 0)
+    fwrite (buf, 1, (size_t) n, stream);
+}
+
+/* ---- tail(1) support shims (iopoll / isapipe / posixver / xnanosleep) ------
+ * The follow (-f) machinery upstream leans on OS facilities Horus does not have
+ * (inotify, poll, pipes, a wall-clock sleep). tail's non-follow paths (-n / -c
+ * line and byte selection) use none of these; the shims below let the byte-
+ * identical source link and run, with -f degrading to a preemptible poll loop. */
+#include <unistd.h>
+#include "iopoll.h"
+#include "isapipe.h"
+#include "posixver.h"
+#include "xnanosleep.h"
+
+/* Horus has no pipes/FIFOs. */
+int
+isapipe (int fd)
+{
+  (void) fd;
+  return 0;
+}
+
+/* Always select the modern (POSIX.1-2008) argument syntax. */
+int
+posix2_version (void)
+{
+  return 200809;
+}
+
+/* No poll(2) and no breakable output consumer: report "keep going". tail -f then
+ * follows until the task is killed, which is correct when output cannot break. */
+int
+iopoll (int fdin, int fdout, bool block)
+{
+  (void) fdin; (void) fdout; (void) block;
+  return 0;
+}
+
+bool
+iopoll_input_ok (int fdin)
+{
+  (void) fdin;
+  return true;
+}
+
+/* Best-effort sleep: Horus exposes no timed sleep to ring 3, so busy-spin a
+ * bounded amount (scaled loosely by the requested seconds) and return. The timer
+ * preempts the spin, so other tasks still run; tail -f therefore polls promptly
+ * rather than pacing to a real clock. Returns 0 (success), as gnulib's
+ * xnanosleep does. The counter is volatile so the loop is not optimised away. */
+int
+xnanosleep (double seconds)
+{
+  double s = seconds > 0.0 ? seconds : 0.0;
+  unsigned long iters = (unsigned long) (s * 2000000.0) + 100000UL;
+  if (iters > 200000000UL) iters = 200000000UL;
+  for (volatile unsigned long i = 0; i < iters; i++)
+    ;
+  return 0;
+}

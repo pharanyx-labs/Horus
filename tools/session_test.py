@@ -167,6 +167,32 @@ def run():
         s.send("useradd 1234 alice"); s.expect("user added", STEP_TIMEOUT)
         step("useradd allowed for root")
 
+        # --- 4a. the manual: man / whatis / apropos -----------------------
+        #        These are the shell's own reference pages, held in the binary
+        #        (there is no /usr/share/man to read), so they work before any
+        #        filesystem is mounted. Assert the man page renders its sections
+        #        rather than just printing something: a page missing SYNOPSIS or
+        #        SEE ALSO is the failure worth catching, and an unknown command
+        #        must say so rather than silently print nothing.
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("man ls")
+        s.expect("ls - list directory entries", STEP_TIMEOUT)
+        s.expect("SYNOPSIS", STEP_TIMEOUT)
+        s.expect("SEE ALSO", STEP_TIMEOUT)
+        step("man renders a full reference page")
+
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("whatis stat"); s.expect("show a file's metadata", STEP_TIMEOUT)
+        step("whatis prints the one-line summary")
+
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("apropos directory"); s.expect("mkdir", STEP_TIMEOUT)
+        step("apropos finds pages by keyword")
+
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("man nosuchthing"); s.expect("No manual entry", STEP_TIMEOUT)
+        step("man reports an unknown page instead of printing nothing")
+
         # --- 4b. filesystem coreutils drive the real shell + fs_server ----
         #        cd/pwd/mkdir/ls -l/echo/cat/wc/cp/mv/stat over the encrypted
         #        fs_server, all relative to a working directory. Each step first
@@ -187,6 +213,13 @@ def run():
         s.send("ls"); s.expect("sess_d/", STEP_TIMEOUT)
         step("ls lists a real entry and stops at end-of-directory")
         s.expect("root@horus#", STEP_TIMEOUT)
+        # ls -l is a table now: a header row, then aligned columns. Assert the
+        # header and the directory's mode string, so a regression in the column
+        # layout shows up here rather than only to the eye.
+        s.send("ls -l"); s.expect("Mode", STEP_TIMEOUT)
+        s.expect("drwxr-xr-x", STEP_TIMEOUT)
+        step("ls -l prints an aligned table with a header")
+        s.expect("root@horus#", STEP_TIMEOUT)
         s.send("cd sess_d")                       # no output; next prompt confirms
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("pwd"); s.expect("/sess_d", STEP_TIMEOUT)
@@ -205,7 +238,11 @@ def run():
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("ls -l"); s.expect("note3", STEP_TIMEOUT)
         s.expect("root@horus#", STEP_TIMEOUT)
-        s.send("stat note"); s.expect("Type: file", STEP_TIMEOUT)
+        # stat's labels are padded into a column now, and a regular file is
+        # named as one (POSIX's term, and what real stat(1) prints), so match the
+        # value rather than the old unpadded "Type: file".
+        s.send("stat note"); s.expect("regular file", STEP_TIMEOUT)
+        s.expect("-rw-r--r--", STEP_TIMEOUT)   # symbolic mode column
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("cd /")                            # back to root for the logout below
         step("filesystem coreutils (cd/pwd/ls -l/cp/mv/wc/stat) work as root")

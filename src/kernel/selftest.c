@@ -1559,44 +1559,76 @@ void cow_selftest(void) {
 #ifdef COREUTILS_SELFTEST
 /* ---- GNU coreutils port self-test (COREUTILS_SELFTEST builds only) ----------
  *
- * Runs the *real*, unmodified GNU coreutils echo(1) — coreutils 9.5 src/echo.c,
- * byte-identical to the upstream tarball — as a ring-3 task on Horus, compiled
+ * Runs *real*, unmodified GNU coreutils utilities -- coreutils 9.5 sources,
+ * byte-identical to the upstream tarball -- as ring-3 tasks on Horus, compiled
  * against the newlib libc and a small port shim in place of autoconf + gnulib
  * (see userspace/ports/coreutils/README.md).
  *
- * The assertion is deliberately made by upstream's own logic rather than by us:
- * the marker only appears if echo joins its argument vector with spaces AND
- * interprets the -e backslash escapes (\x20 -> space, \x21 -> '!'). If argv
- * marshalling were broken the words would be missing; if escape handling were
- * broken the literal "\x20" would appear and the marker would not match. So a
- * passing run exercises SYS_SPAWN argv, the ELF loader, the newlib port, the
- * POSIX fd layer and stdio, and echo's real option/escape parser end to end.
+ * The assertions are made by upstream's own logic rather than by us. echo only
+ * produces the marker if it joins its argument vector with spaces AND expands
+ * the -e backslash escapes (\x20 -> space, \x21 -> '!'); basename and dirname
+ * only produce theirs if their real path-splitting runs. So a passing run
+ * exercises SYS_SPAWN argv, the ELF loader, the newlib port, the POSIX fd layer
+ * and stdio, and each utility's actual parsing code end to end.
+ *
+ * Each utility runs to completion and exits; the next is spawned from the
+ * reaper path when the scheduler comes back to task 0.
  */
+static int coreutils_spawn(const char *name, const char *const *argv, uint32_t argc,
+                           uint8_t *start, uint8_t *end) {
+    extern void stage_spawn_args_kernel(const char *const *argv, uint32_t argc);
+    stage_spawn_args_kernel(argv, argc);
+    int pid = fs_spawn_embedded(start, end, name);
+    if (pid > 0) tasks[pid].uid = 0;
+    return pid;
+}
+
 void coreutils_selftest(void) {
     extern uint8_t embedded_coreutils_echo_bin_start[], embedded_coreutils_echo_bin_end[];
-    extern void stage_spawn_args_kernel(const char *const *argv, uint32_t argc);
+    extern uint8_t embedded_coreutils_basename_bin_start[], embedded_coreutils_basename_bin_end[];
+    extern uint8_t embedded_coreutils_dirname_bin_start[], embedded_coreutils_dirname_bin_end[];
+    extern uint8_t embedded_coreutils_true_bin_start[], embedded_coreutils_true_bin_end[];
 
     print("COREUTILS_SELFTEST: begin\n");
 
-    /* Stage argv BEFORE the spawn: do_spawn consumes the staging while building
-     * the child's stack. Upstream echo joins these with single spaces and, under
-     * -e, expands the escapes -- producing exactly the marker asserted below. */
-    static const char *const echo_argv[] = {
-        "echo", "-e", "COREUTILS_SELFTEST:", "PASS\\x20echo", "ran\\x21"
+    /* basename /horus/ports/cat.c .c  ->  "cat"
+     * dirname  /horus/ports/cat.c     ->  "/horus/ports"
+     * Both are upstream's own path splitting, not ours. */
+    static const char *const bn_argv[] = { "basename", "/horus/ports/cat.c", ".c" };
+    static const char *const dn_argv[] = { "dirname",  "/horus/ports/cat.c" };
+    static const char *const tr_argv[] = { "true" };
+    static const char *const ec_argv[] = {
+        "echo", "-e", "COREUTILS_SELFTEST:", "PASS\\x20coreutils", "ran\\x21"
     };
-    stage_spawn_args_kernel(echo_argv, (uint32_t)(sizeof(echo_argv) / sizeof(echo_argv[0])));
 
-    int pid = fs_spawn_embedded(embedded_coreutils_echo_bin_start,
-                                embedded_coreutils_echo_bin_end, "echo");
-    if (pid <= 0) {
-        print("COREUTILS_SELFTEST: FAIL spawn\n");
-        for (;;) asm volatile("hlt");
+    if (coreutils_spawn("basename", bn_argv, 3,
+                        embedded_coreutils_basename_bin_start,
+                        embedded_coreutils_basename_bin_end) <= 0) {
+        print("COREUTILS_SELFTEST: FAIL spawn-basename\n"); for (;;) asm volatile("hlt");
     }
-    tasks[pid].uid = 0;
+    if (coreutils_spawn("dirname", dn_argv, 2,
+                        embedded_coreutils_dirname_bin_start,
+                        embedded_coreutils_dirname_bin_end) <= 0) {
+        print("COREUTILS_SELFTEST: FAIL spawn-dirname\n"); for (;;) asm volatile("hlt");
+    }
+    if (coreutils_spawn("true", tr_argv, 1,
+                        embedded_coreutils_true_bin_start,
+                        embedded_coreutils_true_bin_end) <= 0) {
+        print("COREUTILS_SELFTEST: FAIL spawn-true\n"); for (;;) asm volatile("hlt");
+    }
+
+    /* echo goes last: its marker is what the smoke test requires, so seeing it
+     * means every utility spawned before it also got through. */
+    int pid = coreutils_spawn("echo", ec_argv, 5,
+                              embedded_coreutils_echo_bin_start,
+                              embedded_coreutils_echo_bin_end);
+    if (pid <= 0) {
+        print("COREUTILS_SELFTEST: FAIL spawn-echo\n"); for (;;) asm volatile("hlt");
+    }
 
     print("COREUTILS_SELFTEST: launching\n");
     sched_enable_preemption();
-    sched_enter_user(pid);   /* echo prints the marker and exits; does not return */
+    sched_enter_user(pid);   /* the utilities print their output and exit */
 }
 #endif /* COREUTILS_SELFTEST */
 

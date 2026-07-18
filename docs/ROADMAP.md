@@ -228,13 +228,33 @@ With a libc and a heap in place, grow what runs on top.
   then ignored by `write()`, so an append silently overwrote the file from byte
   0. The offset is now chosen by the *server*, at the file's current end, which
   a client-side stat-then-write could not do without racing another writer.
-  Remaining for a real coreutils/binutils port: `getcwd`/`chdir`, an (empty)
-  `environ`/`getenv`, `fcntl` (`F_GETFL`/`F_SETFL` no-ops), directory
-  reads (`opendir`/`readdir` over `FS_OP_READDIR`), `mkstemp`/`tmpfile`, `link()`
-  (needs hard-link/refcount support in the store, currently `ENOSYS`), and wiring
-  signal delivery through `kill()` onto `SYS_SIGNAL` (blocked on the capability
-  model — `SYS_SIGNAL` is `CAP_TCB`-gated, so a generic `kill(pid)` needs a
-  pid→capability broker or a descendants-only restriction). The binding
+  **Directory iteration and a working directory are wired too:**
+  `opendir`/`readdir`/`closedir` run over a new permission-checked `FS_OP_READDIR`
+  op (a `read` on the directory is required; `opendir` on a regular file is
+  `ENOTDIR`, on a missing path `ENOENT`), and `chdir`/`getcwd` maintain a
+  per-process cwd with relative-path resolution (a relative create lands under the
+  cwd, `..` walks up, and a `chdir` to a missing path fails leaving the cwd
+  unchanged). All proven by `make smoke-newlib`.
+  **The environment, `fcntl`, `kill()` and `mkstemp` are wired too:** an empty
+  `environ` is provided (so libc's `getenv` links and returns "not found"),
+  `fcntl` validates the fd and no-ops the flag words (`F_GETFL`/`F_SETFL`/
+  `F_GETFD`/`F_SETFD`; anything else `EINVAL`), and `mkstemp` round-trips a named
+  temp file through the object store. `kill()` now forwards onto `SYS_SIGNAL`
+  — the "descendants-only" resolution of the pid→capability question, which fell
+  straight out of the existing gating rather than needing a broker: `SYS_SIGNAL`
+  already looks a `CAP_TCB` for the target up in the *caller's* cspace (or accepts
+  `CAP_USER` admin, and always allows self), so `kill(pid, sig)` reaches your own
+  descendants and yourself and is `EPERM` for anything else, with no ambient pid
+  namespace exposed. Signal numbers already agree with newlib's for the set that
+  matters (`SIGKILL`/`SIGTERM`/`SIGSEGV`/`SIGILL`); the null signal (sig 0) is a
+  best-effort success since Horus has no reachability-probe syscall. All proven by
+  `make smoke-newlib`.
+  Remaining for a real coreutils/binutils port: `link()` (hard links) and
+  `tmpfile()` — both blocked on the *same* store feature, an open-inode refcount:
+  `link` needs multiple names for one inode, and `tmpfile` needs an inode to
+  survive being unlinked while an fd holds it open (the `fs_server` frees an inode
+  the instant its link count hits zero, so both currently `ENOSYS`, `tmpfile`
+  failing cleanly rather than handing back a broken stream). The binding
   constraint beyond the libc surface is the 4 MiB userspace image window /
   1 MiB `MAX_PROGRAM_SIZE` (see the address-separation item in Phase 5) — a real
   binutils binary is several MB and does not fit until that is widened.

@@ -260,6 +260,19 @@ ASFLAGS += -DNEWLIB_SELFTEST
 NEWLIB_SELFTEST_DEP = userspace/hello_newlib.bin
 endif
 
+# COREUTILS_SELFTEST=1 embeds the vendored GNU coreutils echo(1) -- unmodified
+# upstream source built against the Horus port shim (userspace/ports/coreutils)
+# -- and runs it at boot with an argument vector, letting its own argv joining
+# and -e backslash-escape handling produce the marker (prints
+# "COREUTILS_SELFTEST: PASS echo ran!" to serial). Gated off the ship kernel, so
+# the ISO carries neither the ~400 KiB image nor any GPLv3-derived binary.
+COREUTILS_SELFTEST ?= 0
+ifeq ($(COREUTILS_SELFTEST),1)
+CFLAGS  += -DCOREUTILS_SELFTEST
+ASFLAGS += -DCOREUTILS_SELFTEST
+COREUTILS_SELFTEST_DEP = userspace/coreutils_echo.bin
+endif
+
 # NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
 # a sender) to prove the async SYS_NOTIFY / SYS_WAIT_NOTIFY badge round-trip works
 # end-to-end (prints NOTIFY_SELFTEST: PASS to serial). Gated off the ship kernel.
@@ -383,7 +396,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(COREUTILS_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -535,6 +548,36 @@ userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
 
 userspace/hello_newlib.bin: userspace/hello_newlib.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "hello_newlib"
+
+# ---- GNU coreutils port (userspace/ports/coreutils) -------------------------
+# Unmodified upstream coreutils sources compiled against a small Horus port shim
+# (config.h / system.h / assure.h / c-ctype.h / port.c) instead of autoconf +
+# gnulib. The upstream .c files are GPLv3 and are NOT edited; the shim is MIT.
+# See userspace/ports/coreutils/README.md.
+#
+# The shim's include dir comes FIRST so its config.h/system.h win over anything
+# of the same name, then the newlib headers.
+COREUTILS_DIR    = userspace/ports/coreutils
+COREUTILS_CFLAGS = $(USERSPACE_CFLAGS) -I $(COREUTILS_DIR)/port -I $(NEWLIB_INC)
+
+$(COREUTILS_DIR)/port/port.o: $(COREUTILS_DIR)/port/port.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(COREUTILS_CFLAGS) -c $< -o $@
+
+# Vendored upstream: compiled as-is. -Wno-unused-parameter because upstream is
+# built with its own warning set, and a port must not have to edit the source to
+# stay quiet under ours.
+$(COREUTILS_DIR)/echo.o: $(COREUTILS_DIR)/echo.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(COREUTILS_CFLAGS) -Wno-unused-parameter -c $< -o $@
+
+userspace/coreutils_echo.pie.elf: $(COREUTILS_DIR)/echo.o $(COREUTILS_DIR)/port/port.o \
+                                  $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o $(COREUTILS_DIR)/echo.o $(COREUTILS_DIR)/port/port.o \
+	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
+	    userspace/malloc.o -L$(NEWLIB_LIB) -lc
+
+userspace/coreutils_echo.bin: userspace/coreutils_echo.pie.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "echo"
 
 # Fixed-base flat link (used by the gated selftest payloads that are embedded
 # raw and loaded at USER_AREA_BASE without relocation).
@@ -841,6 +884,19 @@ smoke-newlib:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
 		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the vendored GNU coreutils echo(1) and run it at boot as a ring-3
+# task. The required marker is produced by UPSTREAM's own code path -- echo joins
+# its argv with spaces and expands the -e escapes (\x20 -> space, \x21 -> '!') --
+# so a pass means real third-party source ran correctly on Horus, not that we
+# printed a string. See userspace/ports/coreutils/README.md.
+.PHONY: smoke-coreutils
+smoke-coreutils:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COREUTILS_SELFTEST: PASS echo ran!' \
+		FAIL_MARKER='COREUTILS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated large-file self-test, boot headless, and require the
 # in-kernel test to report PASS -- runtime proof that a single inode can map

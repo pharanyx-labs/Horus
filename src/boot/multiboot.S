@@ -638,6 +638,19 @@ embedded_hello_newlib_bin_start:
 embedded_hello_newlib_bin_end:
 #endif
 
+#ifdef COREUTILS_SELFTEST
+/* PIE binary of the vendored GNU coreutils echo(1) (GPLv3 upstream source built
+ * against the Horus port shim; see userspace/ports/coreutils/README.md).
+ * Embedded only in COREUTILS_SELFTEST builds -- the shipped kernel does not
+ * carry it, so the ISO stays free of the ~400 KiB newlib-linked image. */
+.align 16
+.global embedded_coreutils_echo_bin_start
+embedded_coreutils_echo_bin_start:
+.incbin "userspace/coreutils_echo.bin"
+.global embedded_coreutils_echo_bin_end
+embedded_coreutils_echo_bin_end:
+#endif
+
 #ifdef NOTIFY_SELFTEST
 /* PIE notifytest binary: spawned twice (waiter + sender) to exercise the
  * async SYS_NOTIFY / SYS_WAIT_NOTIFY badge round-trip. */

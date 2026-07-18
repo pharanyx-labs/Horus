@@ -228,9 +228,16 @@ With a libc and a heap in place, grow what runs on top.
   then ignored by `write()`, so an append silently overwrote the file from byte
   0. The offset is now chosen by the *server*, at the file's current end, which
   a client-side stat-then-write could not do without racing another writer.
-  Remaining for a real coreutils/binutils port: `getcwd`/`chdir`, an (empty)
-  `environ`/`getenv`, `fcntl` (`F_GETFL`/`F_SETFL` no-ops), directory
-  reads (`opendir`/`readdir` over `FS_OP_READDIR`), `mkstemp`/`tmpfile`, `link()`
+  **Directory iteration and a working directory are wired too:**
+  `opendir`/`readdir`/`closedir` run over a new permission-checked `FS_OP_READDIR`
+  op (a `read` on the directory is required; `opendir` on a regular file is
+  `ENOTDIR`, on a missing path `ENOENT`), and `chdir`/`getcwd` maintain a
+  per-process cwd with relative-path resolution (a relative create lands under the
+  cwd, `..` walks up, and a `chdir` to a missing path fails leaving the cwd
+  unchanged). All proven by `make smoke-newlib`.
+  Remaining for a real coreutils/binutils port: an (empty)
+  `environ`/`getenv`, `fcntl` (`F_GETFL`/`F_SETFL` no-ops),
+  `mkstemp`/`tmpfile`, `link()`
   (needs hard-link/refcount support in the store, currently `ENOSYS`), and wiring
   signal delivery through `kill()` onto `SYS_SIGNAL` (blocked on the capability
   model — `SYS_SIGNAL` is `CAP_TCB`-gated, so a generic `kill(pid)` needs a

@@ -76,9 +76,22 @@ static void init_user_page_allocator(void) {
     for (int i = 0; i < USER_PHYS_PAGES; i++) {
         page_refcounts[i] = 0;
     }
-    /* Push only the frames the pool actually covers (E820-sized). Frame i maps to
-     * USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps the top below PHYS_POOL_CEIL. */
-    for (int i = (int)g_phys_pool_pages - 1; i >= 0; i--) {
+    /* Reserve the staged-image buffer at the base of the pool:
+     * [USER_PHYS_BASE, USER_PHYS_BASE + LOADER_STAGING_BYTES) is held back from
+     * the free list and never handed out, and loader_staging points at it through
+     * the PHYS_KVA window (mapped rw+NX for the whole pool, from boot). This is
+     * why the staged-image cap no longer costs .bss — it is pool RAM, not a static
+     * array. The PHYS_POOL_MIN_PAGES floor guarantees g_phys_pool_pages exceeds
+     * the reserve, so usable frames remain; assert it rather than trust it. */
+    loader_staging = (uint8_t *)PHYS_KVA(USER_PHYS_BASE);
+    if (g_phys_pool_pages <= LOADER_STAGING_PAGES) {
+        for (;;) { __asm__ volatile("cli; hlt"); }   /* pool too small for staging: refuse to run */
+    }
+
+    /* Push only the frames the pool actually covers (E820-sized) above the
+     * staging reserve. Frame i maps to USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps
+     * the top below PHYS_POOL_CEIL. */
+    for (int i = (int)g_phys_pool_pages - 1; i >= (int)LOADER_STAGING_PAGES; i--) {
         free_page_stack[free_page_count++] = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
     }
     /* Register the one true refcount table with the Rust trust boundary so any

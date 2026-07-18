@@ -42,6 +42,25 @@ static void kwrite(const char *s) {
 #define BIG_BSS_SIZE (160u * 1024u)
 static volatile unsigned char big_bss[BIG_BSS_SIZE];
 
+/* A large *initialized* (const → .rodata, so its bytes live in the file) array
+ * that pushes this image's on-disk size past the old 1 MiB MAX_PROGRAM_SIZE
+ * staging cap. Before the staging buffer moved off .bss and grew to 8 MiB, an
+ * image file this big could not even be staged (arm rejects size >
+ * MAX_PROGRAM_SIZE), so it never loaded and NEWLIB_SELFTEST: PASS never printed.
+ * Non-zero bytes at the ends and middle keep the whole array in .rodata (not
+ * zero-elided) and let the test confirm it loaded intact. */
+/* `volatile` so -O2 cannot constant-fold the reads below and garbage-collect the
+ * array (which would keep it out of the file and defeat the whole point);
+ * `const` keeps it in .rodata (loaded, read-only) rather than .data. */
+#define BIG_RODATA_SIZE (1024u * 1024u + 64u * 1024u)   /* ~1.06 MiB, over the old 1 MiB cap */
+static const volatile unsigned char big_rodata[BIG_RODATA_SIZE] = {
+    [0]                   = 0x11,
+    [1]                   = 0x22,
+    [BIG_RODATA_SIZE / 2] = 0x33,
+    [BIG_RODATA_SIZE - 2] = 0x44,
+    [BIG_RODATA_SIZE - 1] = 0x55,
+};
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -492,6 +511,23 @@ int main(int argc, char **argv, char **envp) {
             }
         }
         printf("large image (~275 KiB) loaded OK\n");
+    }
+
+    /* --- large file: a >1 MiB image staged and loaded ----------------------
+     * big_rodata takes this image's on-disk size past the old 1 MiB
+     * MAX_PROGRAM_SIZE staging cap. That it loaded and runs at all is the proof
+     * the staging buffer grew (it's now an 8 MiB region reserved off the pool,
+     * not a static .bss array); the checks confirm the whole .rodata arrived
+     * intact — read-only bytes at both ends and the middle, past the 1 MiB mark. */
+    {
+        if (big_rodata[0] != 0x11 || big_rodata[1] != 0x22 ||
+            big_rodata[BIG_RODATA_SIZE / 2] != 0x33 ||
+            big_rodata[BIG_RODATA_SIZE - 2] != 0x44 ||
+            big_rodata[BIG_RODATA_SIZE - 1] != 0x55) {
+            printf("NEWLIB_SELFTEST: FAIL bigrodata-corrupt\n");
+            return 1;
+        }
+        printf("large file (>1 MiB image) staged + loaded OK\n");
     }
 
     printf("NEWLIB_SELFTEST: PASS\n");

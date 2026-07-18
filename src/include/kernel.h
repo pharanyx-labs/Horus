@@ -79,7 +79,24 @@ typedef uint64_t vaddr_t;
 #define USER_PHYS_BASE          0x01000000
 #define USER_PHYS_PAGES         131072              /* array cap: 512 MiB pool */
 #define USER_PHYS_DEFAULT_PAGES 16384               /* fallback: 64 MiB (pre-E820) */
-#define PHYS_POOL_MIN_PAGES     4096                /* floor: 16 MiB, keep the system usable */
+
+/* Staged-program-image buffer. The loader stages a whole program file here
+ * before validating and mapping it into a new address space. It used to be a
+ * static .bss array (`loader_staging[MAX_PROGRAM_SIZE]`), which pinned the image
+ * cap at ~1 MiB: .bss must end below USER_PHYS_BASE and only ~1.9 MiB of headroom
+ * was left. Instead it is now a fixed region reserved at the *base of the
+ * physical pool* — [USER_PHYS_BASE, USER_PHYS_BASE + LOADER_STAGING_BYTES) — that
+ * init_user_page_allocator holds back from the free list and points
+ * `loader_staging` at through the PHYS_KVA window. That decouples the image cap
+ * from the .bss ceiling entirely: raising it just reserves a few more pool
+ * frames (of the ~495 MiB E820 pool), costing no .bss. */
+#define LOADER_STAGING_BYTES    (8u * 1024u * 1024u)          /* 8 MiB staged-image cap */
+#define LOADER_STAGING_PAGES    (LOADER_STAGING_BYTES / PAGE_SIZE)
+extern uint8_t *loader_staging;                               /* set at boot -> PHYS_KVA(USER_PHYS_BASE) */
+
+/* Floor keeps 16 MiB *usable* after the staging reserve, so even a tiny E820 pool
+ * still boots with the historical headroom. */
+#define PHYS_POOL_MIN_PAGES     (4096 + LOADER_STAGING_PAGES)  /* floor: 16 MiB usable + staging */
 #define PHYS_POOL_CEIL          0x40000000ULL       /* pool top must stay < 1 GiB (PHYS_KVA) */
 #define CNODE_SIZE              256
 #define MAX_TASKS               64

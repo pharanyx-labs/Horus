@@ -4,7 +4,11 @@
  * (declared extern in syscall_internal.h). Split out of syscall.c. */
 #include "syscall_internal.h"
 
-uint8_t loader_staging[MAX_PROGRAM_SIZE];
+/* The staged-image buffer is no longer a static .bss array — it is a fixed
+ * LOADER_STAGING_BYTES region reserved at the base of the physical pool, which
+ * init_user_page_allocator points this at (PHYS_KVA(USER_PHYS_BASE)) before any
+ * image is armed. 0 until then; nothing arms an image that early. */
+uint8_t *loader_staging = 0;
 struct program_header armed_hdr;
 int program_armed = 0;
 

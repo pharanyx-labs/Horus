@@ -34,8 +34,11 @@ int main(int argc, char **argv) {
     long fsize = ftell(fin);
     fseek(fin, 0, SEEK_SET);
 
-    if (fsize <= 0 || fsize > 1024*1024) {
-        fprintf(stderr, "Bad input size\n");
+    /* Must not exceed the kernel's staged-image cap (LOADER_STAGING_BYTES in
+     * src/include/kernel.h, 8 MiB): the kernel refuses to arm a larger image, so
+     * a .bin bigger than this could never load. Keep the two in step. */
+    if (fsize <= 0 || fsize > 8*1024*1024) {
+        fprintf(stderr, "Bad input size (max 8 MiB, the kernel LOADER_STAGING_BYTES cap)\n");
         fclose(fin);
         return 1;
     }

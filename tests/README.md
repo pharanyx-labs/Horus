@@ -3,7 +3,7 @@
 This directory contains host-side test code for Horus. The primary test suites live elsewhere:
 
 - **Rust unit tests** (58) in the `rust/` crate — the security core.
-- **Headless QEMU self-tests** driven by the Makefile via `tools/smoke_test.sh`. All nineteen are gated in CI: `make smoke`, `smoke-elf`, `smoke-elf64`, `smoke-aslr`, `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-cow`, `smoke-notify`, `smoke-smp`, `smoke-session`, and the filesystem/libc suite (`smoke-fs`, `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-init-fs`, `smoke-newlib`).
+- **Headless QEMU self-tests** driven by the Makefile via `tools/smoke_test.sh`. All 28 `smoke-*` targets are gated in CI: `make smoke`, `smoke-cpu`, `smoke-tsd`, `smoke-e820`, `smoke-aspace`, `smoke-wx`, `smoke-wx-smp`, `smoke-elf`, `smoke-elf64`, `smoke-aslr`, `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-cow`, `smoke-notify`, `smoke-smp`, `smoke-captest`, `smoke-session`, the filesystem/libc suite (`smoke-fs`, `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-init-fs`, `smoke-newlib`), and the coreutils-from-the-filesystem tests (`smoke-modules`, `smoke-coreutils-shell`).
 - **Scripted integration session** — `make smoke-session` (`tools/session_test.py`) drives the real ring-3 shell over serial (login, identity, least-privilege enforcement) and asserts on the responses. Gated in CI.
 
 ## Contents

@@ -37,6 +37,12 @@
 # endif
 #endif
 
+/* Platform features tail(1) probes. Horus has no inotify and no FIFO/pipe
+ * objects, so both are 0 — tail's follow (-f) falls back to its stat-polling loop
+ * and never takes the inotify or pipe-growth paths. */
+#define HAVE_INOTIFY     0
+#define HAVE_FIFO_PIPES  0
+
 /* gnulib's fallthrough attribute (used in echo.c's octal-escape parser). */
 #ifndef FALLTHROUGH
 # if defined __GNUC__ && 7 <= __GNUC__

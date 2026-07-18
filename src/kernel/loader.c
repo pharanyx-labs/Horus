@@ -48,77 +48,12 @@ extern uint8_t embedded_argtest_bin_start[];
 extern uint8_t embedded_argtest_bin_end[];
 #endif
 
-#ifdef CU_EMBED_echo
-extern uint8_t embedded_coreutils_echo_bin_start[];
-extern uint8_t embedded_coreutils_echo_bin_end[];
-#endif
-#ifdef CU_EMBED_true
-extern uint8_t embedded_coreutils_true_bin_start[];
-extern uint8_t embedded_coreutils_true_bin_end[];
-#endif
-#ifdef CU_EMBED_false
-extern uint8_t embedded_coreutils_false_bin_start[];
-extern uint8_t embedded_coreutils_false_bin_end[];
-#endif
-#ifdef CU_EMBED_basename
-extern uint8_t embedded_coreutils_basename_bin_start[];
-extern uint8_t embedded_coreutils_basename_bin_end[];
-#endif
-#ifdef CU_EMBED_dirname
-extern uint8_t embedded_coreutils_dirname_bin_start[];
-extern uint8_t embedded_coreutils_dirname_bin_end[];
-#endif
-#ifdef CU_EMBED_cat
-extern uint8_t embedded_coreutils_cat_bin_start[];
-extern uint8_t embedded_coreutils_cat_bin_end[];
-#endif
-#ifdef CU_EMBED_head
-extern uint8_t embedded_coreutils_head_bin_start[];
-extern uint8_t embedded_coreutils_head_bin_end[];
-#endif
-#ifdef CU_EMBED_seq
-extern uint8_t embedded_coreutils_seq_bin_start[];
-extern uint8_t embedded_coreutils_seq_bin_end[];
-#endif
-#ifdef CU_EMBED_wc
-extern uint8_t embedded_coreutils_wc_bin_start[];
-extern uint8_t embedded_coreutils_wc_bin_end[];
-#endif
-
+/* The ported GNU coreutils utilities are no longer embedded here. They ship as
+ * GRUB modules and the fs_server installs them into /bin, from where the shell
+ * loads them as ordinary program images — see provision_boot_modules() in
+ * userspace/fs_server.c and try_run_from_bin() in userspace/shell.c. */
 
 static const struct embedded_binary embedded_binaries[] = {
-#ifdef CU_EMBED_echo
-    /* Ported GNU coreutils utilities, spawnable by their real names. Each is
-     * present only when its CU_EMBED_<name> is defined (per-test subset). */
-#endif
-#ifdef CU_EMBED_echo
-    { "echo",       embedded_coreutils_echo_bin_start, embedded_coreutils_echo_bin_end },
-#endif
-#ifdef CU_EMBED_true
-    { "true",       embedded_coreutils_true_bin_start, embedded_coreutils_true_bin_end },
-#endif
-#ifdef CU_EMBED_false
-    { "false",      embedded_coreutils_false_bin_start, embedded_coreutils_false_bin_end },
-#endif
-#ifdef CU_EMBED_basename
-    { "basename",   embedded_coreutils_basename_bin_start, embedded_coreutils_basename_bin_end },
-#endif
-#ifdef CU_EMBED_dirname
-    { "dirname",    embedded_coreutils_dirname_bin_start, embedded_coreutils_dirname_bin_end },
-#endif
-#ifdef CU_EMBED_cat
-    { "cat",        embedded_coreutils_cat_bin_start, embedded_coreutils_cat_bin_end },
-#endif
-#ifdef CU_EMBED_head
-    { "head",       embedded_coreutils_head_bin_start, embedded_coreutils_head_bin_end },
-#endif
-#ifdef CU_EMBED_seq
-    { "seq",        embedded_coreutils_seq_bin_start, embedded_coreutils_seq_bin_end },
-#endif
-#ifdef CU_EMBED_wc
-    { "wc",         embedded_coreutils_wc_bin_start, embedded_coreutils_wc_bin_end },
-#endif
-
     { "shell",     embedded_shell_bin_start,   embedded_shell_bin_end   },
     { "hello",     embedded_hello_bin_start,   embedded_hello_bin_end   },
     { "captest",   embedded_captest_bin_start, embedded_captest_bin_end },

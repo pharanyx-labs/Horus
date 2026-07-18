@@ -1223,8 +1223,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(COREUTILS_SELFTEST) || defined(CAPTEST_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/COREUTILS_SELFTEST only) ----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
@@ -1556,84 +1556,6 @@ void cow_selftest(void) {
 #endif /* COW_SELFTEST */
 
 
-#ifdef COREUTILS_SELFTEST
-/* ---- GNU coreutils port self-test (COREUTILS_SELFTEST builds only) ----------
- *
- * Runs *real*, unmodified GNU coreutils utilities -- coreutils 9.5 sources,
- * byte-identical to the upstream tarball -- as ring-3 tasks on Horus, compiled
- * against the newlib libc and a small port shim in place of autoconf + gnulib
- * (see userspace/ports/coreutils/README.md).
- *
- * The assertions are made by upstream's own logic rather than by us. echo only
- * produces the marker if it joins its argument vector with spaces AND expands
- * the -e backslash escapes (\x20 -> space, \x21 -> '!'); basename and dirname
- * only produce theirs if their real path-splitting runs. So a passing run
- * exercises SYS_SPAWN argv, the ELF loader, the newlib port, the POSIX fd layer
- * and stdio, and each utility's actual parsing code end to end.
- *
- * Each utility runs to completion and exits; the next is spawned from the
- * reaper path when the scheduler comes back to task 0.
- */
-static int coreutils_spawn(const char *name, const char *const *argv, uint32_t argc,
-                           uint8_t *start, uint8_t *end) {
-    extern void stage_spawn_args_kernel(const char *const *argv, uint32_t argc);
-    stage_spawn_args_kernel(argv, argc);
-    int pid = fs_spawn_embedded(start, end, name);
-    if (pid > 0) tasks[pid].uid = 0;
-    return pid;
-}
-
-void coreutils_selftest(void) {
-    extern uint8_t embedded_coreutils_echo_bin_start[], embedded_coreutils_echo_bin_end[];
-    extern uint8_t embedded_coreutils_basename_bin_start[], embedded_coreutils_basename_bin_end[];
-    extern uint8_t embedded_coreutils_dirname_bin_start[], embedded_coreutils_dirname_bin_end[];
-    extern uint8_t embedded_coreutils_seq_bin_start[], embedded_coreutils_seq_bin_end[];
-
-    print("COREUTILS_SELFTEST: begin\n");
-
-    /* basename /horus/ports/cat.c .c  ->  "cat"
-     * dirname  /horus/ports/cat.c     ->  "/horus/ports"
-     * seq 1 2 5                       ->  1 3 5   (start, step, last)
-     * All three are upstream's own logic -- path splitting and the long-double
-     * sequence generator -- not ours. seq in particular exercises the whole
-     * foundation: xstrtold / cl_strtod float parsing and %Lf formatting. */
-    static const char *const bn_argv[] = { "basename", "/horus/ports/cat.c", ".c" };
-    static const char *const dn_argv[] = { "dirname",  "/horus/ports/cat.c" };
-    static const char *const sq_argv[] = { "seq", "1", "2", "5" };
-    static const char *const ec_argv[] = {
-        "echo", "-e", "COREUTILS_SELFTEST:", "PASS\\x20coreutils", "ran\\x21"
-    };
-
-    if (coreutils_spawn("basename", bn_argv, 3,
-                        embedded_coreutils_basename_bin_start,
-                        embedded_coreutils_basename_bin_end) <= 0) {
-        print("COREUTILS_SELFTEST: FAIL spawn-basename\n"); for (;;) asm volatile("hlt");
-    }
-    if (coreutils_spawn("dirname", dn_argv, 2,
-                        embedded_coreutils_dirname_bin_start,
-                        embedded_coreutils_dirname_bin_end) <= 0) {
-        print("COREUTILS_SELFTEST: FAIL spawn-dirname\n"); for (;;) asm volatile("hlt");
-    }
-    if (coreutils_spawn("seq", sq_argv, 4,
-                        embedded_coreutils_seq_bin_start,
-                        embedded_coreutils_seq_bin_end) <= 0) {
-        print("COREUTILS_SELFTEST: FAIL spawn-seq\n"); for (;;) asm volatile("hlt");
-    }
-
-    /* echo goes last: its marker is what the smoke test requires, so seeing it
-     * means every utility spawned before it also got through. */
-    int pid = coreutils_spawn("echo", ec_argv, 5,
-                              embedded_coreutils_echo_bin_start,
-                              embedded_coreutils_echo_bin_end);
-    if (pid <= 0) {
-        print("COREUTILS_SELFTEST: FAIL spawn-echo\n"); for (;;) asm volatile("hlt");
-    }
-
-    print("COREUTILS_SELFTEST: launching\n");
-    sched_enable_preemption();
-    sched_enter_user(pid);   /* the utilities print their output and exit */
-}
-#endif /* COREUTILS_SELFTEST */
 
 #ifdef CAPTEST_SELFTEST
 /* ---- Capability/syscall conformance self-test (CAPTEST_SELFTEST only) -------

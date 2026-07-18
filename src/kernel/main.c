@@ -103,13 +103,69 @@ static void assert_higher_half(void) {
  * RAM, read through PHYS_KVA — valid from boot, before paging_init runs. */
 #define MB2_BOOT_MAGIC     0x36d76289u
 #define MB2_TAG_END        0u
+#define MB2_TAG_MODULE     3u
 #define MB2_TAG_MMAP       6u
 #define MB2_MEM_AVAILABLE  1u
 
 struct mb2_tag        { uint32_t type; uint32_t size; };
 struct mb2_mmap_entry { uint64_t base; uint64_t len; uint32_t type; uint32_t reserved; };
 
-static uint32_t e820_detect_pool_pages(void) {
+/* Boot-module table, filled by the same tag walk that sizes the pool. Kept in
+ * .bss as 24 * ~48 bytes of descriptors — the module *payloads* stay where GRUB
+ * put them and are never copied into the image. */
+static struct boot_module g_boot_modules[MAX_BOOT_MODULES];
+static uint32_t           g_boot_module_count = 0;
+static uint64_t           g_boot_module_top   = 0;
+
+uint32_t boot_module_count(void) { return g_boot_module_count; }
+uint64_t boot_module_top(void)   { return g_boot_module_top; }
+
+const struct boot_module *boot_module_get(uint32_t index) {
+    if (index >= g_boot_module_count) return 0;
+    return &g_boot_modules[index];
+}
+
+/* Record one type-3 module tag. Rejects anything whose extent is not a sane
+ * ascending range inside the PHYS_KVA window — a module the pager cannot reach
+ * is worse than no module, and mod_start/mod_end come from outside the kernel. */
+static void mb_record_module(const uint8_t *info, uint32_t off, uint32_t tag_size) {
+    if (g_boot_module_count >= MAX_BOOT_MODULES) return;
+    if (tag_size < 16) return;                       /* type+size+start+end */
+
+    uint64_t start = *(const uint32_t *)(info + off + 8);
+    uint64_t end   = *(const uint32_t *)(info + off + 12);
+    if (end <= start) return;
+    /* GRUB places modules wherever it likes — in practice just below the 16 MiB
+     * pool base, not above it. Accept anything in low RAM above 1 MiB (the BIOS/
+     * real-mode area) and within the PHYS_KVA window, so the pager can reach it.
+     * A module inside the pool [USER_PHYS_BASE, …) is separately held back from the
+     * free list (phys_in_boot_module); one below it needs no reservation. */
+    if (start < 0x100000ULL) return;                 /* below usable RAM */
+    if (end > PHYS_POOL_CEIL) return;                /* unreachable through PHYS_KVA */
+
+    struct boot_module *m = &g_boot_modules[g_boot_module_count];
+    m->start = start;
+    m->end   = end;
+
+    /* The tag's trailing string is the module2 cmdline — the utility name. It is
+     * NUL-terminated inside the tag, but treat the tag extent as the real bound
+     * and terminate ourselves rather than trusting the terminator is there. */
+    const char *s = (const char *)(info + off + 16);
+    uint32_t avail = tag_size - 16;
+    uint32_t i = 0;
+    while (i < avail && i < BOOT_MODULE_NAME_MAX - 1 && s[i]) { m->name[i] = s[i]; i++; }
+    m->name[i] = 0;
+
+    uint64_t top = (end + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
+    if (top > g_boot_module_top) g_boot_module_top = top;
+    g_boot_module_count++;
+}
+
+/* One walk over the boot-information tags: sizes the physical pool from the
+ * memory map (return value, in frames) and fills the boot-module table as a side
+ * effect. Returns 0 if the map cannot be trusted, so the caller keeps the
+ * conservative default rather than assuming RAM. */
+static uint32_t mb_scan_boot_info(void) {
     if (saved_mb_magic != MB2_BOOT_MAGIC || saved_mb_info == 0) return 0;
 
     const uint8_t *info = (const uint8_t *)PHYS_KVA((uint64_t)saved_mb_info);
@@ -123,7 +179,9 @@ static uint32_t e820_detect_pool_pages(void) {
         if (tag->type == MB2_TAG_END) break;
         if (tag->size < sizeof(struct mb2_tag) || (uint64_t)off + tag->size > total) break;
 
-        if (tag->type == MB2_TAG_MMAP) {
+        if (tag->type == MB2_TAG_MODULE) {
+            mb_record_module(info, off, tag->size);
+        } else if (tag->type == MB2_TAG_MMAP) {
             uint32_t entry_size = *(const uint32_t *)(info + off + 8);
             if (entry_size >= sizeof(struct mb2_mmap_entry)) {
                 for (uint32_t e = off + 16; (uint64_t)e + entry_size <= (uint64_t)off + tag->size;
@@ -160,10 +218,11 @@ void kernel_main(uint32_t mb_info) {
     idt_init64();
     pic_init();
 
-    /* Size the physical page pool from the E820 memory map before paging_init
-     * builds its free list. On a boot we cannot parse, keep the conservative
+    /* One walk of the multiboot2 tags before paging_init builds its free list:
+     * size the physical page pool from the E820 memory map AND record any boot
+     * modules GRUB loaded. On a boot we cannot parse, keep the conservative
      * 64 MiB default (unchanged behaviour) rather than assume RAM. */
-    uint32_t e820_pages = e820_detect_pool_pages();
+    uint32_t e820_pages = mb_scan_boot_info();
     if (e820_pages) phys_set_pool_pages(e820_pages);
     {
         uint32_t used = e820_pages ? e820_pages : USER_PHYS_DEFAULT_PAGES;
@@ -172,6 +231,17 @@ void kernel_main(uint32_t mb_info) {
         print(" MiB (");
         print_decimal(used);
         print(e820_pages ? " frames, from E820)\n" : " frames, default: no E820)\n");
+    }
+    if (g_boot_module_count) {
+        print("[mod] boot modules: ");
+        print_decimal(g_boot_module_count);
+        for (uint32_t i = 0; i < g_boot_module_count; i++) {
+            print(" ");
+            print(g_boot_modules[i].name);
+            print("@");
+            print_hex64(g_boot_modules[i].start);
+        }
+        print("\n");
     }
 
     paging_init();

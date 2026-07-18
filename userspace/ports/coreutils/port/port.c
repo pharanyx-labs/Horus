@@ -21,6 +21,7 @@
 #include "full-read.h"
 #include "alignalloc.h"
 #include "quote.h"
+#include "quotearg.h"
 #include "dirname.h"
 
 /* gnulib's progname.c exports this; utilities print it in diagnostics. */
@@ -303,6 +304,23 @@ quote (char const *arg)
   return quote_n (0, arg);
 }
 
+/* quotearg_style / quotearg_n_style: the utilities only ask for the shell-escape
+ * style (printf(1) quoting a bad argument), which is exactly the shell-safe form
+ * quote_n() already produces, so delegate to it. The cast drops const — gnulib's
+ * quotearg returns a mutable buffer; callers here only read it. */
+char *
+quotearg_n_style (int n, enum quoting_style style, char const *arg)
+{
+  (void) style;
+  return (char *) quote_n (n, arg);
+}
+
+char *
+quotearg_style (enum quoting_style style, char const *arg)
+{
+  return quotearg_n_style (0, style, arg);
+}
+
 /* ---- usage / diagnostic boilerplate ------------------------------------ */
 
 void
@@ -494,4 +512,13 @@ error (int status, int errnum, char const *format, ...)
    * does not abandon the rest of the command line. */
   if (status)
     exit (status);
+}
+
+/* lstat: Horus has no symbolic links, so a name always refers to the file
+ * itself — lstat is exactly stat. Provided because newlib declares stat but not
+ * lstat, and tail(1)'s --follow=name path calls it. */
+int
+lstat (const char *path, struct stat *st)
+{
+  return stat (path, st);
 }

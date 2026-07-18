@@ -67,6 +67,21 @@ static uint64_t g_zero_page_phys = 0;
 static uint64_t g_cow_faults = 0;
 uint64_t get_cow_fault_count(void) { return g_cow_faults; }
 
+/* Does a pool frame fall inside any boot module GRUB loaded? Called once per
+ * frame at pool init; MAX_BOOT_MODULES is tiny so a linear scan is fine. */
+static int phys_in_boot_module(uint32_t phys) {
+    uint32_t n = boot_module_count();
+    for (uint32_t i = 0; i < n; i++) {
+        const struct boot_module *m = boot_module_get(i);
+        uint64_t p = (uint64_t)phys;
+        /* Reserve the whole page the module touches at either end. */
+        uint64_t mstart = m->start & ~((uint64_t)PAGE_SIZE - 1);
+        uint64_t mend   = (m->end + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
+        if (p >= mstart && p < mend) return 1;
+    }
+    return 0;
+}
+
 static void init_user_page_allocator(void) {
 
     free_page_count = 0;
@@ -90,9 +105,15 @@ static void init_user_page_allocator(void) {
 
     /* Push only the frames the pool actually covers (E820-sized) above the
      * staging reserve. Frame i maps to USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps
-     * the top below PHYS_POOL_CEIL. */
+     * the top below PHYS_POOL_CEIL. A frame that a boot module occupies is skipped
+     * — GRUB dropped a program image there, and handing it out as an anonymous
+     * page would corrupt the image before init copies it into the store. Module
+     * frames stay reserved for the life of the boot (a few MiB of a ~495 MiB pool);
+     * not reclaiming them post-provision keeps the allocator branch-free. */
     for (int i = (int)g_phys_pool_pages - 1; i >= (int)LOADER_STAGING_PAGES; i--) {
-        free_page_stack[free_page_count++] = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
+        uint32_t phys = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
+        if (phys_in_boot_module(phys)) continue;
+        free_page_stack[free_page_count++] = phys;
     }
     /* Register the one true refcount table with the Rust trust boundary so any
      * later inc/dec passing a wrong pointer/size is refused rather than trusted. */

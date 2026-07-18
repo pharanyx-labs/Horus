@@ -637,6 +637,18 @@ static void h_getuid(struct interrupt_frame64 *r) {
     r->rax = tasks[get_current_task()].uid;
 }
 
+/* SYS_GETPID (20): this task's own id. Self-authorizing — a task learning its
+ * own identity grants it nothing it did not already have, so no capability gate.
+ *
+ * This number was defined in both syscall headers and wrapped as sys_getpid()
+ * (libc's getpid() calls it) but never had a handler or a dispatch-table entry,
+ * so every call fell through to the fail-closed deny path and came back
+ * negative. Nothing shipped checked the result, which is why it went unnoticed
+ * until captest asserted on it. */
+static void h_getpid(struct interrupt_frame64 *r) {
+    r->rax = (uint32_t)get_current_task();
+}
+
 /* SYS_SIGACTION: register (handler != 0) or clear (handler == 0) THIS task's own
  * fault-signal handler. Self-authority only -- a task sets a handler for itself,
  * never for another (async cross-task signals would need a capability on the
@@ -793,6 +805,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * Slot-3 WRITE, same as the other send/reply paths. */
     [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
+    [SYS_GETPID]                   = { h_getpid,                  SC_NONE, 0, SC_ANYTYPE }, /* own id: self-authorizing */
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
     [SYS_GET_PASS]                 = { h_get_pass,                SC_NONE, 0, SC_ANYTYPE },

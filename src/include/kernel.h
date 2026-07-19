@@ -1114,6 +1114,7 @@ int  rust_audit_chain_record(const uint8_t *key, size_t key_len, uint64_t seq,
 int  rust_audit_entry_mac(const uint8_t *key, size_t key_len, uint64_t seq,
                           const uint8_t *event, size_t event_len, uint8_t *out_mac32);
 int  rust_audit_mac_eq(const uint8_t *a32, const uint8_t *b32);
+int  rust_ct_eq(const uint8_t *a, const uint8_t *b, size_t len);
 int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
                       const uint8_t *salt, size_t salt_len,
                       const uint8_t *info, size_t info_len,

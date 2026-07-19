@@ -296,11 +296,11 @@ COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_
 # boot.iso rule consumes; the module-name becomes the /bin filename.
 #
 # COREUTILS_MODULE_SET picks which utilities to ship as modules (default: all of
-# them). The tests override it with a smaller set, because the 2 MiB store volume
-# only holds ~3-4 of the ~450 KiB newlib-linked binaries at once (a single-block
-# allocation bitmap caps the volume; growing it is a deferred FS feature). The
-# kernel-image budget no longer limits them — that is the point of the modules —
-# so a full build can ship every utility; residency in /bin is bounded by the FS.
+# them). The 16 MiB store volume holds every ported coreutils binary at once, so
+# smoke-modules ships the full set; smoke-coreutils-shell overrides it with a
+# smaller set only to keep that focused test fast. Neither the kernel-image budget
+# (removed by the modules) nor the store volume (grown to 16 MiB) limits the full
+# set any more.
 COREUTILS_MODULE_SET ?= $(COREUTILS_PROGS)
 COREUTILS_MODULES    ?= 0
 ifeq ($(COREUTILS_MODULES),1)
@@ -850,7 +850,11 @@ ifeq ($(STORAGE),ata)
 SMOKE_FS_FLAGS = STORAGE_ATA=1
 SMOKE_FS_ENV   = SMOKE_DISK=horus-fs.img
 SMOKE_FS_PREP  = dd if=/dev/zero of=horus-fs.img bs=512 count=$(BLOCKS_PER_DISK) status=none
-BLOCKS_PER_DISK ?= 1024
+# Sizes the test ATA disk image; MUST match the kernel's volume, so read the
+# authoritative value straight from the C #define rather than duplicating it (a
+# stale copy silently truncates the image below the on-disk layout the kernel
+# formats, which fails only once the volume is large enough to notice).
+BLOCKS_PER_DISK ?= $(shell grep -oE '#define[[:space:]]+BLOCKS_PER_DISK[[:space:]]+[0-9]+' src/include/kernel.h | grep -oE '[0-9]+')
 else
 SMOKE_FS_FLAGS =
 SMOKE_FS_ENV   =
@@ -884,7 +888,9 @@ smoke-init-fs:
 # the encrypted object store and its per-block crypto metadata (nonces/tags)
 # survive a reboot. Argon2id KEK derivation + format-on-first-boot run under TCG,
 # so allow a generous timeout.
-PERSIST_BLOCKS  ?= 1024
+# Same as BLOCKS_PER_DISK above: sized from the kernel's C #define so the two-boot
+# persistent-disk images are never smaller than the volume the kernel formats.
+PERSIST_BLOCKS  ?= $(shell grep -oE '#define[[:space:]]+BLOCKS_PER_DISK[[:space:]]+[0-9]+' src/include/kernel.h | grep -oE '[0-9]+')
 PERSIST_TIMEOUT ?= 300
 .PHONY: smoke-fs-persist
 smoke-fs-persist:
@@ -971,20 +977,19 @@ smoke-captest:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh boot.iso
 
-# Modules gate: ship the two newly ported utilities (printf, tail) as GRUB boot
-# modules, boot normally, and prove they are provisioned into /bin FROM the
-# modules (not baked into the kernel image) and run through the real shell. This
-# is the transport proof — a ~530 KiB program image reaching the filesystem
-# without living in the 16 MiB kernel image (well over the old per-image embedding
-# limit) — and the coverage for printf and tail. The set is kept to the two new
-# utilities (and disjoint from smoke-coreutils-shell's) so it stays within the
-# 2 MiB store volume and leaves the shell's echo builtin unshadowed for creating
-# the tail fixture. See tools/modules_session.py.
+# Modules + residency gate: ship ALL ported coreutils as GRUB boot modules, boot
+# normally, and prove (a) every one is provisioned into /bin FROM the modules (not
+# baked into the kernel image — the transport proof, each a ~450-610 KiB image
+# reaching the filesystem without living in the 16 MiB kernel image), and (b) all
+# of them fit at once on the 16 MiB store volume (no "did not fit"), which is what
+# the multi-block bitmap + off-.bss vdisk + hierarchical meta-MAC deliver. Then it
+# runs printf and tail from /bin. Uses the default COREUTILS_MODULE_SET (all).
+# See tools/modules_session.py.
 .PHONY: smoke-modules
 smoke-modules:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="printf tail"
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="printf tail" boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 boot.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/modules_session.py boot.iso
 
 # Ship head/seq/wc as GRUB modules and drive them through the REAL ring-3 shell

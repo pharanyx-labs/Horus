@@ -1,0 +1,33 @@
+PRINTF(1)                      User Commands                      PRINTF(1)
+
+NAME
+    printf - format and print data
+
+SYNOPSIS
+    printf FORMAT [ARGUMENT]...
+
+DESCRIPTION
+    Print ARGUMENTs under the control of FORMAT, in the style of the C
+    printf function. FORMAT is reused as often as needed to consume all
+    ARGUMENTs. Interpreted sequences in FORMAT include:
+
+        \n \t \\ \" \r      the usual C escapes
+        \0NNN               a byte with octal value NNN
+        \xHH                a byte with hex value HH
+        \uHHHH \UHHHHHHHH   a Unicode code point, emitted as UTF-8
+        %s %d %i %o %x %c   the usual C conversions, plus %b (escapes in
+                            the argument) and %q (shell-quoted)
+
+    This is the unmodified GNU coreutils printf(1), ported to Horus and run
+    as a ring-3 program from /bin/printf.
+
+NOTES
+    The shell splits a command line on spaces, so quote nothing special is
+    needed: `printf %s=%d\n foo 7` prints "foo=7" followed by a newline
+    (printf expands the \n itself).
+
+EXIT STATUS
+    0 on success, non-zero on a bad format or conversion.
+
+SEE ALSO
+    seq(1), echo(1), hier(7)

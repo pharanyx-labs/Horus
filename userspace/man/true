@@ -1,0 +1,20 @@
+TRUE(1)                        User Commands                        TRUE(1)
+
+NAME
+    true - do nothing, successfully
+
+SYNOPSIS
+    true [IGNORED]...
+
+DESCRIPTION
+    Exit with a status of 0. All arguments are ignored. Useful as a
+    placeholder or to force a success status in a script.
+
+    This is the unmodified GNU coreutils true(1), ported to Horus and run as
+    a ring-3 program from /bin/true.
+
+EXIT STATUS
+    Always 0.
+
+SEE ALSO
+    false(1), hier(7)

@@ -79,31 +79,39 @@ loader.
 The utilities are **not baked into the kernel image**. They ship as GRUB
 multiboot2 *modules* (`module2` lines the `boot.iso` rule writes onto the ISO),
 which GRUB loads into RAM outside the kernel. At boot the kernel records each
-module from the multiboot2 tags, the `fs_server` copies it into `/bin` on the
-encrypted store (`provision_boot_modules()`), and the shell runs it from there:
-typing a bare name resolves `/bin/<name>`, the shell loads the ~400–610 KiB image
-over the `fs_server`, and spawns it. A `/bin/<name>` shadows the shell's lighter
-builtin of the same name. Because a module costs nothing against the kernel
+module from the multiboot2 tags, the `fs_server` copies it to its destination path
+in the encrypted store (`provision_boot_modules()`), and the shell runs it from
+there: typing a bare name resolves `/bin/<name>`, the shell loads the ~400–610 KiB
+image over the `fs_server`, and spawns it. A `/bin/<name>` shadows the shell's
+lighter builtin of the same name. Because a module costs nothing against the kernel
 image's 16 MiB budget, that budget no longer limits the utilities — a full build
 can ship every one. The shipped default carries no module, so the default ISO
 holds no GPLv3-derived binary.
 
+Each utility also ships its **man page** — a plain-text file in `userspace/man/`
+routed as its own module to `usr/share/man/<name>` (plus `hier(7)`, the filesystem
+layout). `man <name>` reads it from `/usr/share/man`; a module's cmdline is its
+store destination path (`bin/<name>`, `usr/share/man/<name>`), so the one transport
+places binaries and their docs. `make run` ships all of this by default so an
+interactive session has `/bin` populated and `man` working.
+
 Two gated build+test paths (`COREUTILS_MODULES=1`):
 
 ```sh
-make smoke-modules          # ship ALL the utilities as modules; assert every one
-                            #   is provisioned into /bin (none dropped) and run
-                            #   printf + tail from /bin over the real shell
+make smoke-modules          # ship ALL the utilities + man pages; assert the
+                            #   directory skeleton, that every one is provisioned
+                            #   into /bin, that /usr/share/man is populated and
+                            #   `man tail`/`man hier` read from it, and run printf+tail
 make smoke-coreutils-shell  # ship head/seq/wc as modules; create a file with the
                             #   shell's echo, then run head/wc/seq on it
 ```
 
 Both drive the full user path — the kernel recording the module, the fs_server
-provisioning it into `/bin`, the shell resolving `/bin/<name>`, loading the image
-over the fs_server, spawning it with argv, the utility opening files over its own
-fs_server connection — and assert on output produced by upstream's own code
-(`printf`'s format engine, `tail`'s byte/line selection, `seq`'s long-double
-generator, `wc`'s counting).
+provisioning it, the shell resolving `/bin/<name>`, loading the image over the
+fs_server, spawning it with argv, the utility opening files over its own fs_server
+connection — and assert on output produced by upstream's own code (`printf`'s
+format engine, `tail`'s byte/line selection, `seq`'s long-double generator, `wc`'s
+counting).
 
 **All the utilities fit in `/bin` at once.** The encrypted store volume is 16 MiB
 (~14 MiB usable): a multi-block data-allocation bitmap lifted the old 4096-block

@@ -1,0 +1,30 @@
+TAIL(1)                        User Commands                        TAIL(1)
+
+NAME
+    tail - output the last part of a file
+
+SYNOPSIS
+    tail [OPTION]... [FILE]...
+
+DESCRIPTION
+    Print the last part of each FILE to standard output. With no options,
+    the last 10 lines are shown.
+
+    This is the unmodified GNU coreutils tail(1), ported to Horus and run as
+    a ring-3 program from /bin/tail over the fs_server.
+
+OPTIONS
+    -n [+]N    print the last N lines (or, with '+', from line N onward)
+    -c [+]N    print the last N bytes (or, with '+', from byte N onward)
+    -q         never print file-name headers
+    -v         always print file-name headers
+
+    -f follow (keep printing as the file grows) is best-effort on Horus: it
+    polls rather than pacing to a wall clock, because the kernel exposes no
+    timed sleep to ring 3. Run `tail --help` for the full option list.
+
+EXIT STATUS
+    0 on success, non-zero on error (e.g. a file that cannot be read).
+
+SEE ALSO
+    head(1), cat(1), wc(1), hier(7)

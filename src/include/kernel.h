@@ -912,6 +912,7 @@ void paging_init(void);
 void cap_init(void);
 capability_t *cap_lookup(uint32_t slot, uint32_t required_rights);
 bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
+bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint32_t badge);
 bool cap_transfer(uint32_t dest_slot, uint32_t src_slot);
 bool cap_move(uint32_t dest_slot, uint32_t src_slot);
 bool cap_revoke(uint32_t slot);

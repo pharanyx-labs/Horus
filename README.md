@@ -135,7 +135,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Per-file POSIX ownership & permissions (zero-trust, kernel-attested identity) | ✅ Working |
 | Multi-client `fs_server` concurrency (identity-routed replies via `SYS_IPC_REPLY_TO`) | ✅ Working |
 | Crash-atomic filesystem (write-ahead redo journal + mount-time `fsck`) | ✅ Working |
-| Large files (direct + single- + double-indirect blocks, 2 MiB volume) | ✅ Working |
+| Large files (direct + single- + double-indirect blocks, 16 MiB volume, multi-block bitmap) | ✅ Working |
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |

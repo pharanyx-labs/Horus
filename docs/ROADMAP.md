@@ -159,15 +159,16 @@ by `make smoke-fs-wal` (boot 1 commits a write then crashes before applying it;
 boot 2 replays it and the data survives), alongside `smoke-fs` and
 `smoke-fs-persist`.
 
-**Large files are done:** double-indirect data blocks are implemented and the
-volume is 4096 blocks (2 MiB), so a single file maps through the direct +
-single-indirect + double-indirect range (up to 12 + 64 + 64×64 = 4172 blocks).
-Proven by `make smoke-fs-large`, which also frees a ~130-block file in one journal
-transaction (every freed block clears the same block-bitmap sector, so the writes
-coalesce and the transaction stays well under the 16-sector journal limit — a
-large-file free never overflows or aborts). This pass also fixed a latent
-single-indirect fanout bug: the pointers-per-block count was 1024 instead of the
-correct 64, which would have overrun a stack buffer for any file past block 76.
+**Large files are done:** double-indirect data blocks are implemented, so a single
+file maps through the direct + single-indirect + double-indirect range (up to
+12 + 64 + 64×64 = 4172 blocks). Proven by `make smoke-fs-large`, which also frees a
+~130-block file in one journal transaction (the file's blocks fall within one
+block-bitmap sector, and `do_block_write` coalesces repeat writes to it, so the
+transaction stays well under the 16-sector journal limit — a large-file free never
+overflows or aborts). This pass also fixed a latent single-indirect fanout bug:
+the pointers-per-block count was 1024 instead of the correct 64, which would have
+overrun a stack buffer for any file past block 76. The volume is **16 MiB** (32768
+blocks, ~14 MiB usable) — see the multi-block-bitmap item below.
 
 **The legacy capfs is gone:** the parallel in-memory capability filesystem
 (`SYS_FS_*` 38–45, `fs_objects[]`, the `capfs_*` engine and its own at-rest AEAD)
@@ -183,10 +184,17 @@ attack surface to one, capability-mediated, permission-enforcing FS.
   a large, security-sensitive surface (on-disk ACL storage, evaluation, new proto
   ops) for no gain in what can be *expressed* securely with the existing model, so
   they are intentionally out of scope.
-- **Multi-block allocation bitmaps — not adopted.** The single 512-byte bitmap
-  block caps the volume at 4096 blocks, which the allocator already enforces
-  safely (it never allocates past the cap). Growing the cap is a pure capacity
-  feature with no security value; it is deferred rather than built.
+- **Multi-block allocation bitmaps — done.** A single 512-byte bitmap block caps a
+  volume at 4096 blocks; the *data* allocator now spans as many bitmap blocks as
+  the data region needs (`storage_alloc_block`/`storage_free_block` and the
+  mount-time `fsck`), and `storage_format_sealed` solves for the bitmap span and
+  lays the inode table + data region out past it. The inode allocator stays
+  single-block (4096 inodes is ample). This is what let the volume grow to 16 MiB
+  so every ported coreutils binary lives in `/bin` at once. The metadata
+  rollback-HMAC was reworked in the same pass to be hierarchical (per-meta-block
+  MACs under one top MAC) so the per-block-write cost no longer scales with the
+  volume, and the RAM vdisk's backing store moved off `.bss` into the physical pool
+  so a 16 MiB volume does not blow the `.bss` ceiling.
 
 ---
 
@@ -312,13 +320,14 @@ With a libc and a heap in place, grow what runs on top.
   `make smoke-modules` (ships `printf`/`tail`, provisions and runs them) and `make
   smoke-coreutils-shell` (`head`/`wc`/`seq`), each asserting on output produced by
   upstream's own code. A `/bin/<name>` shadows the shell's lighter builtin.
-  **Residency is now bounded by the 2 MiB store volume, not the kernel image:**
-  only ~3–4 binaries fit in `/bin` at once (a single-block allocation bitmap caps
-  the volume — see the deferred multi-block-bitmap non-goal in Phase 2), so
-  provisioning installs what fits and skips the rest gracefully. Next: growing the
-  store volume so more utilities are resident at once, then binutils (now shippable
-  as a module — the image budget no longer blocks it — but a several-MB binary
-  wants the larger volume and faster provisioning first).
+  **All eleven fit in `/bin` at once:** the store volume was grown from 2 MiB to
+  **16 MiB** (multi-block data-allocation bitmap + off-`.bss` RAM vdisk +
+  hierarchical metadata rollback-MAC — see the Phase 2 multi-block-bitmap item),
+  and `make smoke-modules` ships the full set and asserts every one provisions with
+  none dropped (provisioning is still ordered and skips anything that would not
+  fit, but nothing does). Next: binutils — now shippable as a module (the image
+  budget no longer blocks it) and holdable in the larger volume; what remains is
+  bringing its sources up against newlib.
 - **More servers**: a network-stack server, a block-device driver server, and a
   name server, each following the capability-delegation model.
 - **`captest` expansion** — *done*: it was a seven-line stub of raw `int $0x80`

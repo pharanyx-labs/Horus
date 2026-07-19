@@ -98,19 +98,24 @@ static void init_user_page_allocator(void) {
      * why the staged-image cap no longer costs .bss — it is pool RAM, not a static
      * array. The PHYS_POOL_MIN_PAGES floor guarantees g_phys_pool_pages exceeds
      * the reserve, so usable frames remain; assert it rather than trust it. */
-    loader_staging = (uint8_t *)PHYS_KVA(USER_PHYS_BASE);
-    if (g_phys_pool_pages <= LOADER_STAGING_PAGES) {
-        for (;;) { __asm__ volatile("cli; hlt"); }   /* pool too small for staging: refuse to run */
+    loader_staging  = (uint8_t *)PHYS_KVA(USER_PHYS_BASE);
+    /* The RAM vdisk's backing store sits right after the staging reserve. Both are
+     * held back from the free list; the vdisk (diskless boots) is sized to the
+     * whole volume, which is why the volume can grow past 2 MiB without touching
+     * the .bss ceiling. */
+    g_vdisk_backing = (uint8_t *)PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES);
+    if (g_phys_pool_pages <= POOL_RESERVE_PAGES) {
+        for (;;) { __asm__ volatile("cli; hlt"); }   /* pool too small for the base reserves: refuse to run */
     }
 
-    /* Push only the frames the pool actually covers (E820-sized) above the
-     * staging reserve. Frame i maps to USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps
-     * the top below PHYS_POOL_CEIL. A frame that a boot module occupies is skipped
-     * — GRUB dropped a program image there, and handing it out as an anonymous
-     * page would corrupt the image before init copies it into the store. Module
-     * frames stay reserved for the life of the boot (a few MiB of a ~495 MiB pool);
-     * not reclaiming them post-provision keeps the allocator branch-free. */
-    for (int i = (int)g_phys_pool_pages - 1; i >= (int)LOADER_STAGING_PAGES; i--) {
+    /* Push only the frames the pool actually covers (E820-sized) above the base
+     * reserves. Frame i maps to USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps the top
+     * below PHYS_POOL_CEIL. A frame that a boot module occupies is skipped — GRUB
+     * dropped a program image there, and handing it out as an anonymous page would
+     * corrupt the image before init copies it into the store. Module frames stay
+     * reserved for the life of the boot (a few MiB of a ~495 MiB pool); not
+     * reclaiming them post-provision keeps the allocator branch-free. */
+    for (int i = (int)g_phys_pool_pages - 1; i >= (int)POOL_RESERVE_PAGES; i--) {
         uint32_t phys = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
         if (phys_in_boot_module(phys)) continue;
         free_page_stack[free_page_count++] = phys;

@@ -417,8 +417,8 @@ static int install_module(uint32_t bin_ino, const char *name, uint32_t mod_index
         if (got <= 0) { sys_fs_inode_free((uint32_t)ino); return -1; }
         /* sys_fblock_write returns the byte count it stored (== got); it zero-pads
          * a short final block internally, so compare against got, not BLK. A write
-         * failure here is typically the 2 MiB volume filling up (a large binary is
-         * ~800 blocks) — free the partial inode and let the caller skip this one. */
+         * failure here means the store volume filled up (a large binary is ~800
+         * blocks) — free the partial inode and let the caller skip this one. */
         if (sys_fblock_write((uint32_t)ino, blk, buf, (uint32_t)got) != got) {
             sys_fs_inode_free((uint32_t)ino); return -1;
         }
@@ -438,13 +438,10 @@ static int install_module(uint32_t bin_ino, const char *name, uint32_t mod_index
  * replaced. This is how the coreutils binaries reach the filesystem WITHOUT being
  * baked into the kernel image.
  *
- * Capacity note: the store volume is 2 MiB (BLOCKS_PER_DISK), so only ~3-4 of the
- * ~450 KiB newlib-linked binaries fit in /bin at once. Modules are installed in
- * order until the volume fills; a module that does not fit is skipped (its partial
- * inode freed) and provisioning continues, so the system always comes up with as
- * many utilities as fit rather than failing. Growing the volume past 2 MiB needs a
- * multi-block allocation bitmap (a deferred FS feature), independent of the
- * kernel-image budget this transport removes. */
+ * Capacity note: the store volume is 16 MiB (~14 MiB usable), which holds every
+ * ported coreutils binary (~11 x ~450 KiB) at once. Modules are still installed in
+ * order and a module that does not fit is skipped (its partial inode freed) so
+ * provisioning always continues — but on the current volume nothing is dropped. */
 static void provision_boot_modules(void) {
     int n = sys_boot_module_info(0, 0);
     if (n <= 0) return;                                     /* no modules: no /bin needed */
@@ -466,7 +463,7 @@ static void provision_boot_modules(void) {
         else skipped++;                                      /* did not fit: keep going */
     }
     if (installed > 0) println("[fs_server] provisioned boot modules into /bin");
-    if (skipped  > 0) println("[fs_server] some boot modules did not fit the 2 MiB volume");
+    if (skipped  > 0) println("[fs_server] some boot modules did not fit the store volume");
 }
 
 /* The gate endpoint init shares with us (slot 3, object 0), and the badge we

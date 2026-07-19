@@ -237,6 +237,32 @@ pub extern "C" fn rust_validate_fs_operation(
     0
 }
 
+/// Constant-time equality of two `len`-byte buffers. Returns 1 if equal, else 0;
+/// the running time depends only on `len`, never on where or how many bytes
+/// differ, so a mismatch leaks no timing oracle. Single Rust source of truth for
+/// comparing secret material (password hashes, the user-database integrity tag),
+/// replacing the hand-rolled C `constant_time_compare` in kusers.c. Same 1=equal
+/// convention as `rust_audit_mac_eq`, but length-generic.
+///
+/// # Safety
+/// `a` and `b` must each point to `len` readable bytes. A null pointer or an
+/// empty comparison (`len == 0`) returns 0 (fail closed) rather than vacuously
+/// "equal" — no caller compares zero-length secrets, and equal-by-default on an
+/// empty buffer is a footgun for an equality-of-secrets primitive.
+#[no_mangle]
+pub unsafe extern "C" fn rust_ct_eq(a: *const u8, b: *const u8, len: usize) -> i32 {
+    if a.is_null() || b.is_null() || len == 0 {
+        return 0;
+    }
+    let sa = core::slice::from_raw_parts(a, len);
+    let sb = core::slice::from_raw_parts(b, len);
+    let mut diff = 0u8;
+    for i in 0..len {
+        diff |= sa[i] ^ sb[i];
+    }
+    (diff == 0) as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +270,23 @@ mod tests {
     // err_code bit layout used throughout: present=1, write=2, user=4.
     const PRESENT: u32 = 1;
     const USER: u32 = 4;
+
+    #[test]
+    fn ct_eq_matches_only_on_equal_buffers() {
+        let a = [0x11u8, 0x22, 0x33, 0x44];
+        let equal = a;
+        let diff_last = [0x11u8, 0x22, 0x33, 0x45];
+        let diff_first = [0x10u8, 0x22, 0x33, 0x44];
+        unsafe {
+            assert_eq!(rust_ct_eq(a.as_ptr(), equal.as_ptr(), a.len()), 1);
+            assert_eq!(rust_ct_eq(a.as_ptr(), diff_last.as_ptr(), a.len()), 0);
+            assert_eq!(rust_ct_eq(a.as_ptr(), diff_first.as_ptr(), a.len()), 0);
+            // Fail closed: null pointer and zero-length both return not-equal.
+            assert_eq!(rust_ct_eq(core::ptr::null(), a.as_ptr(), a.len()), 0);
+            assert_eq!(rust_ct_eq(a.as_ptr(), core::ptr::null(), a.len()), 0);
+            assert_eq!(rust_ct_eq(a.as_ptr(), equal.as_ptr(), 0), 0);
+        }
+    }
 
     #[test]
     fn page_fault_validation_is_region_scoped() {

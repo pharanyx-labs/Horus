@@ -52,12 +52,13 @@ Builds `kernel.elf` (x86-64). It compiles the Rust crate to `libhorus_shell.a`, 
 
 ### `make run`
 
-Builds `boot.iso` and launches QEMU: 512 MB RAM, `qemu64` CPU with AES/RDRAND/SMEP/SMAP, `-machine accel=kvm:tcg` (KVM when available), SDL display, and two serial ports. The console is on the socket serial at `localhost:4445` and **boot waits for a connection** (`wait=on`), so connect from another terminal:
+Builds `boot.iso` and launches QEMU: 512 MB RAM, `qemu64` CPU with AES/RDRAND/SMEP/SMAP, `-machine accel=kvm:tcg` (KVM when available), no display, and the console + QEMU monitor multiplexed onto stdio (`-serial mon:stdio`). The interactive console is therefore the terminal you run it in (Ctrl-A X quits QEMU; Ctrl-A C reaches the monitor):
 
 ```bash
 make run
-nc localhost 4445        # the interactive console
 ```
+
+`make run` also ships the ported GNU coreutils and their man pages as boot modules (`RUN_MODULES=1` by default), so the session comes up with `/bin` populated (`tail`, `head`, `wc`, `seq`, `printf`, ...) and `man <name>` reading `/usr/share/man`. Set `RUN_MODULES=0` for a module-free boot.
 
 Default login: `user` / `password` (or `root` / `rootpass`).
 
@@ -94,7 +95,7 @@ Each of these does a clean build with the relevant `*_SELFTEST` (or `SMP`) flag,
 | `make smoke-init-fs` | The `init`-delegated `fs_server` driven by an automated client end-to-end |
 | `make smoke-newlib` | The newlib libc port over the POSIX fd layer (`NEWLIB_SELFTEST: PASS`). First run fetches and builds newlib — see below |
 | `make smoke-smp` | Application processors come online and concurrently run scheduled tasks (`SMP_SELFTEST: PASS`); `SMP_CPUS=<n>` sets the core count |
-| `make smoke-modules` | Ships the ported `printf`/`tail` as GRUB boot modules; asserts the `fs_server` provisioned them into `/bin` and both run from the store through the real shell (`MODULES_SESSION: PASS`) — a program image reaching the filesystem without living in the kernel image |
+| `make smoke-modules` | Ships all the ported coreutils and their man pages as GRUB boot modules; asserts the directory skeleton (`/bin /etc /home /lib /usr`), that every binary is provisioned into `/bin`, that `/usr/share/man` is populated and `man tail`/`man hier` read from it, and runs `printf`/`tail` (`MODULES_SESSION: PASS`) — program images and docs reaching the filesystem without living in the kernel image |
 | `make smoke-coreutils-shell` | The same, for `head`/`wc`/`seq` on real files (`COREUTILS_SESSION: PASS`) |
 
 ### The newlib dependency
@@ -129,7 +130,7 @@ Pass flags as `make FLAG=VALUE`.
 | `MINIMAL_SECURE` | `0` | Strips optional kernel features for a smaller attack surface |
 | `SMP` | `0` | Brings up the application processors (multi-core). `SMP_CPUS` sets the guest core count |
 | `STORAGE_ATA` | `0` | Used by FS smoke/self-test targets to prefer the ATA path; at runtime the kernel always probes for a disk and falls back to the RAM vdisk when none is present. `BLOCKS_PER_DISK` sizes the volume |
-| `COREUTILS_MODULES` | `0` | Ships the ported GNU coreutils as GRUB multiboot2 modules on the ISO (not baked into the kernel image); the `fs_server` provisions them into `/bin` at boot. `COREUTILS_MODULE_SET` selects which utilities (default: all — the 16 MiB store volume holds every one at once) |
+| `COREUTILS_MODULES` | `0` | Ships the ported GNU coreutils **and their man pages** as GRUB multiboot2 modules on the ISO (not baked into the kernel image); the `fs_server` provisions binaries into `/bin` and man pages into `/usr/share/man` at boot (routing each module by its destination-path cmdline). `COREUTILS_MODULE_SET` selects which utilities (default: all — the 16 MiB store volume holds every one at once). `make run` turns this on by default (`RUN_MODULES=1`) |
 | `ELF_SELFTEST` | `0` | Embeds a real static-PIE ELF and runs an in-kernel loader + W^X + relocation self-test at boot (ELFCLASS32) |
 | `ELF64_SELFTEST` | `0` | Same, for an ELFCLASS64 static-PIE image — gates the x86-64 RELA relocation path. The image is loaded and inspected, never executed |
 | `ASLR_SELFTEST` | `0` | Spawns several PIE images and asserts the loader really randomises the image base |

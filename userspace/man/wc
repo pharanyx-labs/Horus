@@ -1,0 +1,29 @@
+WC(1)                          User Commands                          WC(1)
+
+NAME
+    wc - count lines, words, and bytes
+
+SYNOPSIS
+    wc [OPTION]... [FILE]...
+
+DESCRIPTION
+    Print newline, word, and byte counts for each FILE, and a total line if
+    more than one FILE is given. A word is a maximal run of non-whitespace.
+    With no option, all three counts are printed.
+
+    This is the unmodified GNU coreutils wc(1), ported to Horus and run as a
+    ring-3 program from /bin/wc over the fs_server.
+
+OPTIONS
+    -l    print the newline count
+    -w    print the word count
+    -c    print the byte count
+    -m    print the character count
+
+    Run `wc --help` for the full option list.
+
+EXIT STATUS
+    0 on success, non-zero on error.
+
+SEE ALSO
+    cat(1), head(1), tail(1), hier(7)

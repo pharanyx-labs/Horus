@@ -1,0 +1,29 @@
+CAT(1)                         User Commands                         CAT(1)
+
+NAME
+    cat - concatenate files and print them
+
+SYNOPSIS
+    cat [OPTION]... [FILE]...
+
+DESCRIPTION
+    Copy each FILE to standard output, in order. With no FILE, or when FILE
+    is '-', read standard input.
+
+    This is the unmodified GNU coreutils cat(1), ported to Horus and run as a
+    ring-3 program from /bin/cat over the fs_server. The shell also has a
+    lighter cat builtin; /bin/cat shadows it when present.
+
+OPTIONS
+    -n    number all output lines
+    -b    number non-blank output lines
+    -s    squeeze repeated blank lines
+    -E    show a '$' at end of each line
+
+    Run `cat --help` for the full option list.
+
+EXIT STATUS
+    0 on success, non-zero on a file that cannot be read.
+
+SEE ALSO
+    head(1), tail(1), wc(1), hier(7)

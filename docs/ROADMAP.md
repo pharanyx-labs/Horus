@@ -317,9 +317,16 @@ With a libc and a heap in place, grow what runs on top.
   the shell runs them from there (`try_run_from_bin` resolves `/bin/<name>`, loads
   the image over the `fs_server`, spawns it). The kernel-image budget no longer
   limits them — a full build can ship every utility. Two gated shell-driven tests:
-  `make smoke-modules` (ships `printf`/`tail`, provisions and runs them) and `make
-  smoke-coreutils-shell` (`head`/`wc`/`seq`), each asserting on output produced by
-  upstream's own code. A `/bin/<name>` shadows the shell's lighter builtin.
+  `make smoke-modules` (ships the full set + man pages, checks the directory
+  skeleton, and runs `printf`/`tail`) and `make smoke-coreutils-shell`
+  (`head`/`wc`/`seq`), each asserting on output produced by upstream's own code. A
+  `/bin/<name>` shadows the shell's lighter builtin. The `fs_server` also lays down
+  a **directory skeleton** (`/bin /etc /home /lib /usr /usr/share/man`) at boot so a
+  fresh `ls` shows a real layout, and each utility's **man page** ships as its own
+  module to `/usr/share/man/<name>` (plus `hier(7)`); `man <name>` reads it from the
+  store. Modules carry a destination path (`bin/<name>`, `usr/share/man/<name>`), so
+  the same transport places binaries and their docs. `make run` ships all of this by
+  default (`RUN_MODULES=1`) for an interactive session.
   **All eleven fit in `/bin` at once:** the store volume was grown from 2 MiB to
   **16 MiB** (multi-block data-allocation bitmap + off-`.bss` RAM vdisk +
   hierarchical metadata rollback-MAC — see the Phase 2 multi-block-bitmap item),

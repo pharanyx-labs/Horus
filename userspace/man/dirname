@@ -1,0 +1,28 @@
+DIRNAME(1)                     User Commands                     DIRNAME(1)
+
+NAME
+    dirname - strip the last component from a file name
+
+SYNOPSIS
+    dirname [OPTION] NAME...
+
+DESCRIPTION
+    Print NAME with its last non-slash component and any trailing slashes
+    removed; if NAME contains no slashes, print '.' (the current directory).
+
+        dirname /usr/share/man/tail   ->  /usr/share/man
+        dirname tail                  ->  .
+
+    This is the unmodified GNU coreutils dirname(1), ported to Horus and run
+    as a ring-3 program from /bin/dirname.
+
+OPTIONS
+    -z    separate output with NUL rather than newline
+
+    Run `dirname --help` for the full option list.
+
+EXIT STATUS
+    0 on success, non-zero on error.
+
+SEE ALSO
+    basename(1), hier(7)

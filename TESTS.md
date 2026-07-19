@@ -62,7 +62,7 @@ Each self-test target clean-builds with the relevant flag, boots under QEMU with
 | `make smoke-captest` | `CAPTEST: PASS <n> checks` — a ring-3 conformance exerciser asserting mostly on refusals (unheld caps, post-revoke use, grants outside the descendants rule, bad input) |
 | `make smoke-wx-smp` | `WX_SELFTEST: PASS` with the APs online — the W^X sweep and per-CPU protections hold under `SMP=1` |
 | `make smoke-session` | `SESSION_TEST: PASS` — drives the real ring-3 shell over serial (auth + least-privilege) |
-| `make smoke-modules` | `MODULES_SESSION: PASS` — ships `printf`/`tail` as GRUB boot modules; asserts the `fs_server` provisioned them into `/bin` and both run from the store through the real shell (a program image reaching the filesystem without living in the kernel image) |
+| `make smoke-modules` | `MODULES_SESSION: PASS` — ships all coreutils + their man pages as GRUB boot modules; asserts the directory skeleton, that every binary is in `/bin`, that `/usr/share/man` is populated and `man tail`/`man hier` read from it, and runs `printf`/`tail` (filesystem content reaching the store without living in the kernel image) |
 | `make smoke-coreutils-shell` | `COREUTILS_SESSION: PASS` — the same, for `head`/`wc`/`seq` on real files |
 
 ### Full build test
@@ -114,7 +114,7 @@ checks list shows a couple more than the job count.
 15. **smoke-init-fs** — `make smoke-init-fs` (the same `fs_server` round-trip, but with the server spawned and endowed by ring-3 `init` as the real system boots it, rather than by the kernel)
 16. **smoke-newlib** — `make smoke-newlib` (newlib libc over the POSIX fd layer)
 17. **smoke-session** — `make smoke-session` (drives the real ring-3 shell over serial: auth + least-privilege enforcement)
-18. **smoke-modules** / **smoke-coreutils-shell** — the ported GNU coreutils shipped as GRUB boot modules, provisioned into `/bin` by the `fs_server`, and run from the store through the real shell: `smoke-modules` covers `printf`/`tail` (the transport proof — a ~530 KiB image reaching the filesystem without living in the kernel image), `smoke-coreutils-shell` covers `head`/`wc`/`seq`
+18. **smoke-modules** / **smoke-coreutils-shell** — the ported GNU coreutils shipped as GRUB boot modules, provisioned into the store by the `fs_server`, and run from the filesystem through the real shell: `smoke-modules` ships the full set plus their man pages and asserts the directory skeleton (`/bin /etc /home /lib /usr`), that all binaries land in `/bin`, that `/usr/share/man` is populated and `man` reads from it, and runs `printf`/`tail`; `smoke-coreutils-shell` covers `head`/`wc`/`seq`
 19. **smoke-captest**, **smoke-cpu**, **smoke-tsd**, **smoke-e820**, **smoke-aspace**, **smoke-wx** / **smoke-wx-smp** — the capability/syscall conformance exerciser, the CR4-protection and CR4.TSD checks, the E820 pool sizing, the address-space reclaim/walker, and the kernel W^X leaf sweep (single- and multi-core)
 20. **reproducible** — builds `kernel.elf` twice and fails if they are not byte-for-byte identical
 21. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM (advisory)

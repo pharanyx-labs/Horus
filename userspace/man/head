@@ -1,0 +1,28 @@
+HEAD(1)                        User Commands                        HEAD(1)
+
+NAME
+    head - output the first part of a file
+
+SYNOPSIS
+    head [OPTION]... [FILE]...
+
+DESCRIPTION
+    Print the first part of each FILE to standard output. With no options,
+    the first 10 lines are shown.
+
+    This is the unmodified GNU coreutils head(1), ported to Horus and run as
+    a ring-3 program from /bin/head over the fs_server.
+
+OPTIONS
+    -n [-]N    print the first N lines (or, with '-', all but the last N)
+    -c [-]N    print the first N bytes (or, with '-', all but the last N)
+    -q         never print file-name headers
+    -v         always print file-name headers
+
+    Run `head --help` for the full option list.
+
+EXIT STATUS
+    0 on success, non-zero on error.
+
+SEE ALSO
+    tail(1), cat(1), wc(1), hier(7)

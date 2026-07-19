@@ -304,6 +304,35 @@ static int try_run_from_bin(const char *cmd) {
     return 1;
 }
 
+/* If /usr/share/man/<name> exists in the store, print it verbatim and return 1;
+ * otherwise return 0 so the caller falls back to the shell's built-in man page.
+ * Man pages are plain-text files provisioned from GRUB boot modules, so `man tail`
+ * works once /usr/share/man is populated, and still works (from the built-in
+ * table) on a bare kernel that ships none. */
+static int try_man_from_fs(const char *name) {
+    uint32_t dir = sh_walk_abs_dir("/usr/share/man");
+    if (dir == (uint32_t)-1) return 0;                    /* no /usr/share/man yet */
+
+    struct fs_request  rq = {0};
+    struct fs_response rp;
+    rq.op = FS_OP_LOOKUP; rq.dir_ino = dir; fss_strcpy(rq.name, name);
+    if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) return 0;
+    uint32_t ino = rp.ino;
+
+    struct fs_request sq = {0};
+    sq.op = FS_OP_STAT; sq.ino = ino;
+    if (fss_call(&sq, &rp) < 0 || rp.rc < 0) return 0;
+    uint32_t size = rp.size;
+    if (size == 0 || size > SH_MAX_IMAGE) return 0;
+
+    unsigned char *buf = malloc(size);
+    if (!buf) return 0;
+    if (sh_read_file(ino, buf, size) != 0) { free(buf); return 0; }
+    sys_write(1, (const char *)buf, size);                /* the page is already formatted */
+    free(buf);
+    return 1;
+}
+
 /* Print `s` right-aligned in `width`, for numeric columns where the digits
  * should line up on their last character. */
 static void print_rpad(const char *s, int width) {
@@ -611,10 +640,12 @@ static const char *const d_help[] = {
 static const char *const d_man[] = {
     "Display the reference page for a command.",
     "",
-    "Pages are held in the shell itself -- there is no /usr/share/man to read",
-    "and nothing to load from disk, so man works before any filesystem is",
-    "mounted. Use apropos(1) to search them by keyword and whatis(1) for the",
-    "one-line summary.",
+    "man first looks for /usr/share/man/<name> in the filesystem -- where the",
+    "ported coreutils and hier(7) install their pages -- and prints it. If there",
+    "is no such file it falls back to a built-in table compiled into the shell,",
+    "which documents the shell's own builtins and works before any filesystem is",
+    "mounted. Use apropos(1) to search the built-in pages by keyword and",
+    "whatis(1) for the one-line summary.",
     0 };
 static const char *const d_apropos[] = {
     "Search the manual page names and summaries for a keyword and list every",
@@ -1069,11 +1100,16 @@ static void handle_command(char *cmd) {
         man_index();
     } else if (strncmp(cmd, "man ", 4) == 0) {
         const char *t = cmd + 4; while (*t == ' ') t++;
-        const struct man_page *m = man_find(t);
-        if (m) man_render(m);
-        else {
-            print("No manual entry for "); print(t); println("");
-            println("Try: apropos <keyword>   or   help   for the command index.");
+        /* Prefer a page on disk (/usr/share/man/<t>, e.g. the ported coreutils and
+         * hier(7)); fall back to the built-in table (shell builtins, and any system
+         * with no /usr/share/man). */
+        if (!try_man_from_fs(t)) {
+            const struct man_page *m = man_find(t);
+            if (m) man_render(m);
+            else {
+                print("No manual entry for "); print(t); println("");
+                println("Try: apropos <keyword>   or   help   for the command index.");
+            }
         }
     } else if (strncmp(cmd, "whatis ", 7) == 0) {
         const char *t = cmd + 7; while (*t == ' ') t++;
@@ -1204,22 +1240,22 @@ static void handle_command(char *cmd) {
             uint32_t type, mode, uid, size;
             int      stat_ok;
         } ent[LS_MAX];
-        int n = 0, failed = 0, truncated = 0;
+        int n = 0, truncated = 0;
 
         struct fs_request  rq = {0};
         struct fs_response rp;
         for (uint32_t idx = 0; idx < 4096; idx++) {
             rq.op = FS_OP_READDIR; rq.dir_ino = sh_cwd_ino; rq.offset = idx;
-            /* Every way this loop can stop used to break into the same silence,
-             * and the caller then printed "(empty)" -- so a broken IPC path, a
-             * directory you cannot read, and an empty directory were one
-             * indistinguishable (reassuring) answer. Separate them: only running
-             * off the end is a normal stop. */
+            /* Distinguish the ways this loop can stop: a broken IPC path, a
+             * directory you cannot read, and a genuine end-of-directory once read
+             * to the same silence, so a failure was indistinguishable from an
+             * empty directory. Each failure now reports itself (below); only
+             * running off the end is a normal stop, after which an empty directory
+             * prints nothing at all. */
             int rc = fss_call(&rq, &rp);
             if (rc < 0) {
                 if (!fss_connected) println("ls: spawn fs_server first");
                 else { print("ls: fs_server call failed ("); print(sys_strerror(rc)); println(")"); }
-                failed = 1;
                 break;
             }
             /* NOENT here means the server walked past the last entry, which is
@@ -1230,7 +1266,6 @@ static void handle_command(char *cmd) {
             if (rp.rc == SYS_ERR_NOENT) break;
             if (rp.rc < 0) {
                 print("ls: "); print(sys_strerror(rp.rc)); println("");
-                failed = 1;
                 break;
             }
             if (n >= LS_MAX) { truncated = 1; break; }
@@ -1275,10 +1310,11 @@ static void handle_command(char *cmd) {
         }
 
         if (n == 0) {
-            /* Only claim emptiness when the directory was actually read to its
-             * end; after a failure the count is zero too, which is the confusion
-             * this used to produce. */
-            if (!failed && fss_connected) println("(empty)");
+            /* An empty directory prints nothing, like ls(1) — the root now holds
+             * the provisioned skeleton (/bin /etc /home /lib /usr), so a bare `ls`
+             * shows a real filesystem. A read *failure* still surfaces below (it is
+             * distinct from an empty directory), so a broken fs_server is not
+             * silently mistaken for emptiness. */
         } else if (long_fmt) {
             /* Size column is sized to its widest value so the numbers line up. */
             int wsize = 4;   /* at least as wide as the "Size" heading */

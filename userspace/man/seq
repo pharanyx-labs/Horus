@@ -1,0 +1,31 @@
+SEQ(1)                         User Commands                         SEQ(1)
+
+NAME
+    seq - print a sequence of numbers
+
+SYNOPSIS
+    seq [OPTION]... LAST
+    seq [OPTION]... FIRST LAST
+    seq [OPTION]... FIRST INCREMENT LAST
+
+DESCRIPTION
+    Print numbers from FIRST to LAST, stepping by INCREMENT, one per line.
+    FIRST and INCREMENT default to 1. Values may be floating-point; the
+    generator uses C-locale long-double arithmetic, so a decimal point is
+    always '.' regardless of any locale.
+
+    This is the unmodified GNU coreutils seq(1), ported to Horus and run as a
+    ring-3 program from /bin/seq.
+
+OPTIONS
+    -s STRING    separate numbers with STRING (default: newline)
+    -w           pad numbers with leading zeros to equal width
+    -f FORMAT    use printf-style floating FORMAT
+
+    Run `seq --help` for the full option list.
+
+EXIT STATUS
+    0 on success, non-zero on a malformed argument.
+
+SEE ALSO
+    printf(1), wc(1), hier(7)

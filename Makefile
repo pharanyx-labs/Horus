@@ -292,20 +292,27 @@ COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_
 # and try_run_from_bin() in userspace/shell.c). Off by default, so the shipped ISO
 # carries no GPLv3-derived binary; the coreutils smoke tests turn it on.
 #
-# BOOT_MODULES is a space-separated list of `<file>:<module-name>` pairs the
-# boot.iso rule consumes; the module-name becomes the /bin filename.
+# BOOT_MODULES is a space-separated list of `<file>:<dest-path>` pairs the boot.iso
+# rule consumes; `dest-path` is where the fs_server provisions the module in the
+# store (relative to the root) — `bin/<name>` for a runnable binary,
+# `usr/share/man/<name>` for a man page. The fs_server creates any missing parent
+# directories on the way.
 #
 # COREUTILS_MODULE_SET picks which utilities to ship as modules (default: all of
 # them). The 16 MiB store volume holds every ported coreutils binary at once, so
 # smoke-modules ships the full set; smoke-coreutils-shell overrides it with a
-# smaller set only to keep that focused test fast. Neither the kernel-image budget
-# (removed by the modules) nor the store volume (grown to 16 MiB) limits the full
-# set any more.
+# smaller set only to keep that focused test fast. Each shipped utility also ships
+# its plain-text man page (userspace/man/<name>) to usr/share/man, and hier(7) —
+# the filesystem-layout page — always ships.
 COREUTILS_MODULE_SET ?= $(COREUTILS_PROGS)
 COREUTILS_MODULES    ?= 0
 ifeq ($(COREUTILS_MODULES),1)
-BOOT_MODULES        += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin:$(p))
+BOOT_MODULES        += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin:bin/$(p))
 BOOT_MODULE_DEP     += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin)
+BOOT_MODULES        += userspace/man/hier:usr/share/man/hier \
+                       $(foreach p,$(COREUTILS_MODULE_SET),userspace/man/$(p):usr/share/man/$(p))
+BOOT_MODULE_DEP     += userspace/man/hier \
+                       $(foreach p,$(COREUTILS_MODULE_SET),userspace/man/$(p))
 endif
 
 # NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
@@ -470,8 +477,14 @@ $(RUST_LIB): rust/src/lib.rs rust/Cargo.toml rust/src/capability.rs rust/src/cry
 	@test -f $(RUST_LIB) || (echo "ERROR: $(RUST_LIB) missing"; exit 1)
 endif
 
+# `run` is the interactive/dev target: it ships the ported coreutils and their man
+# pages as boot modules (RUN_MODULES=1 by default), so an interactive session comes
+# up with /bin populated and `man` reading /usr/share/man. Set RUN_MODULES=0 for a
+# module-free (GPLv3-clean) boot; the plain `boot.iso` / release target stays
+# module-free regardless.
+RUN_MODULES ?= 1
 run: kernel.elf
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) boot.iso
 	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \
 		-machine accel=kvm:tcg -display none \

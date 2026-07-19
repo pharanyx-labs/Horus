@@ -1,0 +1,31 @@
+BASENAME(1)                    User Commands                    BASENAME(1)
+
+NAME
+    basename - strip directory and suffix from a file name
+
+SYNOPSIS
+    basename NAME [SUFFIX]
+    basename OPTION... NAME...
+
+DESCRIPTION
+    Print NAME with any leading directory components removed. If SUFFIX is
+    given and is a trailing part of the result, it is removed too.
+
+        basename /usr/share/man/tail   ->  tail
+        basename /a/b/c.txt .txt       ->  c
+
+    This is the unmodified GNU coreutils basename(1), ported to Horus and run
+    as a ring-3 program from /bin/basename.
+
+OPTIONS
+    -a           treat every argument as a NAME
+    -s SUFFIX    remove a trailing SUFFIX (implies -a)
+    -z           separate output with NUL rather than newline
+
+    Run `basename --help` for the full option list.
+
+EXIT STATUS
+    0 on success, non-zero on error.
+
+SEE ALSO
+    dirname(1), hier(7)

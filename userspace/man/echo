@@ -1,0 +1,31 @@
+ECHO(1)                        User Commands                        ECHO(1)
+
+NAME
+    echo - display a line of text
+
+SYNOPSIS
+    echo [OPTION]... [STRING]...
+
+DESCRIPTION
+    Print the STRINGs to standard output, separated by single spaces and
+    followed by a newline.
+
+    This is the unmodified GNU coreutils echo(1), ported to Horus and run as
+    a ring-3 program from /bin/echo. It shadows the shell's own echo builtin
+    when present.
+
+OPTIONS
+    -n    do not output the trailing newline
+    -e    interpret backslash escapes (\n \t \\ \0NNN \xHH ...)
+    -E    do not interpret backslash escapes (default)
+
+    Run `echo --help` for the full option list.
+
+NOTES
+    The shell's redirection (echo TEXT > FILE) is handled by the shell's own
+    echo builtin. Because /bin/echo shadows that builtin, redirection is not
+    available when /bin/echo is installed; use the fss_create / fss_write
+    builtins to write a file directly.
+
+SEE ALSO
+    printf(1), cat(1), hier(7)

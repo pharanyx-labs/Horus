@@ -125,7 +125,7 @@ extern uint8_t *g_vdisk_backing;                             /* set at boot -> P
  * in practice just above the kernel image, i.e. inside the pool — and handing
  * one out as an anonymous user page would corrupt the image before init reads
  * it. Their extent also pushes the staged-image reserve upward. */
-#define MAX_BOOT_MODULES        24
+#define MAX_BOOT_MODULES        48
 #define BOOT_MODULE_NAME_MAX    32
 struct boot_module {
     uint64_t start;                        /* physical, inclusive */

@@ -648,3 +648,36 @@ jobs:
           name: horus-sbom-cyclonedx
           path: sbom.cyclonedx.json
           if-no-files-found: warn
+
+  # Advisory job: coverage-guided fuzzing of the pointer/scalar FFI predicates in
+  # the Rust security core (rust/fuzz). Non-gating by design — it hunts panics/UB
+  # on adversarial inputs, but a finding (or a flaky nightly/libFuzzer setup) must
+  # not redden the pipeline. The hard gates stay the other four jobs (rust,
+  # kernel, smoke, reproducible). Short per-target budget for CI; run longer
+  # locally with `cargo +nightly fuzz run <target>`.
+  fuzz:
+    name: FFI fuzzing (cargo-fuzz, advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+
+      - name: Install nightly toolchain + cargo-fuzz
+        continue-on-error: true
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup component add --toolchain nightly rust-src
+          cargo install cargo-fuzz || true
+
+      - name: Build fuzz targets
+        continue-on-error: true
+        working-directory: rust
+        run: cargo +nightly fuzz build
+
+      - name: Run fuzz targets (short budget)
+        continue-on-error: true
+        working-directory: rust
+        run: |
+          for t in ct_eq validate_page_fault signal_handler_addr; do
+            echo "== fuzzing $t =="
+            cargo +nightly fuzz run "$t" -- -max_total_time=30 -rss_limit_mb=4096 || true
+          done

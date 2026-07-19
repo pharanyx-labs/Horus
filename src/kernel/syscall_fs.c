@@ -98,22 +98,20 @@ void h_connect_fs_server(struct interrupt_frame64 *r) {
         r->rax = -1;
         return;
     }
-    if (dest_slot < 4 || dest_slot >= 256) {
-        r->rax = -2;
-        return;
-    }
-    /* A fresh serial + generation is required or cap_lookup rejects the cap
-     * (a serial-0 slot is treated as empty), which previously left the client
-     * unable to pass the IPC capability gate. */
-    uint32_t serial = cap_alloc_fresh_serial();
-    struct capability *dest = &tasks[get_current_task()].cspace[dest_slot];
-    dest->type   = CAP_ENDPOINT;
-    dest->rights = rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT);
-    dest->object = fs_server_listen_ep_idx;
-    dest->badge  = 0xF51A0000U;
-    dest->serial = serial;
-    dest->generation = 0;
-    r->rax = 0;
+    /* Install the endpoint cap through the locked, authority-checked, accounted
+     * cap path (cap_install_endpoint) rather than a raw cspace store. Policy is
+     * unchanged: any task may connect — the fs_server is a reference monitor
+     * that authorizes every request by kernel-attested identity (SYS_IPC_SENDER),
+     * so the endpoint alone grants no file access — but the cap must be written
+     * with the same discipline as every other one: SMP-safe against a concurrent
+     * global revoke, reserved-slot-checked, and counted against MAX_CAPS_PER_TASK.
+     * A fresh serial + generation is required or cap_lookup treats the slot as
+     * empty and the client cannot pass the IPC capability gate. Rights are masked
+     * to R/W/GRANT here so the connect policy lives at the policy site. */
+    uint32_t ep_rights = rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT);
+    bool ok = cap_install_endpoint(dest_slot, (uint32_t)fs_server_listen_ep_idx,
+                                   ep_rights, 0xF51A0000U);
+    r->rax = ok ? 0 : -2;
 }
 
 /* ---- Encrypted object-store API for the userspace FS server -------------- *

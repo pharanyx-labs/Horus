@@ -148,6 +148,49 @@ int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t o
     return 0;
 }
 
+static bool caller_has_authority(void); /* defined below; the no-ambient guard */
+
+/* Install a fresh endpoint capability into the CURRENT task's own cspace under
+ * cap_lock, with the same authority guard, reserved-slot rule, and caps_in_use
+ * accounting as cap_mint(). Used by SYS_CONNECT_FS_SERVER: any task may connect
+ * to the fs_server (the server is a reference monitor that authorizes every
+ * request by kernel-attested identity, so connecting grants no file access on
+ * its own), but the cap write must go through the same locked discipline as
+ * every other cap write rather than a raw, unsynchronised cspace store that
+ * races a concurrent rust_cap_revoke_global sweep under SMP and never counts
+ * against MAX_CAPS_PER_TASK. Returns false on authority failure, a reserved or
+ * out-of-range slot, or when the task is at its capability ceiling. */
+bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
+                          uint32_t rights, uint32_t badge) {
+    /* Allocate the serial before taking cap_lock: cap_alloc_fresh_serial()
+     * takes the same (non-recursive) lock, so ordering it inside would deadlock
+     * (mirrors cap_create_revocation_set). */
+    uint32_t serial = cap_alloc_fresh_serial();
+    spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
+    int cur = get_current_task();
+    struct capability *cspace = tasks[cur].cspace;
+    uint32_t cspace_sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+    if (!cspace || dest_slot < KERNEL_RESERVED_CAPS || dest_slot >= cspace_sz) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    bool was_null = (cspace[dest_slot].type == CAP_NULL);
+    if (was_null && tasks[cur].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    cspace[dest_slot].type       = CAP_ENDPOINT;
+    cspace[dest_slot].rights     = rights;
+    cspace[dest_slot].object     = object;
+    cspace[dest_slot].badge      = badge;
+    cspace[dest_slot].serial     = serial;
+    cspace[dest_slot].generation = 0;
+    if (was_null) tasks[cur].caps_in_use++;
+    spin_unlock(&cap_lock);
+    return true;
+}
+
 struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
     if (slot >= CNODE_SIZE) return NULL;
     struct capability *cspace = tasks[get_current_task()].cspace;

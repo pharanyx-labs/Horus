@@ -58,14 +58,6 @@ int kernel_argon2id(const uint8_t *pwd, size_t plen,
                               out, out_len);
 }
 
-static int constant_time_compare(const uint8_t *a, const uint8_t *b, size_t len) {
-    uint8_t diff = 0;
-    for (size_t i = 0; i < len; i++) {
-        diff |= (uint8_t)a[i] ^ (uint8_t)b[i];
-    }
-    return diff == 0;
-}
-
 int set_user_password(uint32_t uid, const char *new_password) {
     for (int i = 0; i < MAX_USERS; i++) {
         if (users[i].valid && users[i].uid == uid) {
@@ -103,7 +95,7 @@ static int verify_user_password(const char *name, const char *password) {
     const uint8_t *expect = u ? u->pass_hash : computed;
 
     strong_password_hash(password, salt, kernel_pepper, computed);
-    int eq = constant_time_compare(computed, expect, PASS_HASH_LEN);
+    int eq = rust_ct_eq(computed, expect, PASS_HASH_LEN);
     return (u && eq) ? 1 : 0;
 }
 
@@ -131,7 +123,7 @@ static void compute_userdb_tag(uint8_t *tag_out) {
 static int userdb_tag_valid(const uint8_t *tag_on_disk) {
     uint8_t computed[USERDB_TAG_LEN];
     compute_userdb_tag(computed);
-    return constant_time_compare(computed, tag_on_disk, USERDB_TAG_LEN);
+    return rust_ct_eq(computed, tag_on_disk, USERDB_TAG_LEN);
 }
 
 static void users_save_to_ramfs(void) {

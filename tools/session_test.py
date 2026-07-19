@@ -168,9 +168,9 @@ def run():
         step("useradd allowed for root")
 
         # --- 4a. the manual: man / whatis / apropos -----------------------
-        #        These are the shell's own reference pages, held in the binary
-        #        (there is no /usr/share/man to read), so they work before any
-        #        filesystem is mounted. Assert the man page renders its sections
+        #        `ls` is a shell builtin, so `man ls` has no /usr/share/man/ls
+        #        file and renders the built-in reference page compiled into the
+        #        shell (the fallback path). Assert the page renders its sections
         #        rather than just printing something: a page missing SYNOPSIS or
         #        SEE ALSO is the failure worth catching, and an unknown command
         #        must say so rather than silently print nothing.
@@ -199,19 +199,19 @@ def run():
         #        consumes the prompt left by the previous command so the next
         #        command's output can't be confused with a stale prompt.
         #
-        #        ls reports "(empty)" only when it read a directory to its end,
-        #        never as the silent answer to a failed/denied readdir. A fresh
-        #        volume is really empty; after mkdir, ls lists the entry and
-        #        terminates at end-of-directory (the load-bearing NOENT stop:
+        #        A fresh volume is not empty: the fs_server provisions a directory
+        #        skeleton (/bin /etc /home /lib /usr) at boot, so `ls` lists those
+        #        and terminates at end-of-directory (the load-bearing NOENT stop:
         #        drop it and ls either lists nothing or spins to its 4096 cap).
+        #        After mkdir the new entry appears alongside the skeleton.
         s.expect("root@horus#", STEP_TIMEOUT)
-        s.send("ls"); s.expect("(empty)", STEP_TIMEOUT)
-        step("ls reports (empty) on a fresh volume")
+        s.send("ls"); s.expect("bin/", STEP_TIMEOUT)
+        step("ls shows the boot-provisioned directory skeleton")
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("mkdir sess_d"); s.expect("mkdir: created sess_d", STEP_TIMEOUT)
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("ls"); s.expect("sess_d/", STEP_TIMEOUT)
-        step("ls lists a real entry and stops at end-of-directory")
+        step("ls lists a new entry alongside the skeleton and stops at end-of-directory")
         s.expect("root@horus#", STEP_TIMEOUT)
         # ls -l is a table now: a header row, then aligned columns. Assert the
         # header and the directory's mode string, so a regression in the column

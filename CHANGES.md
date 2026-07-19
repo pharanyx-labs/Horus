@@ -8,6 +8,14 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — a real filesystem: a directory skeleton, path-routed provisioning, and man pages on disk (this pass)
+
+- **A fresh boot now comes up with a directory skeleton**, not an empty root. The `fs_server` creates `/bin`, `/etc`, `/home`, `/lib`, `/usr`, `/usr/share` and `/usr/share/man` at startup (idempotently), so a bare `ls` shows a real layout. The shell's `ls` no longer prints the `(empty)` string — an empty directory prints nothing, like `ls(1)`; a read *failure* is still surfaced distinctly, so a broken `fs_server` is never mistaken for emptiness.
+- **Boot modules are routed to a destination path**, not always `/bin`. A module's multiboot2 cmdline is now the store path it provisions to — `bin/<name>` for a runnable binary, `usr/share/man/<name>` for a man page — and the `fs_server` creates any missing parent directories on the way (a bare name with no `/` still defaults under `/bin`). Executables under `/bin` are `0755`, everything else `0644`. `MAX_BOOT_MODULES` was raised 24 → 48 to hold the binaries plus their man pages.
+- **Man pages live on the filesystem.** Each ported coreutil ships a plain-text man page (`userspace/man/<name>`) as its own boot module, provisioned to `/usr/share/man/<name>`, plus `hier(7)` describing the layout. `man <name>` reads `/usr/share/man/<name>` from the store and prints it; if there is no such file it falls back to the shell's built-in page table (so `man` still documents shell builtins and works on a module-free kernel). `man tail`, `man hier`, etc. now work.
+- **`make run` ships the coreutils and their man pages** (`RUN_MODULES=1` by default), so the interactive/dev boot comes up with `/bin` populated and `man` reading `/usr/share/man`. Previously `make run` shipped no modules, so `/bin` did not exist, `ls` showed `(empty)`, and a coreutil like `tail` was an "unknown command". The plain `boot.iso` / release target stays module-free (no GPLv3-derived binary); set `RUN_MODULES=0` for a module-free interactive boot.
+- **`make smoke-modules`** now also asserts the directory skeleton is present, that the man pages land in `/usr/share/man`, and that `man tail` / `man hier` read from there. `smoke-session` was updated: a fresh volume shows the skeleton rather than `(empty)`.
+
 ### Added — the store volume grew to 16 MiB so every coreutils binary lives in /bin at once (this pass)
 
 - **The encrypted store was 2 MiB (4096 blocks), so only ~3–4 of the ~450 KiB newlib-linked coreutils fit in `/bin` at once** — the residency ceiling that replaced the (removed) kernel-image budget. It is now **16 MiB (32768 blocks, ~14 MiB usable)**, which holds all eleven ported utilities simultaneously. `make smoke-modules` ships the full set and asserts every one provisions into `/bin` with none dropped.

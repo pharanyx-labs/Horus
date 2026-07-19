@@ -390,25 +390,78 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     }
 }
 
-/* Ensure /bin exists as a root-owned 0755 directory; return its inode, or -1.
- * Idempotent — reuses the directory if it already exists. */
-static int ensure_bin_dir(void) {
+/* Find `name` in `parent_ino`; if it is a directory return it, else create it as a
+ * root-owned 0755 directory. Idempotent — reuses the directory if present. Returns
+ * the directory inode, or -1 (including when `name` exists as a non-directory). */
+static int resolve_or_make_dir(uint32_t parent_ino, const char *name) {
     uint32_t ino, type;
-    if (dir_find(0, "bin", &ino, &type)) return (type == FS_TYPE_DIR) ? (int)ino : -1;
+    if (dir_find(parent_ino, name, &ino, &type)) return (type == FS_TYPE_DIR) ? (int)ino : -1;
     int nino = sys_fs_inode_alloc(FS_TYPE_DIR);
     if (nino < 0) return -1;
     sys_fs_set_meta((uint32_t)nino, 0755u, 0, 0);            /* root-owned */
-    if (dir_add(0, "bin", (uint32_t)nino, FS_TYPE_DIR) != 0) { sys_fs_inode_free((uint32_t)nino); return -1; }
+    if (dir_add(parent_ino, name, (uint32_t)nino, FS_TYPE_DIR) != 0) { sys_fs_inode_free((uint32_t)nino); return -1; }
     return nino;
 }
 
-/* Copy boot module `mod_index` (size bytes) into a fresh root-owned 0755 file
- * `name` under directory `bin_ino`. Runs entirely inside the server, so the store
- * primitives are called directly rather than over IPC. Returns 0 or negative. */
-static int install_module(uint32_t bin_ino, const char *name, uint32_t mod_index, uint32_t size) {
+/* Walk a '/'-separated path relative to the root, creating each component as a
+ * directory. Returns the final directory's inode, or -1. e.g. "usr/share/man". */
+static int ensure_dir_path(const char *path) {
+    int cur = 0;   /* root inode */
+    const char *p = path;
+    while (*p == '/') p++;
+    while (*p) {
+        char comp[FS_NAME_MAX]; int c = 0;
+        while (*p && *p != '/' && c < (int)FS_NAME_MAX - 1) comp[c++] = *p++;
+        comp[c] = 0;
+        while (*p == '/') p++;
+        if (c == 0) continue;
+        cur = resolve_or_make_dir((uint32_t)cur, comp);
+        if (cur < 0) return -1;
+    }
+    return cur;
+}
+
+/* Copy boot module `mod_index` (size bytes) to the '/'-relative destination `path`
+ * (e.g. "bin/tail" or "usr/share/man/tail"): create any missing parent directories,
+ * then write a root-owned file at the leaf. A bare name with no '/' defaults under
+ * /bin (the common case — a runnable program). Executables under /bin are 0755;
+ * everything else (man pages, config) is 0644. Idempotent: a leaf already present
+ * at the right size is left alone. Returns 1 if installed, 0 if skipped (current),
+ * -1 on failure (including the volume filling up). Runs entirely inside the server,
+ * so the store primitives are called directly rather than over IPC. */
+static int install_module_at(const char *path, uint32_t mod_index, uint32_t size) {
+    const char *slash = 0;
+    for (const char *q = path; *q; q++) if (*q == '/') slash = q;
+
+    int parent_ino;
+    const char *leaf;
+    int is_exec;
+    if (slash) {
+        char parent[FS_NAME_MAX * 6]; int n = 0;
+        for (const char *q = path; q < slash && n < (int)sizeof(parent) - 1; q++) parent[n++] = *q;
+        parent[n] = 0;
+        parent_ino = ensure_dir_path(parent);
+        leaf = slash + 1;
+        is_exec = (parent[0]=='b' && parent[1]=='i' && parent[2]=='n' &&
+                   (parent[3]==0 || parent[3]=='/'));
+    } else {
+        parent_ino = ensure_dir_path("bin");                /* bare name -> /bin */
+        leaf = path;
+        is_exec = 1;
+    }
+    if (parent_ino < 0 || leaf[0] == 0) return -1;
+
+    uint32_t eino, etype;
+    if (dir_find((uint32_t)parent_ino, leaf, &eino, &etype)) {
+        struct fs_stat es;
+        if (sys_fs_stat(eino, &es) == 0 && (uint32_t)es.size == size) return 0;  /* up to date */
+        dir_remove((uint32_t)parent_ino, leaf);             /* stale/partial: replace */
+        sys_fs_inode_free(eino);
+    }
+
     int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
     if (ino < 0) return -1;
-    sys_fs_set_meta((uint32_t)ino, 0755u, 0, 0);            /* root-owned, executable */
+    sys_fs_set_meta((uint32_t)ino, is_exec ? 0755u : 0644u, 0, 0);   /* root-owned */
     static uint8_t buf[BLK];
     uint32_t off = 0, blk = 0;
     while (off < size) {
@@ -417,53 +470,51 @@ static int install_module(uint32_t bin_ino, const char *name, uint32_t mod_index
         if (got <= 0) { sys_fs_inode_free((uint32_t)ino); return -1; }
         /* sys_fblock_write returns the byte count it stored (== got); it zero-pads
          * a short final block internally, so compare against got, not BLK. A write
-         * failure here means the store volume filled up (a large binary is ~800
-         * blocks) — free the partial inode and let the caller skip this one. */
+         * failure here means the store volume filled up — free the partial inode
+         * and let the caller skip this one. */
         if (sys_fblock_write((uint32_t)ino, blk, buf, (uint32_t)got) != got) {
             sys_fs_inode_free((uint32_t)ino); return -1;
         }
         off += (uint32_t)got; blk++;
     }
     sys_fs_set_size((uint32_t)ino, size);
-    if (dir_add(bin_ino, name, (uint32_t)ino, FS_TYPE_FILE) != 0) {
+    if (dir_add((uint32_t)parent_ino, leaf, (uint32_t)ino, FS_TYPE_FILE) != 0) {
         sys_fs_inode_free((uint32_t)ino); return -1;
     }
-    return 0;
+    return 1;
 }
 
-/* Install every boot module GRUB loaded into /bin as a runnable file. Called once
- * per boot, after the store is readable (unlocked). Idempotent: a module already
- * present at the right size is left alone, so a persistent disk is written only on
- * the first boot that sees a new/changed module; a stale or partial entry is
- * replaced. This is how the coreutils binaries reach the filesystem WITHOUT being
- * baked into the kernel image.
- *
- * Capacity note: the store volume is 16 MiB (~14 MiB usable), which holds every
- * ported coreutils binary (~11 x ~450 KiB) at once. Modules are still installed in
- * order and a module that does not fit is skipped (its partial inode freed) so
- * provisioning always continues — but on the current volume nothing is dropped. */
+/* Provision the filesystem at boot, once, after the store is readable (unlocked):
+ *   1. Create the directory skeleton (/bin /etc /home /lib /usr /usr/share/man),
+ *      so `ls` on a fresh root shows a real layout rather than an empty root — this
+ *      runs even when no boot modules are shipped.
+ *   2. Route each boot module to its declared destination path (bin/<name> for the
+ *      coreutils binaries, usr/share/man/<name> for the man pages), creating parent
+ *      dirs as needed. Idempotent, so a persistent disk is written only on the
+ *      first boot that sees a new/changed module.
+ * This is how program binaries and their man pages reach the filesystem WITHOUT
+ * being baked into the kernel image. The 16 MiB store holds all of it at once. */
 static void provision_boot_modules(void) {
+    static const char *const skel[] = {
+        "bin", "etc", "home", "lib", "usr", "usr/share", "usr/share/man", 0
+    };
+    for (int i = 0; skel[i]; i++) ensure_dir_path(skel[i]);
+
     int n = sys_boot_module_info(0, 0);
-    if (n <= 0) return;                                     /* no modules: no /bin needed */
-    int bin = ensure_bin_dir();
-    if (bin < 0) { println("[fs_server] /bin provisioning failed"); return; }
     int installed = 0, skipped = 0;
     for (int i = 0; i < n; i++) {
         struct boot_module_info info;
         if (sys_boot_module_info((uint32_t)i, &info) < 0) continue;
         if (info.name[0] == 0 || info.size == 0) continue;
-        uint32_t eino, etype;
-        if (dir_find((uint32_t)bin, info.name, &eino, &etype)) {
-            struct fs_stat es;
-            if (sys_fs_stat(eino, &es) == 0 && (uint32_t)es.size == info.size) continue; /* up to date */
-            dir_remove((uint32_t)bin, info.name);            /* stale/partial: replace */
-            sys_fs_inode_free(eino);
-        }
-        if (install_module((uint32_t)bin, info.name, (uint32_t)i, info.size) == 0) installed++;
-        else skipped++;                                      /* did not fit: keep going */
+        int rc = install_module_at(info.name, (uint32_t)i, info.size);
+        if (rc == 1) installed++;
+        else if (rc < 0) skipped++;
     }
-    if (installed > 0) println("[fs_server] provisioned boot modules into /bin");
     if (skipped  > 0) println("[fs_server] some boot modules did not fit the store volume");
+    /* One marker whether or not modules were shipped: the skeleton is always
+     * created, so a default (module-free) boot still reports a real filesystem. */
+    (void)installed;
+    println("[fs_server] filesystem provisioned");
 }
 
 /* The gate endpoint init shares with us (slot 3, object 0), and the badge we

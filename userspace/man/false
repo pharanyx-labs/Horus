@@ -1,0 +1,20 @@
+FALSE(1)                       User Commands                       FALSE(1)
+
+NAME
+    false - do nothing, unsuccessfully
+
+SYNOPSIS
+    false [IGNORED]...
+
+DESCRIPTION
+    Exit with a status of 1. All arguments are ignored. Useful as a
+    placeholder or to force a failure status in a script.
+
+    This is the unmodified GNU coreutils false(1), ported to Horus and run as
+    a ring-3 program from /bin/false.
+
+EXIT STATUS
+    Always 1.
+
+SEE ALSO
+    true(1), hier(7)

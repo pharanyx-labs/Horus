@@ -1,0 +1,39 @@
+HIER(7)                    Horus Filesystem Hierarchy                   HIER(7)
+
+NAME
+    hier - the layout of the Horus filesystem
+
+DESCRIPTION
+    Horus keeps its files in a single encrypted object store served by the
+    ring-3 fs_server. The fs_server creates this directory skeleton at boot,
+    so a fresh system always shows a real layout rather than an empty root:
+
+    /           The root directory.
+
+    /bin        Executable programs, run by typing their name. The ported GNU
+                coreutils (cat, echo, head, wc, seq, printf, tail, ...) live
+                here, provisioned from GRUB boot modules. A /bin/<name>
+                shadows the shell's lighter builtin of the same name.
+
+    /etc        System configuration. Empty for now.
+
+    /home       Per-user home directories. Empty for now.
+
+    /lib        Shared libraries. Empty for now (programs are static-linked).
+
+    /usr        Read-only user data and programs.
+
+    /usr/share  Architecture-independent data:
+
+    /usr/share/man
+                Manual pages, one plain-text file per command (this page is
+                /usr/share/man/hier). The man(1) command reads them from here.
+
+NOTES
+    Every file is owned by a uid the kernel attests at login, and the
+    fs_server enforces POSIX owner/group/other permissions against it. Root
+    (uid 0) is the only ambient authority. Files persist across reboot when
+    an ATA disk is present; otherwise the store is an ephemeral RAM volume.
+
+SEE ALSO
+    ls(1), cat(1), man(1)

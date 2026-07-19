@@ -37,8 +37,11 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 #define STORAGE_VERSION 5   /* v5: adds the write-ahead redo log (journal region) */
 
 static struct virtual_disk g_vdisk;
-/* Unused when STORAGE_ATA selects the ATA backend instead of the RAM vdisk. */
-static uint8_t g_vdisk_buffer[BLOCKS_PER_DISK * BLOCK_SIZE] __attribute__((unused));
+/* The RAM vdisk's backing store lives in the physical pool (reserved by
+ * init_user_page_allocator), not in .bss — so the volume can be larger than the
+ * ~2 MiB a .bss array allowed. Set at boot to PHYS_KVA(pool staging reserve end).
+ * Only touched on a diskless boot (the ATA backend uses the real device). */
+uint8_t *g_vdisk_backing = 0;
 
 /* Deferred-format state: storage_init() sets this when no valid disk is found,
  * then storage_unlock() (called at first login) formats+seals with the user's
@@ -111,10 +114,22 @@ _Static_assert(sizeof(struct block_crypto_meta) == META_ENTRY_SIZE,
                "block_crypto_meta must be META_ENTRY_SIZE bytes");
 static struct block_crypto_meta g_block_meta[BLOCKS_PER_DISK];
 
+/* Per-meta-block MAC cache (in RAM, derived from g_block_meta — never persisted).
+ * g_meta_block_mac[b] binds meta block b's META_ENTRIES_PER_BLOCK crypto entries
+ * AND its index b, so a physical attacker cannot roll one meta sector back or swap
+ * two of them without changing it. sb.meta_hmac is then the MAC over all of these
+ * in order, which additionally detects reorder or truncation of the whole region.
+ * This two-level construction lets a single block write refresh just one block MAC
+ * plus the small top MAC (META_BLOCKS_COUNT * 32 bytes), instead of re-HMACing the
+ * entire volume-sized metadata array on every write — so the per-write cost stays
+ * small as the volume grows. The stored sb.meta_hmac is unchanged (still one
+ * 32-byte value verified at unlock): only how it is computed changed. */
+static uint8_t g_meta_block_mac[META_BLOCKS_COUNT][32];
+
 /* forward declarations — defined after do_block_read/do_block_write */
 static void flush_meta_block(uint64_t phys);
 static void load_meta_region(struct mounted_fs *mfs);
-static void update_meta_hmac(void);
+static void update_meta_block_mac(uint64_t meta_blk);
 static int  derive_kek(const char *password, size_t plen,
                        const uint8_t *kek_salt, uint8_t *kek32);
 static void storage_fsck_pass(struct mounted_fs *mfs);
@@ -460,8 +475,9 @@ static void flush_meta_block(uint64_t phys)
                   META_ENTRY_SIZE);
     }
     do_block_write(mfs->sb.meta_start + meta_blk, buf);
-    /* Keep the superblock's meta_hmac in sync so mount can verify integrity. */
-    update_meta_hmac();
+    /* Keep the superblock's meta_hmac in sync so mount can verify integrity —
+     * refreshing only this block's MAC and the top MAC, not the whole region. */
+    update_meta_block_mac(meta_blk);
 }
 
 /* Read the entire metadata region from disk into g_block_meta on mount. */
@@ -541,11 +557,11 @@ static void journal_recover(struct mounted_fs *mfs)
     for (int i = 0; i < 32; i++) bad |= (want[i] ^ hdr.hmac[i]);
     if (bad) goto discard;
 
-    /* Every target must land in the filesystem body — never block 0 (superblock
-     * lives there but is written via the txn's own staged copy, target != 0
-     * because update_meta_hmac stages block 0... actually it may; allow 0 since a
-     * valid HMAC proves the kernel authored it) — but never inside the journal
-     * region, and never past the disk. Fail closed on any out-of-range target. */
+    /* Every target must land in the filesystem body. Block 0 (the superblock) is
+     * allowed because update_meta_block_mac stages it as part of a txn to keep
+     * sb.meta_hmac in sync, and a valid journal HMAC proves the kernel authored the
+     * transaction. But never inside the journal region, and never past the disk.
+     * Fail closed on any out-of-range target. */
     for (uint32_t i = 0; i < hdr.count; i++) {
         uint64_t t = hdr.target[i];
         if (t >= mfs->sb.total_blocks) goto discard;
@@ -562,25 +578,45 @@ discard:
     raw_block_write(jstart, hbuf);   /* clear the header either way */
 }
 
-/* HMAC-SHA256(meta_mac_key, entire g_block_meta[] array) → out32.
- * Covers all BLOCKS_PER_DISK entries at once; at 32 KB this is cheap. */
+/* MAC of one meta block: HMAC(mac_key, meta_blk_index || the block's entries).
+ * The index is bound so two meta blocks cannot be swapped undetected. */
+static int compute_block_mac(uint64_t meta_blk, const uint8_t *mac_key, uint8_t out32[32])
+{
+    uint8_t pre[8 + BLOCK_SIZE];
+    for (int i = 0; i < 8; i++) pre[i] = (uint8_t)(meta_blk >> (i * 8));
+    my_memcpy(pre + 8,
+              (const uint8_t *)&g_block_meta[meta_blk * META_ENTRIES_PER_BLOCK],
+              META_ENTRIES_PER_BLOCK * META_ENTRY_SIZE);
+    return rust_hmac_sha256(mac_key, 32, pre, sizeof(pre), out32);
+}
+
+/* Full recompute: every per-block MAC (from the current g_block_meta) and then the
+ * top-level HMAC over all of them → out32. Used at format and at unlock, where the
+ * whole metadata region is (re)loaded — a once-per-boot cost, not per-write. */
 static int compute_meta_hmac(const uint8_t *mac_key, uint8_t *out32)
 {
+    for (uint64_t b = 0; b < META_BLOCKS_COUNT; b++)
+        if (compute_block_mac(b, mac_key, g_meta_block_mac[b]) != 0) return -1;
     return rust_hmac_sha256(mac_key, 32,
-                            (const uint8_t *)g_block_meta, sizeof(g_block_meta),
+                            (const uint8_t *)g_meta_block_mac, sizeof(g_meta_block_mac),
                             out32);
 }
 
-/* Recompute the metadata HMAC, store it in the in-memory superblock, and
- * flush the superblock (block 0) to disk.  Called while holding storage_lock
- * after every metadata-sector write, so the HMAC always reflects the current
- * state of the metadata region. */
-static void update_meta_hmac(void)
+/* Hot path (called after every metadata-sector write): exactly one meta block
+ * changed, so refresh just its MAC and then the top-level MAC over all block MACs,
+ * store it in the in-memory superblock, and flush the superblock (block 0). The
+ * per-write cost is one 512-byte block MAC + one HMAC over META_BLOCKS_COUNT*32
+ * bytes, independent of how large the volume's data region is. */
+static void update_meta_block_mac(uint64_t meta_blk)
 {
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted) return;
+    if (meta_blk >= META_BLOCKS_COUNT) return;
+    if (compute_block_mac(meta_blk, mfs->meta_mac_key, g_meta_block_mac[meta_blk]) != 0) return;
     uint8_t tag[32];
-    if (compute_meta_hmac(mfs->meta_mac_key, tag) != 0) return;
+    if (rust_hmac_sha256(mfs->meta_mac_key, 32,
+                         (const uint8_t *)g_meta_block_mac, sizeof(g_meta_block_mac),
+                         tag) != 0) return;
     my_memcpy(mfs->sb.meta_hmac, tag, 32);
     do_block_write(0, &mfs->sb);   /* superblock is always block 0 */
 }
@@ -629,9 +665,12 @@ int storage_init(void) {
 
     /* No disk: ephemeral in-RAM virtual disk, formatted and unlocked immediately
      * with a per-boot random password (the vdisk is never persisted, so the
-     * password is discarded after unlock and no login is required to use it). */
-    g_vdisk.data        = g_vdisk_buffer;
-    g_vdisk.size        = sizeof(g_vdisk_buffer);
+     * password is discarded after unlock and no login is required to use it). Its
+     * backing store is the pool reservation (g_vdisk_backing, set at paging_init),
+     * not .bss, so the volume can exceed the old ~2 MiB .bss ceiling. */
+    if (!g_vdisk_backing) return -1;   /* pool reserve not set up: refuse rather than fault */
+    g_vdisk.data        = g_vdisk_backing;
+    g_vdisk.size        = VDISK_BYTES;
     g_vdisk.block_count = BLOCKS_PER_DISK;
     my_memset(g_vdisk.data, 0, g_vdisk.size);
     current_bd = &g_vdisk_bd;
@@ -671,34 +710,46 @@ static int64_t bitmap_find_free(const uint8_t *bitmap, uint64_t max_bits) {
     return -1;
 }
 
-static int read_block_bitmap(struct block_device *bd, const struct fs_superblock *sb, uint8_t *buf) {
-    (void)bd; return do_block_read(sb->block_bitmap_start, buf);
+/* Bits addressable by one bitmap block. The data (block) allocator spans as many
+ * bitmap blocks as sb->block_count needs — bitmap block `n` covers data-relative
+ * blocks [n*BITS_PER_BITMAP_BLOCK, (n+1)*BITS_PER_BITMAP_BLOCK). */
+#define BITS_PER_BITMAP_BLOCK   ((uint64_t)BLOCK_SIZE * 8)
+
+static int read_block_bitmap_n(const struct fs_superblock *sb, uint64_t bm_idx, uint8_t *buf) {
+    return do_block_read(sb->block_bitmap_start + bm_idx, buf);
 }
 
-static int write_block_bitmap(struct block_device *bd, const struct fs_superblock *sb, const uint8_t *buf) {
-    (void)bd; return do_block_write(sb->block_bitmap_start, buf);
+static int write_block_bitmap_n(const struct fs_superblock *sb, uint64_t bm_idx, const uint8_t *buf) {
+    return do_block_write(sb->block_bitmap_start + bm_idx, buf);
 }
 
 int64_t storage_alloc_block(struct block_device *bd, struct fs_superblock *sb) {
+    (void)bd;
     uint8_t bitmap[BLOCK_SIZE];
-    if (read_block_bitmap(bd, sb, bitmap) != 0) return -1;
-
-    int64_t block = bitmap_find_free(bitmap, sb->block_count);
-    if (block < 0) return -1;
-
-    bitmap_set(bitmap, block);
-    write_block_bitmap(bd, sb, bitmap);
-
-    return sb->data_start + block;
+    uint64_t remaining = sb->block_count;
+    for (uint64_t bm = 0; remaining > 0; bm++) {
+        uint64_t bits_here = remaining < BITS_PER_BITMAP_BLOCK ? remaining : BITS_PER_BITMAP_BLOCK;
+        if (read_block_bitmap_n(sb, bm, bitmap) != 0) return -1;
+        int64_t bit = bitmap_find_free(bitmap, bits_here);
+        if (bit >= 0) {
+            bitmap_set(bitmap, bit);
+            write_block_bitmap_n(sb, bm, bitmap);
+            return (int64_t)(sb->data_start + bm * BITS_PER_BITMAP_BLOCK + (uint64_t)bit);
+        }
+        remaining -= bits_here;
+    }
+    return -1;   /* volume full */
 }
 
 void storage_free_block(struct block_device *bd, struct fs_superblock *sb, uint64_t block) {
-    uint8_t bitmap[BLOCK_SIZE];
-    if (read_block_bitmap(bd, sb, bitmap) != 0) return;
-
+    (void)bd;
     uint64_t rel = block - sb->data_start;
-    bitmap_clear(bitmap, rel);
-    write_block_bitmap(bd, sb, bitmap);
+    uint64_t bm  = rel / BITS_PER_BITMAP_BLOCK;
+    uint64_t bit = rel % BITS_PER_BITMAP_BLOCK;
+    uint8_t bitmap[BLOCK_SIZE];
+    if (read_block_bitmap_n(sb, bm, bitmap) != 0) return;
+    bitmap_clear(bitmap, bit);
+    write_block_bitmap_n(sb, bm, bitmap);
 }
 
 int64_t storage_alloc_inode(struct block_device *bd, struct fs_superblock *sb) {
@@ -855,28 +906,48 @@ static int storage_format_sealed(struct block_device *bd,
     sb.journal_start      = 1 + META_BLOCKS_COUNT;
     sb.journal_blocks     = JOURNAL_BLOCKS;
     uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
-    sb.inode_bitmap_start = after_j;
-    sb.block_bitmap_start = after_j + 1;
-    sb.inode_table_start  = after_j + 2;
 
-    /* Geometry is computed from the device size instead of hardcoded. One bitmap
-     * block addresses at most BLOCK_SIZE*8 (=4096) bits, so both the inode count
-     * and the data region are bounded to a single bitmap block; multi-block
-     * bitmaps (larger disks) are a documented follow-up. */
+    /* Geometry is computed from the device size. One bitmap block addresses
+     * BLOCK_SIZE*8 (=4096) bits. The inode count is kept to a single inode-bitmap
+     * block (4096 inodes is ample); the DATA allocator's bitmap spans as many
+     * blocks as the data region needs, so the volume is no longer capped at 4096
+     * data blocks. Layout after the journal:
+     *   inode_bitmap : 1 block
+     *   block_bitmap : bm_blocks blocks
+     *   inode_table  : table_blocks blocks
+     *   data         : the rest */
     const uint64_t BITS_PER_BLOCK = (uint64_t)BLOCK_SIZE * 8;
 
     uint64_t inodes = bd->total_blocks / 4;   /* ~1 inode per 4 blocks */
     if (inodes < 16) inodes = 16;
-    if (inodes > BITS_PER_BLOCK) inodes = BITS_PER_BLOCK;
+    if (inodes > BITS_PER_BLOCK) inodes = BITS_PER_BLOCK;   /* single inode-bitmap block */
     uint64_t table_blocks = (inodes + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK;
     inodes = table_blocks * INODES_PER_BLOCK;
-
     sb.inode_count = inodes;
-    sb.data_start  = sb.inode_table_start + table_blocks;
-    if (sb.data_start >= bd->total_blocks) return -1;   /* disk too small */
 
-    uint64_t data_blocks = bd->total_blocks - sb.data_start;
-    if (data_blocks > BITS_PER_BLOCK) data_blocks = BITS_PER_BLOCK;
+    sb.inode_bitmap_start = after_j;
+    sb.block_bitmap_start = after_j + 1;
+
+    /* Solve for the data-bitmap span: (bm_blocks + data_blocks) share `avail`,
+     * and bm_blocks = ceil(data_blocks / BITS_PER_BLOCK). Iterating converges in a
+     * couple of steps (bm_blocks is tiny next to data_blocks). */
+    uint64_t fixed  = after_j + 1 + table_blocks;   /* everything except bitmap + data */
+    if (fixed >= bd->total_blocks) return -1;        /* disk too small */
+    uint64_t avail  = bd->total_blocks - fixed;
+    uint64_t bm_blocks = (avail + BITS_PER_BLOCK - 1) / BITS_PER_BLOCK;
+    for (int it = 0; it < 8; it++) {
+        uint64_t d = (avail > bm_blocks) ? avail - bm_blocks : 0;
+        uint64_t nb = (d + BITS_PER_BLOCK - 1) / BITS_PER_BLOCK;
+        if (nb == 0) nb = 1;
+        if (nb == bm_blocks) break;
+        bm_blocks = nb;
+    }
+    if (bm_blocks >= avail) return -1;               /* no room for data */
+    uint64_t data_blocks = avail - bm_blocks;
+
+    sb.inode_table_start = sb.block_bitmap_start + bm_blocks;
+    sb.data_start        = sb.inode_table_start + table_blocks;
+    if (sb.data_start >= bd->total_blocks) return -1;   /* disk too small */
     sb.block_count = data_blocks;
 
     /* Per-volume HKDF diversifier — random per-format, stable on disk. */
@@ -950,7 +1021,10 @@ static int storage_format_sealed(struct block_device *bd,
         bd->write_block(bd, sb.journal_start + j, zero);
     }
 
-    bd->write_block(bd, sb.block_bitmap_start, zero);
+    /* Zero every block-bitmap block (the data allocator may span several). */
+    for (uint64_t b = 0; b < bm_blocks; b++) {
+        bd->write_block(bd, sb.block_bitmap_start + b, zero);
+    }
 
     /* Zero the whole inode table so inodes sharing a block with a freshly used
      * one read back clean (matters on a garbage ATA disk at first format). */
@@ -1152,13 +1226,12 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
     uint8_t inode_bitmap[BLOCK_SIZE];
     if (do_block_read(mfs->sb.inode_bitmap_start, inode_bitmap) != 0) return;
 
-    uint8_t block_bitmap[BLOCK_SIZE];
-    int have_bb = (do_block_read(mfs->sb.block_bitmap_start, block_bitmap) == 0);
-
-    /* Data blocks reachable from a live inode's direct/single-indirect pointers.
-     * Indexed by rel = phys - data_start, matching the block bitmap. */
-    static uint8_t referenced[BLOCK_SIZE];
-    my_memset(referenced, 0, BLOCK_SIZE);
+    /* Data blocks reachable from a live inode's direct/single-indirect pointers,
+     * indexed by rel = phys - data_start (matching the block bitmap). Sized to the
+     * whole volume, since the data region — and thus its bitmap — can now span
+     * several blocks; block_count <= total_blocks <= BLOCKS_PER_DISK. */
+    static uint8_t referenced[BLOCKS_PER_DISK / 8];
+    my_memset(referenced, 0, sizeof(referenced));
     const uint64_t data_start  = mfs->sb.data_start;
     const uint64_t block_count = mfs->sb.block_count;
 
@@ -1215,17 +1288,24 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
 
     /* Reclaim data blocks the bitmap marks allocated but no live inode references
      * (crash-orphaned: allocated before the operation that would link them
-     * committed). Only clears bits; never touches a referenced block. */
-    if (have_bb) {
+     * committed). Only clears bits; never touches a referenced block. The data
+     * bitmap can span several blocks, so walk it a block at a time and write back
+     * only the ones that changed. */
+    for (uint64_t bm = 0, base = 0; base < block_count; bm++, base += BITS_PER_BITMAP_BLOCK) {
+        uint8_t block_bitmap[BLOCK_SIZE];
+        if (do_block_read(mfs->sb.block_bitmap_start + bm, block_bitmap) != 0) continue;
+        uint64_t here = block_count - base;
+        if (here > BITS_PER_BITMAP_BLOCK) here = BITS_PER_BITMAP_BLOCK;
         int bb_dirty = 0;
-        for (uint64_t r = 0; r < block_count; r++) {
-            if (bitmap_test(block_bitmap, r) && !bitmap_test(referenced, r)) {
-                bitmap_clear(block_bitmap, r);
+        for (uint64_t b = 0; b < here; b++) {
+            uint64_t r = base + b;                 /* volume-relative data block */
+            if (bitmap_test(block_bitmap, b) && !bitmap_test(referenced, r)) {
+                bitmap_clear(block_bitmap, b);
                 bb_dirty = 1;
             }
         }
         if (bb_dirty)
-            do_block_write(mfs->sb.block_bitmap_start, block_bitmap);
+            do_block_write(mfs->sb.block_bitmap_start + bm, block_bitmap);
     }
 }
 

@@ -5,7 +5,18 @@ edition = "2021"
 description = "Security-critical components for the Horus microkernel (no_std staticlib)"
 
 [lib]
-crate-type = ["staticlib"]
+# staticlib: linked into the C kernel. rlib: lets the rust/fuzz harness depend on
+# the crate as a normal Rust library (the kernel build uses only the staticlib).
+crate-type = ["staticlib", "rlib"]
+# No doctests: with the rlib crate-type, `cargo test` would otherwise build a
+# non-test no_std rlib under the harness's forced panic=unwind, which cannot link.
+doctest = false
+
+[features]
+# Built by rust/fuzz only: turns the crate into an rlib dependency of a std
+# libFuzzer harness. Gates off the #[panic_handler] (std provides one there) so
+# the two do not collide. Off for the kernel build and the gating `rust` job.
+fuzzing = []
 
 [profile.dev]
 panic = "abort"

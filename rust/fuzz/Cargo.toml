@@ -1,0 +1,44 @@
+[package]
+name = "horus_shell-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: this crate needs nightly + libFuzzer and must never be
+# pulled into the parent horus_shell build graph (the gating `rust` CI job and
+# the kernel build must stay on stable and unaffected by anything here).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.horus_shell]
+path = ".."
+features = ["fuzzing"]
+
+[[bin]]
+name = "ct_eq"
+path = "fuzz_targets/ct_eq.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validate_page_fault"
+path = "fuzz_targets/validate_page_fault.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signal_handler_addr"
+path = "fuzz_targets/signal_handler_addr.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

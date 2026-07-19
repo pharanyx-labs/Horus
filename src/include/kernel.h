@@ -13,13 +13,17 @@ typedef uint64_t vaddr_t;
 
 
 #define BLOCK_SIZE              512
-/* 4096 blocks x 512 B = 2 MiB volume. Sized so a single file can exceed the
- * direct+single-indirect range (12 + 64 = 76 blocks) and actually reach the
- * double-indirect region. Bounded to one bitmap block (BLOCK_SIZE*8 = 4096 bits)
- * for both the data and inode allocators; larger disks need multi-block bitmaps
- * (a documented follow-up). Grows the RAM vdisk buffer + per-block crypto-meta
- * arrays to ~2 MiB of kernel BSS. */
-#define BLOCKS_PER_DISK         4096
+/* 32768 blocks x 512 B = 16 MiB volume (~14 MiB usable after metadata/journal/
+ * inode-table/bitmap overhead). The DATA allocator uses a multi-block bitmap
+ * (storage.c), so the data region is no longer capped at one bitmap block's 4096
+ * bits; the inode allocator stays single-block (4096 inodes is ample for this
+ * volume). Large enough to hold every ported coreutils binary in /bin at once
+ * (~11 x ~450 KiB). The RAM vdisk's backing store moved out of .bss into a
+ * physical-pool reservation (see VDISK_BYTES) so the volume can be this large
+ * without blowing the __bss_end < USER_PHYS_BASE (16 MiB) ceiling; the per-block
+ * crypto-meta array (g_block_meta) is ~1 MiB of .bss, and its rollback MAC is now
+ * hierarchical so the per-write cost does not scale with the volume. */
+#define BLOCKS_PER_DISK         32768
 #define PAGE_SIZE               4096
 
 /* ---- Kernel address translation --------------------------------------------
@@ -94,6 +98,20 @@ typedef uint64_t vaddr_t;
 #define LOADER_STAGING_PAGES    (LOADER_STAGING_BYTES / PAGE_SIZE)
 extern uint8_t *loader_staging;                               /* set at boot -> PHYS_KVA(USER_PHYS_BASE) */
 
+/* The ephemeral RAM virtual disk's backing store. Sized to the whole volume
+ * (BLOCKS_PER_DISK * BLOCK_SIZE), it used to be a static .bss array — fine at a
+ * 2 MiB volume, but a larger volume would blow the `__bss_end < USER_PHYS_BASE`
+ * (16 MiB) linker ASSERT. Like loader_staging it is now reserved in the physical
+ * pool, right after the staging region, and reached through PHYS_KVA. Reserved
+ * unconditionally (a fixed pool location is simplest); an ATA boot just never
+ * touches it. Costs pool frames, not .bss. */
+#define VDISK_BYTES             ((uint64_t)BLOCKS_PER_DISK * BLOCK_SIZE)
+#define VDISK_PAGES             (VDISK_BYTES / PAGE_SIZE)
+extern uint8_t *g_vdisk_backing;                             /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES) */
+
+/* Total pool frames held back at the base before the free list starts. */
+#define POOL_RESERVE_PAGES      (LOADER_STAGING_PAGES + VDISK_PAGES)
+
 /* Boot modules. GRUB loads each `module2` line in grub.cfg into physical RAM and
  * describes it with a multiboot2 type-3 tag; mb_scan_boot_info() records them
  * here at boot. This is how program images reach the system WITHOUT being
@@ -119,9 +137,9 @@ const struct boot_module *boot_module_get(uint32_t index);
 /* Highest physical address any module occupies, page-rounded (0 if none). */
 uint64_t boot_module_top(void);
 
-/* Floor keeps 16 MiB *usable* after the staging reserve, so even a tiny E820 pool
- * still boots with the historical headroom. */
-#define PHYS_POOL_MIN_PAGES     (4096 + LOADER_STAGING_PAGES)  /* floor: 16 MiB usable + staging */
+/* Floor keeps 16 MiB *usable* after the base reserves (staging + RAM vdisk), so
+ * even a tiny E820 pool still boots with the historical headroom. */
+#define PHYS_POOL_MIN_PAGES     (4096 + POOL_RESERVE_PAGES)   /* floor: 16 MiB usable + reserves */
 #define PHYS_POOL_CEIL          0x40000000ULL       /* pool top must stay < 1 GiB (PHYS_KVA) */
 #define CNODE_SIZE              256
 #define MAX_TASKS               64

@@ -129,7 +129,7 @@ Pass flags as `make FLAG=VALUE`.
 | `MINIMAL_SECURE` | `0` | Strips optional kernel features for a smaller attack surface |
 | `SMP` | `0` | Brings up the application processors (multi-core). `SMP_CPUS` sets the guest core count |
 | `STORAGE_ATA` | `0` | Used by FS smoke/self-test targets to prefer the ATA path; at runtime the kernel always probes for a disk and falls back to the RAM vdisk when none is present. `BLOCKS_PER_DISK` sizes the volume |
-| `COREUTILS_MODULES` | `0` | Ships the ported GNU coreutils as GRUB multiboot2 modules on the ISO (not baked into the kernel image); the `fs_server` provisions them into `/bin` at boot. `COREUTILS_MODULE_SET` selects which utilities (default: all), kept small enough to fit the 2 MiB store volume by the smoke targets |
+| `COREUTILS_MODULES` | `0` | Ships the ported GNU coreutils as GRUB multiboot2 modules on the ISO (not baked into the kernel image); the `fs_server` provisions them into `/bin` at boot. `COREUTILS_MODULE_SET` selects which utilities (default: all — the 16 MiB store volume holds every one at once) |
 | `ELF_SELFTEST` | `0` | Embeds a real static-PIE ELF and runs an in-kernel loader + W^X + relocation self-test at boot (ELFCLASS32) |
 | `ELF64_SELFTEST` | `0` | Same, for an ELFCLASS64 static-PIE image — gates the x86-64 RELA relocation path. The image is loaded and inspected, never executed |
 | `ASLR_SELFTEST` | `0` | Spawns several PIE images and asserts the loader really randomises the image base |

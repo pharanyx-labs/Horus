@@ -88,13 +88,12 @@ image's 16 MiB budget, that budget no longer limits the utilities — a full bui
 can ship every one. The shipped default carries no module, so the default ISO
 holds no GPLv3-derived binary.
 
-Two gated build+test paths (`COREUTILS_MODULES=1`, with a `COREUTILS_MODULE_SET`
-kept small enough to fit the 2 MiB store volume — see the note below):
+Two gated build+test paths (`COREUTILS_MODULES=1`):
 
 ```sh
-make smoke-modules          # ship printf/tail as modules; log in, and drive them
-                            #   from /bin over the real shell (the transport gate,
-                            #   and the coverage for the two newest utilities)
+make smoke-modules          # ship ALL the utilities as modules; assert every one
+                            #   is provisioned into /bin (none dropped) and run
+                            #   printf + tail from /bin over the real shell
 make smoke-coreutils-shell  # ship head/seq/wc as modules; create a file with the
                             #   shell's echo, then run head/wc/seq on it
 ```
@@ -106,11 +105,13 @@ fs_server connection — and assert on output produced by upstream's own code
 (`printf`'s format engine, `tail`'s byte/line selection, `seq`'s long-double
 generator, `wc`'s counting).
 
-**Residency is bounded by the store volume, not the kernel image.** The encrypted
-volume is 2 MiB (a single-block allocation bitmap; growing it is a deferred FS
-feature), so only ~3–4 of the ~450 KiB newlib-linked binaries fit in `/bin` at
-once. The `fs_server` installs modules in order until the volume fills and skips
-the rest gracefully. The two test sets above are disjoint and each fits.
+**All the utilities fit in `/bin` at once.** The encrypted store volume is 16 MiB
+(~14 MiB usable): a multi-block data-allocation bitmap lifted the old 4096-block
+(2 MiB) cap, the RAM vdisk's backing store moved off `.bss`, and the metadata
+rollback-MAC became hierarchical so provisioning a large binary block-by-block is
+not slowed by the bigger volume. `make smoke-modules` ships the full set and
+asserts none is dropped. The `fs_server` still installs modules in order and skips
+anything that would not fit, but on this volume nothing does.
 
 Adding another utility is a matter of dropping its unmodified `.c` here, adding
 its name to `COREUTILS_PROGS` in the Makefile, and extending `port/` with whatever

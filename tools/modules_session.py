@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""modules_session.py — prove GNU coreutils utilities shipped as GRUB *boot
-modules* (not baked into the kernel image) are provisioned into /bin and run
-through the REAL ring-3 shell over serial.
+"""modules_session.py — prove ALL ported GNU coreutils, shipped as GRUB *boot
+modules* (not baked into the kernel image), are provisioned into /bin and fit the
+store volume at once, then run through the REAL ring-3 shell over serial.
 
-This is the transport gate for loading programs from the filesystem: the kernel
-records each module from the multiboot2 tags, the fs_server copies it into /bin
-on the encrypted store, and the shell resolves /bin/<name>, loads the ~530 KiB
-image over the fs_server, and spawns it — none of it living in the 16 MiB kernel
-image. It doubles as the coverage for the two newly ported utilities, printf and
-tail, each of which is far larger than the old per-image embedding limit.
+This is the transport gate for loading programs from the filesystem AND the
+residency gate for the grown store volume: the kernel records each module from
+the multiboot2 tags, the fs_server copies every one into /bin on the encrypted
+store, and all of them fit (no "did not fit") — which is what the multi-block
+allocation bitmap, the off-.bss RAM vdisk, and the hierarchical metadata MAC
+deliver. It then runs printf and tail from /bin. Each binary is ~450-610 KiB, far
+over the old per-image embedding limit.
 
-Fixtures use the shell's own `echo`+redirect (its echo builtin is unshadowed,
-since echo is not in this module set), and every assertion is on output produced
-by the utility's own upstream code.
+Fixtures use the raw `fss_create` + `fss_write` builtins (not coreutil names),
+because /bin/echo now shadows the shell's echo builtin so its redirection cannot
+create a file.
 
 Usage:  tools/modules_session.py [boot.iso]
 Exit:   0 and "MODULES_SESSION: PASS" on success; 1 and a FAIL line otherwise.
@@ -25,9 +26,12 @@ from session_test import Serial, SessionFail  # noqa: E402
 
 ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "60"))
-# Provisioning ~500 KiB binaries block-by-block through the encrypted+journaled
-# store is slow under TCG, so allow generous headroom before the banner.
-BOOT = float(os.environ.get("BOOT_TIMEOUT", "240"))
+# Provisioning all ~11 * ~450 KiB binaries block-by-block through the encrypted
+# store is the slow part under TCG; allow generous headroom before the banner.
+BOOT = float(os.environ.get("BOOT_TIMEOUT", "300"))
+
+ALL = ["echo", "true", "false", "basename", "dirname",
+       "cat", "head", "seq", "wc", "printf", "tail"]
 
 
 def step(msg):
@@ -49,6 +53,12 @@ def run():
         s.expect("provisioned boot modules into /bin", BOOT)
         step("fs_server provisioned boot modules into /bin")
 
+        # Residency: every module fit the 16 MiB volume. The fs_server prints the
+        # "did not fit" line only when the volume filled — assert it did NOT.
+        if "did not fit" in getattr(s, "buf", ""):
+            raise SessionFail("a boot module did not fit the store volume")
+        step("all boot modules fit the store volume (no 'did not fit')")
+
         s.expect("horus login:", BOOT)
         s.send("root")
         s.expect("Password:", STEP)
@@ -56,10 +66,11 @@ def run():
         s.expect(PROMPT, STEP)
         step("logged in")
 
-        # The utilities landed in /bin as real files, from the modules.
+        # Every utility landed in /bin as a real file, from the modules.
         cmd("cd /bin")
-        cmd("ls", "printf", "tail")
-        step("/bin lists printf and tail (provisioned from boot modules)")
+        for u in ALL:
+            cmd("ls", u)
+        step(f"all {len(ALL)} coreutils present in /bin")
         cmd("cd /")
 
         # printf: real coreutils printf.c formatting. The shell splits on spaces,
@@ -67,10 +78,11 @@ def run():
         cmd("printf %s=%d\\n foo 7", "foo=7")
         step("printf formats (upstream printf.c, loaded from /bin)")
 
-        # tail: create a fixture with the shell's echo builtin (unshadowed here),
-        # then select the tail of it. "one two three four five six" is 27 bytes
-        # with no trailing newline, so its last 3 bytes are "six".
-        cmd("echo one two three four five six > cu.txt")
+        # tail: build a fixture with fss_create + fss_write (echo is a module here,
+        # so its redirection can't), then select its tail. fss_write stores exactly
+        # the text — "one two three four five six" is 27 bytes, last 3 are "six".
+        cmd("fss_create cu.txt", "created")
+        cmd("fss_write cu.txt one two three four five six", "wrote")
         cmd("tail -c 3 cu.txt", "six")
         step("tail -c selects trailing bytes (upstream tail.c)")
         cmd("tail -n 1 cu.txt", "one two three four five six")
@@ -80,7 +92,7 @@ def run():
         return 0
     except SessionFail as e:
         print(f"MODULES_SESSION: FAIL - {e}", file=sys.stderr)
-        tail = s.buf[-1600:] if hasattr(s, "buf") else ""
+        tail = s.buf[-1800:] if hasattr(s, "buf") else ""
         print("---- serial tail ----\n" + tail, file=sys.stderr)
         return 1
     finally:

@@ -603,42 +603,39 @@ uint32_t staged_image_span_pages(void) {
     return (uint32_t)pages;
 }
 
+/* FFI layout contract for struct elf_header_info (mirror of Rust ElfHeaderInfo
+ * in rust/src/lib.rs). Rust writes it, this loader reads it; a field reorder or
+ * retype in either language fails one of these asserts. Same doctrine as the
+ * capability_t/Capability asserts in capability.c. */
+_Static_assert(sizeof(struct elf_header_info) == 24, "elf_header_info size");
+_Static_assert(__builtin_offsetof(struct elf_header_info, e_entry)   == 0,  "e_entry offset");
+_Static_assert(__builtin_offsetof(struct elf_header_info, e_phoff)   == 8,  "e_phoff offset");
+_Static_assert(__builtin_offsetof(struct elf_header_info, e_type)    == 12, "e_type offset");
+_Static_assert(__builtin_offsetof(struct elf_header_info, e_machine) == 14, "e_machine offset");
+_Static_assert(__builtin_offsetof(struct elf_header_info, e_phnum)   == 16, "e_phnum offset");
+_Static_assert(__builtin_offsetof(struct elf_header_info, ei_class)  == 18, "ei_class offset");
+
 int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
 {
     if (!out_entry) return -1;
     const uint8_t *st = loader_staging;
-    
-    if (st[0] != 0x7f || st[1] != 'E' || st[2] != 'L' || st[3] != 'F') return -2;
 
-    uint8_t ei_class = st[4]; 
-    uint8_t ei_data  = st[5]; 
-    if (ei_data != 1) return -3; 
+    /* Parse+validate the ELF identity and program-header locator in safe Rust.
+     * The staged image is fully attacker-controlled, so the header parse — the
+     * part that reads untrusted offsets — is done with bounds-checked slice reads
+     * that cannot walk off the staging buffer. rust_elf_validate_header returns
+     * the same negative codes this loader has always used (-2..-8, -17), so
+     * behaviour is unchanged; only the memory safety of the parse improves. The
+     * PT_LOAD segment walk below still parses in C (moved to Rust in J10.2). */
+    struct elf_header_info hdr;
+    int hrc = rust_elf_validate_header(st, MAX_PROGRAM_SIZE, &hdr);
+    if (hrc != 0) return hrc;
 
-    
-    uint16_t e_type = (uint16_t)st[16] | ((uint16_t)st[17] << 8);
-    uint16_t e_machine = (uint16_t)st[18] | ((uint16_t)st[19] << 8);
-    uint32_t e_entry32 = 0;
-    uint64_t e_entry64 = 0;
-    uint32_t e_phoff = 0;
-    uint16_t e_phnum = 0;
-
-    if (ei_class == 1) { 
-        if (e_machine != 3 ) return -4;
-        e_entry32 = (uint32_t)st[24] | ((uint32_t)st[25]<<8) | ((uint32_t)st[26]<<16) | ((uint32_t)st[27]<<24);
-        e_phoff   = (uint32_t)st[28] | ((uint32_t)st[29]<<8) | ((uint32_t)st[30]<<16) | ((uint32_t)st[31]<<24);
-        e_phnum   = (uint16_t)st[44] | ((uint16_t)st[45] << 8);
-    } else if (ei_class == 2) {
-        if (e_machine != 62 ) return -4;
-        e_entry64 = elf64_rd(st + 24);   /* bounds-checked against USER_MAX_VADDR below */
-        if (elf64_narrow(st + 32, &e_phoff) != 0) return -17;
-        e_phnum   = (uint16_t)st[56] | ((uint16_t)st[57] << 8);
-    } else {
-        return -5;
-    }
-
-    if (e_type != 2  && e_type != 3 ) return -6;
-    if (e_phnum == 0 || e_phnum > 8) return -7; 
-    if (e_phoff == 0 || e_phoff > (MAX_PROGRAM_SIZE - 64)) return -8;
+    uint8_t  ei_class  = hdr.ei_class;
+    uint32_t e_entry32 = (ei_class == 1) ? (uint32_t)hdr.e_entry : 0;
+    uint64_t e_entry64 = (ei_class == 2) ? hdr.e_entry : 0;
+    uint32_t e_phoff   = hdr.e_phoff;
+    uint16_t e_phnum   = hdr.e_phnum;
 
     
     uint32_t min_vaddr = 0xFFFFFFFFU;

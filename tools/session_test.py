@@ -266,6 +266,33 @@ def run():
         s.send("useradd 1235 eve"); s.expect("useradd failed", STEP_TIMEOUT)
         step("useradd denied for standard user (least privilege enforced)")
 
+        # --- 6b. userdel is an admin op too: the same identity gate must cover
+        #         it, not just useradd. A standard user deleting an account (here
+        #         alice, uid 1234, added by root earlier) would be a trivial
+        #         escalation/denial-of-service, so it must be refused.
+        s.send("userdel 1234"); s.expect("userdel failed", STEP_TIMEOUT)
+        step("userdel denied for standard user")
+
+        # --- 6c. cross-user filesystem access: the fs_server is the reference
+        #         monitor and checks POSIX permissions against the caller's
+        #         KERNEL-ATTESTED uid (SYS_IPC_SENDER), never an identity from
+        #         the request. /sess_d/note is a 0644 file owned by root (created
+        #         in section 4), so a standard user (uid 1000, "other") may READ
+        #         it but must NOT be able to WRITE it. This exercises the
+        #         reference-monitor property end-to-end from ring 3, not just in
+        #         a unit test (docs/LIMITATIONS.md).
+        s.send("cd /sess_d"); s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
+        step("standard user can read a world-readable root-owned file")
+        s.send("echo pwned > note"); s.expect("echo: write failed", STEP_TIMEOUT)
+        step("standard user cannot write a root-owned file (fs_server denies by attested uid)")
+        # The write was genuinely refused, not silently applied: the content is
+        # still root's. If enforcement were bypassed, this cat would show "pwned"
+        # and the expect below would fail instead of passing.
+        s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
+        step("the root-owned file is unchanged after the denied write")
+        s.send("cd /"); s.expect("user@horus$", STEP_TIMEOUT)
+
         # --- 7. sudo refuses to take the password on the command line ----
         #        It would be echoed to the console and mirrored to the serial
         #        log, which is where this was found: the password was legible

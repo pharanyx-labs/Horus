@@ -271,9 +271,255 @@ pub unsafe extern "C" fn rust_ct_eq(a: *const u8, b: *const u8, len: usize) -> i
     (diff == 0) as i32
 }
 
+// ---------------------------------------------------------------------------
+// ELF image header validation (J10.1).
+//
+// The ELF loader (src/kernel/loader.c: try_elf_load) parses a fully
+// attacker-controlled program image. Moving the header parse — the part that
+// reads untrusted offsets and lengths — into safe Rust means a malformed header
+// can never cause an out-of-bounds read in the parser: every field access is a
+// bounds-checked slice read. This is behaviour-preserving: the validator accepts
+// exactly the images the C loader accepted and returns the SAME negative codes
+// for each rejection, so smoke-elf / smoke-elf64 are unchanged. Only the parser's
+// memory safety improves. The PT_LOAD segment walk still parses in C (a later
+// change, J10.2, moves that too).
+// ---------------------------------------------------------------------------
+
+/// Validated ELF header fields — the identity plus the program-header locator.
+/// Mirrors `struct elf_header_info` in src/include/kernel.h (identical field
+/// order and repr(C) layout). Rust fills it; the C loader reads it only after
+/// `rust_elf_validate_header` returns 0.
+#[repr(C)]
+#[derive(Clone, Copy)]
+// Debug/PartialEq are only used by the unit tests' assert_eq!, so keep them out
+// of the kernel staticlib (which is linked --whole-archive, pulling in even
+// unused impls) rather than shipping code the kernel never runs.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub struct ElfHeaderInfo {
+    pub e_entry: u64,   // entry vaddr, zero-extended from the 32- or 64-bit field
+    pub e_phoff: u32,   // program-header table offset (loader plumbing is 32-bit)
+    pub e_type: u16,    // 2 = ET_EXEC, 3 = ET_DYN
+    pub e_machine: u16, // 3 = EM_386, 62 = EM_X86_64
+    pub e_phnum: u16,   // number of program headers, validated to 1..=8
+    pub ei_class: u8,   // 1 = ELFCLASS32, 2 = ELFCLASS64
+}
+
+#[inline]
+fn elf_rd_u16(s: &[u8], off: usize) -> Option<u16> {
+    let b = s.get(off..off + 2)?;
+    Some(u16::from_le_bytes([b[0], b[1]]))
+}
+#[inline]
+fn elf_rd_u32(s: &[u8], off: usize) -> Option<u32> {
+    let b = s.get(off..off + 4)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+#[inline]
+fn elf_rd_u64(s: &[u8], off: usize) -> Option<u64> {
+    let b = s.get(off..off + 8)?;
+    Some(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+}
+/// Read an ELF64 8-byte field into the loader's 32-bit plumbing, refusing any
+/// value that does not fit (the -17 case). Mirrors elf64_narrow in loader.c:
+/// reading only the low half would defeat the downstream bounds checks. `Err(-2)`
+/// on an out-of-bounds read (a truncated header; cannot happen for the real
+/// MAX_PROGRAM_SIZE-sized staging buffer, but fails closed rather than reading
+/// past the slice).
+#[inline]
+fn elf_narrow(s: &[u8], off: usize) -> Result<u32, i32> {
+    let v = elf_rd_u64(s, off).ok_or(-2)?;
+    if v > u32::MAX as u64 { return Err(-17); }
+    Ok(v as u32)
+}
+
+/// Pure, panic-free ELF-header validator over a byte slice — the core exercised
+/// by the unit tests, the fuzz target, and the Kani proof. `buf` is the staged
+/// image; `buf.len()` is the size of the staging buffer (MAX_PROGRAM_SIZE in the
+/// kernel). Returns the validated fields, or the loader's negative error code.
+///
+/// The check order mirrors try_elf_load exactly, so a header failing more than
+/// one check yields the same code the C loader would have (e.g. an ELF64 header
+/// with a narrowed e_phoff returns -17 before the e_type check).
+fn validate_elf_header(buf: &[u8]) -> Result<ElfHeaderInfo, i32> {
+    // ELF magic: 0x7f 'E' 'L' 'F'.
+    if buf.get(0..4) != Some(&[0x7f, b'E', b'L', b'F'][..]) {
+        return Err(-2);
+    }
+    let ei_class = *buf.get(4).ok_or(-2)?;
+    let ei_data = *buf.get(5).ok_or(-2)?;
+    if ei_data != 1 { return Err(-3); } // ELFDATA2LSB (little-endian) only
+
+    let e_type = elf_rd_u16(buf, 16).ok_or(-2)?;
+    let e_machine = elf_rd_u16(buf, 18).ok_or(-2)?;
+
+    let (e_entry, e_phoff, e_phnum) = match ei_class {
+        1 => {
+            // ELFCLASS32: e_machine EM_386, 32-bit e_entry/e_phoff, e_phnum @44.
+            if e_machine != 3 { return Err(-4); }
+            let entry = elf_rd_u32(buf, 24).ok_or(-2)? as u64;
+            let phoff = elf_rd_u32(buf, 28).ok_or(-2)?;
+            let phnum = elf_rd_u16(buf, 44).ok_or(-2)?;
+            (entry, phoff, phnum)
+        }
+        2 => {
+            // ELFCLASS64: e_machine EM_X86_64, 64-bit e_entry, narrowed e_phoff,
+            // e_phnum @56.
+            if e_machine != 62 { return Err(-4); }
+            let entry = elf_rd_u64(buf, 24).ok_or(-2)?;
+            let phoff = elf_narrow(buf, 32)?;
+            let phnum = elf_rd_u16(buf, 56).ok_or(-2)?;
+            (entry, phoff, phnum)
+        }
+        _ => return Err(-5),
+    };
+
+    if e_type != 2 && e_type != 3 { return Err(-6); } // ET_EXEC | ET_DYN
+    if e_phnum == 0 || e_phnum > 8 { return Err(-7); }
+    // e_phoff in [1, buf.len() - 64]. buf.len() == MAX_PROGRAM_SIZE at the call
+    // site, so this is the same bound the C loader used, now also guaranteeing the
+    // program-header table start is inside the buffer.
+    let max_phoff = (buf.len() as u64).saturating_sub(64);
+    if e_phoff == 0 || e_phoff as u64 > max_phoff { return Err(-8); }
+
+    Ok(ElfHeaderInfo { e_entry, e_phoff, e_type, e_machine, e_phnum, ei_class })
+}
+
+/// FFI entry: validate the header of the staged ELF image. On success fills
+/// `*out` and returns 0; otherwise returns the loader's negative error code
+/// (-2 bad magic, -3 not LE, -4 machine/class mismatch, -5 bad class, -6 bad
+/// e_type, -7 bad e_phnum, -8 bad e_phoff, -17 an ELF64 field exceeds 32 bits).
+///
+/// # Safety
+/// `buf` must point to `buf_len` readable bytes; `out` must be a writable,
+/// aligned `ElfHeaderInfo`. Null pointers are handled (returns -2).
+#[no_mangle]
+pub unsafe extern "C" fn rust_elf_validate_header(
+    buf: *const u8,
+    buf_len: usize,
+    out: *mut ElfHeaderInfo,
+) -> i32 {
+    if buf.is_null() || out.is_null() {
+        return -2;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    match validate_elf_header(s) {
+        Ok(info) => {
+            *out = info;
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+#[cfg(kani)]
+mod elf_kani_proofs {
+    use super::*;
+
+    /// Soundness of the ELF header validator, over EVERY possible 128-byte input
+    /// (buffer size chosen so acceptance is reachable: e_phoff can fall within
+    /// [1, len-64]). Two things are proved together:
+    ///   - the parse never panics — no overflow, no out-of-bounds slice read;
+    ///   - if it ACCEPTS a header, every field the C loader then trusts is within
+    ///     the range the loader assumes (class, e_type, e_phnum, e_phoff bound,
+    ///     and the machine/class pairing). A malformed image can never slip an
+    ///     out-of-range field past the validator.
+    #[kani::proof]
+    fn elf_header_validation_is_sound() {
+        let buf: [u8; 128] = kani::any();
+        if let Ok(info) = validate_elf_header(&buf) {
+            assert!(info.ei_class == 1 || info.ei_class == 2);
+            assert!(info.e_type == 2 || info.e_type == 3);
+            assert!(info.e_phnum >= 1 && info.e_phnum <= 8);
+            assert!(info.e_phoff >= 1);
+            assert!(info.e_phoff as usize <= buf.len() - 64);
+            assert!(
+                (info.ei_class == 1 && info.e_machine == 3)
+                    || (info.ei_class == 2 && info.e_machine == 62)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- ELF header validation (J10.1) -----------------------------------
+    // Minimal little-endian ELF header builders (512-byte buffer; only the
+    // fields the validator reads are set, the rest stay 0).
+    fn elf32(e_machine: u16, e_type: u16, e_phoff: u32, e_phnum: u16) -> [u8; 512] {
+        let mut b = [0u8; 512];
+        b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        b[4] = 1; // ELFCLASS32
+        b[5] = 1; // ELFDATA2LSB
+        b[16..18].copy_from_slice(&e_type.to_le_bytes());
+        b[18..20].copy_from_slice(&e_machine.to_le_bytes());
+        b[24..28].copy_from_slice(&0x0040_0000u32.to_le_bytes()); // e_entry
+        b[28..32].copy_from_slice(&e_phoff.to_le_bytes());
+        b[44..46].copy_from_slice(&e_phnum.to_le_bytes());
+        b
+    }
+    fn elf64(e_machine: u16, e_type: u16, phoff_lo: u32, phoff_hi: u32, e_phnum: u16) -> [u8; 512] {
+        let mut b = [0u8; 512];
+        b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        b[4] = 2; // ELFCLASS64
+        b[5] = 1; // ELFDATA2LSB
+        b[16..18].copy_from_slice(&e_type.to_le_bytes());
+        b[18..20].copy_from_slice(&e_machine.to_le_bytes());
+        b[24..32].copy_from_slice(&0x0040_0000u64.to_le_bytes()); // e_entry (8 bytes)
+        b[32..36].copy_from_slice(&phoff_lo.to_le_bytes());       // e_phoff low dword
+        b[36..40].copy_from_slice(&phoff_hi.to_le_bytes());       // e_phoff high dword
+        b[56..58].copy_from_slice(&e_phnum.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn elf_header_accepts_valid_elf32_and_elf64() {
+        let info = validate_elf_header(&elf32(3, 2, 64, 1)).expect("valid ELF32");
+        assert_eq!(
+            info,
+            ElfHeaderInfo { e_entry: 0x0040_0000, e_phoff: 64, e_type: 2, e_machine: 3, e_phnum: 1, ei_class: 1 }
+        );
+        let info = validate_elf_header(&elf64(62, 3, 64, 0, 2)).expect("valid ELF64");
+        assert_eq!(
+            info,
+            ElfHeaderInfo { e_entry: 0x0040_0000, e_phoff: 64, e_type: 3, e_machine: 62, e_phnum: 2, ei_class: 2 }
+        );
+    }
+
+    #[test]
+    fn elf_header_rejects_with_the_loaders_exact_codes() {
+        let mut bad_magic = elf32(3, 2, 64, 1);
+        bad_magic[1] = b'X';
+        assert_eq!(validate_elf_header(&bad_magic), Err(-2)); // bad magic
+        let mut be = elf32(3, 2, 64, 1);
+        be[5] = 2;
+        assert_eq!(validate_elf_header(&be), Err(-3)); // not little-endian
+        assert_eq!(validate_elf_header(&elf32(62, 2, 64, 1)), Err(-4)); // ELF32 wrong machine
+        assert_eq!(validate_elf_header(&elf64(3, 2, 64, 0, 1)), Err(-4)); // ELF64 wrong machine
+        let mut badclass = elf32(3, 2, 64, 1);
+        badclass[4] = 3;
+        assert_eq!(validate_elf_header(&badclass), Err(-5)); // bad ELFCLASS
+        assert_eq!(validate_elf_header(&elf32(3, 1, 64, 1)), Err(-6)); // ET_REL not loadable
+        assert_eq!(validate_elf_header(&elf32(3, 2, 64, 0)), Err(-7)); // e_phnum 0
+        assert_eq!(validate_elf_header(&elf32(3, 2, 64, 9)), Err(-7)); // e_phnum > 8
+        assert_eq!(validate_elf_header(&elf32(3, 2, 0, 1)), Err(-8)); // e_phoff 0
+        assert_eq!(validate_elf_header(&elf32(3, 2, 500, 1)), Err(-8)); // e_phoff > len-64 (448)
+        assert_eq!(validate_elf_header(&elf64(62, 2, 64, 1, 1)), Err(-17)); // e_phoff exceeds 32 bits
+        // The narrow (-17) is checked inside the class branch, before e_type
+        // (-6), so a header that fails both yields -17 — same as the C loader.
+        assert_eq!(validate_elf_header(&elf64(62, 1, 64, 1, 1)), Err(-17));
+    }
+
+    #[test]
+    fn elf_header_never_panics_on_short_buffers() {
+        // A truncated header must fail closed with a negative code, never panic
+        // or read past the slice — the memory-safety win of the Rust parse.
+        let full = elf64(62, 3, 64, 0, 1);
+        for n in 0..=80usize {
+            assert!(validate_elf_header(&full[..n]).is_err() || n >= 58);
+        }
+    }
 
     // err_code bit layout used throughout: present=1, write=2, user=4.
     const PRESENT: u32 = 1;

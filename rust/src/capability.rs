@@ -790,4 +790,125 @@ mod tests {
                 "a pre-revoke snapshot must fail the generation re-check (TOCTOU guard)");
         }
     }
+
+    /// Minting into a kernel-reserved slot (`0..KERNEL_RESERVED_CAPS`) must be
+    /// refused, leaving the slot untouched — this is what stops a userspace mint
+    /// from overwriting a primordial root capability by naming its slot.
+    #[test]
+    fn test_mint_into_reserved_slot_refused() {
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        // A valid, mint-worthy source in a normal slot. generation 0 => the
+        // lookup/mint paths never touch the shared lineage table (parallel-safe).
+        cs[5] = cap(1, 0x3f, 0xB100, 0, 0x5100, 0);
+        let mut next = 0x10000u32;
+        unsafe {
+            for dest in 0..KERNEL_RESERVED_CAPS {
+                assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, dest, 5, 0x3f, &mut next, 0),
+                    "mint into reserved slot {dest} must be refused");
+                assert_eq!(cs[dest as usize].typ, CAP_NULL,
+                    "reserved slot {dest} must be left untouched");
+            }
+            // The first non-reserved slot succeeds — proving the guard is the
+            // destination slot number, not a broken source or exhausted serial.
+            assert!(rust_cap_mint(cs.as_mut_ptr(), 16, KERNEL_RESERVED_CAPS, 5, 0x3f, &mut next, 0));
+        }
+    }
+
+    /// Authority cannot be fabricated from nothing: minting from an empty
+    /// (CAP_NULL) source, or from a structurally-present source whose serial is 0
+    /// (which lookup also treats as empty), must both be refused with the
+    /// destination left untouched.
+    #[test]
+    fn test_mint_from_invalid_source_refused() {
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        // slot 6 is empty (CAP_NULL); slot 7 is non-null but carries serial 0.
+        cs[7] = cap(1, 0x3f, 0xB101, 0, 0 /* serial */, 0);
+        let mut next = 0x10000u32;
+        unsafe {
+            assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, 8, 6, 0x3f, &mut next, 0),
+                "mint from an empty source slot must be refused");
+            assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, 8, 7, 0x3f, &mut next, 0),
+                "mint from a serial-0 source must be refused");
+            assert_eq!(cs[8].typ, CAP_NULL, "destination must stay empty when the source is invalid");
+        }
+    }
+
+    /// Out-of-range slot indices must fail closed on every entry point — null /
+    /// false, never an out-of-bounds access or a mutation. Crucially the hard
+    /// `CNODE_SIZE` cap holds even when the caller claims an oversized
+    /// `cspace_size`, so a bad size argument cannot authorize an OOB read.
+    /// Complements the J5 fuzz targets with a fast, explicit regression check.
+    #[test]
+    fn test_out_of_range_slots_fail_closed() {
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        cs[5] = cap(1, 0x3f, 0xB102, 0, 0x5102, 0); // a valid in-range cap
+        let mut next = 0x10000u32;
+        unsafe {
+            // slot >= cspace_size
+            assert!(rust_cap_lookup(cs.as_mut_ptr(), 16, 16, 0x1).is_null());
+            assert!(rust_cap_lookup(cs.as_mut_ptr(), 16, 99, 0x1).is_null());
+            // slot >= CNODE_SIZE even when the caller over-claims the size: the
+            // hard cap must reject BEFORE indexing the (only 16-long) array.
+            assert!(rust_cap_lookup(cs.as_mut_ptr(), u32::MAX, CNODE_SIZE, 0x1).is_null());
+
+            assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, 16, 5, 0x3f, &mut next, 0),
+                "out-of-range dest must be refused");
+            assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, 5, 16, 0x3f, &mut next, 0),
+                "out-of-range src must be refused");
+            assert!(!rust_cap_revoke(cs.as_mut_ptr(), 16, 16, core::ptr::null_mut()),
+                "out-of-range revoke must be refused");
+
+            // None of the above disturbed the one valid in-range capability.
+            assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 5, 0x1).is_null());
+        }
+    }
+
+    /// Revocation is transitive across a multi-level derivation chain, not just
+    /// parent->child. Minting a grandchild from a child and then revoking the
+    /// original parent must null the child AND the grandchild, because every
+    /// derived copy shares the parent's `object` and the sweep matches on it.
+    #[test]
+    fn test_transitive_revoke_across_derivation_chain() {
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        // Parent in slot 4, generation 0 (lineage-exempt => the pre-revoke
+        // lookups never depend on the shared generation table).
+        cs[4] = cap(1, 0x3f, 0xB600, 0, 0x5600, 0);
+        let mut next = 0x30000u32;
+        unsafe {
+            assert!(rust_cap_mint(cs.as_mut_ptr(), 16, 5, 4, 0x3f, &mut next, 0)); // child  <- parent
+            assert!(rust_cap_mint(cs.as_mut_ptr(), 16, 6, 5, 0x3f, &mut next, 0)); // grandchild <- child
+            for slot in [4u32, 5, 6] {
+                assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, slot, 0x1).is_null(),
+                    "slot {slot} must be usable before revocation");
+            }
+            // Revoke the ROOT parent only.
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut()));
+            for slot in [4u32, 5, 6] {
+                assert_eq!(cs[slot as usize].typ, CAP_NULL,
+                    "slot {slot} in the derivation chain must be revoked with its ancestor");
+            }
+        }
+    }
+
+    /// The `caps_in_use` accounting must saturate at zero: if a revocation sweep
+    /// nulls capabilities while the counter is already 0 (an accounting
+    /// inconsistency), it must stay 0 rather than wrap to `u32::MAX` — an
+    /// underflow would permanently defeat the `MAX_CAPS_PER_TASK` ceiling.
+    #[test]
+    fn test_caps_in_use_never_underflows() {
+        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        // A parent and a same-object derived copy (badge == parent serial), both
+        // generation 0 for parallel safety.
+        cs[4] = cap(1, 0x3f, 0xB700, 0, 0x5700, 0);
+        cs[5] = cap(1, 0x03, 0xB700, 0x5700, 0x9700, 0);
+        let mut ciu = 0u32; // deliberately understated relative to the two caps present
+        unsafe {
+            let spaces = [CSpaceDesc { caps: cs.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu) }];
+            assert!(rust_cap_revoke_global(
+                cs.as_mut_ptr(), 16, 4, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut()));
+            assert_eq!(cs[4].typ, CAP_NULL);
+            assert_eq!(cs[5].typ, CAP_NULL, "the same-object derived copy is swept too");
+            assert_eq!(ciu, 0, "caps_in_use must saturate at 0, never wrap to u32::MAX");
+        }
+    }
 }

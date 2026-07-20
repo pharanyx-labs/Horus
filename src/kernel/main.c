@@ -267,6 +267,11 @@ void kernel_main(uint32_t mb_info) {
     /* Must follow entropy_init (needs the CSPRNG) and must run from a frame
      * that never returns — kernel_main is both. See stack_protector_init. */
     stack_protector_init();
+#ifdef STACKGUARD_SELFTEST
+    /* Immediately after the re-seed, so it reads the live guard. Boot continues;
+     * make smoke-stackguard asserts on it. */
+    stackguard_selftest();
+#endif
     init_syscall_instruction_path();
 #ifndef MINIMAL_SECURE
     ramfs_init();   /* -> storage_init(): probes for an ATA disk (persistent) and

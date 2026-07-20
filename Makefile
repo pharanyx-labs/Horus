@@ -361,6 +361,17 @@ CFLAGS  += -DCPU_SELFTEST
 ASFLAGS += -DCPU_SELFTEST
 endif
 
+# STACKGUARD_SELFTEST=1 makes kernel_main assert (right after
+# stack_protector_init) that the stack canary was re-seeded from the CSPRNG at
+# boot — i.e. the live __stack_chk_guard is no longer the published compile-time
+# constant (nor 0). Guards against the "-fstack-protector-strong is on but the
+# guard is the reproducible-build default" silent-inertness class. Drives
+# `make smoke-stackguard`.
+STACKGUARD_SELFTEST ?= 0
+ifeq ($(STACKGUARD_SELFTEST),1)
+CFLAGS  += -DSTACKGUARD_SELFTEST
+endif
+
 WX_SELFTEST ?= 0
 ifeq ($(WX_SELFTEST),1)
 CFLAGS  += -DWX_SELFTEST
@@ -785,6 +796,14 @@ smoke-cpu:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CPU_SELFTEST: PASS' \
 		FAIL_MARKER='CPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+.PHONY: smoke-stackguard
+smoke-stackguard:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STACKGUARD_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='STACKGUARD_SELFTEST: PASS' \
+		FAIL_MARKER='STACKGUARD_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build the kernel with the gated ELF-loader self-test, boot it headless, and
 # require the in-kernel self-test to report PASS on serial (in addition to the

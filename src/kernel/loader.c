@@ -615,6 +615,20 @@ _Static_assert(__builtin_offsetof(struct elf_header_info, e_machine) == 14, "e_m
 _Static_assert(__builtin_offsetof(struct elf_header_info, e_phnum)   == 16, "e_phnum offset");
 _Static_assert(__builtin_offsetof(struct elf_header_info, ei_class)  == 18, "ei_class offset");
 
+/* FFI layout contract for the load plan (mirror of Rust ElfLoadSegment /
+ * ElfLoadPlan). */
+_Static_assert(sizeof(struct elf_load_segment) == 24, "elf_load_segment size");
+_Static_assert(__builtin_offsetof(struct elf_load_segment, dest_va)  == 0,  "seg.dest_va offset");
+_Static_assert(__builtin_offsetof(struct elf_load_segment, file_off) == 8,  "seg.file_off offset");
+_Static_assert(__builtin_offsetof(struct elf_load_segment, file_sz)  == 12, "seg.file_sz offset");
+_Static_assert(__builtin_offsetof(struct elf_load_segment, mem_sz)   == 16, "seg.mem_sz offset");
+_Static_assert(__builtin_offsetof(struct elf_load_segment, flags)    == 20, "seg.flags offset");
+_Static_assert(sizeof(struct elf_load_plan) == 216, "elf_load_plan size");
+_Static_assert(__builtin_offsetof(struct elf_load_plan, slide)      == 0,   "plan.slide offset");
+_Static_assert(__builtin_offsetof(struct elf_load_plan, max_va_end) == 8,   "plan.max_va_end offset");
+_Static_assert(__builtin_offsetof(struct elf_load_plan, segs)       == 16,  "plan.segs offset");
+_Static_assert(__builtin_offsetof(struct elf_load_plan, nseg)       == 208, "plan.nseg offset");
+
 int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
 {
     if (!out_entry) return -1;
@@ -638,75 +652,48 @@ int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
     uint16_t e_phnum   = hdr.e_phnum;
 
     
-    uint32_t min_vaddr = 0xFFFFFFFFU;
-    int have_load = 0;
     const uint8_t *ph = st + e_phoff;
     uint32_t phentsize = (ei_class == 1) ? 32 : 56;
 
-    for (uint16_t i = 0; i < e_phnum; i++) {
-        const uint8_t *p = ph + (uint32_t)i * phentsize;
-        uint32_t p_type = p[0] | (p[1]<<8) | (p[2]<<16) | (p[3]<<24);
-        if (p_type != 1 ) continue;
-        uint32_t p_vaddr;
-        if (ei_class == 1) {
-            p_vaddr = (uint32_t)p[8] | ((uint32_t)p[9]<<8) | ((uint32_t)p[10]<<16) | ((uint32_t)p[11]<<24);
-        } else {
-            if (elf64_narrow(p + 16, &p_vaddr) != 0) return -17;
-        }
-        if (p_vaddr < min_vaddr) min_vaddr = p_vaddr;
-        have_load = 1;
-    }
-    if (!have_load) return -9;
+    /* Parse+validate the PT_LOAD program headers in safe Rust and get back a
+     * load plan (validated segments + slide). The program-header table is
+     * attacker-controlled, so this walk — bounds-checked slice reads, u64 length
+     * arithmetic — cannot read off the staging buffer, nor wrap p_offset+p_filesz
+     * past its bound the way the old hand-rolled u32 parse could. Same negative
+     * codes as before (-9,-10,-11,-12,-13,-17). The privileged copy_to_user below
+     * stays in C; the relocation pass (which re-parses phdrs via ph/phentsize) is
+     * still C too (moved to Rust in J10.3). */
+    struct elf_load_plan plan;
+    int prc = rust_elf_build_load_plan(st, MAX_PROGRAM_SIZE, ei_class, e_phoff,
+                                       e_phnum, load_base, USER_AREA_BASE,
+                                       USER_MAX_VADDR, &plan);
+    if (prc != 0) return prc;
 
-    uint64_t slide = load_base - (uint64_t)(min_vaddr & ~0xFFFU);
+    uint64_t slide      = plan.slide;
+    uint64_t max_va_end = plan.max_va_end;
+    int      nseg       = (int)plan.nseg;
 
-    /* Record each loaded segment's mapped range and ELF p_flags so that, after
-     * the bytes are copied in (which needs the pages writable), we can apply
-     * W^X per page: code becomes read+execute, data/rodata read[+write]+NX.
-     * e_phnum is capped at 8 above, so PT_LOAD segments fit in these arrays. */
+    /* seg_va/seg_memsz/seg_flags feed the relocation pass and the W^X pass below,
+     * exactly as the old in-loop recording did. */
     uint64_t seg_va[8], seg_memsz[8];
     uint32_t seg_flags[8];
-    int nseg = 0;
-    uint64_t max_va_end = 0;
 
-    for (uint16_t i = 0; i < e_phnum; i++) {
-        const uint8_t *p = ph + (uint32_t)i * phentsize;
-        uint32_t p_type = p[0] | (p[1]<<8) | (p[2]<<16) | (p[3]<<24);
-        if (p_type != 1) continue;
+    static const uint8_t elf_zero_fill[4096] = {0};
+    for (int i = 0; i < nseg; i++) {
+        uint64_t dest_va  = plan.segs[i].dest_va;
+        uint32_t p_offset = plan.segs[i].file_off;
+        uint32_t p_filesz = plan.segs[i].file_sz;
+        uint32_t p_memsz  = plan.segs[i].mem_sz;
+        seg_va[i]    = dest_va;
+        seg_memsz[i] = p_memsz;
+        seg_flags[i] = plan.segs[i].flags;
 
-        uint32_t p_offset=0, p_vaddr=0, p_filesz=0, p_memsz=0, p_flags=0;
-        if (ei_class == 1) {
-            p_offset = (uint32_t)p[4] | ((uint32_t)p[5]<<8) | ((uint32_t)p[6]<<16) | ((uint32_t)p[7]<<24);
-            p_vaddr  = (uint32_t)p[8] | ((uint32_t)p[9]<<8) | ((uint32_t)p[10]<<16) | ((uint32_t)p[11]<<24);
-            p_filesz = (uint32_t)p[16]| ((uint32_t)p[17]<<8)| ((uint32_t)p[18]<<16)| ((uint32_t)p[19]<<24);
-            p_memsz  = (uint32_t)p[20]| ((uint32_t)p[21]<<8)| ((uint32_t)p[22]<<16)| ((uint32_t)p[23]<<24);
-            p_flags  = (uint32_t)p[24]| ((uint32_t)p[25]<<8)| ((uint32_t)p[26]<<16)| ((uint32_t)p[27]<<24);
-        } else {
-            if (elf64_narrow(p + 8,  &p_offset) != 0) return -17;
-            if (elf64_narrow(p + 16, &p_vaddr)  != 0) return -17;
-            if (elf64_narrow(p + 32, &p_filesz) != 0) return -17;
-            if (elf64_narrow(p + 40, &p_memsz)  != 0) return -17;
-            /* p_flags is genuinely 4 bytes in ELF64, at offset 4. */
-            p_flags  = (uint32_t)p[4] | ((uint32_t)p[5]<<8)| ((uint32_t)p[6]<<16)| ((uint32_t)p[7]<<24);
-        }
-
-        if (p_memsz < p_filesz) return -10;
-        if (p_offset + p_filesz > MAX_PROGRAM_SIZE) return -11;
-        uint64_t dest_va = (uint64_t)p_vaddr + slide;
-        uint64_t va_end = dest_va + p_memsz;
-        if (va_end > max_va_end) max_va_end = va_end;
-        if (dest_va < USER_AREA_BASE || dest_va >= USER_MAX_VADDR) return -12;
-        if (dest_va + p_memsz < dest_va) return -13; 
-
-        /* Copy the segment's file bytes, then zero-fill the BSS tail, into
-         * the target task's address space (current task == new_id here).
-         * copy_to_user walks the page tables with present/user/write checks,
-         * handles huge pages, switches to the kernel CR3 (SMAP-safe), and
-         * fails closed on any unmapped page -- unlike the previous
-         * hand-rolled walk, which masked each level without a present-bit
-         * check and would dereference and write a garbage ring-0 physical
-         * address for any non-present or huge-page mapping. */
-        static const uint8_t elf_zero_fill[4096] = {0};
+        /* Copy the segment's file bytes, then zero-fill the BSS tail, into the
+         * target task's address space (current task == new_id here). copy_to_user
+         * walks the page tables with present/user/write checks, handles huge
+         * pages, switches to the kernel CR3 (SMAP-safe) and fails closed on any
+         * unmapped page. The source range [p_offset, p_offset+p_filesz) is inside
+         * the staging buffer — validated by rust_elf_build_load_plan. */
         const uint8_t *s = st + p_offset;
         for (uint32_t off = 0; off < p_filesz; ) {
             uint32_t chunk = p_filesz - off;
@@ -721,13 +708,6 @@ int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
             if (copy_to_user((void *)(uintptr_t)(dest_va + off), elf_zero_fill, chunk) != 0)
                 return -15;
             off += chunk;
-        }
-
-        if (nseg < 8) {
-            seg_va[nseg]    = dest_va;
-            seg_memsz[nseg] = p_memsz;
-            seg_flags[nseg] = p_flags;
-            nseg++;
         }
     }
 

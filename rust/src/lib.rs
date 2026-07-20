@@ -620,6 +620,213 @@ pub unsafe extern "C" fn rust_elf_build_load_plan(
     }
 }
 
+// ---------------------------------------------------------------------------
+// i386 dynamic relocation parsing (J10.3a).
+//
+// The third attacker-controlled parser in the ELF loader: for a static-PIE
+// (ET_DYN) ELFCLASS32 image it walks PT_DYNAMIC to find the REL table, maps the
+// table's link-time vaddr to a file offset, and validates each entry. Moving the
+// PARSE into safe Rust means the untrusted-offset reads are bounds-checked slice
+// accesses; the C loader keeps the privileged apply (a read-modify-write of the
+// user address space — `*(u32*)target += slide`), which needs ring 0.
+//
+// Behaviour-preserving: only R_386_RELATIVE (type 8) is applied, R_386_NONE is
+// skipped, and everything else — a DT_RELA table (i386 uses REL), a bad entsize,
+// an unmapped/out-of-bounds table, an unknown type, a target outside every
+// loaded segment — fails closed with -16, exactly as the C did.
+// ---------------------------------------------------------------------------
+
+/// The located i386 REL table. Mirrors `struct elf_i386_reloc_table` in kernel.h.
+/// `nrel == 0` means the image has no dynamic relocations (a success, not an
+/// error).
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub struct ElfI386RelocTable {
+    pub rel_file_off: u32, // file offset of the REL table in the staging buffer
+    pub nrel: u32,         // number of 8-byte Elf32_Rel entries, capped at 8192
+}
+
+const I386_PHENTSIZE: usize = 32;
+
+/// Map a link-time (base-0) vaddr to its offset in the staging file image via the
+/// PT_LOAD segment that contains it. None if no segment contains it or the file
+/// offset would not fit u32 (fail closed).
+fn i386_map_vaddr_to_file_off(buf: &[u8], e_phoff: u32, e_phnum: u16, vaddr: u32) -> Option<u32> {
+    let ph = e_phoff as usize;
+    for i in 0..e_phnum as usize {
+        let p = ph + i * I386_PHENTSIZE;
+        if elf_rd_u32(buf, p)? != PT_LOAD {
+            continue;
+        }
+        let p_offset = elf_rd_u32(buf, p + 4)?;
+        let p_vaddr = elf_rd_u32(buf, p + 8)?;
+        let p_filesz = elf_rd_u32(buf, p + 16)?;
+        if vaddr >= p_vaddr && (vaddr as u64) < p_vaddr as u64 + p_filesz as u64 {
+            let off = p_offset as u64 + (vaddr - p_vaddr) as u64;
+            return u32::try_from(off).ok();
+        }
+    }
+    None
+}
+
+/// Locate + validate the i386 dynamic REL table. Mirrors the parse in
+/// elf_apply_relocations_i386. `Ok(nrel==0)` for no dynamic relocations.
+fn i386_reloc_locate(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<ElfI386RelocTable, i32> {
+    let none = ElfI386RelocTable { rel_file_off: 0, nrel: 0 };
+    let ph = e_phoff as usize;
+
+    // Locate PT_DYNAMIC (p_type == 2). Elf32_Phdr: p_type@0 p_offset@4 p_filesz@16.
+    let (mut dyn_off, mut dyn_sz) = (0u32, 0u32);
+    for i in 0..e_phnum as usize {
+        let p = ph + i * I386_PHENTSIZE;
+        if elf_rd_u32(buf, p).ok_or(-16)? == 2 {
+            dyn_off = elf_rd_u32(buf, p + 4).ok_or(-16)?;
+            dyn_sz = elf_rd_u32(buf, p + 16).ok_or(-16)?;
+            break;
+        }
+    }
+    if dyn_off == 0 || dyn_sz == 0 {
+        return Ok(none);
+    }
+    let len = buf.len() as u64;
+    if dyn_off as u64 > len || dyn_sz as u64 > len || dyn_off as u64 + dyn_sz as u64 > len {
+        return Err(-16);
+    }
+
+    // Walk Elf32_Dyn { i32 d_tag; u32 d_val } (8 bytes) for the REL table.
+    let (mut rel_vaddr, mut rel_sz, mut rel_ent) = (0u32, 0u32, 8u32);
+    let mut o = 0u32;
+    while o as u64 + 8 <= dyn_sz as u64 {
+        let base = (dyn_off + o) as usize;
+        let tag = elf_rd_u32(buf, base).ok_or(-16)? as i32;
+        let val = elf_rd_u32(buf, base + 4).ok_or(-16)?;
+        match tag {
+            0 => break,             // DT_NULL
+            17 => rel_vaddr = val,  // DT_REL
+            18 => rel_sz = val,     // DT_RELSZ
+            19 => rel_ent = val,    // DT_RELENT
+            7 => return Err(-16),   // DT_RELA: unsupported on i386
+            _ => {}
+        }
+        o += 8;
+    }
+    if rel_vaddr == 0 || rel_sz == 0 {
+        return Ok(none);
+    }
+    if rel_ent != 8 {
+        return Err(-16);
+    }
+
+    let rel_file_off = i386_map_vaddr_to_file_off(buf, e_phoff, e_phnum, rel_vaddr).ok_or(-16)?;
+    if rel_file_off as u64 > len || rel_sz as u64 > len || rel_file_off as u64 + rel_sz as u64 > len
+    {
+        return Err(-16);
+    }
+
+    let nrel = rel_sz / 8;
+    if nrel > 8192 {
+        return Err(-16);
+    }
+    Ok(ElfI386RelocTable { rel_file_off, nrel })
+}
+
+/// Validate entry `k` of the located REL table and return its patch target
+/// (`r_offset + slide`, which the caller read-modify-writes). `Ok(Some(t))` =
+/// apply, `Ok(None)` = skip (R_386_NONE), `Err(-16)` = reject.
+fn i386_reloc_target(
+    buf: &[u8],
+    rel_file_off: u32,
+    k: u32,
+    slide: u64,
+    seg_va: &[u64],
+    seg_memsz: &[u64],
+) -> Result<Option<u64>, i32> {
+    let r = rel_file_off as usize + k as usize * 8;
+    let r_offset = elf_rd_u32(buf, r).ok_or(-16)?;
+    let r_info = elf_rd_u32(buf, r + 4).ok_or(-16)?;
+    let r_type = r_info & 0xFF;
+    if r_type == 0 {
+        return Ok(None); // R_386_NONE
+    }
+    if r_type != 8 {
+        return Err(-16); // only R_386_RELATIVE
+    }
+
+    let target = (r_offset as u64).wrapping_add(slide);
+    let n = seg_va.len().min(seg_memsz.len());
+    for s in 0..n {
+        if let (Some(t4), Some(end)) = (target.checked_add(4), seg_va[s].checked_add(seg_memsz[s])) {
+            if target >= seg_va[s] && t4 <= end {
+                return Ok(Some(target));
+            }
+        }
+    }
+    Err(-16)
+}
+
+/// FFI: locate the i386 dynamic REL table. 0 + `*out` on success (out.nrel == 0
+/// = no relocations), else -16.
+///
+/// # Safety
+/// `buf` points to `buf_len` readable bytes; `out` is a writable
+/// `ElfI386RelocTable`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_elf_i386_reloc_locate(
+    buf: *const u8,
+    buf_len: usize,
+    e_phoff: u32,
+    e_phnum: u16,
+    out: *mut ElfI386RelocTable,
+) -> i32 {
+    if buf.is_null() || out.is_null() {
+        return -16;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    match i386_reloc_locate(s, e_phoff, e_phnum) {
+        Ok(rt) => {
+            *out = rt;
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// FFI: resolve reloc entry `k`. Returns 0 (apply `*out_target`), 1 (skip /
+/// R_386_NONE), or -16 (reject).
+///
+/// # Safety
+/// `buf`/`buf_len` bound the staging image; `seg_va`/`seg_memsz` each point to
+/// `nseg` readable u64s; `out_target` is writable.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rust_elf_i386_reloc_target(
+    buf: *const u8,
+    buf_len: usize,
+    rel_file_off: u32,
+    k: u32,
+    slide: u64,
+    seg_va: *const u64,
+    seg_memsz: *const u64,
+    nseg: u32,
+    out_target: *mut u64,
+) -> i32 {
+    if buf.is_null() || out_target.is_null() || seg_va.is_null() || seg_memsz.is_null() {
+        return -16;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    let va = core::slice::from_raw_parts(seg_va, nseg as usize);
+    let mz = core::slice::from_raw_parts(seg_memsz, nseg as usize);
+    match i386_reloc_target(s, rel_file_off, k, slide, va, mz) {
+        Ok(Some(t)) => {
+            *out_target = t;
+            0
+        }
+        Ok(None) => 1,
+        Err(code) => code,
+    }
+}
+
 #[cfg(kani)]
 mod elf_kani_proofs {
     use super::*;
@@ -849,6 +1056,89 @@ mod tests {
         for lb in [0u64, u64::MAX, 0x7fff_ffff_ffff_f000, UAB] {
             let _ = build_load_plan(&buf, 2, 64, 1, lb, UAB, UMV);
             let _ = build_load_plan(&buf, 1, 52, 8, lb, UAB, UMV);
+        }
+    }
+
+    // --- i386 dynamic relocations (J10.3a) --------------------------------
+    fn put_u32(b: &mut [u8], off: usize, v: u32) {
+        b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    // Build a minimal ELFCLASS32 static-PIE image with two program headers
+    // (PT_LOAD covering everything, PT_DYNAMIC), a dynamic section naming the REL
+    // (or, if `rela`, RELA) table, and the REL entries. e_phoff = 64.
+    fn build_i386_reloc_image(rels: &[(u32, u32)], rela: bool) -> [u8; 1024] {
+        let mut b = [0u8; 1024];
+        // phdr0 PT_LOAD @64: type=1, offset=0, vaddr=0, filesz=1024.
+        put_u32(&mut b, 64, 1);
+        put_u32(&mut b, 64 + 16, 1024);
+        // phdr1 PT_DYNAMIC @96: type=2, offset=dyn_off, filesz set below.
+        let dyn_off = 128u32;
+        put_u32(&mut b, 96, 2);
+        put_u32(&mut b, 96 + 4, dyn_off);
+        // dynamic section @128: Elf32_Dyn { tag, val } (8 bytes).
+        let rel_vaddr = 256u32;
+        let rel_sz = rels.len() as u32 * 8;
+        let mut d = dyn_off as usize;
+        let tag = if rela { 7u32 } else { 17u32 }; // DT_RELA vs DT_REL
+        put_u32(&mut b, d, tag);
+        put_u32(&mut b, d + 4, rel_vaddr);
+        d += 8;
+        put_u32(&mut b, d, 18); // DT_RELSZ
+        put_u32(&mut b, d + 4, rel_sz);
+        d += 8;
+        put_u32(&mut b, d, 19); // DT_RELENT
+        put_u32(&mut b, d + 4, 8);
+        d += 8;
+        put_u32(&mut b, d, 0); // DT_NULL
+        d += 8;
+        put_u32(&mut b, 96 + 16, d as u32 - dyn_off); // PT_DYNAMIC p_filesz
+        // REL table @ file offset 256 (== rel_vaddr, since p_offset=p_vaddr=0).
+        let mut r = rel_vaddr as usize;
+        for (r_offset, r_info) in rels {
+            put_u32(&mut b, r, *r_offset);
+            put_u32(&mut b, r + 4, *r_info);
+            r += 8;
+        }
+        b
+    }
+
+    #[test]
+    fn i386_reloc_locate_and_target() {
+        // Two R_386_RELATIVE (type 8) + one R_386_NONE (type 0).
+        let img = build_i386_reloc_image(&[(0x10, 8), (0x20, 8), (0x30, 0)], false);
+        let rt = i386_reloc_locate(&img, 64, 2).expect("locate ok");
+        assert_eq!(rt, ElfI386RelocTable { rel_file_off: 256, nrel: 3 });
+        let (va, mz) = ([0u64], [1024u64]);
+        assert_eq!(i386_reloc_target(&img, 256, 0, 0, &va, &mz), Ok(Some(0x10)));
+        assert_eq!(i386_reloc_target(&img, 256, 2, 0, &va, &mz), Ok(None)); // R_386_NONE
+        // slide applied and target re-validated against the slid segment.
+        assert_eq!(i386_reloc_target(&img, 256, 1, 0x40_0000, &[0x40_0000], &[1024]), Ok(Some(0x40_0020)));
+    }
+
+    #[test]
+    fn i386_reloc_rejects_malformed() {
+        // DT_RELA on i386 is rejected outright.
+        assert_eq!(i386_reloc_locate(&build_i386_reloc_image(&[(0x10, 8)], true), 64, 2), Err(-16));
+        // An unknown relocation type fails closed.
+        let img = build_i386_reloc_image(&[(0x10, 5)], false);
+        assert_eq!(i386_reloc_target(&img, 256, 0, 0, &[0u64], &[1024u64]), Err(-16));
+        // A target outside every loaded segment fails closed.
+        let img = build_i386_reloc_image(&[(0x900, 8)], false);
+        assert_eq!(i386_reloc_target(&img, 256, 0, 0, &[0u64], &[0x100u64]), Err(-16));
+        // No PT_DYNAMIC -> no relocations (success, nrel 0).
+        let mut bare = [0u8; 256];
+        put_u32(&mut bare, 64, 1); // one PT_LOAD phdr
+        assert_eq!(i386_reloc_locate(&bare, 64, 1), Ok(ElfI386RelocTable { rel_file_off: 0, nrel: 0 }));
+    }
+
+    #[test]
+    fn i386_reloc_never_panics_on_junk() {
+        let junk = [0xABu8; 300];
+        for phoff in [0u32, 64, 296, 0xFFFF_FFF0] {
+            let _ = i386_reloc_locate(&junk, phoff, 8);
+        }
+        for k in [0u32, 1, 100, u32::MAX] {
+            let _ = i386_reloc_target(&junk, 0, k, u64::MAX, &[0u64, 1], &[1u64, 2]);
         }
     }
 

@@ -1014,6 +1014,28 @@ int  rust_elf_build_load_plan(const uint8_t *buf, size_t buf_len, uint8_t ei_cla
                               uint64_t user_area_base, uint64_t user_max_vaddr,
                               struct elf_load_plan *out);
 
+/* The located i386 dynamic REL table (J10.3a). Mirrors `struct ElfI386RelocTable`
+ * in rust/src/lib.rs; the offset asserts in loader.c pin it. nrel == 0 means the
+ * image has no dynamic relocations. */
+struct elf_i386_reloc_table {
+    uint32_t rel_file_off;  /* file offset of the REL table in the staging buffer */
+    uint32_t nrel;          /* number of 8-byte Elf32_Rel entries (<= 8192) */
+};
+
+/* Parse+validate the i386 dynamic REL table of the staged image in safe Rust: a
+ * malformed dynamic section or REL table can never cause an out-of-bounds read in
+ * the parser. Returns 0 and fills `*out` (out->nrel == 0 = no relocations), else
+ * -16. The privileged read-modify-write apply stays in the C loader. */
+int  rust_elf_i386_reloc_locate(const uint8_t *buf, size_t buf_len, uint32_t e_phoff,
+                                uint16_t e_phnum, struct elf_i386_reloc_table *out);
+
+/* Validate REL entry `k` and return its patch target (r_offset + slide) via
+ * `*out_target`. Returns 0 (apply the RMW), 1 (skip — R_386_NONE), or -16
+ * (reject). `seg_va`/`seg_memsz` are the load plan's PT_LOAD segments. */
+int  rust_elf_i386_reloc_target(const uint8_t *buf, size_t buf_len, uint32_t rel_file_off,
+                                uint32_t k, uint64_t slide, const uint64_t *seg_va,
+                                const uint64_t *seg_memsz, uint32_t nseg, uint64_t *out_target);
+
 
 int  do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *pass);
 int  do_userdel(uint32_t uid);

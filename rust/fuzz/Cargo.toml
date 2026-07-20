@@ -54,5 +54,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "elf_i386_reloc"
+path = "fuzz_targets/elf_i386_reloc.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

@@ -228,90 +228,54 @@ int do_receive_program(struct program_header *hdr_out) {
     return rc;
 }
 
+/* FFI layout contract for the located i386 REL table (mirror of Rust
+ * ElfI386RelocTable). */
+_Static_assert(sizeof(struct elf_i386_reloc_table) == 8, "elf_i386_reloc_table size");
+_Static_assert(__builtin_offsetof(struct elf_i386_reloc_table, rel_file_off) == 0, "reloc.rel_file_off");
+_Static_assert(__builtin_offsetof(struct elf_i386_reloc_table, nrel)         == 4, "reloc.nrel");
+
 /* Apply i386 dynamic relocations for a static-PIE (ET_DYN) image after its
  * segments have been copied into the task address space (still writable) and
- * before the W^X protection pass. Only R_386_RELATIVE (type 8) is implemented:
- * `*(u32*)(r_offset + slide) += slide`. Any other relocation type, a DT_RELA
- * table (i386 uses REL), an out-of-bounds table, or a target outside a loaded
- * segment causes a hard failure (fail closed) rather than a silently corrupt
- * image. `slide` is the load bias; seg_va[]/seg_memsz[] describe the mapped
- * segments (for target validation); the reloc table is read from the staging
- * file image, patches go through copy_from/to_user (current task == new task).
- * Returns 0 on success (including "no dynamic relocations"), negative on error. */
+ * before the W^X protection pass.
+ *
+ * The PARSE — locate PT_DYNAMIC, find the DT_REL table, map its link-time vaddr
+ * to a staging-file offset, and validate each entry (type, in-segment target) —
+ * is done in safe Rust (rust_elf_i386_reloc_locate / _target): the reloc table
+ * is attacker-controlled, so every untrusted-offset read is a bounds-checked
+ * slice access rather than raw pointer arithmetic. Only the privileged
+ * read-modify-write of the user address space stays here: `*(u32*)target +=
+ * slide`. The fail-closed contract is unchanged — only R_386_RELATIVE (type 8)
+ * is applied, R_386_NONE skipped, and any other type, a DT_RELA table (i386 uses
+ * REL), an out-of-bounds table, or an out-of-segment target returns -16.
+ *
+ * `slide` is the load bias; seg_va[]/seg_memsz[] describe the mapped segments
+ * (the load plan) for target validation. Returns 0 on success (including "no
+ * dynamic relocations"), negative on error. */
 static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
                                       uint16_t e_phnum, uint32_t phentsize,
                                       uint64_t slide,
                                       const uint64_t *seg_va, const uint64_t *seg_memsz,
                                       int nseg) {
-    /* Locate PT_DYNAMIC (p_type == 2). */
-    uint32_t dyn_off = 0, dyn_sz = 0;
-    for (uint16_t i = 0; i < e_phnum; i++) {
-        const uint8_t *p = ph + (uint32_t)i * phentsize;
-        uint32_t p_type = elf_rd32(p);
-        if (p_type == 2) {                 /* PT_DYNAMIC */
-            dyn_off = elf_rd32(p + 4);     /* p_offset (Elf32_Phdr) */
-            dyn_sz  = elf_rd32(p + 16);    /* p_filesz */
-            break;
-        }
-    }
-    if (dyn_off == 0 || dyn_sz == 0) return 0;                 /* no dynamic info */
-    if (dyn_off > MAX_PROGRAM_SIZE || dyn_sz > MAX_PROGRAM_SIZE ||
-        dyn_off + dyn_sz > MAX_PROGRAM_SIZE) return -16;
+    (void)phentsize;   /* i386 program headers are a fixed 32 bytes in the Rust parser */
+    uint32_t e_phoff = (uint32_t)(ph - st);
 
-    /* Walk Elf32_Dyn { int32 d_tag; uint32 d_val; } for the REL table. */
-    uint32_t rel_vaddr = 0, rel_sz = 0, rel_ent = 8;
-    for (uint32_t o = 0; o + 8 <= dyn_sz; o += 8) {
-        int32_t  tag = (int32_t)elf_rd32(st + dyn_off + o);
-        uint32_t val = elf_rd32(st + dyn_off + o + 4);
-        if (tag == 0) break;               /* DT_NULL */
-        else if (tag == 17) rel_vaddr = val;   /* DT_REL   */
-        else if (tag == 18) rel_sz    = val;   /* DT_RELSZ */
-        else if (tag == 19) rel_ent   = val;   /* DT_RELENT */
-        else if (tag == 7)  return -16;        /* DT_RELA: unsupported on i386 */
-    }
-    if (rel_vaddr == 0 || rel_sz == 0) return 0;               /* no REL relocations */
-    if (rel_ent != 8) return -16;
+    struct elf_i386_reloc_table rt;
+    int rc = rust_elf_i386_reloc_locate(st, MAX_PROGRAM_SIZE, e_phoff, e_phnum, &rt);
+    if (rc != 0) return rc;
 
-    /* Map the REL table's (link-time, base-0) vaddr to a file offset via the
-     * PT_LOAD segment that contains it. */
-    uint32_t rel_file_off = 0;
-    int mapped = 0;
-    for (uint16_t i = 0; i < e_phnum; i++) {
-        const uint8_t *p = ph + (uint32_t)i * phentsize;
-        if (elf_rd32(p) != 1) continue;    /* PT_LOAD */
-        uint32_t p_offset = elf_rd32(p + 4);
-        uint32_t p_vaddr  = elf_rd32(p + 8);
-        uint32_t p_filesz = elf_rd32(p + 16);
-        if (rel_vaddr >= p_vaddr && rel_vaddr < p_vaddr + p_filesz) {
-            rel_file_off = p_offset + (rel_vaddr - p_vaddr);
-            mapped = 1;
-            break;
-        }
-    }
-    if (!mapped) return -16;
-    if (rel_file_off > MAX_PROGRAM_SIZE || rel_sz > MAX_PROGRAM_SIZE ||
-        rel_file_off + rel_sz > MAX_PROGRAM_SIZE) return -16;
+    for (uint32_t k = 0; k < rt.nrel; k++) {
+        uint64_t target;
+        int tr = rust_elf_i386_reloc_target(st, MAX_PROGRAM_SIZE, rt.rel_file_off, k, slide,
+                                            seg_va, seg_memsz, (uint32_t)nseg, &target);
+        if (tr < 0) return tr;      /* -16: malformed / out-of-segment entry */
+        if (tr == 1) continue;      /* R_386_NONE */
 
-    uint32_t nrel = rel_sz / 8;
-    if (nrel > 8192) return -16;           /* sane cap */
-    for (uint32_t k = 0; k < nrel; k++) {
-        const uint8_t *r = st + rel_file_off + (uint32_t)k * 8;
-        uint32_t r_offset = elf_rd32(r);
-        uint32_t r_info   = elf_rd32(r + 4);
-        uint32_t r_type   = r_info & 0xFF;
-        if (r_type == 0) continue;         /* R_386_NONE */
-        if (r_type != 8) return -16;       /* only R_386_RELATIVE (fail closed) */
-
-        uint64_t target = (uint64_t)r_offset + slide;
-        int in_seg = 0;
-        for (int s = 0; s < nseg; s++) {
-            if (target >= seg_va[s] && target + 4 <= seg_va[s] + seg_memsz[s]) { in_seg = 1; break; }
-        }
-        if (!in_seg) return -16;
-
+        /* R_386_RELATIVE: *(u32*)target += slide, in the target task's address
+         * space. copy_from/to_user walk the page tables with present/user/write
+         * checks and fail closed on any unmapped page. */
         uint32_t w;
         if (copy_from_user(&w, (void *)(uintptr_t)target, 4) != 0) return -16;
-        w += slide;
+        w = (uint32_t)((uint64_t)w + slide);
         if (copy_to_user((void *)(uintptr_t)target, &w, 4) != 0) return -16;
     }
     return 0;

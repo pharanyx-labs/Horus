@@ -983,6 +983,37 @@ struct elf_header_info {
  * -8,-17). See rust/src/lib.rs. */
 int  rust_elf_validate_header(const uint8_t *buf, size_t buf_len, struct elf_header_info *out);
 
+/* One validated PT_LOAD segment of the load plan (J10.2). Mirrors `struct
+ * ElfLoadSegment` in rust/src/lib.rs; the offset asserts in loader.c pin it. */
+struct elf_load_segment {
+    uint64_t dest_va;   /* map target, validated in [USER_AREA_BASE, USER_MAX_VADDR) */
+    uint32_t file_off;  /* offset of the file bytes in the staging buffer */
+    uint32_t file_sz;   /* bytes to copy from the file (file_off+file_sz <= buf_len) */
+    uint32_t mem_sz;    /* total mapped size; the [file_sz, mem_sz) tail is zero-filled */
+    uint32_t flags;     /* ELF p_flags: PF_X=1, PF_W=2, PF_R=4 */
+};
+
+/* The validated load plan: up to 8 PT_LOAD segments (e_phnum is capped at 8 by
+ * the header check) plus the load slide and image end. Mirrors `struct
+ * ElfLoadPlan` in rust/src/lib.rs. */
+struct elf_load_plan {
+    uint64_t slide;               /* load bias applied to every p_vaddr */
+    uint64_t max_va_end;          /* highest dest_va + mem_sz (the image end) */
+    struct elf_load_segment segs[8];
+    uint32_t nseg;                /* number of PT_LOAD segments, 1..8 */
+};
+
+/* Parse+validate the PT_LOAD program headers of the staged image in safe Rust
+ * and return the load plan the C loader executes: a malformed program header can
+ * never cause an out-of-bounds read (or a u32 length overflow) in the parser.
+ * Returns 0 and fills `*out`, else the loader's negative code (-9,-10,-11,-12,
+ * -13,-17). Requires the header already validated (ei_class/e_phoff/e_phnum from
+ * rust_elf_validate_header). See rust/src/lib.rs. */
+int  rust_elf_build_load_plan(const uint8_t *buf, size_t buf_len, uint8_t ei_class,
+                              uint32_t e_phoff, uint16_t e_phnum, uint64_t load_base,
+                              uint64_t user_area_base, uint64_t user_max_vaddr,
+                              struct elf_load_plan *out);
+
 
 int  do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *pass);
 int  do_userdel(uint32_t uid);

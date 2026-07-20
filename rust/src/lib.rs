@@ -1,7 +1,8 @@
-// no_std for the kernel staticlib. Under the `fuzzing` feature the crate is an
-// rlib inside a std libFuzzer harness, where unwinding + a std panic handler are
-// required, so it builds as std there.
-#![cfg_attr(not(feature = "fuzzing"), no_std)]
+// no_std for the kernel staticlib. Two environments need std instead: the
+// `fuzzing` feature (an rlib inside a std libFuzzer harness) and `cargo kani`
+// (Kani links its own std, and its verification harnesses run there). In both,
+// std also provides the panic handler, so ours below is gated off.
+#![cfg_attr(not(any(feature = "fuzzing", kani)), no_std)]
 // The page-fault / protection / demand-paging policy below is written as
 // explicit `addr >= LO && addr < HI` window comparisons on purpose: the bounds
 // are security-sensitive and read more auditably side-by-side than as range
@@ -27,9 +28,10 @@ mod rng;
 mod sha256;
 
 // Present only when this crate is the final artifact (the kernel staticlib).
-// Under `test` or the `fuzzing` feature the crate is an rlib inside a std binary
-// that already provides a panic handler; defining a second one would not link.
-#[cfg(all(not(test), not(feature = "fuzzing")))]
+// Under `test`, the `fuzzing` feature, or `cargo kani`, the crate is compiled
+// into a std binary that already provides a panic handler; defining a second one
+// is a duplicate `panic_impl` lang item and will not link.
+#[cfg(all(not(test), not(feature = "fuzzing"), not(kani)))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}

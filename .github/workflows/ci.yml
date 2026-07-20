@@ -698,3 +698,25 @@ jobs:
             echo "== fuzzing $t =="
             cargo +nightly fuzz run "$t" -- -max_total_time=30 -rss_limit_mb=4096 || true
           done
+
+  # Advisory job: Kani bounded model checking of the capability engine's
+  # authority invariants (rust/src/capability.rs #[cfg(kani)] harnesses; see
+  # rust/KANI.md). Non-gating by design — Kani is a heavy separate toolchain
+  # (its own nightly + a ~140 MB CBMC bundle), so a slow or flaky setup must not
+  # redden the pipeline. The hard gates stay rust, kernel, smoke, reproducible.
+  kani:
+    name: Formal verification (Kani, advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+
+      - name: Install Kani
+        continue-on-error: true
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+
+      - name: Verify capability-engine proofs
+        continue-on-error: true
+        working-directory: rust
+        run: cargo kani

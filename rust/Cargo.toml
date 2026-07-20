@@ -18,6 +18,13 @@ doctest = false
 # the two do not collide. Off for the kernel build and the gating `rust` job.
 fuzzing = []
 
+[lints.rust]
+# `#[cfg(kani)]` gates the formal-verification harnesses in capability.rs. Kani
+# sets this cfg; every other build (kernel, cargo test, clippy -D warnings) does
+# not, so declare it as known or the unexpected_cfgs lint would fail the gating
+# `rust` job. The harnesses compile to nothing outside `cargo kani`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [profile.dev]
 panic = "abort"
 

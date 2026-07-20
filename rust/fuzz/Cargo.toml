@@ -40,5 +40,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "elf_validate_header"
+path = "fuzz_targets/elf_validate_header.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

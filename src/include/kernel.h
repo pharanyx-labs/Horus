@@ -963,6 +963,26 @@ bool rust_validate_page_fault(uint64_t a, uint32_t e,
                               uint64_t heap_start, uint64_t heap_end);
 int  rust_handle_command(const uint8_t *cmd, size_t len);
 
+/* Validated ELF header fields returned by rust_elf_validate_header (J10.1).
+ * Layout mirrors `struct ElfHeaderInfo` in rust/src/lib.rs (same field order,
+ * repr(C)); the offset asserts in loader.c pin the contract. Rust writes it, the
+ * loader reads it only after rust_elf_validate_header returns 0. */
+struct elf_header_info {
+    uint64_t e_entry;    /* entry vaddr, zero-extended from the 32-/64-bit field */
+    uint32_t e_phoff;    /* program-header table offset (loader plumbing is 32-bit) */
+    uint16_t e_type;     /* 2 = ET_EXEC, 3 = ET_DYN */
+    uint16_t e_machine;  /* 3 = EM_386, 62 = EM_X86_64 */
+    uint16_t e_phnum;    /* number of program headers, validated to 1..8 */
+    uint8_t  ei_class;   /* 1 = ELFCLASS32, 2 = ELFCLASS64 */
+};
+
+/* Parse+validate the staged ELF image header entirely in safe Rust: a malformed
+ * header can never cause an out-of-bounds read in the parser. `buf`/`buf_len` is
+ * the loader staging buffer (buf_len == MAX_PROGRAM_SIZE). Returns 0 and fills
+ * `*out` on success, else the loader's negative error code (-2,-3,-4,-5,-6,-7,
+ * -8,-17). See rust/src/lib.rs. */
+int  rust_elf_validate_header(const uint8_t *buf, size_t buf_len, struct elf_header_info *out);
+
 
 int  do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *pass);
 int  do_userdel(uint32_t uid);

@@ -1162,7 +1162,15 @@ int  cpu_has_rdrand(void);
 void entropy_init(void);            /* gather hardware/timing entropy, seed CSPRNG */
 void entropy_add_sample(uint64_t s);/* mix an opportunistic entropy sample */
 void secure_random_bytes(void *out, size_t n);
+/* The compile-time stack-guard value, before stack_protector_init() swaps it for
+ * a CSPRNG draw. Single source of truth: crypto.c initialises __stack_chk_guard
+ * to this, and the STACKGUARD_SELFTEST asserts the live guard is NO LONGER this
+ * (nor 0), i.e. the boot-time re-seed actually happened. The build is
+ * reproducible, so this constant is published — a guard still equal to it is
+ * effectively no protection at all. */
+#define STACK_GUARD_COMPILE_DEFAULT 0x9c2f5a1e7b40d3e6ULL
 void stack_protector_init(void);   /* crypto.c — call once, after entropy_init */
+void stackguard_selftest(void);    /* selftest.c — asserts the guard was re-seeded */
 
 /* Password KDF cost (PBKDF2-HMAC-SHA256 iterations). */
 #define PASSWORD_KDF_ITERATIONS 120000U   /* legacy PBKDF2 cost (no longer used) */

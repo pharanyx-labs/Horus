@@ -694,7 +694,7 @@ jobs:
         continue-on-error: true
         working-directory: rust
         run: |
-          for t in ct_eq validate_page_fault signal_handler_addr elf_validate_header elf_load_plan; do
+          for t in ct_eq validate_page_fault signal_handler_addr elf_validate_header elf_load_plan elf_i386_reloc; do
             echo "== fuzzing $t =="
             cargo +nightly fuzz run "$t" -- -max_total_time=30 -rss_limit_mb=4096 || true
           done

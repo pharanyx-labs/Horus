@@ -47,5 +47,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "elf_load_plan"
+path = "fuzz_targets/elf_load_plan.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

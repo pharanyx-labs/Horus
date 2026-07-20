@@ -411,6 +411,215 @@ pub unsafe extern "C" fn rust_elf_validate_header(
     }
 }
 
+// ---------------------------------------------------------------------------
+// ELF program-header (PT_LOAD) validation -> load plan (J10.2).
+//
+// The second attacker-controlled parser in try_elf_load: it walks the program
+// header table, reads each PT_LOAD's offset/vaddr/filesz/memsz/flags, validates
+// them, and computes where each segment maps. Moving it into safe Rust removes
+// the memory-safety blast radius the hand-rolled C carried:
+//   * `p_offset + p_filesz` was u32 arithmetic — a crafted header could overflow
+//     it below MAX_PROGRAM_SIZE, pass the bound, then copy from `st + p_offset`
+//     far out of bounds (a kernel-memory read into the new image). Here the sum
+//     is computed in u64 and cannot wrap.
+//   * the program-header table read `ph + i*phentsize` could run past the
+//     staging buffer for a large e_phoff with e_phnum up to 8; every read here
+//     is a bounds-checked slice access instead.
+// Legitimate images (small e_phoff, no overflow) are unaffected, so behaviour is
+// unchanged for them; only malformed images that previously triggered an OOB
+// read are now cleanly rejected. Rust returns a validated plan; the C loader
+// executes only the privileged copy_to_user from it. The relocation pass stays
+// in C (J10.3 moves that).
+// ---------------------------------------------------------------------------
+
+/// One validated PT_LOAD segment of the load plan. Mirrors `struct
+/// elf_load_segment` in kernel.h.
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub struct ElfLoadSegment {
+    pub dest_va: u64,  // where it maps: validated in [user_area_base, user_max_vaddr)
+    pub file_off: u32, // offset of the file bytes in the staging buffer
+    pub file_sz: u32,  // bytes to copy from the file (file_off + file_sz <= buf_len)
+    pub mem_sz: u32,   // total mapped size; the [file_sz, mem_sz) tail is zero-filled
+    pub flags: u32,    // ELF p_flags: PF_X=1, PF_W=2, PF_R=4
+}
+
+/// The validated plan the C loader executes. Mirrors `struct elf_load_plan` in
+/// kernel.h. Holds up to 8 segments (e_phnum is capped at 8 by the header check).
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub struct ElfLoadPlan {
+    pub slide: u64,      // load bias applied to every p_vaddr (load_base - min_vaddr page)
+    pub max_va_end: u64, // highest dest_va + mem_sz across segments (the image end)
+    pub segs: [ElfLoadSegment; 8],
+    pub nseg: u32,       // number of PT_LOAD segments, 1..=8
+}
+
+const PT_LOAD: u32 = 1;
+
+/// Pure, panic-free program-header validator. Two passes mirroring try_elf_load:
+/// find the minimum PT_LOAD vaddr (to compute the load slide), then validate each
+/// segment and record it. Returns the loader's negative code on rejection
+/// (-9 no PT_LOAD / malformed table, -10 memsz<filesz, -11 file range out of the
+/// buffer, -12 dest vaddr outside the user window, -13 dest range overflow,
+/// -17 an ELF64 field exceeds 32 bits).
+fn build_load_plan(
+    buf: &[u8],
+    ei_class: u8,
+    e_phoff: u32,
+    e_phnum: u16,
+    load_base: u64,
+    user_area_base: u64,
+    user_max_vaddr: u64,
+) -> Result<ElfLoadPlan, i32> {
+    let phentsize: usize = if ei_class == 1 { 32 } else { 56 };
+    let ph = e_phoff as usize;
+
+    // A PT_LOAD's p_vaddr: 32-bit direct for ELFCLASS32, narrowed for ELFCLASS64.
+    // An out-of-bounds phdr read is a malformed table (-9); a value that does not
+    // fit the 32-bit plumbing is -17.
+    let read_vaddr = |p: usize| -> Result<u32, i32> {
+        if ei_class == 1 {
+            elf_rd_u32(buf, p + 8).ok_or(-9)
+        } else {
+            match elf_rd_u64(buf, p + 16) {
+                None => Err(-9),
+                Some(v) if v > u32::MAX as u64 => Err(-17),
+                Some(v) => Ok(v as u32),
+            }
+        }
+    };
+
+    // Pass 1: minimum PT_LOAD vaddr -> slide.
+    let mut min_vaddr = u32::MAX;
+    let mut have_load = false;
+    for i in 0..e_phnum as usize {
+        let p = ph + i * phentsize;
+        let p_type = elf_rd_u32(buf, p).ok_or(-9)?;
+        if p_type != PT_LOAD {
+            continue;
+        }
+        let p_vaddr = read_vaddr(p)?;
+        if p_vaddr < min_vaddr {
+            min_vaddr = p_vaddr;
+        }
+        have_load = true;
+    }
+    if !have_load {
+        return Err(-9);
+    }
+    let slide = load_base.wrapping_sub((min_vaddr & !0xFFFu32) as u64);
+
+    // Pass 2: validate and record each PT_LOAD segment.
+    let mut plan = ElfLoadPlan {
+        slide,
+        max_va_end: 0,
+        segs: [ElfLoadSegment { dest_va: 0, file_off: 0, file_sz: 0, mem_sz: 0, flags: 0 }; 8],
+        nseg: 0,
+    };
+    for i in 0..e_phnum as usize {
+        let p = ph + i * phentsize;
+        let p_type = elf_rd_u32(buf, p).ok_or(-9)?;
+        if p_type != PT_LOAD {
+            continue;
+        }
+
+        let (p_offset, p_vaddr, p_filesz, p_memsz, p_flags) = if ei_class == 1 {
+            (
+                elf_rd_u32(buf, p + 4).ok_or(-9)?,
+                elf_rd_u32(buf, p + 8).ok_or(-9)?,
+                elf_rd_u32(buf, p + 16).ok_or(-9)?,
+                elf_rd_u32(buf, p + 20).ok_or(-9)?,
+                elf_rd_u32(buf, p + 24).ok_or(-9)?,
+            )
+        } else {
+            (
+                elf_narrow(buf, p + 8)?,
+                elf_narrow(buf, p + 16)?,
+                elf_narrow(buf, p + 32)?,
+                elf_narrow(buf, p + 40)?,
+                // p_flags is a genuine 4-byte field at offset 4 in ELF64.
+                elf_rd_u32(buf, p + 4).ok_or(-9)?,
+            )
+        };
+
+        if p_memsz < p_filesz {
+            return Err(-10);
+        }
+        // Checked in u64 so a crafted p_offset/p_filesz cannot wrap past the
+        // buffer bound the way the old u32 addition could (both are <= u32::MAX,
+        // so the u64 sum itself never overflows).
+        if p_offset as u64 + p_filesz as u64 > buf.len() as u64 {
+            return Err(-11);
+        }
+        // dest_va / va_end use wrapping adds (matching the C's u64 arithmetic);
+        // load_base is caller-supplied so slide is unconstrained here. The range
+        // check (-12) and the wrap detection (-13, == the C's `va_end < dest_va`)
+        // are what make the result sound, not the absence of a wrap.
+        let dest_va = (p_vaddr as u64).wrapping_add(slide);
+        let va_end = dest_va.wrapping_add(p_memsz as u64);
+        if dest_va < user_area_base || dest_va >= user_max_vaddr {
+            return Err(-12);
+        }
+        if va_end < dest_va {
+            return Err(-13);
+        }
+        if va_end > plan.max_va_end {
+            plan.max_va_end = va_end;
+        }
+
+        // e_phnum <= 8 (header check) bounds the PT_LOAD count to 8.
+        let n = plan.nseg as usize;
+        if n < 8 {
+            plan.segs[n] = ElfLoadSegment {
+                dest_va,
+                file_off: p_offset,
+                file_sz: p_filesz,
+                mem_sz: p_memsz,
+                flags: p_flags,
+            };
+            plan.nseg += 1;
+        }
+    }
+
+    Ok(plan)
+}
+
+/// FFI entry: parse+validate the PT_LOAD program headers of the staged image and
+/// build the load plan the C loader executes. Returns 0 and fills `*out` on
+/// success, else the loader's negative error code (see build_load_plan).
+///
+/// # Safety
+/// `buf` must point to `buf_len` readable bytes; `out` must be a writable,
+/// aligned `ElfLoadPlan`. Null pointers are handled (returns -9).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rust_elf_build_load_plan(
+    buf: *const u8,
+    buf_len: usize,
+    ei_class: u8,
+    e_phoff: u32,
+    e_phnum: u16,
+    load_base: u64,
+    user_area_base: u64,
+    user_max_vaddr: u64,
+    out: *mut ElfLoadPlan,
+) -> i32 {
+    if buf.is_null() || out.is_null() {
+        return -9;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    match build_load_plan(s, ei_class, e_phoff, e_phnum, load_base, user_area_base, user_max_vaddr) {
+        Ok(plan) => {
+            *out = plan;
+            0
+        }
+        Err(code) => code,
+    }
+}
+
 #[cfg(kani)]
 mod elf_kani_proofs {
     use super::*;
@@ -436,6 +645,35 @@ mod elf_kani_proofs {
                 (info.ei_class == 1 && info.e_machine == 3)
                     || (info.ei_class == 2 && info.e_machine == 62)
             );
+        }
+    }
+
+    /// Soundness of the PT_LOAD load-plan builder, over a symbolic staging buffer
+    /// and an ARBITRARY load_base (which drives the wrapping dest_va arithmetic).
+    /// Proves the builder never panics/overflows, and that every segment in an
+    /// accepted plan is safe for the C loader to execute: its file source range
+    /// is inside the buffer, its map target is inside the user window, and its
+    /// zero-fill tail is non-negative (mem_sz >= file_sz).
+    #[kani::proof]
+    fn elf_load_plan_is_sound() {
+        const UAB: u64 = 0x0040_0000;
+        const UMV: u64 = 0x0000_8000_0000_0000;
+        let buf: [u8; 128] = kani::any();
+        let load_base: u64 = kani::any();
+        // ELFCLASS64, one program header at offset 0.
+        if let Ok(plan) = build_load_plan(&buf, 2, 0, 1, load_base, UAB, UMV) {
+            assert!(plan.nseg <= 8);
+            // Iterate the fixed-size segs array with a CONSTANT bound and guard on
+            // the count, so CBMC unwinds a fixed 8 times rather than treating the
+            // u32 nseg as a symbolic loop bound (which does not terminate).
+            for i in 0..8usize {
+                if (i as u32) < plan.nseg {
+                    let s = plan.segs[i];
+                    assert!(s.dest_va >= UAB && s.dest_va < UMV);
+                    assert!(s.file_off as u64 + s.file_sz as u64 <= buf.len() as u64);
+                    assert!(s.mem_sz >= s.file_sz);
+                }
+            }
         }
     }
 }
@@ -518,6 +756,99 @@ mod tests {
         let full = elf64(62, 3, 64, 0, 1);
         for n in 0..=80usize {
             assert!(validate_elf_header(&full[..n]).is_err() || n >= 58);
+        }
+    }
+
+    // --- ELF program-header load plan (J10.2) ----------------------------
+    const UAB: u64 = 0x0040_0000; // USER_AREA_BASE
+    const UMV: u64 = 0x0000_8000_0000_0000; // USER_MAX_VADDR
+
+    fn buf_with_phdrs(phoff: usize, phdrs: &[u8]) -> [u8; 4096] {
+        let mut b = [0u8; 4096];
+        b[phoff..phoff + phdrs.len()].copy_from_slice(phdrs);
+        b
+    }
+    // One ELFCLASS64 program header (56 bytes): p_type@0 p_flags@4 p_offset@8
+    // p_vaddr@16 p_filesz@32 p_memsz@40.
+    fn ph64(p_type: u32, p_flags: u32, p_offset: u64, p_vaddr: u64, p_filesz: u64, p_memsz: u64) -> [u8; 56] {
+        let mut p = [0u8; 56];
+        p[0..4].copy_from_slice(&p_type.to_le_bytes());
+        p[4..8].copy_from_slice(&p_flags.to_le_bytes());
+        p[8..16].copy_from_slice(&p_offset.to_le_bytes());
+        p[16..24].copy_from_slice(&p_vaddr.to_le_bytes());
+        p[32..40].copy_from_slice(&p_filesz.to_le_bytes());
+        p[40..48].copy_from_slice(&p_memsz.to_le_bytes());
+        p
+    }
+    // One ELFCLASS32 program header (32 bytes): p_type@0 p_offset@4 p_vaddr@8
+    // p_filesz@16 p_memsz@20 p_flags@24.
+    fn ph32(p_type: u32, p_flags: u32, p_offset: u32, p_vaddr: u32, p_filesz: u32, p_memsz: u32) -> [u8; 32] {
+        let mut p = [0u8; 32];
+        p[0..4].copy_from_slice(&p_type.to_le_bytes());
+        p[4..8].copy_from_slice(&p_offset.to_le_bytes());
+        p[8..12].copy_from_slice(&p_vaddr.to_le_bytes());
+        p[16..20].copy_from_slice(&p_filesz.to_le_bytes());
+        p[20..24].copy_from_slice(&p_memsz.to_le_bytes());
+        p[24..28].copy_from_slice(&p_flags.to_le_bytes());
+        p
+    }
+
+    #[test]
+    fn load_plan_accepts_valid_pt_load() {
+        // ELF64: one R+X PT_LOAD at vaddr 0x400000 (== load_base, so slide 0).
+        let buf = buf_with_phdrs(64, &ph64(PT_LOAD, 5, 0, 0x40_0000, 0x100, 0x200));
+        let plan = build_load_plan(&buf, 2, 64, 1, 0x40_0000, UAB, UMV).expect("valid ELF64 plan");
+        assert_eq!(plan.nseg, 1);
+        assert_eq!(plan.slide, 0);
+        assert_eq!(plan.max_va_end, 0x40_0000 + 0x200);
+        assert_eq!(
+            plan.segs[0],
+            ElfLoadSegment { dest_va: 0x40_0000, file_off: 0, file_sz: 0x100, mem_sz: 0x200, flags: 5 }
+        );
+
+        // ELF32: same shape via the 32-bit program header.
+        let buf = buf_with_phdrs(52, &ph32(PT_LOAD, 6, 0, 0x40_0000, 0x80, 0x80));
+        let plan = build_load_plan(&buf, 1, 52, 1, 0x40_0000, UAB, UMV).expect("valid ELF32 plan");
+        assert_eq!(plan.nseg, 1);
+        assert_eq!(plan.segs[0].flags, 6);
+        assert_eq!(plan.segs[0].mem_sz, 0x80);
+    }
+
+    #[test]
+    fn load_plan_rejects_with_the_loaders_exact_codes() {
+        let mk = |ph: [u8; 56]| buf_with_phdrs(64, &ph);
+        // -9: no PT_LOAD segment (a lone PT_NOTE).
+        assert_eq!(build_load_plan(&mk(ph64(4, 4, 0, 0x40_0000, 0, 0)), 2, 64, 1, 0x40_0000, UAB, UMV), Err(-9));
+        // -10: p_memsz < p_filesz.
+        assert_eq!(build_load_plan(&mk(ph64(PT_LOAD, 6, 0, 0x40_0000, 0x200, 0x100)), 2, 64, 1, 0x40_0000, UAB, UMV), Err(-10));
+        // -11: file range past the 4096-byte buffer.
+        assert_eq!(build_load_plan(&mk(ph64(PT_LOAD, 6, 0, 0x40_0000, 0x2000, 0x2000)), 2, 64, 1, 0x40_0000, UAB, UMV), Err(-11));
+        // -12: dest vaddr below the user window.
+        assert_eq!(build_load_plan(&mk(ph64(PT_LOAD, 6, 0, 0x1000, 0x10, 0x10)), 2, 64, 1, 0x1000, UAB, UMV), Err(-12));
+        // -17: an ELF64 field (p_offset) exceeds 32 bits.
+        assert_eq!(build_load_plan(&mk(ph64(PT_LOAD, 6, 0x1_0000_0000, 0x40_0000, 0x10, 0x10)), 2, 64, 1, 0x40_0000, UAB, UMV), Err(-17));
+    }
+
+    #[test]
+    fn load_plan_rejects_the_u32_overflow_that_the_c_missed() {
+        // p_offset=0xFFFF_F000, p_filesz=0x2000: the old C did `p_offset+p_filesz`
+        // in u32, which wraps to 0x1000 (< buffer) and PASSED the bound — then
+        // copied from `st + 0xFFFF_F000`, a large out-of-bounds read. The u64 sum
+        // is 0x1_0000_1000 > buffer, so it is correctly rejected with -11.
+        let buf = buf_with_phdrs(64, &ph64(PT_LOAD, 6, 0xFFFF_F000, 0x40_0000, 0x2000, 0x2000));
+        assert_eq!(build_load_plan(&buf, 2, 64, 1, 0x40_0000, UAB, UMV), Err(-11));
+    }
+
+    #[test]
+    fn load_plan_never_panics_on_adversarial_inputs() {
+        // An arbitrary load_base (which would overflow a naive dest_va add) over
+        // junk program-header bytes must never panic — just return a plan or an
+        // error. Exercises the wrapping arithmetic and the bounds-checked reads.
+        let mut buf = [0xFFu8; 256];
+        buf[64..68].copy_from_slice(&PT_LOAD.to_le_bytes());
+        for lb in [0u64, u64::MAX, 0x7fff_ffff_ffff_f000, UAB] {
+            let _ = build_load_plan(&buf, 2, 64, 1, lb, UAB, UMV);
+            let _ = build_load_plan(&buf, 1, 52, 8, lb, UAB, UMV);
         }
     }
 

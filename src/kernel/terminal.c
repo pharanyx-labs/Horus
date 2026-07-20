@@ -212,18 +212,31 @@ char console_getc(void) {
             return c;
         }
 
-        /* Spin in place — do NOT call the cooperative yield()/schedule() here.
-         * Console input arrives from hardware (the keyboard IRQ or the serial
-         * UART), not from another task, so the waiter must stay the current
-         * task while it polls. With more than one runnable ring-3 task (e.g.
-         * init + the shell), the cooperative scheduler would switch CR3 and
-         * current_task to the peer and return on *this* task's kernel stack;
-         * the byte would then be delivered and copy_to_user'd under the wrong
-         * address space, intermittently hanging or corrupting the reader. Real
-         * task switching happens via timer preemption once this task is back in
-         * ring 3 (a ring-0 spin is never preempted, which is fine — nothing
-         * else needs to run for the awaited keystroke to arrive). */
-        __asm__ volatile ("pause");
+        /* Nothing pending: sleep the CPU until the next interrupt instead of
+         * spinning hot. A bare poll here pegged a host core at 100% under
+         * emulation — an idle prompt was enough to overheat the host — and
+         * wastes power on real hardware. Still do NOT call the cooperative
+         * yield()/schedule(): console input arrives from hardware (the keyboard
+         * IRQ or the serial UART), not from another task, so the waiter must
+         * stay the current task. A cooperative switch here would run on this
+         * task's kernel stack under the peer's CR3 and copy_to_user the byte
+         * into the wrong address space, intermittently hanging or corrupting the
+         * reader.
+         *
+         * `sti; hlt` is atomic — sti defers enabling interrupts until after the
+         * following instruction, so no wakeup is lost between the two — and the
+         * keyboard/serial IRQ or the 100 Hz timer wakes us to re-poll (serial is
+         * polled, so its latency is bounded by the tick, <= 10 ms). Interrupts
+         * are enabled only across the halt and the caller's prior interrupt
+         * state is restored, so this never newly enables interrupts for the rest
+         * of the syscall. A ring-0 spin is not preempted, so a timer tick just
+         * re-checks and returns here rather than switching tasks — the same
+         * invariant the old spin relied on. */
+        uint64_t rflags;
+        __asm__ volatile ("pushfq; pop %0" : "=r"(rflags) :: "memory");
+        __asm__ volatile ("sti; hlt" ::: "memory");
+        if (!(rflags & (1ull << 9)))   /* caller had IF clear -> restore it */
+            __asm__ volatile ("cli" ::: "memory");
     }
 }
 

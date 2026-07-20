@@ -276,7 +276,7 @@ void entropy_init(void) {
  * %gs:0x28, which in a kernel with no per-CPU GS base is a garbage address —
  * and defining this variable would have had no effect whatsoever, because
  * nothing would reference it. */
-uintptr_t __stack_chk_guard = 0x9c2f5a1e7b40d3e6ULL;
+uintptr_t __stack_chk_guard = STACK_GUARD_COMPILE_DEFAULT;
 
 /* GCC's callback when a canary check fails. By definition the calling frame's
  * return address is already corrupt, so returning is not an option. Fail closed

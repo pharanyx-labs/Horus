@@ -442,6 +442,33 @@ void cpu_protections_selftest(void) {
 }
 #endif /* CPU_SELFTEST */
 
+#ifdef STACKGUARD_SELFTEST
+/* Assert the stack-protector canary was actually re-seeded at boot.
+ *
+ * The kernel is built with -fstack-protector-strong, and every protected
+ * function checks __stack_chk_guard on exit — but that only proves the guard is
+ * *consistent*, never that it is *unpredictable*. If stack_protector_init() were
+ * skipped, or the CSPRNG returned zeros (so the zero-guard fallback kept the
+ * compile-time value), the guard would stay the published, reproducible-build
+ * constant: stack protection present, every check passing, and yet trivially
+ * bypassable — the SMEP/SMAP "silently off" pattern applied to the canary.
+ *
+ * Runs from kernel_main right after stack_protector_init(), so it observes the
+ * live, post-reseed guard. Pass = the guard is neither the compile-time default
+ * nor 0. */
+void stackguard_selftest(void) {
+    extern uintptr_t __stack_chk_guard;
+    uintptr_t g = __stack_chk_guard;
+    if (g == STACK_GUARD_COMPILE_DEFAULT) {
+        print("STACKGUARD_SELFTEST: FAIL guard still the published compile-time constant (re-seed did not run)\n");
+    } else if (g == 0) {
+        print("STACKGUARD_SELFTEST: FAIL guard is zero (protection inert)\n");
+    } else {
+        print("STACKGUARD_SELFTEST: PASS canary re-seeded from CSPRNG\n");
+    }
+}
+#endif /* STACKGUARD_SELFTEST */
+
 #if defined(ELF_SELFTEST) || defined(ELF64_SELFTEST)
 /* In-kernel self-test of the ELF loader's W^X enforcement (gated; never in the
  * ship build). Loads a real multi-segment ELF (userspace/elftest.elf, embedded

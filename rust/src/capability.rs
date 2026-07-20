@@ -912,3 +912,62 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Formal verification (Kani bounded model checking).
+//
+// These #[kani::proof] harnesses are compiled ONLY under `cargo kani` (the
+// `kani` cfg); they are invisible to the normal build, `cargo test`, clippy,
+// and the kernel link. Where a unit test in the module above samples a handful
+// of inputs, Kani proves the property over the ENTIRE input space (every u32),
+// so it catches a boundary the samples miss. Run with:  cargo kani  (from rust/)
+//
+// Scope: the pure / self-contained authority invariants. Functions that mutate
+// the shared LINEAGE_GEN static are avoided here (global mutable state needs a
+// heavier model); the harnesses keep object==0 so the lineage floor update in
+// mint is not exercised — the rights logic under proof is identical either way.
+// ---------------------------------------------------------------------------
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A freshly allocated derived serial is NEVER in the reserved primordial
+    /// range and NEVER 0 — for every possible value of the kernel's monotonic
+    /// serial counter, not just the boundary values the unit test samples. This
+    /// is what guarantees a derived capability's serial can never be mistaken for
+    /// a primordial (0xC0DE-prefixed) one or for an empty (serial-0) slot.
+    #[kani::proof]
+    fn serial_never_reserved_or_zero() {
+        let mut counter: u32 = kani::any();
+        let s = unsafe { assign_fresh_serial(&mut counter as *mut u32) };
+        assert!(s >= MIN_DERIVED_SERIAL, "serial dipped below the derived floor");
+        assert!(s != 0, "serial wrapped to the reserved 0");
+        assert!(counter == s, "counter must advance to exactly the returned serial");
+    }
+
+    /// Minting can only ever REDUCE authority: the minted capability's rights are
+    /// a subset of the source's, and exactly the intersection of the requested
+    /// and source rights — for EVERY (source rights, requested rights) pair. No
+    /// combination of requested rights can escalate beyond what the source holds.
+    #[kani::proof]
+    fn mint_never_escalates_rights() {
+        let src_rights: u32 = kani::any();
+        let req_rights: u32 = kani::any();
+
+        // 8-slot cspace: source at slot 0, mint into slot 4 (>= KERNEL_RESERVED_CAPS
+        // so the mint is not refused). object==0 keeps the proof free of the
+        // shared lineage table.
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0 }; 8];
+        cs[0] = Capability { typ: 1, rights: src_rights, object: 0, badge: 0, serial: 0x10000, generation: 0 };
+        let mut next: u32 = 0x10000;
+
+        let ok = unsafe {
+            rust_cap_mint(cs.as_mut_ptr(), 8, 4, 0, req_rights, &mut next as *mut u32, 0)
+        };
+        assert!(ok, "mint of a valid source into a non-reserved slot must succeed");
+
+        let minted = cs[4].rights;
+        assert!(minted & !src_rights == 0, "minted rights must be a subset of the source's");
+        assert!(minted == (req_rights & src_rights), "minted rights must be requested AND source");
+    }
+}

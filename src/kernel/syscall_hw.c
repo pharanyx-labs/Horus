@@ -73,3 +73,18 @@ void h_map_phys(struct interrupt_frame64 *r) {
     int rc = user_map_device_page((uint32_t)cur, vaddr, paddr, writable);
     r->rax = (rc == 0) ? 0 : (uint32_t)SYS_ERR_FAULT;
 }
+
+/* SYS_IOPORT_GRANT(): grant the calling task native ring-3 in/out on the console
+ * ports (the TSS I/O bitmap's allowlist). Cap-gated on CAP_IO_DEVICE + WRITE by
+ * the dispatch table, so only the console/driver server reaches it. Sets the
+ * per-task flag and activates the bitmap on the current CPU immediately, so the
+ * caller's next in/out succeeds without waiting for a reschedule; the context
+ * switch (set_current_task -> tss_set_io_allowed) keeps it correct afterward, and
+ * flips it off for every other task. */
+void h_ioport_grant(struct interrupt_frame64 *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    tasks[cur].io_allowed = 1;
+    tss_set_io_allowed(1);
+    r->rax = 0;
+}

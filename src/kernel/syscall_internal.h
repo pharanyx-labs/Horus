@@ -164,6 +164,7 @@ void h_notify(struct interrupt_frame64 *r);
 void h_wait_notify(struct interrupt_frame64 *r);
 /* syscall_hw.c — console/driver hardware-delegation syscalls */
 void h_map_phys(struct interrupt_frame64 *r);
+void h_ioport_grant(struct interrupt_frame64 *r);
 
 /* selftest.c (test-only trace hook) */
 #ifdef PREEMPT_SELFTEST

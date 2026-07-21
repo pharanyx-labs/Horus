@@ -1333,6 +1333,48 @@ void irq_selftest(void) {
 }
 #endif /* IRQ_SELFTEST */
 
+#ifdef CONSOLE_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Ring-3 console server self-test (CONSOLE_SELFTEST builds only) ----------
+ * The J5 cutover's first, gated milestone: stand up the userspace console_server
+ * (which owns the console hardware via SYS_MAP_PHYS + SYS_IOPORT_GRANT) and a
+ * client that drives it over IPC, exactly as FS_SELFTEST first proved the
+ * filesystem server before it became the default. The client asks the server to
+ * write a line; the server emits it to serial with its own hands, so
+ * "CONSOLE_SELFTEST: PASS" appearing on serial proves the whole ring-3 console
+ * output path (client -> IPC -> server -> hardware). Entry into ring 3 does not
+ * return. See docs/proposals/console-server.md. */
+void console_selftest(void) {
+    extern uint8_t embedded_console_server_bin_start[], embedded_console_server_bin_end[];
+    extern uint8_t embedded_consoletest_bin_start[], embedded_consoletest_bin_end[];
+
+    print("CONSOLE_SELFTEST: begin\n");
+
+    int srv = fs_spawn_embedded(embedded_console_server_bin_start,
+                                embedded_console_server_bin_end, "console_server");
+    if (srv <= 0) { print("CONSOLE_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
+    tasks[srv].uid = 0;
+    /* slot 3 = CAP_ENDPOINT (READ|WRITE) gates the IPC recv/reply; slot 10 =
+     * CAP_IO_DEVICE gates SYS_MAP_PHYS / SYS_IOPORT_GRANT. Nothing else gets the
+     * device cap — only the console server owns the hardware. */
+    cap_install_from_root(srv, 3, 2, 0);
+    if (cap_install_from_root(srv, 10, 10, 0) != 0) {
+        print("CONSOLE_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+
+    int cli = fs_spawn_embedded(embedded_consoletest_bin_start,
+                                embedded_consoletest_bin_end, "consoletest");
+    if (cli <= 0) { print("CONSOLE_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+    tasks[cli].uid = 0;
+    cap_install_from_root(cli, 3, 2, 0);   /* endpoint cap for the IPC gate */
+
+    /* Launch the server; when it blocks in IPC the full-context path runs the
+     * client. Does not return. */
+    sched_enable_preemption();
+    sched_enter_user(srv);
+}
+#endif /* CONSOLE_SELFTEST */
+
 #ifdef E820_SELFTEST
 /* ---- E820 physical-pool self-test (E820_SELFTEST builds only) --------------
  * Runs after paging_init has built the free list from the E820-sized pool. The
@@ -1353,8 +1395,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ only) ----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {

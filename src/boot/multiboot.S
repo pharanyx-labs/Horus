@@ -685,6 +685,17 @@ embedded_ioporttest_bin_start:
 embedded_ioporttest_bin_end:
 #endif
 
+#ifdef IRQ_SELFTEST
+/* PIE irqtest binary: endowed with CAP_IO_DEVICE, it routes the timer IRQ to a
+ * notification via SYS_IRQ_REGISTER and waits for a real interrupt to wake it. */
+.align 16
+.global embedded_irqtest_bin_start
+embedded_irqtest_bin_start:
+.incbin "userspace/irqtest.bin"
+.global embedded_irqtest_bin_end
+embedded_irqtest_bin_end:
+#endif
+
 #ifdef COW_SELFTEST
 /* PIE cowtest binary: reads two fresh heap pages (shared zero page) then writes
  * one, proving copy-on-write hands out a private page without disturbing the

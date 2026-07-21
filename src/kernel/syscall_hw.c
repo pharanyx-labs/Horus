@@ -88,3 +88,19 @@ void h_ioport_grant(struct interrupt_frame64 *r) {
     tss_set_io_allowed(1);
     r->rax = 0;
 }
+
+/* SYS_IRQ_REGISTER(irq, notif_slot, badge): route hardware IRQ `irq` (0 timer /
+ * 1 keyboard) to an async notification for the calling task, so a ring-3 driver
+ * blocked in SYS_WAIT_NOTIFY wakes to service the device. Cap-gated on
+ * CAP_IO_DEVICE + WRITE by the dispatch table -- console/driver server only. Only
+ * a task may register for itself; the registration is dropped when the task exits
+ * (irq_notify_clear_task from task_teardown). Fail closed on an unroutable IRQ. */
+void h_irq_register(struct interrupt_frame64 *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    int irq = (int)r->rbx;
+    if (irq_notify_register(irq, cur, (uint32_t)r->rcx, (uint32_t)r->rdx) != 0) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    r->rax = 0;
+}

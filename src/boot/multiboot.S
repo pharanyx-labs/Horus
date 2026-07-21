@@ -657,6 +657,17 @@ embedded_notifytest_bin_start:
 embedded_notifytest_bin_end:
 #endif
 
+#ifdef MAPPHYS_SELFTEST
+/* PIE mapphystest binary: endowed with CAP_IO_DEVICE, it maps the allowlisted
+ * VGA framebuffer via SYS_MAP_PHYS and round-trips a cell through the mapping. */
+.align 16
+.global embedded_mapphystest_bin_start
+embedded_mapphystest_bin_start:
+.incbin "userspace/mapphystest.bin"
+.global embedded_mapphystest_bin_end
+embedded_mapphystest_bin_end:
+#endif
+
 #ifdef COW_SELFTEST
 /* PIE cowtest binary: reads two fresh heap pages (shared zero page) then writes
  * one, proving copy-on-write hands out a private page without disturbing the

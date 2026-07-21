@@ -786,7 +786,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 79
+#define SYSCALL_TABLE_SIZE 80
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -894,18 +894,24 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * slot 7 here + uid 0 in the handler), so only the FS server reaches it. */
     [SYS_BOOT_MODULE_INFO]        = { h_boot_module_info,        7, CAP_BLOCK_DEV, SC_ANYTYPE },
     [SYS_BOOT_MODULE_READ]        = { h_boot_module_read,        7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    /* Console/driver hardware delegation (syscall_hw.c): map an allowlisted
+     * device frame into the caller's own address space. Gated on a CAP_IO_DEVICE
+     * capability with WRITE right in slot 10 -- only the console server is ever
+     * endowed with it, so no other task can reach the map-device path. The frame
+     * itself is additionally checked against a fixed allowlist in the handler. */
+    [SYS_MAP_PHYS]                = { h_map_phys,               10, CAP_RIGHT_WRITE, CAP_IO_DEVICE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_FS_INODE_LINK is currently the highest syscall number. Adding a higher one
+ * SYS_MAP_PHYS is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_BOOT_MODULE_READ + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_MAP_PHYS + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

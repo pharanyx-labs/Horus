@@ -71,6 +71,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/kspawn.o \
        src/kernel/selftest.o \
        src/kernel/syscall_ipc.o \
+       src/kernel/syscall_hw.o \
        src/kernel/ramfs.o \
        src/kernel/storage.o \
        src/kernel/crypto.o \
@@ -325,6 +326,19 @@ ASFLAGS += -DNOTIFY_SELFTEST
 NOTIFY_SELFTEST_DEP = userspace/notifytest.bin
 endif
 
+# MAPPHYS_SELFTEST=1 embeds mapphystest and, at boot, spawns it endowed with a
+# CAP_IO_DEVICE cap; the probe maps the allowlisted VGA framebuffer into its own
+# address space via SYS_MAP_PHYS, reads back a kernel-seeded sentinel (proving the
+# mapping is the real physical frame), writes+reads a magic, and confirms an
+# off-allowlist frame is refused (prints MAPPHYS_SELFTEST: PASS to serial). First
+# driver-privilege-separation job (Phase 6); gated off the ship kernel.
+MAPPHYS_SELFTEST ?= 0
+ifeq ($(MAPPHYS_SELFTEST),1)
+CFLAGS  += -DMAPPHYS_SELFTEST
+ASFLAGS += -DMAPPHYS_SELFTEST
+MAPPHYS_SELFTEST_DEP = userspace/mapphystest.bin
+endif
+
 # COW_SELFTEST=1 embeds cowtest and, at boot, reads two fresh heap pages (each
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
@@ -449,7 +463,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -718,7 +732,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -1083,6 +1097,19 @@ smoke-notify:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NOTIFY_SELFTEST: PASS' \
 		FAIL_MARKER='NOTIFY_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated map-phys self-test, boot headless, and require the ring-3
+# probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task can map
+# the allowlisted VGA framebuffer into its own address space (SYS_MAP_PHYS) and
+# that the mapping is the real device frame, while an off-list frame is refused.
+# First driver-privilege-separation job; see docs/proposals/console-server.md.
+.PHONY: smoke-mapphys
+smoke-mapphys:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MAPPHYS_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='MAPPHYS_SELFTEST: PASS' \
+		FAIL_MARKER='MAPPHYS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated copy-on-write self-test, boot headless, and require that a
 # write to a read-only shared-zero page breaks COW into a private page without

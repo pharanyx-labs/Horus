@@ -122,6 +122,17 @@ void cap_init(void) {
     root_cnode[9].serial = 0xC0DE0009U;
     root_cnode[9].generation = 0;
 
+    /* Hardware device authority (CAP_IO_DEVICE): the primordial cap the console
+     * server is endowed with (via cap_install_from_root) to reach the
+     * device-hardware syscalls -- SYS_MAP_PHYS today, port-I/O and IRQ grants in
+     * later jobs. Nothing else is given a copy. */
+    root_cnode[10].type   = CAP_IO_DEVICE;
+    root_cnode[10].rights = CAP_RIGHT_ALL;
+    root_cnode[10].object = 0;
+    root_cnode[10].badge  = 0;
+    root_cnode[10].serial = 0xC0DE000AU;
+    root_cnode[10].generation = 0;
+
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;

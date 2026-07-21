@@ -132,6 +132,7 @@ struct audit_event {
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (fs server only) */
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> total module count; fills *info for a valid index (store owner only) */
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module's payload (store owner only) */
+#define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an allowlisted device frame into the caller's address space (CAP_IO_DEVICE + WRITE; driver server only) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -659,6 +660,20 @@ static inline int sys_fs_set_size(uint32_t ino, uint32_t size) {
  * preserved. Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_fs_set_meta(uint32_t ino, uint32_t mode, uint32_t uid, uint32_t gid) {
     return (int)syscall6(SYS_FS_SET_META, ino, mode, uid, gid, 0, 0);
+}
+
+/* SYS_MAP_PHYS access flags (the `flags` word). READ is implied; WRITE adds the
+ * writable bit. Device MMIO is always mapped non-executable (W^X) by the kernel. */
+#define MAP_PHYS_READ   0x1u
+#define MAP_PHYS_WRITE  0x2u
+
+/* Map one 4 KiB physical device frame `paddr` at user address `vaddr` in the
+ * caller's own address space (both must be page-aligned; `len` must be <= 4096).
+ * Only frames on the kernel's fixed device allowlist may be mapped, and only with
+ * a CAP_IO_DEVICE cap (WRITE right) in the gating slot — a console/driver server
+ * only. Returns 0 on success or a negative SYS_ERR_*. */
+static inline int sys_map_phys(uint64_t paddr, uint64_t vaddr, uint32_t len, uint32_t flags) {
+    return (int)syscall6(SYS_MAP_PHYS, paddr, vaddr, len, flags, 0, 0);
 }
 
 /* Audit-log integrity digest. Writes 40 bytes to `out` (8-byte little-endian

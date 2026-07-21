@@ -1230,6 +1230,48 @@ void tsd_selftest(void) {
 }
 #endif /* TSD_SELFTEST */
 
+#ifdef MAPPHYS_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- SYS_MAP_PHYS device-frame mapping self-test (MAPPHYS_SELFTEST builds only)
+ * The first driver-privilege-separation job (Phase 6): prove a ring-3 task
+ * endowed with CAP_IO_DEVICE can map the ALLOWLISTED VGA framebuffer into its own
+ * address space, that the mapping is the REAL physical frame, and that an
+ * off-list frame is refused. We seed a sentinel into a VGA cell here; the probe
+ * (userspace/mapphystest.c) reads it back through its own mapping, writes+reads a
+ * magic, checks the allowlist refusal, and prints MAPPHYS_SELFTEST: PASS. Entry
+ * into ring 3 does not return. See docs/proposals/console-server.md. */
+void mapphys_selftest(void) {
+    extern uint8_t embedded_mapphystest_bin_start[], embedded_mapphystest_bin_end[];
+
+    print("MAPPHYS_SELFTEST: launch\n");
+
+    /* mapphystest is a PIE image, so it goes through the ELF loader
+     * (fs_spawn_embedded), not the flat-payload staging the RDTSC/signal tests
+     * use. */
+    int a = fs_spawn_embedded(embedded_mapphystest_bin_start,
+                              embedded_mapphystest_bin_end, "mapphys");
+    if (a <= 0) { print("MAPPHYS_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+
+    /* Endow the probe with the device-hardware capability in slot 10 -- the
+     * SYS_MAP_PHYS gate. Nothing else is ever given a copy. */
+    if (cap_install_from_root(a, 10, 10, 0) != 0) {
+        print("MAPPHYS_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+
+    /* Seed the sentinel into the last VGA text cell via the kernel's own
+     * higher-half alias of 0xB8000. The probe reads this exact value back through
+     * its user mapping; a fresh page would read zero. This runs after all boot
+     * output, immediately before ring-3 entry, so nothing overwrites the cell
+     * first. Must match CELL/SENTINEL in userspace/mapphystest.c. */
+    volatile uint16_t *vga = (volatile uint16_t *)PHYS_KVA(0xB8000);
+    vga[1000] = 0x0741;
+
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* MAPPHYS_SELFTEST */
+
 #ifdef E820_SELFTEST
 /* ---- E820 physical-pool self-test (E820_SELFTEST builds only) --------------
  * Runs after paging_init has built the free list from the E820-sized pool. The
@@ -1250,8 +1292,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST only) ----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {

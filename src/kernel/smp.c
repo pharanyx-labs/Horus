@@ -273,6 +273,12 @@ void smp_bringup(void) {
     /* Gated: a waiter blocks in SYS_WAIT_NOTIFY and a sender fires a badge with
      * SYS_NOTIFY; prove the badge round-trips to userspace (NOTIFY_SELFTEST: PASS). */
     notify_selftest();
+#elif defined(MAPPHYS_SELFTEST)
+    /* Gated: a ring-3 task endowed with CAP_IO_DEVICE maps the allowlisted VGA
+     * framebuffer into its own address space and round-trips a cell through it,
+     * proving the SYS_MAP_PHYS device-delegation path (MAPPHYS_SELFTEST: PASS).
+     * First driver-privilege-separation job; see docs/proposals/console-server.md. */
+    mapphys_selftest();
 #elif defined(COW_SELFTEST)
     /* Gated: read two fresh heap pages (shared zero page) then write one, and
      * prove the write broke COW into a private page without disturbing the

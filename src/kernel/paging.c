@@ -767,6 +767,39 @@ static int user_map_fresh_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t flag
     return 0;
 }
 
+/* Map one physical device frame `phys` at `vaddr` in task `task_id`'s address
+ * space, user-accessible. This is the plumbing behind SYS_MAP_PHYS: the handler
+ * validates `phys` against the device allowlist and passes `writable`; the PTE
+ * bits are built here, where they are defined. A device mapping is always present,
+ * user, and non-executable (W^X — no device frame is ever executable); `writable`
+ * adds PAGE_WRITE. Unlike user_map_fresh_page it maps a caller-named PHYSICAL
+ * frame rather than allocating one, which is why it must never be reachable
+ * without the cap gate. user_pte_slot already refuses the kernel half, so a
+ * device frame can only ever land in the task's own user half.
+ *
+ * The invlpg is on the running CPU. SYS_MAP_PHYS only maps into the *caller's
+ * own* address space (task_id == current), so the mapping takes effect on the
+ * CPU that returns to the caller; a not-present entry may have been cached, so
+ * the flush is required. (A driver that migrates CPUs is out of scope for v1 —
+ * the console server is pinned; see the RFC.) Returns 0 on success. */
+int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
+                         uint64_t writable) {
+    if (task_id >= MAX_TASKS) return -1;
+    uint64_t pml4_phys = tasks[task_id].cr3;
+    if (pml4_phys == 0) return -1;   /* task 0 / kernel address space: never a target */
+
+    uint64_t flags = PAGE_PRESENT | PAGE_USER | PAGE_NX;
+    if (writable) flags |= PAGE_WRITE;
+
+    spin_lock(&page_lock);
+    int rc = user_map_page((uint64_t *)PHYS_KVA(pml4_phys), vaddr, phys, flags);
+    spin_unlock(&page_lock);
+
+    if (rc == 0)
+        __asm__ volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
+    return rc;
+}
+
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
     if (task_id == 0) {

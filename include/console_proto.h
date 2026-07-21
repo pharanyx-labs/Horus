@@ -30,20 +30,27 @@
 #define CON_EP_REP   7   /* client's SYS_IPC_CALL reply-wait endpoint */
 
 /* Operations. */
-#define CON_OP_WRITE  1   /* data[len] -> bytes written; emit bytes to the console */
+#define CON_OP_WRITE    1   /* data[len]  -> rc = bytes written; emit bytes to the console */
+#define CON_OP_GETLINE  2   /* len = max  -> data[rc], rc = line length; read one edited,
+                             * echoed line from the console (up to Enter) */
+#define CON_OP_GETPASS  3   /* len = max  -> data[rc], rc = line length; as GETLINE but the
+                             * echo is masked ('*'), for password entry */
 
 #define CON_IO_MAX   200  /* max payload bytes per write request */
+#define CON_LINE_MAX 128  /* max input line (incl. NUL); matches the kernel's h_get_line */
 
 struct con_request {
     uint32_t magic;                 /* CON_PROTO_MAGIC */
     uint32_t op;
-    uint32_t len;                   /* payload length (write) */
-    uint8_t  data[CON_IO_MAX];      /* write payload */
+    uint32_t len;                   /* WRITE: payload length; GETLINE/GETPASS: max line len */
+    uint8_t  data[CON_IO_MAX];      /* write payload (WRITE only) */
 };                                  /* 12 + 200 = 212 <= 256 */
 
 struct con_response {
     uint32_t magic;                 /* CON_PROTO_MAGIC */
-    int32_t  rc;                    /* bytes written on success, negative SYS_ERR_* */
-};
+    int32_t  rc;                    /* WRITE: bytes written; GETLINE/GETPASS: line length;
+                                     * negative SYS_ERR_* on failure */
+    uint8_t  data[CON_LINE_MAX];    /* the input line (GETLINE/GETPASS), NUL-terminated */
+};                                  /* 8 + 128 = 136 <= 256 */
 
 #endif /* HORUS_CONSOLE_PROTO_H */

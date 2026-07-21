@@ -66,6 +66,47 @@ static void con_write(const uint8_t *data, unsigned len) {
 }
 static void ser_puts(const char *s) { while (*s) con_putc(*s++); }
 
+/* ---- input ----------------------------------------------------------------- */
+/* Read one console character. Serial RX is polled (the COM1 line-status data-ready
+ * bit, then the data register) exactly as the in-kernel console_getc does — this
+ * is what the headless system and the tests drive. When nothing is ready we yield
+ * the CPU rather than busy-spin, so the (preemptible, ring-3) wait does not starve
+ * the rest of the system the way the old unpreemptible ring-0 console read did.
+ *
+ * Keyboard (PS/2) input stays with the kernel for now; moving it here needs the
+ * IRQ->notification bridge wired so the kernel stops draining the controller
+ * (a follow-up). See docs/proposals/console-server.md. */
+static char con_getc(void) {
+    for (;;) {
+        if (inb(COM1_LSR) & 0x01)          /* serial receive-data-ready */
+            return (char)inb(COM1);
+        sys_yield();
+    }
+}
+
+/* Read one line from the console: echo as typed, handle backspace, stop at Enter.
+ * `mask` masks the echo with '*' for password entry. Mirrors the kernel's
+ * h_get_line / h_get_pass so behaviour (and the session tests) are unchanged.
+ * Returns the line length; `out` is NUL-terminated. */
+static int con_getline(uint8_t *out, unsigned max, int mask) {
+    if (max > CON_LINE_MAX - 1) max = CON_LINE_MAX - 1;
+    unsigned len = 0;
+    for (;;) {
+        char ch = con_getc();
+        if (ch == '\r' || ch == '\n') { con_putc('\n'); break; }
+        if (ch == '\b' || ch == 0x7F) {            /* backspace */
+            if (len > 0) { len--; ser_puts("\b \b"); }
+            continue;
+        }
+        if ((unsigned char)ch < 32) continue;      /* ignore other control chars */
+        if (len >= max) continue;                  /* line full: drop extra input */
+        con_putc(mask ? '*' : ch);
+        out[len++] = (uint8_t)ch;
+    }
+    out[len] = 0;
+    return (int)len;
+}
+
 /* ---- helpers --------------------------------------------------------------- */
 static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
 static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
@@ -104,17 +145,26 @@ void _start(void) {
 
         umemset(&rp, 0, sizeof(rp));
         rp.magic = CON_PROTO_MAGIC;
+        int was_pass = 0;
         if (rq.magic != CON_PROTO_MAGIC) {
             rp.rc = -1;
         } else if (rq.op == CON_OP_WRITE) {
             unsigned n = rq.len; if (n > CON_IO_MAX) n = CON_IO_MAX;
             con_write(rq.data, n);                    /* <-- ring-3 drives the hardware */
             rp.rc = (int)n;
+        } else if (rq.op == CON_OP_GETLINE) {
+            rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 0);
+        } else if (rq.op == CON_OP_GETPASS) {
+            rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 1);
+            was_pass = 1;
         } else {
             rp.rc = -1;
         }
         /* Reply to THIS request's sender by kernel-recorded identity; retry on a
          * transient "client still blocking" race, before the next recv. */
         while (sys_ipc_reply_to(CON_EP_REQ, (const char *)&rp, sizeof(rp)) < 0) sys_yield();
+        /* Do not let a just-read password linger in the reply buffer between
+         * requests (it was already delivered to the caller). */
+        if (was_pass) umemset(rp.data, 0, sizeof(rp.data));
     }
 }

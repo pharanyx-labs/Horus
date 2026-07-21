@@ -53,6 +53,42 @@ static void print(const char *s) {
         sys_write(1, s, l);   /* fallback: in-kernel console (fd 1) */
 }
 
+/* Read one line from the ring-3 console_server: `op` is CON_OP_GETLINE (echoed)
+ * or CON_OP_GETPASS (masked echo). The server does the terminal editing/echo and
+ * replies with the line. Returns the length and fills `buf` (NUL-terminated), or
+ * -1 so the caller falls back to the in-kernel console — so input still works if
+ * the server is unreachable. Password bytes in the shared reply buffer are
+ * scrubbed after use. */
+static int con_read_line(uint32_t op, char *buf, unsigned max) {
+    con_rq.magic = CON_PROTO_MAGIC;
+    con_rq.op    = op;
+    con_rq.len   = max;
+    int rc = -1;
+    for (int tries = 0; tries < 8; tries++) {
+        rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &con_rq, sizeof(con_rq), &con_rp);
+        if (rc >= 0) break;
+        sys_yield();
+    }
+    if (rc < 0 || con_rp.magic != CON_PROTO_MAGIC || con_rp.rc < 0)
+        return -1;   /* fall back to the in-kernel console reader */
+    int n = con_rp.rc; if (n > (int)max) n = (int)max;
+    for (int i = 0; i < n; i++) buf[i] = (char)con_rp.data[i];
+    buf[n] = 0;
+    scrub((char *)con_rp.data, sizeof(con_rp.data));   /* don't retain input (esp. passwords) */
+    return n;
+}
+
+/* Console input, routed through console_server with an in-kernel fallback — the
+ * input counterparts of print(). */
+static int sh_get_line(char *buf, unsigned max) {
+    int n = con_read_line(CON_OP_GETLINE, buf, max);
+    return (n >= 0) ? n : sys_get_line(buf, max);
+}
+static int sh_get_pass(char *buf, unsigned max) {
+    int n = con_read_line(CON_OP_GETPASS, buf, max);
+    return (n >= 0) ? n : sys_get_pass(buf, max);
+}
+
 static void println(const char *s) {
     print(s);
     print("\n");
@@ -1685,7 +1721,7 @@ static void handle_command(char *cmd) {
         } else {
             char sudopass[32];
             print("Password: ");
-            int plen = sys_get_pass(sudopass, sizeof(sudopass) - 1);
+            int plen = sh_get_pass(sudopass, sizeof(sudopass) - 1);
             if (plen < 0) {
                 println("sudo: input error");
             } else {
@@ -1732,7 +1768,7 @@ static void handle_command(char *cmd) {
     } else if (strcmp(cmd, "passwd") == 0 || strncmp(cmd, "passwd ", 7) == 0) {
         println("New password: ");
         char newp[32];
-        int plen = sys_get_pass(newp, 31);
+        int plen = sh_get_pass(newp, 31);
         if (plen > 0) {
             newp[plen] = 0;
             /* Change the CURRENT user's password, not uid 0.  The old code
@@ -1970,12 +2006,12 @@ static void do_login(void) {
 
     while (1) {
         print("\nhorus login: ");
-        int ulen = sys_get_line(username, sizeof(username) - 1);
+        int ulen = sh_get_line(username, sizeof(username) - 1);
         if (ulen <= 0) continue;
         username[ulen] = 0;
 
         print("Password: ");
-        int plen = sys_get_pass(password, sizeof(password) - 1);
+        int plen = sh_get_pass(password, sizeof(password) - 1);
         if (plen < 0) {
             println("Input error, try again.");
             continue;
@@ -2032,7 +2068,7 @@ void _start(void) {
         print("@horus");
         if (uid == 0) print("# ");
         else print("$ ");
-        int len = sys_get_line(cmd, sizeof(cmd));
+        int len = sh_get_line(cmd, sizeof(cmd));
         if (len < 0) {
             println("Input error");
             continue;

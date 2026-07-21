@@ -827,6 +827,296 @@ pub unsafe extern "C" fn rust_elf_i386_reloc_target(
     }
 }
 
+// ---------------------------------------------------------------------------
+// x86-64 dynamic relocation parsing (J10.3b).
+//
+// The x86-64 counterpart of the i386 parser above and the last hand-rolled
+// untrusted-input parser in the ELF loader. It differs from i386 in three ways
+// that each matter for correctness: RELA (24-byte entries with an explicit
+// addend, so the patch is a *write* of slide+addend, not a read-modify-write);
+// the type is the low 32 bits of r_info; and R_X86_64_GLOB_DAT (6) resolves a
+// symbol from the dynamic symbol table (undefined-weak -> NULL, defined ->
+// st_value+slide+addend, undefined-strong -> reject).
+//
+// The whole parse — dynamic walk, RELA/symtab location, per-entry validation AND
+// the symbol lookup — is memory-safe Rust (bounds-checked slice reads). Because
+// x86-64 relocations are a pure write of a computed value, Rust computes the
+// value too; the C loader keeps only the privileged copy_to_user. Behaviour is
+// preserved: R_X86_64_RELATIVE (8) and GLOB_DAT (6) are applied, R_X86_64_NONE
+// skipped, everything else (a DT_REL table, bad entsizes, out-of-bounds tables,
+// unknown types, out-of-segment targets, unresolved strong symbols) fails closed
+// with -16.
+// ---------------------------------------------------------------------------
+
+/// The located x86-64 RELA + symbol tables. Mirrors `struct
+/// elf_x86_64_reloc_table` in kernel.h. `nrela == 0` = no dynamic relocations;
+/// `sym_file_off == 0` = no symbol table (any GLOB_DAT then fails closed).
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub struct ElfX8664RelocTable {
+    pub rela_file_off: u64, // file offset of the RELA table in the staging buffer
+    pub sym_file_off: u64,  // file offset of the dynamic symbol table (0 = none)
+    pub nrela: u64,         // number of 24-byte Elf64_Rela entries (<= 8192)
+}
+
+const X86_64_PHENTSIZE: usize = 56;
+
+/// Map a link-time (base-0) vaddr to its offset in the staging file image via the
+/// PT_LOAD segment that contains it. None if unmapped. Elf64_Phdr: p_type@0
+/// p_offset@8 p_vaddr@16 p_filesz@32.
+fn x86_64_map_vaddr_to_file_off(buf: &[u8], e_phoff: u32, e_phnum: u16, vaddr: u64) -> Option<u64> {
+    let ph = e_phoff as usize;
+    for i in 0..e_phnum as usize {
+        let p = ph + i * X86_64_PHENTSIZE;
+        if elf_rd_u32(buf, p)? != PT_LOAD {
+            continue;
+        }
+        let p_offset = elf_rd_u64(buf, p + 8)?;
+        let p_vaddr = elf_rd_u64(buf, p + 16)?;
+        let p_filesz = elf_rd_u64(buf, p + 32)?;
+        if vaddr >= p_vaddr && vaddr < p_vaddr.checked_add(p_filesz)? {
+            return p_offset.checked_add(vaddr - p_vaddr);
+        }
+    }
+    None
+}
+
+/// Locate + validate the x86-64 RELA table and dynamic symbol table. Mirrors the
+/// parse in elf_apply_relocations_x86_64. `Ok(nrela==0)` for no relocations.
+fn x86_64_reloc_locate(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<ElfX8664RelocTable, i32> {
+    let none = ElfX8664RelocTable { rela_file_off: 0, sym_file_off: 0, nrela: 0 };
+    let ph = e_phoff as usize;
+    let len = buf.len() as u64;
+
+    // Locate PT_DYNAMIC (p_type == 2). Elf64_Phdr: p_offset@8 p_filesz@32.
+    let (mut dyn_off, mut dyn_sz) = (0u64, 0u64);
+    for i in 0..e_phnum as usize {
+        let p = ph + i * X86_64_PHENTSIZE;
+        if elf_rd_u32(buf, p).ok_or(-16)? == 2 {
+            dyn_off = elf_rd_u64(buf, p + 8).ok_or(-16)?;
+            dyn_sz = elf_rd_u64(buf, p + 32).ok_or(-16)?;
+            break;
+        }
+    }
+    if dyn_off == 0 || dyn_sz == 0 {
+        return Ok(none);
+    }
+    if dyn_off > len || dyn_sz > len || dyn_off + dyn_sz > len {
+        return Err(-16);
+    }
+
+    // Walk Elf64_Dyn { i64 d_tag; u64 d_val } (16 bytes) for the RELA + symtab.
+    let (mut rela_vaddr, mut rela_sz, mut rela_ent) = (0u64, 0u64, 24u64);
+    let (mut sym_vaddr, mut sym_ent) = (0u64, 24u64);
+    let mut o = 0u64;
+    while o + 16 <= dyn_sz {
+        let base = (dyn_off + o) as usize;
+        let tag = elf_rd_u64(buf, base).ok_or(-16)? as i64;
+        let val = elf_rd_u64(buf, base + 8).ok_or(-16)?;
+        match tag {
+            0 => break,             // DT_NULL
+            7 => rela_vaddr = val,  // DT_RELA
+            8 => rela_sz = val,     // DT_RELASZ
+            9 => rela_ent = val,    // DT_RELAENT
+            6 => sym_vaddr = val,   // DT_SYMTAB
+            11 => sym_ent = val,    // DT_SYMENT
+            17 => return Err(-16),  // DT_REL: x86-64 must use RELA
+            _ => {}
+        }
+        o += 16;
+    }
+    if sym_vaddr != 0 && sym_ent != 24 {
+        return Err(-16); // Elf64_Sym is 24 bytes
+    }
+    if rela_vaddr == 0 || rela_sz == 0 {
+        return Ok(none);
+    }
+    if rela_ent != 24 {
+        return Err(-16);
+    }
+
+    let rela_file_off = x86_64_map_vaddr_to_file_off(buf, e_phoff, e_phnum, rela_vaddr).ok_or(-16)?;
+    if rela_file_off > len || rela_sz > len || rela_file_off + rela_sz > len {
+        return Err(-16);
+    }
+
+    // The symbol table has no length in the dynamic section; only its base is
+    // resolved (each entry is bounds-checked at use). sym_file_off == 0 (no
+    // symtab, or a symtab that maps to file offset 0) makes any GLOB_DAT below
+    // fail closed rather than read from offset 0 — matching the C.
+    let mut sym_file_off = 0u64;
+    if sym_vaddr != 0 {
+        sym_file_off = x86_64_map_vaddr_to_file_off(buf, e_phoff, e_phnum, sym_vaddr).unwrap_or(0);
+        if sym_file_off == 0 || sym_file_off > len {
+            return Err(-16);
+        }
+    }
+
+    let nrela = rela_sz / 24;
+    if nrela > 8192 {
+        return Err(-16);
+    }
+    Ok(ElfX8664RelocTable { rela_file_off, sym_file_off, nrela })
+}
+
+/// Validate RELA entry `k` and compute the (target, value) to write.
+/// `Ok(Some((target, value)))` = write `value` at `target`, `Ok(None)` = skip
+/// (R_X86_64_NONE), `Err(-16)` = reject.
+#[allow(clippy::too_many_arguments)]
+fn x86_64_reloc_resolve(
+    buf: &[u8],
+    rela_file_off: u64,
+    sym_file_off: u64,
+    k: u64,
+    slide: u64,
+    user_max_vaddr: u64,
+    seg_va: &[u64],
+    seg_memsz: &[u64],
+) -> Result<Option<(u64, u64)>, i32> {
+    let r = (rela_file_off as usize)
+        .checked_add((k as usize).checked_mul(24).ok_or(-16)?)
+        .ok_or(-16)?;
+    let r_offset = elf_rd_u64(buf, r).ok_or(-16)?;
+    let r_info = elf_rd_u64(buf, r + 8).ok_or(-16)?;
+    let r_addend = elf_rd_u64(buf, r + 16).ok_or(-16)? as i64;
+    let r_type = (r_info & 0xFFFF_FFFF) as u32;
+    if r_type == 0 {
+        return Ok(None); // R_X86_64_NONE
+    }
+    if r_type != 8 && r_type != 6 {
+        return Err(-16);
+    }
+
+    if r_offset > user_max_vaddr {
+        return Err(-16);
+    }
+    let target = r_offset.wrapping_add(slide);
+    let mut in_seg = false;
+    let n = seg_va.len().min(seg_memsz.len());
+    for s in 0..n {
+        if let (Some(t8), Some(end)) = (target.checked_add(8), seg_va[s].checked_add(seg_memsz[s])) {
+            if target >= seg_va[s] && t8 <= end {
+                in_seg = true;
+                break;
+            }
+        }
+    }
+    if !in_seg {
+        return Err(-16);
+    }
+
+    // RELA default: write slide + addend outright (the linker recorded the addend).
+    let mut w = (slide as i64).wrapping_add(r_addend) as u64;
+
+    if r_type == 6 {
+        // R_X86_64_GLOB_DAT: resolve a symbol from the dynamic symbol table.
+        let sym_idx = r_info >> 32;
+        if sym_file_off == 0 {
+            return Err(-16); // GLOB_DAT with no symbol table
+        }
+        if sym_idx > buf.len() as u64 / 24 {
+            return Err(-16); // index overflow
+        }
+        let sym_off = sym_idx
+            .checked_mul(24)
+            .and_then(|m| sym_file_off.checked_add(m))
+            .ok_or(-16)?;
+        if sym_off.checked_add(24).is_none_or(|e| e > buf.len() as u64) {
+            return Err(-16); // entry out of the staged image
+        }
+        let base = sym_off as usize;
+        // Elf64_Sym: st_name@0 st_info@4 st_other@5 st_shndx@6(u16) st_value@8(u64).
+        let st_info = *buf.get(base + 4).ok_or(-16)?;
+        let st_shndx = elf_rd_u16(buf, base + 6).ok_or(-16)?;
+        let st_value = elf_rd_u64(buf, base + 8).ok_or(-16)?;
+
+        if st_shndx == 0 {
+            // SHN_UNDEF: only an undefined *weak* symbol (STB_WEAK == 2) resolves
+            // to NULL; an undefined strong symbol is genuinely unresolved.
+            if (st_info >> 4) != 2 {
+                return Err(-16);
+            }
+            w = 0;
+        } else {
+            if st_value > user_max_vaddr {
+                return Err(-16);
+            }
+            w = (st_value as i64)
+                .wrapping_add(slide as i64)
+                .wrapping_add(r_addend) as u64;
+        }
+    }
+
+    Ok(Some((target, w)))
+}
+
+/// FFI: locate the x86-64 RELA + symbol tables. 0 + `*out` on success
+/// (out.nrela == 0 = no relocations), else -16.
+///
+/// # Safety
+/// `buf` points to `buf_len` readable bytes; `out` is a writable
+/// `ElfX8664RelocTable`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_elf_x86_64_reloc_locate(
+    buf: *const u8,
+    buf_len: usize,
+    e_phoff: u32,
+    e_phnum: u16,
+    out: *mut ElfX8664RelocTable,
+) -> i32 {
+    if buf.is_null() || out.is_null() {
+        return -16;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    match x86_64_reloc_locate(s, e_phoff, e_phnum) {
+        Ok(rt) => {
+            *out = rt;
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// FFI: resolve RELA entry `k`. Returns 0 (write `*out_value` at `*out_target`),
+/// 1 (skip / R_X86_64_NONE), or -16 (reject).
+///
+/// # Safety
+/// `buf`/`buf_len` bound the staging image; `seg_va`/`seg_memsz` each point to
+/// `nseg` readable u64s; `out_target`/`out_value` are writable.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rust_elf_x86_64_reloc_resolve(
+    buf: *const u8,
+    buf_len: usize,
+    rela_file_off: u64,
+    sym_file_off: u64,
+    k: u64,
+    slide: u64,
+    user_max_vaddr: u64,
+    seg_va: *const u64,
+    seg_memsz: *const u64,
+    nseg: u32,
+    out_target: *mut u64,
+    out_value: *mut u64,
+) -> i32 {
+    if buf.is_null() || out_target.is_null() || out_value.is_null() || seg_va.is_null() || seg_memsz.is_null() {
+        return -16;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    let va = core::slice::from_raw_parts(seg_va, nseg as usize);
+    let mz = core::slice::from_raw_parts(seg_memsz, nseg as usize);
+    match x86_64_reloc_resolve(s, rela_file_off, sym_file_off, k, slide, user_max_vaddr, va, mz) {
+        Ok(Some((t, v))) => {
+            *out_target = t;
+            *out_value = v;
+            0
+        }
+        Ok(None) => 1,
+        Err(code) => code,
+    }
+}
+
 #[cfg(kani)]
 mod elf_kani_proofs {
     use super::*;
@@ -1139,6 +1429,152 @@ mod tests {
         }
         for k in [0u32, 1, 100, u32::MAX] {
             let _ = i386_reloc_target(&junk, 0, k, u64::MAX, &[0u64, 1], &[1u64, 2]);
+        }
+    }
+
+    // --- x86-64 dynamic relocations (J10.3b) ------------------------------
+    fn put_u64(b: &mut [u8], off: usize, v: u64) {
+        b[off..off + 8].copy_from_slice(&v.to_le_bytes());
+    }
+    fn put_u16(b: &mut [u8], off: usize, v: u16) {
+        b[off..off + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    // Build a minimal ELFCLASS64 static-PIE image with a PT_LOAD + PT_DYNAMIC,
+    // a dynamic section naming the RELA (or, if `use_rel`, DT_REL) table and the
+    // dynamic symbol table, plus the RELA entries and the symbols. e_phoff = 64;
+    // PT_LOAD maps p_offset=p_vaddr=0 so file offset == vaddr. RELA @512, symtab
+    // @1024. Each sym: (st_info, st_shndx, st_value).
+    fn build_x86_64_reloc_image(
+        relas: &[(u64, u64, i64)],
+        syms: &[(u8, u16, u64)],
+        use_rel: bool,
+    ) -> [u8; 2048] {
+        let mut b = [0u8; 2048];
+        // phdr0 PT_LOAD @64 (56-byte Elf64_Phdr): p_type@0 p_offset@8 p_vaddr@16 p_filesz@32.
+        put_u32(&mut b, 64, 1);
+        put_u64(&mut b, 64 + 32, 2048);
+        // phdr1 PT_DYNAMIC @120: p_type@0 p_offset@8 p_filesz@32.
+        let dyn_off = 256u64;
+        put_u32(&mut b, 120, 2);
+        put_u64(&mut b, 120 + 8, dyn_off);
+        // dynamic section @256: Elf64_Dyn { tag, val } (16 bytes).
+        let rela_vaddr = 512u64;
+        let rela_sz = relas.len() as u64 * 24;
+        let sym_vaddr = 1024u64;
+        let mut d = dyn_off as usize;
+        put_u64(&mut b, d, if use_rel { 17 } else { 7 }); // DT_REL / DT_RELA
+        put_u64(&mut b, d + 8, rela_vaddr);
+        d += 16;
+        put_u64(&mut b, d, 8); // DT_RELASZ
+        put_u64(&mut b, d + 8, rela_sz);
+        d += 16;
+        put_u64(&mut b, d, 9); // DT_RELAENT
+        put_u64(&mut b, d + 8, 24);
+        d += 16;
+        put_u64(&mut b, d, 6); // DT_SYMTAB
+        put_u64(&mut b, d + 8, sym_vaddr);
+        d += 16;
+        put_u64(&mut b, d, 11); // DT_SYMENT
+        put_u64(&mut b, d + 8, 24);
+        d += 16;
+        put_u64(&mut b, d, 0); // DT_NULL
+        d += 16;
+        put_u64(&mut b, 120 + 32, d as u64 - dyn_off); // PT_DYNAMIC p_filesz
+        // RELA table @512: Elf64_Rela { r_offset(8), r_info(8), r_addend(8) }.
+        let mut r = 512usize;
+        for (off, info, add) in relas {
+            put_u64(&mut b, r, *off);
+            put_u64(&mut b, r + 8, *info);
+            put_u64(&mut b, r + 16, *add as u64);
+            r += 24;
+        }
+        // symtab @1024: Elf64_Sym { st_name(4) st_info@4 st_other@5 st_shndx@6(u16) st_value@8(u64) ... }.
+        let mut sy = 1024usize;
+        for (info, shndx, value) in syms {
+            b[sy + 4] = *info;
+            put_u16(&mut b, sy + 6, *shndx);
+            put_u64(&mut b, sy + 8, *value);
+            sy += 24;
+        }
+        b
+    }
+
+    const UMV64: u64 = 0x0000_8000_0000_0000;
+
+    #[test]
+    fn x86_64_reloc_relative_glob_dat_and_none() {
+        let slide = 0x40_0000u64;
+        let relas = [
+            (0x10u64, 8u64, 0x100i64),         // R_X86_64_RELATIVE
+            (0x20u64, (1u64 << 32) | 6, 0i64), // R_X86_64_GLOB_DAT, sym index 1
+            (0x30u64, 0u64, 0i64),             // R_X86_64_NONE
+        ];
+        // sym 0 = reserved null; sym 1 = defined (shndx != 0), st_value 0x2000.
+        let syms = [(0u8, 0u16, 0u64), (0x10u8, 1u16, 0x2000u64)];
+        let img = build_x86_64_reloc_image(&relas, &syms, false);
+        let rt = x86_64_reloc_locate(&img, 64, 2).expect("locate ok");
+        assert_eq!(rt.nrela, 3);
+        let seg = ([slide], [0x2000u64]);
+        // RELATIVE: value = slide + addend.
+        assert_eq!(
+            x86_64_reloc_resolve(&img, rt.rela_file_off, rt.sym_file_off, 0, slide, UMV64, &seg.0, &seg.1),
+            Ok(Some((slide + 0x10, slide + 0x100)))
+        );
+        // GLOB_DAT defined: value = st_value + slide + addend.
+        assert_eq!(
+            x86_64_reloc_resolve(&img, rt.rela_file_off, rt.sym_file_off, 1, slide, UMV64, &seg.0, &seg.1),
+            Ok(Some((slide + 0x20, 0x2000 + slide)))
+        );
+        // NONE: skip.
+        assert_eq!(
+            x86_64_reloc_resolve(&img, rt.rela_file_off, rt.sym_file_off, 2, slide, UMV64, &seg.0, &seg.1),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn x86_64_reloc_glob_dat_weak_and_rejections() {
+        let slide = 0x40_0000u64;
+        let relas = [(0x10u64, (1u64 << 32) | 6, 0i64)]; // GLOB_DAT, sym index 1
+        let seg = ([slide], [0x2000u64]);
+
+        // Undefined *weak* (shndx 0, STB_WEAK bind => st_info>>4 == 2) resolves to 0.
+        let img = build_x86_64_reloc_image(&relas, &[(0u8, 0u16, 0u64), (0x20u8, 0u16, 0u64)], false);
+        let rt = x86_64_reloc_locate(&img, 64, 2).unwrap();
+        assert_eq!(
+            x86_64_reloc_resolve(&img, rt.rela_file_off, rt.sym_file_off, 0, slide, UMV64, &seg.0, &seg.1),
+            Ok(Some((slide + 0x10, 0)))
+        );
+
+        // Undefined *strong* (STB_GLOBAL) is genuinely unresolved -> reject.
+        let img = build_x86_64_reloc_image(&relas, &[(0u8, 0u16, 0u64), (0x10u8, 0u16, 0u64)], false);
+        let rt = x86_64_reloc_locate(&img, 64, 2).unwrap();
+        assert_eq!(
+            x86_64_reloc_resolve(&img, rt.rela_file_off, rt.sym_file_off, 0, slide, UMV64, &seg.0, &seg.1),
+            Err(-16)
+        );
+
+        // DT_REL on x86-64 is rejected outright.
+        assert_eq!(x86_64_reloc_locate(&build_x86_64_reloc_image(&[(0, 8, 0)], &[(0, 0, 0)], true), 64, 2), Err(-16));
+
+        // An unknown relocation type fails closed.
+        let img = build_x86_64_reloc_image(&[(0x10, 99, 0)], &[(0, 0, 0)], false);
+        let rt = x86_64_reloc_locate(&img, 64, 2).unwrap();
+        assert_eq!(
+            x86_64_reloc_resolve(&img, rt.rela_file_off, rt.sym_file_off, 0, slide, UMV64, &seg.0, &seg.1),
+            Err(-16)
+        );
+    }
+
+    #[test]
+    fn x86_64_reloc_never_panics_on_junk() {
+        let junk = [0xCDu8; 400];
+        for phoff in [0u32, 64, 396, 0xFFFF_FFF0] {
+            let _ = x86_64_reloc_locate(&junk, phoff, 8);
+        }
+        for k in [0u64, 1, 1000, u64::MAX] {
+            let _ = x86_64_reloc_resolve(&junk, 0, 0, k, u64::MAX, u64::MAX, &[0u64, 1], &[1u64, 2]);
+            let _ = x86_64_reloc_resolve(&junk, 100, 200, k, u64::MAX, 0, &[u64::MAX], &[u64::MAX]);
         }
     }
 

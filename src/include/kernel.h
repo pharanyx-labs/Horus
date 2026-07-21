@@ -1036,6 +1036,32 @@ int  rust_elf_i386_reloc_target(const uint8_t *buf, size_t buf_len, uint32_t rel
                                 uint32_t k, uint64_t slide, const uint64_t *seg_va,
                                 const uint64_t *seg_memsz, uint32_t nseg, uint64_t *out_target);
 
+/* The located x86-64 RELA + dynamic symbol tables (J10.3b). Mirrors `struct
+ * ElfX8664RelocTable` in rust/src/lib.rs; the offset asserts in loader.c pin it.
+ * nrela == 0 = no dynamic relocations; sym_file_off == 0 = no symbol table. */
+struct elf_x86_64_reloc_table {
+    uint64_t rela_file_off; /* file offset of the RELA table in the staging buffer */
+    uint64_t sym_file_off;  /* file offset of the dynamic symbol table (0 = none) */
+    uint64_t nrela;         /* number of 24-byte Elf64_Rela entries (<= 8192) */
+};
+
+/* Parse+validate the x86-64 RELA + symbol tables of the staged image in safe
+ * Rust: no untrusted-offset read (including the GLOB_DAT symbol lookup) can walk
+ * off the staging buffer. Returns 0 and fills `*out` (out->nrela == 0 = none),
+ * else -16. The privileged copy_to_user apply stays in the C loader. */
+int  rust_elf_x86_64_reloc_locate(const uint8_t *buf, size_t buf_len, uint32_t e_phoff,
+                                  uint16_t e_phnum, struct elf_x86_64_reloc_table *out);
+
+/* Validate RELA entry `k` and compute the (target, value) to write. Returns 0
+ * (write *out_value at *out_target), 1 (skip — R_X86_64_NONE), or -16 (reject).
+ * Because x86-64 relocations are a pure write, Rust computes the value (RELATIVE:
+ * slide+addend; GLOB_DAT: the resolved symbol address); the loader only writes. */
+int  rust_elf_x86_64_reloc_resolve(const uint8_t *buf, size_t buf_len, uint64_t rela_file_off,
+                                   uint64_t sym_file_off, uint64_t k, uint64_t slide,
+                                   uint64_t user_max_vaddr, const uint64_t *seg_va,
+                                   const uint64_t *seg_memsz, uint32_t nseg,
+                                   uint64_t *out_target, uint64_t *out_value);
+
 
 int  do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *pass);
 int  do_userdel(uint32_t uid);

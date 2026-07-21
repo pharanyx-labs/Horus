@@ -134,6 +134,7 @@ struct audit_event {
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module's payload (store owner only) */
 #define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an allowlisted device frame into the caller's address space (CAP_IO_DEVICE + WRITE; driver server only) */
 #define SYS_IOPORT_GRANT       80   /* () -> 0; grant native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE; driver server only) */
+#define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification (CAP_IO_DEVICE + WRITE; driver server only) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -683,6 +684,14 @@ static inline int sys_map_phys(uint64_t paddr, uint64_t vaddr, uint32_t len, uin
  * Takes effect immediately for the caller. Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_ioport_grant(void) {
     return syscall(SYS_IOPORT_GRANT, 0, 0, 0);
+}
+
+/* Route hardware IRQ `irq` (0 = timer, 1 = keyboard) to notification slot
+ * `notif_slot`, delivering `badge` each time it fires — so a ring-3 driver blocked
+ * in sys_wait_notify(notif_slot) wakes to service the device. Requires a
+ * CAP_IO_DEVICE cap (WRITE) in the gating slot. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_irq_register(uint32_t irq, uint32_t notif_slot, uint32_t badge) {
+    return syscall(SYS_IRQ_REGISTER, irq, notif_slot, badge);
 }
 
 /* Audit-log integrity digest. Writes 40 bytes to `out` (8-byte little-endian

@@ -285,6 +285,12 @@ void smp_bringup(void) {
      * non-allowlisted port #GPs (IOPORT_SELFTEST: PASS). Second
      * driver-privilege-separation job; see docs/proposals/console-server.md. */
     ioport_selftest();
+#elif defined(IRQ_SELFTEST)
+    /* Gated: a ring-3 task endowed with CAP_IO_DEVICE routes the timer IRQ to a
+     * notification (SYS_IRQ_REGISTER) and a real hardware interrupt wakes it with
+     * the registered badge (IRQ_SELFTEST: PASS). Third driver-privilege-separation
+     * job; see docs/proposals/console-server.md. */
+    irq_selftest();
 #elif defined(COW_SELFTEST)
     /* Gated: read two fresh heap pages (shared zero page) then write one, and
      * prove the write broke COW into a private page without disturbing the

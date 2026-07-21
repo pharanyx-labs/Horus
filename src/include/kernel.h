@@ -367,6 +367,7 @@ void users_init(void);
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module; store owner only (uid 0 + CAP_BLOCK_DEV) */
 #define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an ALLOWLISTED device frame into the caller's own address space (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
 #define SYS_IOPORT_GRANT       80   /* () -> 0; grant the caller native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
+#define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
 
 /* SYS_MAP_PHYS `flags` word (must match include/syscall.h). READ is the floor;
  * WRITE adds the writable bit. Device MMIO is always mapped non-executable. */
@@ -916,6 +917,10 @@ void set_tss_kernel_stack(uint64_t kstack_top);
  * #GPs. See docs/proposals/console-server.md. */
 void tss_io_bitmap_init(void);
 void tss_set_io_allowed(int allowed);
+/* IRQ -> userspace notification bridge (idt.c): register/clear routing a hardware
+ * IRQ to an async notification for a ring-3 driver. See docs/proposals/console-server.md. */
+int  irq_notify_register(int irq, int task, uint32_t slot, uint32_t badge);
+void irq_notify_clear_task(int task);
 void cpu_detect_features(void);
 void init_syscall_instruction_path(void);
 void ramfs_init(void);
@@ -1213,9 +1218,10 @@ void proc_selftest(void);
 #ifdef NOTIFY_SELFTEST
 void notify_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST)
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST)
 void mapphys_selftest(void);
 void ioport_selftest(void);
+void irq_selftest(void);
 /* The map-phys harness endows its ring-3 probe with a CAP_IO_DEVICE cap by
  * copying it out of the root cnode, exactly as the FS/newlib harnesses do for
  * their server caps. */

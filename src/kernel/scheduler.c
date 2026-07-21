@@ -723,6 +723,10 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
 void task_teardown(int id) {
     if (id <= 0 || id >= MAX_TASKS) return;
 
+    /* Drop any IRQ->notification routing this task registered, so a hardware IRQ
+     * cannot keep notifying a dead task's slot. */
+    irq_notify_clear_task(id);
+
     int w = tasks[id].waiter;
     if (w >= 0 && w < MAX_TASKS) {
         /* Unblock a SYS_WAIT waiter: make it runnable and resumable so the

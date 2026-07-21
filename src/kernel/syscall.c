@@ -786,7 +786,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 81
+#define SYSCALL_TABLE_SIZE 82
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -903,18 +903,21 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     /* Grant native ring-3 port I/O (TSS I/O bitmap) on the console ports. Same
      * CAP_IO_DEVICE + WRITE gate in slot 10 as SYS_MAP_PHYS — console server only. */
     [SYS_IOPORT_GRANT]            = { h_ioport_grant,           10, CAP_RIGHT_WRITE, CAP_IO_DEVICE },
+    /* Route a hardware IRQ to a userspace notification. Same CAP_IO_DEVICE + WRITE
+     * gate in slot 10 as the other device-delegation syscalls — console server only. */
+    [SYS_IRQ_REGISTER]            = { h_irq_register,           10, CAP_RIGHT_WRITE, CAP_IO_DEVICE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_IOPORT_GRANT is currently the highest syscall number. Adding a higher one
+ * SYS_IRQ_REGISTER is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_IOPORT_GRANT + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_IRQ_REGISTER + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

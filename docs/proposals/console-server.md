@@ -1,16 +1,34 @@
 # RFC: Console driver privilege separation (ring-3 `console_server`)
 
-**Status:** proposed · **Phase:** 6 (Security hardening) → C · **Supersedes:** the
-open roadmap item *"Reduce driver blast radius (privilege separation)"*
+**Status:** implemented · **Phase:** 6 (Security hardening) → C · **Realises:** the
+former roadmap item *"Reduce driver blast radius (privilege separation)"*
 (`docs/ROADMAP.md`).
 
-This document is the design proposal the roadmap asks for before any patch. It
-describes moving the console (VGA text / serial / keyboard) out of the ring-0
-kernel into a ring-3 server process that owns the console hardware directly. It
-records the problem, the three new kernel mechanisms the move requires, the
-capability model, the server and client design, the boot-ordering and panic
+This document began as the design proposal the roadmap asks for before any patch,
+and now records the design as built. It describes moving the console (VGA text /
+serial) out of the ring-0 kernel into a ring-3 server process that owns the console
+hardware directly: the problem, the three new kernel mechanisms the move requires,
+the capability model, the server and client design, the boot-ordering and panic
 consequences, and how each step is verified. Where this document and the code
 disagree, the code is the source of truth — open an issue.
+
+**Implementation status.** The program landed as the commit-per-job plan in §9,
+each job behavior-verified with a gated smoke test:
+
+| Job | What landed | Gate |
+|-----|-------------|------|
+| J2 | `SYS_MAP_PHYS` — map an allowlisted device frame into a task's address space | `smoke-mapphys` |
+| J3 | Per-task TSS I/O-permission bitmap — native ring-3 port I/O | `smoke-ioport` |
+| J4 | IRQ→notification bridge (`SYS_IRQ_REGISTER`) | `smoke-irq` |
+| J5a | `console_server` owns the hardware, serves a client over IPC | `smoke-console` |
+| J5b | The real shell's **output** routed through the ring-3 console | `smoke-session`, `smoke-modules` |
+| J5c | Console **input** (line editing, echo, password masking) moved to ring 3 | `smoke-session` |
+| J6 | Blast-radius proof — a console fault is contained in ring 3 | `smoke-console-isolation` |
+
+Two items in this document remain deliberately unbuilt: keyboard (PS/2) input stays
+in the kernel for now (the tests and headless deployment drive serial), and the
+in-kernel console is retained as a robustness fallback and for coreutils output,
+boot, and panic — see the notes inline.
 
 ---
 

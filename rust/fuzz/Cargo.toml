@@ -61,5 +61,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "elf_x86_64_reloc"
+path = "fuzz_targets/elf_x86_64_reloc.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

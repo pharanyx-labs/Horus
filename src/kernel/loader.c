@@ -281,185 +281,48 @@ static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
     return 0;
 }
 
-/* Apply x86-64 dynamic relocations for a static-PIE (ET_DYN) image. The
- * counterpart of elf_apply_relocations_i386 above, with the same fail-closed
- * contract, called at the same point (segments copied in and still writable,
- * before the W^X pass). Three things differ from i386 and each is a place this
- * would silently corrupt an image if copied over from the 32-bit version:
- *
- *   - RELA, not REL. Entries are 24 bytes { r_offset, r_info, r_addend } and
- *     carry their addend explicitly, so the patch is a WRITE of (slide +
- *     r_addend), not the i386 read-modify-write of (*target += slide): for a
- *     RELA the addend is authoritative and the existing field contents are not
- *     part of the result.
- *
- *     Worth knowing before "simplifying" this into the i386 form: GNU ld also
- *     pre-applies the addend INTO the field, so for an ld-linked image the two
- *     forms happen to agree and the ELF64 self-test cannot tell them apart
- *     (this was checked, not assumed -- a deliberately RMW-broken build still
- *     passed). They diverge for a producer that leaves the field zero, which is
- *     lld's default (--no-apply-dynamic-relocs). Following the spec costs
- *     nothing here and is the difference between working and silently writing a
- *     wrong pointer if the image ever comes from a different linker.
- *   - The type is the LOW 32 bits of r_info; for ELF32 it is the low 8 (the
- *     symbol index occupies the high 24 there, the high 32 here). Every
- *     currently-defined x86-64 type happens to be < 256, so the i386 mask would
- *     coincidentally agree today -- it is still wrong per spec, and would
- *     misclassify any future type >= 256 into a *different* type rather than
- *     into the fail-closed path, which is the dangerous direction to be wrong in.
- *   - The table is named by DT_RELA/DT_RELASZ/DT_RELAENT (7/8/9), not
- *     DT_REL/DT_RELSZ/DT_RELENT (17/18/19).
- *
- * Only R_X86_64_RELATIVE (8) is implemented; every other type fails closed.
- * Note R_X86_64_RELATIVE and R_386_RELATIVE happen to share the number 8 -- a
- * coincidence, not a shared definition. */
+/* Apply x86-64 dynamic relocations for a static-PIE (ET_DYN) image, at the same
+ * point as the i386 path (segments copied in and still writable, before the W^X
+ * pass). The parse and per-entry resolution now live in safe Rust
+ * (rust_elf_x86_64_reloc_*): the reloc + symbol tables are attacker-controlled,
+ * so every read is bounds-checked. Unlike i386's read-modify-write, an x86-64
+ * relocation is a pure WRITE of a value Rust computes — R_X86_64_RELATIVE writes
+ * slide+addend, R_X86_64_GLOB_DAT writes a resolved symbol address (undefined-
+ * weak -> NULL, undefined-strong -> reject) — so the loader only copies it out.
+ * See rust/src/lib.rs for the RELA-vs-REL, type-in-low-32-bits and GLOB_DAT
+ * subtleties this preserves (incl. the GNU-ld/lld addend divergence note). */
+/* FFI layout contract for the located x86-64 RELA + symbol tables (mirror of
+ * Rust ElfX8664RelocTable). */
+_Static_assert(sizeof(struct elf_x86_64_reloc_table) == 24, "elf_x86_64_reloc_table size");
+_Static_assert(__builtin_offsetof(struct elf_x86_64_reloc_table, rela_file_off) == 0,  "x64reloc.rela_file_off");
+_Static_assert(__builtin_offsetof(struct elf_x86_64_reloc_table, sym_file_off)  == 8,  "x64reloc.sym_file_off");
+_Static_assert(__builtin_offsetof(struct elf_x86_64_reloc_table, nrela)         == 16, "x64reloc.nrela");
+
 static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
                                         uint16_t e_phnum, uint32_t phentsize,
                                         uint64_t slide,
                                         const uint64_t *seg_va, const uint64_t *seg_memsz,
                                         int nseg) {
-    /* Locate PT_DYNAMIC (p_type == 2). Elf64_Phdr: p_type(4) p_flags(4)
-     * p_offset(8) p_vaddr(8) p_paddr(8) p_filesz(8) ... */
-    uint64_t dyn_off = 0, dyn_sz = 0;
-    for (uint16_t i = 0; i < e_phnum; i++) {
-        const uint8_t *p = ph + (uint32_t)i * phentsize;
-        if (elf_rd32(p) == 2) {                /* PT_DYNAMIC */
-            dyn_off = elf_rd64(p + 8);         /* p_offset */
-            dyn_sz  = elf_rd64(p + 32);        /* p_filesz */
-            break;
-        }
-    }
-    if (dyn_off == 0 || dyn_sz == 0) return 0;                 /* no dynamic info */
-    if (dyn_off > MAX_PROGRAM_SIZE || dyn_sz > MAX_PROGRAM_SIZE ||
-        dyn_off + dyn_sz > MAX_PROGRAM_SIZE) return -16;
+    (void)phentsize;   /* x86-64 program headers are a fixed 56 bytes in the Rust parser */
+    uint32_t e_phoff = (uint32_t)(ph - st);
 
-    /* Walk Elf64_Dyn { int64 d_tag; uint64 d_val; } for the RELA table, plus the
-     * dynamic symbol table that R_X86_64_GLOB_DAT entries index into. */
-    uint64_t rela_vaddr = 0, rela_sz = 0, rela_ent = 24;
-    uint64_t sym_vaddr = 0, sym_ent = 24;
-    for (uint64_t o = 0; o + 16 <= dyn_sz; o += 16) {
-        int64_t  tag = (int64_t)elf_rd64(st + dyn_off + o);
-        uint64_t val = elf_rd64(st + dyn_off + o + 8);
-        if (tag == 0) break;                   /* DT_NULL */
-        else if (tag == 7)  rela_vaddr = val;  /* DT_RELA    */
-        else if (tag == 8)  rela_sz    = val;  /* DT_RELASZ  */
-        else if (tag == 9)  rela_ent   = val;  /* DT_RELAENT */
-        else if (tag == 6)  sym_vaddr  = val;  /* DT_SYMTAB  */
-        else if (tag == 11) sym_ent    = val;  /* DT_SYMENT  */
-        else if (tag == 17) return -16;        /* DT_REL: x86-64 must use RELA */
-    }
-    if (sym_vaddr != 0 && sym_ent != 24) return -16;   /* Elf64_Sym is 24 bytes */
-    if (rela_vaddr == 0 || rela_sz == 0) return 0;             /* no RELA relocations */
-    if (rela_ent != 24) return -16;
+    struct elf_x86_64_reloc_table rt;
+    int rc = rust_elf_x86_64_reloc_locate(st, MAX_PROGRAM_SIZE, e_phoff, e_phnum, &rt);
+    if (rc != 0) return rc;
 
-    /* Map the RELA table's (link-time, base-0) vaddr to a file offset via the
-     * PT_LOAD segment that contains it. */
-    uint64_t rela_file_off = 0;
-    int mapped = 0;
-    for (uint16_t i = 0; i < e_phnum; i++) {
-        const uint8_t *p = ph + (uint32_t)i * phentsize;
-        if (elf_rd32(p) != 1) continue;        /* PT_LOAD */
-        uint64_t p_offset = elf_rd64(p + 8);
-        uint64_t p_vaddr  = elf_rd64(p + 16);
-        uint64_t p_filesz = elf_rd64(p + 32);
-        if (rela_vaddr >= p_vaddr && rela_vaddr < p_vaddr + p_filesz) {
-            rela_file_off = p_offset + (rela_vaddr - p_vaddr);
-            mapped = 1;
-            break;
-        }
-    }
-    if (!mapped) return -16;
-    if (rela_file_off > MAX_PROGRAM_SIZE || rela_sz > MAX_PROGRAM_SIZE ||
-        rela_file_off + rela_sz > MAX_PROGRAM_SIZE) return -16;
+    for (uint64_t k = 0; k < rt.nrela; k++) {
+        uint64_t target, value;
+        int r = rust_elf_x86_64_reloc_resolve(st, MAX_PROGRAM_SIZE, rt.rela_file_off,
+                                              rt.sym_file_off, k, slide, USER_MAX_VADDR,
+                                              seg_va, seg_memsz, (uint32_t)nseg,
+                                              &target, &value);
+        if (r < 0) return r;        /* -16: malformed / unresolved / out-of-segment */
+        if (r == 1) continue;       /* R_X86_64_NONE */
 
-    /* Same link-time-vaddr -> file-offset mapping for the dynamic symbol table.
-     * Only its base is resolved here; each entry is bounds-checked at use, since
-     * the table has no length in the dynamic section (DT_SYMTAB carries no size).
-     * sym_file_off == 0 means "no symbol table", which makes any GLOB_DAT below
-     * fail closed rather than read from offset 0. */
-    uint64_t sym_file_off = 0;
-    if (sym_vaddr != 0) {
-        for (uint16_t i = 0; i < e_phnum; i++) {
-            const uint8_t *p = ph + (uint32_t)i * phentsize;
-            if (elf_rd32(p) != 1) continue;        /* PT_LOAD */
-            uint64_t p_offset = elf_rd64(p + 8);
-            uint64_t p_vaddr  = elf_rd64(p + 16);
-            uint64_t p_filesz = elf_rd64(p + 32);
-            if (sym_vaddr >= p_vaddr && sym_vaddr < p_vaddr + p_filesz) {
-                sym_file_off = p_offset + (sym_vaddr - p_vaddr);
-                break;
-            }
-        }
-        if (sym_file_off == 0 || sym_file_off > MAX_PROGRAM_SIZE) return -16;
-    }
-
-    uint64_t nrela = rela_sz / 24;
-    if (nrela > 8192) return -16;              /* sane cap, as i386 */
-    for (uint64_t k = 0; k < nrela; k++) {
-        const uint8_t *r = st + rela_file_off + k * 24;
-        uint64_t r_offset = elf_rd64(r);
-        uint64_t r_info   = elf_rd64(r + 8);
-        int64_t  r_addend = (int64_t)elf_rd64(r + 16);
-        uint32_t r_type   = (uint32_t)(r_info & 0xFFFFFFFFu);
-        if (r_type == 0) continue;             /* R_X86_64_NONE */
-        /* Accepted: R_X86_64_RELATIVE (8) and R_X86_64_GLOB_DAT (6). Anything
-         * else still fails closed rather than running an image half-relocated. */
-        if (r_type != 8 && r_type != 6) return -16;
-
-        /* r_offset is a link-time (base-0) vaddr; the patch site is it + slide.
-         * Bound it before truncating to the 32-bit user window the loader still
-         * uses, so a wild r_offset cannot alias a valid target. */
-        if (r_offset > USER_MAX_VADDR) return -16;
-        uint64_t target = r_offset + slide;
-        int in_seg = 0;
-        for (int s = 0; s < nseg; s++) {
-            if (target >= seg_va[s] && target + 8 <= (uint64_t)seg_va[s] + seg_memsz[s]) {
-                in_seg = 1; break;
-            }
-        }
-        if (!in_seg) return -16;
-
-        /* RELA: write slide + addend outright. The addend is the link-time
-         * value, so this is the i386 read-modify-write with the read replaced
-         * by the addend the linker already recorded. */
-        uint64_t w = (uint64_t)((int64_t)slide + r_addend);
-
-        if (r_type == 6) {
-            /* R_X86_64_GLOB_DAT: patch a GOT slot with a symbol's address.
-             *
-             * A static PIE has no interpreter and no other object to resolve
-             * against, so the only two outcomes are: the symbol is defined in
-             * this image (relocate it like anything else — st_value + slide), or
-             * it is an undefined *weak* symbol, which the ABI says resolves to
-             * zero. newlib's exit()/atexit() machinery emits exactly the latter
-             * (a weak __on_exit_args), which is why a libc program that returns
-             * from main through exit() carries one of these and used to be
-             * refused outright.
-             *
-             * An undefined *strong* symbol is a genuinely unresolved external:
-             * nothing here can supply it, so refuse rather than quietly writing
-             * a null the program will call through. */
-            uint64_t sym_idx = r_info >> 32;
-            if (sym_file_off == 0) return -16;                 /* GLOB_DAT with no symtab */
-            if (sym_idx > (MAX_PROGRAM_SIZE / 24)) return -16; /* index overflow */
-            uint64_t sym_off = sym_file_off + sym_idx * 24;
-            if (sym_off + 24 > MAX_PROGRAM_SIZE) return -16;   /* entry out of the staged image */
-
-            const uint8_t *sym = st + sym_off;
-            uint8_t  st_info  = sym[4];
-            uint16_t st_shndx = (uint16_t)(sym[6] | ((uint16_t)sym[7] << 8));
-            uint64_t st_value = elf_rd64(sym + 8);
-
-            if (st_shndx == 0) {                               /* SHN_UNDEF */
-                if ((st_info >> 4) != 2) return -16;           /* not STB_WEAK: unresolved */
-                w = 0;                                         /* weak undefined -> NULL */
-            } else {
-                if (st_value > USER_MAX_VADDR) return -16;
-                w = (uint64_t)((int64_t)st_value + (int64_t)slide + r_addend);
-            }
-        }
-
-        if (copy_to_user((void *)(uintptr_t)target, &w, 8) != 0) return -16;
+        /* Rust computed the value; the loader only writes it. copy_to_user walks
+         * the page tables with present/user/write checks and fails closed on any
+         * unmapped page. */
+        if (copy_to_user((void *)(uintptr_t)target, &value, 8) != 0) return -16;
     }
     return 0;
 }

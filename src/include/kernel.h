@@ -365,6 +365,12 @@ void users_init(void);
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (object-store server only: uid 0 + CAP_BLOCK_DEV) */
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> module count; store owner only (uid 0 + CAP_BLOCK_DEV) */
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module; store owner only (uid 0 + CAP_BLOCK_DEV) */
+#define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an ALLOWLISTED device frame into the caller's own address space (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
+
+/* SYS_MAP_PHYS `flags` word (must match include/syscall.h). READ is the floor;
+ * WRITE adds the writable bit. Device MMIO is always mapped non-executable. */
+#define MAP_PHYS_READ           0x1u
+#define MAP_PHYS_WRITE          0x2u
 
 /* Minimum size of a registered alternate signal stack (SYS_SIGALTSTACK); smaller
  * requests fail closed so a handler always has room for at least a shallow frame. */
@@ -415,6 +421,12 @@ struct boot_module_info {
 #define CAP_ENCRYPTED_STORAGE   9
 #define CAP_REVOCATION          10
 #define CAP_BLOCK_DEV           11
+/* Hardware device authority: the right to touch a physical device (map a device
+ * MMIO frame into a user address space, and — in later console-server jobs — hold
+ * a port-I/O grant / claim an IRQ line). Distinct from CAP_CONSOLE, which is only
+ * a software privilege token for the kernel shell. Only a driver server is ever
+ * endowed with it. See docs/proposals/console-server.md. */
+#define CAP_IO_DEVICE           12
 
 #define CAP_RIGHT_READ          (1u << 0)
 #define CAP_RIGHT_WRITE         (1u << 1)
@@ -1137,6 +1149,14 @@ void free_user_aspace_for_test(uint64_t pml4_phys);
 int  user_map_fresh_page_for_test(uint64_t pml4_phys, uint64_t vaddr, uint64_t flags);
 void create_user_pagedir(uint32_t task_id);
 #endif
+/* Map one 4 KiB physical device frame `phys` at `vaddr` in task `task_id`'s own
+ * address space, user-accessible with `flags` (paging.c). The caller (the
+ * SYS_MAP_PHYS handler) has already validated `phys` against the device
+ * allowlist and `writable`; this only builds the PTE bits (always present + user
+ * + non-executable, +writable), does the page-table plumbing, and flushes the TLB.
+ * Returns 0 on success, negative on failure (bad task / no address space /
+ * refused VA). */
+int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys, uint64_t writable);
 uint32_t get_free_user_pages(void);   /* paging.c — free frames in the user pool */
 /* Set the runtime physical-pool size (frames), clamped to
  * [PHYS_POOL_MIN_PAGES, USER_PHYS_PAGES]. Must be called before paging_init,
@@ -1180,6 +1200,13 @@ void proc_selftest(void);
 #endif
 #ifdef NOTIFY_SELFTEST
 void notify_selftest(void);
+#endif
+#ifdef MAPPHYS_SELFTEST
+void mapphys_selftest(void);
+/* The map-phys harness endows its ring-3 probe with a CAP_IO_DEVICE cap by
+ * copying it out of the root cnode, exactly as the FS/newlib harnesses do for
+ * their server caps. */
+int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
 #endif
 
 

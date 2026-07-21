@@ -1272,6 +1272,36 @@ void mapphys_selftest(void) {
 }
 #endif /* MAPPHYS_SELFTEST */
 
+#ifdef IOPORT_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- TSS I/O-permission bitmap self-test (IOPORT_SELFTEST builds only) -------
+ * Second driver-privilege-separation job (Phase 6): prove a ring-3 task endowed
+ * with CAP_IO_DEVICE can be granted native port I/O (SYS_IOPORT_GRANT) on the
+ * console ports and that the grant is precise -- an allowlisted port succeeds, a
+ * non-allowlisted port still #GPs. The probe (userspace/ioporttest.c) self-asserts
+ * and prints IOPORT_SELFTEST: PASS. Entry into ring 3 does not return. See
+ * docs/proposals/console-server.md. */
+void ioport_selftest(void) {
+    extern uint8_t embedded_ioporttest_bin_start[], embedded_ioporttest_bin_end[];
+
+    print("IOPORT_SELFTEST: launch\n");
+
+    int a = fs_spawn_embedded(embedded_ioporttest_bin_start,
+                              embedded_ioporttest_bin_end, "ioport");
+    if (a <= 0) { print("IOPORT_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+
+    /* Endow the probe with the device-hardware capability in slot 10 -- the
+     * SYS_IOPORT_GRANT gate. Nothing else is ever given a copy. */
+    if (cap_install_from_root(a, 10, 10, 0) != 0) {
+        print("IOPORT_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* IOPORT_SELFTEST */
+
 #ifdef E820_SELFTEST
 /* ---- E820 physical-pool self-test (E820_SELFTEST builds only) --------------
  * Runs after paging_init has built the free list from the E820-sized pool. The
@@ -1292,8 +1322,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS only) ----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {

@@ -1,14 +1,17 @@
 # Horus Roadmap
 
-This document describes where Horus is **headed** — the work that is still ahead.
-For what already exists, see the summary below, the git history, and
-`docs/ARCHITECTURE.md`.
+This document is the map of the whole program — each phase records what it has
+delivered and what remains, so the roadmap doubles as an honest status report and
+a guide to where Horus is **headed**. For the finer-grained "what exists today,"
+see the summary below, the git history, and `docs/ARCHITECTURE.md`; for the
+honest account of current limitations, `docs/LIMITATIONS.md`.
 
 The phases are roughly ordered by dependency and priority, but they are largely
-independent and can be picked up in any order. Nothing here is a commitment —
-priorities shift as contributors join and the design evolves. If you want to work
-on something, open an issue or start a discussion first; coordination saves
-effort.
+independent and can be picked up in any order. Phases 1 and 2 (process model,
+filesystem) are complete; Phase 6 (security hardening) has completed most of its
+program; Phases 3–5 are ongoing. Nothing here is a commitment — priorities shift
+as contributors join and the design evolves. If you want to work on something,
+open an issue or start a discussion first; coordination saves effort.
 
 ---
 
@@ -55,11 +58,21 @@ self-tests in CI (28 `smoke-*` targets, all gated). Already in place:
   userspace `malloc`, and an `x86_64-elf` newlib libc port over a per-process
   POSIX fd layer (`make smoke-newlib`). The only 32-bit code left is the boot
   on-ramp that must be: the multiboot entry stage and the AP SIPI trampoline.
-- **CI** — every `smoke-*` target is gated (the `security` SAST/SBOM scan is the
-  only advisory job): `rust` (`cargo test` + `clippy -D warnings`), `kernel`
-  (build + ISO), `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE matrix), the headless
-  QEMU boot `smoke`, the runtime self-tests (`smoke-elf`, `smoke-elf64`,
-  `smoke-aslr`, `smoke-preempt`, `smoke-signal`, `smoke-tsd`, `smoke-cpu`,
+- **Security core in safe Rust** — the security-critical logic lives in the
+  `no_std` `horus_shell` crate: the capability algebra (mint/transfer/revoke +
+  lineage/generation), the page-refcount trust boundary, the crypto primitives,
+  and the FFI validation predicates. The **entire ELF loader parse** — header,
+  program headers, and both i386 and x86-64 dynamic relocations — now runs
+  memory-safe in Rust too, so no attacker-controlled image can walk a hand-rolled
+  C parser off its buffer (the C loader keeps only the privileged page mapping
+  and copies). Parts of that core carry machine-checked proofs (Kani) and
+  coverage-guided fuzzers. See **Phase 6** for the hardening program.
+- **CI** — every `smoke-*` target is gated (the advisory jobs are the `security`
+  SAST/SBOM scan, the `fuzz` FFI fuzzers, and the `kani` formal-verification run):
+  `rust` (`cargo test` + `clippy -D warnings`), `kernel` (build + ISO),
+  `altconfigs` (DEBUG_SHELL/MINIMAL_SECURE/SMP matrix), the headless QEMU boot
+  `smoke`, the runtime self-tests (`smoke-elf`, `smoke-elf64`, `smoke-aslr`,
+  `smoke-preempt`, `smoke-signal`, `smoke-tsd`, `smoke-cpu`, `smoke-stackguard`,
   `smoke-e820`, `smoke-wx`, `smoke-wx-smp`, `smoke-aspace`, `smoke-captest`,
   `smoke-proc`, `smoke-cow`, `smoke-notify`, `smoke-smp`, `smoke-fs`,
   `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`, `smoke-fs-wal`,
@@ -67,9 +80,9 @@ self-tests in CI (28 `smoke-*` targets, all gated). Already in place:
   tests (`smoke-session`, `smoke-modules`, `smoke-coreutils-shell`), and a
   `reproducible` build check. The whole filesystem suite (persistence,
   permissions, concurrency, journal crash-recovery, large files), the newlib
-  libc port, async notifications, the CPU-protection and W^X sweeps, and loading
-  programs from the filesystem via boot modules are all CI-enforced, not
-  local-only.
+  libc port, async notifications, the CPU-protection / W^X / stack-guard sweeps,
+  and loading programs from the filesystem via boot modules are all CI-enforced,
+  not local-only.
 
 ---
 
@@ -357,22 +370,36 @@ With a libc and a heap in place, grow what runs on top.
 
 Cross-cutting work that should grow alongside every other phase.
 
-- **Scripted integration harness**: beyond the boot smoke-test, drive scripted
-  sessions (login, capability denials, W^X violations, IPC round-trips) and assert
-  on the responses. *Seeded*: `make smoke-session` (`tools/session_test.py`) boots
-  the shipped kernel and drives the **real** ring-3 shell over serial as a black
-  box — asserting that a wrong password is rejected, the right one is accepted, the
-  kernel-attested identity is what `whoami` reports, and a capability-gated admin
-  op (`useradd`) is allowed for root but denied for a standard user (no ambient
-  authority). Gated in CI. Remaining: broaden the scenarios (W^X violation, IPC/FS
-  round-trips) and grow the assertion vocabulary.
-- **Fuzzing**: coverage-guided fuzzing (libFuzzer or AFL++) of the syscall
-  interface and the Rust FFI boundary.
+- **Scripted integration harness** — *seeded and growing*: `make smoke-session`
+  (`tools/session_test.py`) boots the shipped kernel and drives the **real** ring-3
+  shell over serial as a black box — a wrong password is rejected, the right one
+  accepted, the kernel-attested identity is what `whoami` reports, and
+  capability-gated admin ops are allowed for root but denied for a standard user
+  (no ambient authority). Phase 6 (J8) added cross-user authority-bypass scenarios:
+  a standard user is refused `userdel`, and the `fs_server` reference monitor lets
+  it *read* a world-readable root-owned file but refuses a *write*, with the file
+  proven unchanged afterwards. Gated in CI. Remaining: W^X-violation and IPC/FS
+  round-trip scenarios, and a broader assertion vocabulary.
+- **Fuzzing** — *done, and expanding*: a `cargo-fuzz` / libFuzzer harness
+  (`rust/fuzz/`) exercises the pointer- and scalar-taking FFI predicates — the
+  functions the C kernel calls to make security decisions — over arbitrary input:
+  `rust_ct_eq`, `rust_validate_page_fault`, `rust_signal_handler_addr_ok`, and the
+  four ELF-loader parsers (`elf_validate_header`, `elf_load_plan`,
+  `elf_i386_reloc`, `elf_x86_64_reloc`). Runs as the advisory `fuzz` CI job; each
+  target is also driven for tens of millions of executions locally. See Phase 6
+  (J5, J10). Remaining: a syscall-boundary fuzzer under QEMU (syzkaller-style).
 - **Model checking**: extend the TLA+ specifications (`docs/cap_algebra.tla`,
   `docs/paging_isolation.tla`) to cover IPC, the scheduler, and SMP interactions,
-  and wire a checker into CI.
-- **Formal verification**: apply Verus or Kani to the capability operations in
-  `rust/src/capability.rs`.
+  and wire a checker into CI. *Not yet started.*
+- **Formal verification** — *done for the crown-jewel paths, expandable*: Kani
+  (bounded model checking) proves, over their entire input space, that
+  `assign_fresh_serial` never returns a reserved or zero serial and that
+  `rust_cap_mint` can only ever reduce rights (no privilege escalation), plus that
+  the ELF header and load-plan validators never panic/read out of bounds and only
+  accept in-range fields. Runs as the advisory `kani` CI job; see `rust/KANI.md`
+  and Phase 6 (J9, J10). Remaining: extend proofs to the lineage/revocation paths
+  (they touch a shared static that needs a heavier model) and consider Verus for
+  the parts Kani's loop bounds make impractical.
 - **User/kernel address separation**: **the kernel now runs at `KERNEL_VMA`
   (`0xFFFFFFFF80000000`)**, so no kernel address is a user address and nothing a
   task maps can shadow kernel state. This was the "full fix" this item asked for.
@@ -439,12 +466,111 @@ Cross-cutting work that should grow alongside every other phase.
 
 ---
 
+## Phase 6 — Security hardening
+
+A dedicated program to shrink the two things that most limit Horus as a security
+kernel: the amount of **unverified, security-critical C**, and the **blast
+radius** of any single bug. `docs/LIMITATIONS.md` states the core problem plainly
+— the kernel is one flat trust domain, so "a bug in the terminal driver has the
+same blast radius as one in the capability system," and a full kernel compromise
+also defeats the audit log and the user-DB tag. This phase attacks that on two
+axes: move attacker-facing parsing and secret-comparison logic into the
+memory-safe, machine-checkable Rust core (reducing bug *likelihood* where it
+matters most), and — the remaining big rock — introduce privilege separation
+inside the kernel (reducing bug *consequence*).
+
+Each job below was landed as one focused, behavior-verified change (smoke tests
+and, where applicable, fuzzing and Kani proofs), on a commit-per-job cadence.
+
+### A. Close concrete authority gaps — *done*
+
+- **fs_server connect through the locked cap path** — `SYS_CONNECT_FS_SERVER`
+  minted its endpoint capability with a raw, unsynchronised cspace store — the one
+  cap-installing path that skipped the discipline every other one follows. It now
+  goes through `cap_install_endpoint` (under `cap_lock`, with the no-ambient
+  authority guard and `caps_in_use` accounting), closing an `SMP=1` race against a
+  concurrent global revoke and an accounting gap. Open-connect is deliberately
+  *kept*: the `fs_server` is a reference monitor that authorises every request by
+  kernel-attested identity, so the endpoint alone grants nothing.
+- **Constant-time comparison in Rust** — the last hand-rolled constant-time
+  primitive in the auth path (`constant_time_compare` in `kusers.c`, used for
+  password-hash and user-DB-tag checks) was replaced by a unit-tested, generic
+  `rust_ct_eq` in the security core. No hand-rolled secret comparison remains.
+
+### B. Stand up the safety net — *done*
+
+- **FFI fuzzing** — a `cargo-fuzz` / libFuzzer harness (`rust/fuzz/`) over the
+  pure FFI predicates the kernel trusts for security decisions, run as an advisory
+  CI job. (See Phase 5 → Fuzzing.)
+- **Capability-engine property tests** — five adversarial unit tests pinning
+  invariants the existing suite missed: a mint into a kernel-reserved slot is
+  refused, a mint from an empty / serial-0 source is refused, lookup/mint/revoke
+  fail closed on out-of-range slots (no OOB access), revocation is transitive
+  across a multi-level derivation chain, and `caps_in_use` saturates at zero
+  instead of underflowing (which would permanently defeat `MAX_CAPS_PER_TASK`).
+- **"Assert what the hardware actually does" audit** — an audit of every
+  set-and-assumed protection bit confirmed each has a self-test asserting the
+  *effective* register/MSR state (SMEP/SMAP/UMIP in CR4, `CR0.WP`, `EFER.NXE`,
+  `CR4.TSD`), and closed the one gap it found: the `-fstack-protector-strong`
+  canary is re-seeded from the CSPRNG at boot, but nothing checked that it *was* —
+  a skipped re-seed would leave the published reproducible-build constant in place,
+  protection on but bypassable. `make smoke-stackguard` now asserts the live guard
+  is no longer the compile-time default (falsification-tested: neutering the
+  re-seed makes the test go red).
+
+### C. Chip at the architectural root — *the ELF loader done; driver isolation ahead*
+
+- **Authority-bypass integration scenarios** — the scripted session harness gained
+  end-to-end negative tests proving the reference-monitor guarantee from ring 3.
+  (See Phase 5 → Scripted integration harness.)
+- **Formal verification of the capability engine** — Kani proofs over the whole
+  input space. (See Phase 5 → Formal verification.)
+- **The ELF loader moved to memory-safe Rust — *done*.** The loader parses fully
+  attacker-controlled program images; every hand-rolled C parse in `try_elf_load`
+  now runs in the Rust core, with the C loader keeping only the privileged page
+  mapping and `copy_to_user`. Delivered in four behaviour-preserving steps, each
+  with parity unit tests, a fuzz target, and (for the first two) a Kani proof:
+  the ELF **header** validation, the **PT_LOAD program-header** load-plan builder,
+  and the **i386** and **x86-64** dynamic relocation parsers (the last including
+  the `R_X86_64_GLOB_DAT` dynamic-symbol lookup and undefined-weak → NULL
+  resolution). Moving the program-header walk also fixed **two real
+  out-of-bounds-read bugs** the C carried: a `u32` `p_offset + p_filesz` overflow
+  that let a crafted header pass the bound and then read far out of the staging
+  buffer, and a program-header-table read that could run past the buffer for a
+  large `e_phoff`.
+- **Reduce driver blast radius (privilege separation)** — *the one open item*.
+  Everything above reduces the *likelihood* of a memory-safety bug in the highest
+  risk C; it does not add privilege separation, so a bug still has kernel-wide
+  reach. The microkernel-native answer is the same move the filesystem already
+  made: run the highest-risk, ring-3-reachable drivers (the VGA/serial/keyboard
+  console first) as ring-3 server processes holding only their own capabilities,
+  reached over IPC — so a driver bug is no longer automatically a capability-system
+  compromise. The main constraint is keeping a minimal in-kernel serial path for
+  early-boot and panic output. This is a genuine architecture change and is scoped
+  as future work; it would begin with a design proposal, not a patch.
+
+### Deliberate non-goal: don't wire up empty validators
+
+Two Rust functions (`rust_validate_ipc`, `rust_validate_fs_operation`) exist but
+are never called. They *look* like disconnected safety nets, but they are empty
+scaffolding (`return rights != 0 ? 0 : -1`), and the IPC and FS paths they would
+guard are already fully defended (central capability gate + snapshot/revalidate
+TOCTOU protection + bounds checks for IPC; `CAP_BLOCK_DEV` + `uid == 0` for the FS
+path). Wiring them in would add the *appearance* of a control without the
+substance — security theater — and, if made unconditional, would break the
+in-kernel shell caller. They are intentionally left unwired. The lesson: an unused
+symbol is not the same as a missing defense.
+
+---
+
 ## Contributing
 
-Phases 1 and 2 are complete. Phase 4 (userspace ecosystem) holds the most
-self-contained items and is the recommended starting point for new contributors.
-If you have kernel or systems experience and want something more involved, Phase
-3 (SMP maturity) is a good target.
+Phases 1 and 2 are complete, and the Phase 6 hardening program has moved the whole
+ELF-loader parse into memory-safe Rust. Phase 4 (userspace ecosystem) holds the
+most self-contained items and is the recommended starting point for new
+contributors. If you have kernel or systems experience and want something more
+involved, Phase 3 (SMP maturity) and the open Phase 6 item — **driver privilege
+separation** (moving a driver to a ring-3 server) — are the meatiest targets.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to set up your environment and
 submit work.

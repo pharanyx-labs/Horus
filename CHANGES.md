@@ -8,6 +8,19 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — driver privilege separation: the console driver moved out of the kernel into a ring-3 server (this pass)
+
+The highest-risk, ring-3-reachable driver — the VGA/serial console, which parses input and handles password entry — has been moved out of the kernel's flat trust domain into a ring-3 server, `console_server`. A bug in it is now an ordinary ring-3 fault rather than a kernel-wide compromise. It landed as a design proposal (`docs/proposals/console-server.md`) followed by a commit-per-job program, each behavior-verified with a gated smoke test.
+
+- **Three new device-delegation mechanisms** let a ring-3 driver own device hardware, all gated on a new `CAP_IO_DEVICE` capability that only the console server holds:
+  - `SYS_MAP_PHYS` maps an **allowlisted** physical device frame (the VGA framebuffer / graphics plane) into a task's own address space — present, user, non-executable — over the existing page-table plumbing (`make smoke-mapphys`).
+  - `SYS_IOPORT_GRANT` installs a **per-task TSS I/O-permission bitmap** so the driver runs `in`/`out` natively on the serial UART, PS/2 keyboard, and VGA register ports, while every other task's port I/O still `#GP`s (`make smoke-ioport`). This grew the TSS to carry an 8 KiB I/O bitmap and flips `iomap_base` on the single context-switch chokepoint.
+  - `SYS_IRQ_REGISTER` routes a hardware IRQ to an async notification, so a ring-3 driver can be woken to service the device; safe to call from the ISR because syscalls and IRQs both run behind interrupt gates (`make smoke-irq`).
+- **`console_server`** takes ownership of the console hardware with those mechanisms and serves the shell over IPC: output (`CON_OP_WRITE`) and input (`CON_OP_GETLINE` / `CON_OP_GETPASS`, doing the line editing, echo, and `*`-masking itself, a byte-for-byte port of the old in-kernel `h_get_line`/`h_get_pass`). It holds only its own capabilities and replies to each client by kernel-attested identity, like the filesystem server. `init` launches it before the shell.
+- **The real shell routes its output *and* input through it** (`make smoke-session`, `smoke-modules`, `smoke-coreutils-shell`), with an in-kernel fallback so a console-server hiccup can never silence or hang login. Removing the fallback and re-running the full session — every password prompt included — confirmed input and output genuinely traverse ring 3 rather than falling back.
+- **Blast-radius proof.** `make smoke-console-isolation` deliberately faults the ring-3 console server and asserts the kernel stays alive to report it — the containment the whole program set out to achieve.
+- Retained deliberately: a minimal in-kernel serial writer for panic/early-boot output, the in-kernel console reader as a fallback, and PS/2 keyboard handling in the kernel (the tests and headless deployment drive serial; moving the keyboard into the server is future work).
+
 ### Added — a real filesystem: a directory skeleton, path-routed provisioning, and man pages on disk (this pass)
 
 - **A fresh boot now comes up with a directory skeleton**, not an empty root. The `fs_server` creates `/bin`, `/etc`, `/home`, `/lib`, `/usr`, `/usr/share` and `/usr/share/man` at startup (idempotently), so a bare `ls` shows a real layout. The shell's `ls` no longer prints the `(empty)` string — an empty directory prints nothing, like `ls(1)`; a read *failure* is still surfaced distinctly, so a broken `fs_server` is never mistaken for emptiness.

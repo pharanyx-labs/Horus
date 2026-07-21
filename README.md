@@ -27,7 +27,7 @@ Horus is an x86-64 microkernel that treats the **capability token** as its singl
 
 The kernel is written in C. The security-critical core — the capability engine, physical-memory reference counting, the cryptographic primitives, the W^X page policy, and every FFI validation boundary — is implemented in **safe, `no_std` Rust**, where the type system statically rules out entire classes of memory-safety defects.
 
-Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **28 headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
+Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **31 headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
 
 > ### Project status — research / early development
 > Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store — persistent when an ATA disk is present, enforcing per-file POSIX ownership/permissions against a kernel-attested identity, serving multiple clients concurrently, and crash-atomic via a write-ahead journal — a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support behind a build gate. Some subsystems (SMP default-on, multi-slot IPC) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
@@ -53,7 +53,7 @@ Horus is engineered as if it were destined for production even though it is not 
  │                   Userspace  (Ring 3)                    │
  │   init → shell     fs_server     hello     captest       │
  └──────────────────────┬───────────────────────────────────┘
-                        │  syscalls (0-75, table-dispatched)
+                        │  syscalls (0-81, table-dispatched)
  ┌──────────────────────▼───────────────────────────────────┐
  │                  Horus Kernel  (Ring 0)                  │
  │                                                          │
@@ -110,7 +110,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 |---|---|
 | Multiboot2 boot (x86-64 long mode), kernel in the higher half | ✅ Working |
 | 64-bit ring-3 ABI (`EM_X86_64` static-PIE, RELA relocation at load) | ✅ Working |
-| VGA terminal + serial output | ✅ Working |
+| Console (VGA text + serial) driven by a **ring-3 server** (`console_server`), reached over IPC | ✅ Working |
 | GDT / IDT / TSS, hardware user/kernel isolation | ✅ Working |
 | Paging, per-task address spaces, memory isolation | ✅ Working |
 | Capability mint / transfer / move / revoke | ✅ Working |
@@ -121,7 +121,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Per-task x87/SSE context (FXSAVE/FXRSTOR on the ring-3 boundary) | ✅ Working |
 | Kernel stack protector (`-fstack-protector-strong`, CSPRNG-seeded guard) | ✅ Working |
 | ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 30 bits, image placed in a 4 TiB window above 16 GiB) | ✅ Working |
-| Table-driven syscall dispatch (central capability gate, 0–75) | ✅ Working |
+| Table-driven syscall dispatch (central capability gate, 0–81) | ✅ Working |
 | User authentication + lockout (Argon2id memory-hard hashing) | ✅ Working |
 | Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
 | Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256) | ✅ Working |
@@ -138,9 +138,11 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Large files (direct + single- + double-indirect blocks, 16 MiB volume, multi-block bitmap) | ✅ Working |
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
+| ELF loader parse (header, program headers, i386 + x86-64 relocations) in memory-safe Rust | ✅ Working |
+| Driver privilege separation — VGA/serial console runs as a ring-3 server (`console_server`, `CAP_IO_DEVICE`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
-| Rust security-core unit tests (59) + GitHub Actions CI (33 jobs, 32 gating) | ✅ Working |
-| Headless QEMU self-tests (28): boot, kernel W^X sweep (single- and multi-core), CR4 protections, CR4.TSD, E820 pool sizing, ELF/W^X (32- and 64-bit), ASLR, preemption, signals, process-control, COW, notifications, address-space reclaim, capability conformance, session, SMP, fs (×7), newlib, and the coreutils shipped from the filesystem as boot modules (modules, coreutils-shell) | ✅ Working |
+| Rust security-core unit tests (78) + GitHub Actions CI (41 jobs, 38 gating) | ✅ Working |
+| Headless QEMU self-tests (31): boot, kernel W^X sweep (single- and multi-core), CR4 protections, CR4.TSD, E820 pool sizing, ELF/W^X (32- and 64-bit), ASLR, preemption, signals, process-control, COW, notifications, address-space reclaim, capability conformance, session, SMP, fs (×7), newlib, the coreutils shipped from the filesystem as boot modules (modules, coreutils-shell), and the driver-isolation suite (map-phys, port-I/O, IRQ bridge, console server, console fault containment) | ✅ Working |
 | Scripted integration session: drives the real ring-3 shell over serial (auth + least privilege) | ✅ Working |
 | Reproducible builds | ✅ Working |
 | Userspace shell and commands | 🟡 Partial |
@@ -176,7 +178,7 @@ Default login: `user` / `password` (or `root` / `rootpass`).
 ### Verify it
 
 ```bash
-make test               # Rust unit tests (59) + a clean full build
+make test               # Rust unit tests (78) + a clean full build
 make smoke              # headless QEMU boot to the ring-3 login prompt, no fault
 make smoke-proc         # ring-3 process control: exit/kill/spawn/exec/grant/signal/wait
 make reproducible-build # byte-for-byte deterministic kernel.elf

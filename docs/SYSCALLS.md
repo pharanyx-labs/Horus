@@ -132,6 +132,16 @@ Program images GRUB loaded as multiboot2 modules — read-only, at the same trus
 | 77     | `SYS_BOOT_MODULE_INFO` | Count boot modules; read one's size + name    | `CAP_BLOCK_DEV` (slot 7) + uid 0 | Returns the module count; fills a `struct boot_module_info` for a valid index |
 | 78     | `SYS_BOOT_MODULE_READ` | Copy a byte range out of a module's payload   | `CAP_BLOCK_DEV` + uid 0        | Offset/length bounded to the module extent; source is reached through the `PHYS_KVA` window |
 
+### Device delegation (ring-3 drivers)
+
+These three syscalls let a ring-3 driver server own device hardware directly. All are gated on a `CAP_IO_DEVICE` capability (slot 10) with WRITE — only the console server is endowed with it, by `init`. See [`docs/proposals/console-server.md`](proposals/console-server.md).
+
+| Number | Name               | Description                                            | Required Capability            | Notes |
+|--------|--------------------|--------------------------------------------------------|--------------------------------|-------|
+| 79     | `SYS_MAP_PHYS`     | Map an allowlisted device frame into the caller's address space | `CAP_IO_DEVICE` (slot 10) | Physical frame must be on a fixed device allowlist (the VGA framebuffer / graphics-plane frames); mapped present + user + non-executable, one 4 KiB page per call. Fails closed on any off-list frame or a kernel-half target address |
+| 80     | `SYS_IOPORT_GRANT` | Grant the caller native ring-3 `in`/`out` on the console ports | `CAP_IO_DEVICE` (slot 10) | Installs a per-task TSS I/O-permission bitmap allowing only the serial UART, PS/2 keyboard, and VGA register ports; every other port still `#GP`s. Takes effect immediately and is dropped on a switch to any other task |
+| 81     | `SYS_IRQ_REGISTER` | Route a hardware IRQ to an async notification          | `CAP_IO_DEVICE` (slot 10) | `irq` 0 (timer) or 1 (keyboard); each firing calls `sys_notify(slot, badge)` so a driver blocked in `SYS_WAIT_NOTIFY` wakes to service the device. The registration is dropped when the task exits |
+
 ### Block storage & server registration
 
 | Number | Name                          | Description                              | Required Capability      | Notes |

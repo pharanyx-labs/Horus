@@ -378,6 +378,20 @@ ASFLAGS += -DCONSOLE_SELFTEST
 CONSOLE_SELFTEST_DEP = userspace/consoletest.bin
 endif
 
+# CONSOLE_ISOLATION_TEST=1 is the Phase-6 close-out blast-radius proof: the ring-3
+# console_server takes ownership of the console hardware and then deliberately
+# faults. Because it now runs in ring 3, the kernel contains the fault (delivers it
+# to the server's own handler) and keeps running -- proof that a bug in the console
+# driver can no longer reach kernel memory or the capability system (prints
+# CONSOLE_ISOLATION: PASS to serial). console_server is always embedded; the flag
+# reaches its userspace build too, so it carries the deliberate fault. Gated off the
+# ship kernel.
+CONSOLE_ISOLATION_TEST ?= 0
+ifeq ($(CONSOLE_ISOLATION_TEST),1)
+CFLAGS  += -DCONSOLE_ISOLATION_TEST
+ASFLAGS += -DCONSOLE_ISOLATION_TEST
+endif
+
 # COW_SELFTEST=1 embeds cowtest and, at boot, reads two fresh heap pages (each
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
@@ -622,6 +636,11 @@ USERSPACE_CFLAGS += -DPERM_SELFTEST
 endif
 ifeq ($(CONC_SELFTEST),1)
 USERSPACE_CFLAGS += -DCONC_SELFTEST
+endif
+# console_server.c grows a deliberate-fault path under this flag, so its userspace
+# build must see it too (kernel CFLAGS alone won't reach it).
+ifeq ($(CONSOLE_ISOLATION_TEST),1)
+USERSPACE_CFLAGS += -DCONSOLE_ISOLATION_TEST
 endif
 
 userspace/%.o: userspace/%.c
@@ -1189,6 +1208,17 @@ smoke-console:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
 		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated console blast-radius test, boot headless, and require the
+# marker proving the ring-3 console_server's deliberate fault was contained (the
+# kernel stayed alive to print it). Phase 6 close-out; see docs/proposals/console-server.md.
+.PHONY: smoke-console-isolation
+smoke-console-isolation:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_ISOLATION_TEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_ISOLATION: PASS' \
+		FAIL_MARKER='CONSOLE_ISOLATION: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated copy-on-write self-test, boot headless, and require that a
 # write to a read-only shared-zero page breaks COW into a private page without

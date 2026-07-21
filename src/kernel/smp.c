@@ -297,6 +297,11 @@ void smp_bringup(void) {
      * client's line to serial natively (CONSOLE_SELFTEST: PASS). First J5 cutover
      * milestone; see docs/proposals/console-server.md. */
     console_selftest();
+#elif defined(CONSOLE_ISOLATION_TEST)
+    /* Gated: the ring-3 console_server takes the hardware then deliberately faults;
+     * the kernel contains it as a ring-3 fault and stays alive (CONSOLE_ISOLATION:
+     * PASS). The Phase 6 close-out blast-radius proof; see docs/proposals/console-server.md. */
+    console_isolation_selftest();
 #elif defined(COW_SELFTEST)
     /* Gated: read two fresh heap pages (shared zero page) then write one, and
      * prove the write broke COW into a private page without disturbing the

@@ -5,7 +5,7 @@ This folder contains technical documentation for the Horus microkernel.
 | Document | Contents |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Design philosophy, subsystem internals, capability model, task/process model, scheduling, signals, SMP, memory layout, Rust integration |
-| [SYSCALLS.md](SYSCALLS.md) | Per-syscall reference (0–75): numbers, capability requirements, and notes |
+| [SYSCALLS.md](SYSCALLS.md) | Per-syscall reference (0–81): numbers, capability requirements, and notes |
 | [BUILDING.md](BUILDING.md) | Toolchain requirements, build targets, build flags, QEMU setup, troubleshooting |
 | [LIMITATIONS.md](LIMITATIONS.md) | Honest account of what works, what is partial, and known security gaps |
 | [ROADMAP.md](ROADMAP.md) | Forward-looking milestones and open contribution areas |
@@ -30,6 +30,6 @@ Project-level documents (at the repository root):
 |---|---|
 | [README.md](../README.md) | Build quick start, status-at-a-glance table, project overview |
 | [SECURITY.md](../SECURITY.md) | Security policy, current posture, hardening in place, reporting |
-| [TESTS.md](../TESTS.md) | Test coverage today (59 Rust unit tests, 33 CI jobs) and what is still needed |
+| [TESTS.md](../TESTS.md) | Test coverage today (78 Rust unit tests, 41 CI jobs) and what is still needed |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | How to set up and submit work |
 | [CHANGES.md](../CHANGES.md) | Changelog (`main` branch state) |

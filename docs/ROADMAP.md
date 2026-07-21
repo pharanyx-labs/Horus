@@ -19,7 +19,7 @@ open an issue or start a discussion first; coordination saves effort.
 
 The foundation is a working x86-64 capability microkernel that boots a ring-3
 `init` supervising a ring-3 shell, and passes a broad suite of headless QEMU
-self-tests in CI (28 `smoke-*` targets, all gated). Already in place:
+self-tests in CI (31 `smoke-*` targets, all gated). Already in place:
 
 - **Kernel core** — long-mode microkernel linked into the higher half at
   `0xFFFFFFFF80000000`, so no kernel address is a user address; capability-based
@@ -67,6 +67,14 @@ self-tests in CI (28 `smoke-*` targets, all gated). Already in place:
   C parser off its buffer (the C loader keeps only the privileged page mapping
   and copies). Parts of that core carry machine-checked proofs (Kani) and
   coverage-guided fuzzers. See **Phase 6** for the hardening program.
+- **Driver privilege separation** — the highest-risk, ring-3-reachable driver, the
+  **VGA/serial console**, now runs as a ring-3 server (`console_server`) reached
+  over IPC, holding only its own capabilities. It maps the framebuffer into its own
+  address space, runs port I/O through a per-task TSS I/O-permission bitmap, and
+  serves the shell's output and its line input (echo + masked password entry) — all
+  gated by a new `CAP_IO_DEVICE` capability. A fault in it is contained as an
+  ordinary ring-3 fault, so a console-driver bug can no longer reach kernel memory
+  or the capability system. See **Phase 6 → C** for the program.
 - **CI** — every `smoke-*` target is gated (the advisory jobs are the `security`
   SAST/SBOM scan, the `fuzz` FFI fuzzers, and the `kani` formal-verification run):
   `rust` (`cargo test` + `clippy -D warnings`), `kernel` (build + ISO),
@@ -76,9 +84,10 @@ self-tests in CI (28 `smoke-*` targets, all gated). Already in place:
   `smoke-e820`, `smoke-wx`, `smoke-wx-smp`, `smoke-aspace`, `smoke-captest`,
   `smoke-proc`, `smoke-cow`, `smoke-notify`, `smoke-smp`, `smoke-fs`,
   `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-persist`, `smoke-fs-wal`,
-  `smoke-fs-large`, `smoke-init-fs`, `smoke-newlib`), the shell-driven session
-  tests (`smoke-session`, `smoke-modules`, `smoke-coreutils-shell`), and a
-  `reproducible` build check. The whole filesystem suite (persistence,
+  `smoke-fs-large`, `smoke-init-fs`, `smoke-newlib`), the driver-isolation
+  self-tests (`smoke-mapphys`, `smoke-ioport`, `smoke-irq`, `smoke-console`,
+  `smoke-console-isolation`), the shell-driven session tests (`smoke-session`,
+  `smoke-modules`, `smoke-coreutils-shell`), and a `reproducible` build check. The whole filesystem suite (persistence,
   permissions, concurrency, journal crash-recovery, large files), the newlib
   libc port, async notifications, the CPU-protection / W^X / stack-guard sweeps,
   and loading programs from the filesystem via boot modules are all CI-enforced,
@@ -471,13 +480,15 @@ Cross-cutting work that should grow alongside every other phase.
 A dedicated program to shrink the two things that most limit Horus as a security
 kernel: the amount of **unverified, security-critical C**, and the **blast
 radius** of any single bug. `docs/LIMITATIONS.md` states the core problem plainly
-— the kernel is one flat trust domain, so "a bug in the terminal driver has the
-same blast radius as one in the capability system," and a full kernel compromise
+— the kernel is largely one flat trust domain, so a bug in an in-kernel driver has
+the same blast radius as one in the capability system, and a full kernel compromise
 also defeats the audit log and the user-DB tag. This phase attacks that on two
 axes: move attacker-facing parsing and secret-comparison logic into the
 memory-safe, machine-checkable Rust core (reducing bug *likelihood* where it
-matters most), and — the remaining big rock — introduce privilege separation
-inside the kernel (reducing bug *consequence*).
+matters most), and introduce privilege separation inside the kernel (reducing bug
+*consequence*). Both axes have now delivered: the whole ELF-loader parse runs in
+Rust, and the console — the highest-risk, ring-3-reachable driver — runs as a
+ring-3 server. Separating the remaining in-kernel drivers is the ongoing work.
 
 Each job below was landed as one focused, behavior-verified change (smoke tests
 and, where applicable, fuzzing and Kani proofs), on a commit-per-job cadence.
@@ -518,7 +529,7 @@ and, where applicable, fuzzing and Kani proofs), on a commit-per-job cadence.
   is no longer the compile-time default (falsification-tested: neutering the
   re-seed makes the test go red).
 
-### C. Chip at the architectural root — *the ELF loader done; driver isolation ahead*
+### C. Chip at the architectural root — *the ELF loader and the console driver both done*
 
 - **Authority-bypass integration scenarios** — the scripted session harness gained
   end-to-end negative tests proving the reference-monitor guarantee from ring 3.
@@ -538,16 +549,32 @@ and, where applicable, fuzzing and Kani proofs), on a commit-per-job cadence.
   that let a crafted header pass the bound and then read far out of the staging
   buffer, and a program-header-table read that could run past the buffer for a
   large `e_phoff`.
-- **Reduce driver blast radius (privilege separation)** — *the one open item*.
+- **Reduce driver blast radius (privilege separation) — *done for the console*.**
   Everything above reduces the *likelihood* of a memory-safety bug in the highest
-  risk C; it does not add privilege separation, so a bug still has kernel-wide
-  reach. The microkernel-native answer is the same move the filesystem already
-  made: run the highest-risk, ring-3-reachable drivers (the VGA/serial/keyboard
-  console first) as ring-3 server processes holding only their own capabilities,
-  reached over IPC — so a driver bug is no longer automatically a capability-system
-  compromise. The main constraint is keeping a minimal in-kernel serial path for
-  early-boot and panic output. This is a genuine architecture change and is scoped
-  as future work; it would begin with a design proposal, not a patch.
+  risk C; this adds privilege separation, so a bug's *consequence* shrinks too. The
+  microkernel-native move the filesystem already made has now been made for the
+  highest-risk, ring-3-reachable driver: the **VGA/serial console runs as a ring-3
+  server** (`console_server`) holding only its own capabilities, reached over IPC —
+  so a console-driver bug is no longer automatically a capability-system compromise.
+  It began with a design proposal (`docs/proposals/console-server.md`), then landed
+  as a commit-per-job program:
+    - three new device-delegation mechanisms, each `CAP_IO_DEVICE`-gated and
+      falsification-tested — map an allowlisted device frame into a user address
+      space (`SYS_MAP_PHYS`, `smoke-mapphys`), native ring-3 port I/O via a per-task
+      TSS I/O-permission bitmap (`SYS_IOPORT_GRANT`, `smoke-ioport`), and an
+      IRQ→notification bridge (`SYS_IRQ_REGISTER`, `smoke-irq`);
+    - `console_server` itself, which owns the framebuffer and serial/VGA ports and
+      serves the shell's **output** and its **input** — line editing, echo, and
+      masked password entry — over IPC (`smoke-console`, and the real-shell
+      `smoke-session` / `smoke-modules` with the in-kernel fallback removed to prove
+      input and output genuinely traverse ring 3);
+    - a blast-radius proof: a deliberate fault in the ring-3 console driver is
+      contained as a ring-3 fault and the kernel stays alive (`smoke-console-isolation`).
+
+  A minimal in-kernel serial writer is deliberately retained for early-boot and
+  panic output, and an in-kernel reader remains as a fallback. Remaining as future
+  work: move PS/2 keyboard input into the server too (the tests and headless
+  deployment drive serial), and separate the other in-kernel drivers (block/ATA).
 
 ### Deliberate non-goal: don't wire up empty validators
 
@@ -566,11 +593,12 @@ symbol is not the same as a missing defense.
 ## Contributing
 
 Phases 1 and 2 are complete, and the Phase 6 hardening program has moved the whole
-ELF-loader parse into memory-safe Rust. Phase 4 (userspace ecosystem) holds the
-most self-contained items and is the recommended starting point for new
-contributors. If you have kernel or systems experience and want something more
-involved, Phase 3 (SMP maturity) and the open Phase 6 item — **driver privilege
-separation** (moving a driver to a ring-3 server) — are the meatiest targets.
+ELF-loader parse into memory-safe Rust and the console driver into a ring-3 server.
+Phase 4 (userspace ecosystem) holds the most self-contained items and is the
+recommended starting point for new contributors. If you have kernel or systems
+experience and want something more involved, Phase 3 (SMP maturity) and the next
+steps in Phase 6 driver isolation — moving PS/2 keyboard input into the console
+server, then separating the block/ATA driver the same way — are the meatiest targets.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to set up your environment and
 submit work.

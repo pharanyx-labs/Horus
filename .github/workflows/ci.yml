@@ -427,6 +427,23 @@ jobs:
       - name: Boot NOTIFY_SELFTEST kernel and assert SYS_NOTIFY delivers a badge to a blocked SYS_WAIT_NOTIFY
         run: make smoke-notify
 
+  smoke-mapphys:
+    name: QEMU map-phys device-frame self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot MAPPHYS_SELFTEST kernel and assert a CAP_IO_DEVICE task maps the allowlisted VGA frame (SYS_MAP_PHYS) and an off-list frame is refused
+        run: make smoke-mapphys
+
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)
     runs-on: ubuntu-latest

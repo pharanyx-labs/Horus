@@ -1302,6 +1302,37 @@ void ioport_selftest(void) {
 }
 #endif /* IOPORT_SELFTEST */
 
+#ifdef IRQ_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- IRQ -> notification bridge self-test (IRQ_SELFTEST builds only) ---------
+ * Third driver-privilege-separation job (Phase 6): prove a ring-3 task endowed
+ * with CAP_IO_DEVICE can route a hardware IRQ to an async notification. The probe
+ * (userspace/irqtest.c) registers the timer IRQ, blocks in SYS_WAIT_NOTIFY, and a
+ * real timer interrupt wakes it with the registered badge (IRQ_SELFTEST: PASS).
+ * The timer self-triggers, so no key injection is needed. Entry into ring 3 does
+ * not return. See docs/proposals/console-server.md. */
+void irq_selftest(void) {
+    extern uint8_t embedded_irqtest_bin_start[], embedded_irqtest_bin_end[];
+
+    print("IRQ_SELFTEST: launch\n");
+
+    int a = fs_spawn_embedded(embedded_irqtest_bin_start,
+                              embedded_irqtest_bin_end, "irqtest");
+    if (a <= 0) { print("IRQ_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+
+    /* slot 3 = CAP_ENDPOINT (READ|WRITE) gates SYS_WAIT_NOTIFY; slot 10 =
+     * CAP_IO_DEVICE gates SYS_IRQ_REGISTER. Nothing else gets the device cap. */
+    cap_install_from_root(a, 3, 2, 0);
+    if (cap_install_from_root(a, 10, 10, 0) != 0) {
+        print("IRQ_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* IRQ_SELFTEST */
+
 #ifdef E820_SELFTEST
 /* ---- E820 physical-pool self-test (E820_SELFTEST builds only) --------------
  * Runs after paging_init has built the free list from the E820-sized pool. The
@@ -1322,8 +1353,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT only) ----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {

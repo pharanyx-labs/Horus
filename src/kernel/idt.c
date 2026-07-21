@@ -28,6 +28,46 @@ uint32_t kb_tail = 0;
 
 static uint8_t ps2_e0_prefix;
 
+/* IRQ -> userspace notification bridge (J4, driver privilege separation): a task
+ * holding CAP_IO_DEVICE can register (SYS_IRQ_REGISTER) to be sent an async
+ * notification each time a hardware IRQ fires, so a ring-3 driver (the console
+ * server) can service the device instead of the kernel. Only IRQ0 (timer, for a
+ * periodic serial re-poll wake) and IRQ1 (keyboard) are routable.
+ *
+ * sys_notify is safe to call from the ISR: syscalls and IRQs both run behind
+ * interrupt gates (IF=0), so no code on this CPU can be holding ipc_lock when the
+ * ISR takes it (no same-CPU deadlock); under SMP it is ordinary brief spinlock
+ * contention. See docs/proposals/console-server.md. */
+#define IRQ_NOTIFY_MAX 2      /* index 0 = IRQ0 (timer), 1 = IRQ1 (keyboard) */
+struct irq_notify_reg { int task; uint32_t slot; uint32_t badge; int active; };
+static struct irq_notify_reg irq_reg[IRQ_NOTIFY_MAX];
+extern int sys_notify(uint32_t notif_slot, uint32_t badge);
+
+/* Register `task` to receive notification (`slot`, `badge`) on `irq`. Called by
+ * the SYS_IRQ_REGISTER handler, which has already enforced CAP_IO_DEVICE. */
+int irq_notify_register(int irq, int task, uint32_t slot, uint32_t badge) {
+    if (irq < 0 || irq >= IRQ_NOTIFY_MAX) return -1;
+    irq_reg[irq].task   = task;
+    irq_reg[irq].slot   = slot;
+    irq_reg[irq].badge  = badge;
+    irq_reg[irq].active = 1;
+    return 0;
+}
+
+/* Drop any IRQ registrations owned by `task`. Called from task_teardown so a dead
+ * task's slot cannot keep receiving IRQ notifications (or leak onto a later task
+ * that reuses the notification slot). */
+void irq_notify_clear_task(int task) {
+    for (int i = 0; i < IRQ_NOTIFY_MAX; i++)
+        if (irq_reg[i].active && irq_reg[i].task == task)
+            irq_reg[i].active = 0;
+}
+
+static inline void irq_notify_fire(int irq) {
+    if (irq_reg[irq].active)
+        sys_notify(irq_reg[irq].slot, irq_reg[irq].badge);
+}
+
 static char ps2_translate(uint8_t sc) {
     if (ps2_e0_prefix) {
         ps2_e0_prefix = 0;
@@ -167,20 +207,34 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * on: the current frame (no switch) or the next task's saved frame. */
         outb(0x20, 0x20);
         timer_handler();
+        /* Wake a registered driver (e.g. the console server's serial re-poll)
+         * before the scheduler decides who runs next, so a newly-runnable waiter
+         * is eligible on this same tick. */
+        irq_notify_fire(0);
         return preempt_on_tick((uint64_t)frame, frame->cs);
     } else if (vector == 33) {
-        /* Only consume a scancode when the controller output buffer is full,
-         * so a spurious IRQ never re-reads a stale byte. */
-        if (inb(0x64) & 1) {
-            uint8_t scancode = inb(0x60);
-            char c = ps2_translate(scancode);
-            if (c) {
-                keyboard_buffer[kb_tail] = c;
-                kb_tail = (kb_tail + 1) % 256;
-                if (kb_tail == kb_head) kb_head = (kb_head + 1) % 256;
+        if (irq_reg[1].active) {
+            /* A userspace driver owns the keyboard: leave the scancode in the PS/2
+             * output buffer for it to inb(0x60) itself (the buffer staying full
+             * naturally gates the next IRQ until it reads), and just EOI + notify.
+             * The kernel does not translate or buffer it here. */
+            outb(0x20, 0x20);
+            irq_notify_fire(1);
+        } else {
+            /* No driver registered: the in-kernel console reader owns the key.
+             * Only consume a scancode when the controller output buffer is full,
+             * so a spurious IRQ never re-reads a stale byte. */
+            if (inb(0x64) & 1) {
+                uint8_t scancode = inb(0x60);
+                char c = ps2_translate(scancode);
+                if (c) {
+                    keyboard_buffer[kb_tail] = c;
+                    kb_tail = (kb_tail + 1) % 256;
+                    if (kb_tail == kb_head) kb_head = (kb_head + 1) % 256;
+                }
             }
+            outb(0x20, 0x20);
         }
-        outb(0x20, 0x20);
 #ifdef SMP
     } else if (vector == 0x40) {
         /* LAPIC timer: the application processors' preemption tick (the legacy

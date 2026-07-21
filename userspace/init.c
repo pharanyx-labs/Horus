@@ -39,6 +39,7 @@ static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 #define CAP_SLOT_STORAGE    9    /* CAP_ENCRYPTED_STORAGE (also the object-store cap)*/
 #define INIT_EP_GATE_SLOT   10   /* CAP_ENDPOINT, object 0         (coarse IPC gate) */
 #define INIT_EP_LISTEN_SLOT 11   /* CAP_ENDPOINT, object FS_EP_REQ (server listen)   */
+#define CAP_SLOT_IO_DEVICE  12   /* CAP_IO_DEVICE (console_server hardware authority) */
 
 /* Launch the userspace fs_server and provision it entirely by delegation: init
  * grants the server all four capabilities it needs — the coarse IPC gate (slot
@@ -55,6 +56,21 @@ static int launch_fs_server(void) {
     if (sys_cap_grant(srv, CAP_SLOT_USER,       6) != 0) return -4;  /* SYS_REGISTER_FS gate */
     if (sys_cap_grant(srv, CAP_SLOT_STORAGE,    7) != 0) return -5;  /* object-store gate   */
     return srv;
+}
+
+/* Launch the userspace console_server and delegate it exactly what it needs: the
+ * coarse IPC gate (its slot 3, so it can recv requests / reply / notify) and the
+ * CAP_IO_DEVICE hardware cap (its slot 10, gating SYS_MAP_PHYS / SYS_IOPORT_GRANT
+ * so it can own the VGA framebuffer and the serial/VGA ports). It serves on the
+ * well-known endpoint CON_EP_REQ, which a client reaches with its own default
+ * endpoint cap — no per-client console grant is needed. Returns the server's task
+ * id, or a negative value on failure. */
+static int launch_console_server(void) {
+    int csrv = sys_spawn_named("console_server");
+    if (csrv <= 0) return -1;
+    if (sys_cap_grant(csrv, INIT_EP_GATE_SLOT,  3)  != 0) return -2;  /* IPC gate -> slot 3   */
+    if (sys_cap_grant(csrv, CAP_SLOT_IO_DEVICE, 10) != 0) return -3;  /* CAP_IO_DEVICE -> 10  */
+    return csrv;
 }
 
 /* Spawn the shell and delegate it the console + storage capabilities. Returns
@@ -109,6 +125,15 @@ void _start(void) {
         sys_wait_notify(3, &ready_badge);
         report("init: fs_server ready\n");
     }
+
+    /* Bring up the ring-3 console server before the shell, so the shell's output
+     * goes through it (the shell falls back to the in-kernel console if the server
+     * is somehow unreachable, so a console_server failure can never silence login).
+     * It owns the console hardware via the delegated CAP_IO_DEVICE. */
+    if (launch_console_server() < 0)
+        report("init: WARNING console_server launch failed (shell output falls back to kernel console)\n");
+    else
+        report("init: console_server launched\n");
 
     report("init: starting, launching shell\n");
 

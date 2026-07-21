@@ -69,7 +69,6 @@ static void ser_puts(const char *s) { while (*s) con_putc(*s++); }
 /* ---- helpers --------------------------------------------------------------- */
 static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
 static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
-static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { } }
 
 void _start(void) {
     /* Take native port I/O first — everything below (serial, VGA registers) needs
@@ -97,7 +96,11 @@ void _start(void) {
     struct con_response rp;
     for (;;) {
         int r = sys_ipc_recv(CON_EP_REQ, (char *)&rq, sizeof(rq));
-        if (r < 0) { spin_delay(); continue; }        /* no request yet */
+        if (r < 0) { sys_yield(); continue; }          /* no request yet: yield the CPU
+                                                        * (don't busy-spin — a second
+                                                        * busy-spin server alongside
+                                                        * fs_server starves the shell
+                                                        * under emulation) */
 
         umemset(&rp, 0, sizeof(rp));
         rp.magic = CON_PROTO_MAGIC;
@@ -112,6 +115,6 @@ void _start(void) {
         }
         /* Reply to THIS request's sender by kernel-recorded identity; retry on a
          * transient "client still blocking" race, before the next recv. */
-        while (sys_ipc_reply_to(CON_EP_REQ, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
+        while (sys_ipc_reply_to(CON_EP_REQ, (const char *)&rp, sizeof(rp)) < 0) sys_yield();
     }
 }

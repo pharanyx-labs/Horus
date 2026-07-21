@@ -509,6 +509,17 @@ embedded_fsserver_bin_start:
 embedded_fsserver_bin_end:
 #endif
 
+/* console_server is always embedded too: init launches it at boot so the shell's
+ * output goes through the ring-3 console (Phase 6, driver privilege separation).
+ * The gated CONSOLE_SELFTEST spawns its own copy of this same image plus a test
+ * client; see the block below. */
+.align 16
+.global embedded_console_server_bin_start
+embedded_console_server_bin_start:
+.incbin "userspace/console_server.bin"
+.global embedded_console_server_bin_end
+embedded_console_server_bin_end:
+
 #if defined(ELF_SELFTEST)
 /* Real multi-segment ELF used by the in-kernel ELF-loader self-test
  * (elf_loader_selftest). ELF_SELFTEST build only. */
@@ -697,15 +708,8 @@ embedded_irqtest_bin_end:
 #endif
 
 #ifdef CONSOLE_SELFTEST
-/* PIE console_server + client: the server owns the console hardware (J2/J3) and
- * serves the client's write over IPC, emitting it to serial with its own hands. */
-.align 16
-.global embedded_console_server_bin_start
-embedded_console_server_bin_start:
-.incbin "userspace/console_server.bin"
-.global embedded_console_server_bin_end
-embedded_console_server_bin_end:
-
+/* PIE consoletest client: drives the (always-embedded) console_server over IPC,
+ * asking it to write a line the server emits to serial with its own hands. */
 .align 16
 .global embedded_consoletest_bin_start
 embedded_consoletest_bin_start:

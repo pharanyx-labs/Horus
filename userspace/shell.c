@@ -1,5 +1,6 @@
 #include "syscall.h"
 #include "fs_proto.h"
+#include "console_proto.h"
 #include "malloc.h"
 
 /* Wipe a password buffer so it does not outlive its use on the stack. Volatile,
@@ -12,9 +13,44 @@ static void scrub(char *buf, size_t n) {
     while (n--) *p++ = 0;
 }
 
+/* Send `len` bytes to the ring-3 console_server (CON_OP_WRITE, well-known endpoint
+ * CON_EP_REQ) using the shell's own default endpoint cap. Returns 0 if the server
+ * accepted the whole write, -1 to fall back to the in-kernel console — so console
+ * output is never lost even if the server is not up yet, unreachable, or errors.
+ * Bounded retries keep a transient "mailbox full / not yet serving" condition from
+ * hanging the shell. Part of moving the console into ring 3 (Phase 6); see
+ * docs/proposals/console-server.md. */
+static struct con_request  con_rq;   /* static: keep these off the shell's stack */
+static struct con_response con_rp;
+static int con_write_all(const char *s, size_t len) {
+    size_t off = 0;
+    do {
+        size_t n = len - off;
+        if (n > CON_IO_MAX) n = CON_IO_MAX;
+        con_rq.magic = CON_PROTO_MAGIC;
+        con_rq.op    = CON_OP_WRITE;
+        con_rq.len   = (uint32_t)n;
+        for (size_t i = 0; i < n; i++) con_rq.data[i] = (uint8_t)s[off + i];
+
+        int rc = -1;
+        for (int tries = 0; tries < 8; tries++) {
+            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP,
+                              &con_rq, sizeof(con_rq), &con_rp);
+            if (rc >= 0) break;
+            sys_yield();   /* mailbox full: let console_server drain it */
+        }
+        if (rc < 0 || con_rp.magic != CON_PROTO_MAGIC || con_rp.rc != (int)n)
+            return -1;   /* fall back to the in-kernel console */
+        off += n;
+    } while (off < len);
+    return 0;
+}
+
 static void print(const char *s) {
     size_t l = 0; while (s[l]) l++;
-    sys_write(1, s, l);
+    if (l == 0) return;
+    if (con_write_all(s, l) != 0)
+        sys_write(1, s, l);   /* fallback: in-kernel console (fd 1) */
 }
 
 static void println(const char *s) {

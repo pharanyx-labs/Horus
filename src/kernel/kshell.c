@@ -399,6 +399,10 @@ void spawn_initial_userspace_init(void) {
         cap_install_from_root(pid, 6, 6, 0);    /* root[6] = CAP_USER (ALL)                 */
         cap_install_from_root(pid, 10, 2, 0);   /* root[2] = CAP_ENDPOINT, object 0 (gate)  */
         cap_install_from_root(pid, 11, 2, 4);   /* root[2] = CAP_ENDPOINT, object FS_EP_REQ */
+        /* CAP_IO_DEVICE (root[10]): init delegates this to the console_server it
+         * launches (userspace/init.c), so that server can own the console hardware
+         * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy. */
+        cap_install_from_root(pid, 12, 10, 0);  /* root[10] = CAP_IO_DEVICE                 */
 
         /* do_spawn already fabricated a full trap frame; enter via the same
          * pop+iretq path every later resume uses. */

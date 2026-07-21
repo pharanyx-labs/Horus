@@ -1375,6 +1375,36 @@ void console_selftest(void) {
 }
 #endif /* CONSOLE_SELFTEST */
 
+#ifdef CONSOLE_ISOLATION_TEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Console blast-radius self-test (CONSOLE_ISOLATION_TEST builds only) ------
+ * The Phase 6 close-out: prove the security win of moving the console into ring 3.
+ * console_server (built with the same flag) takes ownership of the hardware, then
+ * deliberately faults. Because it now runs in ring 3, the fault is delivered to
+ * its own handler and the kernel keeps running -- it cannot reach kernel memory or
+ * the capability system, which is exactly the blast-radius reduction the program
+ * set out to achieve. The handler prints CONSOLE_ISOLATION: PASS through the
+ * (still-alive) kernel console. Entry into ring 3 does not return. See
+ * docs/proposals/console-server.md. */
+void console_isolation_selftest(void) {
+    extern uint8_t embedded_console_server_bin_start[], embedded_console_server_bin_end[];
+
+    print("CONSOLE_ISOLATION: begin\n");
+
+    int srv = fs_spawn_embedded(embedded_console_server_bin_start,
+                                embedded_console_server_bin_end, "console_server");
+    if (srv <= 0) { print("CONSOLE_ISOLATION: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[srv].uid = 0;
+    cap_install_from_root(srv, 3, 2, 0);
+    if (cap_install_from_root(srv, 10, 10, 0) != 0) {
+        print("CONSOLE_ISOLATION: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+
+    sched_enable_preemption();
+    sched_enter_user(srv);
+}
+#endif /* CONSOLE_ISOLATION_TEST */
+
 #ifdef E820_SELFTEST
 /* ---- E820 physical-pool self-test (E820_SELFTEST builds only) --------------
  * Runs after paging_init has built the free list from the E820-sized pool. The
@@ -1395,7 +1425,7 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST)
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

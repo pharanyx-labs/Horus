@@ -111,6 +111,28 @@ static int con_getline(uint8_t *out, unsigned max, int mask) {
 static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
 static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
 
+#ifdef CONSOLE_ISOLATION_TEST
+/* Blast-radius proof (Phase 6 close-out). The console driver used to run in ring 0,
+ * where a bug had the same reach as one in the capability system. Now that it is a
+ * ring-3 server, a fault in it is just a ring-3 fault: the kernel delivers it to
+ * this handler (or, with none, tears down only this task) and keeps running -- it
+ * cannot reach kernel memory or the capability system. Deliberately fault to show
+ * that concretely. The PASS marker is written through the kernel console because
+ * the whole point is that the kernel is still alive to print it. */
+static void con_isolation_handler(void) {
+    kput("CONSOLE_ISOLATION: PASS (console driver fault contained in ring 3)\n");
+    sys_exit();
+}
+static void con_isolation_fault(void) {
+    if (sys_signal((uintptr_t)&con_isolation_handler) != 0) {
+        kput("CONSOLE_ISOLATION: FAIL register\n"); sys_exit();
+    }
+    kput("CONSOLE_ISOLATION: console_server faulting on purpose...\n");
+    *(volatile int *)0 = 0;   /* NULL write -> #PF -> delivered to the handler at ring 3 */
+    kput("CONSOLE_ISOLATION: FAIL not-faulted\n"); sys_exit();
+}
+#endif
+
 void _start(void) {
     /* Take native port I/O first — everything below (serial, VGA registers) needs
      * it. If it is refused we have no console of our own; report via the kernel
@@ -132,6 +154,10 @@ void _start(void) {
 
     /* From here on the console output is ours, produced entirely in ring 3. */
     ser_puts("[console_server] ready (ring-3; owns serial + VGA framebuffer)\n");
+
+#ifdef CONSOLE_ISOLATION_TEST
+    con_isolation_fault();   /* prove a console-driver fault stays contained in ring 3 */
+#endif
 
     struct con_request  rq;
     struct con_response rp;

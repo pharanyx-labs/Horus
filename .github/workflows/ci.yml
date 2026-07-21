@@ -495,6 +495,23 @@ jobs:
       - name: Boot CONSOLE_SELFTEST kernel and assert a ring-3 console_server owning the hardware serves a client's write over IPC and drives the serial port itself
         run: make smoke-console
 
+  smoke-console-isolation:
+    name: QEMU console blast-radius self-test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot CONSOLE_ISOLATION_TEST kernel and assert a deliberate fault in the ring-3 console_server is contained (the kernel stays alive)
+        run: make smoke-console-isolation
+
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)
     runs-on: ubuntu-latest

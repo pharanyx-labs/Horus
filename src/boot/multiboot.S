@@ -696,6 +696,24 @@ embedded_irqtest_bin_start:
 embedded_irqtest_bin_end:
 #endif
 
+#ifdef CONSOLE_SELFTEST
+/* PIE console_server + client: the server owns the console hardware (J2/J3) and
+ * serves the client's write over IPC, emitting it to serial with its own hands. */
+.align 16
+.global embedded_console_server_bin_start
+embedded_console_server_bin_start:
+.incbin "userspace/console_server.bin"
+.global embedded_console_server_bin_end
+embedded_console_server_bin_end:
+
+.align 16
+.global embedded_consoletest_bin_start
+embedded_consoletest_bin_start:
+.incbin "userspace/consoletest.bin"
+.global embedded_consoletest_bin_end
+embedded_consoletest_bin_end:
+#endif
+
 #ifdef COW_SELFTEST
 /* PIE cowtest binary: reads two fresh heap pages (shared zero page) then writes
  * one, proving copy-on-write hands out a private page without disturbing the

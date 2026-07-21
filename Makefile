@@ -365,6 +365,19 @@ ASFLAGS += -DIRQ_SELFTEST
 IRQ_SELFTEST_DEP = userspace/irqtest.bin
 endif
 
+# CONSOLE_SELFTEST=1 embeds the userspace console_server + a client and, at boot,
+# stands up the server (which owns the console hardware via SYS_MAP_PHYS +
+# SYS_IOPORT_GRANT) and has the client drive it over IPC. The server emits the
+# client's line to serial with its own hands, so CONSOLE_SELFTEST: PASS on serial
+# proves the whole ring-3 console output path (client -> IPC -> server ->
+# hardware). First J5 cutover milestone (Phase 6); gated off the ship kernel.
+CONSOLE_SELFTEST ?= 0
+ifeq ($(CONSOLE_SELFTEST),1)
+CFLAGS  += -DCONSOLE_SELFTEST
+ASFLAGS += -DCONSOLE_SELFTEST
+CONSOLE_SELFTEST_DEP = userspace/console_server.bin userspace/consoletest.bin
+endif
+
 # COW_SELFTEST=1 embeds cowtest and, at boot, reads two fresh heap pages (each
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
@@ -489,7 +502,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -758,7 +771,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/console_server.bin userspace/consoletest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -1162,6 +1175,19 @@ smoke-irq:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='IRQ_SELFTEST: PASS' \
 		FAIL_MARKER='IRQ_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated ring-3 console-server self-test, boot headless, and require
+# the client's line to appear on serial -- runtime proof that a ring-3
+# console_server, owning the console hardware (SYS_MAP_PHYS + SYS_IOPORT_GRANT),
+# served a client's write over IPC and drove the serial port itself. First J5
+# cutover milestone; see docs/proposals/console-server.md.
+.PHONY: smoke-console
+smoke-console:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
+		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated copy-on-write self-test, boot headless, and require that a
 # write to a read-only shared-zero page breaks COW into a private page without

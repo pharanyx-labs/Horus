@@ -1218,10 +1218,11 @@ void proc_selftest(void);
 #ifdef NOTIFY_SELFTEST
 void notify_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST)
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST)
 void mapphys_selftest(void);
 void ioport_selftest(void);
 void irq_selftest(void);
+void console_selftest(void);
 /* The map-phys harness endows its ring-3 probe with a CAP_IO_DEVICE cap by
  * copying it out of the root cnode, exactly as the FS/newlib harnesses do for
  * their server caps. */

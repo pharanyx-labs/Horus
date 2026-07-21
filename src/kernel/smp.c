@@ -291,6 +291,12 @@ void smp_bringup(void) {
      * the registered badge (IRQ_SELFTEST: PASS). Third driver-privilege-separation
      * job; see docs/proposals/console-server.md. */
     irq_selftest();
+#elif defined(CONSOLE_SELFTEST)
+    /* Gated: stand up the ring-3 console_server (owns the console hardware via the
+     * J2/J3 mechanisms) and a client that drives it over IPC; the server emits the
+     * client's line to serial natively (CONSOLE_SELFTEST: PASS). First J5 cutover
+     * milestone; see docs/proposals/console-server.md. */
+    console_selftest();
 #elif defined(COW_SELFTEST)
     /* Gated: read two fresh heap pages (shared zero page) then write one, and
      * prove the write broke COW into a private page without disturbing the

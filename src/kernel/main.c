@@ -251,6 +251,8 @@ void kernel_main(uint32_t mb_info) {
     e820_selftest();
 #endif
     fpu_init_template();   /* the x87/SSE image every new task starts from */
+    tss_io_bitmap_init();  /* prefill the console I/O-port allowlist (stays inactive
+                            * until a task with a port grant is switched in) */
     cap_init();
     cpu_detect_features();
     cpu_enable_protections();

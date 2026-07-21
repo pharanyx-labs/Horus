@@ -339,6 +339,19 @@ ASFLAGS += -DMAPPHYS_SELFTEST
 MAPPHYS_SELFTEST_DEP = userspace/mapphystest.bin
 endif
 
+# IOPORT_SELFTEST=1 embeds ioporttest and, at boot, spawns it endowed with a
+# CAP_IO_DEVICE cap; the probe requests native port I/O (SYS_IOPORT_GRANT / TSS
+# I/O-permission bitmap), then confirms an allowlisted console port (serial line
+# status) can be read while a non-allowlisted port (CMOS) still #GPs (prints
+# IOPORT_SELFTEST: PASS to serial). Second driver-privilege-separation job
+# (Phase 6); gated off the ship kernel.
+IOPORT_SELFTEST ?= 0
+ifeq ($(IOPORT_SELFTEST),1)
+CFLAGS  += -DIOPORT_SELFTEST
+ASFLAGS += -DIOPORT_SELFTEST
+IOPORT_SELFTEST_DEP = userspace/ioporttest.bin
+endif
+
 # COW_SELFTEST=1 embeds cowtest and, at boot, reads two fresh heap pages (each
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
@@ -463,7 +476,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -732,7 +745,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -1110,6 +1123,19 @@ smoke-mapphys:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='MAPPHYS_SELFTEST: PASS' \
 		FAIL_MARKER='MAPPHYS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Build with the gated port-I/O self-test, boot headless, and require the ring-3
+# probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task granted
+# native port I/O (TSS I/O bitmap) can read an allowlisted console port while a
+# non-allowlisted port still #GPs. Second driver-privilege-separation job; see
+# docs/proposals/console-server.md.
+.PHONY: smoke-ioport
+smoke-ioport:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IOPORT_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='IOPORT_SELFTEST: PASS' \
+		FAIL_MARKER='IOPORT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated copy-on-write self-test, boot headless, and require that a
 # write to a read-only shared-zero page breaks COW into a private page without

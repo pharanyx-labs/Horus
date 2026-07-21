@@ -196,7 +196,7 @@ setup_tss64:
     /* Encode the 16-byte TSS descriptor at gdt64 offset 56 (selector 0x38). */
     lea gdt64_start(%rip), %rdi
     lea tss64(%rip), %rax
-    movw $103, 56(%rdi)        /* limit[15:0] = sizeof(TSS)-1 */
+    movw $(tss64_end - tss64 - 1), 56(%rdi)  /* limit[15:0] = full TSS+bitmap size - 1 */
     movw %ax, 58(%rdi)         /* base[15:0] */
     movb $0x89, 61(%rdi)       /* access: present, type=9 (avail 64-bit TSS) */
     movb $0x00, 62(%rdi)       /* limit[19:16]=0, flags=0 */
@@ -231,7 +231,7 @@ setup_full_early_64bit_env:
     movb %ah, 29(%rdi)
     shrq $32, %rax
     movl %eax, 32(%rdi)
-    movw $103, 26(%rdi)
+    movw $(tss64_end - tss64 - 1), 26(%rdi)  /* limit[15:0] = full TSS+bitmap size - 1 */
     movb $0x89, 30(%rdi)
     movb $0x00, 31(%rdi)
 
@@ -332,13 +332,19 @@ gdt64_ptr:
 .global tss64
 .align 16
 tss64:
-    .long 0, 0
-    .quad 0
-    .quad 0, 0, 0
-    .quad 0, 0, 0, 0, 0, 0, 0
-    .quad 0
-    .word 0
-    .word 0
+    .space 102            /* 64-bit TSS fields: reserved, RSP0..2, IST1..7, reserved.
+                           * RSP0 (@4) and IST tops (@36/44/52) are filled by
+                           * setup_tss64 / set_tss_kernel_stack. */
+    .word 0xFFFF          /* iomap_base (@102): default DISABLED (>= segment limit),
+                           * so a ring-3 in/out #GPs. tss_set_io_allowed() points it
+                           * at the bitmap (offset 104) only while a granted task runs. */
+.global tss64_io_bitmap
+tss64_io_bitmap:
+    .space 8193           /* I/O permission bitmap (8192 bytes, one bit per port:
+                           * 0=allow, 1=deny) + the mandatory terminating 0xFF byte.
+                           * Filled by tss_io_bitmap_init(): deny all, then clear the
+                           * console port allowlist. */
+tss64_end:
 
 /* Each IST fault stack (IST1: #DF/#GP/#PF, IST2: NMI, IST3: #SS) sits above a
  * page-aligned guard page that kern_fixed_stack_guards_init() unmaps at boot, so
@@ -666,6 +672,17 @@ embedded_mapphystest_bin_start:
 .incbin "userspace/mapphystest.bin"
 .global embedded_mapphystest_bin_end
 embedded_mapphystest_bin_end:
+#endif
+
+#ifdef IOPORT_SELFTEST
+/* PIE ioporttest binary: endowed with CAP_IO_DEVICE, it is granted native port
+ * I/O via SYS_IOPORT_GRANT and checks an allowed port succeeds / a denied one #GPs. */
+.align 16
+.global embedded_ioporttest_bin_start
+embedded_ioporttest_bin_start:
+.incbin "userspace/ioporttest.bin"
+.global embedded_ioporttest_bin_end
+embedded_ioporttest_bin_end:
 #endif
 
 #ifdef COW_SELFTEST

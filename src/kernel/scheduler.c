@@ -842,8 +842,13 @@ void set_current_task(int v) {
     int c = this_cpu();
     if (c < 0 || c >= MAX_CPUS) c = 0;
     percpu_current_task[c] = v;
-    
+
     if (c == 0) current_task = v;
+
+    /* Single switch chokepoint: point this CPU's TSS I/O bitmap at the active
+     * bitmap only for a task holding a port-I/O grant; every other task gets
+     * iomap_base past the limit, so a ring-3 in/out #GPs. */
+    tss_set_io_allowed(v > 0 && v < MAX_TASKS && tasks[v].io_allowed);
 }
 
 void scheduler_lock_acquire(void) { spin_lock(&scheduler_lock); }

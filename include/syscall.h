@@ -133,6 +133,7 @@ struct audit_event {
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> total module count; fills *info for a valid index (store owner only) */
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module's payload (store owner only) */
 #define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an allowlisted device frame into the caller's address space (CAP_IO_DEVICE + WRITE; driver server only) */
+#define SYS_IOPORT_GRANT       80   /* () -> 0; grant native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE; driver server only) */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -674,6 +675,14 @@ static inline int sys_fs_set_meta(uint32_t ino, uint32_t mode, uint32_t uid, uin
  * only. Returns 0 on success or a negative SYS_ERR_*. */
 static inline int sys_map_phys(uint64_t paddr, uint64_t vaddr, uint32_t len, uint32_t flags) {
     return (int)syscall6(SYS_MAP_PHYS, paddr, vaddr, len, flags, 0, 0);
+}
+
+/* Grant the calling task native ring-3 in/out on the console ports (serial, PS/2
+ * keyboard, VGA registers) via the TSS I/O-permission bitmap. Requires a
+ * CAP_IO_DEVICE cap (WRITE) in the gating slot — a console/driver server only.
+ * Takes effect immediately for the caller. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_ioport_grant(void) {
+    return syscall(SYS_IOPORT_GRANT, 0, 0, 0);
 }
 
 /* Audit-log integrity digest. Writes 40 bytes to `out` (8-byte little-endian

@@ -26,6 +26,38 @@ extern uint8_t tss64[];
 #define TSS_IST2_OFF 44
 #define TSS_IST3_OFF 52
 
+/* I/O permission bitmap, appended to the TSS so a task holding a port-I/O grant
+ * (the console-driver server) can run in/out natively at ring 3 while every other
+ * task's in/out #GPs. iomap_base (@102) points at the bitmap only while a granted
+ * task runs; otherwise it is set past the segment limit (disabled), so all ring-3
+ * I/O faults. The bitmap is one bit per port (0=allow, 1=deny) plus a mandatory
+ * terminating 0xFF byte. Layout mirrors the boot tss64 in multiboot.S. */
+#define TSS_IOMAP_OFF        102
+#define TSS_IO_BITMAP_OFF    104
+#define TSS_IO_BITMAP_BYTES  8192
+#define TSS_FULL_SIZE        (TSS_IO_BITMAP_OFF + TSS_IO_BITMAP_BYTES + 1)  /* + terminator */
+#define TSS_IOMAP_DISABLED   0xFFFFu   /* iomap_base >= limit => no bitmap => deny all */
+
+/* Fill a TSS's I/O bitmap: deny every port, then clear (allow) exactly the
+ * console's ports. Kept deliberately narrow -- a granted driver can touch the
+ * serial UARTs, the PS/2 keyboard, and the VGA register file, nothing else (not
+ * the PIC, not the ATA/CMOS/PCI ports). */
+static void tss_io_bitmap_fill(uint8_t *tss) {
+    uint8_t *bm = tss + TSS_IO_BITMAP_OFF;
+    for (int i = 0; i < TSS_IO_BITMAP_BYTES; i++) bm[i] = 0xFF;   /* deny all */
+    bm[TSS_IO_BITMAP_BYTES] = 0xFF;                               /* terminating byte */
+    static const struct { uint16_t base, count; } allow[] = {
+        { 0x60,  1 }, { 0x64, 1 },     /* PS/2 keyboard data / status-command */
+        { 0x2F8, 8 }, { 0x3F8, 8 },    /* serial COM2 / COM1 register files */
+        { 0x3B0, 0x30 },               /* VGA CRTC/sequencer/graphics/attribute (0x3B0-0x3DF) */
+    };
+    for (unsigned r = 0; r < sizeof(allow) / sizeof(allow[0]); r++)
+        for (uint16_t p = 0; p < allow[r].count; p++) {
+            uint16_t port = (uint16_t)(allow[r].base + p);
+            bm[port >> 3] &= (uint8_t)~(1u << (port & 7));        /* 0 = allow */
+        }
+}
+
 #ifdef SMP
 extern uint8_t gdt64_start[];
 extern int this_cpu(void);
@@ -46,7 +78,7 @@ extern volatile int smp_active;   /* scheduler.c: 1 once the LAPIC is up */
  * the stack page. */
 #define AP_IST_COUNT       3            /* IST1/IST2/IST3 */
 #define AP_IST_BLOCK_PAGES 2            /* one guard page + one stack page */
-static uint8_t ap_tss[MAX_CPUS][TSS64_SIZE] __attribute__((aligned(16)));
+static uint8_t ap_tss[MAX_CPUS][TSS_FULL_SIZE] __attribute__((aligned(16)));
 static uint8_t ap_ist[MAX_CPUS][AP_IST_COUNT][AP_IST_BLOCK_PAGES * 4096]
     __attribute__((aligned(4096)));
 
@@ -90,9 +122,13 @@ void setup_ap_tss(int cpu, uintptr_t rsp0) {
     *(uint64_t *)(tss + TSS_IST1_OFF) = (uint64_t)ap_ist_top(cpu, 0);
     *(uint64_t *)(tss + TSS_IST2_OFF) = (uint64_t)ap_ist_top(cpu, 1);
     *(uint64_t *)(tss + TSS_IST3_OFF) = (uint64_t)ap_ist_top(cpu, 2);
+    /* Disabled by default; the console allowlist is prefilled so the per-switch
+     * iomap_base flip (tss_set_io_allowed) can activate it on this CPU too. */
+    *(uint16_t *)(tss + TSS_IOMAP_OFF) = TSS_IOMAP_DISABLED;
+    tss_io_bitmap_fill(tss);
 
     uint16_t sel = ap_tss_selector(cpu);
-    encode_tss_desc(gdt64_start + sel, (uint64_t)(uintptr_t)tss, TSS64_SIZE - 1);
+    encode_tss_desc(gdt64_start + sel, (uint64_t)(uintptr_t)tss, TSS_FULL_SIZE - 1);
     __asm__ volatile ("ltr %0" :: "r"(sel) : "memory");
 }
 
@@ -139,4 +175,33 @@ void set_tss_kernel_stack(uintptr_t rsp0) {
     }
 #endif
     *(uint64_t *)(tss64 + TSS_RSP0_OFF) = (uint64_t)rsp0;   /* tss64 + 4 == RSP0 */
+}
+
+/* Prefill the BSP TSS's I/O bitmap with the console allowlist (deny all, allow the
+ * console ports). Called once at boot, before any ring-3 task runs. The bitmap
+ * stays inactive (iomap_base disabled) until a task with a port-I/O grant is
+ * switched in. The AP TSSes are filled the same way in setup_ap_tss. */
+void tss_io_bitmap_init(void) {
+    tss_io_bitmap_fill(tss64);
+    *(uint16_t *)(tss64 + TSS_IOMAP_OFF) = TSS_IOMAP_DISABLED;
+}
+
+/* Point the *running CPU's* TSS iomap_base at the bitmap (in/out consult it) when
+ * `allowed`, or past the segment limit (all ring-3 in/out #GP) otherwise. Called
+ * from the context-switch chokepoint (set_current_task) with the incoming task's
+ * grant, and directly by SYS_IOPORT_GRANT so the grant takes effect immediately
+ * for the calling task without waiting for a reschedule. Routed per-CPU exactly
+ * like set_tss_kernel_stack. */
+void tss_set_io_allowed(int allowed) {
+    uint16_t base = allowed ? (uint16_t)TSS_IO_BITMAP_OFF : (uint16_t)TSS_IOMAP_DISABLED;
+#ifdef SMP
+    if (smp_active) {
+        int c = this_cpu();
+        if (c > 0 && c < MAX_CPUS) {
+            *(uint16_t *)(ap_tss[c] + TSS_IOMAP_OFF) = base;
+            return;
+        }
+    }
+#endif
+    *(uint16_t *)(tss64 + TSS_IOMAP_OFF) = base;
 }

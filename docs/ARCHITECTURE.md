@@ -21,7 +21,7 @@ Horus targets **x86-64** exclusively.
 - The kernel runs in 64-bit long mode: PML4 paging, 48-bit virtual addresses, `mcmodel=kernel`.
 - Bootloader: **Multiboot2** compatible (GRUB2).
 - CPU features detected at runtime: SMEP, SMAP, AES-NI, SSE2/SSE4.2, TSC, RDRAND.
-- Multi-core: application processors are brought up via the LAPIC (INIT-SIPI-SIPI), each with its own LAPIC-timer preemption tick, behind the `SMP=1` build gate. The single-core PIT path is the default.
+- Multi-core: application processors are brought up via the LAPIC (INIT-SIPI-SIPI), each with its own LAPIC-timer preemption tick. SMP is **default-on** (the CPU count comes from the ACPI MADT); `SMP=0` compiles the whole subsystem out and boots single-core on the PIT path.
 
 Ring-3 userspace is 64-bit too: tasks run under the GDT's 64-bit user code segment (`cs = 0x23`, L=1/D=0/DPL=3) as static-PIE `EM_X86_64` images, relocated at load. Userspace was `EM_386` in compatibility mode until the 64-bit ABI landed.
 
@@ -40,7 +40,7 @@ The only 32-bit code left is the boot on-ramp, and it cannot go: an x86 CPU star
 | Low identity map | `0x0000000000000000` | Physical `[0, 1 GiB)` as 2 MiB supervisor pages. Retained: see below |
 | LAPIC | `0x00000000FEE00000` | Identity-mapped MMIO, replicated into every address space |
 | Boot stage (`.boot`) | `0x0000000000100000` | VA == PA. The 32-bit entry code and its GDT/stack; dead after long mode |
-| User text | `0x0000000000400000` | 4 MB initial window (PIE base randomised across 480 pages ≈ 8.91 bits) |
+| User text (PIE base) | `0x0000000400000000` + random | PIE image relocated to `USER_IMAGE_ASLR_BASE` (16 GiB) + a random page offset in a 4 TiB window (**30 bits**). `0x400000` (4 MiB) is only the flat/non-PIE fallback base and the loader floor |
 | User heap | `0x0000000001000000` | Grows upward via `sbrk`/`brk` |
 
 **The kernel runs at `-2 GiB`** (`KERNEL_VMA = 0xFFFFFFFF80000000`), so no kernel address is
@@ -136,7 +136,7 @@ Two subtleties bind this together. The pager derives the old frame with `PTE_ADD
 
 **ASLR**: per-spawn stack top, heap gap, **and image load base** are randomised from the CSPRNG. Userspace is built static-PIE (`ET_DYN`); `do_spawn` picks a random page-aligned base and `try_elf_load` relocates there, failing closed on any relocation type it does not implement. Both forms are handled: `R_386_RELATIVE` (i386 REL — 8-byte entries, read-modify-write, type in `r_info & 0xFF`) and `R_X86_64_RELATIVE` (RELA — 24-byte entries, `*(u64*)(r_offset+slide) = slide + r_addend`, type in `r_info & 0xFFFFFFFF`). The two agree for ld-linked images because GNU ld pre-applies the addend into the field; they diverge only for a linker that does not (lld's `--no-apply-dynamic-relocs`).
 
-Image-base entropy is **480 pages ≈ 8.91 bits — the structural ceiling**, not a policy choice. The only bound left is that the premap window (`base + USER_ASPACE_PREMAP_PAGES`) must stay inside a single 2 MiB PD entry, which is exactly what `ASLR_MAX_LOAD_RANDOM_PAGES` (`512 - 32`) encodes. The old, lower figure came from clamping against kernel low memory; the higher-half move removed that constraint entirely.
+Image-base entropy is **2³⁰ page-aligned positions = 30 bits**, a 4 TiB window above `USER_IMAGE_ASLR_BASE` (16 GiB) — set by `ASLR_MAX_LOAD_RANDOM_PAGES` (`1 << 30`). The image sits in its own base region, clear of the fixed low regions (the ~8 MiB stack and the 16 MiB heap), so the window can be this wide without colliding with them. The earlier ~8.91-bit figure (`log2(512 − 32)`) was not a policy choice but the shape of the old single-PD-entry premap; the multi-level page-table walk removed that constraint, and the entropy is a genuine choice now.
 
 ---
 
@@ -315,14 +315,14 @@ The console (VGA text framebuffer + serial) is driven by a ring-3 server, `conso
 
 ## Symmetric multiprocessing
 
-Behind the `SMP=1` build gate, Horus brings up the application processors and runs scheduled tasks across cores:
+Horus brings up the application processors and runs scheduled tasks across cores. SMP is **default-on** (`SMP=0` compiles it out and boots single-core):
 
 - **AP bringup** via the LAPIC INIT-SIPI-SIPI sequence; each AP sets up long mode, its GDT/TSS/IDT, and enters the scheduler.
 - **Per-CPU preemption** from the LAPIC timer (the legacy PIC IRQ0 only reaches the BSP); a shared runnable pool with a per-CPU pull under a raw scheduler lock is the load-balancing mechanism.
 - **IPC + notification locking** so cross-CPU sends/receives serialise correctly.
 - **TLB-shootdown IPIs** with acknowledgement, so a CPU that changes a shared mapping flushes the others' TLBs before proceeding.
 
-The BSP is never pulled out of its ring-0 idle/kernel context by the timer, preserving the exact single-CPU boot flow; the APs do the multi-core work. Proven by `make smoke-smp`. Per-CPU run queues, priorities, and default-on multi-core are Phase 3 roadmap items.
+The BSP is never pulled out of its ring-0 idle/kernel context by the timer, preserving the exact single-CPU boot flow; the APs do the multi-core work. Proven by `make smoke-smp`. Per-CPU run queues, priorities, and flush-on-switch between time-sliced tasks are the remaining SMP-maturity work (Roadmap Track 3).
 
 ---
 
@@ -399,4 +399,4 @@ The build system sets `SOURCE_DATE_EPOCH=1609459200` (2021-01-01 UTC) and passes
 
 ### What the design does not yet provide
 
-See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: IPC endpoints are single-slot mailboxes, so requests serialise one at a time — multi-client *replies* are routed by kernel-recorded identity (`SYS_IPC_REPLY_TO`), but multi-slot queueing is not implemented; and SMP works behind a build gate but is not default-on and has no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks. Image-base ASLR now sits at its structural ceiling (8.91 bits), bounded by the premap fitting one 2 MiB PD entry rather than by the address space. (The filesystem is now persistent, multi-client, permission-enforcing, and crash-atomic — see the LIMITATIONS filesystem note for the residual operational limits.)
+See [LIMITATIONS.md](LIMITATIONS.md) for detail. Key gaps: IPC endpoints are single-slot mailboxes, so requests serialise one at a time — multi-client *replies* are routed by kernel-recorded identity (`SYS_IPC_REPLY_TO`), but multi-slot queueing is not implemented; and SMP is default-on but the multi-core scheduler still shares one runnable pool with no per-CPU run queues, priorities, or flush-on-switch between time-sliced tasks. Image-base ASLR is 30 bits (a 4 TiB window at 16 GiB). (The filesystem is now persistent, multi-client, permission-enforcing, and crash-atomic — see the LIMITATIONS filesystem note for the residual operational limits.)

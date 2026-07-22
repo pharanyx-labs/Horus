@@ -72,7 +72,7 @@ The security-sensitive primitives are audited-standard algorithms implemented in
 
 ## Side-channel threat model
 
-Horus preempts and switches between mutually distrusting ring-3 tasks on a single core, and — under `SMP=1` — across cores.
+Horus preempts and switches between mutually distrusting ring-3 tasks on a single core, and — with SMP default-on — across cores.
 
 **Architectural** state is isolated across that switch: general-purpose registers live in the per-task trap frame, and the x87/SSE register file is saved/restored around every ring-3 kernel entry (`FXSAVE`/`FXRSTOR` into the TCB), so one task cannot read what another left in `xmm`. The kernel itself is built `-mno-sse -mno-mmx -mno-80387`, so it has no FPU state of its own to leak into ring 3 either. (This was not always true — see CHANGES.md; it was latent for as long as userspace was i386 and could not hold a live `xmm` across a syscall.)
 
@@ -116,7 +116,7 @@ Given the project's status, the following are in scope for responsible disclosur
 The following are out of scope for now, because they are known and documented:
 
 - Absence of covert-channel / cache side-channel mitigations
-- SMP scheduler maturity (works behind `SMP=1`; not default, no per-CPU queues/priorities)
+- SMP scheduler maturity (default-on; shared run queue, no per-CPU queues/priorities, no flush-on-switch)
 
 ---
 

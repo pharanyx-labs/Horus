@@ -20,6 +20,15 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+    # Group all Action bumps into a SINGLE PR. This is required for multi-ref
+    # actions like github/codeql-action, whose `init` and `analyze` steps MUST be
+    # the same version — Dependabot otherwise opens one PR per ref, producing a
+    # v3-init/v4-analyze mismatch that fails CodeQL. One grouped PR bumps them
+    # together. (Also keeps CI supply-chain updates to one reviewable PR.)
+    groups:
+      github-actions:
+        patterns:
+          - "*"
     # Reviewers can be added once team grows
 
   # Rust / Cargo. The crate has no external runtime dependencies today, but this

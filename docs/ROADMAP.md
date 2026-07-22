@@ -113,21 +113,27 @@ and the lineage table is a lossy hash (A3). These are correctness defects in the
 system's core security mechanism. A1 fails safe (it over-revokes) but violates the
 advertised least-privilege-delegation and transitive-revocation semantics.
 
-### 1.1 — Replace equivalence-set revocation with a derivation tree (A1)
+### 1.1 — Replace equivalence-set revocation with a derivation tree (A1) — *done*
 
-Introduce an explicit **capability derivation tree (CDT)**: each capability carries
-a parent link (or a badge-interval subtree id, seL4-style), and `revoke(T)` deletes
-exactly the nodes in *T*'s subtree — never its ancestors, unrelated siblings, or
-same-`object` peers.
+`revoke_matching_in`/`lineage_matches` were replaced by `revoke_subtree`, which
+computes the exact **derivation subtree** of the target: seed a bounded worklist
+with the target's serial, then close it under "child (`badge`) of an already-revoked
+serial", and null exactly those. Ancestors, siblings, and independent same-`object`
+capabilities are left intact (this builds on the A2 fix, which makes every derived
+cap record its immediate parent's serial in `badge`). Completeness is a fail-safe:
+if a subtree exceeds the worklist (`MAX_REVOKE_LINEAGE = 256`, never in practice),
+the null pass also sweeps every cap sharing the target's `object` — a complete
+superset, so no descendant can survive.
 
-- **Interim, if the full CDT is deferred:** drop the `object`-equality clause and
-  the *upward* (`== target.badge`) clauses in `lineage_matches`, matching
-  descendants only.
-- **Regression tests (must land with the change):** revoking a child leaves the
-  parent and any same-`object` peer intact; revoking a parent still nulls the whole
-  descendant chain; two independently-endowed caps to one object are independent.
-- Extend the Kani harnesses to the revised revocation once the shared mutable state
-  is modelled (see Track 5).
+Regression tests landed: revoking a child leaves the parent and siblings intact;
+two independent same-object caps are independent; the overflow fallback revokes a
+whole oversized subtree; the existing transitive-chain / other-cspace / grant tests
+still pass. Covered on real hardware by `smoke-captest` / `smoke-proc` /
+`smoke-aspace` / `smoke-session` / `smoke-fs-conc`.
+
+*Follow-up:* an explicit CDT with parent pointers would remove the (documented,
+never-hit) worklist bound; extend the Kani harnesses to the revised revocation once
+the shared mutable state is modelled (Track 5).
 
 ### 1.2 — Route `SYS_CAP_GRANT` through the locked discipline (A2) — *done*
 
@@ -148,12 +154,17 @@ legitimately endows a dominated child's low slots (e.g. a server's IPC gate at s
 or a dedicated `SYS_CAP_GRANT_RIGHTS`) so a supervisor can delegate with reduced
 rights and, by default, without `CAP_RIGHT_REVOKE`.
 
-### 1.3 — Make lineage generations exact (A3)
+### 1.3 — Make lineage generations exact (A3) — *deferred (latent)*
 
-Store the generation in the owning object's record (per-object, collision-free)
-rather than the shared 4096-slot hash — or, if the hash is retained, add a
-collision counter to the audit log and document the rare spurious-revocation as an
-accepted availability event.
+Investigation during the A1 fix established that the generation mechanism is
+**dormant**: no code path assigns a capability a non-zero `generation`, and
+`lineage_check` treats generation 0 as "untracked / always valid", so the
+object-keyed generation check never rejects a real capability and its hash
+collisions cannot invalidate anything today. Structural (descendant-only)
+revocation is the sole enforcement. If per-lineage generations are ever *activated*
+as real use-after-revoke defense-in-depth, store the generation per-object (exact)
+rather than in the shared 4096-slot hash so activation does not reintroduce
+over-invalidation. Until then, no action is required.
 
 ---
 

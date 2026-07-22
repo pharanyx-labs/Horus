@@ -8,6 +8,15 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — machine-checked proofs that revocation hits exactly the target's subtree (audit A1)
+
+The descendant-only revocation fix shipped with unit tests that *sample* serials; these two Kani harnesses prove the same invariants over the **entire** input space (every `u32` serial triple), by symbolic execution:
+
+- **`revoke_descendant_never_nulls_ancestors`** — over a parent → child → grandchild derivation chain, revoking the grandchild's subtree leaves the parent and child intact (`typ` and `serial` unchanged) and nulls exactly the grandchild. This is precisely what the old equivalence-set matcher got wrong: it compared the target's `badge` against other caps' `serial`, so revoking a child also nulled its parent.
+- **`revoke_root_nulls_every_descendant`** — the completeness half: revoking the root nulls the child *and* the grandchild, so no derived authority outlives its ancestor.
+
+Together they pin revocation to exactly the target's subtree — no more (no ancestors, no siblings) and no less (all descendants). Kani also discharges the memory-safety checks and the loop-unwinding assertions on the closure, so the worklist is proved fully explored at the proof's size. `cargo kani` now verifies **6 harnesses, 0 failures** (up from 4). `rust/KANI.md` documents the new properties and the scope limits (single cspace, `object == 0`, so the shared `LINEAGE_GEN` static stays out of the model; the overflow fallback remains unit-tested).
+
 ### Fixed — boot modules can only land in `/bin` or `/usr/share/man` (audit A4, destination half)
 
 Every boot module (the ported coreutils and their man pages, shipped as GRUB multiboot2 modules) is written into the store as a **root-owned** file — executables `0755` under `/bin`. The destination came straight from the module's cmdline with no validation, so a stray or tampered module list could plant a root-owned file at any path, including one with `..` components.

@@ -8,6 +8,14 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — boot modules can only land in `/bin` or `/usr/share/man` (audit A4, destination half)
+
+Every boot module (the ported coreutils and their man pages, shipped as GRUB multiboot2 modules) is written into the store as a **root-owned** file — executables `0755` under `/bin`. The destination came straight from the module's cmdline with no validation, so a stray or tampered module list could plant a root-owned file at any path, including one with `..` components.
+
+`fs_server.c` now gates every install on `module_dest_ok`: only a bare name (which defaults under `/bin`), a path under `bin/`, or a path under `usr/share/man/` is accepted; absolute paths and any empty, `.` or `..` component are refused. A rejected module is skipped with a log line instead of installed. Verified by `make smoke-modules` and `make smoke-coreutils-shell` (the real modules still provision and run end-to-end), plus `smoke-fs` / `smoke-init-fs`.
+
+This is the *destination* half of audit A4. Module **content** is still trusted to the boot chain — verifying it in-kernel (embedded hash manifest vs. embedded public key + signed manifest) is scoped in `docs/ROADMAP.md` Track 2.1 and deliberately deferred rather than rushed, since it reorders the build graph or needs a new asymmetric primitive.
+
 ### Changed — Track 0 governance: `main` is branch-protected, code scanning is on (audit P1/P3/P5)
 
 Acting on the audit's process findings (the assurance gap it called the highest-leverage fix):

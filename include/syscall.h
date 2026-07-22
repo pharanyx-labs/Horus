@@ -135,6 +135,7 @@ struct audit_event {
 #define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an allowlisted device frame into the caller's address space (CAP_IO_DEVICE + WRITE; driver server only) */
 #define SYS_IOPORT_GRANT       80   /* () -> 0; grant native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE; driver server only) */
 #define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification (CAP_IO_DEVICE + WRITE; driver server only) */
+#define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (so fd-1 output must route through it, not the kernel), else 0; read-only status, self-authorizing */
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -317,6 +318,14 @@ static inline int sys_exec(uint32_t load_base, uint32_t entry) {
 
 static inline int sys_getpid(void) {
     return syscall(SYS_GETPID, 0, 0, 0);
+}
+
+/* 1 if a ring-3 console server owns the console hardware. When it does, the
+ * kernel's fd-1 write path (SYS_WRITE -> print) stays hands-off the hardware to
+ * keep the console single-writer, so a client that wants its stdout on screen must
+ * route it through the server instead. */
+static inline int sys_console_owned(void) {
+    return syscall(SYS_CONSOLE_OWNED, 0, 0, 0);
 }
 
 static inline int sys_ipc_send(int ep_slot, const void *msg, size_t len) {

@@ -368,6 +368,7 @@ void users_init(void);
 #define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an ALLOWLISTED device frame into the caller's own address space (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
 #define SYS_IOPORT_GRANT       80   /* () -> 0; grant the caller native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
 #define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
+#define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (fd-1 output must route through it), else 0; read-only status, self-authorizing */
 
 /* SYS_MAP_PHYS `flags` word (must match include/syscall.h). READ is the floor;
  * WRITE adds the writable bit. Device MMIO is always mapped non-executable. */
@@ -844,6 +845,13 @@ void secure_zero(void *p, size_t n);
 void spin_lock(spinlock_t *lock);
 void spin_unlock(spinlock_t *lock);
 void dump_kernel_log(void);
+/* Console hardware ownership handoff: a ring-3 driver that takes native port I/O
+ * over the console becomes the sole writer (console_set_owner), and the kernel's
+ * print() stops touching serial+VGA until that task dies (console_clear_owner),
+ * so the two writers never interleave on the shared UART under SMP. */
+void console_set_owner(int tid);
+void console_clear_owner(int tid);
+int  console_hw_owned(void);
 void syscall_handler(struct interrupt_frame64 *r);
 void resume_shell_after_fault(void);
 void print_hex64(uint64_t v);

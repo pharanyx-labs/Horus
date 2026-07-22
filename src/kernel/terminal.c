@@ -25,6 +25,61 @@ static void klog_append(char c) {
     if (klog_len < sizeof(klog_buf)) klog_len++;
 }
 
+/* ---- console mutual exclusion + hardware ownership -------------------------
+ *
+ * print() drives shared state (cursor, colour, klog) and, when the kernel owns
+ * the console, the COM1 FIFO + VGA text buffer. Two things break once SMP is the
+ * default and more than one CPU runs at once:
+ *
+ *   1. Two CPUs can be inside print() simultaneously — a kernel log on the BSP
+ *      vs. a ring-3 task's SYS_WRITE on an AP — and interleave their bytes
+ *      character by character. A leaf spinlock makes each print()/clear_screen()
+ *      atomic across CPUs.
+ *
+ *   2. Once the ring-3 console_server takes native port I/O over the console
+ *      (SYS_IOPORT_GRANT), it drives the SAME UART + VGA buffer with its own
+ *      hands. A kernel lock cannot reach a ring-3 writer, so the only way to keep
+ *      the console single-writer is for the kernel to stop touching the hardware
+ *      while a ring-3 owner exists. It still records every byte to klog, so the
+ *      kernel log and panic dumps stay complete; ownership is released if the
+ *      owner dies (task_teardown), so the shell's in-kernel console fallback
+ *      keeps login working even if the server crashes.
+ *
+ * The lock saves/restores IF locally instead of using spin_lock()'s global
+ * irq-depth counter: print() is reached from interrupt and exception context, so
+ * releasing must not unconditionally re-enable interrupts, and must not perturb a
+ * caller that already holds an IF-clearing lock. */
+static volatile uint32_t console_lock = 0;
+static volatile int console_owner_task = 0;   /* ring-3 task driving the console HW; 0 => kernel drives it */
+
+static uint64_t console_lock_acquire(void) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(rflags) :: "memory");
+    __asm__ volatile ("cli" ::: "memory");
+    while (__sync_lock_test_and_set(&console_lock, 1))
+        while (console_lock) __asm__ volatile ("pause" ::: "memory");
+    return rflags;
+}
+static void console_lock_release(uint64_t rflags) {
+    __sync_lock_release(&console_lock);
+    if (rflags & (1ull << 9))          /* only re-enable IF if the caller had it set */
+        __asm__ volatile ("sti" ::: "memory");
+}
+
+/* A ring-3 task took native port I/O over the console (SYS_IOPORT_GRANT): it now
+ * owns the hardware, so the kernel stops driving serial + VGA. */
+void console_set_owner(int tid) { console_owner_task = tid; }
+
+/* The owning task died (task_teardown): reclaim the console for the kernel so the
+ * in-kernel print()/console fallback works again. No-op if `tid` was not the owner. */
+void console_clear_owner(int tid) { if (console_owner_task == tid) console_owner_task = 0; }
+
+/* True while a ring-3 console server owns the hardware. The kernel's own console
+ * input path (console_getc and the SYS_GET_LINE/SYS_GET_PASS/SYS_READ handlers)
+ * fails closed when this holds: the owner is the sole reader of the serial UART,
+ * so a kernel-side read would race it byte-for-byte and split a typed line. */
+int console_hw_owned(void) { return console_owner_task != 0; }
+
 static const uint8_t font_8x8[256][8] = {
      ['!'] = {0x00,0x10,0x10,0x10,0x10,0x00,0x10,0x00},
      ['"'] = {0x00,0x28,0x28,0x00,0x00,0x00,0x00,0x00},
@@ -378,9 +433,17 @@ static void serial_update_colour(void) {
 }
 
 void print(const char* str) {
+    uint64_t flags = console_lock_acquire();
+    /* Snapshot ownership once for the whole call so a line is emitted whole to one
+     * sink, never split across a handoff. `drive_hw` false => a ring-3 server owns
+     * the console; we only record to klog and leave the wire to it. */
+    int drive_hw = (console_owner_task == 0);
+
     while (*str) {
         char c = *str;
-        klog_append(c);   
+        klog_append(c);   /* always: the kernel log survives the handoff to ring 3 */
+
+        if (!drive_hw) { str++; continue; }
 
         if (cursor_y >= VGA_ROWS || cursor_x >= VGA_COLS) {
             scroll_screen();
@@ -424,14 +487,19 @@ void print(const char* str) {
 
         str++;
     }
-    update_cursor();
+    if (drive_hw) update_cursor();
+    console_lock_release(flags);
 }
 
 void println(const char* str) { print(str); print("\n"); }
 
 void clear_screen(void) {
-    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) VIDEO_MEMORY[i] = (current_attr << 8) | ' ';
-    cursor_x = 0; cursor_y = 0; update_cursor();
+    uint64_t flags = console_lock_acquire();
+    if (console_owner_task == 0) {
+        for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) VIDEO_MEMORY[i] = (current_attr << 8) | ' ';
+        cursor_x = 0; cursor_y = 0; update_cursor();
+    }
+    console_lock_release(flags);
 }
 
 void print_hex(uint64_t n) {

@@ -72,6 +72,21 @@ void h_map_phys(struct interrupt_frame64 *r) {
     uint64_t writable = (flags & MAP_PHYS_WRITE) ? 1 : 0;
     int rc = user_map_device_page((uint32_t)cur, vaddr, paddr, writable);
     r->rax = (rc == 0) ? 0 : (uint32_t)SYS_ERR_FAULT;
+
+    /* Hand the console over to the ring-3 console driver, so the kernel's print()
+     * stops touching serial+VGA (klog only) and the two can't interleave on the
+     * shared UART once SMP runs them at once. The console driver is the task that
+     * owns BOTH the console ports (io_allowed, via SYS_IOPORT_GRANT) AND the VGA
+     * framebuffer it just mapped — that pair uniquely identifies console_server.
+     * Keying off the port grant alone would wrongly silence ioporttest (grants
+     * ports to probe faults, never drives the console); off the VGA map alone would
+     * wrongly silence mapphystest (maps the frame to verify it, holds no port
+     * grant). Both self-tests report via the kernel console, so neither may lose
+     * ownership of it. */
+    if (rc == 0 && paddr >= 0xB8000ULL && paddr < 0xBA000ULL &&
+        cur > 0 && cur < MAX_TASKS && tasks[cur].io_allowed) {
+        console_set_owner(cur);
+    }
 }
 
 /* SYS_IOPORT_GRANT(): grant the calling task native ring-3 in/out on the console
@@ -86,11 +101,11 @@ void h_ioport_grant(struct interrupt_frame64 *r) {
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     tasks[cur].io_allowed = 1;
     tss_set_io_allowed(1);
-    /* The grant covers the console UART + VGA registers, so this task now drives
-     * the console hardware natively. Hand the console over: the kernel's print()
-     * stops writing serial+VGA (klog only) so it and this ring-3 owner cannot
-     * interleave byte-for-byte on the shared UART once SMP runs them at once. */
-    console_set_owner(cur);
+    /* Console ownership is NOT taken here: the port grant alone does not make a
+     * task the console driver (ioporttest grants ports only to probe that a
+     * non-allowlisted port still faults, and reports via the kernel console). The
+     * handover happens once the same task also maps the VGA framebuffer — the pair
+     * that uniquely identifies console_server. See h_map_phys. */
     r->rax = 0;
 }
 

@@ -81,7 +81,67 @@ Multi-core works behind `SMP=1`, but the shipped kernel is single-core. The mult
 
 ## Security limitations
 
-These matter specifically for anyone evaluating Horus as a security system:
+These matter specifically for anyone evaluating Horus as a security system. The
+July 2026 audit ([AUDIT-2026-07.md](AUDIT-2026-07.md)) added the first four items
+below; remediation is tracked in [ROADMAP.md](ROADMAP.md) (Tracks 0–2).
+
+### Capability revocation over-revokes (audit A1)
+
+Revocation is intended to be *transitive downward* — revoking a capability should
+null it and its derived descendants. The current implementation instead matches an
+**object/badge/serial equivalence set**: because a derived capability records its
+parent's serial in its `badge`, and the sweep also matches on shared `object`,
+revoking a delegated capability can additionally null **the grantor's original** and
+**any other capability to the same object**. A child that was *granted* a revocable
+capability can therefore strip the same authority from its supervisor and from
+unrelated peers.
+
+This **fails safe** — it removes access, never grants it, so it is not a privilege
+escalation — but it breaks the least-privilege-delegation contract the design
+advertises. The fix is a proper capability derivation tree (Roadmap Track 1), so
+`revoke(T)` deletes exactly `T`'s subtree.
+
+### Capability grant skips the locked write discipline (audit A2)
+
+`SYS_CAP_GRANT` performs a raw cspace store rather than going through the locked
+cap-write path that `cap_mint`/`cap_transfer`/`cap_install_endpoint` all use. It
+does **not** enforce the `KERNEL_RESERVED_CAPS` slot floor (so a supervisor could
+overwrite a child's reserved slots 0–3), does **not** account the write against
+`caps_in_use` / `MAX_CAPS_PER_TASK`, and copies the source's **full rights**
+including `CAP_RIGHT_REVOKE` with no reduction. Being routed through the locked mint
+path with an optional rights mask (Roadmap Track 1); this also shrinks the A1 blast
+radius, since a granted copy without `REVOKE` cannot trigger the over-broad sweep.
+
+### Lineage-generation table is a lossy hash (audit A3)
+
+Use-after-revoke is backed by a 4096-slot generation table keyed by a hash of the
+capability's `object`. Distinct objects can collide into one slot, so bumping one
+lineage can **spuriously invalidate a colliding object's live capabilities** at next
+use. This is an availability effect (it fails safe) and undermines the precision the
+"single source of truth" framing claims; the fix is per-object exact generation
+storage (Roadmap Track 1).
+
+### Boot modules are unsigned (audit A4)
+
+Programs and man pages that ship as GRUB multiboot2 modules are written into the
+encrypted store as **root-owned executables** and run by the shell, trusted purely
+by boot-chain provenance. There is no per-module signature or hash manifest, and the
+reproducible-build hash covers only the *embedded* binaries (`init`, `shell`,
+`fs_server`, …), **not** the modules — so anyone able to alter the ISO/GRUB config
+can inject an arbitrary root-owned binary into `/bin`. A signed manifest verified
+in-kernel is planned (Roadmap Track 2), as the precursor to measured boot.
+
+### Development process is not yet high-assurance (audit P1–P5)
+
+The audit's central finding is about the *process*, not the code: `main` is **not
+branch-protected**, so CODEOWNERS and CI are advisory; every PR is self-merged by a
+single maintainer (no independent review); Dependabot security updates and
+CodeQL/code-scanning are off; and the reproducible build is deterministic on one
+runner image but the toolchain is unpinned and artifacts are unsigned. For a kernel
+whose value is *verifiable* isolation, the build's integrity currently rests on the
+maintainer's workstation and an unenforced pipeline. Remediation is
+[Roadmap Track 0](ROADMAP.md) and is the highest priority. See
+[../SECURITY.md](../SECURITY.md) → "Development process & governance."
 
 ### Encrypted storage is persistent, but still early
 

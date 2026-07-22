@@ -8,6 +8,15 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Documented — July 2026 security & engineering audit; docs realigned to its findings (this pass)
+
+A professional-grade audit of the kernel **and its development ecosystem** was recorded and the documentation set was updated to reflect it. No code changed in this pass — the findings set the [roadmap](docs/ROADMAP.md) priorities and the fixes are tracked there.
+
+- **New `docs/AUDIT-2026-07.md`** — canonical record of the findings, rated against a high-assurance bar. Kernel findings: **A1** revocation matches an object/badge equivalence set rather than a derivation subtree (over-revokes; fails safe); **A2** `SYS_CAP_GRANT` skips the locked cap-write discipline (no reserved-slot floor, no `caps_in_use` accounting, copies full rights incl. `REVOKE`); **A3** the lineage-generation table is a lossy 4096-slot hash (object collisions spuriously revoke; fails safe); **A4** boot modules become root-owned `/bin` executables with no signature. Process findings: **P1** `main` has no branch protection (CODEOWNERS/CI advisory only — Critical); **P2** single-maintainer self-merge; **P3** Dependabot security updates + code-scanning off, SAST/fuzz/Kani non-gating; **P4** reproducibility ≠ provenance (unpinned toolchain, unsigned artifacts); **P5** hygiene (stale branches, unsigned commits). Verified strengths were also recorded (zero-trust refcount FFI, `PAGE_USER`+`PHYS_KVA` user-copy path, fail-closed CSPRNG seeding).
+- **`docs/ROADMAP.md` reworked** around the audit: three top-priority remediation tracks — **Track 0** (assurance & governance: enforce `main`, independent review, CodeQL/Dependabot, hermetic signed builds), **Track 1** (capability-model correctness: derivation-tree revocation, locked grant path, exact lineage generations), **Track 2** (boot & supply-chain: signed module manifest → measured boot) — followed by the ongoing SMP/userspace/verification/driver-isolation tracks, with completed foundations kept as a record.
+- **`SECURITY.md`** gained a "Development process & governance" section (P1–P4) and the A1/A2/A4 weaknesses, with fail-safe caveats added to the "no ambient authority" and "least-privilege process control" hardening bullets.
+- **`docs/LIMITATIONS.md`** gained security-limitation subsections for A1–A4 and the process gap; **`docs/ARCHITECTURE.md`** gained an audit note on the revocation semantics; **`README.md`** and **`CONTRIBUTING.md`** point to the audit and reflect the branch-protection/review reality.
+
 ### Fixed — the console is a single writer/reader under SMP, and blocking IPC no longer fabricates a reply (this pass)
 
 With SMP now the default, the real login/shell boot exposed two multi-core console races. Both are fixed; two new headless regression guards (`make smoke-console-smp`, `make smoke-session-smp`) lock them down.

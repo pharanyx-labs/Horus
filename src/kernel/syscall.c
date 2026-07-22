@@ -658,6 +658,13 @@ static void h_getpid(struct interrupt_frame64 *r) {
     r->rax = (uint32_t)get_current_task();
 }
 
+/* SYS_CONSOLE_OWNED: report whether a ring-3 console server owns the console
+ * hardware. Read-only status a client uses to decide whether to route its stdout
+ * through the server (see userspace posix_write); self-authorizing. */
+static void h_console_owned(struct interrupt_frame64 *r) {
+    r->rax = (uint32_t)(console_hw_owned() ? 1 : 0);
+}
+
 /* SYS_SIGACTION: register (handler != 0) or clear (handler == 0) THIS task's own
  * fault-signal handler. Self-authority only -- a task sets a handler for itself,
  * never for another (async cross-task signals would need a capability on the
@@ -795,7 +802,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 82
+#define SYSCALL_TABLE_SIZE 83
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -863,6 +870,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_GETPID]                   = { h_getpid,                  SC_NONE, 0, SC_ANYTYPE }, /* own id: self-authorizing */
+    [SYS_CONSOLE_OWNED]            = { h_console_owned,           SC_NONE, 0, SC_ANYTYPE }, /* console status: read-only, self-authorizing */
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
     [SYS_GET_PASS]                 = { h_get_pass,                SC_NONE, 0, SC_ANYTYPE },
@@ -926,7 +934,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_IRQ_REGISTER + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_CONSOLE_OWNED + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

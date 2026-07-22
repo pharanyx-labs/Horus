@@ -22,6 +22,7 @@
 
 #include "../include/posix.h"
 #include "../include/syscall.h"
+#include "../include/console_proto.h"
 #include "fs_proto.h"
 
 /* ----- internal helpers ----------------------------------------------- */
@@ -388,6 +389,41 @@ int posix_read(int fd, void *buf, size_t len) {
     return (int)total;
 }
 
+/* Emit `len` bytes to the ring-3 console_server (CON_OP_WRITE, well-known
+ * endpoint CON_EP_REQ) so console output stays single-writer under SMP: while the
+ * server owns the hardware the kernel's own fd-1 path is hands-off, so a program's
+ * stdout must go through the server or it never reaches the screen. Chunked to the
+ * protocol's CON_IO_MAX; returns bytes written, or -1 if the server is unreachable
+ * (the caller then falls back to the kernel path). Static buffers keep the 212+136
+ * byte request/response off the (small) libc stack; a program is single-threaded
+ * over its own fds, so sharing them across calls is safe. */
+static struct con_request  g_con_rq;
+static struct con_response g_con_rp;
+static int con_server_write(const void *buf, size_t len) {
+    const unsigned char *s = (const unsigned char *)buf;
+    size_t off = 0;
+    while (off < len) {
+        unsigned n = (unsigned)(len - off);
+        if (n > CON_IO_MAX) n = CON_IO_MAX;
+        g_con_rq.magic = CON_PROTO_MAGIC;
+        g_con_rq.op    = CON_OP_WRITE;
+        g_con_rq.len   = n;
+        for (unsigned i = 0; i < n; i++) g_con_rq.data[i] = s[off + i];
+
+        int rc = -1;
+        for (int tries = 0; tries < 20000; tries++) {
+            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP,
+                              &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+            if (rc >= 0) break;
+            sys_yield();          /* mailbox full: yield and retry */
+        }
+        if (rc < 0 || g_con_rp.magic != CON_PROTO_MAGIC || g_con_rp.rc != (int)n)
+            return (off > 0) ? (int)off : -1;
+        off += n;
+    }
+    return (int)off;
+}
+
 int posix_write(int fd, const void *buf, size_t len) {
     ENSURE_INIT();
     if (!fd_valid(fd))  return -1;
@@ -399,6 +435,16 @@ int posix_write(int fd, const void *buf, size_t len) {
     if ((e->flags & O_ACCMODE) == O_RDONLY) return -1;
 
     if (e->type == FD_CONSOLE_OUT) {
+        /* Keep the console single-writer: while a ring-3 console_server owns the
+         * hardware, the kernel's fd-1 path stays hands-off, so route stdout through
+         * the server. When no server owns it (early boot, or selftest images with
+         * no console_server), the kernel drives the console directly — take that
+         * path so those images don't block on an IPC nobody answers. */
+        if (sys_console_owned()) {
+            int n = con_server_write(buf, len);
+            if (n >= 0) return n;
+            /* server unreachable: fall through to the in-kernel path */
+        }
         return sys_write(fd, buf, len);
     }
 

@@ -8,6 +8,16 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — Track 0 governance: `main` is branch-protected, code scanning is on (audit P1/P3/P5)
+
+Acting on the audit's process findings (the assurance gap it called the highest-leverage fix):
+
+- **`main` branch protection (P1).** The four hard-gate CI checks (Rust+clippy, kernel+ISO build, QEMU smoke-boot, reproducible build) are now **required** before merge, the rule is **enforced for administrators**, and **force-push + branch deletion are blocked**. Required CODEOWNERS review is intentionally left off while the project has a single maintainer (it would deadlock every merge — the P2 gap, documented as accepted).
+- **Native code scanning + dependency security (P3).** Added `.github/workflows/codeql.yml` (CodeQL over the C kernel, SARIF → Security tab, advisory); enabled Dependabot vulnerability alerts + automated security updates; added the cargo ecosystem to `.github/dependabot.yml` and **grouped** GitHub-Actions updates into one PR (multi-ref actions like `codeql-action` must bump `init`/`analyze` together, else a v3/v4 mismatch fails CodeQL). Bumped `codeql-action` to v4.37.0.
+- **Repository hygiene (P5).** Enabled `delete_branch_on_merge`; created the `dependencies`/`github-actions`/`rust` labels Dependabot needs. Pruning the ~55 already-merged branches and commit signing remain for the maintainer.
+
+Docs updated (AUDIT-2026-07, ROADMAP Track 0, SECURITY). See docs/AUDIT-2026-07.md for the full findings.
+
 ### Fixed — capability revocation is descendant-only, not an equivalence-set sweep (audit A1)
 
 Revocation nulled every capability whose `serial`, `badge`, **or** `object` matched the target. Since a derived cap records its parent's serial in its `badge` and all derived copies share the parent's `object`, that matched not just descendants but **ancestors, siblings, and any independent capability to the same object**. A supervisor that granted a revocable capability, then had the child revoke its copy, would find its *own* capability (and same-object peers) nulled too — a fail-safe but least-privilege-violating over-revocation.

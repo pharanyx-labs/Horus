@@ -52,21 +52,24 @@ ships it. Right now several controls the repository *documents* are not *enforce
 This track makes the process match the promise. None of it touches kernel code, and
 all of it is high-leverage.
 
-### 0.1 — Enforce `main` (P1) — *do this first*
+### 0.1 — Enforce `main` (P1) — *mostly done*
 
-`main` currently has **no branch protection**, so CODEOWNERS and every CI job are
-advisory. Stand up a `main` ruleset that requires:
+`main` is now branch-protected. Enabled:
 
-- a pull request before merge;
-- the hard-gate checks as **required status checks** — `rust` (`cargo test` +
-  `clippy -D warnings`), `kernel` (build + ISO), the `smoke*` suite, and
-  `reproducible`;
-- **CODEOWNERS review** with dismiss-stale-approvals-on-push;
-- **linear history** and **block force-push**;
-- **include administrators** (a rule the owner can bypass is not a control).
+- **Required status checks** (the hard gates): *Rust unit tests + clippy
+  (deny-warnings gate)*, *Build kernel.elf + bootable ISO (x86_64)*, *QEMU
+  smoke-boot (headless)*, and *Verify reproducible kernel build* — a PR cannot
+  merge while any is red.
+- **Enforce for administrators** (the rule is not owner-bypassable).
+- **Block force-push and branch deletion** (history cannot be rewritten).
+- **Linear history** (merges are squash/rebase, no merge commits).
 
-*Acceptance:* a PR that fails any hard-gate check, or that touches a CODEOWNERS
-path without the owner's review, cannot merge — verified by attempting both.
+*Deferred:* **required CODEOWNERS review** is intentionally **not** enabled while
+the project has a single maintainer — a required review with no second reviewer
+would deadlock all merges. This is the P2 gap, documented as an accepted risk in
+[../SECURITY.md](../SECURITY.md); turn required review on the moment a second
+reviewer exists. (`strict`/up-to-date-before-merge is also off for now, to avoid
+serial-rebase friction.)
 
 ### 0.2 — Independent review (P2)
 
@@ -77,16 +80,18 @@ accepted limitation** in [../SECURITY.md](../SECURITY.md) rather than leaving
 "CODEOWNERS review" to imply four-eyes that does not happen. Consolidate the four
 committer identities and **require signed commits** (P5).
 
-### 0.3 — Turn on the native security controls (P3)
+### 0.3 — Turn on the native security controls (P3) — *mostly done*
 
-- Enable **Dependabot security updates** and vulnerability alerts (version updates
-  for Actions are already configured; this adds the security channel).
-- Add a **CodeQL** workflow for C/C++ and Rust that **uploads SARIF** so findings
-  land in the Security tab.
-- Keep the noisy scanners advisory, but promote a **fast, deterministic Kani/fuzz
-  subset** (pinned nightly, fixed seed corpus) to a **required** check so a
-  regression in a proven invariant — `mint_never_escalates_rights`,
-  `serial_never_reserved_or_zero`, the ELF validators — cannot merge green.
+- **Dependabot vulnerability alerts + automated security updates** enabled at the
+  repository level, and the **cargo** ecosystem (`/rust`) added to
+  `.github/dependabot.yml` alongside GitHub Actions.
+- **CodeQL** workflow added (`.github/workflows/codeql.yml`): it builds the C
+  kernel under CodeQL's tracer (`security-and-quality` suite) and uploads SARIF to
+  the Security tab. Advisory, not a merge hard-gate.
+- *Remaining:* promote a **fast, deterministic Kani/fuzz subset** (pinned nightly,
+  fixed seed corpus) to a **required** check so a regression in a proven invariant
+  — `mint_never_escalates_rights`, `serial_never_reserved_or_zero`, the ELF
+  validators — cannot merge green.
 
 ### 0.4 — Hermetic, attestable builds (P4)
 
@@ -97,11 +102,14 @@ committer identities and **require signed commits** (P5).
   (cosign / sigstore), recording the reference hashes alongside the existing
   `.build.sha`.
 
-### 0.5 — Repository hygiene (P5)
+### 0.5 — Repository hygiene (P5) — *partially done*
 
-Enable `delete_branch_on_merge`; prune the ~50 stale feature branches; keep
-CODEOWNERS and the workflow files under owner review (they are part of the trusted
-base).
+- **`delete_branch_on_merge` enabled** — merged PR branches are auto-deleted going
+  forward.
+- *Remaining:* prune the ~55 already-merged feature branches (a bulk-delete the
+  maintainer should run — e.g. `git branch -r --merged origin/main | ... | xargs
+  git push origin --delete`); consolidate the committer identities and **require
+  signed commits** (P2/P5).
 
 ---
 
@@ -170,14 +178,38 @@ over-invalidation. Until then, no action is required.
 
 ## Track 2 — Boot & supply-chain integrity
 
-### 2.1 — Sign the boot modules (A4)
+### 2.1 — Verify the boot modules (A4)
 
 Boot-module images (coreutils + man pages) currently become root-owned `/bin`
-executables trusted purely by boot-chain provenance. Embed a **signed manifest**
-(`{path → BLAKE2b/HMAC}`) in the reproducible kernel image; `provision_boot_modules`
-verifies each module against a kernel-held key before writing it, failing closed on
-a mismatch. This brings modules under the same integrity guarantee the embedded
-binaries already enjoy.
+executables trusted purely by boot-chain provenance. The kernel should verify each
+module's content before exposing it (via `SYS_BOOT_MODULE_READ`) so `/bin` inherits
+the integrity guarantee the *embedded* binaries already enjoy.
+
+Two viable designs, with the trade-offs found while scoping this (it is a larger,
+higher-risk change than A1/A2, so it was deliberately deferred rather than rushed):
+
+- **Embedded per-module hash manifest (no new crypto).** A build step hashes each
+  module (BLAKE2b/SHA-256, both already in the Rust core) and generates a C header
+  baked into `kernel.elf`; at boot the kernel hashes each recorded module and
+  refuses any whose hash is absent/wrong. Security rests on the kernel image being
+  the reproducible root of trust — no key needed. **Cost/risk:** the kernel build
+  must learn the module hashes *before* it compiles, which reorders the build graph
+  (today the kernel builds without the coreutils modules; a plain `make` and the
+  `reproducible` job must keep working with an empty/default manifest). This
+  bifurcation is the main hazard and must not break the existing jobs.
+- **Embedded public key + signed manifest (decoupled build, new crypto).** The
+  kernel embeds only an **ed25519 public key**; a signed `{path → hash}` manifest
+  ships as its own module and is verified in-kernel, then each module is checked
+  against it. This decouples the kernel build from module contents, but requires
+  adding **ed25519/curve25519 verification** to the Rust core (a substantial,
+  security-sensitive primitive the crate does not yet have — a symmetric HMAC key
+  would be pointless since it is readable in the reproducible image).
+
+Recommended first step: the embedded-hash approach behind a build flag, wired so a
+module-less `make` and the `reproducible` job are unaffected, then flip it on for
+`make run` / `smoke-modules`. Path-sanity hardening of the module cmdline
+(allowlist `bin/` and `usr/share/man/` prefixes; reject traversal) is a cheap,
+orthogonal companion.
 
 ### 2.2 — Toward measured boot
 

@@ -12,6 +12,7 @@
 int this_cpu(void);
 #ifdef SMP
 extern int task_running_cpu[MAX_TASKS];
+extern volatile int smp_sched_enabled;   /* scheduler.c: master switch for the SMP branch */
 #endif
 
 /* ===== SMP: application-processor bringup ================================== *
@@ -175,10 +176,11 @@ static void lapic_broadcast_init_sipi(uint8_t vector) {
     smp_busy_delay(50000);
 }
 
-static void smp_start_aps(void) {
-    /* No task is running on any CPU yet. */
-    for (int i = 0; i < MAX_TASKS; i++) task_running_cpu[i] = -1;
-
+/* Bring up the APs and wait for exactly `expected_cpus` (BSP + APs) to check in.
+ * `expected_cpus` comes from the ACPI MADT (see smp_bringup), so the wait ends as
+ * soon as the real cores are online instead of stalling for a fixed MAX_CPUS that
+ * may never appear. Only called when expected_cpus > 1. */
+static void smp_start_aps(int expected_cpus) {
     /* Calibrate the LAPIC timer once (on the BSP, using the PIT) so every AP can
      * start its periodic timer at a known ~100 Hz rate. */
     lapic_timer_calibrate();
@@ -205,8 +207,10 @@ static void smp_start_aps(void) {
 
     lapic_broadcast_init_sipi((uint8_t)(AP_TRAMP_PHYS >> 12));   /* vector 0x08 */
 
-    /* Wait (bounded) for the APs to check in. */
-    for (int spins = 0; spins < 200 && smp_cpus_online < MAX_CPUS; spins++)
+    /* Wait (bounded) for the APs to check in. The loop exits the instant every
+     * expected CPU is online, so an accurate MADT count means no wasted spinning;
+     * the 200-iteration cap is only a backstop for a core that never appears. */
+    for (int spins = 0; spins < 200 && smp_cpus_online < expected_cpus; spins++)
         smp_busy_delay(20000);
 
     print("[smp] CPUs online: ");
@@ -221,7 +225,43 @@ void smp_bringup(void) {
     /* LAPIC is mapped (paging_init) and now enabled, so this_cpu() is safe and
      * per-CPU TSS routing can turn on before any AP or context switch runs. */
     smp_active = 1;
-    smp_start_aps();
+
+    /* No task is running on any CPU yet. Done unconditionally (before the count
+     * branch) because the BSP's own preempt_on_tick consults task_running_cpu[]
+     * even when there are no APs — leaving it zero would read as "task N running
+     * on CPU 0" and break single-CPU scheduling. */
+    for (int i = 0; i < MAX_TASKS; i++) task_running_cpu[i] = -1;
+
+    /* Ask ACPI how many CPUs actually exist. On success we wake and wait for
+     * exactly that many; a uniprocessor skips AP bringup entirely (no trampoline
+     * staging, no INIT-SIPI, no wait). If the MADT can't be parsed, fall back to
+     * the old conservative broadcast that assumes up to MAX_CPUS. */
+    uint8_t apic_ids[MAX_CPUS];
+    int ncpu = acpi_detect_cpus(apic_ids, MAX_CPUS);
+    if (ncpu < 1) {
+        print("[smp] ACPI MADT unreadable; assuming up to MAX_CPUS\n");
+        ncpu = MAX_CPUS;
+    } else if (ncpu > MAX_CPUS) {
+        /* More CPUs than we have idle-stack slots for: cap here; any AP whose
+         * LAPIC id lands outside the array parks in the trampoline (see
+         * ap_trampoline.S), so this only forgoes their compute, never faults. */
+        print("[smp] MADT reports more CPUs than MAX_CPUS; capping\n");
+        ncpu = MAX_CPUS;
+    }
+
+    if (ncpu > 1) {
+        smp_start_aps(ncpu);
+    } else {
+        print("[smp] uniprocessor: 1 CPU, no APs to start\n");
+    }
+
+    /* Turn on the SMP scheduler now that every AP is parked in its idle loop and
+     * the runnable pool is consistent. Until this is set, preempt_on_tick's SMP
+     * branch is a no-op, so the online APs would sit idle and the BSP would never
+     * preempt a ring-3 task — the whole system would run cooperatively on one CPU.
+     * Actual preemption still waits for preempt_enabled (set as the shell starts),
+     * so setting it here only arms the mechanism; it does not switch anything yet. */
+    smp_sched_enabled = 1;
 #endif
 
     println("[ok] kernel ready, starting init...");

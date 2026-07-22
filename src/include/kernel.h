@@ -851,6 +851,9 @@ void timer_handler(void);
 void pit_init(void);
 void smp_maybe_shootdown(uint64_t v);
 int smp_get_online_count(void);
+/* ACPI MADT CPU enumeration (acpi.c): fills apic_ids[] up to max_ids and returns
+ * the enabled-CPU count (>=1), or -1 if the firmware tables can't be parsed. */
+int acpi_detect_cpus(uint8_t *apic_ids, int max_ids);
 
 /* Preemptive scheduling (scheduler.c). preempt_on_tick is called from the timer
  * ISR with the current trap-frame pointer and the interrupted CS; it returns the

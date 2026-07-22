@@ -138,6 +138,16 @@ void ap_idle_loop(void) {
     for (;;) __asm__ volatile ("sti; hlt");
 }
 
+/* Top (highest address) of CPU `cpu`'s idle stack — the one ap_entry64 handed it.
+ * Reused by the scheduler when a running CPU must drop back to idle mid-operation
+ * (a task blocked with no peer to switch to): the CPU returns to ap_idle_loop on
+ * this stack and lets a timer tick reschedule the woken task. Slot 0 is the BSP's;
+ * it is otherwise unused on the AP path, so the BSP idles here too. */
+uint8_t *ap_idle_stack_top(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) cpu = 0;
+    return &ap_idle_stacks[0][0] + (uintptr_t)(cpu + 1) * AP_IDLE_STACK_SIZE;
+}
+
 /* 64-bit C entry for every AP, reached from the trampoline on the AP's private
  * idle stack.  Adopt the shared kernel GDT/IDT, install a per-CPU TSS (own RSP0
  * + IST fault stacks), enable the local APIC + its periodic timer, check in, and

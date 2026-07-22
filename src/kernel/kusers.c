@@ -605,6 +605,10 @@ void h_get_pass(struct interrupt_frame64 *r) {
     uint32_t max_len = r->rcx;
     if (max_len > 127) max_len = 127;
 
+    /* Fail closed while a ring-3 console server owns the serial UART (see
+     * h_get_line): the kernel must not race the owner reading a typed password. */
+    if (console_hw_owned()) { r->rax = (uint32_t)-1; return; }
+
     char line[128];
     uint32_t len = 0;
     char ch;

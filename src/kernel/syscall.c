@@ -32,6 +32,12 @@ static void h_get_line(struct interrupt_frame64 *r) {
     if (!c) c = cap_lookup(3, CAP_RIGHT_READ);
     if (!c) { r->rax = -1; return; }
 
+    /* Fail closed while a ring-3 console server owns the serial UART: a kernel-side
+     * read here would race the owner's read and steal bytes from a typed line. The
+     * caller must route input through the console server (see userspace sh_get_line);
+     * this in-kernel path is only for before handoff / after the owner has died. */
+    if (console_hw_owned()) { r->rax = (uint32_t)-1; return; }
+
     void *user_dest = (void *)(addr_t)r->rbx;
     uint32_t max_len = 127;
     char line[128];
@@ -246,6 +252,9 @@ static void h_read(struct interrupt_frame64 *r) {
     size_t len = r->rdx;
 
     if (fd == 0) {
+        /* Fail closed while a ring-3 console server owns the serial UART (see
+         * h_get_line): the kernel must not be a second reader. */
+        if (console_hw_owned()) { r->rax = (uint32_t)-1; return; }
         char line[128];
         uint32_t got = 0;
         while (got < len && got < 127) {

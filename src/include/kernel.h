@@ -844,6 +844,13 @@ void secure_zero(void *p, size_t n);
 void spin_lock(spinlock_t *lock);
 void spin_unlock(spinlock_t *lock);
 void dump_kernel_log(void);
+/* Console hardware ownership handoff: a ring-3 driver that takes native port I/O
+ * over the console becomes the sole writer (console_set_owner), and the kernel's
+ * print() stops touching serial+VGA until that task dies (console_clear_owner),
+ * so the two writers never interleave on the shared UART under SMP. */
+void console_set_owner(int tid);
+void console_clear_owner(int tid);
+int  console_hw_owned(void);
 void syscall_handler(struct interrupt_frame64 *r);
 void resume_shell_after_fault(void);
 void print_hex64(uint64_t v);

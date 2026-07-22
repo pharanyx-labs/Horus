@@ -8,6 +8,16 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — console_server no longer loses a startup race with its own endowment under SMP
+
+An intermittent multi-core boot hang (`make smoke-console-smp` failing with `CONSOLE_SELFTEST: FAIL grant`, then timing out before the shell banner) was a spawn/endow ordering race, not a capability-system fault.
+
+`init` launches the console server with `sys_spawn_named("console_server")` — which makes the child **runnable immediately** — and only *then* grants it the IPC gate and `CAP_IO_DEVICE`. The server's very first action is `sys_ioport_grant()`, which requires that capability. On one core the child cannot run until init blocks, so the grants always landed first; with SMP default-on the child can execute on another core *before* the grant arrives, be correctly refused for a capability it is about to be given, print `FAIL grant` and park forever. Nothing then drove the console, so the boot timed out.
+
+The server now **retries the startup port-I/O grant** (bounded, `CON_GRANT_RETRIES`, yielding between attempts) so it waits for authority that is on its way. This waits for a capability to *arrive*; it never widens one — the kernel's `CAP_IO_DEVICE` check is untouched, and after the bound the server fails closed exactly as before. Because init grants the IPC gate (slot 3) before `CAP_IO_DEVICE` (slot 10), a successful port grant also implies the gate is in place.
+
+Verified: `smoke-console-smp` run three times in a row (previously intermittent), plus `smoke-console`, `smoke-console-isolation` and `smoke-session-smp`.
+
 ### Added — machine-checked proofs that revocation hits exactly the target's subtree (audit A1)
 
 The descendant-only revocation fix shipped with unit tests that *sample* serials; these two Kani harnesses prove the same invariants over the **entire** input space (every `u32` serial triple), by symbolic execution:

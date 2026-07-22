@@ -363,6 +363,65 @@ bool cap_move(uint32_t dest_slot, uint32_t src_slot) {
     return false;
 }
 
+/* Grant (delegate) the caller's capability at `src_slot` into a supervised
+ * target task's cspace at `dest_slot`, through the same locked, accounted,
+ * lineage-correct discipline every other cap write uses.
+ *
+ * The authority to grant (a CAP_TCB on the target, or admin) is enforced by the
+ * caller (h_cap_grant), exactly as for SYS_KILL. This routine owns the cspace
+ * read-modify-write: it holds `cap_lock` across the source lookup and the
+ * destination store, so it cannot race a concurrent `rust_cap_revoke_global`
+ * sweep under SMP (the bug the old raw `tasks[target].cspace[dest] = *src` store
+ * had); it counts a newly-occupied slot against the TARGET's MAX_CAPS_PER_TASK
+ * ceiling (the old store never did, so granted caps were invisible to the
+ * ceiling and desynced the revoke-time decrement); and it reduces rights to
+ * `new_rights & src.rights` while recording the grantor's cap as the grantee's
+ * parent (`badge = src.serial`), so the derivation tree stays well-formed and a
+ * later revoke of the grantor sweeps the grantee too.
+ *
+ * NB: unlike cap_mint/cap_transfer there is deliberately NO
+ * `dest_slot < KERNEL_RESERVED_CAPS` floor — grant writes into a *child* the
+ * caller already dominates (it holds the child's CAP_TCB), and endowing a
+ * child's low slots (e.g. its IPC gate at slot 3) is exactly what grant is for.
+ * The reserved-slot floor protects a task's own primordial slots against its own
+ * mint/transfer; it does not apply to a supervisor endowing a subordinate.
+ *
+ * Returns false on a missing/invalid source, an out-of-range slot, a missing
+ * cspace, or when the target is at its capability ceiling. */
+bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
+    if (target_pid <= 0 || target_pid >= MAX_TASKS) return false;
+    if (src_slot >= CNODE_SIZE || dest_slot >= CNODE_SIZE) return false;
+
+    spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
+
+    int cur = get_current_task();
+    struct capability *src_cspace = tasks[cur].cspace;
+    uint32_t src_sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+    struct capability *dst_cspace = tasks[target_pid].cspace;
+    uint32_t dst_sz = tasks[target_pid].cspace_size ? tasks[target_pid].cspace_size : CNODE_SIZE;
+    if (!src_cspace || !dst_cspace) { spin_unlock(&cap_lock); return false; }
+
+    /* Authoritative source lookup under the lock: rights(0) => possession is
+     * enough, but the type/serial/lineage-generation validity is enforced (the
+     * same checks cap_lookup applies), so a revoked or stale source is refused. */
+    struct capability *src = rust_cap_lookup(src_cspace, src_sz, src_slot, 0);
+    if (src && !rust_lineage_check(src->object, src->generation)) src = NULL;
+    if (!src) { spin_unlock(&cap_lock); return false; }
+
+    bool was_null = (dest_slot < dst_sz) && (dst_cspace[dest_slot].type == CAP_NULL);
+    if (was_null && tasks[target_pid].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+
+    bool ok = rust_cap_grant_into(src, dst_cspace, dst_sz, dest_slot, new_rights,
+                                  &cap_next_serial);
+    if (ok && was_null) tasks[target_pid].caps_in_use++;
+    spin_unlock(&cap_lock);
+    return ok;
+}
+
 bool cap_revoke(uint32_t slot) {
     spin_lock(&cap_lock);
     if (slot >= CNODE_SIZE) {

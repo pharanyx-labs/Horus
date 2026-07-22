@@ -129,15 +129,24 @@ same-`object` peers.
 - Extend the Kani harnesses to the revised revocation once the shared mutable state
   is modelled (see Track 5).
 
-### 1.2 — Route `SYS_CAP_GRANT` through the locked discipline (A2)
+### 1.2 — Route `SYS_CAP_GRANT` through the locked discipline (A2) — *done*
 
-Replace the raw `tasks[target].cspace[dest_slot] = granted` store with a locked
-helper mirroring `cap_transfer` / `cap_install_endpoint`: enforce the
-`dest_slot >= KERNEL_RESERVED_CAPS` floor, do the was-null `caps_in_use` accounting
-against `MAX_CAPS_PER_TASK`, and add an optional `new_rights` mask so a supervisor
-can **reduce** rights on delegation (and, by default, not propagate
-`CAP_RIGHT_REVOKE`). This also shrinks the A1 blast radius, since a granted copy
-without `REVOKE` cannot trigger the over-broad sweep.
+Replaced the raw `tasks[target].cspace[dest_slot] = granted` store with
+`cap_grant_into` (C) → `rust_cap_grant_into` (safe Rust): the source lookup and
+destination store now happen together under `cap_lock` (SMP-safe against a
+concurrent revoke), the write is counted against the target's `caps_in_use`
+ceiling, rights are masked to `new_rights & src.rights` (rights-reduction plumbing
+in place; the 3-arg `SYS_CAP_GRANT` ABI still passes full rights for
+compatibility), and the grantee records the grantor's cap as its parent
+(`badge = src.serial`) so the derivation tree the A1 fix relies on is well-formed.
+The originally-reported "reserved-slot floor" sub-point was withdrawn — grant
+legitimately endows a dominated child's low slots (e.g. a server's IPC gate at slot
+3). Covered by new Rust unit tests and the `smoke-proc` / `smoke-captest` /
+`smoke-init-fs` / `smoke-session` self-tests.
+
+*Follow-up:* expose the `new_rights` mask through the syscall ABI (a 4th argument
+or a dedicated `SYS_CAP_GRANT_RIGHTS`) so a supervisor can delegate with reduced
+rights and, by default, without `CAP_RIGHT_REVOKE`.
 
 ### 1.3 — Make lineage generations exact (A3)
 

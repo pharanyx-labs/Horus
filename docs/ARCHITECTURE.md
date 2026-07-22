@@ -218,8 +218,9 @@ The system additionally prevents use-after-revoke via a **lineage table** (`LINE
 > broader than the least-privilege-delegation model intends. The planned fix is an
 > explicit capability derivation tree (CDT) so `revoke(T)` deletes exactly `T`'s
 > subtree. Related: the lineage-generation table is a lossy 4096-slot hash keyed by
-> `object` (finding A3), and `SYS_CAP_GRANT` copies full rights and skips the
-> locked reserved-slot/`caps_in_use` discipline (finding A2). See
+> `object` (finding A3, open); `SYS_CAP_GRANT` now goes through the locked,
+> `caps_in_use`-accounted, rights-masked `cap_grant_into` path with a well-formed
+> derivation-tree badge (finding A2, fixed). See
 > [AUDIT-2026-07.md](AUDIT-2026-07.md) and [ROADMAP.md](ROADMAP.md) Track 1.
 
 ---

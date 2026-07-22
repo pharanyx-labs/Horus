@@ -101,16 +101,19 @@ escalation — but it breaks the least-privilege-delegation contract the design
 advertises. The fix is a proper capability derivation tree (Roadmap Track 1), so
 `revoke(T)` deletes exactly `T`'s subtree.
 
-### Capability grant skips the locked write discipline (audit A2)
+### Capability grant now uses the locked write discipline (audit A2 — fixed)
 
-`SYS_CAP_GRANT` performs a raw cspace store rather than going through the locked
-cap-write path that `cap_mint`/`cap_transfer`/`cap_install_endpoint` all use. It
-does **not** enforce the `KERNEL_RESERVED_CAPS` slot floor (so a supervisor could
-overwrite a child's reserved slots 0–3), does **not** account the write against
-`caps_in_use` / `MAX_CAPS_PER_TASK`, and copies the source's **full rights**
-including `CAP_RIGHT_REVOKE` with no reduction. Being routed through the locked mint
-path with an optional rights mask (Roadmap Track 1); this also shrinks the A1 blast
-radius, since a granted copy without `REVOKE` cannot trigger the over-broad sweep.
+`SYS_CAP_GRANT` previously performed a raw cspace store: the source was looked up
+outside `cap_lock` and then written under it (an SMP race with a concurrent
+revoke), the write was not accounted against the target's `caps_in_use` /
+`MAX_CAPS_PER_TASK` ceiling, and it left a malformed lineage badge. It now routes
+through `cap_grant_into`/`rust_cap_grant_into`, which does the source lookup and
+destination store together under `cap_lock`, counts the write, masks rights to the
+source's, and records a well-formed derivation-tree parent. (The audit's original
+"reserved-slot floor" sub-point was withdrawn — grant legitimately endows a
+dominated child's low slots, e.g. a server's IPC gate at slot 3.) A residual
+follow-up is exposing the rights-reduction mask through the syscall ABI so grant
+can drop `CAP_RIGHT_REVOKE` on delegation by default.
 
 ### Lineage-generation table is a lossy hash (audit A3)
 

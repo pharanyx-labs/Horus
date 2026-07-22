@@ -63,11 +63,13 @@ static void lapic_enable_bsp(void) { lapic_enable(); }
  * Called from the vector-0x40 LAPIC-timer path in idt.c. */
 void lapic_eoi(void) { lapic_write(0xB0, 0); }
 
+#ifdef SMP
+/* Bounded pause-spin. Only the AP-bringup and TLB-shootdown paths use it, both
+ * SMP-only, so it lives inside the guard (an SMP=0 build would flag it unused). */
 static void smp_busy_delay(int iters) {
     for (volatile int d = 0; d < iters; d++) __asm__ volatile ("pause");
 }
 
-#ifdef SMP
 /* Per-CPU idle stacks. APs index by LAPIC id (see ap_trampoline.S), so MAX_CPUS
  * slots cover ids 0..MAX_CPUS-1; slot 0 (the BSP's) is unused on this path.
  * An AP whose id has no slot parks in the trampoline rather than running off

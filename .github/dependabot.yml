@@ -22,15 +22,23 @@ updates:
       - "github-actions"
     # Reviewers can be added once team grows
 
-  # Future: Rust / Cargo (uncomment when dependencies are added)
-  # - package-ecosystem: "cargo"
-  #   directory: "/rust"
-  #   schedule:
-  #     interval: "weekly"
-  #   open-pull-requests-limit: 3
-  #   labels:
-  #     - "dependencies"
-  #     - "rust"
+  # Rust / Cargo. The crate has no external runtime dependencies today, but this
+  # keeps the (dev/build) dependency graph and Cargo.lock monitored, and lights up
+  # the moment a dependency is added — enabled per the July 2026 audit (P3).
+  - package-ecosystem: "cargo"
+    directory: "/rust"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(rust)"
+    labels:
+      - "dependencies"
+      - "rust"
 
   # Future: Docker (if containerized builds are adopted)
   # - package-ecosystem: "docker"

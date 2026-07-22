@@ -411,7 +411,11 @@ static int try_man_from_fs(const char *name) {
     unsigned char *buf = malloc(size);
     if (!buf) return 0;
     if (sh_read_file(ino, buf, size) != 0) { free(buf); return 0; }
-    sys_write(1, (const char *)buf, size);                /* the page is already formatted */
+    /* The page is already formatted; emit it through the console server (with the
+     * in-kernel fallback) like all other shell output — a raw sys_write(1) would be
+     * swallowed while the ring-3 console_server owns the hardware. */
+    if (con_write_all((const char *)buf, size) != 0)
+        sys_write(1, (const char *)buf, size);
     free(buf);
     return 1;
 }

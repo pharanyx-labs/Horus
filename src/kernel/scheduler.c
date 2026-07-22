@@ -5,6 +5,17 @@ int current_task = 0;
 int percpu_current_task[MAX_CPUS];
 
 #ifdef SMP
+/* Per-CPU "parked in the idle loop" flag. Set only when a CPU is dropped back to
+ * ap_idle_loop with no task to run (enter_cpu_idle); cleared the moment a real
+ * task is made current on it (set_current_task with v > 0). It is what lets the
+ * BSP be rescheduled out of a genuine idle — a task that blocked it there is woken
+ * cross-core and must be picked back up — WITHOUT reintroducing preemption of the
+ * BSP's real ring-0 kernel work (e.g. the SMP self-test's result-spin loop, which
+ * also runs with current-task 0 but must run to completion). */
+int percpu_idle[MAX_CPUS];
+#endif
+
+#ifdef SMP
 /* Which CPU is currently running each task (-1 == not running anywhere). The SMP
  * scheduler's mutual-exclusion guard: preempt_on_tick only ever claims a task
  * whose entry is -1, so a task's single kernel stack + saved trap frame are
@@ -392,7 +403,14 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     int cpu = this_cpu();
     if (!smp_sched_enabled) return frame_rsp;
     int ring3 = ((interrupted_cs & 3) == 3);
-    if (!ring3 && cpu == 0) return frame_rsp;
+    /* Protect the BSP's ring-0 kernel work from the timer (it preserves the
+     * single-CPU boot flow). Exception: a BSP genuinely parked in ap_idle_loop
+     * (percpu_idle) must still be reschedulable, so a task that blocked it into
+     * idle and was then woken cross-core gets picked back up here instead of the
+     * BSP stranding idle forever. Syscalls run with interrupts cleared, so a ring-0
+     * tick never lands mid-syscall; the only ring-0 ticks are on idle or in-kernel
+     * spin loops (the SMP self-test), and only the former sets percpu_idle. */
+    if (!ring3 && cpu == 0 && !percpu_idle[cpu]) return frame_rsp;
 
     sched_raw_lock();
     int cur = percpu_current_task[cpu];
@@ -445,6 +463,39 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 #endif
 }
 
+#ifdef SMP
+extern uint8_t *ap_idle_stack_top(int cpu);   /* smp.c */
+extern void ap_idle_loop(void);               /* smp.c */
+
+/* Return this CPU to its idle loop, leaving no task current on it. Used when a
+ * task blocks (IPC/wait/notif) but no other task is runnable here: under SMP the
+ * awaited wake arrives from another core, so this CPU must idle and let a timer
+ * tick reschedule the woken task — it must NOT fabricate a reply by resuming the
+ * blocked caller with an unfilled buffer (which split typed console lines and made
+ * logins fail intermittently under SMP). Fabricates the same ring-0 trap frame the
+ * ISR epilogue expects, on this CPU's idle stack, resuming at ap_idle_loop with
+ * interrupts enabled. Caller holds sched_raw_lock and must publish the blocked task
+ * as schedulable (task_running_cpu = -1) before calling. */
+static uint64_t enter_cpu_idle(int cpu) {
+    uint8_t *top = ap_idle_stack_top(cpu);
+    struct interrupt_frame64 *f =
+        (struct interrupt_frame64 *)(void *)(top - sizeof(struct interrupt_frame64));
+    f->r15 = f->r14 = f->r13 = f->r12 = f->r11 = f->r10 = f->r9 = f->r8 = 0;
+    f->rbp = f->rdi = f->rsi = f->rdx = f->rcx = f->rbx = f->rax = 0;
+    f->int_no = 0;
+    f->err_code = 0;
+    f->rip    = (uint64_t)(uintptr_t)ap_idle_loop;
+    f->cs     = 0x08;
+    f->rflags = 0x202;                 /* IF=1: idle with interrupts on */
+    f->rsp    = (uint64_t)(uintptr_t)top;
+    f->ss     = 0x10;
+    percpu_current_task[cpu] = 0;       /* this CPU now idle (no task) */
+    percpu_idle[cpu] = 1;               /* ...and parked in ap_idle_loop */
+    if (cpu == 0) current_task = 0;
+    return (uint64_t)(uintptr_t)f;
+}
+#endif
+
 /* Block/switch with the concurrent-IPC publish order:
  *
  *   1. Write saved_ksp (the live trap frame) first.
@@ -493,12 +544,15 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         }
     }
     if (next < 0) {
-        /* Nothing else runnable: un-publish and resume self (same fallback as
-         * before — the caller retries from ring 3 once another task exists). */
-        ipc_unpublish_block(blocked_task);
-        task_running_cpu[blocked_task] = cpu;
+        /* No task to switch to on this CPU. blocked_task stays genuinely blocked
+         * and schedulable by any CPU (task_running_cpu already -1 above); return
+         * this CPU to idle so a timer tick reschedules the woken task once its
+         * cross-core reply lands. Resuming the caller here instead — the old
+         * single-CPU fallback — fabricated a zero-length reply into its unfilled
+         * buffer, which under SMP split console input and broke logins. */
+        uint64_t idle = enter_cpu_idle(cpu);
         sched_raw_unlock();
-        return frame_rsp;
+        return idle;
     }
 
     task_running_cpu[next] = cpu;
@@ -737,6 +791,14 @@ void task_teardown(int id) {
      * cannot keep notifying a dead task's slot. */
     irq_notify_clear_task(id);
 
+    /* Revoke native port I/O: task slots are reused without being zeroed (do_spawn
+     * only re-inits selected fields), and io_allowed is otherwise never cleared, so
+     * a fresh task could inherit a dead driver's port grant. Clearing it here also
+     * releases the console back to the kernel if this was the console owner, so the
+     * shell's in-kernel console fallback works again after a console_server crash. */
+    tasks[id].io_allowed = 0;
+    console_clear_owner(id);
+
     int w = tasks[id].waiter;
     if (w >= 0 && w < MAX_TASKS) {
         /* Unblock a SYS_WAIT waiter: make it runnable and resumable so the
@@ -856,6 +918,9 @@ void set_current_task(int v) {
     int c = this_cpu();
     if (c < 0 || c >= MAX_CPUS) c = 0;
     percpu_current_task[c] = v;
+#ifdef SMP
+    if (v > 0) percpu_idle[c] = 0;   /* running a real task: no longer idle-parked */
+#endif
 
     if (c == 0) current_task = v;
 

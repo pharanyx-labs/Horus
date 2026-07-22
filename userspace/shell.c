@@ -13,6 +13,17 @@ static void scrub(char *buf, size_t n) {
     while (n--) *p++ = 0;
 }
 
+/* Retry budget for a console-server IPC round-trip. A live server on another core
+ * answers on the first try; this only matters under SMP contention, where the
+ * shell and the server rendezvous on a single-slot mailbox and the timing does not
+ * always line up in a handful of yields. The kernel now fails its own console path
+ * closed while the server owns the hardware (so it can't race the server on the
+ * UART), which means there is no working in-kernel fallback while the server is
+ * alive — these calls MUST reach it. Waiting is safe: if the server has actually
+ * died, task teardown releases console ownership, the kernel path re-opens, and the
+ * fallback below then works. Each try yields, so this never busy-spins. */
+#define CON_MAX_RETRY 20000
+
 /* Send `len` bytes to the ring-3 console_server (CON_OP_WRITE, well-known endpoint
  * CON_EP_REQ) using the shell's own default endpoint cap. Returns 0 if the server
  * accepted the whole write, -1 to fall back to the in-kernel console — so console
@@ -33,7 +44,7 @@ static int con_write_all(const char *s, size_t len) {
         for (size_t i = 0; i < n; i++) con_rq.data[i] = (uint8_t)s[off + i];
 
         int rc = -1;
-        for (int tries = 0; tries < 8; tries++) {
+        for (int tries = 0; tries < CON_MAX_RETRY; tries++) {
             rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP,
                               &con_rq, sizeof(con_rq), &con_rp);
             if (rc >= 0) break;
@@ -64,7 +75,7 @@ static int con_read_line(uint32_t op, char *buf, unsigned max) {
     con_rq.op    = op;
     con_rq.len   = max;
     int rc = -1;
-    for (int tries = 0; tries < 8; tries++) {
+    for (int tries = 0; tries < CON_MAX_RETRY; tries++) {
         rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &con_rq, sizeof(con_rq), &con_rp);
         if (rc >= 0) break;
         sys_yield();
@@ -400,7 +411,11 @@ static int try_man_from_fs(const char *name) {
     unsigned char *buf = malloc(size);
     if (!buf) return 0;
     if (sh_read_file(ino, buf, size) != 0) { free(buf); return 0; }
-    sys_write(1, (const char *)buf, size);                /* the page is already formatted */
+    /* The page is already formatted; emit it through the console server (with the
+     * in-kernel fallback) like all other shell output — a raw sys_write(1) would be
+     * swallowed while the ring-3 console_server owns the hardware. */
+    if (con_write_all((const char *)buf, size) != 0)
+        sys_write(1, (const char *)buf, size);
     free(buf);
     return 1;
 }

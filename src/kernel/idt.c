@@ -320,6 +320,12 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
         if ((frame->cs & 3) != 0 && get_current_task() > 0) {
             int cur = get_current_task();
             uint32_t signum = (vector == 6) ? SIG_ILL : SIG_SEGV; /* #UD vs other */
+            /* Fail-safe: a faulting console owner loses the console, so the kernel
+             * drives it again. This holds whether the task is torn down (below) or
+             * survives via a fault-signal handler — a driver that just faulted may
+             * be compromised and must not keep muting the kernel's own console
+             * (which is how the blast-radius self-test reports containment). */
+            console_clear_owner(cur);
             if (!try_deliver_fault_signal(frame, cur, signum, 0)) {
                 int killed = cur;
                 /* Tear the task down — marks it dead AND wakes any SYS_WAIT
@@ -620,6 +626,14 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
     if (allowed && handle_demand_page_fault(fault_addr, err) == 0) {
         return 0;
     }
+
+    /* Fail-safe: a real ring-3 fault in the console owner reclaims the console for
+     * the kernel, whether the task then survives via a handler (below) or is torn
+     * down (task_teardown, further down). A driver that just faulted may be
+     * compromised and must not keep muting the kernel's own console — which is how
+     * the blast-radius self-test reports containment. (#PF is handled here, ahead
+     * of the generic ring-3 fault path, so the reclaim is repeated in both.) */
+    if (cur > 0 && (f64->cs & 3)) console_clear_owner(cur);
 
     /* Deliver SIGSEGV to a registered ring-3 handler instead of killing the
      * task (and without printing the fault banner). Only for a fault the

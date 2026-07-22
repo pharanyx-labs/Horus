@@ -421,15 +421,52 @@ static int ensure_dir_path(const char *path) {
     return cur;
 }
 
+static int has_prefix(const char *s, const char *pre) {
+    while (*pre) { if (*s != *pre) return 0; s++; pre++; }
+    return 1;
+}
+
+/* Destination allowlist for boot modules (defence-in-depth, audit A4 companion).
+ * A module's cmdline is its destination path and each module becomes a ROOT-OWNED
+ * file — an executable 0755 under /bin. Constrain WHERE a module may land so a
+ * stray or tampered module list cannot plant a root-owned file outside the two
+ * intended trees. Accept only: a bare name (no '/', defaults under /bin), a path
+ * under `bin/`, or a path under `usr/share/man/`. Reject absolute paths and any
+ * empty, `.` or `..` component, so no entry can be named to climb out. Module
+ * *content* is still trusted to the boot chain — verifying that is the open part
+ * of A4 (see docs/ROADMAP.md Track 2.1). */
+static int module_dest_ok(const char *path) {
+    if (!path || path[0] == 0 || path[0] == '/') return 0;
+    int ncomp = 0;
+    const char *p = path;
+    while (*p) {
+        const char *start = p;
+        while (*p && *p != '/') p++;
+        int len = (int)(p - start);
+        if (len == 0) return 0;                                   /* "//" or trailing '/' */
+        if (len == 1 && start[0] == '.') return 0;                /* "." */
+        if (len == 2 && start[0] == '.' && start[1] == '.') return 0; /* ".." */
+        ncomp++;
+        if (*p == '/') p++;
+    }
+    if (ncomp == 1) return 1;                                     /* bare name -> /bin */
+    return has_prefix(path, "bin/") || has_prefix(path, "usr/share/man/");
+}
+
 /* Copy boot module `mod_index` (size bytes) to the '/'-relative destination `path`
  * (e.g. "bin/tail" or "usr/share/man/tail"): create any missing parent directories,
  * then write a root-owned file at the leaf. A bare name with no '/' defaults under
  * /bin (the common case — a runnable program). Executables under /bin are 0755;
  * everything else (man pages, config) is 0644. Idempotent: a leaf already present
  * at the right size is left alone. Returns 1 if installed, 0 if skipped (current),
- * -1 on failure (including the volume filling up). Runs entirely inside the server,
- * so the store primitives are called directly rather than over IPC. */
+ * -1 on failure (including the volume filling up, or a disallowed destination path).
+ * Runs entirely inside the server, so the store primitives are called directly
+ * rather than over IPC. */
 static int install_module_at(const char *path, uint32_t mod_index, uint32_t size) {
+    if (!module_dest_ok(path)) {
+        println("[fs_server] refusing boot module with a disallowed destination path");
+        return -1;
+    }
     const char *slash = 0;
     for (const char *q = path; *q; q++) if (*q == '/') slash = q;
 

@@ -770,8 +770,18 @@ static void h_boot_module_info(struct interrupt_frame64 *r) {
     if (uout && index < count) {
         const struct boot_module *m = boot_module_get(index);
         struct boot_module_info info;
-        info.size = (uint32_t)(m->end - m->start);
-        for (int i = 0; i < BOOT_MODULE_INFO_NAME_MAX; i++) info.name[i] = m->name[i];
+        /* An unverified module (no match in the kernel's embedded SHA-256
+         * manifest — audit A4) is reported as an empty slot: zero size, empty
+         * name. The index stays valid so module numbering is stable, but the
+         * provisioning loop skips it exactly as it skips a malformed one, and
+         * SYS_BOOT_MODULE_READ refuses its payload outright. */
+        if (m->verified) {
+            info.size = (uint32_t)(m->end - m->start);
+            for (int i = 0; i < BOOT_MODULE_INFO_NAME_MAX; i++) info.name[i] = m->name[i];
+        } else {
+            info.size = 0;
+            for (int i = 0; i < BOOT_MODULE_INFO_NAME_MAX; i++) info.name[i] = 0;
+        }
         info.name[BOOT_MODULE_INFO_NAME_MAX - 1] = 0;
         if (copy_to_user(uout, &info, sizeof(info)) != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
     }
@@ -792,6 +802,11 @@ static void h_boot_module_read(struct interrupt_frame64 *r) {
 
     const struct boot_module *m = boot_module_get(index);
     if (!m) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    /* Refuse a payload that did not match the kernel's embedded SHA-256 manifest
+     * (audit A4). Verification ran once at boot, before userspace existed, so this
+     * is a flag test — and it is the choke point: a module that fails it can never
+     * be read, hence never provisioned into /bin as a root-owned executable. */
+    if (!m->verified) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint32_t size = (uint32_t)(m->end - m->start);
     if (offset >= size) { r->rax = 0; return; }          /* at/after end: 0 bytes */
     uint32_t avail = size - offset;

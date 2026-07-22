@@ -1322,4 +1322,78 @@ mod kani_proofs {
         assert!(minted & !src_rights == 0, "minted rights must be a subset of the source's");
         assert!(minted == (req_rights & src_rights), "minted rights must be requested AND source");
     }
+
+    /// Build a 3-capability derivation chain (parent -> child -> grandchild) in
+    /// one cspace, with caller-chosen serials. `object` is 0 throughout so the
+    /// proofs never touch the shared LINEAGE_GEN static.
+    fn chain(p: u32, c: u32, g: u32) -> [Capability; 3] {
+        [
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: 0, serial: p, generation: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: p, serial: c, generation: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: c, serial: g, generation: 0 },
+        ]
+    }
+
+    /// AUDIT A1, the core invariant, proved over the ENTIRE serial space:
+    /// revoking a *derived* capability never nulls its ancestors. For every
+    /// distinct (parent, child, grandchild) serial triple, revoking the
+    /// grandchild's subtree leaves the parent and the child intact and usable,
+    /// and removes exactly the grandchild.
+    ///
+    /// This is the property the old equivalence-set matcher violated: it matched
+    /// the target's `badge` against other caps' `serial`, so revoking a child
+    /// also nulled its parent. A unit test samples a few serials; this covers all
+    /// of them.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn revoke_descendant_never_nulls_ancestors() {
+        let p: u32 = kani::any();
+        let c: u32 = kani::any();
+        let g: u32 = kani::any();
+        // Serials are unique and non-zero by construction (assign_fresh_serial).
+        kani::assume(p != 0 && c != 0 && g != 0);
+        kani::assume(p != c && c != g && p != g);
+
+        let mut cs = chain(p, c, g);
+        let desc = CSpaceDesc {
+            caps: cs.as_mut_ptr(),
+            size: 3,
+            caps_in_use: core::ptr::null_mut(),
+        };
+        // Revoke the LEAF (grandchild) subtree.
+        unsafe { revoke_subtree(&desc as *const CSpaceDesc, 1, g, 0) };
+
+        assert!(cs[0].typ != CAP_NULL, "revoking a descendant must not null the parent");
+        assert!(cs[0].serial == p, "the parent must be left byte-for-byte intact");
+        assert!(cs[1].typ != CAP_NULL, "revoking a descendant must not null its own parent");
+        assert!(cs[1].serial == c, "the intermediate cap must be left intact");
+        assert!(cs[2].typ == CAP_NULL, "the revoked capability itself must be nulled");
+    }
+
+    /// The other half: revocation is COMPLETE downward. Revoking the root of a
+    /// derivation chain nulls every descendant — the child and the grandchild —
+    /// for every distinct serial triple, so no derived authority can outlive its
+    /// ancestor. Together with the proof above this pins revocation to exactly
+    /// the target's subtree: no more (no ancestors) and no less (all descendants).
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn revoke_root_nulls_every_descendant() {
+        let p: u32 = kani::any();
+        let c: u32 = kani::any();
+        let g: u32 = kani::any();
+        kani::assume(p != 0 && c != 0 && g != 0);
+        kani::assume(p != c && c != g && p != g);
+
+        let mut cs = chain(p, c, g);
+        let desc = CSpaceDesc {
+            caps: cs.as_mut_ptr(),
+            size: 3,
+            caps_in_use: core::ptr::null_mut(),
+        };
+        unsafe { revoke_subtree(&desc as *const CSpaceDesc, 1, p, 0) };
+
+        assert!(cs[0].typ == CAP_NULL, "the revoked root must be nulled");
+        assert!(cs[1].typ == CAP_NULL, "a direct child must be revoked with its parent");
+        assert!(cs[2].typ == CAP_NULL, "a grandchild must be revoked transitively");
+    }
 }

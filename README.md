@@ -142,7 +142,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
 | ELF loader parse (header, program headers, i386 + x86-64 relocations) in memory-safe Rust | ✅ Working |
 | Driver privilege separation — VGA/serial console runs as a ring-3 server (`console_server`, `CAP_IO_DEVICE`) | ✅ Working |
-| Symmetric multiprocessing (AP bringup, per-CPU scheduler, TLB-shootdown IPIs) | ✅ Working *(behind `SMP=1`)* |
+| Symmetric multiprocessing (AP bringup, per-CPU preemption, TLB-shootdown IPIs) | ✅ Working *(default-on; `SMP=0` compiles it out)* |
 | Rust security-core unit tests (78) + GitHub Actions CI (41 jobs, 38 gating) | ✅ Working |
 | Headless QEMU self-tests (31): boot, kernel W^X sweep (single- and multi-core), CR4 protections, CR4.TSD, E820 pool sizing, ELF/W^X (32- and 64-bit), ASLR, preemption, signals, process-control, COW, notifications, address-space reclaim, capability conformance, session, SMP, fs (×7), newlib, the coreutils shipped from the filesystem as boot modules (modules, coreutils-shell), and the driver-isolation suite (map-phys, port-I/O, IRQ bridge, console server, console fault containment) | ✅ Working |
 | Scripted integration session: drives the real ring-3 shell over serial (auth + least privilege) | ✅ Working |
@@ -151,7 +151,7 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 | Async notifications (`SYS_NOTIFY` / `SYS_WAIT_NOTIFY`, badge-carrying) | ✅ Working |
 | Endpoint-based IPC (single-slot, non-blocking) | 🟡 Partial |
 | Copy-on-write paging | 🟡 Partial |
-| SMP as default (per-CPU run queues, priorities) | ⬜ Not yet (works behind `SMP=1`) |
+| SMP scheduler maturity (per-CPU run queues, priorities, flush-on-switch) | ⬜ Not yet (SMP itself is default-on) |
 
 ---
 
@@ -193,7 +193,7 @@ make reproducible-build # byte-for-byte deterministic kernel.elf
 | `DEBUG_SHELL` | `0` | Enable the in-kernel debug shell |
 | `MINIMAL_SECURE` | `0` | Strip non-essential kernel features (smaller attack surface) |
 | `RUST_ENABLED` | `1` | Link the Rust security core (`0` uses C stub shims) |
-| `SMP` | `0` | Bring up the application processors (multi-core) |
+| `SMP` | `1` | Bring up the application processors (multi-core); default-on. `SMP=0` compiles the subsystem out and boots single-core |
 | `STORAGE_ATA` | `0` | Prefer the ATA path in smoke/self-test builds; runtime always probes for a disk and falls back to the RAM vdisk when none is present |
 | `*_SELFTEST` | `0` | Boot-time self-tests: `ELF_`, `ELF64_`, `ASLR_`, `PREEMPT_`, `SIGNAL_`, `PROC_`, `COW_`, `NOTIFY_`, `FS_`, `INIT_FS_`, `PERSIST_`, `PERM_`, `CONC_`, `BIGFILE_`, `NEWLIB_`, `SMP_` |
 

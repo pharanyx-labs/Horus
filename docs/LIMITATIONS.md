@@ -127,25 +127,36 @@ use. This is an availability effect (it fails safe) and undermines the precision
 "single source of truth" framing claims; the fix is per-object exact generation
 storage (Roadmap Track 1).
 
-### Boot modules are unsigned (audit A4)
+### Boot modules are unsigned (audit A4 — content unverified; destination now constrained)
 
 Programs and man pages that ship as GRUB multiboot2 modules are written into the
 encrypted store as **root-owned executables** and run by the shell, trusted purely
-by boot-chain provenance. There is no per-module signature or hash manifest, and the
-reproducible-build hash covers only the *embedded* binaries (`init`, `shell`,
-`fs_server`, …), **not** the modules — so anyone able to alter the ISO/GRUB config
-can inject an arbitrary root-owned binary into `/bin`. A signed manifest verified
-in-kernel is planned (Roadmap Track 2), as the precursor to measured boot.
+by boot-chain provenance. There is still no per-module signature or hash manifest,
+and the reproducible-build hash covers only the *embedded* binaries (`init`,
+`shell`, `fs_server`, …), **not** the modules — so anyone able to alter the
+ISO/GRUB config can inject an arbitrary root-owned binary into `/bin`. Verifying
+module *content* in-kernel is planned (Roadmap Track 2.1, which records the
+embedded-hash vs signed-manifest trade-off) as the precursor to measured boot.
+
+The *destination* half is now closed: `module_dest_ok` (`fs_server.c`) constrains
+where a module may land — only a bare name (→ `/bin`), a path under `bin/`, or one
+under `usr/share/man/`; absolute paths and any empty, `.` or `..` component are
+refused and the module is skipped with a log line. So a stray or tampered module
+list can no longer plant a root-owned file outside the two intended trees, even
+though its contents remain unverified.
 
 ### Development process is not yet high-assurance (audit P1–P5)
 
-The audit's central finding is about the *process*, not the code: `main` is **not
-branch-protected**, so CODEOWNERS and CI are advisory; every PR is self-merged by a
-single maintainer (no independent review); Dependabot security updates and
-CodeQL/code-scanning are off; and the reproducible build is deterministic on one
+The audit's central finding was about the *process*, not the code. Much of it is
+now closed: `main` **is** branch-protected (the four hard-gate checks are required,
+the rule is enforced for administrators, force-push and deletion are blocked),
+Dependabot alerts + security updates are on, and CodeQL scans the C kernel. What
+remains: every PR is still **self-merged by a single maintainer** (no independent
+review — required CODEOWNERS review is deliberately off, since with one maintainer
+it would deadlock every merge), and the reproducible build is deterministic on one
 runner image but the toolchain is unpinned and artifacts are unsigned. For a kernel
-whose value is *verifiable* isolation, the build's integrity currently rests on the
-maintainer's workstation and an unenforced pipeline. Remediation is
+whose value is *verifiable* isolation, the build's integrity still rests on the
+maintainer's workstation and an unattested toolchain. Remediation is
 [Roadmap Track 0](ROADMAP.md) and is the highest priority. See
 [../SECURITY.md](../SECURITY.md) → "Development process & governance."
 

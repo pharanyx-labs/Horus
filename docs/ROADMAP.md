@@ -207,9 +207,16 @@ higher-risk change than A1/A2, so it was deliberately deferred rather than rushe
 
 Recommended first step: the embedded-hash approach behind a build flag, wired so a
 module-less `make` and the `reproducible` job are unaffected, then flip it on for
-`make run` / `smoke-modules`. Path-sanity hardening of the module cmdline
-(allowlist `bin/` and `usr/share/man/` prefixes; reject traversal) is a cheap,
-orthogonal companion.
+`make run` / `smoke-modules`.
+
+**Landed already — destination allowlist (the orthogonal half).** `module_dest_ok`
+in `fs_server.c` now constrains *where* a boot module may land: only a bare name
+(→ `/bin`), a path under `bin/`, or one under `usr/share/man/`; absolute paths and
+any empty, `.` or `..` component are refused, and a rejected module is skipped with
+a log line rather than installed. Since every module becomes a **root-owned** file
+(0755 under `/bin`), this stops a stray or tampered module list from planting a
+root-owned file outside the two intended trees. Module *content* is still trusted
+to the boot chain — that is the remaining, larger half of A4 described above.
 
 ### 2.2 — Toward measured boot
 

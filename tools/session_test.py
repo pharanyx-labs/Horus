@@ -18,8 +18,21 @@ path (sys_auth / sys_getuid / sys_useradd), not a compiled-in shortcut:
     against the login identity, not anything the client asserts.
 
 Usage:  tools/session_test.py [boot.iso]
-Env:    SESSION_TIMEOUT   per-step expect timeout, seconds (default 45)
+Env:    SESSION_TIMEOUT   per-step expect timeout, seconds (default 45). Raise to
+                          ~60 under QEMU_SMP>1 in CI: 4-core TCG emulation (no KVM)
+                          runs the coreutils steps slowly, not a correctness issue.
         BOOT_TIMEOUT      time to reach the first login prompt (default 90)
+        QEMU_SMP          logical CPUs to boot the guest with (default 1). The
+                          interactive login/command drive is SMP-safe: console
+                          input rides the ring-3 console_server over IPC (the
+                          kernel's own console read fails closed while the server
+                          owns the UART), and the blocking IPC round-trip no longer
+                          fabricates a zero-length reply when its peer is busy on
+                          another core — it idles the CPU until the cross-core reply
+                          lands (see ipc_block_switch -> enter_cpu_idle). The SMP
+                          run is guarded in CI by `make smoke-session-smp`; the
+                          console-*output* (doubled banner) case by
+                          `make smoke-console-smp`.
 Exit:   0 and "SESSION_TEST: PASS" on success; 1 and "SESSION_TEST: FAIL ..." otherwise.
 """
 
@@ -34,6 +47,7 @@ import time
 ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
 STEP_TIMEOUT = float(os.environ.get("SESSION_TIMEOUT", "45"))
 BOOT_TIMEOUT = float(os.environ.get("BOOT_TIMEOUT", "90"))
+SMP = os.environ.get("QEMU_SMP", "1")
 
 # Any of these on the wire means the kernel faulted — fail the run immediately.
 FAULT_RE = re.compile(r"PAGE FAULT|Exception! Vector|PANIC|Rejected by validator")
@@ -63,6 +77,7 @@ class Serial:
         self.proc = subprocess.Popen(
             [qemu,
              "-m", "512M", "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-accel", "tcg",
+             "-smp", SMP,
              "-display", "none", "-no-reboot", "-no-shutdown",
              "-device", "isa-debug-exit,iobase=0x604,iosize=0x04",
              "-serial", "pty", "-net", "none", "-cdrom", iso],
@@ -138,12 +153,37 @@ class Serial:
                 pass
 
 
+def assert_banner_clean(buf):
+    """The login banner must reach the wire intact — not doubled/interleaved.
+
+    This is the regression guard for the SMP console-corruption bug: the ring-3
+    console_server drove COM1 natively while the kernel's print() drove the same
+    UART, and once SMP ran them on different cores at once every byte came out
+    twice, interleaved ("HHoorruuss  SSeeccuurree  MMiiccrrookkeerrnneell"). So
+    assert the clean banner is present AND that none of its words appear in the
+    character-doubled form the two-writer race produced.
+    """
+    if "Horus Secure Microkernel" not in buf:
+        raise SessionFail("login banner missing or garbled — "
+                          "'Horus Secure Microkernel' not found intact on serial")
+    for doubled in ("HHoorruuss", "SSeeccuurree", "MMiiccrrookkeerrnneell"):
+        if doubled in buf:
+            raise SessionFail(f"console corruption: banner text doubled on serial "
+                              f"({doubled!r}) — two writers are racing the console")
+
+
 def run():
     s = Serial(ISO)
     try:
         # --- reach the login prompt --------------------------------------
         s.expect("horus login:", BOOT_TIMEOUT)
         step("reached login prompt")
+
+        # The banner is printed just before the login prompt, so it is already in
+        # the buffer. Assert it arrived intact — the console must have exactly one
+        # writer even under SMP (see assert_banner_clean).
+        assert_banner_clean(s.buf)
+        step("login banner is intact (single console writer under SMP)")
 
         # --- 1. a wrong password is rejected -----------------------------
         s.send("root"); s.expect("Password:", STEP_TIMEOUT)

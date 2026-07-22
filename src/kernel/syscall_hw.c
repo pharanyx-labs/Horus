@@ -86,6 +86,11 @@ void h_ioport_grant(struct interrupt_frame64 *r) {
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     tasks[cur].io_allowed = 1;
     tss_set_io_allowed(1);
+    /* The grant covers the console UART + VGA registers, so this task now drives
+     * the console hardware natively. Hand the console over: the kernel's print()
+     * stops writing serial+VGA (klog only) so it and this ring-3 owner cannot
+     * interleave byte-for-byte on the shared UART once SMP runs them at once. */
+    console_set_owner(cur);
     r->rax = 0;
 }
 

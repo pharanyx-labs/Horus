@@ -1247,6 +1247,42 @@ smoke-session:
 	@$(MAKE) --no-print-directory boot.iso
 	@python3 tools/session_test.py boot.iso
 
+# Regression guard for the SMP console-INPUT corruption: drive the real ring-3
+# shell over serial under -smp 4. Where smoke-console-smp covers console *output*
+# (the doubled banner), this covers the interactive round-trip — login, coreutils,
+# least-privilege checks. The bug it guards: a blocking SYS_IPC_CALL whose peer was
+# busy on another core had no task to switch to, so the kernel resumed the caller
+# with a fabricated zero-length reply instead of blocking. The shell then read a
+# stale reply buffer, so typed usernames/passwords arrived empty or truncated and
+# logins failed intermittently (roughly half the time under -smp 4). The fix idles
+# the CPU (ipc_block_switch -> enter_cpu_idle) so the cross-core reply lands and a
+# timer tick reschedules the woken caller. A 60s step timeout absorbs 4-core TCG
+# emulation slowness on the coreutils steps (no KVM in CI).
+.PHONY: smoke-session-smp
+smoke-session-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@QEMU_SMP=4 SESSION_TIMEOUT=60 python3 tools/session_test.py boot.iso
+
+# Regression guard for the SMP console-output corruption: boot the SHIPPED kernel
+# (no self-test flag) under -smp 4 and require it to reach the ring-3 login banner
+# intact. This is the multi-core case the default smoke test never exercised —
+# with SMP the default, the kernel's print() and the ring-3 console_server both
+# drove the same COM1 UART + VGA buffer, so on different cores every byte came out
+# twice, interleaved ("HHoorruuss ... MMiiccrrookkeerrnneell"). Two things fail a
+# regressed kernel here: the clean banner substring "Horus Secure Microkernel"
+# never appears (it is broken up by the doubling) so the run times out, and the
+# doubled signature trips FAIL_MARKER for a fast, explicit failure. The fix makes
+# the console single-writer (console ownership handed to the ring-3 server; the
+# kernel's print() stops touching the hardware while a ring-3 owner is live).
+.PHONY: smoke-console-smp
+smoke-console-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='HHoorruuss' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: test
 test:
 	@cargo test --manifest-path rust/Cargo.toml --release || true

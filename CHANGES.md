@@ -8,6 +8,22 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — boot modules are verified against a SHA-256 manifest embedded in the kernel (audit A4)
+
+A boot module becomes a **root-owned executable** in `/bin` that the shell will run, but its contents were trusted purely to the boot chain: anyone able to alter the ISO could swap a payload and have the kernel provision an arbitrary root-owned binary. The reproducible-build hash covered the *embedded* binaries, never the modules.
+
+The kernel now embeds the SHA-256 of exactly the modules it was built to ship, and refuses anything else:
+
+- **`tools/gen_module_manifest.sh`** generates `src/kernel/boot_module_manifest.h` at build time from the same `BOOT_MODULES` list the `boot.iso` rule consumes, so the manifest and the ISO cannot drift. It is a `main.o` prerequisite and rewrites the header only when the content changes, so an unchanged module set causes no rebuild churn. A build shipping no modules gets an **empty** manifest.
+- **`boot_module_verify_all()`** runs at boot, after the multiboot tag walk and before any userspace exists. It hashes each module in place through `PHYS_KVA` (the same window the read syscall uses, via a new `rust_sha256` FFI over the crate's existing SHA-256) and requires an exact **(destination path, size, digest)** match, comparing with `rust_ct_eq`.
+- **Fail closed at the choke point:** an unverified module is reported by `SYS_BOOT_MODULE_INFO` as an empty slot — so the `fs_server` provisioning loop skips it exactly as it skips a malformed one — and `SYS_BOOT_MODULE_READ` refuses its payload with `SYS_ERR_PERM`. It therefore can never reach `/bin`. An empty manifest verifies nothing, so a module-free kernel refuses every module it is handed: correct, since it attested to none.
+
+No key is involved *by design*: the manifest ships inside the reproducible kernel image, so the image itself is the root of trust and an embedded key would be equally readable. The residual limitation is exactly that — this protects a tampered module payload, not a replaced kernel image, which is what pinned/attested builds (audit P4) and measured boot are for.
+
+**New gating CI job `make smoke-modules-tamper`:** builds the kernel with its manifest, assembles a second ISO carrying the *same kernel* but one module payload corrupted by a single byte flip (size unchanged, so only the hash differs), and asserts the kernel refuses exactly that module and still boots. Falsification-tested — with verification neutered, the tampered module provisions happily and the gate goes red.
+
+Verified: `smoke-modules` (all 23 modules verify and provision), `smoke-coreutils-shell` (a subset), `smoke` (module-free boot), 85 Rust tests including a `rust_sha256` known-answer + fail-closed test, `clippy -D warnings` clean, and `make reproducible-build` still byte-for-byte identical.
+
 ### Fixed — console_server no longer loses a startup race with its own endowment under SMP
 
 An intermittent multi-core boot hang (`make smoke-console-smp` failing with `CONSOLE_SELFTEST: FAIL grant`, then timing out before the shell banner) was a spawn/endow ordering race, not a capability-system fault.

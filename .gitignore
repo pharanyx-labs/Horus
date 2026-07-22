@@ -107,3 +107,7 @@ horus_usage.log
 
 # Generated program-image byte arrays for PROC_SELFTEST (execve-from-fd)
 userspace/*_image.h
+
+# Generated boot-module hash manifest (tools/gen_module_manifest.sh)
+src/kernel/boot_module_manifest.h
+tamper.iso

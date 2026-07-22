@@ -504,6 +504,24 @@ else
 RUST_EXTRA_OBJS := src/kernel/rust_shims.o
 endif
 
+# Boot-module hash manifest (audit A4). Generated from the very same BOOT_MODULES
+# list the boot.iso rule ships, so the kernel embeds the SHA-256 of exactly the
+# payloads it was built to carry and refuses anything else at boot
+# (boot_module_verify_all). A build with no modules gets an empty manifest and
+# therefore refuses every module it is handed — fail closed.
+#
+# src/kernel/main.c includes it, so it must exist before any kernel object is
+# compiled; the generator rewrites the file only when its content changes, so an
+# unchanged module set does not trigger a rebuild. BOOT_MODULE_DEP puts the module
+# payloads themselves in the prerequisites: change a shipped binary and the
+# manifest (and the kernel) are regenerated.
+MODULE_MANIFEST := src/kernel/boot_module_manifest.h
+
+$(MODULE_MANIFEST): tools/gen_module_manifest.sh $(BOOT_MODULE_DEP)
+	@tools/gen_module_manifest.sh $@ $(BOOT_MODULES)
+
+src/kernel/main.o: $(MODULE_MANIFEST)
+
 # linker64.ld is a real input to this link (LDFLAGS carries -T linker64.ld), so
 # it belongs in the prerequisites: without it, editing the script leaves a stale
 # kernel.elf sitting on disk and make reports "up to date".
@@ -1095,6 +1113,30 @@ smoke-captest:
 # the multi-block bitmap + off-.bss vdisk + hierarchical meta-MAC deliver. Then it
 # runs printf and tail from /bin. Uses the default COREUTILS_MODULE_SET (all).
 # See tools/modules_session.py.
+# Boot-module integrity gate (audit A4). Builds the kernel WITH the module hash
+# manifest embedded, then assembles a second ISO carrying the same kernel but one
+# CORRUPTED module payload (one byte flipped, size unchanged, so only the SHA-256
+# differs) and boots that. The kernel must refuse exactly the tampered module and
+# still come up — proving the manifest check is what stops an altered ISO from
+# planting a root-owned binary in /bin, rather than that being trusted to the boot
+# chain. Falsification-tested: with the verification removed, the tampered module
+# provisions happily and this test goes green-to-red.
+.PHONY: smoke-modules-tamper
+smoke-modules-tamper:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 tamper.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='boot module refused (no manifest match)' \
+		tools/smoke_test.sh tamper.iso
+	@rm -f tamper.iso
+
+# Staged only by smoke-modules-tamper, and only ever under COREUTILS_MODULES=1 —
+# BOOT_MODULES is empty otherwise, and a "tampered" ISO with no modules would
+# prove nothing.
+tamper.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
+	@tools/tamper_module_iso.sh $@ kernel.elf grub.cfg $(BOOT_MODULES)
+
 .PHONY: smoke-modules
 smoke-modules:
 	@$(MAKE) --no-print-directory clean

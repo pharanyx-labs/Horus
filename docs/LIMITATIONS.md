@@ -130,20 +130,25 @@ storage (Roadmap Track 1).
 ### Boot modules are unsigned (audit A4 — content unverified; destination now constrained)
 
 Programs and man pages that ship as GRUB multiboot2 modules are written into the
-encrypted store as **root-owned executables** and run by the shell, trusted purely
-by boot-chain provenance. There is still no per-module signature or hash manifest,
-and the reproducible-build hash covers only the *embedded* binaries (`init`,
-`shell`, `fs_server`, …), **not** the modules — so anyone able to alter the
-ISO/GRUB config can inject an arbitrary root-owned binary into `/bin`. Verifying
-module *content* in-kernel is planned (Roadmap Track 2.1, which records the
-embedded-hash vs signed-manifest trade-off) as the precursor to measured boot.
+encrypted store as **root-owned executables** and run by the shell. They used to be
+trusted purely by boot-chain provenance; both halves of that gap are now closed:
 
-The *destination* half is now closed: `module_dest_ok` (`fs_server.c`) constrains
-where a module may land — only a bare name (→ `/bin`), a path under `bin/`, or one
-under `usr/share/man/`; absolute paths and any empty, `.` or `..` component are
-refused and the module is skipped with a log line. So a stray or tampered module
-list can no longer plant a root-owned file outside the two intended trees, even
-though its contents remain unverified.
+- **Content.** The kernel embeds a **SHA-256 manifest** of exactly the modules it
+  was built to ship (generated at build time from the same `BOOT_MODULES` list the
+  ISO is assembled from). At boot, before userspace exists, every module is hashed
+  in place and must match on **(destination path, size, SHA-256)**; a mismatch is
+  refused at the syscall choke point — `SYS_BOOT_MODULE_INFO` reports an empty slot
+  and `SYS_BOOT_MODULE_READ` returns `SYS_ERR_PERM` — so it can never be
+  provisioned into `/bin`. Gated by `make smoke-modules-tamper`, which boots an ISO
+  whose kernel is unchanged but one module payload has a single byte flipped.
+- **Destination.** `module_dest_ok` (`fs_server.c`) restricts a module to `/bin` or
+  `/usr/share/man`, refusing absolute paths and `.`/`..` components.
+
+**Residual limitation:** the manifest lives *inside* the kernel image, which is the
+root of trust — deliberately, since an embedded key would be equally readable in a
+reproducible image. So this protects against a tampered *module payload*, not
+against someone who can replace the *kernel image itself*. Closing that needs the
+pinned, attested, signed build of Roadmap Track 0.4 and measured boot (Track 2.2).
 
 ### Development process is not yet high-assurance (audit P1–P5)
 

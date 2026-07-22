@@ -178,45 +178,64 @@ over-invalidation. Until then, no action is required.
 
 ## Track 2 — Boot & supply-chain integrity
 
-### 2.1 — Verify the boot modules (A4)
+### 2.1 — Verify the boot modules (A4) — *done*
 
-Boot-module images (coreutils + man pages) currently become root-owned `/bin`
-executables trusted purely by boot-chain provenance. The kernel should verify each
-module's content before exposing it (via `SYS_BOOT_MODULE_READ`) so `/bin` inherits
-the integrity guarantee the *embedded* binaries already enjoy.
+**Landed.** The kernel now embeds a **SHA-256 manifest** of exactly the modules it
+was built to ship, generated at build time by `tools/gen_module_manifest.sh` from
+the same `BOOT_MODULES` list the ISO is assembled from
+(`src/kernel/boot_module_manifest.h`, generated — not checked in). At boot, right
+after the multiboot tag walk and before any userspace exists,
+`boot_module_verify_all()` hashes every module where GRUB left it and requires an
+exact **(destination path, size, SHA-256)** match. Unmatched modules are marked
+unverified, and the two syscalls that expose them fail closed:
+`SYS_BOOT_MODULE_INFO` reports an empty slot (so the `fs_server` provisioning loop
+skips it) and `SYS_BOOT_MODULE_READ` refuses the payload — so an unverified module
+can never be provisioned into `/bin` as a root-owned executable.
 
-Two viable designs, with the trade-offs found while scoping this (it is a larger,
-higher-risk change than A1/A2, so it was deliberately deferred rather than rushed):
+Design notes: no key is involved by choice — the manifest ships *inside* the
+reproducible kernel image, so the image is the root of trust and any embedded key
+would be equally readable. A build that ships no modules gets an **empty** manifest
+and therefore refuses every module it is handed (fail closed, and correct: such a
+kernel never attested to any). Verification runs once at boot, so the syscalls only
+test a flag.
 
-- **Embedded per-module hash manifest (no new crypto).** A build step hashes each
-  module (BLAKE2b/SHA-256, both already in the Rust core) and generates a C header
-  baked into `kernel.elf`; at boot the kernel hashes each recorded module and
-  refuses any whose hash is absent/wrong. Security rests on the kernel image being
-  the reproducible root of trust — no key needed. **Cost/risk:** the kernel build
-  must learn the module hashes *before* it compiles, which reorders the build graph
-  (today the kernel builds without the coreutils modules; a plain `make` and the
-  `reproducible` job must keep working with an empty/default manifest). This
-  bifurcation is the main hazard and must not break the existing jobs.
-- **Embedded public key + signed manifest (decoupled build, new crypto).** The
-  kernel embeds only an **ed25519 public key**; a signed `{path → hash}` manifest
-  ships as its own module and is verified in-kernel, then each module is checked
-  against it. This decouples the kernel build from module contents, but requires
-  adding **ed25519/curve25519 verification** to the Rust core (a substantial,
-  security-sensitive primitive the crate does not yet have — a symmetric HMAC key
-  would be pointless since it is readable in the reproducible image).
+Gated by **`make smoke-modules-tamper`** (CI): it builds the kernel with the
+manifest, assembles a second ISO carrying the *same kernel* but one module payload
+corrupted (one byte flipped — size unchanged, so only the hash differs), and
+asserts the kernel refuses exactly that module and still boots. Falsification-
+tested: with the verification neutered the tampered module provisions happily and
+the gate goes red. `make reproducible-build` remains byte-for-byte identical.
 
-Recommended first step: the embedded-hash approach behind a build flag, wired so a
-module-less `make` and the `reproducible` job are unaffected, then flip it on for
-`make run` / `smoke-modules`.
+*Remaining for a full A4 close:* the manifest's integrity rests on the kernel image
+being unmodified, which is Track 0.4's job (pinned toolchain, SLSA provenance,
+signed artifacts) and 2.2's (measured boot). Signing the kernel image itself would
+also let the manifest be decoupled from the build (an embedded public key + a
+separately-shipped signed manifest), which needs ed25519 in the Rust core.
 
-**Landed already — destination allowlist (the orthogonal half).** `module_dest_ok`
-in `fs_server.c` now constrains *where* a boot module may land: only a bare name
-(→ `/bin`), a path under `bin/`, or one under `usr/share/man/`; absolute paths and
-any empty, `.` or `..` component are refused, and a rejected module is skipped with
-a log line rather than installed. Since every module becomes a **root-owned** file
-(0755 under `/bin`), this stops a stray or tampered module list from planting a
-root-owned file outside the two intended trees. Module *content* is still trusted
-to the boot chain — that is the remaining, larger half of A4 described above.
+#### Design record — why the embedded hash manifest, not a signed one
+
+Two designs were scoped. The **embedded per-module hash manifest** (chosen) needs
+no new crypto: the build hashes each module and bakes the table into `kernel.elf`,
+so security rests on the kernel image being the reproducible root of trust. Its one
+real cost is that the kernel build must learn the module hashes before it compiles
+— handled by generating the header from `BOOT_MODULES` as a prerequisite of
+`main.o`, with an empty manifest (and no rebuild churn) when no modules ship, so a
+plain `make` and the `reproducible` job are unaffected.
+
+The alternative — an embedded **ed25519 public key** plus a separately-shipped
+signed manifest — decouples the kernel build from module contents, but requires
+adding curve25519/ed25519 verification to the Rust core: a substantial,
+security-sensitive primitive the crate does not have. (A symmetric HMAC key would
+be pointless: it would sit readable inside the reproducible image.) That remains
+the upgrade path once the kernel image itself is signed (Track 0.4).
+
+#### Companion — destination allowlist
+
+`module_dest_ok` in `fs_server.c` constrains *where* a module may land: only a bare
+name (→ `/bin`), a path under `bin/`, or one under `usr/share/man/`; absolute paths
+and any empty, `.` or `..` component are refused, and a rejected module is skipped
+with a log line. With 2.1's content check this closes both halves — **what** a
+module contains and **where** it may go.
 
 ### 2.2 — Toward measured boot
 

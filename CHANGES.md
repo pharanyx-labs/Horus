@@ -8,6 +8,16 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — SYS_CAP_GRANT goes through the locked, accounted cap-write path (audit A2)
+
+`SYS_CAP_GRANT` delegated a capability into a supervised child with a raw cspace store: `capability_t granted = *src; ... tasks[target].cspace[dest_slot] = granted;`. Three problems, now fixed by routing grant through a new `cap_grant_into` (C) → `rust_cap_grant_into` (safe Rust) path:
+
+- **SMP race with revoke.** The source was looked up *outside* `cap_lock` and copied, then stored under it — so under SMP a concurrent `rust_cap_revoke_global` could null the source between the read and the write, materialising a copy of a just-revoked capability. The lookup and store now happen together under `cap_lock`.
+- **No `caps_in_use` accounting.** The granted cap was invisible to the target's `MAX_CAPS_PER_TASK` ceiling, and a later revoke's saturating decrement then desynced the counter. A newly-occupied destination slot is now counted.
+- **Malformed lineage badge.** Grant copied the source's `badge` (the *grandparent*) instead of recording the grantor's cap as the parent. It now sets `badge = src.serial`, so the derivation tree is well-formed (a prerequisite for the audit-A1 descendant-only revocation rework). Rights are also masked to `new_rights & src.rights` — the plumbing for rights *reduction*; the 3-argument `SYS_CAP_GRANT` ABI still passes full rights for compatibility.
+
+The audit's original "grant should enforce a `KERNEL_RESERVED_CAPS` slot floor" sub-point was **withdrawn as incorrect** — a grantor already dominates the target (it holds its `CAP_TCB`) and endowing a child's low slots (e.g. `init` granting a server's IPC gate into slot 3) is exactly what grant is for; enforcing the floor would have broken boot. Covered by three new Rust unit tests (rights masking, parent recording, fail-closed inputs, revoke-sweeps-grantee) and the existing `smoke-proc` / `smoke-captest` / `smoke-init-fs` / `smoke-session` self-tests. Docs updated (AUDIT-2026-07, ROADMAP Track 1.2, SECURITY, LIMITATIONS, ARCHITECTURE).
+
 ### Documented — July 2026 security & engineering audit; docs realigned to its findings (this pass)
 
 A professional-grade audit of the kernel **and its development ecosystem** was recorded and the documentation set was updated to reflect it. No code changed in this pass — the findings set the [roadmap](docs/ROADMAP.md) priorities and the fixes are tracked there.

@@ -308,6 +308,27 @@ pub unsafe extern "C" fn rust_password_hash(
     0
 }
 
+/// Plain SHA-256 digest of `data`, writing 32 bytes to `out32`.
+///
+/// Used to verify boot-module payloads against the hash manifest embedded in the
+/// kernel image (see `boot_module_verify_all`). A keyed MAC would add nothing
+/// here: the manifest ships *inside* the reproducible kernel image, so the image
+/// itself is the root of trust and any key in it would be equally readable.
+///
+/// # Safety
+/// `data` must be valid for `data_len` bytes (or `data_len` may be 0), and
+/// `out32` must point to at least 32 writable bytes. Null is handled.
+#[no_mangle]
+pub unsafe extern "C" fn rust_sha256(data: *const u8, data_len: usize, out32: *mut u8) -> i32 {
+    if out32.is_null() || (data.is_null() && data_len != 0) {
+        return -1;
+    }
+    let d = if data_len == 0 { &[][..] } else { core::slice::from_raw_parts(data, data_len) };
+    let digest = sha256(d);
+    core::ptr::copy_nonoverlapping(digest.as_ptr(), out32, SHA256_OUT);
+    0
+}
+
 /// HMAC-SHA256 over `data` with `key`, writing 32 bytes to `out32`.
 #[no_mangle]
 pub unsafe extern "C" fn rust_hmac_sha256(
@@ -399,6 +420,30 @@ mod tests {
             &sha256(msg),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
         );
+    }
+
+    /// The `rust_sha256` FFI the kernel uses to verify boot modules against its
+    /// embedded manifest: it must agree with the internal digest on the FIPS
+    /// vectors, handle the empty input, and fail closed (never write) on a null
+    /// output pointer or a null/non-zero-length input.
+    #[test]
+    fn rust_sha256_ffi_matches_and_fails_closed() {
+        unsafe {
+            let mut out = [0u8; 32];
+            assert_eq!(rust_sha256(b"abc".as_ptr(), 3, out.as_mut_ptr()), 0);
+            assert_hex(&out, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+            // Empty input is valid: a null data pointer with len 0 is accepted.
+            let mut empty = [0u8; 32];
+            assert_eq!(rust_sha256(core::ptr::null(), 0, empty.as_mut_ptr()), 0);
+            assert_hex(&empty, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+
+            // Fail closed: null output, or null input with a non-zero length.
+            assert_eq!(rust_sha256(b"abc".as_ptr(), 3, core::ptr::null_mut()), -1);
+            let mut untouched = [0xAAu8; 32];
+            assert_eq!(rust_sha256(core::ptr::null(), 3, untouched.as_mut_ptr()), -1);
+            assert!(untouched.iter().all(|&b| b == 0xAA), "output must not be written on refusal");
+        }
     }
 
     #[test]

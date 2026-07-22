@@ -131,9 +131,32 @@ struct boot_module {
     uint64_t start;                        /* physical, inclusive */
     uint64_t end;                          /* physical, exclusive */
     char     name[BOOT_MODULE_NAME_MAX];   /* the module2 cmdline, truncated */
+    uint8_t  verified;                     /* 1 iff it matched the embedded manifest */
 };
+
+/* One entry of the boot-module hash manifest embedded in the kernel image
+ * (generated into src/kernel/boot_module_manifest.h by
+ * tools/gen_module_manifest.sh at build time).
+ *
+ * A module arrives as an untrusted payload GRUB dropped in RAM, and the
+ * fs_server writes it into the store as a ROOT-OWNED file — an executable under
+ * /bin. Provenance alone is not integrity (audit A4), so at boot the kernel
+ * hashes each module and requires an exact (path, size, SHA-256) match against
+ * this table before exposing it over SYS_BOOT_MODULE_INFO/READ. No key is
+ * involved by design: the manifest ships inside the reproducible kernel image,
+ * so the image itself is the root of trust. */
+struct boot_module_digest {
+    const char *path;      /* destination path == the module2 cmdline */
+    uint32_t    size;      /* exact payload byte count */
+    uint8_t     sha256[32];
+};
+
 uint32_t boot_module_count(void);
 const struct boot_module *boot_module_get(uint32_t index);
+/* Hash every recorded module and mark it verified iff it matches the embedded
+ * manifest. Call once at boot, after the multiboot tags are parsed and before
+ * anything can read a module. Returns the number that failed (0 == all good). */
+uint32_t boot_module_verify_all(void);
 /* Highest physical address any module occupies, page-rounded (0 if none). */
 uint64_t boot_module_top(void);
 
@@ -1275,6 +1298,8 @@ int  rust_argon2id_hash(const uint8_t *pwd, size_t pwd_len,
                         uint8_t *out, size_t out_len);
 int  rust_hmac_sha256(const uint8_t *key, size_t key_len,
                       const uint8_t *data, size_t data_len, uint8_t *out32);
+/* Plain SHA-256 digest (boot-module manifest verification). */
+int  rust_sha256(const uint8_t *data, size_t data_len, uint8_t *out32);
 /* Tamper-evident audit log (rust/src/audit.rs). */
 int  rust_audit_chain_init(const uint8_t *key, size_t key_len, uint8_t *out_head32);
 int  rust_audit_chain_record(const uint8_t *key, size_t key_len, uint64_t seq,

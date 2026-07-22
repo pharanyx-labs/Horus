@@ -125,6 +125,80 @@ const struct boot_module *boot_module_get(uint32_t index) {
     return &g_boot_modules[index];
 }
 
+/* The SHA-256 manifest of the modules this kernel was built to ship. Generated
+ * at build time from the same BOOT_MODULES list the ISO is assembled from; empty
+ * (BOOT_MODULE_DIGEST_COUNT == 0) for a build that ships none. */
+#include "boot_module_manifest.h"
+
+static int module_name_eq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == 0 && *b == 0;
+}
+
+/*
+ * Verify every recorded boot module against the embedded manifest (audit A4).
+ *
+ * A module is an attacker-reachable payload: GRUB drops it in RAM from the ISO,
+ * and the fs_server writes it into the store as a ROOT-OWNED file — an
+ * executable under /bin that the shell will run. Boot-chain provenance is not
+ * integrity, so a module is exposed to userspace only if it matches this
+ * kernel's own manifest exactly: same destination path, same size, same
+ * SHA-256. Anything else — a payload swapped in the ISO, an extra module bolted
+ * on, a module this kernel never attested to — is left unverified and refused by
+ * SYS_BOOT_MODULE_INFO/READ.
+ *
+ * Fail-closed in every direction: an empty manifest (a kernel built without
+ * modules) verifies nothing, so every module it is handed is refused. Payloads
+ * are hashed here, once, before anything can read them; the syscalls then only
+ * consult the flag.
+ *
+ * Returns the number of modules that failed verification.
+ */
+uint32_t boot_module_verify_all(void) {
+    uint32_t failed = 0;
+
+    for (uint32_t i = 0; i < g_boot_module_count; i++) {
+        struct boot_module *m = &g_boot_modules[i];
+        m->verified = 0;
+
+        uint64_t span = m->end - m->start;
+        if (span == 0 || span > 0xFFFFFFFFULL) { failed++; continue; }
+        uint32_t size = (uint32_t)span;
+
+        /* Via a local, not the macro directly: in a module-free build the macro is
+         * the literal 0, and `d < 0u` trips -Wtype-limits ("always false"). */
+        const uint32_t ndigests = BOOT_MODULE_DIGEST_COUNT;
+        for (uint32_t d = 0; d < ndigests; d++) {
+            const struct boot_module_digest *e = &BOOT_MODULE_DIGESTS[d];
+            if (e->size != size) continue;
+            if (!module_name_eq(m->name, e->path)) continue;
+
+            /* Hash the payload where GRUB left it, through the PHYS_KVA window
+             * (the same access the read syscall uses). */
+            uint8_t got[32];
+            if (rust_sha256((const uint8_t *)PHYS_KVA(m->start), (size_t)size, got) != 0) break;
+            /* Constant-time compare for uniformity with the rest of the tree;
+             * these are public hashes, so it is hygiene rather than necessity. */
+            if (rust_ct_eq(got, e->sha256, sizeof(got))) { m->verified = 1; }
+            break;      /* (path,size) identifies the entry; no second candidate */
+        }
+
+        if (!m->verified) {
+            failed++;
+            print("  [WARN] boot module refused (no manifest match): ");
+            print(m->name);
+            println("");
+        }
+    }
+
+    if (failed == 0 && g_boot_module_count > 0) {
+        print("  [ OK ] boot modules verified against the embedded manifest: ");
+        print_decimal(g_boot_module_count);
+        println("");
+    }
+    return failed;
+}
+
 /* Record one type-3 module tag. Rejects anything whose extent is not a sane
  * ascending range inside the PHYS_KVA window — a module the pager cannot reach
  * is worse than no module, and mod_start/mod_end come from outside the kernel. */
@@ -243,6 +317,10 @@ void kernel_main(uint32_t mb_info) {
         }
         print("\n");
     }
+    /* Integrity-check the modules before anything can read one. Runs here, right
+     * after the tag walk that recorded them and well before init/fs_server exist,
+     * so no unverified payload is ever reachable over SYS_BOOT_MODULE_READ. */
+    boot_module_verify_all();
 
     paging_init();
 #ifdef E820_SELFTEST

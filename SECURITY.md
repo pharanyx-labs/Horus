@@ -19,12 +19,12 @@ These are not undisclosed vulnerabilities — they are documented, known limitat
 
 The July 2026 audit found that the **engineering process** is not yet commensurate with the kernel's high-assurance goals: for a system whose value is *verifiable* isolation, the runtime guarantees are only as trustworthy as the pipeline that builds and ships them. These are documented gaps, tracked in [Roadmap Track 0](docs/ROADMAP.md):
 
-- **`main` is not branch-protected (audit P1, Critical).** CODEOWNERS and all CI jobs are currently **advisory** — nothing technically prevents an unreviewed or CI-failing change (or a force-push) from landing on `main`. Enforcing a `main` ruleset with required checks + CODEOWNERS review is the highest-priority remediation.
-- **Single-maintainer self-merge (audit P2).** There is no independent review of capability/crypto/paging changes today (bus factor 1). Treat "CODEOWNERS review" as *intended*, not yet *enforced four-eyes*.
-- **Native scanning gaps (audit P3).** Dependabot *security* updates and CodeQL/code-scanning are off; the in-CI SAST/fuzz/Kani jobs are non-gating. Secret scanning + push protection **are** enabled.
-- **Reproducibility ≠ provenance (audit P4).** The reproducible build is deterministic on one runner image but the toolchain is unpinned and artifacts are unsigned; SLSA provenance and a hermetic, pinned build are planned.
+- **`main` branch protection (audit P1, Critical) — mostly enforced.** `main` now requires the four hard-gate checks (Rust+clippy, kernel+ISO build, QEMU smoke-boot, reproducible build) to pass before merge, enforces the rule for administrators, and blocks force-pushes and branch deletion. **Required CODEOWNERS review is intentionally deferred** — a required review with a single maintainer would deadlock every merge (the P2 gap below); enable it the moment a second reviewer exists.
+- **Single-maintainer self-merge (audit P2) — accepted risk.** There is no independent review of capability/crypto/paging changes today (bus factor 1). "CODEOWNERS review" is *intended*, not yet *enforced four-eyes*; this is an explicitly accepted limitation until a second reviewer joins.
+- **Native scanning (audit P3) — mostly closed.** Dependabot vulnerability alerts + automated security updates are enabled, the cargo ecosystem is monitored, and a **CodeQL** workflow scans the C kernel (SARIF → Security tab). Secret scanning + push protection remain on. Remaining: promote a deterministic Kani/fuzz subset to a required check.
+- **Reproducibility ≠ provenance (audit P4) — open.** The reproducible build is deterministic on one runner image but the toolchain is unpinned and artifacts are unsigned; SLSA provenance and a hermetic, pinned build are planned.
 
-Anyone relying on a built `boot.iso` should understand that, until Track 0 lands, the build's integrity rests on the maintainer's workstation and an unenforced pipeline rather than on enforced controls.
+Branch protection now backs the pipeline, but until P2 (independent review) and P4 (pinned, attested builds) close, the build's integrity still leans on the maintainer's workstation. See [Roadmap Track 0](docs/ROADMAP.md) for status.
 
 ## Hardening currently in place
 

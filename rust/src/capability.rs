@@ -237,6 +237,73 @@ pub unsafe extern "C" fn rust_cap_transfer(
     rust_cap_mint(cspace, cspace_size, dest_slot, src_slot, !0u32, next_serial, 0)
 }
 
+/// FFI: grant (delegate) a capability derived from `src` into ANOTHER task's
+/// cspace at `dest_slot`. This is the cross-cspace analogue of `rust_cap_mint`:
+/// `src` points at the grantor's own capability (in the grantor's cspace) and
+/// `dest_cspace` is the grantee's cspace. It exists so `SYS_CAP_GRANT` writes
+/// through the same audited, rights-reducing, lineage-correct logic every other
+/// cap write uses, rather than a raw `dest = *src` store in the C kernel.
+///
+/// Semantics (mirrors mint):
+///   - the minted rights are `new_rights & src.rights` (grant can only *reduce*;
+///     pass `!0` for the historical "copy full rights" behaviour);
+///   - the grantee records the grantor's cap as its parent (`badge = src.serial`)
+///     so a later revoke of the grantor's cap sweeps the grantee too, and the
+///     derivation tree stays well-formed;
+///   - the grantee gets a fresh serial and inherits the source generation, and
+///     the object's lineage floor is raised to the source generation.
+///
+/// Unlike mint there is intentionally NO `dest_slot < KERNEL_RESERVED_CAPS`
+/// floor: grant writes into a *child* the caller already dominates (it holds the
+/// child's `CAP_TCB`), and endowing a child's low slots — e.g. its IPC gate at
+/// slot 3 — is exactly what grant is for. The C caller enforces the CAP_TCB /
+/// admin authority and the `caps_in_use` ceiling under `cap_lock`.
+///
+/// # Safety
+/// `src` must be null or a valid pointer to a live `Capability`; `dest_cspace`
+/// must be null or point to at least `dest_cspace_size` `Capability` entries;
+/// `next_serial` must be null or a valid `*mut u32`. Called under `cap_lock`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_grant_into(
+    src: *const Capability,
+    dest_cspace: *mut Capability,
+    dest_cspace_size: u32,
+    dest_slot: u32,
+    new_rights: u32,
+    next_serial: *mut u32,
+) -> bool {
+    if src.is_null() || dest_cspace.is_null() {
+        return false;
+    }
+    if dest_slot >= dest_cspace_size || dest_slot >= CNODE_SIZE {
+        return false;
+    }
+    let s = &*src;
+    // Authority cannot be fabricated from an empty or serial-0 (lookup-invalid)
+    // source — same guard mint enforces.
+    if s.typ == CAP_NULL || s.serial == 0 {
+        return false;
+    }
+
+    let parent_serial = s.serial;
+    let fresh = assign_fresh_serial(next_serial);
+    let effective_rights = new_rights & s.rights;
+
+    let dest = &mut *dest_cspace.add(dest_slot as usize);
+    *dest = Capability {
+        typ: s.typ,
+        rights: effective_rights,
+        object: s.object,
+        badge: parent_serial,
+        serial: fresh,
+        generation: s.generation,
+    };
+    if s.object != 0 {
+        LINEAGE_GEN[lineage_idx(s.object)].fetch_max(s.generation, Ordering::SeqCst);
+    }
+    true
+}
+
 /// Clear a capability slot to the null capability.
 #[inline]
 unsafe fn nullify(c: &mut Capability) {
@@ -909,6 +976,93 @@ mod tests {
             assert_eq!(cs[4].typ, CAP_NULL);
             assert_eq!(cs[5].typ, CAP_NULL, "the same-object derived copy is swept too");
             assert_eq!(ciu, 0, "caps_in_use must saturate at 0, never wrap to u32::MAX");
+        }
+    }
+
+    /// `rust_cap_grant_into` delegates a capability across cspaces: the grantee
+    /// gets rights reduced to `new_rights & src.rights`, a fresh serial, and the
+    /// grantor's cap recorded as its parent (`badge == src.serial`) — so the
+    /// derivation tree is well-formed and a later revoke of the grantor sweeps it.
+    #[test]
+    fn test_grant_into_reduces_rights_and_records_parent() {
+        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut grantee = [cap(0, 0, 0, 0, 0, 0); 16];
+        // Grantor holds a full-rights CAP_ENDPOINT (rights 0x3f) at slot 5.
+        grantor[5] = cap(3, 0x3f, 0xC100, 0, 0x5100, 0);
+        let mut next = 0x40000u32;
+        unsafe {
+            // Grant with rights reduced to READ|WRITE (0x03), into a low slot 3
+            // (allowed: grant endows a dominated child's slots).
+            assert!(rust_cap_grant_into(
+                &grantor[5] as *const Capability, grantee.as_mut_ptr(), 16, 3, 0x03, &mut next));
+            let d = grantee[3];
+            assert_eq!(d.typ, 3);
+            assert_eq!(d.rights, 0x03, "grant reduces rights to new_rights & src.rights");
+            assert_eq!(d.object, 0xC100);
+            assert_eq!(d.badge, 0x5100, "grantee records the grantor's cap as its parent");
+            assert!(d.serial >= MIN_DERIVED_SERIAL && d.serial != 0x5100,
+                "grantee gets a fresh serial distinct from the grantor");
+            // A right the source lacks can never be granted, even if requested.
+            let mut grantee2 = [cap(0, 0, 0, 0, 0, 0); 16];
+            assert!(rust_cap_grant_into(
+                &grantor[5] as *const Capability, grantee2.as_mut_ptr(), 16, 4, 0xFFFF, &mut next));
+            assert_eq!(grantee2[4].rights, 0x3f, "requested rights are masked by the source's");
+        }
+    }
+
+    /// Grant refuses an empty / serial-0 source and out-of-range destinations,
+    /// leaving the destination untouched — authority cannot be fabricated.
+    #[test]
+    fn test_grant_into_fails_closed() {
+        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
+        grantor[7] = cap(3, 0x3f, 0xC200, 0, 0 /* serial 0 => invalid */, 0);
+        let mut grantee = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut next = 0x40000u32;
+        unsafe {
+            // serial-0 source refused.
+            assert!(!rust_cap_grant_into(
+                &grantor[7] as *const Capability, grantee.as_mut_ptr(), 16, 5, 0x3f, &mut next));
+            // null source / null dest refused.
+            assert!(!rust_cap_grant_into(
+                core::ptr::null(), grantee.as_mut_ptr(), 16, 5, 0x3f, &mut next));
+            let valid = cap(3, 0x3f, 0xC201, 0, 0x5201, 0);
+            assert!(!rust_cap_grant_into(
+                &valid as *const Capability, core::ptr::null_mut(), 16, 5, 0x3f, &mut next));
+            // out-of-range dest refused (>= size and >= CNODE_SIZE).
+            assert!(!rust_cap_grant_into(
+                &valid as *const Capability, grantee.as_mut_ptr(), 16, 16, 0x3f, &mut next));
+            assert!(!rust_cap_grant_into(
+                &valid as *const Capability, grantee.as_mut_ptr(), u32::MAX, CNODE_SIZE, 0x3f, &mut next));
+            assert_eq!(grantee[5].typ, CAP_NULL, "destination untouched on refusal");
+        }
+    }
+
+    /// A granted capability shares the grantor's lineage: revoking the grantor's
+    /// source (system-wide) sweeps the grantee's delegated copy too, because they
+    /// share the object and the grantee's badge is the grantor's serial.
+    #[test]
+    fn test_grant_into_then_revoke_source_sweeps_grantee() {
+        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut grantee = [cap(0, 0, 0, 0, 0, 0); 16];
+        grantor[5] = cap(4 /*CAP_FRAME*/, 0x3f, 0xC300, 0, 0x5300, 0);
+        let mut next = 0x50000u32;
+        let mut ciu_g = 1u32;
+        let mut ciu_e = 0u32; // grantee accounting starts at 0; the C caller bumps it
+        unsafe {
+            assert!(rust_cap_grant_into(
+                &grantor[5] as *const Capability, grantee.as_mut_ptr(), 16, 6, !0u32, &mut next));
+            ciu_e += 1; // mirror the C caller's was-null increment
+            assert!(!rust_cap_lookup(grantee.as_mut_ptr(), 16, 6, 0x1).is_null());
+
+            let spaces = [
+                CSpaceDesc { caps: grantor.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_g) },
+                CSpaceDesc { caps: grantee.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_e) },
+            ];
+            assert!(rust_cap_revoke_global(
+                grantor.as_mut_ptr(), 16, 5, addr_of_mut!(ciu_g), spaces.as_ptr(), 2, &mut next));
+            assert_eq!(grantor[5].typ, CAP_NULL);
+            assert_eq!(grantee[6].typ, CAP_NULL, "the delegated copy is revoked with its grantor");
+            assert_eq!(ciu_e, 0, "grantee accounting decremented for the swept copy");
         }
     }
 }

@@ -602,18 +602,26 @@ static void h_cap_grant(struct interrupt_frame64 *r) {
         audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, -1, "cap grant denied");
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
-    /* The source must be a live capability the caller actually holds. */
+    /* The source must be a live capability the caller actually holds (checked
+     * again authoritatively under cap_lock inside cap_grant_into; this gives the
+     * caller a specific NOENT for a missing source). */
     struct capability *src = cap_lookup(src_slot, 0);
     if (!src || src->type == CAP_NULL) {
         r->rax = (uint32_t)SYS_ERR_NOENT; return;
     }
-    capability_t granted = *src;                 /* snapshot before taking cap_lock */
-    uint32_t fresh = cap_alloc_fresh_serial();   /* grabs cap_lock itself; call first */
-    granted.serial = fresh;
 
-    spin_lock(&cap_lock);
-    tasks[target].cspace[dest_slot] = granted;
-    spin_unlock(&cap_lock);
+    /* Delegate through the locked, accounted, lineage-correct cap-write path.
+     * This replaced a raw `tasks[target].cspace[dest_slot] = *src` store that
+     * (a) raced a concurrent global revoke under SMP, (b) never counted the
+     * granted cap against the target's MAX_CAPS_PER_TASK ceiling, and (c) left a
+     * malformed lineage (badge copied from the grandparent). Rights are passed as
+     * CAP_RIGHT_ALL to preserve the 3-argument SYS_CAP_GRANT ABI; cap_grant_into
+     * masks them to the source's own rights, so this can still only ever reduce
+     * authority, never widen it. */
+    if (!cap_grant_into(target, dest_slot, src_slot, CAP_RIGHT_ALL)) {
+        audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, -1, "cap grant failed");
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
 
     audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, 0, "cap grant");
     r->rax = 0;

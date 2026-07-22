@@ -19,6 +19,13 @@
 #include "syscall.h"
 #include "console_proto.h"
 
+/* How many times to retry the startup SYS_IOPORT_GRANT while init finishes
+ * endowing us with CAP_IO_DEVICE (see _start). Each attempt yields, so this is a
+ * bounded wait for a capability that is on its way, not a spin: generous enough
+ * to cover init's remaining startup on a loaded multi-core boot, finite so a
+ * genuinely unauthorised server still fails closed rather than hanging. */
+#define CON_GRANT_RETRIES 1000
+
 /* ---- native port I/O (usable only after SYS_IOPORT_GRANT) ------------------ */
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" :: "a"(val), "Nd"(port));
@@ -135,9 +142,28 @@ static void con_isolation_fault(void) {
 
 void _start(void) {
     /* Take native port I/O first — everything below (serial, VGA registers) needs
-     * it. If it is refused we have no console of our own; report via the kernel
-     * console (the only path left) and park. */
-    if (sys_ioport_grant() != 0) { kput("CONSOLE_SELFTEST: FAIL grant\n"); for (;;) sys_yield(); }
+     * it.
+     *
+     * Retry rather than give up on the first refusal. `init` spawns us and only
+     * THEN grants us CAP_IO_DEVICE (SYS_SPAWN makes the child runnable
+     * immediately, and the two SYS_CAP_GRANTs follow), so with SMP we can reach
+     * this line on another core *before* the grant lands and be refused for a
+     * capability we are about to be given. On one core the grants always precede
+     * our first run, which is why this only ever surfaced as an intermittent
+     * multi-core boot hang: we parked forever, nothing drove the console, and the
+     * boot timed out before the shell banner.
+     *
+     * Yielding between attempts lets init run and finish endowing us. This waits
+     * for authority to *arrive*; it never widens it — the kernel's CAP_IO_DEVICE
+     * check is unchanged, and after the bound we fail closed exactly as before.
+     * Because init grants the IPC gate (slot 3) before CAP_IO_DEVICE (slot 10),
+     * seeing the port grant succeed also means the gate is already in place. */
+    int granted = 0;
+    for (int attempt = 0; attempt < CON_GRANT_RETRIES; attempt++) {
+        if (sys_ioport_grant() == 0) { granted = 1; break; }
+        sys_yield();
+    }
+    if (!granted) { kput("CONSOLE_SELFTEST: FAIL grant\n"); for (;;) sys_yield(); }
 
     /* Map the VGA text framebuffer (two 4 KiB frames: an 80x50 buffer is 8000
      * bytes) into our own address space. */

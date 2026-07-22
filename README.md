@@ -30,7 +30,9 @@ The kernel is written in C. The security-critical core — the capability engine
 Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **31 headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
 
 > ### Project status — research / early development
-> Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store — persistent when an ATA disk is present, enforcing per-file POSIX ownership/permissions against a kernel-attested identity, serving multiple clients concurrently, and crash-atomic via a write-ahead journal — a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support behind a build gate. Some subsystems (SMP default-on, multi-slot IPC) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
+> Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store — persistent when an ATA disk is present, enforcing per-file POSIX ownership/permissions against a kernel-attested identity, serving multiple clients concurrently, and crash-atomic via a write-ahead journal — a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support. Some subsystems (multi-slot IPC, per-CPU run queues) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS.
+>
+> A July 2026 security & engineering audit ([docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md)) found the kernel to be disciplined research-grade work but the surrounding **engineering process** (branch protection, independent review, supply-chain provenance) not yet at a high-assurance bar, plus one capability-revocation defect that over-revokes (it fails safe). Those findings set the current [roadmap](docs/ROADMAP.md) priorities. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
 
 ---
 
@@ -92,7 +94,7 @@ The only 32-bit code left is the boot on-ramp that has to be: the multiboot entr
 
 ## Capabilities & security at a glance
 
-- **Transitive, system-wide revocation.** Revoking a capability nullifies it and every derived copy across every task's cspace *and* the kernel root cnode in a single atomic Rust sweep, then bumps a lineage generation counter — so a stale bit pattern that escaped the structural sweep still fails at point of use. Task slots are **zeroed on reuse**, so a newly spawned task cannot inherit the dead task's capabilities.
+- **Transitive, system-wide revocation.** Revoking a capability nullifies it and every derived copy across every task's cspace *and* the kernel root cnode in a single atomic Rust sweep, then bumps a lineage generation counter — so a stale bit pattern that escaped the structural sweep still fails at point of use. Task slots are **zeroed on reuse**, so a newly spawned task cannot inherit the dead task's capabilities. *(The current sweep matches too broadly — it can over-revoke the grantor and same-object peers, a fail-safe defect being reworked to a derivation tree; see [audit A1](docs/AUDIT-2026-07.md).)*
 - **Centralized authorization.** Syscall dispatch is a descriptor table that enforces each call's required capability at one choke point; an unlisted syscall number fails closed, and a compile-time assertion forbids adding a syscall without a table slot.
 - **Least-privilege delegation.** A supervisor (e.g. `init`) holds a child's `CAP_TCB` from the spawn and hands it exactly the capabilities it needs with `SYS_CAP_GRANT`; `SYS_KILL` and `SYS_SIGNAL` are gated on holding that `CAP_TCB`.
 - **Hardware isolation.** Ring 0/3 separation with per-task page tables, and the kernel in the higher half so a user mapping cannot share an address with kernel state; **SMEP**, **SMAP** and **UMIP** engaged when advertised; **W^X** enforced via `EFER.NXE` and the PTE NX bit (non-executable stacks; ELF `PT_LOAD` segments honour their `p_flags`) — and applied to the **kernel's own image** too, which maps its `.text` read-only and its `.rodata`/`.data`/`.bss` non-executable, with `CR0.WP` set so ring 0 actually honours it.
@@ -208,7 +210,8 @@ Horus is x86-64 only. See [docs/BUILDING.md](docs/BUILDING.md) for the full tool
 | [docs/BUILDING.md](docs/BUILDING.md) | Toolchain setup, build targets, build flags, QEMU configuration |
 | [SECURITY.md](SECURITY.md) | Security posture, hardening in place, threat model, disclosure |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Honest breakdown of what works and what does not |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Planned milestones and open contribution areas |
+| [docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md) | July 2026 security & engineering audit findings (kernel + process) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Audit-driven remediation tracks and open contribution areas |
 | [TESTS.md](TESTS.md) | Test coverage today and what is still needed |
 | [CHANGES.md](CHANGES.md) | Changelog (state of the `main` branch) |
 

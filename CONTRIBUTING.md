@@ -37,7 +37,12 @@ See [docs/BUILDING.md](docs/BUILDING.md) for a full explanation of build targets
 
 ## Where help is needed
 
-The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are specific areas by skill set:
+The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Since the July 2026 audit ([docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md)), the two highest-priority tracks are:
+
+- **Track 0 — Assurance & governance** (mostly repository config + CI, approachable without deep kernel knowledge): enforce `main` branch protection with required checks + CODEOWNERS review, enable Dependabot security updates and a CodeQL/SARIF workflow, promote a deterministic Kani/fuzz subset to a required check, and move toward a hermetic, pinned, signed build.
+- **Track 1 — Capability-model correctness** (the meatiest, most security-critical kernel/Rust work): rework revocation from equivalence-set matching to a proper **capability derivation tree** (finding A1), route `SYS_CAP_GRANT` through the locked mint path with rights reduction (A2), and make lineage generations per-object exact (A3).
+
+Here are specific areas by skill set:
 
 ### C kernel work
 
@@ -48,8 +53,9 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 ### Rust work
 
 - **Argon2 intra-request threading** (`rust/src/argon2.rs`): multi-lane + configurable cost is done, but lanes are filled sequentially, so `p > 1` changes the hash without reducing wall-clock time on one core.
+- **Capability derivation tree (audit A1)**: rework `lineage_matches`/revocation so `revoke(T)` deletes exactly `T`'s derived subtree — not its ancestors, siblings, or same-`object` peers — with regression tests proving a child's revoke leaves the parent and same-object peers intact (Roadmap Track 1).
 - **Property-based tests for the capability core**: add hand-rolled generators (the crate is `no_std`) over mint/transfer/grant/revoke to fuzz the lineage and revocation invariants beyond the current example-based tests.
-- **Kani / Verus verification**: apply a Rust verification tool to `capability.rs` to formally verify the revocation properties.
+- **Kani / Verus verification**: apply a Rust verification tool to `capability.rs` to formally verify the revocation properties — and extend the proofs to the reworked (derivation-tree) revocation once it lands.
 
 ### Testing
 
@@ -93,6 +99,13 @@ The [ROADMAP](docs/ROADMAP.md) lists planned work in priority order. Here are sp
 6. Open a pull request with a clear description of what changed and why (see the PR template)
 
 Pull requests that break the build, introduce new warnings without justification, or touch security-critical paths without explanation will be held for discussion before merging.
+
+> **Enforcement note.** CODEOWNERS review and the CI hard-gate checks are the
+> *intended* merge policy, but branch protection on `main` is being introduced as
+> part of [Roadmap Track 0](docs/ROADMAP.md) (audit finding P1) — until it lands,
+> treat required review and green CI as a contributor convention, not a technical
+> guarantee. Do not merge a PR with a red pipeline or without the owner's review on
+> a CODEOWNERS path.
 
 ---
 

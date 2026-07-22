@@ -1,0 +1,65 @@
+name: CodeQL
+
+# GitHub-native static analysis (SARIF -> the repository Security tab), added per
+# the July 2026 audit (finding P3: no code scanning). Advisory by design — it
+# surfaces findings for review but is NOT one of the merge hard-gates (those stay
+# rust / kernel / smoke / reproducible in ci.yml). Scans the C kernel with the
+# security-and-quality query suite; the Rust security core is already covered by
+# `cargo test` + `clippy -D warnings` and the fuzz/Kani jobs.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  schedule:
+    # Weekly, so a newly-published CodeQL query still runs against unchanged code.
+    - cron: '27 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: read the tree, write code-scanning results, read Actions
+# metadata for the analysis. Nothing here needs write access to repository
+# contents.
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    name: CodeQL analyse (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'c-cpp' ]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential binutils make
+
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07  # v3.37.3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      # Manual build: the kernel is freestanding with a custom Makefile, so
+      # CodeQL's autobuilder is not appropriate. `make` links the Rust staticlib
+      # (built via cargo) and compiles the C kernel under CodeQL's tracer.
+      - name: Build kernel.elf
+        run: make
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07  # v3.37.3
+        with:
+          category: "/language:${{ matrix.language }}"

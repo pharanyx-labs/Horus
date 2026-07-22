@@ -8,6 +8,18 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — capability revocation is descendant-only, not an equivalence-set sweep (audit A1)
+
+Revocation nulled every capability whose `serial`, `badge`, **or** `object` matched the target. Since a derived cap records its parent's serial in its `badge` and all derived copies share the parent's `object`, that matched not just descendants but **ancestors, siblings, and any independent capability to the same object**. A supervisor that granted a revocable capability, then had the child revoke its copy, would find its *own* capability (and same-object peers) nulled too — a fail-safe but least-privilege-violating over-revocation.
+
+`revoke_matching_in`/`lineage_matches` are replaced by `revoke_subtree`, which computes the target's exact **derivation subtree**: seed a bounded worklist with the target's serial, then close it under "child (`badge`) of an already-revoked serial", and null exactly those. Ancestors, siblings, and independent same-`object` capabilities are left intact. This builds on the A2 fix, which makes every derived cap record its immediate parent's serial in `badge` (a well-formed `serial → badge` forest).
+
+Completeness is preserved as a fail-safe: if a subtree ever exceeds the worklist (`MAX_REVOKE_LINEAGE = 256` — hundreds of derived copies of one lineage, which does not occur in practice), the null pass *also* nulls every cap sharing the target's `object`. Because mint/transfer/grant all preserve `object`, that is a complete superset of the descendant set, so the fallback can only over-approximate — a descendant can never survive.
+
+While fixing this, the lineage-**generation** mechanism (audit A3) was found to be **dormant**: no code path assigns a capability a non-zero `generation`, and `lineage_check` treats generation 0 as always-valid, so the object-keyed generation bump on revoke is a no-op and its hash collisions cannot invalidate anything today. Structural (descendant-only) revocation is the sole enforcement; the generation table is retained as dormant defense-in-depth and documented for a future per-object-exact rework if ever activated.
+
+New Rust regression tests (revoke-child-leaves-parent/siblings, independent-same-object-cap-survives, overflow-fallback-is-complete) plus the existing suite pass; verified on hardware by `smoke-captest` / `smoke-proc` / `smoke-aspace` / `smoke-session` / `smoke-fs-conc`. Docs updated (AUDIT-2026-07, ROADMAP Track 1.1/1.3, SECURITY, LIMITATIONS, ARCHITECTURE, README).
+
 ### Fixed — SYS_CAP_GRANT goes through the locked, accounted cap-write path (audit A2)
 
 `SYS_CAP_GRANT` delegated a capability into a supervised child with a raw cspace store: `capability_t granted = *src; ... tasks[target].cspace[dest_slot] = granted;`. Three problems, now fixed by routing grant through a new `cap_grant_into` (C) → `rust_cap_grant_into` (safe Rust) path:

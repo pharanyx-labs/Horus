@@ -315,49 +315,127 @@ unsafe fn nullify(c: &mut Capability) {
     c.generation = 0;
 }
 
-/// Lineage match predicate: does capability `c` belong to the revoked lineage
-/// identified by (serial, badge, object)? A derived capability records its
-/// parent's serial in its `badge`, so matching either field on serial/badge —
-/// or matching the underlying object — catches every descendant copy.
+/// Bounded worklist size for a single revocation's descendant closure. A
+/// derivation subtree with more than this many members would need hundreds of
+/// derived copies of one lineage and does not occur in practice; if it ever
+/// happened, `revoke_subtree` falls back to a safe object-match superset rather
+/// than truncating the closure (which would leave a descendant live).
+const MAX_REVOKE_LINEAGE: usize = 256;
+
 #[inline]
-fn lineage_matches(c: &Capability, ts: u32, tb: u32, to: u64) -> bool {
-    (ts != 0 && (c.serial == ts || c.badge == ts))
-        || (tb != 0 && (c.serial == tb || c.badge == tb))
-        || (to != 0 && c.object == to)
+fn set_contains(set: &[u32], v: u32) -> bool {
+    let mut i = 0;
+    while i < set.len() {
+        if set[i] == v {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
-/// Null every capability in one cspace that matches the target lineage,
-/// skipping `skip_slot` (pass `u32::MAX` to skip none). Decrements
-/// `*caps_in_use` once per nulled cap when the pointer is non-null.
+/// Revoke the derivation *subtree* rooted at `root_serial` across every cspace in
+/// `spaces`: null the root's transitive descendants — a capability whose `badge`
+/// chains back to `root_serial` through the derivation tree (each derived cap
+/// records its parent's serial in `badge`) — and NOTHING else. Ancestors,
+/// unrelated siblings, and independent capabilities that merely share the same
+/// `object` are left intact.
 ///
-/// INVARIANT: this is the single mechanism by which a cspace is swept for a
-/// revoked lineage; `rust_cap_revoke` and `rust_cap_revoke_global` both go
-/// through it so their matching semantics can never drift apart.
-unsafe fn revoke_matching_in(
-    cspace: *mut Capability,
-    size: u32,
-    skip_slot: u32,
-    ts: u32,
-    tb: u32,
-    to: u64,
-    caps_in_use: *mut u32,
+/// This is the least-privilege-correct revocation semantics (audit A1). The
+/// previous implementation matched an object/badge/serial *equivalence set*,
+/// which also revoked the grantor's own capability and every same-`object` peer —
+/// far broader than "this capability and everything derived from it".
+///
+/// The root capability itself is expected to be nulled by the caller already for
+/// the `*_global` / `rust_cap_revoke` paths (so it is not double-counted); its
+/// serial is still passed here as the closure seed, and any un-nulled cap holding
+/// `root_serial` (e.g. the revoke-by-values path) is nulled by the sweep below.
+///
+/// Descendants are found with a bounded worklist of revoked serials
+/// (`MAX_REVOKE_LINEAGE`). If a subtree overflows the worklist, `overflow` is set
+/// and the null pass ALSO nulls every cap sharing `root_object`. Because
+/// mint/transfer/grant all preserve `object`, that object set is a *superset* of
+/// the descendant set, so the fallback can only over-approximate — a descendant
+/// can never survive. Revocation is therefore complete (fail-safe) in every case,
+/// and exact in every realistic one.
+///
+/// # Safety
+/// `spaces` must be null or point to `space_count` valid `CSpaceDesc`s whose
+/// `caps`/`size` describe live arrays. Called under `cap_lock`.
+unsafe fn revoke_subtree(
+    spaces: *const CSpaceDesc,
+    space_count: u32,
+    root_serial: u32,
+    root_object: u64,
 ) {
-    if cspace.is_null() {
+    if spaces.is_null() {
         return;
     }
-    let limit = if size > CNODE_SIZE { CNODE_SIZE } else { size };
-    for i in 0..limit {
-        if i == skip_slot {
+    let mut revoked = [0u32; MAX_REVOKE_LINEAGE];
+    let mut n = 0usize;
+    let mut overflow = false;
+
+    if root_serial != 0 {
+        revoked[0] = root_serial;
+        n = 1;
+        // Grow the revoked-serial set one BFS layer per pass until it is closed
+        // under "is a child (badge) of an already-revoked serial".
+        loop {
+            let mut added = false;
+            for s in 0..space_count {
+                let d = &*spaces.add(s as usize);
+                if d.caps.is_null() {
+                    continue;
+                }
+                let limit = if d.size > CNODE_SIZE { CNODE_SIZE } else { d.size };
+                for i in 0..limit {
+                    let c = &*d.caps.add(i as usize);
+                    if c.typ == CAP_NULL || c.serial == 0 || c.badge == 0 {
+                        continue;
+                    }
+                    if set_contains(&revoked[..n], c.badge)
+                        && !set_contains(&revoked[..n], c.serial)
+                    {
+                        if n < MAX_REVOKE_LINEAGE {
+                            revoked[n] = c.serial;
+                            n += 1;
+                            added = true;
+                        } else {
+                            overflow = true;
+                        }
+                    }
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+    } else {
+        // No serial seed (revoke-by-object): fall back to the object sweep, which
+        // is complete for a shared-object lineage.
+        overflow = true;
+    }
+
+    // Null every cap in the revoked set (the root's descendants), plus — only on
+    // overflow / no-seed — every cap sharing the root object (a safe superset).
+    for s in 0..space_count {
+        let d = &*spaces.add(s as usize);
+        if d.caps.is_null() {
             continue;
         }
-        let c = &mut *cspace.add(i as usize);
-        if c.typ == CAP_NULL {
-            continue;
-        }
-        if lineage_matches(c, ts, tb, to) {
-            nullify(c);
-            if !caps_in_use.is_null() && *caps_in_use > 0 {
-                *caps_in_use -= 1;
+        let limit = if d.size > CNODE_SIZE { CNODE_SIZE } else { d.size };
+        for i in 0..limit {
+            let c = &mut *d.caps.add(i as usize);
+            if c.typ == CAP_NULL {
+                continue;
+            }
+            let hit = set_contains(&revoked[..n], c.serial)
+                || (overflow && root_object != 0 && c.object == root_object);
+            if hit {
+                nullify(c);
+                if !d.caps_in_use.is_null() && *d.caps_in_use > 0 {
+                    *d.caps_in_use -= 1;
+                }
             }
         }
     }
@@ -394,7 +472,6 @@ pub unsafe extern "C" fn rust_cap_revoke(
     }
 
     let ts = target.serial;
-    let tb = target.badge;
     let to = target.object;
 
     nullify(target);
@@ -404,7 +481,14 @@ pub unsafe extern "C" fn rust_cap_revoke(
         let _ = bump_lineage(to);
     }
 
-    revoke_matching_in(cspace, cspace_size, slot, ts, tb, to, core::ptr::null_mut());
+    // Descendant-only sweep of this one cspace (audit A1). The target slot is
+    // already nulled, so the closure only reaches capabilities derived from it.
+    let desc = CSpaceDesc {
+        caps: cspace,
+        size: cspace_size,
+        caps_in_use: core::ptr::null_mut(),
+    };
+    revoke_subtree(&desc as *const CSpaceDesc, 1, ts, to);
     true
 }
 
@@ -423,16 +507,19 @@ pub struct CSpaceDesc {
 ///
 /// Revokes the capability at `target_slot` of `target_cspace` and then sweeps
 /// EVERY cspace in `spaces` (which the caller populates with all live tasks'
-/// cspaces plus the kernel root cnode) for derived copies of the same lineage,
-/// nulling them. The lineage generation is bumped exactly once, so any stale
-/// copy that somehow escapes the structural sweep still fails the generation
-/// check in `rust_cap_lookup`.
+/// cspaces plus the kernel root cnode) for the target's derivation *subtree* —
+/// the capabilities transitively derived from it (mint/transfer/grant) — nulling
+/// them. The lineage generation is bumped exactly once, so any stale copy that
+/// somehow escapes the structural sweep still fails the generation check in
+/// `rust_cap_lookup`.
 ///
 /// INVARIANT (see ARCHITECTURE.md): after this returns true, no live cspace
-/// retains a capability whose serial/badge/object matches the revoked lineage.
-/// This is what makes revocation complete rather than caller-local — closing
-/// the use-after-revoke / privilege-retention hole where a derived capability
-/// in another task's CNode could survive its parent's revocation.
+/// retains the target capability or any capability derived from it — and, per
+/// audit A1, capabilities that are NOT descendants (the grantor/ancestor, unrelated
+/// siblings, independent capabilities to the same object) are left intact. This is
+/// what makes revocation both complete (no descendant survives its ancestor's
+/// revocation) and least-privilege-correct (revoking a delegated capability does
+/// not strip the grantor's own authority).
 ///
 /// Must be called by C under `cap_lock` so the `spaces` snapshot is stable.
 #[no_mangle]
@@ -461,7 +548,6 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     }
 
     let ts = target.serial;
-    let tb = target.badge;
     let to = target.object;
 
     // Null the target itself and account for it. The system-wide sweep below
@@ -476,25 +562,23 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
         let _ = bump_lineage(to);
     }
 
-    // Sweep every supplied cspace, including the target's own (target slot is
-    // already null, so it cannot re-match).
-    if !spaces.is_null() {
-        for s in 0..space_count {
-            let d = &*spaces.add(s as usize);
-            revoke_matching_in(d.caps, d.size, u32::MAX, ts, tb, to, d.caps_in_use);
-        }
-    }
+    // Sweep every supplied cspace for the target's derivation subtree only — the
+    // target's descendants, not its ancestors, siblings, or same-object peers
+    // (audit A1). The target slot is already null, so it cannot re-match.
+    revoke_subtree(spaces, space_count, ts, to);
     true
 }
 
 /// Single-cspace revoke by explicit values. Retained for compatibility; the
-/// system-wide path is `rust_cap_revoke_global`.
+/// system-wide path is `rust_cap_revoke_global`. Revokes the derivation subtree
+/// rooted at `target_serial` (audit A1) — `target_badge` is no longer used for
+/// matching, since the subtree is defined by the serial→badge derivation links.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_revoke_by_values(
     cspace: *mut Capability,
     cspace_size: u32,
     target_serial: u32,
-    target_badge: u32,
+    _target_badge: u32,
     target_obj: u64,
 ) -> bool {
     if cspace.is_null() {
@@ -504,15 +588,12 @@ pub unsafe extern "C" fn rust_cap_revoke_by_values(
     if target_obj != 0 {
         let _ = bump_lineage(target_obj);
     }
-    revoke_matching_in(
-        cspace,
-        cspace_size,
-        u32::MAX,
-        target_serial,
-        target_badge,
-        target_obj,
-        core::ptr::null_mut(),
-    );
+    let desc = CSpaceDesc {
+        caps: cspace,
+        size: cspace_size,
+        caps_in_use: core::ptr::null_mut(),
+    };
+    revoke_subtree(&desc as *const CSpaceDesc, 1, target_serial, target_obj);
     true
 }
 
@@ -1063,6 +1144,123 @@ mod tests {
             assert_eq!(grantor[5].typ, CAP_NULL);
             assert_eq!(grantee[6].typ, CAP_NULL, "the delegated copy is revoked with its grantor");
             assert_eq!(ciu_e, 0, "grantee accounting decremented for the swept copy");
+        }
+    }
+
+    /// AUDIT A1 (core regression): revoking a *delegated child* must NOT disturb
+    /// the grantor's original or a sibling child. The old equivalence-set match
+    /// nulled the parent (its serial == the child's badge) and same-object peers;
+    /// descendant-only revocation touches only what is derived FROM the revoked
+    /// capability, not its ancestors or siblings.
+    #[test]
+    fn test_revoke_child_leaves_parent_and_siblings_intact() {
+        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut child_space = [cap(0, 0, 0, 0, 0, 0); 16];
+        // The parent/root of the lineage (generation 0, as every real cap is).
+        grantor[4] = cap(3, 0x3f, 0xD100, 0, 0x6100, 0);
+        // Two children derived from it (badge == parent serial): a sibling in the
+        // grantor's own cspace, and one delegated into another task.
+        grantor[5] = cap(3, 0x3f, 0xD100, 0x6100, 0x6101, 0);
+        child_space[6] = cap(3, 0x3f, 0xD100, 0x6100, 0x6102, 0);
+        let mut ciu_g = 2u32;
+        let mut ciu_c = 1u32;
+        unsafe {
+            let spaces = [
+                CSpaceDesc { caps: grantor.as_mut_ptr(),     size: 16, caps_in_use: addr_of_mut!(ciu_g) },
+                CSpaceDesc { caps: child_space.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_c) },
+            ];
+            // Revoke the DELEGATED CHILD (child_space slot 6) — not the parent.
+            assert!(rust_cap_revoke_global(
+                child_space.as_mut_ptr(), 16, 6, addr_of_mut!(ciu_c),
+                spaces.as_ptr(), 2, core::ptr::null_mut()));
+
+            // The child is gone...
+            assert_eq!(child_space[6].typ, CAP_NULL);
+            assert_eq!(ciu_c, 0);
+            // ...but the grantor's original and the sibling child are UNTOUCHED
+            // and still usable (the crux of audit A1).
+            assert_eq!(grantor[4].typ, 3, "revoking a child must not revoke its parent (A1)");
+            assert_eq!(grantor[5].typ, 3, "revoking a child must not revoke a sibling (A1)");
+            assert!(!rust_cap_lookup(grantor.as_mut_ptr(), 16, 4, 0x1).is_null(),
+                "parent stays usable after a child is revoked");
+            assert!(!rust_cap_lookup(grantor.as_mut_ptr(), 16, 5, 0x1).is_null(),
+                "sibling stays usable after a child is revoked");
+            assert_eq!(ciu_g, 2, "grantor accounting unchanged");
+        }
+    }
+
+    /// AUDIT A1: two capabilities to the *same object* but with independent
+    /// lineages (each installed directly, badge 0, distinct serials — e.g. two
+    /// tasks each connected to the fs_server endpoint) must be independent. The
+    /// old object-equality match co-revoked them; descendant-only revocation does
+    /// not, because neither is derived from the other.
+    #[test]
+    fn test_revoke_does_not_touch_independent_same_object_cap() {
+        let mut a = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0, 0); 16];
+        // Same object 0xE000, independent lineages (badge 0, distinct serials).
+        a[5] = cap(3, 0x3f, 0xE000, 0, 0x7000, 0);
+        b[5] = cap(3, 0x3f, 0xE000, 0, 0x7001, 0);
+        let mut ciu_a = 1u32;
+        let mut ciu_b = 1u32;
+        unsafe {
+            let spaces = [
+                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_b) },
+            ];
+            assert!(rust_cap_revoke_global(
+                a.as_mut_ptr(), 16, 5, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut()));
+            assert_eq!(a[5].typ, CAP_NULL, "the revoked cap is gone");
+            assert_eq!(b[5].typ, 3, "an independent same-object cap must survive (A1)");
+            assert!(!rust_cap_lookup(b.as_mut_ptr(), 16, 5, 0x1).is_null(),
+                "the independent same-object cap stays usable");
+            assert_eq!(ciu_b, 1, "the other task's accounting is untouched");
+        }
+    }
+
+    /// The safe overflow fallback: if a derivation subtree is larger than the
+    /// bounded worklist (`MAX_REVOKE_LINEAGE`), revocation falls back to nulling
+    /// every cap sharing the root object — a complete superset of the descendant
+    /// set — so no descendant can ever survive. Over-approximation, never under.
+    #[test]
+    fn test_revoke_overflow_falls_back_to_complete_object_sweep() {
+        const ROOT_SERIAL: u32 = 0x8000_0001;
+        const OBJ: u64 = 0xF000;
+        // Two full 256-slot cspaces of same-object children of the root (~510
+        // descendants) — comfortably past MAX_REVOKE_LINEAGE (256), forcing the
+        // overflow path.
+        let mut a = [cap(0, 0, 0, 0, 0, 0); 256];
+        let mut b = [cap(0, 0, 0, 0, 0, 0); 256];
+        // Root in a[0]; the caller (*_global) nulls it before the sweep, and its
+        // serial remains the closure seed.
+        a[0] = cap(4, 0x3f, OBJ, 0, ROOT_SERIAL, 0);
+        let mut serial = 0x9000_0000u32;
+        let mut placed = 0usize;
+        for c in a.iter_mut().skip(1) {
+            serial += 1;
+            *c = cap(4, 0x3f, OBJ, ROOT_SERIAL, serial, 0);
+            placed += 1;
+        }
+        for c in b.iter_mut() {
+            serial += 1;
+            *c = cap(4, 0x3f, OBJ, ROOT_SERIAL, serial, 0);
+            placed += 1;
+        }
+        assert!(placed > MAX_REVOKE_LINEAGE, "test must exceed the worklist to hit overflow");
+        let mut ciu_a = 0u32;
+        let mut ciu_b = 0u32;
+        unsafe {
+            let descs = [
+                CSpaceDesc { caps: a.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_b) },
+            ];
+            assert!(rust_cap_revoke_global(
+                a.as_mut_ptr(), 256, 0, addr_of_mut!(ciu_a),
+                descs.as_ptr(), 2, core::ptr::null_mut()));
+            for c in a.iter().chain(b.iter()) {
+                assert_eq!(c.typ, CAP_NULL,
+                    "overflow fallback must revoke every same-object descendant");
+            }
         }
     }
 }

@@ -265,9 +265,14 @@ proving the Track 1 fixes.
   `docs/paging_isolation.tla` exist but are not model-checked; run TLC on every PR
   and extend `cap_algebra.tla` to the **revised (CDT) revocation** so the fix is
   specified, not just coded.
-- **Extend Kani to the revocation / lineage paths** (they mutate a shared static
-  that needs a heavier model); keep the deterministic subset in the required check
-  from 0.3.
+- **Extend Kani to the revocation paths** — *done for the A1 invariant*. Two new
+  harnesses prove, over the **entire** serial space, that revoking a descendant
+  never nulls its ancestors (`revoke_descendant_never_nulls_ancestors`) and that
+  revoking a root nulls every descendant (`revoke_root_nulls_every_descendant`) —
+  together pinning revocation to exactly the target's subtree. Six harnesses now
+  verify. *Remaining:* a multi-cspace + overflow-fallback model, and the
+  lineage-generation paths (they mutate a shared static needing a heavier model);
+  keep the deterministic subset in the required check from 0.3.
 - **Syscall-boundary fuzzer** under QEMU (syzkaller-style), complementing the
   existing host FFI fuzzers.
 - **Broaden the scripted session harness** (`tools/session_test.py`): add

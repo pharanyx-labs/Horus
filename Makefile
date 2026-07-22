@@ -61,6 +61,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/capability.o \
        src/kernel/scheduler.o \
        src/kernel/smp.o \
+       src/kernel/acpi.o \
        src/kernel/aslr.o \
        src/kernel/syscall.o \
        src/kernel/kshell.o \
@@ -413,12 +414,15 @@ ASFLAGS += -DPROC_SELFTEST
 PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
 endif
 
-# SMP=1 brings up the application processors (multi-core) at boot: the BSP wakes
-# every AP with a broadcast INIT-SIPI-SIPI and each walks itself to long mode via
-# the real-mode trampoline (src/boot/ap_trampoline.S). Gated so the default build
-# is single-CPU and byte-for-byte unaffected. Run under QEMU with -smp N (see
-# `make smoke-smp`). ASFLAGS also gets the define so the gated .incbin of the
-# trampoline blob in multiboot.S is included.
+# SMP brings up the application processors (multi-core) at boot: the BSP reads the
+# real CPU count from the ACPI MADT (src/kernel/acpi.c), wakes every AP with a
+# broadcast INIT-SIPI-SIPI, and each walks itself to long mode via the real-mode
+# trampoline (src/boot/ap_trampoline.S). It is ON by default now; a uniprocessor
+# (or SMP=0) build simply finds one CPU and skips AP bringup entirely, so the
+# single-core path stays intact. Run under QEMU with -smp N (`make run` passes
+# -smp $(SMP_CPUS); see also `make smoke-smp`). Build SMP=0 to compile it out
+# completely. ASFLAGS also gets the define so the gated .incbin of the trampoline
+# blob in multiboot.S is included.
 # SMP_SELFTEST=1 implies SMP=1 and, at boot, spawns a pool of forever-looping
 # workers and proves the application processors pull and run them concurrently
 # (prints SMP_SELFTEST: PASS to serial). Drives `make smoke-smp`.
@@ -459,7 +463,7 @@ ASFLAGS += -DSMP_SELFTEST
 SMP_SELFTEST_DEP = userspace/preempttest.bin
 endif
 
-SMP ?= 0
+SMP ?= 1
 ifeq ($(SMP),1)
 CFLAGS  += -DSMP
 ASFLAGS += -DSMP
@@ -565,6 +569,7 @@ run: kernel.elf
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) boot.iso
 	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \
+		-smp $(SMP_CPUS) \
 		-machine accel=kvm:tcg -display none \
 		-serial mon:stdio \
 		-device isa-debug-exit,iobase=0x604,iosize=0x04 \

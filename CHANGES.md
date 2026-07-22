@@ -8,6 +8,19 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — SMP is properly done and on by default: ACPI-driven CPU count, real multi-core scheduling in the normal boot (this pass)
+
+Multi-core was previously gated behind `SMP=1` and only ever exercised by the marker self-tests; the real shell had never run under it. It is now the default build and the normal login/shell boot runs across every core.
+
+- **The CPU count comes from ACPI, not a guess.** A new `src/kernel/acpi.c` locates the RSDP (EBDA + BIOS ROM), walks the RSDT/XSDT to the MADT, and counts the *enabled* Processor-Local-APIC entries. Firmware tables are treated as semi-trusted input: every signature and checksum is verified, every entry length is bounds-checked, and every physical pointer is confined to the `PHYS_KVA` window before it is dereferenced — anything that does not validate makes the probe fail closed and the BSP falls back to the old conservative broadcast. The BSP then waits for **exactly** the reported cores to check in instead of spinning a fixed `MAX_CPUS` timeout, and a uniprocessor skips AP bringup entirely (no trampoline staging, no INIT-SIPI, no wait).
+- **The SMP scheduler is now armed in the normal boot.** `smp_sched_enabled` was only ever set by the SMP self-test, so a plain `SMP=1` boot left the online APs idle and the BSP never preempting — init reached `fs_server` and hung. `smp_bringup` now arms it once every AP is parked (still gated by `preempt_enabled`, so nothing switches early). With it on, the shipped init → `fs_server` → `console_server` → shell → login flow runs to completion across cores.
+- **Async signals now deliver under SMP.** `preempt_on_tick`'s SMP branch never called `deliver_pending_signal`, so a signal sent to a ring-3 task (e.g. `SYS_KILL` from another CPU) was raised but its handler never ran. The SMP branch now mirrors the single-CPU path, delivering into this CPU's ring-3 frame under the scheduler lock. `make smoke-proc` (the `sigwaiter` case) passes under SMP.
+- **`make run` boots multi-core** (`-smp $(SMP_CPUS)`, default 4). Verified: the marker self-tests (`smoke-proc/notify/fs/preempt/signal/captest`, `smoke-smp`), a full **interactive** login + `whoami` round-trip under `-smp 4`, and boot-to-login at 1/2/4 CPUs. `SMP=0` still compiles the whole subsystem out (0 objects carry `-DSMP`) and boots single-core unchanged.
+
+### Changed — boot skips Argon2 on the ephemeral RAM vdisk (this pass)
+
+The diskless/CI boot formats and unlocks an in-RAM encrypted volume whose "password" is a 256-bit CSPRNG value discarded right after unlock. Running the memory-hard Argon2id KDF over a full-entropy key adds no brute-force resistance — there is nothing to brute-force — so the vdisk's KEK now derives via `HKDF-SHA256` instead. A per-boot flag scopes this to the vdisk only; a real ATA disk, whose KEK comes from a low-entropy user password, keeps Argon2id unchanged. This removes both the format-time and unlock-time Argon2 runs from the diskless boot, cutting `ramfs_init` from ~1.5 s to ~0.25 s under TCG. `make smoke-fs` confirms the encrypted store still round-trips end-to-end with the HKDF-derived key.
+
 ### Added — driver privilege separation: the console driver moved out of the kernel into a ring-3 server (this pass)
 
 The highest-risk, ring-3-reachable driver — the VGA/serial console, which parses input and handles password entry — has been moved out of the kernel's flat trust domain into a ring-3 server, `console_server`. A bug in it is now an ordinary ring-3 fault rather than a kernel-wide compromise. It landed as a design proposal (`docs/proposals/console-server.md`) followed by a commit-per-job program, each behavior-verified with a gated smoke test.

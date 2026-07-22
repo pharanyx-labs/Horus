@@ -402,6 +402,16 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (cur > 0 && cur < MAX_TASKS && task_running_cpu[cur] < 0)
         task_running_cpu[cur] = cpu;
 
+    /* Deliver any signal queued for the task running here before it resumes —
+     * the SMP twin of the non-SMP branch above. Without this, a signal sent
+     * (e.g. by SYS_KILL from another CPU) to a task blocked-then-woken or spinning
+     * in ring 3 would never enter its handler under SMP. The frame is rewritten in
+     * place, so both the save-and-switch and the no-switch return below carry the
+     * redirected frame. Safe under the raw lock: the delivery helper takes no lock
+     * and touches only tasks[cur] plus this CPU's own frame. */
+    if (ring3 && cur > 0 && cur < MAX_TASKS)
+        deliver_pending_signal(frame_rsp, cur);
+
     int next = -1;
     for (int i = 1; i <= MAX_TASKS; i++) {
         int cand = (cur + i) % MAX_TASKS;

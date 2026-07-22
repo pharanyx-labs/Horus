@@ -955,6 +955,10 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
 bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint32_t badge);
 bool cap_transfer(uint32_t dest_slot, uint32_t src_slot);
 bool cap_move(uint32_t dest_slot, uint32_t src_slot);
+/* Delegate the caller's src_slot into a supervised target's dest_slot through the
+ * locked, accounted, rights-reducing cap-write path (SYS_CAP_GRANT). Authority
+ * (CAP_TCB on target / admin) is checked by the caller. */
+bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
 bool cap_revoke(uint32_t slot);
 bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot);
 bool has_encrypted_storage_cap(void);
@@ -975,6 +979,12 @@ bool rust_cap_mint(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,
                    uint32_t src_slot, uint32_t new_rights, uint32_t *next_serial, uint32_t caps_in_use);
 bool rust_cap_transfer(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,
                        uint32_t src_slot, uint32_t *next_serial);
+/* Cross-cspace mint: delegate a cap derived from *src into dest_cspace[dest_slot]
+ * with rights reduced to (new_rights & src->rights) and badge = src->serial.
+ * No reserved-slot floor (grant endows a dominated child). Called under cap_lock. */
+bool rust_cap_grant_into(const capability_t *src, capability_t *dest_cspace,
+                         uint32_t dest_cspace_size, uint32_t dest_slot,
+                         uint32_t new_rights, uint32_t *next_serial);
 bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t *next_serial);
 bool rust_cap_revoke_by_values(capability_t *cspace, uint32_t sz, uint32_t target_serial, uint32_t target_badge, uint64_t target_obj);
 

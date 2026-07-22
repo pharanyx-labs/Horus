@@ -85,21 +85,24 @@ These matter specifically for anyone evaluating Horus as a security system. The
 July 2026 audit ([AUDIT-2026-07.md](AUDIT-2026-07.md)) added the first four items
 below; remediation is tracked in [ROADMAP.md](ROADMAP.md) (Tracks 0–2).
 
-### Capability revocation over-revokes (audit A1)
+### Capability revocation is descendant-only (audit A1 — fixed)
 
-Revocation is intended to be *transitive downward* — revoking a capability should
-null it and its derived descendants. The current implementation instead matches an
-**object/badge/serial equivalence set**: because a derived capability records its
-parent's serial in its `badge`, and the sweep also matches on shared `object`,
-revoking a delegated capability can additionally null **the grantor's original** and
-**any other capability to the same object**. A child that was *granted* a revocable
-capability can therefore strip the same authority from its supervisor and from
-unrelated peers.
+Revocation is transitive *downward*: revoking a capability nulls it and its derived
+descendants. Previously the sweep matched an **object/badge/serial equivalence
+set** — because a derived cap records its parent's serial in its `badge`, and the
+sweep also matched shared `object`, revoking a delegated capability could
+additionally null **the grantor's original** and **any same-object peer**. It failed
+safe (removed access, never granted it) but broke the least-privilege-delegation
+contract.
 
-This **fails safe** — it removes access, never grants it, so it is not a privilege
-escalation — but it breaks the least-privilege-delegation contract the design
-advertises. The fix is a proper capability derivation tree (Roadmap Track 1), so
-`revoke(T)` deletes exactly `T`'s subtree.
+It now computes the target's exact **derivation subtree** (`revoke_subtree`): a
+bounded worklist seeded with the target's serial, closed under "child (`badge`) of
+an already-revoked serial", nulling exactly those. Ancestors, siblings, and
+independent same-object capabilities survive. If a subtree ever exceeds the
+worklist (`MAX_REVOKE_LINEAGE`, never in practice), a fail-safe fallback also nulls
+every same-`object` cap — a complete superset — so no descendant can survive.
+Regression-tested in `rust/src/capability.rs` and on real hardware by
+`smoke-captest`.
 
 ### Capability grant now uses the locked write discipline (audit A2 — fixed)
 

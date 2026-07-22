@@ -198,30 +198,30 @@ All capability operations live in `rust/src/capability.rs` (safe Rust) and are c
 | **Transfer** | Copies a capability into another task's CNode with the same rights. |
 | **Move** | Transfer, then immediately nullify the source slot. |
 | **Grant** (`SYS_CAP_GRANT`) | A supervisor that holds a child's `CAP_TCB` copies one of its own cap slots into a chosen slot of that child's cspace — least-privilege delegation at spawn time. |
-| **Revoke** | System-wide. `rust_cap_revoke_global` nullifies the target capability, then sweeps **every live task's CNode plus the kernel root cnode**, nullifying any capability whose serial/badge/object matches the revoked lineage, and bumps the lineage generation counter exactly once. |
+| **Revoke** | System-wide, descendant-only. `rust_cap_revoke_global` nullifies the target capability, then sweeps **every live task's CNode plus the kernel root cnode** for the target's **derivation subtree** (the capabilities transitively derived from it via mint/transfer/grant), nullifying exactly those — not ancestors, siblings, or same-object peers (audit A1) — and bumps the lineage generation counter once. |
 
 ### Revocation and lineage
 
-Revocation is **complete, not caller-local**: the C wrapper `cap_revoke` (under `cap_lock`) builds the list of all live cspaces and passes it to `rust_cap_revoke_global`, which performs the entire sweep inside one Rust call. A derived capability copied into another task's CNode is therefore revoked together with its parent — there is no window in which another task retains access after revocation.
+Revocation is **complete, not caller-local**: the C wrapper `cap_revoke` (under `cap_lock`) builds the list of all live cspaces and passes it to `rust_cap_revoke_global`, which performs the entire sweep inside one Rust call. A derived capability copied into another task's CNode is therefore revoked together with its parent — there is no window in which another task retains access after revocation. The sweep is **descendant-only** (`revoke_subtree`): it follows the `serial → badge` derivation links to null exactly the target's subtree, so revoking a *delegated* capability does not strip the grantor's own authority or unrelated same-object capabilities (audit A1).
 
 The system additionally prevents use-after-revoke via a **lineage table** (`LINEAGE_SLOTS` = 4,096 entries). Each entry is a generation counter, and the Rust table is the single source of truth. When a capability is minted it records the current generation for its lineage slot; at use time `rust_cap_lookup` checks whether the stored generation still matches. A revocation bumps the counter, so even a stale bit pattern that escaped the structural sweep fails the generation check immediately. The structural sweep and the generation bump are defence-in-depth for the same invariant.
 
 **Primordial capabilities** — root capabilities assigned at boot, identified by the `0xC0DE` serial prefix — cannot be revoked. A serial-range check in the Rust revocation path enforces this.
 
-> **Audit note (2026-07, finding A1 — being reworked).** The sweep currently
-> matches a capability's `serial`, its `badge` (which records the *parent's*
-> serial), **or** its `object`. That matches descendants, but also **ancestors,
-> siblings, and any unrelated capability to the same object** — so revocation is an
-> equivalence-class operation, not a derivation-subtree operation. Revoking a
-> *granted* capability can therefore also null the grantor's original. This
-> **fails safe** (it over-revokes; it never leaves stale authority live), but it is
-> broader than the least-privilege-delegation model intends. The planned fix is an
-> explicit capability derivation tree (CDT) so `revoke(T)` deletes exactly `T`'s
-> subtree. Related: the lineage-generation table is a lossy 4096-slot hash keyed by
-> `object` (finding A3, open); `SYS_CAP_GRANT` now goes through the locked,
-> `caps_in_use`-accounted, rights-masked `cap_grant_into` path with a well-formed
-> derivation-tree badge (finding A2, fixed). See
-> [AUDIT-2026-07.md](AUDIT-2026-07.md) and [ROADMAP.md](ROADMAP.md) Track 1.
+> **Audit note (2026-07, finding A1 — fixed).** Revocation now computes the
+> target's exact **derivation subtree** (`revoke_subtree`): it nulls the target and
+> every capability transitively derived from it (a cap whose `badge` chains back to
+> the target's serial), and **nothing else** — not ancestors, not siblings, not
+> independent capabilities to the same `object`. The earlier sweep matched a
+> `serial`/`badge`/`object` equivalence set and could over-revoke the grantor and
+> same-object peers (it failed safe, but was broader than least-privilege intends).
+> Completeness is preserved by a fail-safe object-sweep fallback for a subtree that
+> overflows the bounded worklist (never hit in practice). Related: `SYS_CAP_GRANT`
+> goes through the locked, `caps_in_use`-accounted, rights-masked `cap_grant_into`
+> path with a well-formed derivation-tree badge (finding A2, fixed); the
+> lineage-generation table (finding A3) is a lossy hash but **dormant** — no cap
+> carries a non-zero generation, so structural revocation is the sole enforcement.
+> See [AUDIT-2026-07.md](AUDIT-2026-07.md) and [ROADMAP.md](ROADMAP.md) Track 1.
 
 ---
 

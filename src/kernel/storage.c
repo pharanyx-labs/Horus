@@ -49,6 +49,17 @@ uint8_t *g_vdisk_backing = 0;
 static int                  g_needs_format    = 0;
 static struct block_device *g_needs_format_bd = NULL;
 
+/* Set for the lifetime of a boot that runs on the ephemeral in-RAM vdisk (see
+ * storage_init). That volume's "password" is a 256-bit CSPRNG value discarded
+ * after unlock — there is nothing to brute-force, so the memory-hard Argon2id
+ * step buys no security and only costs boot time. On this path derive_kek uses a
+ * plain HKDF-SHA256 expansion of the full-entropy key instead. Stays 0 for any
+ * real (ATA) disk, whose KEK comes from a low-entropy user password and MUST keep
+ * Argon2id. Set once at boot, single-threaded; the vdisk is the only volume the
+ * boot touches, so format and unlock derive the KEK the same way (a mismatch
+ * would make the AEAD unwrap fail). */
+static int g_vdisk_high_entropy_kek = 0;
+
 static int vdisk_read(struct block_device *bd, uint64_t block, void *buf) {
     struct virtual_disk *vd = (struct virtual_disk *)bd->private;
     if (block >= bd->total_blocks) return -1;
@@ -669,6 +680,9 @@ int storage_init(void) {
      * backing store is the pool reservation (g_vdisk_backing, set at paging_init),
      * not .bss, so the volume can exceed the old ~2 MiB .bss ceiling. */
     if (!g_vdisk_backing) return -1;   /* pool reserve not set up: refuse rather than fault */
+    /* This boot runs on the ephemeral vdisk: its KEK comes from a full-entropy
+     * random key, so derive_kek may skip Argon2id (see the flag's comment). */
+    g_vdisk_high_entropy_kek = 1;
     g_vdisk.data        = g_vdisk_backing;
     g_vdisk.size        = VDISK_BYTES;
     g_vdisk.block_count = BLOCKS_PER_DISK;
@@ -869,13 +883,28 @@ int storage_dir_add(struct mounted_fs *mfs, uint64_t dir_ino, const char *name,
     return 0;
 }
 
-/* Derive a 32-byte Key Encryption Key from password + kek_salt using Argon2id.
+/* Derive a 32-byte Key Encryption Key from password + kek_salt.
  * No kernel_pepper: the KEK must reproduce from the same inputs across reboots.
  * Domain-separated from the login hash by the different salt length (32B vs 32B
- * login_salt||pepper) and the different downstream use (wrapping vs verification). */
+ * login_salt||pepper) and the different downstream use (wrapping vs verification).
+ *
+ * Normally Argon2id (memory-hard, resists brute force of a low-entropy password).
+ * For the ephemeral vdisk, whose key is already 256 bits of CSPRNG output, a
+ * memory-hard step adds nothing, so HKDF-SHA256 is used — cryptographically sound
+ * for a high-entropy input and ~an order of magnitude cheaper at boot. */
 static int derive_kek(const char *password, size_t plen,
                       const uint8_t *kek_salt, uint8_t *kek32)
 {
+    if (g_vdisk_high_entropy_kek) {
+        /* HKDF(ikm=high-entropy key, salt=kek_salt, info="horus-kek-he-v1").
+         * The info label is distinct from the "horus-wrap-v1" expansion below so
+         * the KEK and the wrap subkeys stay domain-separated. */
+        const char *label = "horus-kek-he-v1";
+        uint8_t info[15]; size_t n = 0;
+        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+        return rust_hkdf_sha256((const uint8_t *)password, plen,
+                                kek_salt, 32, info, n, kek32, 32);
+    }
     /* Uses kernel_argon2id (syscall.c) to share the single 4MiB scratch buffer.
      * No kernel_pepper: kek_salt is random per-format and stable across reboots,
      * so the same password always yields the same KEK from the same disk. */

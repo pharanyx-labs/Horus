@@ -1385,13 +1385,17 @@ smoke-session:
 # stale reply buffer, so typed usernames/passwords arrived empty or truncated and
 # logins failed intermittently (roughly half the time under -smp 4). The fix idles
 # the CPU (ipc_block_switch -> enter_cpu_idle) so the cross-core reply lands and a
-# timer tick reschedules the woken caller. A 60s step timeout absorbs 4-core TCG
-# emulation slowness on the coreutils steps (no KVM in CI).
+# timer tick reschedules the woken caller. The per-step timeout absorbs 4-core TCG
+# emulation slowness (no KVM in CI): -smp 4 oversubscribes a 2-vCPU GitHub runner,
+# so a step that is ~1s locally can stall for many seconds when the runner is
+# starved. 60s proved marginal (a loaded runner blew past it on the apropos step,
+# reddening main after #93 with no code fault — the test passes cleanly locally), so
+# the budget is 120s. It is a max-wait, not a sleep, so green runs are unaffected.
 .PHONY: smoke-session-smp
 smoke-session-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory boot.iso
-	@QEMU_SMP=4 SESSION_TIMEOUT=60 python3 tools/session_test.py boot.iso
+	@QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py boot.iso
 
 # Regression guard for the SMP console-output corruption: boot the SHIPPED kernel
 # (no self-test flag) under -smp 4 and require it to reach the ring-3 login banner

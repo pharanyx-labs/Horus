@@ -332,6 +332,12 @@ void kernel_main(uint32_t mb_info) {
      * still long before any userspace (or the store unlock that stages 2-3 gate on
      * these measurements) exists. */
     tpm_measured_boot();
+#ifdef TPM_SELFTEST
+    /* Seal a known value under a PolicyPCR(PCR8,PCR9) and unseal it under the live
+     * PCRs, proving the TPM seal/unseal path (roadmap 2.2 stage 2). Boot continues;
+     * make smoke-tpm-seal-roundtrip asserts on the marker. */
+    tpm_seal_selftest();
+#endif
 #ifdef E820_SELFTEST
     /* Boot continues; make smoke-e820 asserts on the marker. Proves the pool
      * grew past the pre-E820 default from the parsed memory map. */

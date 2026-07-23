@@ -55,8 +55,29 @@
 #define TPM_ST_NO_SESSIONS  0x8001
 #define TPM_ST_SESSIONS     0x8002
 
-#define TPM_CC_STARTUP      0x00000144u
-#define TPM_CC_PCR_EXTEND   0x00000182u
+#define TPM_CC_STARTUP           0x00000144u
+#define TPM_CC_PCR_EXTEND        0x00000182u
+/* Stage 2 (seal/unseal) command codes */
+#define TPM_CC_CREATE_PRIMARY    0x00000131u
+#define TPM_CC_CREATE            0x00000153u
+#define TPM_CC_LOAD              0x00000157u
+#define TPM_CC_UNSEAL            0x0000015Eu
+#define TPM_CC_FLUSH_CONTEXT     0x00000165u
+#define TPM_CC_START_AUTH_SESSION 0x00000176u
+#define TPM_CC_POLICY_PCR        0x0000017Fu
+#define TPM_CC_POLICY_GET_DIGEST 0x00000189u
+
+/* Handles / algorithms for the sealing template */
+#define TPM_RH_OWNER        0x40000001u
+#define TPM_RH_NULL         0x40000007u
+#define TPM_ALG_NULL        0x0010
+#define TPM_ALG_ECC         0x0023
+#define TPM_ALG_KEYEDHASH   0x0008
+#define TPM_ALG_AES         0x0006
+#define TPM_ALG_CFB         0x0043
+#define TPM_ECC_NIST_P256   0x0003
+#define TPM_SE_POLICY       0x01
+#define TPM_SE_TRIAL        0x03
 #define TPM_CC_PCR_READ     0x0000017Eu
 
 #define TPM_SU_CLEAR        0x0000
@@ -129,8 +150,8 @@ static void tpm_release_locality(void) {
  * rsp_cap). Returns the response length on success, or a negative value on any
  * transport timeout / framing error. Response is the full TPM frame including the
  * 10-byte header (tag,size,rc). */
-static int tpm_transact(const uint8_t *cmd, uint32_t cmd_len,
-                        uint8_t *rsp, uint32_t rsp_cap) {
+static int tpm_transact_once(const uint8_t *cmd, uint32_t cmd_len,
+                             uint8_t *rsp, uint32_t rsp_cap) {
     if (!g_tpm) return -1;
 
     /* 1. Move to commandReady. */
@@ -188,6 +209,28 @@ static int tpm_transact(const uint8_t *cmd, uint32_t cmd_len,
 static uint32_t tpm_rc(const uint8_t *rsp, int len) {
     if (len < 10) return 0xFFFFFFFFu;
     return rd_be32(rsp + 6);
+}
+
+/* Transient TPM warnings that mean "ask again": the TPM is self-testing an
+ * algorithm on first use (TESTING), yielded (YIELDED), or asked for a retry
+ * (RETRY). Common right after a CreatePrimary triggers ECC/AES self-tests. */
+#define TPM_RC_YIELDED   0x00000908u
+#define TPM_RC_TESTING   0x0000090Au
+#define TPM_RC_RETRY     0x00000922u
+
+/* tpm_transact_once + bounded retry on the transient warnings above, so a caller
+ * never has to think about first-use self-test timing. */
+static int tpm_transact(const uint8_t *cmd, uint32_t cmd_len,
+                        uint8_t *rsp, uint32_t rsp_cap) {
+    for (int attempt = 0; attempt < 32; attempt++) {
+        int n = tpm_transact_once(cmd, cmd_len, rsp, rsp_cap);
+        if (n < 0) return n;
+        uint32_t rc = tpm_rc(rsp, n);
+        if (rc != TPM_RC_RETRY && rc != TPM_RC_TESTING && rc != TPM_RC_YIELDED)
+            return n;
+        for (volatile int d = 0; d < 100000; d++) __asm__ volatile("pause");
+    }
+    return -10;   /* still transient after many tries */
 }
 
 /* ---- typed commands ------------------------------------------------------- */
@@ -384,4 +427,372 @@ void tpm_measured_boot(void) {
     println("");
     println("[tpm] measured boot OK");
     tpm_release_locality();
+}
+
+/* ===========================================================================
+ * Stage 2 — seal a secret under a PolicyPCR(PCR[8],PCR[9]) and unseal it.
+ *
+ * The TPM enforces the release policy: a secret sealed here comes back only from
+ * a TPM whose live PCR[8]/PCR[9] match the values at seal time — i.e. a
+ * measured-good boot of this exact image + module set. No HMAC/parameter-
+ * encryption sessions are used (authorization is password/empty for the storage
+ * hierarchy and a bare policy session for the unseal); the transport is the
+ * in-process swtpm/QEMU channel. A hardware bus would want session parameter
+ * encryption — noted as follow-up. The storage primary is recreated
+ * deterministically from the Owner seed each boot, so nothing is stored in TPM
+ * NV; only the (public,private) sealed blob is persisted (in the superblock,
+ * stage 3).
+ * ======================================================================== */
+
+/* cursor writers */
+static uint32_t put16(uint8_t *b, uint32_t p, uint16_t v) { be16(b + p, v); return p + 2; }
+static uint32_t put32(uint8_t *b, uint32_t p, uint32_t v) { be32(b + p, v); return p + 4; }
+static uint32_t putbuf(uint8_t *b, uint32_t p, const uint8_t *s, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) b[p + i] = s[i];
+    return p + n;
+}
+/* password (empty) authorization area — 9 bytes */
+static uint32_t put_pw_auth(uint8_t *b, uint32_t p) {
+    p = put32(b, p, TPM_RS_PW);   /* authHandle */
+    p = put16(b, p, 0);           /* nonce size */
+    b[p++] = 0;                   /* sessionAttributes */
+    p = put16(b, p, 0);           /* hmac size */
+    return p;
+}
+/* TPML_PCR_SELECTION selecting PCR[8] and PCR[9] in the SHA-256 bank */
+static uint32_t put_pcr_selection(uint8_t *b, uint32_t p) {
+    p = put32(b, p, 1);                 /* count */
+    p = put16(b, p, TPM_ALG_SHA256);    /* hash */
+    b[p++] = 3;                         /* sizeofSelect */
+    b[p++] = 0;                         /* PCR 0..7 */
+    b[p++] = (uint8_t)((1u << (TPM_PCR_KERNEL_IDENTITY - 8)) |
+                       (1u << (TPM_PCR_BOOT_MODULES  - 8)));   /* PCR 8..15 */
+    b[p++] = 0;                         /* PCR 16..23 */
+    return p;
+}
+
+/* Read a big-endian u16 with bounds check; returns 0 and sets *ok=0 on overrun. */
+static uint16_t rd16(const uint8_t *b, uint32_t off, uint32_t len, int *ok) {
+    if (off + 2 > len) { *ok = 0; return 0; }
+    return (uint16_t)((b[off] << 8) | b[off + 1]);
+}
+
+/* StartAuthSession: trial (TPM_SE_TRIAL) or policy (TPM_SE_POLICY). */
+static int tpm_start_session(uint8_t se_type, uint32_t *session) {
+    static const uint8_t nonce[16] = {0};
+    uint8_t cmd[64];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_NO_SESSIONS);
+    p = put32(cmd, p, 0);                    /* size, patched */
+    p = put32(cmd, p, TPM_CC_START_AUTH_SESSION);
+    p = put32(cmd, p, TPM_RH_NULL);          /* tpmKey */
+    p = put32(cmd, p, TPM_RH_NULL);          /* bind */
+    p = put16(cmd, p, sizeof(nonce));        /* nonceCaller */
+    p = putbuf(cmd, p, nonce, sizeof(nonce));
+    p = put16(cmd, p, 0);                    /* encryptedSalt */
+    cmd[p++] = se_type;                      /* sessionType */
+    p = put16(cmd, p, TPM_ALG_NULL);         /* symmetric = NULL */
+    p = put16(cmd, p, TPM_ALG_SHA256);       /* authHash */
+    be32(cmd + 2, p);
+
+    uint8_t rsp[256];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0 || tpm_rc(rsp, n) != TPM_RC_SUCCESS || n < 14) return -1;
+    *session = rd_be32(rsp + 10);            /* sessionHandle (handle area) */
+    return 0;
+}
+
+/* PolicyPCR: bind the (trial or policy) session to the current PCR[8]/PCR[9]. */
+static int tpm_policy_pcr(uint32_t session) {
+    uint8_t cmd[64];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_NO_SESSIONS);
+    p = put32(cmd, p, 0);
+    p = put32(cmd, p, TPM_CC_POLICY_PCR);
+    p = put32(cmd, p, session);              /* policySession (handle) */
+    p = put16(cmd, p, 0);                    /* pcrDigest empty -> use current PCRs */
+    p = put_pcr_selection(cmd, p);
+    be32(cmd + 2, p);
+
+    uint8_t rsp[64];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    return (n >= 0 && tpm_rc(rsp, n) == TPM_RC_SUCCESS) ? 0 : -1;
+}
+
+/* PolicyGetDigest: read the accumulated policyDigest (from a trial session). */
+static int tpm_policy_get_digest(uint32_t session, uint8_t out32[32]) {
+    uint8_t cmd[32];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_NO_SESSIONS);
+    p = put32(cmd, p, 0);
+    p = put32(cmd, p, TPM_CC_POLICY_GET_DIGEST);
+    p = put32(cmd, p, session);
+    be32(cmd + 2, p);
+
+    uint8_t rsp[128];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0 || tpm_rc(rsp, n) != TPM_RC_SUCCESS) return -1;
+    int ok = 1;
+    uint16_t dsz = rd16(rsp, 10, (uint32_t)n, &ok);
+    if (!ok || dsz != 32 || 12 + 32 > (uint32_t)n) return -1;
+    for (int i = 0; i < 32; i++) out32[i] = rsp[12 + i];
+    return 0;
+}
+
+/* Build the TPMT_PUBLIC of the ECC storage primary (restricted decrypt parent)
+ * into b at p; returns the new cursor. Deterministic template -> deterministic
+ * primary from the Owner seed. */
+static uint32_t put_primary_public(uint8_t *b, uint32_t p) {
+    p = put16(b, p, TPM_ALG_ECC);
+    p = put16(b, p, TPM_ALG_SHA256);         /* nameAlg */
+    p = put32(b, p, 0x00030072u);            /* fixedTPM|fixedParent|sensitiveDataOrigin
+                                              * |userWithAuth|restricted|decrypt */
+    p = put16(b, p, 0);                      /* authPolicy: none */
+    /* TPMS_ECC_PARMS */
+    p = put16(b, p, TPM_ALG_AES);            /* symmetric.algorithm */
+    p = put16(b, p, 128);                    /* symmetric.keyBits */
+    p = put16(b, p, TPM_ALG_CFB);            /* symmetric.mode */
+    p = put16(b, p, TPM_ALG_NULL);           /* scheme */
+    p = put16(b, p, TPM_ECC_NIST_P256);      /* curveID */
+    p = put16(b, p, TPM_ALG_NULL);           /* kdf */
+    /* unique TPMS_ECC_POINT: empty x,y */
+    p = put16(b, p, 0);
+    p = put16(b, p, 0);
+    return p;
+}
+
+/* CreatePrimary(Owner) -> loaded parent handle. */
+static int tpm_create_primary(uint32_t *parent) {
+    uint8_t cmd[256];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_SESSIONS);
+    p = put32(cmd, p, 0);
+    p = put32(cmd, p, TPM_CC_CREATE_PRIMARY);
+    p = put32(cmd, p, TPM_RH_OWNER);         /* primaryHandle (handle area) */
+    p = put32(cmd, p, 9);                    /* authorizationSize */
+    p = put_pw_auth(cmd, p);
+    /* inSensitive: empty userAuth + empty data */
+    p = put16(cmd, p, 4);                    /* TPM2B_SENSITIVE_CREATE size */
+    p = put16(cmd, p, 0);                    /*   userAuth */
+    p = put16(cmd, p, 0);                    /*   data */
+    /* inPublic */
+    uint32_t pub_sz_at = p; p = put16(cmd, p, 0);
+    uint32_t pub_start = p;
+    p = put_primary_public(cmd, p);
+    be16(cmd + pub_sz_at, (uint16_t)(p - pub_start));
+    p = put16(cmd, p, 0);                    /* outsideInfo */
+    p = put32(cmd, p, 0);                    /* creationPCR: count 0 */
+    be32(cmd + 2, p);
+
+    uint8_t rsp[1024];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0 || tpm_rc(rsp, n) != TPM_RC_SUCCESS || n < 14) return -1;
+    *parent = rd_be32(rsp + 10);             /* objectHandle */
+    return 0;
+}
+
+/* Create a keyedhash sealed object holding secret[32], gated by policyDigest. */
+static int tpm_create_sealed(uint32_t parent, const uint8_t secret[32],
+                             const uint8_t policy[32], struct tpm_sealed_blob *out) {
+    uint8_t cmd[256];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_SESSIONS);
+    p = put32(cmd, p, 0);
+    p = put32(cmd, p, TPM_CC_CREATE);
+    p = put32(cmd, p, parent);               /* parentHandle */
+    p = put32(cmd, p, 9);                    /* authorizationSize */
+    p = put_pw_auth(cmd, p);
+    /* inSensitive: empty userAuth + data=secret[32] */
+    p = put16(cmd, p, 2 + 2 + 32);           /* TPM2B_SENSITIVE_CREATE size */
+    p = put16(cmd, p, 0);                    /*   userAuth */
+    p = put16(cmd, p, 32);                   /*   data size */
+    p = putbuf(cmd, p, secret, 32);
+    /* inPublic: keyedhash, fixedTPM|fixedParent, authPolicy=policy, scheme NULL */
+    uint32_t pub_sz_at = p; p = put16(cmd, p, 0);
+    uint32_t pub_start = p;
+    p = put16(cmd, p, TPM_ALG_KEYEDHASH);
+    p = put16(cmd, p, TPM_ALG_SHA256);       /* nameAlg */
+    p = put32(cmd, p, 0x00000012u);          /* fixedTPM|fixedParent (policy-gated) */
+    p = put16(cmd, p, 32);                   /* authPolicy size */
+    p = putbuf(cmd, p, policy, 32);
+    p = put16(cmd, p, TPM_ALG_NULL);         /* scheme */
+    p = put16(cmd, p, 0);                    /* unique: empty */
+    be16(cmd + pub_sz_at, (uint16_t)(p - pub_start));
+    p = put16(cmd, p, 0);                    /* outsideInfo */
+    p = put32(cmd, p, 0);                    /* creationPCR: count 0 */
+    be32(cmd + 2, p);
+
+    uint8_t rsp[1024];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0 || tpm_rc(rsp, n) != TPM_RC_SUCCESS) return -1;
+
+    /* Response params start after header(10) + parameterSize(4). */
+    int ok = 1;
+    uint32_t o = 14;
+    uint16_t priv_len = rd16(rsp, o, (uint32_t)n, &ok); o += 2;
+    if (!ok || priv_len == 0 || priv_len > TPM_SEALED_PRIV_MAX || o + priv_len > (uint32_t)n) return -1;
+    out->priv_len = priv_len;
+    for (uint16_t i = 0; i < priv_len; i++) out->priv[i] = rsp[o + i];
+    o += priv_len;
+    uint16_t pub_len = rd16(rsp, o, (uint32_t)n, &ok); o += 2;
+    if (!ok || pub_len == 0 || pub_len > TPM_SEALED_PUB_MAX || o + pub_len > (uint32_t)n) return -1;
+    out->pub_len = pub_len;
+    for (uint16_t i = 0; i < pub_len; i++) out->pub[i] = rsp[o + i];
+    return 0;
+}
+
+/* Load a sealed blob under the parent -> object handle. */
+static int tpm_load_sealed(uint32_t parent, const struct tpm_sealed_blob *in, uint32_t *obj) {
+    uint8_t cmd[16 + TPM_SEALED_PRIV_MAX + TPM_SEALED_PUB_MAX + 16];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_SESSIONS);
+    p = put32(cmd, p, 0);
+    p = put32(cmd, p, TPM_CC_LOAD);
+    p = put32(cmd, p, parent);
+    p = put32(cmd, p, 9);
+    p = put_pw_auth(cmd, p);
+    p = put16(cmd, p, in->priv_len);
+    p = putbuf(cmd, p, in->priv, in->priv_len);
+    p = put16(cmd, p, in->pub_len);
+    p = putbuf(cmd, p, in->pub, in->pub_len);
+    be32(cmd + 2, p);
+
+    uint8_t rsp[512];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0 || tpm_rc(rsp, n) != TPM_RC_SUCCESS || n < 14) return -1;
+    *obj = rd_be32(rsp + 10);
+    return 0;
+}
+
+/* Unseal the object, authorized by a policy session already bound via PolicyPCR. */
+static int tpm_do_unseal(uint32_t obj, uint32_t session, uint8_t out32[32]) {
+    uint8_t cmd[64];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_SESSIONS);
+    p = put32(cmd, p, 0);
+    p = put32(cmd, p, TPM_CC_UNSEAL);
+    p = put32(cmd, p, obj);                  /* itemHandle */
+    p = put32(cmd, p, 9);                    /* authorizationSize */
+    p = put32(cmd, p, session);              /* policy session handle */
+    p = put16(cmd, p, 0);                    /* nonce */
+    cmd[p++] = 0;                            /* sessionAttributes */
+    p = put16(cmd, p, 0);                    /* hmac */
+    be32(cmd + 2, p);
+
+    uint8_t rsp[256];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0 || tpm_rc(rsp, n) != TPM_RC_SUCCESS) return -1;
+    int ok = 1;
+    uint16_t dsz = rd16(rsp, 14, (uint32_t)n, &ok);   /* after header+parameterSize */
+    if (!ok || dsz != 32 || 16 + 32 > (uint32_t)n) return -1;
+    for (int i = 0; i < 32; i++) out32[i] = rsp[16 + i];
+    return 0;
+}
+
+static void tpm_flush(uint32_t handle) {
+    if (!handle) return;
+    uint8_t cmd[16];
+    uint32_t p = 0;
+    p = put16(cmd, p, TPM_ST_NO_SESSIONS);
+    p = put32(cmd, p, 0);
+    p = put32(cmd, p, TPM_CC_FLUSH_CONTEXT);
+    p = put32(cmd, p, handle);
+    be32(cmd + 2, p);
+    uint8_t rsp[32];
+    (void)tpm_transact(cmd, p, rsp, sizeof(rsp));
+}
+
+/* Bring the TPM up far enough for a seal/unseal at storage-unlock time (which is
+ * long after tpm_measured_boot released locality). Idempotent-ish: startup is
+ * tolerant of already-started. Returns 0 on success. */
+static int tpm_session_prep(void) {
+    if (!tpm_present()) return -1;
+    if (!tpm_request_locality()) return -1;
+    if (tpm_startup() != 0) { tpm_release_locality(); return -1; }
+    return 0;
+}
+
+int tpm_seal_secret(const uint8_t secret[32], struct tpm_sealed_blob *out) {
+    if (tpm_session_prep() != 0) return -1;
+
+    uint32_t parent = 0, trial = 0;
+    uint8_t policy[32];
+    int rc = -1;
+
+    if (tpm_create_primary(&parent) != 0) { println("[tpm] seal: create_primary"); goto done; }
+    if (tpm_start_session(TPM_SE_TRIAL, &trial) != 0) { println("[tpm] seal: start_session"); goto done; }
+    if (tpm_policy_pcr(trial) != 0) { println("[tpm] seal: policy_pcr"); goto done; }
+    if (tpm_policy_get_digest(trial, policy) != 0) { println("[tpm] seal: policy_get_digest"); goto done; }
+    if (tpm_create_sealed(parent, secret, policy, out) != 0) { println("[tpm] seal: create_sealed"); goto done; }
+    rc = 0;
+
+done:
+    if (trial)  tpm_flush(trial);
+    if (parent) tpm_flush(parent);
+    tpm_release_locality();
+    return rc;
+}
+
+int tpm_unseal_secret(const struct tpm_sealed_blob *in, uint8_t secret_out[32]) {
+    if (tpm_session_prep() != 0) return -1;
+
+    uint32_t parent = 0, obj = 0, sess = 0;
+    int rc = -1;
+
+    if (tpm_create_primary(&parent) != 0) goto done;
+    if (tpm_load_sealed(parent, in, &obj) != 0) goto done;
+    if (tpm_start_session(TPM_SE_POLICY, &sess) != 0) goto done;
+    if (tpm_policy_pcr(sess) != 0) goto done;
+    /* The TPM releases the secret only if the live PCRs satisfy the sealed
+     * policy; otherwise tpm_do_unseal returns non-zero and the secret is never
+     * exposed. */
+    if (tpm_do_unseal(obj, sess, secret_out) != 0) { sess = 0; goto done; }
+    rc = 0;
+
+done:
+    /* A consumed policy session (continueSession=0) is auto-flushed by the TPM;
+     * flush only if we did not reach a successful unseal. */
+    if (sess)   tpm_flush(sess);
+    if (obj)    tpm_flush(obj);
+    if (parent) tpm_flush(parent);
+    tpm_release_locality();
+    return rc;
+}
+
+/* ---- round-trip self-test (TPM_SELFTEST build) ---------------------------- */
+
+void tpm_seal_selftest(void) {
+    if (!tpm_present()) { println("TPM_SEAL_SELFTEST: SKIP (no TPM)"); return; }
+
+    uint8_t secret[32];
+    for (int i = 0; i < 32; i++) secret[i] = (uint8_t)(0xA0 ^ i);
+
+    struct tpm_sealed_blob blob;
+    if (tpm_seal_secret(secret, &blob) != 0) { println("TPM_SEAL_SELFTEST: FAIL (seal)"); return; }
+
+    uint8_t got[32];
+    if (tpm_unseal_secret(&blob, got) != 0) { println("TPM_SEAL_SELFTEST: FAIL (unseal)"); return; }
+    if (!rust_ct_eq(secret, got, 32)) { println("TPM_SEAL_SELFTEST: FAIL (mismatch)"); return; }
+
+    /* Negative case — the enforcement that stage 3 rests on: perturb PCR[9], then
+     * the very same blob must NO LONGER unseal (the TPM denies the PolicyPCR). If
+     * it still unseals, the seal was not actually bound to the measurement and the
+     * whole scheme is theatre — fail loudly. (Test build only; corrupting PCR[9]
+     * here is harmless, nothing downstream consults it.) */
+    uint8_t junk[32];
+    for (int i = 0; i < 32; i++) junk[i] = (uint8_t)i;
+    if (tpm_present() && tpm_request_locality()) {
+        (void)tpm_pcr_extend(TPM_PCR_BOOT_MODULES, junk);
+        tpm_release_locality();
+    }
+    uint8_t must_fail[32];
+    if (tpm_unseal_secret(&blob, must_fail) == 0) {
+        println("TPM_SEAL_SELFTEST: FAIL (unseal succeeded under wrong PCRs!)");
+        return;
+    }
+
+    print("[tpm] sealed blob pub="); print_decimal(blob.pub_len);
+    print(" priv="); print_decimal(blob.priv_len);
+    println(" ; unseal correctly denied after PCR change");
+    println("TPM_SEAL_SELFTEST: PASS");
 }

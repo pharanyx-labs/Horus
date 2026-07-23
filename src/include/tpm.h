@@ -27,6 +27,35 @@
 #define TPM_PCR_KERNEL_IDENTITY   8
 #define TPM_PCR_BOOT_MODULES      9
 
+/* A sealed secret: the TPM2_Create outputs (public + private) for a keyedhash
+ * object whose unseal is gated by a PolicyPCR over PCR[8]/PCR[9]. Fixed-size so
+ * it can be embedded verbatim in the on-disk superblock (roadmap 2.2 stage 3).
+ * A keyedhash sealed object's TPM2B_PUBLIC and TPM2B_PRIVATE are both well under
+ * these caps in practice. */
+#define TPM_SEALED_PUB_MAX   256
+#define TPM_SEALED_PRIV_MAX  256
+struct tpm_sealed_blob {
+    uint16_t pub_len;
+    uint16_t priv_len;
+    uint8_t  pub[TPM_SEALED_PUB_MAX];
+    uint8_t  priv[TPM_SEALED_PRIV_MAX];
+};
+
+/* Seal a 32-byte secret so it can only be recovered by a TPM whose PCR[8]/PCR[9]
+ * match the values current *at seal time* (i.e. a measured-good boot). The TPM
+ * enforces the release policy; our code never sees the secret unless the TPM
+ * agrees. Returns 0 on success. Self-contained: requests/releases locality. */
+int tpm_seal_secret(const uint8_t secret[32], struct tpm_sealed_blob *out);
+
+/* Recover a secret sealed by tpm_seal_secret. Succeeds only if the live
+ * PCR[8]/PCR[9] satisfy the sealed PolicyPCR — otherwise the TPM refuses the
+ * unseal and this returns non-zero (the volume stays locked, stage 3). */
+int tpm_unseal_secret(const struct tpm_sealed_blob *in, uint8_t secret_out[32]);
+
+/* TPM_SELFTEST build hook: seal a known value and unseal it under live PCRs,
+ * asserting round-trip equality. Prints TPM_SEAL_SELFTEST: PASS/FAIL/SKIP. */
+void tpm_seal_selftest(void);
+
 /* Probe for a usable TPM 2.0 TIS device at the standard locality-0 MMIO base.
  * Returns 1 if present (a plausible vendor id and a responsive interface),
  * 0 otherwise. Cheap; safe to call before tpm_measured_boot. */

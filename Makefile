@@ -253,6 +253,14 @@ CFLAGS  += -DBIGFILE_SELFTEST
 ASFLAGS += -DBIGFILE_SELFTEST
 endif
 
+# TPM_SELFTEST=1 builds the in-kernel TPM seal/unseal round-trip (roadmap 2.2
+# stage 2): seal a known value under a PolicyPCR(PCR8,PCR9) and unseal it under
+# the live PCRs. Needs an emulated TPM at boot; driven by smoke-tpm-seal-roundtrip.
+TPM_SELFTEST ?= 0
+ifeq ($(TPM_SELFTEST),1)
+CFLAGS  += -DTPM_SELFTEST
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -1181,6 +1189,18 @@ smoke-tpm-tamper:
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 tamper.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_MISMATCH=1 tools/smoke_tpm.sh tamper.iso
 	@rm -f tamper.iso
+
+# Seal/unseal round-trip (roadmap 2.2 stage 2): build the TPM_SELFTEST kernel,
+# boot under an emulated TPM, and require the in-kernel seal-then-unseal test to
+# report PASS — runtime proof the PolicyPCR seal path works end-to-end.
+.PHONY: smoke-tpm-seal-roundtrip
+smoke-tpm-seal-roundtrip:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_SELFTEST=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_SELFTEST=1 boot.iso
+	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TPM_SEAL_SELFTEST: PASS' \
+		FAIL_MARKER='TPM_SEAL_SELFTEST: FAIL' \
+		tools/run_with_swtpm.sh boot.iso
 
 .PHONY: smoke-modules
 smoke-modules:

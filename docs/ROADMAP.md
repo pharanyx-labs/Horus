@@ -237,11 +237,52 @@ and any empty, `.` or `..` component are refused, and a rejected module is skipp
 with a log line. With 2.1's content check this closes both halves — **what** a
 module contains and **where** it may go.
 
-### 2.2 — Toward measured boot
+### 2.2 — Measured boot + TPM-sealed vdisk KEK — *done*
 
-With 2.1 and the attestable build (0.4) in place, extend to **measured boot** (TPM)
-so the reproducible hash chain — kernel + module manifest — is attested at runtime,
-not only at build time.
+**Landed.** A minimal TPM 2.0 TIS (FIFO) driver (`src/kernel/tpm.c`), driven once on
+the BSP right after `boot_module_verify_all()`, records the reproducible boot hash
+chain into the OS-owned PCRs of the SHA-256 bank:
+
+- `PCR[8] ← extend( H("horus-measured-boot-v1" ‖ serialized module manifest) )` — a
+  kernel-identity token bound to the exact module set the reproducible image
+  attests to (the 2.1 embedded manifest).
+- `PCR[9] ← extend(` each **verified** boot module's SHA-256, in manifest order `)` —
+  a module that fails 2.1 verification is not measured, so tampering with a payload
+  provably moves `PCR[9]`.
+
+On top of the measurement, the encrypted store's KEK is **sealed to the TPM**. The
+`disk_key` is AEAD-wrapped by a KEK that, for a volume formatted in **TPM mode**
+(superblock v6, chosen when a TPM is present), is two-factor:
+`KEK = HKDF(password-KEK, tpm_secret)`, where `tpm_secret` is TPM2-sealed under a
+`PolicyPCR(PCR[8],PCR[9])` and released **only** by a measured-good boot. A tampered
+module → different `PCR[9]` → the TPM itself refuses the unseal → the wrong KEK is
+produced → `disk_key` never unwraps → the volume stays **locked** (the same
+fail-closed surface as a wrong password, and enforced by the TPM, not by an `if`).
+
+**Best-effort:** on a machine with no TPM (the default, and the plain release
+`boot.iso`) the whole subsystem is a no-op and boot continues; a password-mode
+volume (`tpm_mode = 0`, unchanged) is unaffected. The storage primary is an ECC
+P-256 parent recreated deterministically from the Owner seed each boot, so nothing
+is kept in TPM NV — only the sealed `(public,private)` blob is persisted (its own
+block in the v6 layout). No HMAC/parameter-encryption sessions are used
+(authorization is password/empty for the storage hierarchy and a bare policy
+session for the unseal); the transport is the in-process swtpm/QEMU channel.
+
+Gated in CI (all under an emulated **swtpm**):
+- **`make smoke-tpm`** — assert the guest-measured `PCR[8]/PCR[9]` equal the values
+  recomputed on the host from the reproducible manifest (`tools/tpm_expected_pcr.py`)
+  — external verification, not the guest's own word.
+- **`make smoke-tpm-tamper`** — corrupt one module payload; require it be refused
+  **and** the measured PCRs diverge (measurement is load-bearing).
+- **`make smoke-tpm-seal-roundtrip`** — seal a secret under `PolicyPCR(8,9)`, unseal
+  it, then perturb `PCR[9]` and require the same blob be **denied**.
+- **`make smoke-tpm-seal`** — format the vdisk in TPM mode, unlock it, then require a
+  changed `PCR[9]` to leave it **locked**.
+
+*Remaining for a hardware deployment:* session parameter-encryption (the in-process
+emulated bus does not need it), and — for remote attestation rather than local
+sealing — a `TPM2_Quote` with an attestation key. `make reproducible-build` stays
+byte-for-byte identical (the kernel-identity token is a build-time constant).
 
 ---
 

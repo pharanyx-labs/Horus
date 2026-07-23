@@ -160,10 +160,16 @@ uint32_t boot_module_verify_all(void);
 /* Highest physical address any module occupies, page-rounded (0 if none). */
 uint64_t boot_module_top(void);
 
-/* Identity-map the TPM TIS locality-0 MMIO page (0xFED40000) for the measured-
- * boot driver (src/kernel/tpm.c). Defined in paging.c. */
-void ensure_tpm_tis_mapped(void);
+/* Identity-map the TPM TIS locality-0 MMIO page (0xFED40000) into a page directory
+ * (NULL = kernel pml4) for the measured-boot driver and the storage KEK-sealing
+ * path (src/kernel/tpm.c). Defined in paging.c. */
+void ensure_tpm_tis_mapped(uint64_t *root_pml4);
 #include "tpm.h"   /* measured boot (roadmap 2.2) — needs boot_module_digest above */
+
+#ifdef TPM_KEK_SELFTEST
+/* Drive the TPM-sealed KEK end-to-end over the vdisk (roadmap 2.2 stage 3). */
+void storage_tpm_kek_selftest(void);
+#endif
 
 /* Floor keeps 16 MiB *usable* after the base reserves (staging + RAM vdisk), so
  * even a tiny E820 pool still boots with the historical headroom. */
@@ -765,7 +771,21 @@ typedef struct fs_superblock {
     uint8_t  meta_hmac[32];          /* HMAC-SHA256(meta_mac_key, g_block_meta[]);
                                        * recomputed on every metadata flush, verified on
                                        * unlock to detect partial nonce/tag rollback */
+    /* v6: measured-boot TPM sealing (roadmap 2.2). When tpm_mode == 1 the KEK is
+     * two-factor — HKDF(password-KEK, tpm_secret) — where tpm_secret is TPM2-sealed
+     * under a PolicyPCR(PCR8,PCR9) and released only under a measured-good boot. The
+     * sealed (public||private) blob lives in its own block (tpm_blob_block), not
+     * here — a 512-byte superblock has no room for it. tpm_mode == 0 is the
+     * unchanged password-only volume. */
+    uint8_t  tpm_mode;               /* 0 = password only, 1 = TPM-sealed KEK */
+    uint8_t  _tpm_pad;
+    uint16_t tpm_pub_len;            /* bytes of TPM2B_PUBLIC in the blob block */
+    uint16_t tpm_priv_len;           /* bytes of TPM2B_PRIVATE in the blob block */
+    uint16_t _tpm_pad2;
+    uint64_t tpm_blob_block;         /* block holding pub||priv (0 if none) */
 } fs_superblock_t;
+_Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
+               "fs_superblock must fit in one block");
 
 typedef struct on_disk_inode {
     uint64_t size;

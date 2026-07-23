@@ -368,6 +368,11 @@ void kernel_main(uint32_t mb_info) {
     stackguard_selftest();
 #endif
     init_syscall_instruction_path();
+#ifdef TPM_KEK_SELFTEST
+    /* Prove the TPM-sealed KEK (roadmap 2.2 stage 3) before storage_init sets up
+     * the real vdisk. Boot continues; make smoke-tpm-seal asserts on the marker. */
+    storage_tpm_kek_selftest();
+#endif
 #ifndef MINIMAL_SECURE
     ramfs_init();   /* -> storage_init(): probes for an ATA disk (persistent) and
                      * falls back to the ephemeral RAM vdisk when none is present */

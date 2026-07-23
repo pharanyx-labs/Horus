@@ -261,6 +261,15 @@ ifeq ($(TPM_SELFTEST),1)
 CFLAGS  += -DTPM_SELFTEST
 endif
 
+# TPM_KEK_SELFTEST=1 builds the in-kernel TPM-sealed-KEK end-to-end test (roadmap
+# 2.2 stage 3): format the vdisk in TPM mode, unlock it, then perturb PCR[9] and
+# require the re-unlock to be refused. Needs an emulated TPM; driven by
+# smoke-tpm-seal.
+TPM_KEK_SELFTEST ?= 0
+ifeq ($(TPM_KEK_SELFTEST),1)
+CFLAGS  += -DTPM_KEK_SELFTEST
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -1200,6 +1209,19 @@ smoke-tpm-seal-roundtrip:
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_SELFTEST=1 boot.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TPM_SEAL_SELFTEST: PASS' \
 		FAIL_MARKER='TPM_SEAL_SELFTEST: FAIL' \
+		tools/run_with_swtpm.sh boot.iso
+
+# TPM-sealed vdisk KEK (roadmap 2.2 stage 3): boot the TPM_KEK_SELFTEST kernel
+# under an emulated TPM and require the in-kernel test to PASS — proof that a
+# measured-good boot unlocks the sealed volume and a changed PCR[9] leaves it
+# locked (the TPM, not our code, enforces the release).
+.PHONY: smoke-tpm-seal
+smoke-tpm-seal:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_KEK_SELFTEST=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_KEK_SELFTEST=1 boot.iso
+	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TPM_KEK_SELFTEST: PASS' \
+		FAIL_MARKER='TPM_KEK_SELFTEST: FAIL' \
 		tools/run_with_swtpm.sh boot.iso
 
 .PHONY: smoke-modules

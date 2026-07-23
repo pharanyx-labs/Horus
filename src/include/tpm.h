@@ -56,6 +56,11 @@ int tpm_unseal_secret(const struct tpm_sealed_blob *in, uint8_t secret_out[32]);
  * asserting round-trip equality. Prints TPM_SEAL_SELFTEST: PASS/FAIL/SKIP. */
 void tpm_seal_selftest(void);
 
+/* Test-only: extend PCR[9] with an arbitrary value so a subsequently-attempted
+ * unseal of a blob sealed against the earlier PCRs is refused. Used by the KEK
+ * seal self-test to model a tampered/changed measurement within one boot. */
+void tpm_test_extend_boot_pcr(void);
+
 /* Probe for a usable TPM 2.0 TIS device at the standard locality-0 MMIO base.
  * Returns 1 if present (a plausible vendor id and a responsive interface),
  * 0 otherwise. Cheap; safe to call before tpm_measured_boot. */

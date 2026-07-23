@@ -928,6 +928,11 @@ void create_user_pagedir(uint32_t task_id) {
     pml4_tab[510] = pml4_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_NX;
 
     ensure_lapic_mapped(pml4_tab);
+    /* Same rationale as the LAPIC: kernel code may touch the TPM TIS registers
+     * while running on this task's cr3 (storage_unlock's KEK unseal during a login
+     * syscall runs in the fs_server's address space), so the supervisor-only TPM
+     * page must be present here too or that access page-faults. */
+    ensure_tpm_tis_mapped(pml4_tab);
 
     tasks[task_id].cr3 = pml4_phys;
 
@@ -1441,10 +1446,14 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
     ensure_identity_mmio_page(root_pml4, 0xFEE00000ULL);
 }
 
-/* Map the TPM TIS locality-0 register page (physical 0xFED40000) into the kernel
- * address space so the boot-time measured-boot driver can reach ACCESS/STS/FIFO.
- * One page covers locality 0 (registers live in 0xFED40000..0xFED40FFF); the
- * driver only ever uses locality 0. */
-void ensure_tpm_tis_mapped(void) {
-    ensure_identity_mmio_page(NULL, 0xFED40000ULL);
+/* Map the TPM TIS locality-0 register page (physical 0xFED40000) into a page
+ * directory so the measured-boot driver and the storage KEK-sealing path can
+ * reach ACCESS/STS/FIFO. One page covers locality 0 (registers live in
+ * 0xFED40000..0xFED40FFF); the driver only ever uses locality 0. NULL = the
+ * kernel pml4 (for the boot-time measured boot on the kernel cr3); a specific
+ * pagedir is used from create_user_pagedir so kernel code that touches the TPM
+ * while running on a user task's cr3 (e.g. storage_unlock during a login
+ * syscall) does not fault. Supervisor-only + NX, exactly like the LAPIC. */
+void ensure_tpm_tis_mapped(uint64_t *root_pml4) {
+    ensure_identity_mmio_page(root_pml4, 0xFED40000ULL);
 }

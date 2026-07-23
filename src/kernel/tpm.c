@@ -320,7 +320,7 @@ static int tpm_pcr_read(uint32_t pcr, uint8_t out32[32]) {
 
 int tpm_present(void) {
     if (!g_tpm) {
-        ensure_tpm_tis_mapped();
+        ensure_tpm_tis_mapped(NULL);   /* kernel pml4; user pagedirs map it at creation */
         g_tpm = (volatile uint8_t *)TPM_TIS_BASE;
     }
     uint32_t idvid = tpm_r32(TPM_REG_DID_VID);
@@ -757,6 +757,17 @@ done:
     if (parent) tpm_flush(parent);
     tpm_release_locality();
     return rc;
+}
+
+/* Test-only: change PCR[9] so a blob sealed against the earlier state stops
+ * unsealing. Self-contained locality handling. */
+void tpm_test_extend_boot_pcr(void) {
+    uint8_t junk[32];
+    for (int i = 0; i < 32; i++) junk[i] = (uint8_t)(0x5A + i);
+    if (tpm_present() && tpm_request_locality()) {
+        (void)tpm_pcr_extend(TPM_PCR_BOOT_MODULES, junk);
+        tpm_release_locality();
+    }
 }
 
 /* ---- round-trip self-test (TPM_SELFTEST build) ---------------------------- */

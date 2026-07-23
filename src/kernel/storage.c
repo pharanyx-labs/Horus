@@ -34,7 +34,9 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 }
 
 #define STORAGE_MAGIC   0x48534653
-#define STORAGE_VERSION 5   /* v5: adds the write-ahead redo log (journal region) */
+#define STORAGE_VERSION 6   /* v6: adds measured-boot TPM sealing (tpm_mode + blob block).
+                             * A version bump reformats older volumes at first login,
+                             * as every prior bump has (v4->v5 did the same). */
 
 static struct virtual_disk g_vdisk;
 /* The RAM vdisk's backing store lives in the physical pool (reserved by
@@ -59,6 +61,13 @@ static struct block_device *g_needs_format_bd = NULL;
  * boot touches, so format and unlock derive the KEK the same way (a mismatch
  * would make the AEAD unwrap fail). */
 static int g_vdisk_high_entropy_kek = 0;
+
+/* Measured-boot TPM sealing (roadmap 2.2 stage 3). A persistent (ATA) volume is
+ * formatted in TPM mode when a TPM is present, so its KEK gains a second factor
+ * released only under a measured-good boot. The ephemeral vdisk is never sealed
+ * (its key is a per-boot throwaway). g_tpm_force_seal lets the KEK self-test drive
+ * the sealed path over the vdisk deterministically. */
+static int g_tpm_force_seal = 0;
 
 static int vdisk_read(struct block_device *bd, uint64_t block, void *buf) {
     struct virtual_disk *vd = (struct virtual_disk *)bd->private;
@@ -912,6 +921,76 @@ static int derive_kek(const char *password, size_t plen,
                            kek_salt, 32, kek32, 32);
 }
 
+/* Mix the TPM-sealed secret into the password-derived KEK for a TPM-mode volume
+ * (roadmap 2.2 stage 3). Reads the sealed (pub||priv) blob from sb->tpm_blob_block
+ * and asks the TPM to unseal it — which succeeds only under a measured-good boot
+ * (PolicyPCR(PCR8,PCR9)) — then folds the released secret into kek in place:
+ *   kek <- HKDF(ikm = password-KEK, salt = tpm_secret, info = "horus-kek-tpm-v1").
+ * On a password-mode volume (tpm_mode != 1) this is a no-op. Returns 0 on success;
+ * non-zero means the TPM refused (tampered measurement, or no TPM) and the caller
+ * must leave the volume LOCKED — the same fail-closed surface as a wrong password,
+ * reached before disk_key is ever unwrapped. */
+static int apply_tpm_kek_binding(struct block_device *bd,
+                                 const struct fs_superblock *sb, uint8_t *kek32)
+{
+    if (sb->tpm_mode != 1) return 0;
+
+    if (sb->tpm_pub_len == 0 || sb->tpm_pub_len > TPM_SEALED_PUB_MAX ||
+        sb->tpm_priv_len == 0 || sb->tpm_priv_len > TPM_SEALED_PRIV_MAX ||
+        (uint32_t)sb->tpm_pub_len + (uint32_t)sb->tpm_priv_len > BLOCK_SIZE ||
+        sb->tpm_blob_block == 0) return -1;
+
+    uint8_t blk[BLOCK_SIZE];
+    if (bd->read_block(bd, sb->tpm_blob_block, blk) != 0) return -1;
+
+    struct tpm_sealed_blob blob;
+    blob.pub_len  = sb->tpm_pub_len;
+    blob.priv_len = sb->tpm_priv_len;
+    my_memcpy(blob.pub,  blk,                blob.pub_len);
+    my_memcpy(blob.priv, blk + blob.pub_len, blob.priv_len);
+
+    uint8_t tpm_secret[32];
+    if (tpm_unseal_secret(&blob, tpm_secret) != 0) return -1;   /* TPM denied -> locked */
+
+    const char *label = "horus-kek-tpm-v1";
+    uint8_t info[16]; size_t n = 0;
+    for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+    uint8_t mixed[32];
+    int rc = rust_hkdf_sha256(kek32, 32, tpm_secret, 32, info, n, mixed, 32);
+    if (rc == 0) my_memcpy(kek32, mixed, 32);
+    secure_zero(mixed,      sizeof(mixed));
+    secure_zero(tpm_secret, sizeof(tpm_secret));
+    return rc;
+}
+
+/* Seal a fresh random secret under PolicyPCR(PCR8,PCR9), write the (pub||priv)
+ * blob to blob_block, and record tpm_mode/lengths/location in sb. Called from
+ * format when the volume opts into TPM mode. Returns 0 on success. */
+static int format_seal_tpm(struct block_device *bd, struct fs_superblock *sb,
+                           uint64_t blob_block)
+{
+    uint8_t tpm_secret[32];
+    secure_random_bytes(tpm_secret, sizeof(tpm_secret));
+
+    struct tpm_sealed_blob blob;
+    int rc = tpm_seal_secret(tpm_secret, &blob);
+    secure_zero(tpm_secret, sizeof(tpm_secret));
+    if (rc != 0) return -1;
+    if ((uint32_t)blob.pub_len + (uint32_t)blob.priv_len > BLOCK_SIZE) return -1;
+
+    uint8_t blk[BLOCK_SIZE];
+    my_memset(blk, 0, sizeof(blk));
+    my_memcpy(blk,                blob.pub,  blob.pub_len);
+    my_memcpy(blk + blob.pub_len, blob.priv, blob.priv_len);
+    if (bd->write_block(bd, blob_block, blk) != 0) return -1;
+
+    sb->tpm_mode       = 1;
+    sb->tpm_pub_len    = blob.pub_len;
+    sb->tpm_priv_len   = blob.priv_len;
+    sb->tpm_blob_block = blob_block;
+    return 0;
+}
+
 /* Format a block device and seal disk_key with the user's password.
  * disk_key is randomly generated, never stored in plaintext on disk.
  * KEK = Argon2id(password, kek_salt); wrapped = AEAD(KEK, disk_key). */
@@ -931,8 +1010,12 @@ static int storage_format_sealed(struct block_device *bd,
      * known offset regardless of disk geometry. */
     sb.meta_start         = 1;
     sb.meta_blocks        = META_BLOCKS_COUNT;
-    /* Write-ahead redo log sits right after the metadata region. */
-    sb.journal_start      = 1 + META_BLOCKS_COUNT;
+    /* v6: one block reserved right after the metadata region for the TPM sealed
+     * blob (used only in tpm_mode; zeroed otherwise). Kept in the layout
+     * unconditionally so geometry does not depend on whether a TPM is present. */
+    uint64_t tpm_blob_block = 1 + META_BLOCKS_COUNT;
+    /* Write-ahead redo log sits right after the TPM blob block. */
+    sb.journal_start      = tpm_blob_block + 1;
     sb.journal_blocks     = JOURNAL_BLOCKS;
     uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
 
@@ -993,9 +1076,27 @@ static int storage_format_sealed(struct block_device *bd,
      * enc_key||mac_key pair for the wrapping AEAD. */
     secure_random_bytes(sb.kek_salt,          sizeof(sb.kek_salt));
     secure_random_bytes(sb.wrapped_key_nonce, sizeof(sb.wrapped_key_nonce));
+
+    /* v6 — opt into TPM sealing for a persistent volume when a TPM is present. The
+     * ephemeral high-entropy vdisk never seals (its key is a per-boot throwaway).
+     * Sealed BEFORE the KEK is derived so apply_tpm_kek_binding (shared with the
+     * unlock path) can fold the sealed secret into the KEK the same way both here
+     * and at unlock. If sealing is not requested the reserved blob block stays
+     * zero and tpm_mode stays 0 (unchanged password-only volume). */
+    int want_tpm = g_tpm_force_seal || (tpm_present() && !g_vdisk_high_entropy_kek);
+    if (want_tpm && format_seal_tpm(bd, &sb, tpm_blob_block) != 0) {
+        secure_zero(disk_key, sizeof(disk_key));
+        return -1;
+    }
     {
         uint8_t kek[32];
         if (derive_kek(password, plen, sb.kek_salt, kek) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -1;
+        }
+        /* Two-factor in TPM mode: fold in the just-sealed secret (no-op otherwise). */
+        if (apply_tpm_kek_binding(bd, &sb, kek) != 0) {
+            secure_zero(kek, sizeof(kek));
             secure_zero(disk_key, sizeof(disk_key));
             return -1;
         }
@@ -1043,6 +1144,10 @@ static int storage_format_sealed(struct block_device *bd,
     for (uint64_t m = 0; m < META_BLOCKS_COUNT; m++) {
         bd->write_block(bd, sb.meta_start + m, zero);
     }
+
+    /* v6: clear the reserved TPM blob block on a password-mode volume. In TPM mode
+     * format_seal_tpm already wrote the sealed blob there — must not wipe it. */
+    if (!want_tpm) bd->write_block(bd, tpm_blob_block, zero);
 
     /* Zero the journal region: a cleared header (magic 0) means "no committed
      * transaction to replay" — a fresh volume has nothing to recover. */
@@ -1130,6 +1235,15 @@ int storage_unlock(const char *password, size_t plen)
     /* Step 1 — Derive KEK from password + stable on-disk salt (no kernel_pepper). */
     uint8_t kek[32];
     if (derive_kek(password, plen, sb->kek_salt, kek) != 0) return -3;
+
+    /* Step 1b — v6 TPM mode: fold in the sealed second factor. The TPM releases it
+     * only under a measured-good boot (PolicyPCR(PCR8,PCR9)); a tampered/unmeasured
+     * boot is refused here, so the wrong KEK is produced and disk_key never unwraps
+     * — the volume stays locked, the same outcome as a wrong password. */
+    if (apply_tpm_kek_binding(mfs->bd, sb, kek) != 0) {
+        secure_zero(kek, sizeof(kek));
+        return -8;
+    }
 
     /* Step 2 — Expand KEK → enc_key[32] || mac_key[32] for wrapping AEAD. */
     uint8_t wrap_keys[64];
@@ -1230,6 +1344,54 @@ int storage_unlock(const char *password, size_t plen)
     storage_fsck_pass(mfs);
     return 0;
 }
+
+#ifdef TPM_KEK_SELFTEST
+/* Prove the TPM-sealed KEK end-to-end (roadmap 2.2 stage 3), deterministically and
+ * without an ATA disk or a login: format the vdisk backing in TPM mode, unlock it
+ * (the good-boot case → the TPM releases the sealed factor → disk_key unwraps),
+ * then perturb PCR[9] and require a re-unlock to be REFUSED (the TPM denies the
+ * unseal → wrong KEK → disk_key stays wrapped → volume locked). If the perturbed
+ * re-unlock ever succeeds, the KEK was not actually bound to the measurement —
+ * fail loudly. Runs before ramfs_init(), which then reformats the vdisk for real
+ * (password/high-entropy) use, so normal boot is unaffected. */
+void storage_tpm_kek_selftest(void)
+{
+    if (!tpm_present())    { println("TPM_KEK_SELFTEST: SKIP (no TPM)"); return; }
+    if (!g_vdisk_backing)  { println("TPM_KEK_SELFTEST: SKIP (no vdisk backing)"); return; }
+
+    g_vdisk_high_entropy_kek = 1;   /* fast HKDF base KEK for the test */
+    g_tpm_force_seal         = 1;   /* force TPM sealing at format */
+    g_vdisk.data        = g_vdisk_backing;
+    g_vdisk.size        = VDISK_BYTES;
+    g_vdisk.block_count = BLOCKS_PER_DISK;
+    my_memset(g_vdisk.data, 0, g_vdisk.size);
+
+    const char *pw = "kek-selftest-password";
+    size_t pl = 0; for (const char *c = pw; *c; c++) pl++;
+
+    int failed = 1;
+    if (storage_format_sealed(&g_vdisk_bd, pw, pl) != 0) {
+        println("TPM_KEK_SELFTEST: FAIL (format+seal)");
+    } else if (storage_mount(&g_vdisk_bd) != 0) {
+        println("TPM_KEK_SELFTEST: FAIL (mount)");
+    } else if (storage_unlock(pw, pl) != 0) {
+        println("TPM_KEK_SELFTEST: FAIL (measured-good boot did not unlock)");
+    } else {
+        /* Change the measurement; the same sealed blob must no longer release. */
+        tpm_test_extend_boot_pcr();
+        if (storage_mount(&g_vdisk_bd) != 0) {
+            println("TPM_KEK_SELFTEST: FAIL (remount)");
+        } else if (storage_unlock(pw, pl) == 0) {
+            println("TPM_KEK_SELFTEST: FAIL (unlocked under wrong PCRs!)");
+        } else {
+            failed = 0;
+        }
+    }
+
+    g_tpm_force_seal = 0;
+    if (!failed) println("TPM_KEK_SELFTEST: PASS");
+}
+#endif
 
 /* Sweep the inode bitmap and free any slot that is allocated but contains
  * stale data from an interrupted operation:

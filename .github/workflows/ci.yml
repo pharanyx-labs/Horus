@@ -206,6 +206,74 @@ jobs:
       - name: Corrupt one module payload in the ISO and assert the kernel refuses it
         run: make smoke-modules-tamper
 
+  smoke-tpm:
+    name: Measured boot (TPM PCRs match the reproducible manifest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU + swtpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86 swtpm swtpm-tools python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot under an emulated TPM; assert PCR[8]/PCR[9] equal the host recomputation
+        run: make smoke-tpm
+
+  smoke-tpm-tamper:
+    name: Measured boot falsification (a tampered module diverges the PCRs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU + swtpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86 swtpm swtpm-tools python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Corrupt one module payload; assert it is refused AND the measured PCRs diverge
+        run: make smoke-tpm-tamper
+
+  smoke-tpm-seal-roundtrip:
+    name: TPM seal/unseal round-trip (PolicyPCR-bound secret)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU + swtpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86 swtpm swtpm-tools
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Seal a secret under PolicyPCR(8,9), unseal it, and prove it is denied after a PCR change
+        run: make smoke-tpm-seal-roundtrip
+
+  smoke-tpm-seal:
+    name: TPM-sealed vdisk KEK (measured-good boot unlocks; changed PCR stays locked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU + swtpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86 swtpm swtpm-tools
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Format the vdisk in TPM mode, unlock it, then require a changed PCR to leave it locked
+        run: make smoke-tpm-seal
+
   smoke-coreutils-shell:
     name: QEMU GNU coreutils via the shell (head / wc / seq on real files)
     runs-on: ubuntu-latest

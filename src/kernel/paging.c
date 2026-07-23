@@ -928,6 +928,11 @@ void create_user_pagedir(uint32_t task_id) {
     pml4_tab[510] = pml4_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_NX;
 
     ensure_lapic_mapped(pml4_tab);
+    /* Same rationale as the LAPIC: kernel code may touch the TPM TIS registers
+     * while running on this task's cr3 (storage_unlock's KEK unseal during a login
+     * syscall runs in the fs_server's address space), so the supervisor-only TPM
+     * page must be present here too or that access page-faults. */
+    ensure_tpm_tis_mapped(pml4_tab);
 
     tasks[task_id].cr3 = pml4_phys;
 
@@ -1344,11 +1349,17 @@ int copy_to_user(void *dst, const void *src, size_t n) {
     return user_copy((uint64_t)(uintptr_t)dst, (uint8_t *)(void *)src, n, 1, 1);
 }
 
-void ensure_lapic_mapped(uint64_t *root_pml4) {
+/* Identity-map one 4 KiB device-MMIO page (vaddr == paddr) as
+ * present+writable+cache-disabled+NX, splitting any covering huge page down to
+ * 4 KiB so exactly this frame gets the device attributes. Shared by the LAPIC
+ * (0xFEE00000) and TPM TIS (0xFED40000) mappings — both live in the sub-4 GiB
+ * MMIO hole reached through pml4[0]'s low identity map. NX because a device
+ * register file is never code; CD because MMIO must not be cached. */
+static void ensure_identity_mmio_page(uint64_t *root_pml4, uint64_t addr) {
     extern uint64_t pml4[512];
     if (root_pml4 == NULL) root_pml4 = pml4;
-    const uint64_t vaddr = 0xFEE00000ULL;
-    const uint64_t paddr = 0xFEE00000ULL;
+    const uint64_t vaddr = addr;
+    const uint64_t paddr = addr;
     const int pml4i = (int)((vaddr >> 39) & 511);
     const int pdpti = (int)((vaddr >> 30) & 511);
     const int pdi   = (int)((vaddr >> 21) & 511);
@@ -1429,4 +1440,20 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
     pt[pti] = paddr | PAGE_PRESENT | PAGE_WRITE | PAGE_CD | PAGE_NX;
 
     asm volatile("invlpg (%0)" :: "r"(vaddr) : "memory");
+}
+
+void ensure_lapic_mapped(uint64_t *root_pml4) {
+    ensure_identity_mmio_page(root_pml4, 0xFEE00000ULL);
+}
+
+/* Map the TPM TIS locality-0 register page (physical 0xFED40000) into a page
+ * directory so the measured-boot driver and the storage KEK-sealing path can
+ * reach ACCESS/STS/FIFO. One page covers locality 0 (registers live in
+ * 0xFED40000..0xFED40FFF); the driver only ever uses locality 0. NULL = the
+ * kernel pml4 (for the boot-time measured boot on the kernel cr3); a specific
+ * pagedir is used from create_user_pagedir so kernel code that touches the TPM
+ * while running on a user task's cr3 (e.g. storage_unlock during a login
+ * syscall) does not fault. Supervisor-only + NX, exactly like the LAPIC. */
+void ensure_tpm_tis_mapped(uint64_t *root_pml4) {
+    ensure_identity_mmio_page(root_pml4, 0xFED40000ULL);
 }

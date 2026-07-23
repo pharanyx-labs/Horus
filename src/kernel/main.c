@@ -323,6 +323,21 @@ void kernel_main(uint32_t mb_info) {
     boot_module_verify_all();
 
     paging_init();
+
+    /* Measured boot (roadmap 2.2): record the reproducible boot hash chain — a
+     * kernel-identity token and the just-verified boot-module manifest — into the
+     * TPM's PCRs, so the boot state can be attested at runtime. Placed right after
+     * paging_init: the TPM MMIO mapping needs the physical allocator and the low
+     * identity map that paging_init installs. Best-effort — a no-op without a TPM,
+     * still long before any userspace (or the store unlock that stages 2-3 gate on
+     * these measurements) exists. */
+    tpm_measured_boot();
+#ifdef TPM_SELFTEST
+    /* Seal a known value under a PolicyPCR(PCR8,PCR9) and unseal it under the live
+     * PCRs, proving the TPM seal/unseal path (roadmap 2.2 stage 2). Boot continues;
+     * make smoke-tpm-seal-roundtrip asserts on the marker. */
+    tpm_seal_selftest();
+#endif
 #ifdef E820_SELFTEST
     /* Boot continues; make smoke-e820 asserts on the marker. Proves the pool
      * grew past the pre-E820 default from the parsed memory map. */
@@ -353,6 +368,11 @@ void kernel_main(uint32_t mb_info) {
     stackguard_selftest();
 #endif
     init_syscall_instruction_path();
+#ifdef TPM_KEK_SELFTEST
+    /* Prove the TPM-sealed KEK (roadmap 2.2 stage 3) before storage_init sets up
+     * the real vdisk. Boot continues; make smoke-tpm-seal asserts on the marker. */
+    storage_tpm_kek_selftest();
+#endif
 #ifndef MINIMAL_SECURE
     ramfs_init();   /* -> storage_init(): probes for an ATA disk (persistent) and
                      * falls back to the ephemeral RAM vdisk when none is present */

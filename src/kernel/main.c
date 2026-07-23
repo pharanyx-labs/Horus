@@ -323,6 +323,15 @@ void kernel_main(uint32_t mb_info) {
     boot_module_verify_all();
 
     paging_init();
+
+    /* Measured boot (roadmap 2.2): record the reproducible boot hash chain — a
+     * kernel-identity token and the just-verified boot-module manifest — into the
+     * TPM's PCRs, so the boot state can be attested at runtime. Placed right after
+     * paging_init: the TPM MMIO mapping needs the physical allocator and the low
+     * identity map that paging_init installs. Best-effort — a no-op without a TPM,
+     * still long before any userspace (or the store unlock that stages 2-3 gate on
+     * these measurements) exists. */
+    tpm_measured_boot();
 #ifdef E820_SELFTEST
     /* Boot continues; make smoke-e820 asserts on the marker. Proves the pool
      * grew past the pre-E820 default from the parsed memory map. */

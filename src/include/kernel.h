@@ -160,6 +160,11 @@ uint32_t boot_module_verify_all(void);
 /* Highest physical address any module occupies, page-rounded (0 if none). */
 uint64_t boot_module_top(void);
 
+/* Identity-map the TPM TIS locality-0 MMIO page (0xFED40000) for the measured-
+ * boot driver (src/kernel/tpm.c). Defined in paging.c. */
+void ensure_tpm_tis_mapped(void);
+#include "tpm.h"   /* measured boot (roadmap 2.2) — needs boot_module_digest above */
+
 /* Floor keeps 16 MiB *usable* after the base reserves (staging + RAM vdisk), so
  * even a tiny E820 pool still boots with the historical headroom. */
 #define PHYS_POOL_MIN_PAGES     (4096 + POOL_RESERVE_PAGES)   /* floor: 16 MiB usable + reserves */

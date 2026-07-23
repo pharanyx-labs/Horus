@@ -76,6 +76,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/ramfs.o \
        src/kernel/storage.o \
        src/kernel/crypto.o \
+       src/kernel/tpm.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0
@@ -521,6 +522,8 @@ $(MODULE_MANIFEST): tools/gen_module_manifest.sh $(BOOT_MODULE_DEP)
 	@tools/gen_module_manifest.sh $@ $(BOOT_MODULES)
 
 src/kernel/main.o: $(MODULE_MANIFEST)
+# tpm.c also embeds the manifest (measures it into PCR[8]).
+src/kernel/tpm.o: $(MODULE_MANIFEST)
 
 # linker64.ld is a real input to this link (LDFLAGS carries -T linker64.ld), so
 # it belongs in the prerequisites: without it, editing the script leaves a stale
@@ -592,6 +595,24 @@ run: kernel.elf
 		-serial mon:stdio \
 		-device isa-debug-exit,iobase=0x604,iosize=0x04 \
 		-net none -no-reboot -no-shutdown -cdrom boot.iso
+
+# Like `run`, but with an emulated TPM 2.0 (swtpm) attached so measured boot
+# (roadmap 2.2) engages — you'll see the `[tpm] PCR8=.. PCR9=..` line and, once a
+# store opts into TPM sealing, the KEK unseal. Needs swtpm + swtpm_setup.
+.PHONY: run-tpm
+run-tpm: kernel.elf
+	@command -v swtpm >/dev/null 2>&1 || { echo "run-tpm needs swtpm (apt install swtpm)"; exit 1; }
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) boot.iso
+	@D=$$(mktemp -d); swtpm_setup --tpm2 --tpmstate $$D --overwrite >/dev/null 2>&1; \
+	 swtpm socket --tpm2 --tpmstate dir=$$D --ctrl type=unixio,path=$$D/sock --daemon --pid file=$$D/pid; \
+	 echo "TPM state in $$D. Quit QEMU with Ctrl-A X."; \
+	 qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap -smp $(SMP_CPUS) \
+	    -machine accel=kvm:tcg -display none -serial mon:stdio \
+	    -chardev socket,id=chrtpm,path=$$D/sock -tpmdev emulator,id=tpm0,chardev=chrtpm \
+	    -device tpm-tis,tpmdev=tpm0 \
+	    -device isa-debug-exit,iobase=0x604,iosize=0x04 \
+	    -net none -no-reboot -no-shutdown -cdrom boot.iso; \
+	 kill $$(cat $$D/pid) 2>/dev/null; rm -rf $$D
 
 
 # The @HORUS_MODULES@ marker in grub.cfg is replaced with a `module2` line per
@@ -1136,6 +1157,30 @@ smoke-modules-tamper:
 # prove nothing.
 tamper.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 	@tools/tamper_module_iso.sh $@ kernel.elf grub.cfg $(BOOT_MODULES)
+
+# Measured boot (roadmap 2.2): boot under an emulated TPM (swtpm) and assert the
+# PCR[8]/PCR[9] the kernel measured into the TPM equal the values recomputed on
+# the host from the reproducible boot-module manifest. External verification of
+# the boot hash chain, not the guest's own word. Skips cleanly where swtpm is
+# absent.
+.PHONY: smoke-tpm
+smoke-tpm:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_tpm.sh boot.iso
+
+# Falsification twin: tamper one module payload, boot under the TPM, and require
+# that the module is refused AND that the measured PCRs DIVERGE from the clean
+# manifest — proof the measurement reflects what actually loaded. Neuter the
+# measurement (or the A4 check) and this goes green-to-red.
+.PHONY: smoke-tpm-tamper
+smoke-tpm-tamper:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 tamper.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_MISMATCH=1 tools/smoke_tpm.sh tamper.iso
+	@rm -f tamper.iso
 
 .PHONY: smoke-modules
 smoke-modules:

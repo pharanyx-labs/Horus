@@ -170,10 +170,10 @@ void h_pipe(struct interrupt_frame64 *r) {
 
     cs[rslot].type = CAP_PIPE; cs[rslot].rights = CAP_RIGHT_READ;
     cs[rslot].object = (uint64_t)(uint32_t)idx; cs[rslot].badge = 0;
-    cs[rslot].serial = cap_alloc_fresh_serial(); cs[rslot].generation = 0;
+    cs[rslot].serial = cap_alloc_fresh_serial(); cs[rslot].generation = rust_lineage_current(cs[rslot].serial); /* finding 3.3 */
     cs[wslot].type = CAP_PIPE; cs[wslot].rights = CAP_RIGHT_WRITE;
     cs[wslot].object = (uint64_t)(uint32_t)idx; cs[wslot].badge = 0;
-    cs[wslot].serial = cap_alloc_fresh_serial(); cs[wslot].generation = 0;
+    cs[wslot].serial = cap_alloc_fresh_serial(); cs[wslot].generation = rust_lineage_current(cs[wslot].serial); /* finding 3.3 */
     pipe_end_ref(idx, 0);   /* read end  */
     pipe_end_ref(idx, 1);   /* write end */
 

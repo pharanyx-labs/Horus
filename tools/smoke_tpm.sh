@@ -27,13 +27,13 @@ echo "expected (host, from manifest): $EXPECTED"
 SERIAL=$(mktemp)
 trap 'rm -f "$SERIAL"' EXIT INT TERM
 
-SERIAL_OUT="$SERIAL" REQUIRE_MARKER='[tpm] measured boot OK' \
-    FAIL_MARKER='[tpm] measured boot FAILED' \
+SERIAL_OUT="$SERIAL" REQUIRE_MARKER='tpm: measured boot OK' \
+    FAIL_MARKER='tpm: measured boot FAILED' \
     SWTPM_TIMEOUT="${SMOKE_TIMEOUT:-60}" \
     "$HERE/run_with_swtpm.sh" "$ISO"
 
-# The guest's line: `[tpm] PCR8=<hex> PCR9=<hex>`
-OBSERVED=$(grep -F '[tpm] PCR8=' "$SERIAL" | tail -1 | tr -d '\r' | sed 's/^.*\[tpm\] //')
+# The guest's line: `[    S.mmm] tpm: PCR8=<hex> PCR9=<hex>`
+OBSERVED=$(grep -F 'tpm: PCR8=' "$SERIAL" | tail -1 | tr -d '\r' | sed 's/^.*tpm: //')
 echo "observed (guest, from TPM):     $OBSERVED"
 
 if [ -z "$OBSERVED" ]; then

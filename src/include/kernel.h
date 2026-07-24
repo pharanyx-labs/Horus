@@ -1399,6 +1399,18 @@ int  rust_audit_chain_record(const uint8_t *key, size_t key_len, uint64_t seq,
 int  rust_audit_entry_mac(const uint8_t *key, size_t key_len, uint64_t seq,
                           const uint8_t *event, size_t event_len, uint8_t *out_mac32);
 int  rust_audit_mac_eq(const uint8_t *a32, const uint8_t *b32);
+/* Forward-secure (forward-integrity) audit log: the per-entry key is ratcheted
+ * one-way and erased in place, so a kernel compromised at time t cannot forge or
+ * alter any entry committed before t. `rust_audit_pub_*` maintain an unkeyed
+ * running hash for a key-free self-check of the retained window. */
+int  rust_audit_fs_genesis(const uint8_t *pepper, size_t pepper_len,
+                           uint8_t *out_key32, uint8_t *out_head32);
+int  rust_audit_fs_record(uint8_t *key32, uint64_t seq,
+                          const uint8_t *event, size_t event_len,
+                          uint8_t *head32, uint8_t *out_mac32);
+int  rust_audit_pub_init(uint8_t *out32);
+int  rust_audit_pub_extend(const uint8_t *prev32, uint64_t seq,
+                           const uint8_t *mac32, uint8_t *out32);
 int  rust_ct_eq(const uint8_t *a, const uint8_t *b, size_t len);
 int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
                       const uint8_t *salt, size_t salt_len,

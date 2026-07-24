@@ -168,28 +168,32 @@ create_user_pagedir(id);
     tasks[id].cspace[0].object = id;
     tasks[id].cspace[0].badge  = 0;
     tasks[id].cspace[0].serial = (0xB0000000U | ((uint32_t)id << 16) | 0U);
-    tasks[id].cspace[0].generation = 0;
+    /* Serial-keyed generation stamp (finding 3.3). These structured serials are
+     * reused when a task slot is reused, so stamping the current cell value keeps
+     * a reincarnated slot's capability valid even if the prior incarnation's
+     * serial was revoked (bumped), rather than born stale. */
+    tasks[id].cspace[0].generation = rust_lineage_current(tasks[id].cspace[0].serial);
 
     tasks[id].cspace[3].type   = CAP_FRAME;
     tasks[id].cspace[3].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_EXEC;
     tasks[id].cspace[3].object = USER_AREA_BASE;
     tasks[id].cspace[3].badge  = 0;
     tasks[id].cspace[3].serial = (0xB0000000U | ((uint32_t)id << 16) | 3U);
-    tasks[id].cspace[3].generation = 0;
+    tasks[id].cspace[3].generation = rust_lineage_current(tasks[id].cspace[3].serial);
 
     tasks[id].cspace[4].type   = CAP_ENDPOINT;
     tasks[id].cspace[4].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
     tasks[id].cspace[4].object = 0;
     tasks[id].cspace[4].badge  = 0;
     tasks[id].cspace[4].serial = (0xB0000000U | ((uint32_t)id << 16) | 4U);
-    tasks[id].cspace[4].generation = 0;
+    tasks[id].cspace[4].generation = rust_lineage_current(tasks[id].cspace[4].serial);
 
     tasks[id].cspace[5].type   = CAP_ENDPOINT;
     tasks[id].cspace[5].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
     tasks[id].cspace[5].object = 1;
     tasks[id].cspace[5].badge  = 0;
     tasks[id].cspace[5].serial = (0xB0000000U | ((uint32_t)id << 16) | 5U);
-    tasks[id].cspace[5].generation = 0;
+    tasks[id].cspace[5].generation = rust_lineage_current(tasks[id].cspace[5].serial);
 
     
     if (id == 0) {

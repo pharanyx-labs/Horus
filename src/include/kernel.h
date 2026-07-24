@@ -1365,8 +1365,14 @@ int  sys_ipc_recv(uint32_t ep_slot, void *msg, size_t max_len);
 
 
 bool     capability_validate_generation(const capability_t *cap);
-uint32_t rust_lineage_bump(uint64_t obj);
-bool     rust_lineage_check(uint64_t obj, uint32_t gen);
+/* Lineage generations are keyed by a capability's unique `serial` (finding 3.3),
+ * not by `object`: each capability has its own generation cell, so an active,
+ * precise use-after-revoke backstop no longer needs the old gen-0 immunity that
+ * left every capability's snapshot un-invalidatable. Every C capability-creation
+ * site stamps `cap.generation = rust_lineage_current(cap.serial)`. */
+uint32_t rust_lineage_bump(uint32_t serial);
+bool     rust_lineage_check(uint32_t serial, uint32_t gen);
+uint32_t rust_lineage_current(uint32_t serial);
 
 /* ---- Cryptography & entropy (audited primitives implemented in Rust) ---- */
 /* SHA-256 suite */

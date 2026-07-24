@@ -47,7 +47,10 @@ uint32_t cap_alloc_fresh_serial(void) {
  */
 bool capability_validate_generation(const capability_t *cap){
     if(!cap||cap->type==CAP_NULL) return false;
-    return rust_lineage_check(cap->object, cap->generation);
+    /* Serial-keyed generation check (finding 3.3): strict equality against the
+     * capability's own serial cell, so a revoked capability (or a detached
+     * snapshot of one) fails even when it carries the old always-valid gen 0. */
+    return rust_lineage_check(cap->serial, cap->generation);
 }
 
 static struct {
@@ -154,7 +157,10 @@ int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t o
     tasks[pid].cspace[slot]            = root_cnode[root_slot];
     tasks[pid].cspace[slot].object     = object;
     tasks[pid].cspace[slot].serial     = serial;
-    tasks[pid].cspace[slot].generation = 0;
+    /* Stamp the fresh serial's current generation so the serial-keyed backstop
+     * is active for this copied-from-root capability (finding 3.3), and it is
+     * born valid even if the serial's hash cell was bumped by a prior revoke. */
+    tasks[pid].cspace[slot].generation = rust_lineage_current(serial);
     spin_unlock(&cap_lock);
     return 0;
 }
@@ -196,7 +202,7 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
     cspace[dest_slot].object     = object;
     cspace[dest_slot].badge      = badge;
     cspace[dest_slot].serial     = serial;
-    cspace[dest_slot].generation = 0;
+    cspace[dest_slot].generation = rust_lineage_current(serial); /* finding 3.3 */
     if (was_null) tasks[cur].caps_in_use++;
     spin_unlock(&cap_lock);
     return true;
@@ -406,7 +412,7 @@ bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint3
      * enough, but the type/serial/lineage-generation validity is enforced (the
      * same checks cap_lookup applies), so a revoked or stale source is refused. */
     struct capability *src = rust_cap_lookup(src_cspace, src_sz, src_slot, 0);
-    if (src && !rust_lineage_check(src->object, src->generation)) src = NULL;
+    if (src && !rust_lineage_check(src->serial, src->generation)) src = NULL;
     if (!src) { spin_unlock(&cap_lock); return false; }
 
     bool was_null = (dest_slot < dst_sz) && (dst_cspace[dest_slot].type == CAP_NULL);
@@ -538,7 +544,7 @@ bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {
     cspace[rev_slot].object = target_slot;
     cspace[rev_slot].badge  = 0xDEAD0000U;
     cspace[rev_slot].serial = fresh_serial;
-    cspace[rev_slot].generation = 0;
+    cspace[rev_slot].generation = rust_lineage_current(fresh_serial); /* finding 3.3 */
 
     spin_unlock(&cap_lock);
     return true;

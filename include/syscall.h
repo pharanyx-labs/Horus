@@ -141,6 +141,7 @@ struct audit_event {
 #define SYS_PIPE_WRITE         85   /* (slot, buf, len) -> bytes; SYS_ERR_AGAIN = full-but-reader-open, SYS_ERR_PIPE = no reader */
 #define SYS_PIPE_CLOSE         86   /* (slot) -> 0; drop a pipe-end cap and unref that end */
 #define SYS_STDIO_INFO         87   /* () -> bit0 stdin-is-pipe, bit1 stdout-is-pipe (spawner-wired); read by posix_init */
+#define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -754,6 +755,14 @@ static inline int sys_irq_register(uint32_t irq, uint32_t notif_slot, uint32_t b
  * -1 = chain uninitialized, -3 = copy failed. Requires a CAP_AUDIT read cap. */
 static inline int sys_audit_digest(void *out) {
     return syscall(SYS_AUDIT_DIGEST, (uint32_t)(unsigned long)out, 0, 0);
+}
+
+/* Copy up to `max` bytes of the kernel message ring (boot + kernel log) into
+ * `buf`, starting `offset` bytes from the oldest retained byte. Returns the
+ * number of bytes copied (0 at/after the end), or SYS_ERR_PERM for a non-root
+ * caller. Read in a loop advancing `offset` by the return value. Backs `dmesg`. */
+static inline int sys_dmesg(void *buf, uint32_t offset, uint32_t max) {
+    return syscall(SYS_DMESG, (uint32_t)(unsigned long)buf, offset, max);
 }
 
 #endif

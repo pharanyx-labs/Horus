@@ -396,11 +396,11 @@ static void print_hex32(const uint8_t *b) {
 
 void tpm_measured_boot(void) {
     if (!tpm_present()) {
-        println("[tpm] no TPM present -- measured boot skipped");
+        kmsg("tpm: no TPM present, measured boot skipped");
         return;
     }
     if (!tpm_request_locality()) {
-        println("[tpm] measured boot FAILED (locality)");
+        kmsg("tpm: measured boot FAILED (locality)");
         return;
     }
 
@@ -409,7 +409,7 @@ void tpm_measured_boot(void) {
           && (measure_boot_modules() == 0);
 
     if (!ok) {
-        println("[tpm] measured boot FAILED (transport)");
+        kmsg("tpm: measured boot FAILED (transport)");
         tpm_release_locality();
         return;
     }
@@ -417,15 +417,15 @@ void tpm_measured_boot(void) {
     uint8_t pcr8[32], pcr9[32];
     if (tpm_pcr_read(TPM_PCR_KERNEL_IDENTITY, pcr8) != 0 ||
         tpm_pcr_read(TPM_PCR_BOOT_MODULES,   pcr9) != 0) {
-        println("[tpm] measured boot FAILED (readback)");
+        kmsg("tpm: measured boot FAILED (readback)");
         tpm_release_locality();
         return;
     }
 
-    print("[tpm] PCR8="); print_hex32(pcr8);
+    kmsg_begin(); print("tpm: PCR8="); print_hex32(pcr8);
     print(" PCR9=");      print_hex32(pcr9);
     println("");
-    println("[tpm] measured boot OK");
+    kmsg("tpm: measured boot OK");
     tpm_release_locality();
 }
 

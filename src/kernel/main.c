@@ -86,8 +86,9 @@ static void assert_higher_half(void) {
         print("HIGHHALF: FAIL virt_to_phys/phys_to_virt do not round-trip\n");
         for (;;) asm volatile("cli; hlt");
     }
-    print("HIGHHALF: PASS kernel at "); print_hex64(here);
-    print(" phys ");                    print_hex64(virt_to_phys(here));
+    kmsg_begin();
+    print("boot: high-half OK, kernel at "); print_hex64(here);
+    print(" phys ");                          print_hex64(virt_to_phys(here));
     print("\n");
 }
 
@@ -287,6 +288,7 @@ void kernel_main(uint32_t mb_info) {
         "pushfq\n andq $~0x100,(%%rsp)\n popfq\n" ::: "rax","memory");
 
     terminal_init();
+    kmsg("Horus secure microkernel (x86_64) booting");
     assert_higher_half();
 
     idt_init64();
@@ -300,14 +302,16 @@ void kernel_main(uint32_t mb_info) {
     if (e820_pages) phys_set_pool_pages(e820_pages);
     {
         uint32_t used = e820_pages ? e820_pages : USER_PHYS_DEFAULT_PAGES;
-        print("[mem] physical pool: ");
+        kmsg_begin();
+        print("mem: physical pool ");
         print_decimal(used / 256);        /* frames * 4 KiB / 1 MiB */
         print(" MiB (");
         print_decimal(used);
         print(e820_pages ? " frames, from E820)\n" : " frames, default: no E820)\n");
     }
     if (g_boot_module_count) {
-        print("[mod] boot modules: ");
+        kmsg_begin();
+        print("boot: modules ");
         print_decimal(g_boot_module_count);
         for (uint32_t i = 0; i < g_boot_module_count; i++) {
             print(" ");

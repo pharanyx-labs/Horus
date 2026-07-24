@@ -1018,6 +1018,7 @@ static void show_general_help_us(void) {
     print_cmd("passwd",            "change your password (secure prompt)");
     print_cmd("sudo",              "re-authenticate (secure prompt), spawn elevated");
     print_cmd("rotate_keys",       "re-encrypt storage under a fresh key    (root)");
+    print_cmd("dmesg",             "print the kernel message log            (root)");
     print_cmd("useradd <uid> <n>", "create a user account                   (root)");
     print_cmd("userdel <uid>",     "delete a user account                   (root)");
     println("");
@@ -1834,6 +1835,23 @@ static void handle_command(char *cmd) {
         print("uid="); print_decimal(uid);
         print(" gid=100");
         println("");
+    } else if (strcmp(cmd, "dmesg") == 0) {
+        /* Print the kernel message ring (boot + kernel log). ROOT ONLY: the
+         * kernel enforces uid==0 against the caller's attested identity and
+         * returns SYS_ERR_PERM otherwise -- the shell just reports it. Read in
+         * small chunks so no multi-KiB user buffer is needed (the kernel log is
+         * text and holds no NULs, so a chunk is safe to NUL-terminate + print). */
+        char buf[512];
+        uint32_t off = 0;
+        for (;;) {
+            int n = sys_dmesg(buf, off, sizeof(buf) - 1);
+            if (n == SYS_ERR_PERM) { println("dmesg: permission denied (root only)"); break; }
+            if (n < 0)             { println("dmesg: read failed"); break; }
+            if (n == 0)            break;   /* end of the log */
+            buf[n] = 0;
+            print(buf);
+            off += (uint32_t)n;
+        }
     } else if (strcmp(cmd, "sudo") == 0 || strncmp(cmd, "sudo ", 5) == 0) {
         /* The password is PROMPTED for, never taken from the command line.
          * `sudo <password>` used to be the interface, which put the password on

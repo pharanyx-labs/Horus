@@ -9,7 +9,7 @@
 #   SWTPM_TIMEOUT   seconds to wait for a marker (default 60)
 #   REQUIRE_MARKER  string that must appear on serial for success
 #   FAIL_MARKER     string whose appearance is an immediate failure
-#   PRINT_PCR       if "1", echo the guest's `[tpm] PCR8=.. PCR9=..` line
+#   PRINT_PCR       if "1", echo the guest's `tpm: PCR8=.. PCR9=..` line
 #   KEEP_TPMSTATE   if set to a dir, reuse/persist swtpm state there instead of a
 #                   throwaway one (for two-boot sealing tests that need the same
 #                   TPM across reboots)
@@ -95,7 +95,7 @@ done
 echo "------------------- serial (tpm lines) -------------------"
 grep -iE 'tpm|PCR|refused' "$LOG" 2>/dev/null || true
 echo "----------------------------------------------------------"
-[ "${PRINT_PCR:-}" = 1 ] && grep -F '[tpm] PCR8=' "$LOG" 2>/dev/null || true
+[ "${PRINT_PCR:-}" = 1 ] && grep -F 'tpm: PCR8=' "$LOG" 2>/dev/null || true
 # Hand the full captured serial to the caller (e.g. the PCR-comparison gate)
 # before the throwaway log is removed on cleanup.
 [ -n "${SERIAL_OUT:-}" ] && cp "$LOG" "$SERIAL_OUT" 2>/dev/null || true

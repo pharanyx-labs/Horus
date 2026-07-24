@@ -132,7 +132,10 @@ class Serial:
             if self.proc.poll() is not None and not self._pump(0):
                 raise SessionFail(f"QEMU exited while waiting for {needle!r}")
             if time.time() >= deadline:
-                raise SessionFail(f"timeout after {timeout:.0f}s waiting for {needle!r}")
+                tail = self.buf[max(self.pos - 200, 0):][-600:]
+                raise SessionFail(
+                    f"timeout after {timeout:.0f}s waiting for {needle!r}; "
+                    f"recent serial: {tail!r}")
             self._pump(min(0.5, max(0.0, deadline - time.time())))
 
     def send(self, line):
@@ -305,6 +308,11 @@ def run():
         s.send("cd /")                            # back to root for the logout below
         step("filesystem coreutils (cd/pwd/ls -l/cp/mv/wc/stat) work as root")
 
+        # --- 4b. dmesg prints the kernel boot log; root is allowed -------
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("dmesg"); s.expect("mem: physical pool", STEP_TIMEOUT)
+        step("dmesg prints the kernel boot log for root")
+
         # --- 5. log out and log back in as a standard user ---------------
         s.send("logout"); s.expect("Logging out", STEP_TIMEOUT)
         s.expect("horus login:", STEP_TIMEOUT)
@@ -349,6 +357,13 @@ def run():
         # and the expect below would fail instead of passing.
         s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
         step("the root-owned file is unchanged after the denied write")
+
+        # --- 6d. dmesg is root-only: the kernel gates it on the attested
+        #         uid (like Linux's dmesg_restrict), so a standard user is
+        #         refused reading the kernel log.
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("dmesg"); s.expect("permission denied", STEP_TIMEOUT)
+        step("dmesg denied for a standard user (root only)")
         s.send("cd /"); s.expect("user@horus$", STEP_TIMEOUT)
 
         # --- 7. sudo refuses to take the password on the command line ----

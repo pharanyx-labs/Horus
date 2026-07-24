@@ -8,6 +8,31 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — Linux-style timestamped boot log + a root-only `dmesg` command
+
+The kernel boot messages were an ad-hoc mix of `[tag]` prefixes (`[mem]`, `[smp]`,
+`ATA:`, `HIGHHALF: PASS`). They now render like Linux `printk`: a monotonic
+`[    S.mmm]` timestamp prefix (from the 100 Hz tick — early lines read
+`[    0.000]`, just like real early boot) followed by a `subsys: message` line,
+via new `kmsg()` / `kmsg_begin()` helpers in `terminal.c`. A boot banner opens the
+sequence and the milestones read cleanly (`kernel ready, starting init (PID 1)`).
+No behaviour change — only formatting; the smoke harness matches `*_SELFTEST: PASS`
+markers, not boot info lines.
+
+A **`dmesg`** shell command prints the kernel message ring (the existing 16 KiB
+`klog` buffer that `print()` already feeds). It is **root-only**: the new
+`SYS_DMESG` syscall enforces `uid == 0` against the caller's *kernel-attested*
+identity (like Linux's `dmesg_restrict`), returning `SYS_ERR_PERM` otherwise. The
+log is read in small chunks via an `(buf, offset, max)` ABI, so neither the shell
+nor the kernel needs a multi-KiB buffer (the kernel copies from a small per-call
+stack buffer — no shared state to race under SMP). Added to the centralised
+capability-checked dispatch table with its compile-time slot assertion updated.
+
+Verified: `make smoke` shows the reformatted boot log and still reaches the shell;
+`make smoke-session` gains two steps — `dmesg` prints the boot log for root, and is
+refused for a standard user — both pass. The session harness now also reports recent
+serial context on an expect timeout.
+
 ### Changed — audit log is now forward-secure (tamper-proof for all history before a compromise)
 
 The audit log was tamper-*evident* but not tamper-*proof*: every entry's MAC and

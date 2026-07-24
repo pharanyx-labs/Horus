@@ -124,7 +124,7 @@ int ata_init(void) {
      * cleared controller with no device reads all-zero. Either means absent. */
     uint8_t status = inb(ATA_STATUS);
     if (status == 0xFF || status == 0x00) {
-        println("ATA: primary master not present");
+        kmsg("ata: primary master not present");
         return 0;
     }
 
@@ -136,7 +136,7 @@ int ata_init(void) {
 
     status = inb(ATA_STATUS);
     if (status == 0) {              /* command ignored: no device */
-        println("ATA: primary master not present");
+        kmsg("ata: primary master not present");
         return 0;
     }
     ata_wait_busy();                /* bounded */
@@ -144,17 +144,17 @@ int ata_init(void) {
     /* A non-ATA device (ATAPI/SATA) writes a signature into the LBA-mid/high
      * registers and aborts IDENTIFY; a genuine parallel-ATA disk keeps them 0. */
     if (inb(ATA_LBA_MID) != 0 || inb(ATA_LBA_HIGH) != 0) {
-        println("ATA: primary master is not an ATA disk");
+        kmsg("ata: primary master is not an ATA disk");
         return 0;
     }
 
     status = inb(ATA_STATUS);
     if (status & 0x01) {            /* ERR/ABRT */
-        println("ATA: primary master not present or error");
+        kmsg("ata: primary master not present or error");
         return 0;
     }
     if (!(status & 0x08)) {         /* DRQ never asserted: no IDENTIFY data */
-        println("ATA: primary master not ready");
+        kmsg("ata: primary master not ready");
         return 0;
     }
 
@@ -162,7 +162,7 @@ int ata_init(void) {
         (void)inw(ATA_DATA);        /* drain the 256-word IDENTIFY block */
     }
 
-    println("ATA: primary master ready (PIO)");
+    kmsg("ata: primary master ready (PIO)");
     return 1;
 }
 

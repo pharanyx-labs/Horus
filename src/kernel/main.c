@@ -332,6 +332,11 @@ void kernel_main(uint32_t mb_info) {
      * still long before any userspace (or the store unlock that stages 2-3 gate on
      * these measurements) exists. */
     tpm_measured_boot();
+#ifdef PIPE_SELFTEST
+    /* Fast in-kernel exercise of the pipe object (roadmap userspace: pipelines).
+     * Boot continues; make smoke-pipe asserts on the PIPE_SELFTEST marker. */
+    pipe_selftest();
+#endif
 #ifdef TPM_SELFTEST
     /* Seal a known value under a PolicyPCR(PCR8,PCR9) and unseal it under the live
      * PCRs, proving the TPM seal/unseal path (roadmap 2.2 stage 2). Boot continues;

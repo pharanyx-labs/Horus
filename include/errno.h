@@ -26,6 +26,7 @@
 #define SYS_ERR_BUSY      (-16)   /* resource busy / already in use */
 #define SYS_ERR_EXIST     (-17)   /* object already exists */
 #define SYS_ERR_INVAL     (-22)   /* invalid argument (bad value, format, or state) */
+#define SYS_ERR_PIPE      (-32)   /* write to a pipe with no reader left (EPIPE) */
 #define SYS_ERR_RANGE     (-34)   /* value or length out of the permitted range */
 #define SYS_ERR_NOSYS     (-38)   /* unknown, reserved, or unimplemented syscall */
 
@@ -49,6 +50,7 @@ static inline const char *sys_strerror(int code) {
         case SYS_ERR_BUSY:    return "resource busy";
         case SYS_ERR_EXIST:   return "already exists";
         case SYS_ERR_INVAL:   return "invalid argument";
+        case SYS_ERR_PIPE:    return "broken pipe (no reader)";
         case SYS_ERR_RANGE:   return "value out of range";
         case SYS_ERR_NOSYS:   return "syscall not implemented";
         case SYS_ERR_REVOKED: return "capability revoked";

@@ -7,14 +7,26 @@ static struct audit_event audit_log_buffer[AUDIT_LOG_SIZE];
 static uint32_t audit_head = 0;
 static uint32_t audit_count = 0;
 
-/* Tamper-evidence (rust/src/audit.rs). For each ring slot we keep the entry's
- * absolute sequence number and its per-entry MAC; `audit_chain_head` is a
- * running commitment over every event ever appended (kept even after the ring
- * overwrites the slot). All keyed by the per-boot kernel_pepper. */
+/* Forward-secure tamper-proofing (rust/src/audit.rs). For each ring slot we keep
+ * the entry's absolute sequence number and its per-entry MAC; `audit_chain_head`
+ * is a running keyed commitment over every event ever appended (kept even after
+ * the ring overwrites the slot).
+ *
+ * The MAC/head are keyed by an EVOLVING key `audit_fs_key` (derived once from the
+ * per-boot pepper, then ratcheted one-way and ERASED after each entry), not by
+ * the persistent pepper. So a kernel compromised at time t holds only the current
+ * key and cannot forge or alter any entry committed before t: history prior to a
+ * compromise is unforgeable, verified by an external monitor that records the
+ * head. `audit_pub_head`/`audit_pub_start` are an UNKEYED running hash that lets
+ * the kernel still self-check the retained window for accidental corruption after
+ * the keys are gone (a corruption detector, not an anti-forgery mechanism). */
 #define AUDIT_MAC_LEN 32
 static uint8_t  audit_mac[AUDIT_LOG_SIZE][AUDIT_MAC_LEN];
 static uint64_t audit_entry_seq[AUDIT_LOG_SIZE];
 static uint8_t  audit_chain_head[AUDIT_MAC_LEN];
+static uint8_t  audit_fs_key[AUDIT_MAC_LEN];   /* K_i: ratcheted + erased per entry */
+static uint8_t  audit_pub_head[AUDIT_MAC_LEN]; /* unkeyed running hash over (seq,mac) */
+static uint8_t  audit_pub_start[AUDIT_MAC_LEN];/* unkeyed hash up to the oldest RETAINED entry */
 static uint64_t audit_seq = 0;
 static int      audit_chain_ready = 0;
 
@@ -37,33 +49,40 @@ static size_t audit_serialize(const struct audit_event *e, uint8_t *buf) {
     return n;
 }
 
-/* Initialize the audit chain once the per-boot pepper is seeded (called from
- * users_init right after secure_random_bytes(kernel_pepper)). */
+/* Initialize the forward-secure audit chain once the per-boot pepper is seeded
+ * (called from users_init right after secure_random_bytes(kernel_pepper)).
+ * Derives the dedicated genesis key K_0 into audit_fs_key (the pepper itself is
+ * left intact for the password hash / user-DB tag) and seeds both the keyed head
+ * and the unkeyed public chain. */
 void audit_chain_start(void) {
-    if (rust_audit_chain_init(kernel_pepper, sizeof(kernel_pepper), audit_chain_head) == 0) {
+    if (rust_audit_fs_genesis(kernel_pepper, sizeof(kernel_pepper),
+                              audit_fs_key, audit_chain_head) == 0 &&
+        rust_audit_pub_init(audit_pub_head) == 0) {
+        for (int i = 0; i < AUDIT_MAC_LEN; i++) audit_pub_start[i] = audit_pub_head[i];
         audit_seq = 0;
         audit_chain_ready = 1;
     }
 }
 
-/* Re-derive each retained entry's MAC and compare to what was stored, using a
- * constant-time compare. Returns 0 if the whole retained window is intact, or
- * (index + 1) of the first tampered slot, or -1 if the chain is uninitialized. */
+/* Self-check the RETAINED window for accidental corruption WITHOUT any key (the
+ * per-entry keys are erased, by design, so the keyed MACs can no longer be
+ * recomputed here — they are verified externally by a monitor holding the head).
+ * Fold the unkeyed public chain from `audit_pub_start` (the commitment up to the
+ * oldest retained entry) over every retained (seq, mac); the result must equal
+ * `audit_pub_head`. Returns 0 if intact, (index+1) of the first divergence, or
+ * -1 if the chain is uninitialized. This catches a stray write flipping a stored
+ * (seq, mac); it is NOT proof against an attacker who can forge the keyed MACs. */
 static int audit_verify(void) {
     if (!audit_chain_ready) return -1;
-    uint8_t buf[8 * 10 + 64 + 128];
-    uint8_t computed[AUDIT_MAC_LEN];
+    uint8_t acc[AUDIT_MAC_LEN];
+    for (int i = 0; i < AUDIT_MAC_LEN; i++) acc[i] = audit_pub_start[i];
     uint32_t start = (audit_head + AUDIT_LOG_SIZE - audit_count) % AUDIT_LOG_SIZE;
     for (uint32_t i = 0; i < audit_count; i++) {
         uint32_t idx = (start + i) % AUDIT_LOG_SIZE;
-        size_t len = audit_serialize(&audit_log_buffer[idx], buf);
-        if (rust_audit_entry_mac(kernel_pepper, sizeof(kernel_pepper),
-                                 audit_entry_seq[idx], buf, len, computed) != 0)
-            return (int)(i + 1);
-        if (!rust_audit_mac_eq(computed, audit_mac[idx]))
+        if (rust_audit_pub_extend(acc, audit_entry_seq[idx], audit_mac[idx], acc) != 0)
             return (int)(i + 1);
     }
-    return 0;
+    return rust_audit_mac_eq(acc, audit_pub_head) ? 0 : (int)(audit_count ? audit_count : 1);
 }
 
 void audit_log(uint32_t type, uint32_t object, int32_t result, const char *msg) {
@@ -86,14 +105,29 @@ void audit_log(uint32_t type, uint32_t object, int32_t result, const char *msg) 
         e->message[0] = 0;
     }
 
-    /* Tamper-evidence: MAC this entry (binding its sequence number) and extend
-     * the running chain head. The keyed-hash logic lives in rust/src/audit.rs. */
+    /* Forward-secure tamper-proofing: MAC this entry (binding its sequence
+     * number) and extend the running head under the CURRENT key, then ratchet the
+     * key forward and erase it -- so this entry can never again be forged, even by
+     * a later full compromise. The keyed-hash logic lives in rust/src/audit.rs. */
     if (audit_chain_ready) {
+        /* Evicting the oldest retained entry? Fold its (seq, mac) into the
+         * unkeyed window-start commitment BEFORE its slot is overwritten, so the
+         * key-free self-check window slides forward with the ring. */
+        if (audit_count == AUDIT_LOG_SIZE) {
+            rust_audit_pub_extend(audit_pub_start, audit_entry_seq[audit_head],
+                                  audit_mac[audit_head], audit_pub_start);
+        }
         uint8_t buf[8 * 10 + 64 + 128];
         size_t len = audit_serialize(e, buf);
-        rust_audit_chain_record(kernel_pepper, sizeof(kernel_pepper), audit_seq,
-                                buf, len, audit_chain_head, audit_mac[audit_head]);
+        /* rust_audit_fs_record ratchets audit_fs_key (K_i -> K_{i+1}) and erases
+         * K_i in place after computing this entry's MAC and the new head. */
+        rust_audit_fs_record(audit_fs_key, audit_seq, buf, len,
+                             audit_chain_head, audit_mac[audit_head]);
         audit_entry_seq[audit_head] = audit_seq;
+        /* Extend the unkeyed public chain over the new (seq, mac) for the
+         * key-free retained-window self-check. */
+        rust_audit_pub_extend(audit_pub_head, audit_seq, audit_mac[audit_head],
+                              audit_pub_head);
         audit_seq++;
     }
 

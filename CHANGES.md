@@ -8,6 +8,44 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — audit log is now forward-secure (tamper-proof for all history before a compromise)
+
+The audit log was tamper-*evident* but not tamper-*proof*: every entry's MAC and
+the running chain head were keyed by the single persistent per-boot pepper, so an
+attacker who fully compromised the kernel and read the pepper could recompute a
+self-consistent chain and rewrite history.
+
+It is now **forward-secure** (forward integrity — Bellare–Yee / Schneier–Kelsey):
+
+- A dedicated genesis key `K_0 = SHA256(domain ‖ pepper)` is derived once (the
+  pepper itself is left intact for the password hash and user-DB tag). Each entry
+  is MAC'd and folded into the head under the current key `K_i`, then the key is
+  ratcheted one-way (`K_{i+1} = SHA256(domain ‖ K_i)`) and **erased in place**
+  (`rust_audit_fs_record`). A kernel compromised at time _t_ holds only `K_t` and
+  cannot recompute or forge any entry committed before _t_ — pre-compromise
+  history is cryptographically unforgeable.
+- Verification of that history moves to an external monitor recording the head via
+  `SYS_AUDIT_DIGEST` (the kernel deliberately can no longer self-recompute old
+  entries — that inability is the security property). An **unkeyed** sliding-window
+  hash (`rust_audit_pub_init`/`_extend`, with an eviction-folded window start) lets
+  the kernel still self-check the *retained* ring for accidental corruption after
+  the keys are erased — a corruption detector, not anti-forgery.
+- `SYS_AUDIT_DIGEST`'s 40-byte ABI (`seq ‖ head`) is unchanged; the CAP_AUDIT gate
+  is unchanged.
+
+Residual (the honest ceiling for a self-hosting kernel): entries logged *after* a
+compromise, and whole-machine rollback, still need an external append-only anchor
+(TPM NV monotonic counter / periodic PCR-extend of the head, or a remote WORM
+sink). "Completely tamper-proof" is unachievable by crypto that runs inside the
+attacker's own trust domain; forward integrity + a hardware/external anchor is the
+maximum, and the anchor is the tracked next step. `docs/LIMITATIONS.md` updated.
+
+Verified: 91 Rust unit tests including an external-verifier simulation that
+re-derives every `K_i` by ratcheting `K_0` and confirms each recorded MAC, a proof
+that each entry uses a fresh (ratcheted) key, and public-chain order-sensitivity;
+`clippy -D warnings` clean; kernel links; `smoke-session` (login + sudo drive
+`audit_log`) passes.
+
 ### Changed — capability use-after-revoke backstop is now active and precise: serial-keyed generations (finding 3.3)
 
 The per-lineage generation counter — the defense-in-depth backstop behind

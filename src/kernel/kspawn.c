@@ -143,7 +143,7 @@ static void wire_child_stdio(int child) {
         ccs[STDIN_PIPE_SLOT] = pcs[in_slot];
         ccs[STDIN_PIPE_SLOT].serial     = cap_alloc_fresh_serial();
         ccs[STDIN_PIPE_SLOT].badge      = 0;
-        ccs[STDIN_PIPE_SLOT].generation = 0;
+        ccs[STDIN_PIPE_SLOT].generation = rust_lineage_current(ccs[STDIN_PIPE_SLOT].serial); /* finding 3.3 */
         pipe_end_ref((int)pcs[in_slot].object, 0);   /* +1 read end */
         tasks[child].stdio_flags |= STDIO_STDIN_PIPE;
     }
@@ -152,7 +152,7 @@ static void wire_child_stdio(int child) {
         ccs[STDOUT_PIPE_SLOT] = pcs[out_slot];
         ccs[STDOUT_PIPE_SLOT].serial     = cap_alloc_fresh_serial();
         ccs[STDOUT_PIPE_SLOT].badge      = 0;
-        ccs[STDOUT_PIPE_SLOT].generation = 0;
+        ccs[STDOUT_PIPE_SLOT].generation = rust_lineage_current(ccs[STDOUT_PIPE_SLOT].serial); /* finding 3.3 */
         pipe_end_ref((int)pcs[out_slot].object, 1);  /* +1 write end */
         tasks[child].stdio_flags |= STDIO_STDOUT_PIPE;
     }
@@ -204,7 +204,10 @@ static int do_spawn_inner(void) {
         tasks[new_id].cspace[6].object = 0;
         tasks[new_id].cspace[6].badge  = creator_admin->serial ? creator_admin->serial : 0xC0DE0006U;
         tasks[new_id].cspace[6].serial = cap6_serial;
-        tasks[new_id].cspace[6].generation = creator_admin->generation;
+        /* Stamp the child admin cap from its OWN fresh serial, not the creator's
+         * generation (finding 3.3): the cap is keyed by cap6_serial, so its
+         * generation must track that serial's cell for revoke to invalidate it. */
+        tasks[new_id].cspace[6].generation = rust_lineage_current(cap6_serial);
     }
     spin_unlock(&cap_lock);
 
@@ -236,7 +239,7 @@ static void grant_child_tcb_cap(int spawner, int pid) {
             cs[s].object     = (uint64_t)pid;
             cs[s].badge      = 0;
             cs[s].serial     = cap_alloc_fresh_serial();
-            cs[s].generation = 0;
+            cs[s].generation = rust_lineage_current(cs[s].serial); /* finding 3.3 */
             break;
         }
     }

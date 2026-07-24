@@ -8,6 +8,59 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — capability use-after-revoke backstop is now active and precise: serial-keyed generations (finding 3.3)
+
+The per-lineage generation counter — the defense-in-depth backstop behind
+use-after-revoke and the IPC lookup/use TOCTOU revalidate guard — was in practice
+**dormant**. It was keyed by a capability's `object`, and `lineage_check` treated
+generation 0 as *always valid*. Because every capability in the running kernel is
+created with generation 0 (all primordial roots, every `cap_install_*`, and
+mint/grant, which inherited the source generation), a stale or snapshotted
+capability passed the generation check unconditionally: the backstop did nothing,
+and revocation correctness rested entirely on the structural sweep.
+
+The reason it could not simply be "switched on" is that an `object`-keyed counter
+cannot separate independent lineages: two capabilities to the same object share a
+cell, so an object-wide bump would also invalidate live siblings and independent
+same-object peers, breaking the least-privilege revocation guarantee (audit A1).
+The generation layer is now keyed by each capability's globally-unique **`serial`**
+instead, with **strict-equality** checking (no gen-0 escape hatch):
+
+- `LINEAGE_GEN` is keyed by `serial`; empty and primordial (`0xC0DE****`) serials
+  are exempt, so a hash collision can never invalidate a kernel root capability.
+- On revoke, `revoke_subtree` bumps the generation of **exactly** the serials it
+  enumerates (the target and its derivation subtree). A live sibling, ancestor, or
+  independent same-object peer — a *different* serial — is never invalidated
+  (A1 preserved), while a detached snapshot/copy of a revoked capability fails the
+  check via its own bumped serial (finding 3.3 closed). A revoked capability is now
+  invalidated by two independent mechanisms: its slot is nulled **and** its serial
+  generation is bumped.
+- Every C capability-creation site (`create_task`, `cap_install_from_root`,
+  `cap_install_endpoint`, the sudo uid-0 caps, pipe endpoints, child-stdio and
+  child-TCB grants, the revocation-set helper) stamps
+  `generation = rust_lineage_current(serial)`, so a fresh serial that hashes onto
+  a cell a prior revoke already bumped is born **valid**, not stale. The FFI
+  (`rust_lineage_check` / `rust_lineage_bump` / new `rust_lineage_current`) is
+  re-typed from `object: u64` to `serial: u32`; the capability struct layout is
+  unchanged.
+
+Residual: the 4096-slot table is still a lossy hash, so distinct serials can
+collide and cause fail-safe *over*-invalidation (availability only, never an
+authority leak) — the sole remaining A3 imprecision, to be retired by exact
+per-serial storage (Roadmap Track 1).
+
+**Verification:** two new Kani harnesses prove the invariants over the entire
+`u32` space — `revoke_invalidates_recorded_generation` (after a bump, a capability
+recording the pre-bump generation is invalid, and a bump never yields the pristine
+0) and `revoke_does_not_touch_a_distinct_lineage_cell` (bumping one serial's cell
+never invalidates a capability in a different cell). A new regression unit test
+`test_gen0_snapshot_invalidated_after_revoke_finding_3_3` reproduces the exact
+production scenario (a gen-0 derived capability whose snapshot used to survive its
+parent's revocation) and asserts an independent same-object capability still
+survives. Verified: 86 Rust unit tests, `clippy -D warnings` clean, `cargo kani`,
+`make` (kernel links), and the QEMU `smoke-captest` (post-revoke-use refusals),
+`smoke-session` (login/least-privilege/sudo), and `smoke-pipe` self-tests.
+
 ### Added — boot modules are verified against a SHA-256 manifest embedded in the kernel (audit A4)
 
 A boot module becomes a **root-owned executable** in `/bin` that the shell will run, but its contents were trusted purely to the boot chain: anyone able to alter the ISO could swap a payload and have the kernel provision an arbitrary root-owned binary. The reproducible-build hash covered the *embedded* binaries, never the modules.

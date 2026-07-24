@@ -118,14 +118,43 @@ dominated child's low slots, e.g. a server's IPC gate at slot 3.) A residual
 follow-up is exposing the rights-reduction mask through the syscall ABI so grant
 can drop `CAP_RIGHT_REVOKE` on delegation by default.
 
-### Lineage-generation table is a lossy hash (audit A3)
+### Lineage-generation table is a lossy hash (audit A3; keying fixed per finding 3.3)
 
-Use-after-revoke is backed by a 4096-slot generation table keyed by a hash of the
-capability's `object`. Distinct objects can collide into one slot, so bumping one
-lineage can **spuriously invalidate a colliding object's live capabilities** at next
-use. This is an availability effect (it fails safe) and undermines the precision the
-"single source of truth" framing claims; the fix is per-object exact generation
-storage (Roadmap Track 1).
+Use-after-revoke is backed by a 4096-slot generation table. As of **finding 3.3**
+it is keyed by a capability's globally-unique **`serial`** (previously its
+`object`), and the check is **strict equality** with no "generation 0 is always
+valid" escape hatch — so the backstop is now **active and precise**. Revoking a
+capability bumps exactly its own and its derivation subtree's serial cells (the
+serials the structural sweep already enumerates), invalidating any detached
+snapshot/copy of a revoked capability while leaving live siblings, ancestors, and
+independent same-`object` peers (distinct serials) untouched.
+
+This closes two prior gaps in one change. The table used to be keyed by `object`,
+so two independent capabilities to the same object shared a cell and could only
+stay independent by carrying the "untracked" generation 0 — which was treated as
+*always valid*. Because **every** capability in the running kernel is created with
+generation 0 (all primordial roots, every `cap_install_*`, and mint/grant, which
+inherited the source generation), the generation backstop was in practice
+**dormant**: a stale/snapshotted capability with generation 0 passed the check
+unconditionally, so the use-after-revoke / IPC-revalidate guard it was meant to
+provide did nothing. Serial-keying gives every capability its own cell, and
+strict-equality removes the gen-0 immunity, so the layer is now a genuine,
+independent second mechanism alongside the structural nulling (a revoked
+capability is invalidated both by having its slot nulled *and* by having its
+serial bumped). Every C creation site now stamps
+`generation = rust_lineage_current(serial)`, so a serial that hashes onto a cell a
+prior revoke already bumped is born valid rather than stale. Proved over the whole
+`u32` input space by two Kani harnesses (`revoke_invalidates_recorded_generation`,
+`revoke_does_not_touch_a_distinct_lineage_cell`) and regression-tested by
+`test_gen0_snapshot_invalidated_after_revoke_finding_3_3`.
+
+The residual limitation is the hash itself: distinct serials can still collide
+into one 4096-slot cell, so bumping one lineage can **spuriously invalidate a
+colliding serial's live capabilities** at next use. This is an availability effect
+(it fails safe — it can only deny access, never grant it) and is the sole
+remaining imprecision now that the object-keying and gen-0 gaps are closed. The
+fix is exact per-serial generation storage (a collision-free map rather than a
+lossy hash — Roadmap Track 1).
 
 ### Boot modules are unsigned (audit A4 — content unverified; destination now constrained)
 

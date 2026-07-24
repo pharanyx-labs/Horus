@@ -11,6 +11,16 @@ static uint32_t g_args_total = 0;              /* bytes used in g_args_strbuf */
 static char     g_args_strbuf[SPAWN_ARGS_BYTES];
 static uint16_t g_args_len[SPAWN_MAX_ARGS];    /* length incl NUL of each arg */
 
+/* Pipe-stdio spec for the next spawn (consume-once, like the argv staging above).
+ * Set by h_spawn_image from the caller's 6th syscall register just before
+ * do_spawn(); consumed and cleared inside do_spawn_inner while the child is built
+ * but before it can be scheduled (runnable_ctx is still 0), so wiring the child's
+ * stdio races nothing. Low 16 bits = the caller's cspace slot holding the pipe
+ * READ end to become the child's stdin (0 = none); high 16 bits = the WRITE end
+ * for the child's stdout (0 = none). 0 = no redirection (the console default). */
+static uint32_t g_spawn_stdio_spec = 0;
+static int      g_spawn_caller     = -1;   /* the spawner, for reading its pipe caps */
+
 /* Copy a NUL-terminated string from user vaddr `usrc` into `dst` (cap bytes incl
  * NUL). Returns length excluding NUL, or -1 on fault / no NUL within cap. */
 static int copy_user_cstr(char *dst, uint64_t usrc, uint32_t cap) {
@@ -105,6 +115,49 @@ static void build_child_argv(int tid) {
     g_args_argc = 0; g_args_total = 0;
 }
 
+/* Wire the child's stdin/stdout to pipe ends the spawner holds (consume-once
+ * g_spawn_stdio_spec). Runs inside do_spawn_inner, before sched_prepare_user_
+ * context publishes a resumable frame — so the child cannot be picked by any CPU
+ * until its stdio slots and stdio_flags are set. Copies the spawner's pipe-end
+ * cap into the child's reserved slot with a fresh serial and bumps that end's
+ * refcount, so the child holds a first-class end that task_teardown will release.
+ * A malformed/absent slot is silently left as the console default (fail-safe). */
+static void wire_child_stdio(int child) {
+    uint32_t spec = g_spawn_stdio_spec;
+    g_spawn_stdio_spec = 0;                       /* consume-once */
+    tasks[child].stdio_flags = 0;
+    if (spec == 0) return;
+
+    int caller = g_spawn_caller;
+    if (caller <= 0 || caller >= MAX_TASKS) return;
+    capability_t *pcs = tasks[caller].cspace;     /* spawner */
+    capability_t *ccs = tasks[child].cspace;      /* child   */
+    if (!pcs || !ccs) return;
+    uint32_t psz = tasks[caller].cspace_size ? tasks[caller].cspace_size : CNODE_SIZE;
+
+    uint32_t in_slot  = spec & 0xFFFFu;           /* read end -> child stdin  */
+    uint32_t out_slot = (spec >> 16) & 0xFFFFu;   /* write end -> child stdout */
+
+    if (in_slot && in_slot < psz &&
+        pcs[in_slot].type == CAP_PIPE && (pcs[in_slot].rights & CAP_RIGHT_READ)) {
+        ccs[STDIN_PIPE_SLOT] = pcs[in_slot];
+        ccs[STDIN_PIPE_SLOT].serial     = cap_alloc_fresh_serial();
+        ccs[STDIN_PIPE_SLOT].badge      = 0;
+        ccs[STDIN_PIPE_SLOT].generation = 0;
+        pipe_end_ref((int)pcs[in_slot].object, 0);   /* +1 read end */
+        tasks[child].stdio_flags |= STDIO_STDIN_PIPE;
+    }
+    if (out_slot && out_slot < psz &&
+        pcs[out_slot].type == CAP_PIPE && (pcs[out_slot].rights & CAP_RIGHT_WRITE)) {
+        ccs[STDOUT_PIPE_SLOT] = pcs[out_slot];
+        ccs[STDOUT_PIPE_SLOT].serial     = cap_alloc_fresh_serial();
+        ccs[STDOUT_PIPE_SLOT].badge      = 0;
+        ccs[STDOUT_PIPE_SLOT].generation = 0;
+        pipe_end_ref((int)pcs[out_slot].object, 1);  /* +1 write end */
+        tasks[child].stdio_flags |= STDIO_STDOUT_PIPE;
+    }
+}
+
 static int do_spawn_inner(void) {
     if (!program_armed) {
         return -1;
@@ -155,6 +208,11 @@ static int do_spawn_inner(void) {
     }
     spin_unlock(&cap_lock);
 
+    /* Wire pipe stdio (if this spawn requested it) BEFORE publishing a resumable
+     * frame below — until sched_prepare_user_context sets runnable_ctx, no CPU can
+     * schedule the child, so it cannot reach posix_init before its stdio is set. */
+    wire_child_stdio(new_id);
+
     /* Fabricate an initial resumable trap frame so sched_enter_user and the
      * preemptive scheduler can iretq into this task (entry/esp/cr3 are final). */
     sched_prepare_user_context(new_id, tasks[new_id].eip,
@@ -197,6 +255,7 @@ int do_spawn(void) {
     uint64_t caller_cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(caller_cr3));
     int caller_task = get_current_task();
+    g_spawn_caller = caller_task;   /* for wire_child_stdio, before the cr3 switch */
     uint64_t kcr3 = virt_to_phys(pml4);   /* CR3 takes a physical address */
 
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
@@ -362,6 +421,9 @@ void h_spawn_image(struct interrupt_frame64 *r) {
     /* Stage the caller's argv before the child exists; do_spawn_inner marshals it
      * onto the child's stack. Read here while the caller is still current. */
     stage_spawn_args(r->rsi, r->rdi);
+    /* Pipe-stdio redirection (r8, the 6th syscall arg): consumed in do_spawn_inner
+     * to wire the child's fd0/fd1 to the spawner's pipe ends. 0 = console default. */
+    g_spawn_stdio_spec = (uint32_t)r->r8;
     int pid = do_spawn();       /* consumes the armed image */
     g_args_argc = 0;            /* drop staging if the spawn failed before consuming it */
     if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;

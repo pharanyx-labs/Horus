@@ -387,6 +387,115 @@ static int try_run_from_bin(const char *cmd) {
     return 1;
 }
 
+/* Load the /bin program named argv[0] into a malloc'd buffer (caller frees).
+ * Returns 0 and sets out_buf + out_size, or -1 (message already printed) if the
+ * name is not a /bin file or cannot be read. Shared by the pipeline runner. */
+static int sh_load_bin(const char *name, unsigned char **out_buf, uint32_t *out_size) {
+    uint32_t bin = sh_walk_abs_dir("/bin");
+    if (bin == (uint32_t)-1) return -1;
+    struct fs_request rq = {0};
+    struct fs_response rp;
+    rq.op = FS_OP_LOOKUP; rq.dir_ino = bin; fss_strcpy(rq.name, name);
+    if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) {
+        print(name); println(": not found in /bin"); return -1;
+    }
+    uint32_t ino = rp.ino;
+    struct fs_request sq = {0};
+    sq.op = FS_OP_STAT; sq.ino = ino;
+    if (fss_call(&sq, &rp) < 0 || rp.rc < 0) { print(name); println(": stat failed"); return -1; }
+    uint32_t size = rp.size;
+    if (size == 0 || size > SH_MAX_IMAGE) { print(name); println(": bad image size"); return -1; }
+    unsigned char *buf = malloc(size);
+    if (!buf) { print(name); println(": out of memory"); return -1; }
+    if (sh_read_file(ino, buf, size) != 0) { print(name); println(": read failed"); free(buf); return -1; }
+    *out_buf = buf; *out_size = size;
+    return 0;
+}
+
+#define PL_MAX_STAGES 6
+
+/* If `cmd` is a pipeline (`a | b | ...`), run it: N stages of /bin programs joined
+ * by N-1 kernel pipes, each stage's stdout wired to the next stage's stdin. All
+ * stages are spawned (running concurrently); the shell then closes its own pipe
+ * ends — so EOF propagates when a producer exits — and waits for every stage.
+ * Returns 1 if it handled a pipeline (even on error), 0 if `cmd` has no `|` so the
+ * caller falls through to the single-command path. No quoting yet, so a `|` is
+ * always a separator. */
+static int try_run_pipeline(const char *cmd) {
+    int has_pipe = 0;
+    for (const char *p = cmd; *p; p++) if (*p == '|') { has_pipe = 1; break; }
+    if (!has_pipe) return 0;
+
+    /* Split a mutable copy on '|' into stage strings (leading spaces trimmed). */
+    char line[256];
+    int L = 0;
+    for (const char *p = cmd; *p && L < (int)sizeof(line) - 1; p++) line[L++] = *p;
+    line[L] = 0;
+
+    char *stage[PL_MAX_STAGES];
+    int nstage = 0;
+    char *seg = line;
+    for (char *p = line; ; p++) {
+        if (*p == '|' || *p == 0) {
+            int last = (*p == 0);
+            *p = 0;
+            while (*seg == ' ' || *seg == '\t') seg++;
+            if (nstage < PL_MAX_STAGES) stage[nstage++] = seg;
+            else if (!last) { println("pipeline: too many stages"); return 1; }
+            seg = p + 1;
+            if (last) break;
+        }
+    }
+    if (nstage < 2) return 0;   /* a lone '|' with one side empty — not a pipeline */
+
+    /* Create the N-1 pipes joining the stages. rslot[i]/wslot[i] are the shell's
+     * read/write ends of the pipe between stage i and stage i+1. */
+    uint32_t rslot[PL_MAX_STAGES - 1], wslot[PL_MAX_STAGES - 1];
+    int npipe = nstage - 1;
+    for (int i = 0; i < npipe; i++) {
+        int pr = sys_pipe();
+        if (pr < 0) {
+            println("pipeline: out of pipes");
+            for (int j = 0; j < i; j++) { sys_pipe_close(rslot[j]); sys_pipe_close(wslot[j]); }
+            return 1;
+        }
+        rslot[i] = (uint32_t)((pr >> 16) & 0xFFFF);
+        wslot[i] = (uint32_t)(pr & 0xFFFF);
+    }
+
+    /* Spawn each stage, wiring its stdin from the previous pipe and stdout to the
+     * next (console at the ends). Load one image at a time (the kernel copies it at
+     * spawn, so it can be freed immediately). */
+    int pid[PL_MAX_STAGES];
+    for (int i = 0; i < nstage; i++) pid[i] = -1;
+
+    for (int i = 0; i < nstage; i++) {
+        char store[128];
+        char *argv[CU_MAXARGS];
+        int argc = tokenize(stage[i], store, sizeof(store), argv);
+        if (argc == 0) { print("pipeline: empty stage "); println(""); continue; }
+
+        unsigned char *buf = 0; uint32_t size = 0;
+        if (sh_load_bin(argv[0], &buf, &size) != 0) continue;   /* message printed */
+
+        uint32_t in_slot  = (i > 0)          ? rslot[i - 1] : 0;   /* 0 = console */
+        uint32_t out_slot = (i < nstage - 1) ? wslot[i]     : 0;
+        pid[i] = sys_spawn_image_stdio(buf, size, argc, argv, in_slot, out_slot);
+        free(buf);
+        if (pid[i] < 0) { print(argv[0]); println(": failed to spawn"); }
+    }
+
+    /* Close every pipe end the shell still holds, so a stage that finishes writing
+     * makes its reader see EOF (and vice-versa) instead of both blocking forever. */
+    for (int i = 0; i < npipe; i++) { sys_pipe_close(rslot[i]); sys_pipe_close(wslot[i]); }
+
+    /* Wait for all spawned stages so their output lands before the next prompt. */
+    for (int i = 0; i < nstage; i++)
+        if (pid[i] > 0) while (sys_wait(pid[i]) == SYS_ERR_INTR) { }
+
+    return 1;
+}
+
 /* If /usr/share/man/<name> exists in the store, print it verbatim and return 1;
  * otherwise return 0 so the caller falls back to the shell's built-in man page.
  * Man pages are plain-text files provisioned from GRUB boot modules, so `man tail`
@@ -1176,6 +1285,11 @@ static void show_topic_help_us(const char *topic) {
 }
 
 static void handle_command(char *cmd) {
+
+    /* A pipeline (`a | b | ...`) of /bin programs — checked before the single
+     * program / builtins so `echo hi | wc -c` runs as a pipeline. No-op (returns 0)
+     * when the line has no '|'. */
+    if (try_run_pipeline(cmd)) return;
 
     /* A real /bin/<name> shadows the shell's own builtin of the same
      * name when it is embedded in this build (e.g. the real `wc` over the shell's

@@ -119,7 +119,10 @@ int open(const char *path, int flags, ...) {
 
 int close(int fd) {
     posix_init();
-    if (fd < 3) { errno = EBADF; return -1; }
+    /* Let posix_close decide: it closes a pipe end at ANY fd (including a
+     * redirected stdin/stdout fd 0/1 in a pipeline stage) and still refuses to
+     * close the console fds 0/1/2. Rejecting fd<3 here unconditionally made a
+     * pipeline stage's close(STDIN_FILENO) return EBADF (e.g. `... | wc`). */
     if (posix_close(fd) < 0) { errno = EBADF; return -1; }
     tmpfile_on_close(fd);   /* if this fd named a tmpfile, remove it now */
     return 0;

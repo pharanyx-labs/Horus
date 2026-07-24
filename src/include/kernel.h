@@ -265,6 +265,42 @@ struct endpoint {
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
 
+/* ---- Pipes (shell pipelines) ---------------------------------------------
+ * A bounded, in-kernel byte pipe. Ends are capabilities (CAP_PIPE, direction in
+ * the rights bit). Back-pressure is by SYS_ERR_AGAIN + a userspace yield-retry
+ * (posix.c), NOT by kernel blocking — this deliberately keeps pipes clear of the
+ * delicate SMP block/wake machinery. A bounded ring + fixed pool means no
+ * unbounded kernel memory. reader_ends / writer_ends count the live end caps of
+ * each direction across all cspaces (incremented on create/grant, decremented on
+ * SYS_PIPE_CLOSE and task_teardown); a reader sees EOF when writer_ends hits 0,
+ * a writer sees SYS_ERR_PIPE when reader_ends hits 0. */
+#define MAX_PIPES        32
+#define PIPE_BUF_BYTES   4096
+struct pipe {
+    int      in_use;
+    uint32_t head;                 /* next byte to read  */
+    uint32_t count;                /* bytes currently buffered */
+    uint32_t reader_ends;          /* live read-end caps  */
+    uint32_t writer_ends;          /* live write-end caps */
+    uint8_t  buf[PIPE_BUF_BYTES];
+};
+extern struct pipe pipes[MAX_PIPES];
+
+/* Pool lifecycle + byte movement. Return values are byte counts (>=0) or a
+ * negative SYS_ERR_*. read: 0 == EOF (all writers closed); SYS_ERR_AGAIN == empty
+ * but writers remain. write: SYS_ERR_AGAIN == full but a reader remains;
+ * SYS_ERR_PIPE == no reader left. */
+int  pipe_alloc(void);                                   /* -> pipe index, or -1 */
+void pipe_end_ref(int idx, int is_writer);               /* +1 that direction     */
+void pipe_end_unref(int idx, int is_writer);             /* -1; frees at 0/0      */
+int  pipe_read(int idx, uint8_t *dst, uint32_t len);
+int  pipe_write(int idx, const uint8_t *src, uint32_t len);
+/* Close every CAP_PIPE end in a dying task's cspace (task_teardown). */
+void pipe_close_task_ends(int task_id);
+#ifdef PIPE_SELFTEST
+void pipe_selftest(void);   /* in-kernel pipe mechanics exercise (smoke-pipe) */
+#endif
+
 #define MAX_NOTIFICATIONS 64
 struct notification {
     uint32_t pending_badge;    /* accumulated badge bits not yet consumed */
@@ -403,6 +439,20 @@ void users_init(void);
 #define SYS_IOPORT_GRANT       80   /* () -> 0; grant the caller native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
 #define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
 #define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (fd-1 output must route through it), else 0; read-only status, self-authorizing */
+#define SYS_PIPE               83   /* () -> (read_slot<<16)|write_slot; create a pipe, install a read-end + write-end CAP_PIPE in the caller's cspace */
+#define SYS_PIPE_READ          84   /* (slot, buf, len) -> bytes read; 0 = EOF (no writers), SYS_ERR_AGAIN = empty but writers remain */
+#define SYS_PIPE_WRITE         85   /* (slot, buf, len) -> bytes written; SYS_ERR_AGAIN = full but reader remains, SYS_ERR_PIPE = no reader */
+#define SYS_PIPE_CLOSE         86   /* (slot) -> 0; drop a pipe-end cap and unref that end (EOF/EPIPE to the peer when it hits 0) */
+#define SYS_STDIO_INFO         87   /* () -> bit0: stdin is a pipe (slot 8); bit1: stdout is a pipe (slot 9); read by posix_init */
+
+/* Reserved cspace slots a spawner wires a child's pipe stdio into (do_spawn),
+ * read back by the child's posix_init via SYS_STDIO_INFO. create_task assigns
+ * 0,3,4,5,8,9 and init grants 6,7,10,11 to servers; 14/15 are always free. */
+#define STDIN_PIPE_SLOT         14
+#define STDOUT_PIPE_SLOT        15
+/* tcb.stdio_flags bits: which of the child's fd0/fd1 was spawned as a pipe. */
+#define STDIO_STDIN_PIPE        0x1u
+#define STDIO_STDOUT_PIPE       0x2u
 
 /* SYS_MAP_PHYS `flags` word (must match include/syscall.h). READ is the floor;
  * WRITE adds the writable bit. Device MMIO is always mapped non-executable. */
@@ -464,6 +514,11 @@ struct boot_module_info {
  * a software privilege token for the kernel shell. Only a driver server is ever
  * endowed with it. See docs/proposals/console-server.md. */
 #define CAP_IO_DEVICE           12
+/* A pipe end (roadmap userspace: shell pipelines). object = pipe index; the
+ * direction is the rights bit: CAP_RIGHT_READ = read end, CAP_RIGHT_WRITE = write
+ * end. Only a task holding the end cap can read/write that pipe (zero-trust). The
+ * capability algebra treats the type opaquely, so this is a C-side type only. */
+#define CAP_PIPE                13
 
 #define CAP_RIGHT_READ          (1u << 0)
 #define CAP_RIGHT_WRITE         (1u << 1)
@@ -686,6 +741,11 @@ typedef struct tcb {
     /* One-word argument handed to a task at spawn (SYS_SPAWN edx), retrieved by
      * the child via SYS_SPAWN_ARG. A fast path alongside the full argv below. */
     uint32_t spawn_arg;
+
+    /* Which of this task's stdio fds the spawner wired to a pipe (STDIO_*_PIPE
+     * bits). Set in do_spawn after granting the pipe ends into slots 8/9; read by
+     * the child's posix_init via SYS_STDIO_INFO. 0 = both default to the console. */
+    uint32_t stdio_flags;
 
     /* Full argument vector. The kernel marshals the spawner's argv strings onto
      * the child's initial user stack at spawn and records the count and the

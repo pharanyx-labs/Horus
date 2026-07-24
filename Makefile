@@ -77,6 +77,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/storage.o \
        src/kernel/crypto.o \
        src/kernel/tpm.o \
+       src/kernel/pipe.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0
@@ -259,6 +260,14 @@ endif
 TPM_SELFTEST ?= 0
 ifeq ($(TPM_SELFTEST),1)
 CFLAGS  += -DTPM_SELFTEST
+endif
+
+# PIPE_SELFTEST=1 builds the in-kernel pipe-object exercise (roadmap userspace:
+# shell pipelines): round-trip, EOF/EPIPE, back-pressure, scrub-on-free — fast and
+# deterministic, no coreutil image loading. Driven by smoke-pipe.
+PIPE_SELFTEST ?= 0
+ifeq ($(PIPE_SELFTEST),1)
+CFLAGS  += -DPIPE_SELFTEST
 endif
 
 # TPM_KEK_SELFTEST=1 builds the in-kernel TPM-sealed-KEK end-to-end test (roadmap
@@ -1248,6 +1257,14 @@ smoke-coreutils-shell:
 # in-kernel test to report PASS -- runtime proof that a single inode can map
 # blocks through the double-indirect region (large files) on the encrypted
 # object store, and that freeing the whole tree succeeds.
+.PHONY: smoke-pipe
+smoke-pipe:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PIPE_SELFTEST: PASS' \
+		FAIL_MARKER='PIPE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-fs-large
 smoke-fs-large:
 	@$(MAKE) --no-print-directory clean

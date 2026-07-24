@@ -799,6 +799,11 @@ void task_teardown(int id) {
     tasks[id].io_allowed = 0;
     console_clear_owner(id);
 
+    /* Release any pipe ends this task still holds so the peer sees EOF/EPIPE and
+     * the pipe is freed — a pipeline stage that exits (cleanly or on a fault)
+     * must not wedge the stage on the other side. */
+    pipe_close_task_ends(id);
+
     int w = tasks[id].waiter;
     if (w >= 0 && w < MAX_TASKS) {
         /* Unblock a SYS_WAIT waiter: make it runnable and resumable so the

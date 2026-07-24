@@ -50,12 +50,13 @@ static uint32_t _ustrlen(const char *s) {
 #define FD_CONSOLE_IN   1u   /* fd 0: console read  */
 #define FD_CONSOLE_OUT  2u   /* fd 1/2: console write */
 #define FD_FS           3u   /* regular fs_server file */
+#define FD_PIPE         4u   /* a pipe end (ino = the CAP_PIPE cspace slot) */
 
 typedef struct {
-    uint8_t  type;     /* FD_FREE / FD_CONSOLE_IN / FD_CONSOLE_OUT / FD_FS */
+    uint8_t  type;     /* FD_FREE / FD_CONSOLE_IN / FD_CONSOLE_OUT / FD_FS / FD_PIPE */
     uint8_t  _pad[3];
     int      flags;    /* O_RDONLY / O_WRONLY / O_RDWR | O_APPEND etc. */
-    uint32_t ino;
+    uint32_t ino;      /* fs inode, or (FD_PIPE) the pipe-end cspace slot */
     uint32_t offset;
 } fd_entry_t;
 
@@ -280,6 +281,14 @@ void posix_init(void) {
     g_fdt[1].flags = O_WRONLY;
     g_fdt[2].type  = FD_CONSOLE_OUT;
     g_fdt[2].flags = O_WRONLY;
+
+    /* If the spawner wired our stdin/stdout to a pipe (a shell pipeline stage),
+     * bind fd 0/1 to the pipe end it granted at STDIN/STDOUT_PIPE_SLOT instead of
+     * the console. stderr (fd 2) always stays on the console. */
+    int sio = sys_stdio_info();
+    if (sio & 0x1) { g_fdt[0].type = FD_PIPE; g_fdt[0].ino = STDIN_PIPE_SLOT;  g_fdt[0].flags = O_RDONLY; }
+    if (sio & 0x2) { g_fdt[1].type = FD_PIPE; g_fdt[1].ino = STDOUT_PIPE_SLOT; g_fdt[1].flags = O_WRONLY; }
+
     g_inited = 1;
 }
 
@@ -350,6 +359,17 @@ int posix_read(int fd, void *buf, size_t len) {
     if (e->type == FD_CONSOLE_IN) {
         int r = sys_read(0, buf, len);
         return r;
+    }
+
+    if (e->type == FD_PIPE) {
+        /* Block until at least one byte or EOF: retry SYS_ERR_AGAIN after yielding
+         * so a slow upstream stage gets to run. Returns available bytes (may be <
+         * len, like a real pipe), 0 at EOF (all writers closed), or a negative. */
+        for (;;) {
+            int n = sys_pipe_read(e->ino, buf, (uint32_t)len);
+            if (n == SYS_ERR_AGAIN) { sys_yield(); continue; }
+            return n;
+        }
     }
 
     if (e->type != FD_FS) return -1;
@@ -434,6 +454,21 @@ int posix_write(int fd, const void *buf, size_t len) {
     /* Access mode check: can't write a read-only fd. */
     if ((e->flags & O_ACCMODE) == O_RDONLY) return -1;
 
+    if (e->type == FD_PIPE) {
+        /* Write all len bytes, yielding on back-pressure (full pipe, reader still
+         * open) so the downstream stage drains it; stop early on SYS_ERR_PIPE (the
+         * reader is gone), returning what got through, or the error if none did. */
+        const unsigned char *src = (const unsigned char *)buf;
+        uint32_t total = 0;
+        while (total < (uint32_t)len) {
+            int n = sys_pipe_write(e->ino, src + total, (uint32_t)len - total);
+            if (n == SYS_ERR_AGAIN) { sys_yield(); continue; }
+            if (n < 0) return total > 0 ? (int)total : n;
+            total += (uint32_t)n;
+        }
+        return (int)total;
+    }
+
     if (e->type == FD_CONSOLE_OUT) {
         /* Keep the console single-writer: while a ring-3 console_server owns the
          * hardware, the kernel's fd-1 path stays hands-off, so route stdout through
@@ -497,6 +532,13 @@ int posix_write(int fd, const void *buf, size_t len) {
 int posix_close(int fd) {
     ENSURE_INIT();
     if (!fd_valid(fd))         return -1;
+    /* A pipe end can be closed at any fd (including a redirected fd 0/1): drop the
+     * kernel end so the peer sees EOF/EPIPE promptly, then free the table slot. */
+    if (g_fdt[fd].type == FD_PIPE) {
+        sys_pipe_close(g_fdt[fd].ino);
+        fd_free(fd);
+        return 0;
+    }
     if (fd < 3)                return -1;   /* never close stdin/stdout/stderr */
     fd_free(fd);
     return 0;
@@ -564,7 +606,10 @@ int posix_fstat(int fd, posix_stat_t *st) {
 
     fd_entry_t *e = &g_fdt[fd];
 
-    if (e->type == FD_CONSOLE_IN || e->type == FD_CONSOLE_OUT) {
+    if (e->type == FD_CONSOLE_IN || e->type == FD_CONSOLE_OUT || e->type == FD_PIPE) {
+        /* A pipe is a non-seekable stream, like the console — report it as a
+         * character/FIFO device with size 0 so tools (wc, cat) treat it as a
+         * stream and read to EOF rather than fstat-ing a file size or erroring. */
         _umemset(st, 0, sizeof(*st));
         st->mode    = S_IFCHR | S_IRWXU;
         st->blksize = 1;

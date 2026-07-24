@@ -166,6 +166,12 @@ void h_wait_notify(struct interrupt_frame64 *r);
 void h_map_phys(struct interrupt_frame64 *r);
 void h_ioport_grant(struct interrupt_frame64 *r);
 void h_irq_register(struct interrupt_frame64 *r);
+/* pipe.c — bounded byte pipes for shell pipelines */
+void h_pipe(struct interrupt_frame64 *r);
+void h_pipe_read(struct interrupt_frame64 *r);
+void h_pipe_write(struct interrupt_frame64 *r);
+void h_pipe_close(struct interrupt_frame64 *r);
+void h_stdio_info(struct interrupt_frame64 *r);
 
 /* selftest.c (test-only trace hook) */
 #ifdef PREEMPT_SELFTEST

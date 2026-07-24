@@ -825,7 +825,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 83
+#define SYSCALL_TABLE_SIZE 88
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -946,6 +946,14 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     /* Route a hardware IRQ to a userspace notification. Same CAP_IO_DEVICE + WRITE
      * gate in slot 10 as the other device-delegation syscalls — console server only. */
     [SYS_IRQ_REGISTER]            = { h_irq_register,           10, CAP_RIGHT_WRITE, CAP_IO_DEVICE },
+    /* Pipes: authorization is the pipe-end capability passed as the slot argument,
+     * validated in the handler (cap_lookup with the direction's right), so no fixed
+     * table slot. SYS_PIPE/STDIO_INFO are self-scoped (own cspace / own tcb). */
+    [SYS_PIPE]                    = { h_pipe,                    SC_NONE, 0, SC_ANYTYPE },
+    [SYS_PIPE_READ]               = { h_pipe_read,               SC_NONE, 0, SC_ANYTYPE },
+    [SYS_PIPE_WRITE]              = { h_pipe_write,              SC_NONE, 0, SC_ANYTYPE },
+    [SYS_PIPE_CLOSE]              = { h_pipe_close,              SC_NONE, 0, SC_ANYTYPE },
+    [SYS_STDIO_INFO]              = { h_stdio_info,              SC_NONE, 0, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -957,7 +965,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_CONSOLE_OWNED + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_STDIO_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

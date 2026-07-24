@@ -750,6 +750,23 @@ jobs:
       - name: Boot BIGFILE_SELFTEST kernel and assert an inode maps through the double-indirect region
         run: make smoke-fs-large
 
+  smoke-pipe:
+    name: QEMU pipe self-test (round-trip / EOF / EPIPE / back-pressure)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot PIPE_SELFTEST kernel and assert the pipe object round-trips with correct EOF/EPIPE/back-pressure
+        run: make smoke-pipe
+
   smoke-init-fs:
     name: QEMU delegated boot-through-init filesystem self-test (headless)
     runs-on: ubuntu-latest

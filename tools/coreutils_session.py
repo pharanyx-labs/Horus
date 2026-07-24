@@ -83,6 +83,17 @@ def run():
         cmd("seq 1 5", "1", "2", "3", "4", "5")
         step("seq generates a sequence")
 
+        # A real shell pipeline: seq's output flows through a kernel pipe into wc's
+        # stdin (`|` parsing + fd redirection at spawn + EOF on close). Both seq and
+        # wc are in this build's module set. seq 1 3 -> "1\n2\n3\n" = 6 bytes, so
+        # `wc -c` prints "6" -- a value absent from the echoed command line, so it
+        # cannot false-match. Slowest step (two coreutil images load over IPC).
+        PIPE_T = max(STEP, 180.0)
+        s.send("seq 1 3 | wc -c")
+        s.expect("6", PIPE_T)
+        s.expect(PROMPT, PIPE_T)
+        step("pipeline: seq | wc over a kernel pipe")
+
         print("COREUTILS_SESSION: PASS")
         return 0
     except SessionFail as e:

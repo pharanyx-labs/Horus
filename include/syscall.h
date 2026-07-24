@@ -136,6 +136,16 @@ struct audit_event {
 #define SYS_IOPORT_GRANT       80   /* () -> 0; grant native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE; driver server only) */
 #define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification (CAP_IO_DEVICE + WRITE; driver server only) */
 #define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (so fd-1 output must route through it, not the kernel), else 0; read-only status, self-authorizing */
+#define SYS_PIPE               83   /* () -> (read_slot<<16)|write_slot; create a bounded pipe, install a read/write CAP_PIPE in the caller's cspace */
+#define SYS_PIPE_READ          84   /* (slot, buf, len) -> bytes; 0 = EOF, SYS_ERR_AGAIN = empty-but-writers-open */
+#define SYS_PIPE_WRITE         85   /* (slot, buf, len) -> bytes; SYS_ERR_AGAIN = full-but-reader-open, SYS_ERR_PIPE = no reader */
+#define SYS_PIPE_CLOSE         86   /* (slot) -> 0; drop a pipe-end cap and unref that end */
+#define SYS_STDIO_INFO         87   /* () -> bit0 stdin-is-pipe, bit1 stdout-is-pipe (spawner-wired); read by posix_init */
+
+/* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
+ * src/include/kernel.h). */
+#define STDIN_PIPE_SLOT        14
+#define STDOUT_PIPE_SLOT       15
 
 /* Signal numbers (1..31). A task registers a handler with sys_signal() (see
  * below); an unhandled signal terminates the target (default action). */
@@ -224,11 +234,11 @@ static inline uint64_t syscall(uint32_t num, uint64_t a, uint64_t b, uint64_t c)
 static inline uint64_t syscall6(uint32_t num, uint64_t a, uint64_t b, uint64_t c,
                                  uint64_t d, uint64_t e, uint64_t f) {
     uint64_t ret;
-    (void)f;
+    register uint64_t r8 asm("r8") = f;   /* 6th arg in r8 (saved in the trap frame) */
     asm volatile (
         "int $0x80"
         : "=a"(ret)
-        : "a"(num), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e)
+        : "a"(num), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e), "r"(r8)
         : "memory"
     );
     return ret;
@@ -487,6 +497,41 @@ static inline int sys_spawn_image_arg(const void *image, uint32_t len, uint32_t 
                                       int argc, char *const argv[]) {
     return (int)syscall6(SYS_SPAWN_IMAGE, (uint64_t)(uintptr_t)image, len, arg,
                          (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
+}
+
+/* As sys_spawn_image but also wires the child's stdio to pipe ends the caller
+ * holds: in_slot = the caller's cspace slot with the pipe READ end that becomes
+ * the child's stdin (0 = leave stdin on the console), out_slot = the WRITE end for
+ * the child's stdout (0 = console). The kernel copies those ends into the child
+ * before it runs (see wire_child_stdio). Used by the shell to build pipelines. */
+static inline int sys_spawn_image_stdio(const void *image, uint32_t len,
+                                        int argc, char *const argv[],
+                                        uint32_t in_slot, uint32_t out_slot) {
+    uint32_t spec = (in_slot & 0xFFFFu) | ((out_slot & 0xFFFFu) << 16);
+    return (int)syscall6(SYS_SPAWN_IMAGE, (uint64_t)(uintptr_t)image, len, 0,
+                         (uint64_t)(uintptr_t)argv, (uint32_t)argc, spec);
+}
+
+/* Pipes. sys_pipe returns (read_slot<<16)|write_slot (both cspace slots holding a
+ * CAP_PIPE end), or a negative SYS_ERR_*. read/write/close take a slot. read: 0 =
+ * EOF, SYS_ERR_AGAIN = would-block (empty, writers open). write: SYS_ERR_AGAIN =
+ * would-block (full, reader open), SYS_ERR_PIPE = no reader. Back-pressure is a
+ * userspace yield-retry (posix.c), so these never block in the kernel. */
+static inline int sys_pipe(void) {
+    return (int)syscall(SYS_PIPE, 0, 0, 0);
+}
+static inline int sys_pipe_read(uint32_t slot, void *buf, uint32_t len) {
+    return (int)syscall(SYS_PIPE_READ, slot, (uint64_t)(uintptr_t)buf, len);
+}
+static inline int sys_pipe_write(uint32_t slot, const void *buf, uint32_t len) {
+    return (int)syscall(SYS_PIPE_WRITE, slot, (uint64_t)(uintptr_t)buf, len);
+}
+static inline int sys_pipe_close(uint32_t slot) {
+    return (int)syscall(SYS_PIPE_CLOSE, slot, 0, 0);
+}
+/* Bitmask: bit0 = stdin is a pipe (STDIN_PIPE_SLOT), bit1 = stdout is a pipe. */
+static inline int sys_stdio_info(void) {
+    return (int)syscall(SYS_STDIO_INFO, 0, 0, 0);
 }
 
 /* Replace the caller's own image with a caller-supplied program image

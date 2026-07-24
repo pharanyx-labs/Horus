@@ -444,6 +444,7 @@ void users_init(void);
 #define SYS_PIPE_WRITE         85   /* (slot, buf, len) -> bytes written; SYS_ERR_AGAIN = full but reader remains, SYS_ERR_PIPE = no reader */
 #define SYS_PIPE_CLOSE         86   /* (slot) -> 0; drop a pipe-end cap and unref that end (EOF/EPIPE to the peer when it hits 0) */
 #define SYS_STDIO_INFO         87   /* () -> bit0: stdin is a pipe (slot 8); bit1: stdout is a pipe (slot 9); read by posix_init */
+#define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
 /* Reserved cspace slots a spawner wires a child's pipe stdio into (do_spawn),
  * read back by the child's posix_init via SYS_STDIO_INFO. create_task assigns
@@ -934,6 +935,10 @@ void console_putc(char c);
 void console_puts(const char *s);
 void println(const char *s);
 void print(const char *s);
+/* Linux-style timestamped boot/kernel-log helpers (terminal.c). */
+void kmsg_begin(void);              /* emit just the "[    S.mmm] " prefix */
+void kmsg(const char *s);           /* emit a whole "[    S.mmm] s" line */
+uint32_t klog_copy(char *dst, uint32_t offset, uint32_t max); /* snapshot the kernel log ring from `offset`; backs SYS_DMESG */
 void print_char(char c);
 #ifdef DEBUG_SHELL
 /* Defined in syscall.c under DEBUG_SHELL; declared here so the in-kernel debug

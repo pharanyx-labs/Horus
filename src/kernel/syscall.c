@@ -818,6 +818,27 @@ static void h_boot_module_read(struct interrupt_frame64 *r) {
     r->rax = len;
 }
 
+/* SYS_DMESG: copy a chunk of the kernel message ring (boot + kernel log) to a
+ * user buffer. ROOT ONLY -- the kernel log discloses addresses and boot detail,
+ * so like Linux (dmesg_restrict) it is gated to uid 0, enforced here against the
+ * caller's kernel-attested identity (never anything the caller supplies). The
+ * caller reads the log in small chunks (rcx = byte offset from the oldest
+ * retained byte, rdx = max bytes), so it never needs a multi-KiB user buffer and
+ * the kernel needs only a small per-call stack buffer -- no shared state to race.
+ * Args: rbx = user buffer, rcx = offset, rdx = max. Returns bytes copied
+ * (0 at end), or SYS_ERR_PERM / SYS_ERR_FAULT. */
+static void h_dmesg(struct interrupt_frame64 *r) {
+    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    void *ubuf     = (void *)(addr_t)r->rbx;
+    uint32_t offset = (uint32_t)r->rcx;
+    uint32_t max    = (uint32_t)r->rdx;
+    char chunk[1024];
+    if (max > sizeof(chunk)) max = (uint32_t)sizeof(chunk);
+    uint32_t n = klog_copy(chunk, offset, max);
+    if (n && copy_to_user(ubuf, chunk, n) != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    r->rax = n;
+}
+
 typedef struct {
     void   (*fn)(struct interrupt_frame64 *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
@@ -825,7 +846,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 88
+#define SYSCALL_TABLE_SIZE 89
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -954,18 +975,19 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_PIPE_WRITE]              = { h_pipe_write,              SC_NONE, 0, SC_ANYTYPE },
     [SYS_PIPE_CLOSE]              = { h_pipe_close,              SC_NONE, 0, SC_ANYTYPE },
     [SYS_STDIO_INFO]              = { h_stdio_info,              SC_NONE, 0, SC_ANYTYPE },
+    [SYS_DMESG]                   = { h_dmesg,                   SC_NONE, 0, SC_ANYTYPE }, /* uid==0 gate in handler */
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_IRQ_REGISTER is currently the highest syscall number. Adding a higher one
+ * SYS_DMESG is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_STDIO_INFO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_DMESG + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -86,10 +86,7 @@ static void assert_higher_half(void) {
         print("HIGHHALF: FAIL virt_to_phys/phys_to_virt do not round-trip\n");
         for (;;) asm volatile("cli; hlt");
     }
-    kmsg_begin();
-    print("boot: high-half OK, kernel at "); print_hex64(here);
-    print(" phys ");                          print_hex64(virt_to_phys(here));
-    print("\n");
+    kmsg("boot: high-half relocation verified");
 }
 
 /* ---- Multiboot2 memory map -> physical pool size --------------------------
@@ -288,6 +285,7 @@ void kernel_main(uint32_t mb_info) {
         "pushfq\n andq $~0x100,(%%rsp)\n popfq\n" ::: "rax","memory");
 
     terminal_init();
+    kmsg_clock_init();   /* TSC boot clock (microsecond timestamps) before the first kmsg */
     kmsg("Horus secure microkernel (x86_64) booting");
     assert_higher_half();
 
@@ -311,15 +309,9 @@ void kernel_main(uint32_t mb_info) {
     }
     if (g_boot_module_count) {
         kmsg_begin();
-        print("boot: modules ");
+        print("boot: ");
         print_decimal(g_boot_module_count);
-        for (uint32_t i = 0; i < g_boot_module_count; i++) {
-            print(" ");
-            print(g_boot_modules[i].name);
-            print("@");
-            print_hex64(g_boot_modules[i].start);
-        }
-        print("\n");
+        print(" boot modules loaded\n");
     }
     /* Integrity-check the modules before anything can read one. Runs here, right
      * after the tag walk that recorded them and well before init/fs_server exist,

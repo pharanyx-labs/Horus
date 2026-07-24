@@ -25,6 +25,22 @@ static void klog_append(char c) {
     if (klog_len < sizeof(klog_buf)) klog_len++;
 }
 
+/* Copy up to `max` bytes of the kernel message ring, starting at logical byte
+ * `offset` from the oldest retained byte, into the kernel buffer `dst`. Returns
+ * the number of bytes copied (0 at/after the end). Backs SYS_DMESG, which reads
+ * the log in small chunks so a caller never needs a multi-KiB user buffer. */
+uint32_t klog_copy(char *dst, uint32_t offset, uint32_t max) {
+    if (offset >= klog_len) return 0;
+    uint32_t avail = klog_len - offset;
+    uint32_t n = avail < max ? avail : max;
+    uint32_t oldest = (klog_head + (uint32_t)sizeof(klog_buf) - klog_len) % (uint32_t)sizeof(klog_buf);
+    uint32_t start = (oldest + offset) % (uint32_t)sizeof(klog_buf);
+    for (uint32_t i = 0; i < n; i++) {
+        dst[i] = klog_buf[(start + i) % (uint32_t)sizeof(klog_buf)];
+    }
+    return n;
+}
+
 /* ---- console mutual exclusion + hardware ownership -------------------------
  *
  * print() drives shared state (cursor, colour, klog) and, when the kernel owns
@@ -492,6 +508,44 @@ void print(const char* str) {
 }
 
 void println(const char* str) { print(str); print("\n"); }
+
+/* Linux-style kernel-log timestamp prefix: "[ sssss.mmm] " where the clock is the
+ * 100 Hz system tick (10 ms resolution). Before the timer starts (most of early
+ * boot) this reads "[    0.000]", exactly like the first printk lines on Linux.
+ * `kmsg_begin()` emits just the prefix (for lines that then print interpolated
+ * values); `kmsg()` emits a whole "[ts] msg" line. */
+void kmsg_begin(void) {
+    uint32_t t   = get_system_ticks();      /* 100 Hz */
+    uint32_t sec = t / 100u;
+    uint32_t ms  = (t % 100u) * 10u;        /* 0..990 in 10 ms steps */
+    char buf[24];
+    int n = 0;
+    buf[n++] = '[';
+    /* right-align the seconds in a width-5 field (the classic printk look) */
+    char digits[10];
+    int dl = 0;
+    if (sec == 0) {
+        digits[dl++] = '0';
+    } else {
+        uint32_t v = sec;
+        char tmp[10];
+        int tl = 0;
+        while (v) { tmp[tl++] = (char)('0' + (v % 10u)); v /= 10u; }
+        while (tl) digits[dl++] = tmp[--tl];
+    }
+    for (int i = dl; i < 5; i++) buf[n++] = ' ';
+    for (int i = 0; i < dl; i++) buf[n++] = digits[i];
+    buf[n++] = '.';
+    buf[n++] = (char)('0' + (ms / 100u) % 10u);
+    buf[n++] = (char)('0' + (ms / 10u) % 10u);
+    buf[n++] = (char)('0' + ms % 10u);
+    buf[n++] = ']';
+    buf[n++] = ' ';
+    buf[n]   = 0;
+    print(buf);
+}
+
+void kmsg(const char* str) { kmsg_begin(); print(str); print("\n"); }
 
 void clear_screen(void) {
     uint64_t flags = console_lock_acquire();

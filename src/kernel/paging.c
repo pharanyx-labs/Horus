@@ -970,6 +970,74 @@ void switch_cr3(addr_t cr3) {
      * interrupts enabled and no scheduler lock held, so its ack wait is safe.) */
 }
 
+/* Break a copy-on-write PTE (the generic, non-zero case; the shared zero page is
+ * special-cased by the caller). `*pte_slot` is the live PTE — a frame with
+ * PAGE_COW set and PAGE_WRITE clear. The caller must hold `page_lock` and must
+ * have confirmed this is a write fault on a COW page whose frame is NOT the
+ * immortal zero page.
+ *
+ * Two outcomes, decided by the shared frame's reference count:
+ *   - SOLE OWNER (refcount 1): no copy is needed — the copy of a frame you alone
+ *     hold is the frame itself. Upgrade the PTE in place to writable, clearing
+ *     PAGE_COW, and keep the frame. (The previous code re-incremented the
+ *     refcount and returned WITHOUT rewriting the PTE, so the write re-faulted on
+ *     the still-COW/read-only page forever — an infinite fault loop. It was never
+ *     hit only because nothing in the tree shares a non-zero page yet.)
+ *   - SHARED (refcount >= 2): hand out a PRIVATE copy. Duplicate the frame,
+ *     decrement the shared frame's refcount (the other aliases keep it alive),
+ *     and point the PTE at the fresh writable copy. `alloc_user_physical_page`
+ *     already sets the new frame's refcount to 1 for this one PTE — the old code
+ *     incremented it a second time, leaving every COW-copied page at refcount 2
+ *     so teardown's ref-dec never reached 0 and never freed it (a per-break leak).
+ *
+ * W^X is preserved: the NX bit is re-derived from `fault_addr` (the low-12-bit
+ * flag copy drops bit 63). Returns 0 on success, or -3 on out-of-memory with the
+ * PTE and refcount left exactly as they were. The caller does the invlpg. */
+static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
+    uint64_t pte      = *pte_slot;
+    uint64_t old_phys = pte & PTE_ADDR_MASK;
+
+    int refs = rust_page_ref_dec((uint32_t)old_phys, page_refcounts,
+                                 (uint32_t)USER_PHYS_PAGES);
+
+    /* Upgraded PTE flags: present + writable, COW cleared. `pte & 0xFFF` keeps the
+     * low flags but drops NX (bit 63), so re-derive NX from the faulting address. */
+    uint64_t nf = (pte & 0xFFFULL) | PAGE_PRESENT | PAGE_WRITE;
+    nf &= ~((uint64_t)PAGE_COW);
+    if (rust_user_page_is_noexec(fault_addr)) nf |= PAGE_NX;
+
+    if (!rust_cow_copy_required(true, true, (uint16_t)((refs > 0 ? refs : 0) + 1))) {
+        /* Sole owner: restore the speculatively-dropped reference (net unchanged
+         * at 1) and upgrade the PTE in place — same frame, now writable. */
+        if (refs >= 0) {
+            (void)rust_page_ref_inc((uint32_t)old_phys, page_refcounts,
+                                    (uint32_t)USER_PHYS_PAGES);
+        }
+        *pte_slot = old_phys | nf;
+        return 0;
+    }
+
+    uint64_t new_phys = alloc_user_physical_page();   /* sets its refcount to 1 */
+    if (new_phys == 0) {
+        if (refs >= 0) {
+            (void)rust_page_ref_inc((uint32_t)old_phys, page_refcounts,
+                                    (uint32_t)USER_PHYS_PAGES);
+        }
+        return -3;
+    }
+
+    /* Both frames are in the user pool (>= 16 MiB), unreachable through the low
+     * identity map on the faulting CR3 — copy via the higher-half alias. */
+    uint8_t *src = (uint8_t *)PHYS_KVA(old_phys);
+    uint8_t *dst = (uint8_t *)PHYS_KVA(new_phys);
+    for (int i = 0; i < PAGE_SIZE; i++) dst[i] = src[i];
+
+    /* new_phys already carries refcount 1 from alloc for this single PTE; do NOT
+     * increment it again (that was the leak). */
+    *pte_slot = new_phys | nf;
+    return 0;
+}
+
 int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
     
     uint64_t cr3_phys = tasks[get_current_task()].cr3;
@@ -1065,50 +1133,11 @@ int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
             return 0;
         }
 
-        int refs = rust_page_ref_dec((uint32_t)old_phys,
-                                     page_refcounts,
-                                     (uint32_t)USER_PHYS_PAGES);
-
-        int is_write_f = 1;
-        if (!rust_cow_copy_required(true, is_write_f != 0, (uint16_t)((refs > 0 ? refs : 0) + 1))) {
-            if (refs >= 0) {
-                (void)rust_page_ref_inc((uint32_t)old_phys,
-                                        page_refcounts,
-                                        (uint32_t)USER_PHYS_PAGES);
-            }
-            spin_unlock(&page_lock);
-            return 0;
-        }
-
-        uint64_t new_phys = alloc_user_physical_page();
-        if (new_phys == 0) {
-            if (refs >= 0) {
-                (void)rust_page_ref_inc((uint32_t)old_phys,
-                                        page_refcounts,
-                                        (uint32_t)USER_PHYS_PAGES);
-            }
-            spin_unlock(&page_lock);
-            return -3;
-        }
-
-        /* Both frames are in the user pool (>= 16 MiB), unreachable through the
-         * low identity map on this task's CR3 — copy via the higher-half alias. */
-        uint8_t *src = (uint8_t *)PHYS_KVA(old_phys);
-        uint8_t *dst = (uint8_t *)PHYS_KVA(new_phys);
-        for (int i = 0; i < PAGE_SIZE; i++) dst[i] = src[i];
-
-        (void)rust_page_ref_inc((uint32_t)new_phys,
-                                page_refcounts,
-                                (uint32_t)USER_PHYS_PAGES);
-
-        uint64_t new_flags = (pte & 0xFFFULL) | PAGE_PRESENT | PAGE_WRITE;
-        new_flags &= ~((uint64_t)PAGE_COW);
-        /* Preserve W^X across copy-on-write: the low-12-bit mask above drops
-         * the NX bit (63), so re-derive it from the faulting address. */
-        if (rust_user_page_is_noexec(fault_addr)) new_flags |= PAGE_NX;
-        ptv[pt_i] = new_phys | new_flags;
+        /* Generic (non-zero) COW break: sole-owner in-place upgrade or private
+         * copy, with correct refcounts — see cow_break_pte above. */
+        int rc = cow_break_pte(&ptv[pt_i], fault_addr);
+        if (rc != 0) { spin_unlock(&page_lock); return rc; }
         g_cow_faults++;
-
         asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
         spin_unlock(&page_lock);
         return 0;
@@ -1198,6 +1227,71 @@ static bool is_canonical_address(uint64_t addr) {
     uint64_t high_bits = addr >> 48;
     return (high_bits == 0) || (high_bits == 0xFFFF);
 }
+
+#ifdef NZCOW_SELFTEST
+/* End-to-end exercise of the GENERIC (non-zero) copy-on-write break — the
+ * privileged page-copy + refcount + PTE-upgrade path that fork would use but that
+ * nothing in the tree reaches today (fork is a non-goal), so it was previously
+ * untested (and, as it turned out, carried a sole-owner infinite-fault loop and a
+ * per-break refcount leak). Sets up a non-zero frame shared read-only + COW by two
+ * PTEs (refcount 2) and drives `cow_break_pte` on each:
+ *   - first write (refcount 2) must produce a PRIVATE copy: a different frame,
+ *     byte-identical content, writable, COW cleared; the sibling PTE and the shared
+ *     frame are untouched and the shared refcount drops to 1;
+ *   - second write, now sole owner (refcount 1), must upgrade IN PLACE: same frame,
+ *     writable, COW cleared, content intact, and NO new allocation.
+ * Prints NZCOW_SELFTEST: PASS/FAIL; boot continues. */
+void nzcow_selftest(void) {
+    print("NZCOW_SELFTEST: begin\n");
+    spin_lock(&page_lock);
+
+    uint64_t shared = alloc_user_physical_page();          /* refcount 1 */
+    if (shared == 0) { spin_unlock(&page_lock); print("NZCOW_SELFTEST: FAIL alloc\n"); return; }
+    int sidx = (int)((shared - USER_PHYS_BASE) / PAGE_SIZE);
+
+    uint8_t *sp = (uint8_t *)PHYS_KVA(shared);
+    for (int i = 0; i < PAGE_SIZE; i++) sp[i] = (uint8_t)(0xA5u ^ (uint8_t)i);   /* non-zero pattern */
+
+    /* Two aliases -> refcount 2, read-only + COW (exactly what the pager installs
+     * for a shared COW page). */
+    (void)rust_page_ref_inc((uint32_t)shared, page_refcounts, (uint32_t)USER_PHYS_PAGES);
+    uint64_t cowf = PAGE_PRESENT | PAGE_USER | PAGE_COW | PAGE_NX;
+    uint64_t pte1 = shared | cowf;
+    uint64_t pte2 = shared | cowf;
+    const uint64_t va = USER_AREA_BASE + 0x40000;          /* a data VA (W^X re-derivation) */
+
+    int ok = 1;
+
+    /* (1) First write, refcount 2 -> private copy. */
+    if (cow_break_pte(&pte1, va) != 0) ok = 0;
+    uint64_t f1 = pte1 & PTE_ADDR_MASK;
+    if (ok && (f1 == shared || (pte1 & PAGE_WRITE) == 0 || (pte1 & PAGE_COW) != 0)) ok = 0;
+    if (ok) {
+        uint8_t *d = (uint8_t *)PHYS_KVA(f1);
+        for (int i = 0; i < PAGE_SIZE; i++) if (d[i] != (uint8_t)(0xA5u ^ (uint8_t)i)) { ok = 0; break; }
+    }
+    if (ok && page_refcounts[sidx] != 1) ok = 0;           /* shared frame dropped to 1 */
+    if (ok && pte2 != (shared | cowf)) ok = 0;             /* sibling PTE untouched */
+
+    /* (2) Second write, now sole owner (refcount 1) -> in-place upgrade, no copy. */
+    int free_before = free_page_count;
+    if (ok && cow_break_pte(&pte2, va) != 0) ok = 0;
+    if (ok && ((pte2 & PTE_ADDR_MASK) != shared || (pte2 & PAGE_WRITE) == 0 ||
+               (pte2 & PAGE_COW) != 0 || free_page_count != free_before)) ok = 0;
+    if (ok) {
+        uint8_t *d = (uint8_t *)PHYS_KVA(shared);
+        for (int i = 0; i < PAGE_SIZE; i++) if (d[i] != (uint8_t)(0xA5u ^ (uint8_t)i)) { ok = 0; break; }
+    }
+    if (ok && page_refcounts[sidx] != 1) ok = 0;
+
+    /* Reclaim the live frames (private copy + the now-sole-owned shared frame). */
+    if (f1 != shared && f1 != 0) free_user_physical_page((uint32_t)f1);
+    free_user_physical_page((uint32_t)shared);
+
+    spin_unlock(&page_lock);
+    print(ok ? "NZCOW_SELFTEST: PASS\n" : "NZCOW_SELFTEST: FAIL\n");
+}
+#endif /* NZCOW_SELFTEST */
 
 #define PT_PHYS_MASK 0x000FFFFFFFFFF000ULL
 

@@ -8,6 +8,37 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — generic (non-zero) copy-on-write break: two latent bugs fixed, path now tested
+
+The generic COW break — the privileged page-copy path that `fork` would use — was
+unreached by any runtime caller (fork is a non-goal; only the shared *zero* page is
+broken today) and therefore untested. That absence hid **two latent bugs**:
+
+- **Sole-owner infinite fault loop.** When the faulting task was the last owner
+  (refcount 1), `rust_cow_copy_required` correctly returns "no copy needed", but the
+  handler then merely re-incremented the refcount and returned **without upgrading
+  the PTE** — it stayed COW + read-only, so the retried write re-faulted, forever.
+- **Per-break refcount leak.** `alloc_user_physical_page` already sets a fresh
+  frame's refcount to 1 for its single PTE, but the copy path incremented it again,
+  leaving every COW-copied page at refcount 2. Teardown's `user_leaf_release`
+  decrements and frees only at 0, so those pages were never reclaimed.
+
+The break is now factored into `cow_break_pte()` and both cases are correct: the
+sole owner is upgraded to writable in place (clear `PAGE_COW`, set `PAGE_WRITE`,
+preserve NX — no copy, no loop), and a shared frame is duplicated into a private
+writable page at refcount 1 with the shared frame decremented. A new gated
+end-to-end test, **`make smoke-nzcow`** (`NZCOW_SELFTEST`), sets up a non-zero frame
+shared read-only + COW by two PTEs (refcount 2) and asserts: the first write copies
+to a *different* frame with byte-identical content while the sibling PTE and shared
+frame are untouched (shared refcount → 1); and the sole-owner write upgrades the
+PTE in place with **no** new allocation, content intact. Added to CI.
+
+The zero-page break (`make smoke-cow`) and normal demand paging are unchanged and
+still pass. `docs/LIMITATIONS.md` updated. (Lazy address-space reclamation — a dead
+task's pages are released at slot reuse, not at death, to avoid a use-after-free of
+page tables a CPU may still be walking — remains a deliberate, documented design
+choice, not part of this fix.)
+
 ### Changed — boot log cleanup: microsecond TSC timestamps, no address noise, no stray AP digits
 
 Follow-up polish to the Linux-style boot log:

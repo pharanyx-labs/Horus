@@ -1295,6 +1295,9 @@ void cpu_protections_selftest(void);
 #ifdef WX_SELFTEST
 void wx_selftest(void);
 #endif
+#ifdef NZCOW_SELFTEST
+void nzcow_selftest(void);   /* generic (non-zero) copy-on-write break test */
+#endif
 #ifdef ASPACE_SELFTEST
 void aspace_selftest(void);
 void free_user_aspace_for_test(uint64_t pml4_phys);

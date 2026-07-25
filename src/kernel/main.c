@@ -344,6 +344,13 @@ void kernel_main(uint32_t mb_info) {
      * grew past the pre-E820 default from the parsed memory map. */
     e820_selftest();
 #endif
+#ifdef NZCOW_SELFTEST
+    /* Boot continues; make smoke-nzcow asserts on the marker. Exercises the
+     * generic (non-zero) copy-on-write break end-to-end — the path fork would use,
+     * previously unreached and untested. Needs only the page pool paging_init set
+     * up. */
+    nzcow_selftest();
+#endif
     fpu_init_template();   /* the x87/SSE image every new task starts from */
     tss_io_bitmap_init();  /* prefill the console I/O-port allowlist (stays inactive
                             * until a task with a port grant is switched in) */

@@ -482,6 +482,15 @@ CFLAGS  += -DASPACE_SELFTEST
 ASFLAGS += -DASPACE_SELFTEST
 endif
 
+# NZCOW_SELFTEST=1 makes kernel_main (after paging_init) drive the generic,
+# non-zero copy-on-write break end-to-end: private copy on the shared write, and
+# an in-place upgrade for the sole owner, with correct refcounts. Prints
+# NZCOW_SELFTEST: PASS/FAIL; make smoke-nzcow asserts on it.
+NZCOW_SELFTEST ?= 0
+ifeq ($(NZCOW_SELFTEST),1)
+CFLAGS  += -DNZCOW_SELFTEST
+endif
+
 SMP_SELFTEST ?= 0
 ifeq ($(SMP_SELFTEST),1)
 SMP := 1
@@ -911,6 +920,19 @@ smoke-aspace:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ASPACE_SELFTEST: PASS' \
 		FAIL_MARKER='ASPACE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Drive the generic (non-zero) copy-on-write break end-to-end: a shared, non-zero
+# COW frame (refcount 2) aliased by two PTEs; the first write must copy to a
+# private frame (content preserved, sibling untouched), the sole-owner write must
+# upgrade in place with no new allocation. Gates the privileged page-copy path
+# that fork would use but nothing else reaches (previously untested).
+.PHONY: smoke-nzcow
+smoke-nzcow:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='NZCOW_SELFTEST: PASS' \
+		FAIL_MARKER='NZCOW_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-wx
 smoke-wx:

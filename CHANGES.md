@@ -8,6 +8,44 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — flush-on-switch between distrusting tasks (SMP scheduler maturity #1, side-channel hardening)
+
+The scheduler preempts and time-slices mutually distrusting ring-3 tasks on a
+core, but left the **microarchitectural** state (branch predictor, L1D cache,
+store/fill/load buffers) untouched across the switch, so an incoming task could
+snoop the outgoing one's residue. The only prior mitigation was `CR4.TSD` (deny
+ring-3 `RDTSC`), which raises the bar on the *timer*, not the *channel*.
+
+On a scheduler switch to a **different** ring-3 task, the kernel now evicts that
+state — **IBPB** (`IA32_PRED_CMD`), **L1D flush** (`IA32_FLUSH_CMD`), and **MDS**
+via `VERW` — in `cpu_flush_microarch_state`. Robustly and securely:
+
+- **Detected, never assumed.** Each barrier is gated on a CPUID-detected
+  capability (`CPUID.7.0:EDX` bits 26/28/10), so an issued `wrmsr` can never `#GP`
+  on a CPU that lacks the feature. Boot logs the real coverage
+  (`sched: flush-on-switch IBPB L1D MDS`, or `none-available`).
+- **No bypass.** The flush hooks the single switch chokepoint (`set_current_task`,
+  which is called exactly when a CPU is about to resume a task), so every switch
+  path — timer preemption, IPC block, yield, first entry — is covered, present and
+  future. Same-task resumes and switches to the kernel idle task are skipped
+  (per-CPU last-user-task tracking).
+- **Verified.** New gated `make smoke-flush` (`FLUSH_SELFTEST`) asserts the stored
+  flags match a fresh CPUID read, the flush path runs without faulting, and the
+  switch policy flushes on a task change only (not on a repeat or on idle). Under
+  TCG (CI, no KVM) the barrier CPUID features are not emulated, so the barriers are
+  no-ops there and CI gates the *policy* + no-fault path; the `wrmsr`/`VERW`
+  barriers and detection accuracy engage on real hardware / KVM.
+
+Residual, documented: cache *partitioning* is still not done, and — critically —
+this covers *time-sliced* co-tenancy only. A sibling **SMT** thread running
+concurrently on the same core shares L1/L2 and is not covered; full isolation
+needs SMT disabled or core scheduling (Roadmap Track 3). The rest of SMP scheduler
+maturity — per-CPU run queues, priorities/fairness, CPU affinity — also remains.
+`docs/LIMITATIONS.md` and `SECURITY.md` updated.
+
+Verified: `smoke-flush` PASS, `smoke-session-smp` (the switch hook under -smp 4)
+PASS, default boot unaffected, clean build.
+
 ### Fixed — generic (non-zero) copy-on-write break: two latent bugs fixed, path now tested
 
 The generic COW break — the privileged page-copy path that `fork` would use — was

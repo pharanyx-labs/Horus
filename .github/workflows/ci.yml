@@ -308,6 +308,23 @@ jobs:
       - name: Boot under -cpu +smep,+smap and assert both are detected and set in CR4
         run: make smoke-cpu
 
+  smoke-flush:
+    name: QEMU flush-on-switch self-test (side-channel barriers detection + policy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot FLUSH_SELFTEST kernel and assert the flush-on-switch detection matches CPUID, the gated barriers run without faulting, and the switch policy flushes only on a task change (barriers no-op under TCG; engage on HW/KVM)
+        run: make smoke-flush
+
   smoke-stackguard:
     name: QEMU stack-guard self-test (canary re-seeded from CSPRNG, not the build constant)
     runs-on: ubuntu-latest

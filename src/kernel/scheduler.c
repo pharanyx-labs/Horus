@@ -13,6 +13,8 @@ int percpu_current_task[MAX_CPUS];
  * BSP's real ring-0 kernel work (e.g. the SMP self-test's result-spin loop, which
  * also runs with current-task 0 but must run to completion). */
 int percpu_idle[MAX_CPUS];
+/* The last ring-3 task each CPU ran, for flush-on-switch (0 = none yet). */
+int percpu_last_user_task[MAX_CPUS];
 #endif
 
 #ifdef SMP
@@ -91,6 +93,7 @@ void scheduler_init(void) {
 
     
     for (int c = 0; c < MAX_CPUS; c++) percpu_current_task[c] = 0;
+    for (int c = 0; c < MAX_CPUS; c++) percpu_last_user_task[c] = 0;
     percpu_current_task[0] = 0;
     current_task = 0;
     scheduler_lock = (spinlock_t){0};
@@ -923,9 +926,34 @@ int get_current_task(void) {
     return percpu_current_task[c];
 }
 
+/* The flush-on-switch policy predicate (exposed for FLUSH_SELFTEST): a flush is
+ * due when the CPU is about to resume a ring-3 task (`next` >= 1) different from
+ * the `prev` user task it last ran. Switches to the kernel idle task (next <= 0)
+ * and same-task resumes do not flush. Pure — no side effects. */
+int sched_domain_switch_would_flush(int prev_user_task, int next_task) {
+    return next_task > 0 && next_task < MAX_TASKS && prev_user_task != next_task;
+}
+
 void set_current_task(int v) {
     int c = this_cpu();
     if (c < 0 || c >= MAX_CPUS) c = 0;
+
+    /* Flush-on-switch: evict the microarchitectural state (indirect-branch
+     * predictor, L1D cache, store/fill/load buffers) an incoming ring-3 task
+     * could use to snoop the outgoing one on this logical CPU, whenever the CPU is
+     * about to resume a DIFFERENT ring-3 task. This is the single switch
+     * chokepoint — set_current_task(v) is called exactly when the CPU is about to
+     * resume v — so hooking here covers every switch path (timer preemption, IPC
+     * block, yield, first entry) with none able to bypass it. Same-task resumes
+     * and switches to the kernel idle task (v <= 0) skip it; the barriers are
+     * gated on detected CPU support, so it is a no-op where unavailable. It does
+     * NOT cover a sibling SMT thread running concurrently on the same core — see
+     * docs/LIMITATIONS.md (disable SMT / core-schedule for that). */
+    if (sched_domain_switch_would_flush(percpu_last_user_task[c], v)) {
+        percpu_last_user_task[c] = v;
+        cpu_flush_microarch_state();
+    }
+
     percpu_current_task[c] = v;
 #ifdef SMP
     if (v > 0) percpu_idle[c] = 0;   /* running a real task: no longer idle-parked */

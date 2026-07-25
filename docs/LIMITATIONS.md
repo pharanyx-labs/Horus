@@ -75,7 +75,7 @@ The shared zero frame is never freed: `free_user_physical_page` refuses it expli
 
 ### SMP scheduler maturity
 
-Multi-core is default-on (the shipped kernel runs across every core; `SMP=0` compiles it out). What is not yet done is *scheduler maturity*: the multi-core scheduler shares one runnable pool with a per-CPU pull, with no per-CPU run queues, no priorities or fairness, and no flush-on-switch between mutually distrusting tasks. Hardening the scheduler is Roadmap Track 3 (the flush-on-switch item is the security-relevant one — see the side-channel note below).
+Multi-core is default-on (the shipped kernel runs across every core; `SMP=0` compiles it out). The security-relevant item — **flush-on-switch between mutually distrusting tasks** — is now done: on a switch to a different ring-3 task the scheduler evicts the microarchitectural state the incoming task could snoop the outgoing one with (IBPB, L1D flush, MDS/VERW), each gated on detected CPU support (see the side-channel note below). What remains is *performance/quality* scheduler maturity: the multi-core scheduler still shares one runnable pool with a per-CPU pull under a single raw lock (no per-CPU run queues), and has no priorities or fairness or CPU affinity. That, plus **SMT co-residency** (a sibling thread on the same core runs concurrently and shares L1/L2, which time-slice flush-on-switch does not cover — disable SMT or core-schedule for that), is Roadmap Track 3.
 
 ---
 
@@ -208,7 +208,12 @@ Because the ratchet is one-way and old keys are erased, **a kernel compromised a
 
 ### Cache side-channel mitigation is partial
 
-The timer preempts and switches between mutually distrusting ring-3 tasks (and, with SMP default-on, across cores), but there is no flush-on-switch or cache partitioning to limit microarchitectural leakage. What *is* mitigated: `CR4.TSD` is set (`cpu_enable_protections`, `crypto.c`), so a ring-3 `RDTSC`/`RDTSCP` — the highest-resolution timer a cache/covert-channel attack leans on — raises `#GP` and is delivered as a fault signal rather than returning a cycle count (ring 0 keeps `RDTSC`; TSD gates CPL>0 only, so the kernel's own jitter entropy is unaffected). This is deliberately *partial*: coarser timers and a counting-thread construction remain, and it does nothing about the cache state itself. `make smoke-tsd` gates that a ring-3 `RDTSC` faults into its handler. Flush-on-switch / partitioning is still open; tracked in `SECURITY.md`.
+The timer preempts and switches between mutually distrusting ring-3 tasks (and, with SMP default-on, across cores). Two mitigations are now in place:
+
+- **`CR4.TSD`** is set (`cpu_enable_protections`, `crypto.c`), so a ring-3 `RDTSC`/`RDTSCP` — the highest-resolution timer a cache/covert-channel attack leans on — raises `#GP` and is delivered as a fault signal rather than returning a cycle count (ring 0 keeps `RDTSC`; TSD gates CPL>0 only, so the kernel's own jitter entropy is unaffected). `make smoke-tsd` gates that a ring-3 `RDTSC` faults into its handler.
+- **Flush-on-switch:** on a scheduler switch to a *different* ring-3 task, the kernel evicts the microarchitectural state the incoming task could snoop the outgoing one with — the indirect-branch predictor (**IBPB**), the L1 data cache (**L1D_FLUSH**), and the store/fill/load buffers (**MDS**, via `VERW`). It hooks the single switch chokepoint (`set_current_task`), so no switch path bypasses it; each barrier is gated on a CPUID-detected capability (`cpu_flush_microarch_state`), so it is a safe no-op on a CPU that lacks a primitive; same-task resumes and switches to the kernel idle task are skipped. Boot logs the active coverage (`sched: flush-on-switch IBPB L1D MDS`). `make smoke-flush` gates the detection + policy (the barriers are exercised on hardware/KVM; TCG does not emulate the features).
+
+Residual (still *partial*): **cache partitioning** is not done (flush-on-switch evicts on the time-slice boundary but does not isolate concurrent use), and, critically, **SMT co-residency** — a sibling hyperthread running concurrently on the same core shares L1/L2, which a time-slice flush cannot cover; full isolation needs SMT disabled or core scheduling (Roadmap Track 3). Coarser timers and counting-thread constructions also remain. Tracked in `SECURITY.md`.
 
 ### Privilege separation is partial
 

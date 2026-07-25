@@ -62,11 +62,12 @@ So the port supplies what upstream would have generated or linked:
   `xnanosleep.h`/`fs.h`/`fs-is-local.h` stubs, and the getopt `--help`/`--version`
   boilerplate.
 
-**tail's follow (`-f`) is best-effort.** Horus has no inotify, no `poll(2)`, no
-pipes and no wall-clock sleep exposed to ring 3, so `tail -f` falls back to a
-stat-polling loop paced by a bounded busy-spin rather than a real timer. `tail`
-by line/byte (`-n`, `-c`) is fully upstream behaviour; the follow path runs but
-does not pace to a clock.
+**tail's follow (`-f`) is best-effort.** Horus has no inotify and no `poll(2)`, and
+exposes no wall-clock sleep to ring 3 (the in-kernel pipes that back shell
+pipelines are a byte-stream primitive, not a follow/notify facility), so `tail -f`
+falls back to a stat-polling loop paced by a bounded busy-spin rather than a real
+timer. `tail` by line/byte (`-n`, `-c`) is fully upstream behaviour; the follow
+path runs but does not pace to a clock.
 
 **The upstream `.c` files are never edited.** Each is byte-identical to the 9.5
 tarball, which is what makes this a port rather than a rewrite: `wc`'s real

@@ -2,7 +2,9 @@
 
 ## Current state
 
-The Rust security core has **78 unit tests**, and a CI pipeline gates every push and pull request (`.github/workflows/ci.yml`) with **44 jobs** (41 gating; the `security` scan is advisory). The **headless QEMU boot tests** run in CI: `make smoke` boots to the ring-3 login prompt with no fault, `make smoke-wx` asserts the kernel maps its own image `.text` r-x / `.rodata` r-- / `.data`+`.bss` rw-, that `CR0.WP` and `EFER.NXE` are actually engaged so those bits are enforced rather than decorative, and then sweeps **every present leaf in the address space** asserting none is simultaneously writable and executable — the per-section checks are the obvious half, but every W^X hole this kernel had was an *alias* (a second mapping of the same frames), which a check of `.text`'s own PTE cannot see, so the invariant is stated over the whole address space instead, `make smoke-cpu` boots under a QEMU CPU that advertises SMEP, SMAP and UMIP and asserts the kernel both detected them and actually set the CR4 bits (SMEP and SMAP were silently off for the project's entire history — the feature query read a stale CPUID subleaf, which looks correct in source and is indistinguishable from a CPU without the feature), `make smoke-elf` boots a real multi-segment static-PIE ELF at a randomised base and asserts the loader enforced W^X **and** applied its `R_386_RELATIVE` relocation, `make smoke-elf64` does the same for a real **64-bit** static-PIE and asserts the loader applied its `R_X86_64_RELATIVE` relocation (loaded and inspected, never executed, so the gate is independent of the ring-3 ABI), `make smoke-aslr` spawns eight PIE images and asserts the load base actually varies (image-base ASLR was once silently disabled entirely, and nothing noticed) and that every base keeps the premap inside a single page table, `make smoke-preempt` asserts the timer time-slices two non-yielding ring-3 tasks, `make smoke-signal` faults a task on purpose and asserts its handler runs, `make smoke-proc` drives ring-3 process control (exit/kill/spawn/exec/grant/signal/wait/fault-wait), `make smoke-cow` asserts fresh heap pages read as zero from one shared read-only frame and that writing one breaks it to a private page without disturbing its sibling, `make smoke-notify` asserts an async `SYS_NOTIFY` badge reaches a task blocked in `SYS_WAIT_NOTIFY`, `make smoke-smp` asserts the application processors come online and run tasks concurrently, and the filesystem/libc suite (`make smoke-fs`, plus `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-newlib` for persistence, per-file permissions, multi-client concurrency, the write-ahead journal, large/double-indirect files, and the newlib libc port) is now gated too. Beyond the marker self-tests, `make smoke-session` drives the **real** ring-3 shell over serial through a scripted login/command session and asserts on the responses (`tools/session_test.py`). The delegated boot-through-`init` filesystem path (`make smoke-init-fs`, which boots the `fs_server` the way the real system does — spawned and endowed by ring-3 `init` rather than by the kernel) is gated too. A coverage-guided fuzz harness is still the highest-value remaining contribution.
+The Rust security core has **91 unit tests**, and `.github/workflows/ci.yml` gates every push and PR with **52 jobs** — three advisory (`security` SAST/SBOM, `fuzz`, `kani`; their steps are `continue-on-error`, so they report but never block a merge) and the rest gating. Of those, only four are **required status checks** in branch protection (Rust+clippy, kernel+ISO build, QEMU smoke-boot, reproducible build); the others run and must be green but are not yet promoted to required (see [ROADMAP.md](docs/ROADMAP.md) Track 0.3).
+
+Beyond the unit tests, ~45 **headless QEMU self-tests** boot the real kernel under software TCG (no host KVM needed), capture the serial port, and assert on a marker — failing on any `PAGE FAULT` / CPU exception / `PANIC` / triple-fault. Reaching the login prompt alone proves the whole boot path: kernel init, the loader, per-task paging with W^X stacks, dropping to ring 3, the syscall dispatch table servicing `SYS_WRITE`, and console output. A coverage-guided syscall/FFI fuzz harness under QEMU is still the highest-value remaining contribution.
 
 ---
 
@@ -14,58 +16,52 @@ The Rust security core has **78 unit tests**, and a CI pipeline gates every push
 cargo test --manifest-path rust/Cargo.toml --release
 ```
 
-This runs the unit tests across the security core:
+Coverage across the security core:
 
-- `capability.rs` — mint with a subset of rights (no escalation), transfer (full-rights copy sharing the parent lineage), system-wide / cross-task revocation, primordial-root revocation refusal, stale-generation rejection, lineage-generation wraparound (skips the reserved 0, invalidates pre-wrap caps), revoke-by-values invalidating a pre-revoke snapshot (the IPC TOCTOU guard), lineage low-bit collision safety, fresh-serial allocation across the u32 wrap boundary
-- `memory.rs` — the refcount-table trust boundary (a wrong pointer or length is refused, not dereferenced), saturation, decrement-at-zero, valid-user-phys bounds, and the page alloc/free LIFO + exhaustion guards
-- `lib.rs` — page-fault validation, capability-rights subset checks, demand-paging (COW / demand-zero) policy, FS-operation right enforcement, command dispatch, the W^X page policy (`rust_user_page_is_noexec`), and the signal-handler-address window (`rust_signal_handler_addr_ok`)
-- `rng.rs` — ChaCha20 against the RFC 8439 vector, reseed behaviour
-- `sha256.rs` — SHA-256 / HMAC / HKDF / PBKDF2 against published known-answer vectors
-- `blake2b.rs` — BLAKE2b-512 against the RFC 7693 known-answer vector, plus multi-block/empty inputs
-- `argon2.rs` — Argon2id against `argon2-cffi` reference tags, single-lane and multi-lane (`p=2`/`p=4`), incl. the kernel's exact 4 MiB / 3-pass / 1-lane config
-- `aead.rs` — the ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD: seal/open round-trip, tampered-ciphertext and tampered-tag rejection (fail-closed), wrong-AAD rejection, and nonce separation
-- `audit.rs` — the tamper-evident audit MACs: per-entry MAC determinism, sequence/content/key binding, domain-separated chain IV, order-sensitivity of the chain head, a full record-then-verify cycle with tamper detection, the constant-time MAC compare, and FFI null rejection
-- `auth.rs` — auth/sudo lockout arithmetic, the anti-spray throttle, and least-privilege sudo frame rights
-- `ps.rs` — task state-name labels
+- `capability.rs` — mint with a rights subset (no escalation), transfer, system-wide / cross-task revocation, **descendant-only** revocation (a child's revoke leaves parent/siblings/same-object peers intact; overflow falls back to a complete object sweep), primordial-root revocation refusal, the serial-keyed lineage backstop (finding 3.3: a gen-0 snapshot is invalidated after revoke; a distinct lineage cell is untouched), stale-generation rejection, revoke-by-values invalidating a pre-revoke snapshot (the IPC TOCTOU guard), fresh-serial allocation across the u32 wrap.
+- `memory.rs` — the refcount-table trust boundary (a wrong pointer/length is refused, not dereferenced), saturation, decrement-at-zero, valid-user-phys bounds, page alloc/free LIFO + exhaustion.
+- `lib.rs` — page-fault validation, rights-subset checks, demand-paging (COW / demand-zero) policy, FS-op right enforcement, command dispatch, the W^X page policy (`rust_user_page_is_noexec`), the signal-handler-address window (`rust_signal_handler_addr_ok`), and the ELF-parse validators.
+- `rng.rs` — ChaCha20 vs the RFC 8439 vector, reseed behaviour.
+- `sha256.rs` — SHA-256 / HMAC / HKDF / PBKDF2 vs published vectors.
+- `blake2b.rs` — BLAKE2b-512 vs the RFC 7693 vector, multi-block/empty inputs.
+- `argon2.rs` — Argon2id vs `argon2-cffi` tags, single- and multi-lane (`p=2`/`p=4`), incl. the kernel's exact 4 MiB / 3-pass / 1-lane config.
+- `aead.rs` — the ChaCha20 + HMAC-SHA256 AEAD: round-trip, tampered-ciphertext/tag rejection (fail-closed), wrong-AAD rejection, nonce separation.
+- `audit.rs` — the forward-secure audit log: per-entry MAC determinism and sequence/content/key binding, the domain-separated chain, order-sensitivity of the head, the one-way key ratchet + erase, a full record-then-verify cycle with tamper detection, the constant-time compare, FFI null rejection.
+- `auth.rs` — auth/sudo lockout arithmetic, the anti-spray throttle, least-privilege sudo frame rights.
+- `ps.rs` — task state-name labels.
+
+Machine-checked **Kani** proofs (advisory `kani` job) cover, over the entire `u32` input space, that mint never escalates rights, serials are never reserved/zero, revocation hits exactly the target's subtree, and the lineage backstop invalidates a recorded generation without touching a distinct cell.
 
 ### Headless self-tests
 
 ```bash
-make smoke          # SMOKE_TIMEOUT=<seconds> to override the default 40
+make smoke          # SMOKE_TIMEOUT=<seconds> to override the default
 ```
 
-Each self-test target clean-builds with the relevant flag, boots under QEMU with no display (`tools/smoke_test.sh`, software TCG so it needs no host KVM), captures the serial port, and asserts on a marker (and fails on any `PAGE FAULT` / CPU exception / `PANIC` / triple-fault). Reaching the login prompt proves the whole boot path end to end: kernel init, the loader, per-task paging including the W^X stack, dropping to ring 3, the syscall dispatch table servicing `SYS_WRITE`, and console output.
+Selected markers (there are ~45 `smoke-*` targets; see [BUILDING.md](docs/BUILDING.md) for the full list):
 
-| Target | Marker |
+| Target | Marker / asserts |
 |---|---|
 | `make smoke` | reaches the ring-3 shell banner + login prompt |
-| `make smoke-cpu` | `CPU_SELFTEST: PASS` (SMEP+SMAP+UMIP advertised by the `-cpu` line are detected *and* set in CR4) |
-| `make smoke-aspace` | `ASPACE_SELFTEST: PASS` (rebuilding a task slot returns every page the previous occupant held — asserts on the pool count, so a partial reclaim still fails; and the page-table walker maps at 2 GiB and at `pml4[255]` while refusing the kernel half and non-canonical addresses) |
-| `make smoke-wx` | `WX_SELFTEST: PASS` (kernel image r-x/r--/rw-, `.text` read-only through its PHYS_KVA alias too, every task's kernel-stack guard page absent while its stack stays mapped, and **no leaf anywhere in the address space is both writable and executable**) |
-| `make smoke-elf` | `ELF_SELFTEST: PASS` |
-| `make smoke-elf64` | `ELF64_SELFTEST: PASS` (x86-64 `R_X86_64_RELATIVE` applied to a real 64-bit static-PIE, + W^X) |
-| `make smoke-aslr` | `ASLR_SELFTEST: PASS` (image base varies across 8 spawns; premap stays inside one page table) |
-| `make smoke-preempt` | `PREEMPT_SELFTEST: PASS` |
-| `make smoke-signal` | `SIGNAL_SELFTEST: PASS` |
-| `make smoke-tsd` | `TSD_SELFTEST: PASS` (a ring-3 `RDTSC` raises `#GP` under `CR4.TSD` and is delivered to the task's fault handler instead of returning a timestamp) |
-| `make smoke-e820` | `E820_SELFTEST: PASS` (the physical pool was sized from the multiboot2 memory map — free frame count exceeds the pre-E820 default under `-m 512M`) |
-| `make smoke-proc` | `PROC_SELFTEST: PASS exit+kill+spawn+exec+grant+signal` (+ `wait OK` / `fault-wait OK`) |
-| `make smoke-notify` | `NOTIFY_SELFTEST: PASS` (async `SYS_NOTIFY` badge delivered to a blocked `SYS_WAIT_NOTIFY`) |
-| `make smoke-smp` | `SMP_SELFTEST: PASS` |
-| `make smoke-fs` | `FS_SELFTEST: PASS` (`STORAGE=ata` for a real disk) |
-| `make smoke-fs-persist` | file written on boot 1 is present on boot 2 against the same disk image |
-| `make smoke-fs-perms` | per-file POSIX ownership/permissions enforced against kernel-attested uid |
-| `make smoke-fs-conc` | three concurrent clients each receive only their own replies — and, since the 64-bit flip, the regression test for per-task x87/SSE context (it was the only witness that a task's `xmm` was not preserved across a syscall) |
-| `make smoke-fs-wal` | a write committed then crashed pre-apply is replayed from the journal on the next mount |
-| `make smoke-fs-large` | reads/writes across direct + single- + double-indirect blocks |
-| `make smoke-newlib` | `NEWLIB_SELFTEST: PASS` |
-| `make smoke-captest` | `CAPTEST: PASS <n> checks` — a ring-3 conformance exerciser asserting mostly on refusals (unheld caps, post-revoke use, grants outside the descendants rule, bad input) |
-| `make smoke-wx-smp` | `WX_SELFTEST: PASS` with the APs online — the W^X sweep and per-CPU protections hold under `SMP=1` |
-| `make smoke-session` | `SESSION_TEST: PASS` — drives the real ring-3 shell over serial (auth + least-privilege) |
-| `make smoke-console-smp` | boot-to-login banner intact under `-smp 4` (regression guard for the two-writer console-*output* race: the kernel's `print()` and the ring-3 `console_server` both drove COM1+VGA, doubling every byte — `HHoorruuss…`; `FAIL_MARKER` trips on the doubled form) |
-| `make smoke-session-smp` | `SESSION_TEST: PASS` under `-smp 4` — the interactive login/coreutils/least-privilege drive over serial (regression guard for the console-*input* race: a blocking `SYS_IPC_CALL` whose peer was busy on another core resumed the caller with a fabricated zero-length reply instead of idling for the cross-core reply, so typed logins arrived empty/truncated ~half the time) |
-| `make smoke-modules` | `MODULES_SESSION: PASS` — ships all coreutils + their man pages as GRUB boot modules; asserts the directory skeleton, that every binary is in `/bin`, that `/usr/share/man` is populated and `man tail`/`man hier` read from it, and runs `printf`/`tail` (filesystem content reaching the store without living in the kernel image) |
-| `make smoke-coreutils-shell` | `COREUTILS_SESSION: PASS` — the same, for `head`/`wc`/`seq` on real files |
+| `make smoke-cpu` | `CPU_SELFTEST: PASS` — SMEP+SMAP+UMIP detected *and* set in CR4 |
+| `make smoke-tsd` | ring-3 `RDTSC` raises `#GP` under `CR4.TSD` and is delivered as a fault signal |
+| `make smoke-wx` / `-wx-smp` | kernel-image r-x/r--/rw-, `CR0.WP`/`EFER.NXE` engaged, stack guards present, and **no leaf anywhere is both writable and executable** (single- and multi-core) |
+| `make smoke-stackguard` | kernel/IST stack guard pages fault on overflow |
+| `make smoke-elf` / `-elf64` | loader + W^X + relocation for ELFCLASS32 (`R_386_RELATIVE`) and ELFCLASS64 (`R_X86_64_RELATIVE`) |
+| `make smoke-aslr` | image base varies across 8 spawns, spanning > 1 GiB |
+| `make smoke-preempt` / `-signal` / `-proc` | timer time-slicing; a fault runs the handler; full ring-3 process control |
+| `make smoke-cow` / `-nzcow` | the demand-zero/COW user contract; the generic non-zero COW break |
+| `make smoke-notify` / `-pipe` | async badge notifications; bounded pipes with back-pressure |
+| `make smoke-flush` / `-smt` | flush-on-switch detection + policy; SMT siblings parked |
+| `make smoke-smp` / `-aspace` / `-e820` | APs run tasks concurrently; address-space reclaim; E820 pool sizing |
+| `make smoke-fs` (+ `-perms`/`-conc`/`-persist`/`-wal`/`-large`) | server round-trip, permissions, concurrency (also the x87/SSE regression), reboot persistence, journal crash-recovery, large files |
+| `make smoke-init-fs` / `-newlib` | the `init`-endowed `fs_server`; the newlib libc port |
+| `make smoke-captest` | `CAPTEST: PASS <n> checks` — conformance asserting mostly on refusals |
+| `make smoke-session` / `-session-smp` / `-console-smp` | drives the real ring-3 shell over serial (auth + least privilege), incl. under `-smp 4` (regression guards for the SMP console-output-doubling and fabricated-reply races) |
+| `make smoke-console` / `-console-isolation` | the ring-3 console server; a console-driver fault is contained |
+| `make smoke-mapphys` / `-ioport` / `-irq` | the three `CAP_IO_DEVICE` device-delegation mechanisms |
+| `make smoke-modules` / `-coreutils-shell` / `-modules-tamper` | coreutils as GRUB modules provisioned into `/bin` and run; a tampered module is refused (SHA-256 manifest) |
+| `make smoke-tpm` / `-tpm-tamper` / `-tpm-seal` / `-tpm-seal-roundtrip` | measured boot (PCR 8/9 vs host-recomputed) + TPM-sealed vdisk KEK (needs `swtpm`) |
 
 ### Full build test
 
@@ -74,8 +70,6 @@ make test          # cargo tests, then a clean full build
 ```
 
 ### Manual testing under QEMU
-
-The most useful end-to-end check is still booting and exercising Horus interactively:
 
 ```bash
 make run            # then connect: nc localhost 4445
@@ -91,59 +85,11 @@ help
 
 ---
 
-## Continuous integration
-
-`.github/workflows/ci.yml` runs **41 jobs**. Thirty-eight are hard gates; the
-`security` SAST/SBOM scan is advisory (every step is `continue-on-error`, so it
-reports but never blocks a merge). Note `altconfigs` is one job id that fans out
-into three matrix runs (`DEBUG_SHELL=1`, `MINIMAL_SECURE=1`, `SMP=1`), so the
-checks list shows a couple more than the job count.
-
-1. **rust** — `cargo test --release` and `cargo clippy --all-targets -- -D warnings`
-2. **kernel** — builds `kernel.elf` and a bootable ISO (x86-64) and uploads them as artifacts
-3. **altconfigs** — a build matrix over `DEBUG_SHELL=1`, `MINIMAL_SECURE=1` and `SMP=1` (the shipping SMP config: `smoke-smp` compiles `-DSMP` too, but only together with its selftest harness)
-4. **smoke** — `make smoke` (headless boot to the shell/login prompt, no fault)
-5. **smoke-elf** — `make smoke-elf` (ELF loader + W^X + relocation self-test)
-6. **smoke-elf64** — `make smoke-elf64` (the loader's x86-64 RELA path: loads a real 64-bit static-PIE and asserts `R_X86_64_RELATIVE` was applied, plus W^X on an ELF64 image. The image is loaded and inspected, never executed, so this gate stays independent of the ring-3 ABI — it was written while userspace was still 32-bit, and keeping it that way means the loader's RELA path is gated on its own terms rather than implicitly via the shipped binaries)
-7. **smoke-aslr** — `make smoke-aslr` (spawns 8 PIE images; asserts the load base actually varies, and that every base keeps the premap inside one page table — the invariant that bounds the entropy)
-8. **smoke-preempt** — `make smoke-preempt` (two-task timer preemption)
-9. **smoke-signal** — `make smoke-signal` (fault delivered to a registered handler)
-10. **smoke-proc** — `make smoke-proc` (ring-3 exit/kill/spawn/exec/grant/signal/wait)
-11. **smoke-cow** — `make smoke-cow` (demand-zero pages share one read-only zero frame; a write breaks it to a private page without disturbing its sibling)
-12. **smoke-notify** — `make smoke-notify` (async `SYS_NOTIFY` badge to a blocked `SYS_WAIT_NOTIFY`)
-13. **smoke-smp** — `make smoke-smp` (application processors run tasks concurrently)
-14. **smoke-fs** / **smoke-fs-perms** / **smoke-fs-conc** / **smoke-fs-persist** / **smoke-fs-wal** / **smoke-fs-large** — the encrypted filesystem suite (server round-trip, permissions, concurrency, reboot persistence, journal crash-recovery, large files). `-conc` doubles as the x87/SSE context regression: it caught a task's `xmm0` surviving into another task and being written to disk as file data, with every checksum agreeing
-15. **smoke-init-fs** — `make smoke-init-fs` (the same `fs_server` round-trip, but with the server spawned and endowed by ring-3 `init` as the real system boots it, rather than by the kernel)
-16. **smoke-newlib** — `make smoke-newlib` (newlib libc over the POSIX fd layer)
-17. **smoke-session** / **smoke-session-smp** — `make smoke-session` drives the real ring-3 shell over serial (auth + least-privilege enforcement); `smoke-session-smp` runs the same drive under `-smp 4`, the regression guard for the SMP console-input / fabricated-reply race
-18. **smoke-console-smp** — `make smoke-console-smp` boots the shipped kernel under `-smp 4` and requires the login banner intact (regression guard for the two-writer console-output doubling)
-18. **smoke-modules** / **smoke-coreutils-shell** — the ported GNU coreutils shipped as GRUB boot modules, provisioned into the store by the `fs_server`, and run from the filesystem through the real shell: `smoke-modules` ships the full set plus their man pages and asserts the directory skeleton (`/bin /etc /home /lib /usr`), that all binaries land in `/bin`, that `/usr/share/man` is populated and `man` reads from it, and runs `printf`/`tail`; `smoke-coreutils-shell` covers `head`/`wc`/`seq`
-19. **smoke-captest**, **smoke-cpu**, **smoke-tsd**, **smoke-e820**, **smoke-aspace**, **smoke-wx** / **smoke-wx-smp** — the capability/syscall conformance exerciser, the CR4-protection and CR4.TSD checks, the E820 pool sizing, the address-space reclaim/walker, and the kernel W^X leaf sweep (single- and multi-core)
-20. **reproducible** — builds `kernel.elf` twice and fails if they are not byte-for-byte identical
-21. **security** — Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`, and a CycloneDX SBOM (advisory)
-
-All but the security job use only first-party / pinned actions.
-
----
-
 ## What still needs tests
 
-The gaps that remain:
-
-### Deeper booted-kernel integration tests
-
-`make smoke-session` (`tools/session_test.py`) seeds this: it drives the serial port through a scripted login/shell session and asserts on the responses — a failed then successful login, the kernel-attested identity via `whoami`, and a capability-gated admin op allowed for root but denied for a standard user. The remaining work is to broaden the scenarios (an ELF running under W^X, an IPC/FS round-trip, a capability revocation) and grow the assertion vocabulary. A coverage-guided fuzz harness over the syscall/FFI boundary is still absent.
-
-### TLA+ specs
-
-`docs/cap_algebra.tla` and `docs/paging_isolation.tla` model the capability and paging invariants but are not model-checked in CI. Wiring TLC/Apalache into the pipeline would close the loop.
-
-### A real C-side test harness
-
-`tests/test_capability.c` is a standalone illustration that reimplements a simplified `cap_lookup`; it is **not** linked against the kernel's `capability.c` and is not built by the Makefile. A host harness linking the real `capability.c` with mocked `tasks[]` / `get_current_task()` would give the C guards genuine regression coverage.
-
-### Fuzzing
-
-The syscall interface and the Rust FFI boundary are the obvious targets. A `cargo-fuzz` target over the pointer-taking FFI entry points is cheap to stand up; `syzkaller` driving a privileged task under QEMU/KVM is the larger effort.
+- **Deeper booted-kernel integration.** `tools/session_test.py` seeds this (scripted login/shell with response assertions); broaden the scenarios (ELF under W^X, IPC/FS round-trips, a capability revocation observed end-to-end) and grow the assertion vocabulary.
+- **TLA+ specs.** `docs/cap_algebra.tla` and `docs/paging_isolation.tla` model the capability and paging invariants but are not model-checked in CI. Wiring TLC/Apalache into the pipeline (and extending `cap_algebra.tla` to the derivation-tree revocation) would close the loop.
+- **A real C-side test harness.** `tests/test_capability.c` is a standalone illustration reimplementing a simplified `cap_lookup`; it is not linked against the kernel's `capability.c`. A host harness linking the real file with mocked `tasks[]` / `get_current_task()` would give the C guards genuine coverage.
+- **Fuzzing.** A `cargo-fuzz` target over the pointer-taking FFI entry points is cheap to stand up (host `fuzz` job seeds it); a `syzkaller`-style syscall fuzzer under QEMU is the larger effort.
 
 Contributions to any of the above are very welcome.

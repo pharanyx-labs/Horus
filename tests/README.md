@@ -1,10 +1,10 @@
 # Tests
 
-This directory contains host-side test code for Horus. The primary test suites live elsewhere:
+This directory holds host-side test code for Horus. The primary suites live elsewhere:
 
-- **Rust unit tests** (58) in the `rust/` crate — the security core.
-- **Headless QEMU self-tests** driven by the Makefile via `tools/smoke_test.sh`. All 28 `smoke-*` targets are gated in CI: `make smoke`, `smoke-cpu`, `smoke-tsd`, `smoke-e820`, `smoke-aspace`, `smoke-wx`, `smoke-wx-smp`, `smoke-elf`, `smoke-elf64`, `smoke-aslr`, `smoke-preempt`, `smoke-signal`, `smoke-proc`, `smoke-cow`, `smoke-notify`, `smoke-smp`, `smoke-captest`, `smoke-session`, the filesystem/libc suite (`smoke-fs`, `smoke-fs-persist`, `smoke-fs-perms`, `smoke-fs-conc`, `smoke-fs-wal`, `smoke-fs-large`, `smoke-init-fs`, `smoke-newlib`), and the coreutils-from-the-filesystem tests (`smoke-modules`, `smoke-coreutils-shell`).
-- **Scripted integration session** — `make smoke-session` (`tools/session_test.py`) drives the real ring-3 shell over serial (login, identity, least-privilege enforcement) and asserts on the responses. Gated in CI.
+- **Rust unit tests** (**91**) in the `rust/` crate — the security core — plus advisory Kani proofs.
+- **Headless QEMU self-tests** driven by the Makefile via `tools/smoke_test.sh` — ~45 `smoke-*` targets, all run in CI (covering boot, W^X leaf sweep single- and multi-core, CR4/TSD protections, stack guards, ELF loader for both classes, ASLR, preemption, signals, process control, COW + non-zero COW, notifications, pipes, flush-on-switch, SMT parking, SMP, capability conformance, the filesystem/libc suite, the console-server / device-delegation suite, coreutils-from-modules incl. tamper rejection, and TPM measured boot + sealing). See [BUILDING.md](../docs/BUILDING.md) for the full list.
+- **Scripted integration session** — `make smoke-session` (`tools/session_test.py`) drives the real ring-3 shell over serial (login, identity, least-privilege enforcement) and asserts on the responses; `smoke-session-smp` runs it under `-smp 4`.
 
 ## Contents
 
@@ -14,12 +14,10 @@ This directory contains host-side test code for Horus. The primary test suites l
 
 ## Running
 
-The Rust unit tests:
-
 ```bash
 cargo test --manifest-path rust/Cargo.toml --release
 ```
 
-A wiring-up opportunity: a host harness that links the real `src/kernel/capability.c` against mocked `tasks[]` / `get_current_task()` would give the C-side capability guards genuine regression coverage. `test_capability.c` is a starting point.
+A wiring-up opportunity: a host harness linking the real `src/kernel/capability.c` against mocked `tasks[]` / `get_current_task()` would give the C-side capability guards genuine regression coverage. `test_capability.c` is a starting point.
 
 See [TESTS.md](../TESTS.md) at the project root for the full picture of current coverage and what is needed.

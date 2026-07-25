@@ -936,7 +936,8 @@ void console_puts(const char *s);
 void println(const char *s);
 void print(const char *s);
 /* Linux-style timestamped boot/kernel-log helpers (terminal.c). */
-void kmsg_begin(void);              /* emit just the "[    S.mmm] " prefix */
+void kmsg_clock_init(void);         /* calibrate the TSC boot clock; call once, early */
+void kmsg_begin(void);              /* emit just the "[    S.uuuuuu] " prefix */
 void kmsg(const char *s);           /* emit a whole "[    S.mmm] s" line */
 uint32_t klog_copy(char *dst, uint32_t offset, uint32_t max); /* snapshot the kernel log ring from `offset`; backs SYS_DMESG */
 void print_char(char c);

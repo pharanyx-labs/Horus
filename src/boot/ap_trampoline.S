@@ -68,11 +68,6 @@ ap_trampoline_start:
     movw %ax, %fs
     movw %ax, %gs
 
-    /* Progress marker: '1' == reached 16-bit real mode. */
-    movw $COM1, %dx
-    movb $'1', %al
-    outb %al, %dx
-
     /* Flat GDT for the mode transitions (32-bit + 64-bit code/data). */
     lgdtl ap_gdtr
 
@@ -93,10 +88,6 @@ prot_mode:
     movw %ax, %ss
     movw %ax, %fs
     movw %ax, %gs
-
-    movw $COM1, %dx
-    movb $'2', %al
-    outb %al, %dx
 
     /* Enable PAE (CR4.PAE). */
     movl %cr4, %eax
@@ -141,10 +132,6 @@ long_mode:
     orq  $((1 << 9) | (1 << 10)), %rax  /* CR4.OSFXSR | CR4.OSXMMEXCPT */
     movq %rax, %cr4
     fninit
-
-    movw $COM1, %dx
-    movb $'3', %al
-    outb %al, %dx
 
     /* This AP's idle stack = base + (apic_id + 1) * AP_IDLE_STACK_SIZE, i.e. the
      * exclusive top of slot[apic_id].  APs have apic_id >= 1, so slots never

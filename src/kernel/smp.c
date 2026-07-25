@@ -227,7 +227,7 @@ static void smp_start_aps(int expected_cpus) {
 
     kmsg_begin();
     print("smp: CPUs online ");
-    print_hex((uint64_t)smp_cpus_online);
+    print_decimal((uint64_t)smp_cpus_online);
     print("\n");
 }
 #endif /* SMP */

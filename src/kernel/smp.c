@@ -27,6 +27,23 @@ extern volatile int smp_sched_enabled;   /* scheduler.c: master switch for the S
  * the source of truth for smp_get_online_count() and the TLB-shootdown path. */
 static volatile int smp_cpus_online = 1;
 
+/* SMT sibling threads that were brought up but PARKED (never scheduled) to avoid
+ * side-channel co-residency — see ap_entry64. They still service TLB-shootdown
+ * IPIs, so they count toward the shootdown ack total even though they run no
+ * tasks: `present = online + parked` is the set of CPUs the all-excluding-self
+ * broadcast reaches. */
+static volatile int smp_siblings_parked = 0;
+
+/* Is `apic_id` a secondary (sibling) SMT thread? True when the low SMT bits of the
+ * APIC id are non-zero (platform.smt_shift from CPUID leaf 0x0B). The primary
+ * thread of every core has those bits zero, so exactly one thread per core (and
+ * always the BSP, apic 0) is schedulable. */
+static int apic_is_smt_sibling(uint32_t apic_id) {
+    int shift = platform.smt_shift;
+    if (shift <= 0) return 0;
+    return (apic_id & ((1u << (unsigned)shift) - 1u)) != 0;
+}
+
 /* Set once the local APIC is up on the BSP (so this_cpu() is safe to call).
  * Gates the per-CPU TSS routing in set_tss_kernel_stack(); stays 0 in the
  * single-CPU default build. Read by gdt.c. */
@@ -170,6 +187,21 @@ void ap_entry64(void) {
     setup_ap_tss(cpu, idle_top);  /* per-CPU TSS + IST, ltr'd */
 
     lapic_enable();
+
+    /* SMT sibling policy: to prevent side-channel co-residency (a sibling thread
+     * shares the core's L1/L2 with the primary, which the time-slice flush-on-
+     * switch cannot cover), a secondary thread is PARKED here — it never starts
+     * its scheduler timer and never enters the scheduler, so no ring-3 task ever
+     * runs on it and its core-partner (the primary thread) does all the work.
+     * It stays TLB-coherent and serviceable: the LAPIC is enabled and interrupts
+     * are ON, so TLB-shootdown IPIs are handled (and acked) here; only the LOCAL
+     * timer that would drive scheduling is left off. This is "disable SMT" done in
+     * software, without needing to suppress the AP in firmware. */
+    if (apic_is_smt_sibling((uint32_t)cpu)) {
+        __sync_fetch_and_add(&smp_siblings_parked, 1);
+        for (;;) __asm__ volatile ("sti; hlt");
+    }
+
     lapic_timer_start_periodic();
 
     __sync_fetch_and_add(&smp_cpus_online, 1);
@@ -222,12 +254,20 @@ static void smp_start_aps(int expected_cpus) {
     /* Wait (bounded) for the APs to check in. The loop exits the instant every
      * expected CPU is online, so an accurate MADT count means no wasted spinning;
      * the 200-iteration cap is only a backstop for a core that never appears. */
-    for (int spins = 0; spins < 200 && smp_cpus_online < expected_cpus; spins++)
+    for (int spins = 0;
+         spins < 200 && (smp_cpus_online + smp_siblings_parked) < expected_cpus;
+         spins++)
         smp_busy_delay(20000);
 
     kmsg_begin();
-    print("smp: CPUs online ");
+    print("smp: ");
     print_decimal((uint64_t)smp_cpus_online);
+    print(" cores online");
+    if (smp_siblings_parked > 0) {
+        print(", ");
+        print_decimal((uint64_t)smp_siblings_parked);
+        print(" SMT siblings parked (co-residency avoided)");
+    }
     print("\n");
 }
 #endif /* SMP */
@@ -422,10 +462,17 @@ void smp_ack_shootdown(void) {
 void smp_maybe_shootdown(uint64_t vaddr) {
     tlb_shootdown(vaddr);
 #ifdef SMP
-    if (smp_get_online_count() > 1) {
+    /* The all-excluding-self broadcast reaches every brought-up CPU, including
+     * parked SMT siblings (which service and ack the IPI to stay TLB-coherent), so
+     * the ack total is `present = online + parked`, not just the schedulable
+     * `online`. Undercounting would let the initiator return before a parked
+     * sibling flushed; overcounting (waiting for a CPU that never received) would
+     * spin to the backstop. */
+    int present = smp_cpus_online + smp_siblings_parked;
+    if (present > 1) {
         while (__sync_lock_test_and_set(&shootdown_lock, 1))
             __asm__ volatile ("pause");              /* IF stays set: still service IPIs */
-        smp_shootdown_pending = smp_get_online_count() - 1;
+        smp_shootdown_pending = present - 1;
         __asm__ volatile ("mfence" ::: "memory");
         lapic_write(0x300, 0x000C0000 | 0xFB);       /* all-excluding-self, vec 0xFB */
         for (int i = 0; i < 100000000 && smp_shootdown_pending > 0; i++)

@@ -58,6 +58,19 @@ void cpu_detect_features(void) {
     platform.has_smap = (ebx & (1 << 20)) != 0;
     platform.has_smep = (ebx & (1 << 7))  != 0;
     platform.has_umip = (ecx & (1 << 2))  != 0;
+
+    /* Side-channel flush-on-switch primitives (leaf 7 subleaf 0, EDX). Detected,
+     * never assumed: every wrmsr below is gated on the matching flag so it can
+     * never #GP on a CPU that lacks the feature, and FLUSH_SELFTEST re-reads CPUID
+     * to prove the stored flags match the hardware. */
+    platform.has_l1d_flush = (edx & (1 << 28)) != 0;
+    platform.has_ibpb      = (edx & (1 << 26)) != 0;   /* IBRS_IBPB */
+    platform.has_md_clear  = (edx & (1 << 10)) != 0;
+    /* HT/SMT capability (CPUID.1:EDX[28]). Flush-on-switch protects time-sliced
+     * tasks on one thread; it does NOT cover a sibling thread running concurrently
+     * on the same core, so this is reported and treated as a residual (disable SMT
+     * or core-schedule for full isolation). */
+    platform.has_htt = (cpu_features_edx & (1 << 28)) != 0;
 }
 
 /*
@@ -105,6 +118,66 @@ static inline void wrmsr(uint32_t msr, uint64_t value) {
     uint32_t hi = (uint32_t)(value >> 32);
     __asm__ volatile ("wrmsr" : : "c"(msr), "a"(lo), "d"(hi) : "memory");
 }
+
+/* Observability / self-test counter: number of microarchitectural flushes issued.
+ * Racy under SMP by design — a coarse counter, not a security control. */
+uint64_t g_domain_flushes = 0;
+
+/* A valid data-segment selector for the VERW operand (kernel DS = 0x10). VERW
+ * with MD_CLEAR microcode flushes the store/fill/load buffers as a side effect;
+ * without it VERW is a harmless no-op on a present descriptor. */
+static const uint16_t verw_selector = 0x10;
+
+/* Flush the microarchitectural state an incoming ring-3 task could otherwise use
+ * to snoop the outgoing one on the same logical CPU: the indirect-branch
+ * predictor (IBPB), the L1 data cache (L1D_FLUSH), and the store/fill/load
+ * buffers (VERW/MDS). Each barrier is gated on detected CPU support, so this is a
+ * safe no-op before feature detection and on a CPU that lacks a given primitive.
+ * Called by the scheduler on a switch between distrusting ring-3 tasks. */
+void cpu_flush_microarch_state(void) {
+    if (platform.has_ibpb)      wrmsr(0x49,  1);   /* IA32_PRED_CMD.IBPB          */
+    if (platform.has_l1d_flush) wrmsr(0x10B, 1);   /* IA32_FLUSH_CMD.L1D_FLUSH    */
+    if (platform.has_md_clear)
+        __asm__ volatile ("verw %0" :: "m"(verw_selector) : "cc", "memory");
+    __sync_fetch_and_add(&g_domain_flushes, 1);
+}
+
+#ifdef FLUSH_SELFTEST
+/* Exercise the flush-on-switch mechanism: (1) the stored capability flags match a
+ * fresh CPUID read; (2) cpu_flush_microarch_state runs to completion without
+ * faulting — each barrier is gated on detected support, so an issued wrmsr can
+ * never #GP; (3) the switch policy flushes on a change of ring-3 task, not on a
+ * repeat or on a switch to the kernel idle task. NOTE on coverage: under TCG (CI,
+ * no KVM) the IBPB/L1D/MDS CPUID features are not emulated, so they read absent
+ * and the barriers are skipped — this gates the POLICY and the no-fault path; the
+ * wrmsr/VERW barriers and detection accuracy engage on real hardware / KVM, where
+ * the boot log shows `sched: flush-on-switch IBPB L1D MDS`. Boot continues. */
+void flush_selftest(void) {
+    print("FLUSH_SELFTEST: begin\n");
+    int ok = 1;
+
+    uint32_t a, b, c, d;
+    cpuid_count(7, 0, &a, &b, &c, &d);
+    if (platform.has_l1d_flush != ((int)((d >> 28) & 1))) ok = 0;
+    if (platform.has_ibpb      != ((int)((d >> 26) & 1))) ok = 0;
+    if (platform.has_md_clear  != ((int)((d >> 10) & 1))) ok = 0;
+
+    uint64_t before = g_domain_flushes;
+    cpu_flush_microarch_state();
+    cpu_flush_microarch_state();
+    if (g_domain_flushes != before + 2) ok = 0;
+
+    if (!sched_domain_switch_would_flush(3, 5)) ok = 0;   /* different user task -> flush */
+    if ( sched_domain_switch_would_flush(5, 5)) ok = 0;   /* same task          -> no flush */
+    if ( sched_domain_switch_would_flush(5, 0)) ok = 0;   /* to kernel idle     -> no flush */
+
+    print(ok ? "FLUSH_SELFTEST: PASS caps:" : "FLUSH_SELFTEST: FAIL caps:");
+    if (platform.has_ibpb)      print(" IBPB");
+    if (platform.has_l1d_flush) print(" L1D");
+    if (platform.has_md_clear)  print(" MDS");
+    print("\n");
+}
+#endif /* FLUSH_SELFTEST */
 
 void init_syscall_instruction_path(void) {
 

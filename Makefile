@@ -459,6 +459,16 @@ CFLAGS  += -DCPU_SELFTEST
 ASFLAGS += -DCPU_SELFTEST
 endif
 
+# FLUSH_SELFTEST=1 makes kernel_main verify the side-channel flush-on-switch
+# mechanism (detection matches CPUID, the gated IBPB/L1D/VERW barriers execute
+# without #GP, and the switch policy flushes on a task change only). Prints
+# FLUSH_SELFTEST: PASS/FAIL; make smoke-flush asserts on it under a QEMU CPU that
+# advertises the primitives.
+FLUSH_SELFTEST ?= 0
+ifeq ($(FLUSH_SELFTEST),1)
+CFLAGS  += -DFLUSH_SELFTEST
+endif
+
 # STACKGUARD_SELFTEST=1 makes kernel_main assert (right after
 # stack_protector_init) that the stack canary was re-seeded from the CSPRNG at
 # boot — i.e. the live __stack_chk_guard is no longer the published compile-time
@@ -961,6 +971,21 @@ smoke-cpu:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CPU_SELFTEST: PASS' \
 		FAIL_MARKER='CPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Flush-on-switch self-test. NOTE: TCG (the CI accelerator -- no KVM) does not
+# emulate the IBPB / L1D-flush / MDS CPUID features, so under CI they read absent
+# and the gated barriers are skipped (which is exactly why the gating is safe: no
+# wrmsr is issued on a CPU that lacks the feature). CI therefore gates the switch
+# POLICY (flush on a task change only) and that the flush path runs without
+# faulting; the barrier wrmsr/VERW execution and detection-accuracy engage on real
+# hardware / KVM, where the log shows `sched: flush-on-switch IBPB L1D MDS`.
+.PHONY: smoke-flush
+smoke-flush:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FLUSH_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='FLUSH_SELFTEST: PASS' \
+		FAIL_MARKER='FLUSH_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-stackguard
 smoke-stackguard:

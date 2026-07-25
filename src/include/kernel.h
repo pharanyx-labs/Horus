@@ -334,6 +334,10 @@ typedef struct platform_info {
     int has_smap;
     int has_smep;
     int has_umip;
+    int has_l1d_flush;   /* CPUID.7.0:EDX[28] — IA32_FLUSH_CMD L1D flush */
+    int has_ibpb;        /* CPUID.7.0:EDX[26] — IA32_PRED_CMD indirect-branch barrier */
+    int has_md_clear;    /* CPUID.7.0:EDX[10] — VERW clears store/fill/load buffers (MDS) */
+    int has_htt;         /* CPUID.1:EDX[28]  — HT/SMT capable (co-residency caveat) */
     int has_aesni;
     int has_tsc;
     int has_sse;
@@ -1061,6 +1065,14 @@ void spawn_initial_userspace_shell(void);
 void spawn_initial_userspace_init(void);
 int cpu_has_aesni(void);
 void cpu_enable_protections(void);
+/* Flush-on-switch: evict microarch state (IBPB / L1D flush / MDS VERW) between
+ * distrusting ring-3 tasks. Gated on detected CPU support. */
+void cpu_flush_microarch_state(void);
+extern uint64_t g_domain_flushes;                 /* count of flushes issued (observability) */
+int  sched_domain_switch_would_flush(int prev_user_task, int next_task);
+#ifdef FLUSH_SELFTEST
+void flush_selftest(void);
+#endif
 void paging_init(void);
 
 void cap_init(void);

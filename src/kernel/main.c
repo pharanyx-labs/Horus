@@ -357,8 +357,23 @@ void kernel_main(uint32_t mb_info) {
     cap_init();
     cpu_detect_features();
     cpu_enable_protections();
+    /* Report side-channel flush-on-switch coverage (like the CR4-protections
+     * gate): which barriers are active, and whether SMT co-residency is a
+     * residual the time-slice flush cannot cover. */
+    kmsg_begin();
+    print("sched: flush-on-switch");
+    if (platform.has_ibpb)      print(" IBPB");
+    if (platform.has_l1d_flush) print(" L1D");
+    if (platform.has_md_clear)  print(" MDS");
+    if (!platform.has_ibpb && !platform.has_l1d_flush && !platform.has_md_clear)
+        print(" none-available");
+    if (platform.has_htt) print(" (SMT present: sibling co-residency not covered)");
+    print("\n");
 #ifdef CPU_SELFTEST
     cpu_protections_selftest();   /* boot continues; make smoke-cpu asserts on it */
+#endif
+#ifdef FLUSH_SELFTEST
+    flush_selftest();   /* boot continues; make smoke-flush asserts on the marker */
 #endif
 #ifdef WX_SELFTEST
     /* After paging_init (which installs the W^X tables) and after

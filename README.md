@@ -2,7 +2,7 @@
 
 # Horus
 
-**A capability-based microkernel with a safe-Rust security core.**
+**A capability-based x86-64 microkernel with a safe-Rust security core.**
 
 [![CI](https://github.com/pharanyx-labs/Horus/actions/workflows/ci.yml/badge.svg)](https://github.com/pharanyx-labs/Horus/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/pharanyx-labs/Horus)](LICENSE)
@@ -23,16 +23,16 @@
 
 ## Overview
 
-Horus is an x86-64 microkernel that treats the **capability token** as its single, foundational security primitive. Every privileged operation — file access, IPC, task creation, signalling, device I/O — requires an explicit, unforgeable capability. Capabilities can be minted with reduced rights, delegated between tasks, and revoked instantly and transitively across the entire system.
+Horus is an x86-64 microkernel whose single, foundational security primitive is the **capability token**. Every privileged operation — file access, IPC, task creation, signalling, device I/O — requires an explicit, unforgeable capability. Capabilities are minted with reduced rights, delegated between tasks one slot at a time, and revoked instantly and transitively across the whole system. There is no ambient authority: a task that holds no capability for an object cannot even name it.
 
-The kernel is written in C. The security-critical core — the capability engine, physical-memory reference counting, the cryptographic primitives, the W^X page policy, and every FFI validation boundary — is implemented in **safe, `no_std` Rust**, where the type system statically rules out entire classes of memory-safety defects.
+The kernel is written in C, but its **security-critical core runs in safe, `no_std` Rust** — the capability engine, physical-memory reference counting, the cryptographic primitives (SHA-2, BLAKE2b, Argon2id, HKDF, ChaCha20+HMAC AEAD, CSPRNG), the W^X page policy, the ELF-loader parse, the tamper-evident audit MAC, and every FFI validation boundary. There the type system statically rules out whole classes of memory-safety defects; the crate contains no `unsafe` in its logic, only at the documented, contract-checked FFI shims.
 
-Horus is engineered as if it were destined for production even though it is not one: every change is gated by a CI pipeline that runs the unit-test suite, a linter with all warnings denied, a byte-for-byte **reproducible-build** check, **31 headless QEMU self-tests**, and a supply-chain security scan with an SBOM.
+Horus is engineered *as if* it were headed for production — while being explicit that it is not. Every change is gated by CI: 91 Rust unit tests, a clippy pass with all warnings denied, a byte-for-byte **reproducible-build** check, and ~45 headless QEMU self-tests, plus an advisory supply-chain scan with an SBOM.
 
 > ### Project status — research / early development
-> Horus boots, runs a ring-3 `init` that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive scheduling, a userspace filesystem server over an encrypted object store — persistent when an ATA disk is present, enforcing per-file POSIX ownership/permissions against a kernel-attested identity, serving multiple clients concurrently, and crash-atomic via a write-ahead journal — a newlib libc port, ring-3 process control (spawn/exec/kill/signal/wait, including masking and alternate stacks), and multi-core support. Some subsystems (multi-slot IPC, per-CPU run queues) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS.
+> Horus boots into 64-bit long mode, runs a ring-3 `init` (PID 1) that supervises a ring-3 shell, and enforces capability-based access control end to end. It has preemptive multi-core scheduling; a userspace filesystem server over an encrypted, persistent object store (per-file POSIX ownership/permissions against a kernel-attested identity, multi-client, crash-atomic via a write-ahead journal); a newlib libc port; ring-3 process control (spawn/exec/kill/signal/wait, masks, alternate stacks); shell pipelines over bounded in-kernel pipes; a ring-3 console driver; measured boot with a TPM-sealed disk key; and a forward-secure audit log. Some subsystems (multi-slot IPC, per-CPU run queues) are deliberately scaffolded rather than finished. This is a research and learning kernel, not a shipping OS.
 >
-> A July 2026 security & engineering audit ([docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md)) found the kernel to be disciplined research-grade work but the surrounding **engineering process** (branch protection, independent review, supply-chain provenance) not yet at a high-assurance bar, plus one capability-revocation defect that over-revokes (it fails safe). Those findings set the current [roadmap](docs/ROADMAP.md) priorities. [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
+> A July 2026 security & engineering audit ([docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md)) found the kernel to be disciplined research-grade work but the surrounding **engineering process** (independent review, supply-chain provenance) not yet at a high-assurance bar. Its code findings (A1–A4) are now fixed; the process findings set the current [roadmap](docs/ROADMAP.md). [docs/LIMITATIONS.md](docs/LIMITATIONS.md) is a candid, subsystem-by-subsystem account of exactly where the line sits.
 
 ---
 
@@ -40,11 +40,11 @@ Horus is engineered as if it were destined for production even though it is not 
 
 | Principle | How Horus applies it |
 |---|---|
-| **No ambient authority** | Access derives solely from held capabilities — never from UID, task identity, or global state. A task with no capability for an object cannot name it. |
-| **Least privilege by construction** | Capabilities are minted with a *subset* of rights; a spawned task receives only the TCB, frame, and endpoints it needs — never the admin, block-device, or console capabilities. A parent delegates one slot at a time (`SYS_CAP_GRANT`) into a child it supervises. |
-| **Verifiable core** | Security-sensitive logic lives in safe Rust with unit tests and known-answer cryptographic vectors; the C/Rust ABI is pinned by mirrored compile-time assertions. |
-| **Defence in depth** | Hardware isolation (SMEP/SMAP, W^X/NX), a single centralized syscall-authorization choke point, transitive revocation, and a tamper-evident audit log reinforce one another. |
-| **Provenance you can trust** | Reproducible builds and a first-party-only CI supply chain mean a released `kernel.elf` can be independently reproduced bit-for-bit. |
+| **No ambient authority** | Access derives solely from held capabilities — never from UID, task identity, or global state. |
+| **Least privilege by construction** | Capabilities are minted with a *subset* of rights; a spawned task receives only the TCB, frames, and endpoints it needs. A parent delegates one slot at a time (`SYS_CAP_GRANT`) into a child it supervises. |
+| **Verifiable core** | Security-sensitive logic lives in safe Rust with unit tests, RFC known-answer vectors, and machine-checked proofs (Kani); the C/Rust ABI is pinned by mirrored compile-time assertions. |
+| **Defence in depth** | Hardware isolation (SMEP/SMAP/UMIP, W^X/NX), a single centralized syscall-authorization choke point, transitive revocation, side-channel flushing, and a forward-secure audit log reinforce one another. |
+| **Provenance you can trust** | Byte-for-byte reproducible builds; measured boot records the boot hash chain into a TPM, and the disk key is sealed to a measured-good boot state. |
 
 ---
 
@@ -52,55 +52,49 @@ Horus is engineered as if it were destined for production even though it is not 
 
 ```
  ┌──────────────────────────────────────────────────────────┐
- │                   Userspace  (Ring 3)                    │
- │   init → shell     fs_server     hello     captest       │
+ │                   Userspace  (Ring 3)                     │
+ │  init → shell   fs_server   console_server   hello  ...   │
  └──────────────────────┬───────────────────────────────────┘
-                        │  syscalls (0-81, table-dispatched)
+                        │  syscalls 0–88 (int 0x80, table-dispatched)
  ┌──────────────────────▼───────────────────────────────────┐
- │                  Horus Kernel  (Ring 0)                  │
- │                                                          │
- │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
- │  │ Capability │  │  Paging /  │  │  Scheduler /    │     │
- │  │  Engine    │  │  Memory    │  │  Task + Signals │     │
- │  └────────────┘  └────────────┘  └─────────────────┘     │
- │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
- │  │  Syscall   │  │  IPC /     │  │  Auth / Audit   │     │
- │  │  Dispatch  │  │  Endpoints │  │  (tamper-evid.) │     │
- │  └────────────┘  └────────────┘  └─────────────────┘     │
- │                                                          │
+ │                  Horus Kernel  (Ring 0)                   │
+ │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐      │
+ │  │ Capability │  │  Paging /  │  │  Scheduler /    │      │
+ │  │  Engine    │  │  COW / W^X │  │  Task + Signals │      │
+ │  └────────────┘  └────────────┘  └─────────────────┘      │
+ │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐      │
+ │  │  Syscall   │  │  IPC / EPs │  │  Auth / Audit   │      │
+ │  │  Dispatch  │  │  + Pipes   │  │ (forward-secure)│      │
+ │  └────────────┘  └────────────┘  └─────────────────┘      │
  │  ┌────────────────────────────────────────────────────┐  │
  │  │        Rust Security Core  (no_std, safe Rust)     │  │
- │  │  capability.rs  memory.rs  lib.rs (W^X)  ps.rs     │  │
- │  │  sha256.rs  blake2b.rs  argon2.rs  rng.rs          │  │
- │  │  aead.rs  auth.rs  audit.rs                        │  │
+ │  │  capability.rs  memory.rs  lib.rs (W^X, ELF parse) │  │
+ │  │  sha256  blake2b  argon2  rng  aead  audit  auth   │  │
  │  └────────────────────────────────────────────────────┘  │
- │                                                          │
- │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐     │
- │  │  Terminal  │  │  GDT / IDT │  │  ATA / RAM      │     │
- │  │  / Serial  │  │ / TSS/APIC │  │  block store    │     │
- │  └────────────┘  └────────────┘  └─────────────────┘     │
+ │  ┌────────────┐  ┌────────────┐  ┌─────────────────┐      │
+ │  │ GDT/IDT/TSS│  │  SMP/APIC  │  │ ATA / RAM store │      │
+ │  │  serial    │  │  TPM (TIS) │  │ (encrypted)     │      │
+ │  └────────────┘  └────────────┘  └─────────────────┘      │
  └──────────────────────┬───────────────────────────────────┘
-                        │
  ┌──────────────────────▼───────────────────────────────────┐
- │            Hardware  (x86-64, 1..N cores)                │
+ │            Hardware  (x86-64, 1..N cores)                 │
  └──────────────────────────────────────────────────────────┘
 ```
 
-The kernel runs in 64-bit long mode, and so does userspace: ring-3 tasks execute under a 64-bit code segment as static-PIE `EM_X86_64` images, relocated at load. The kernel itself lives in the higher half, at `0xFFFFFFFF80000000`, so no user mapping can share an address with kernel state by construction.
-
-The only 32-bit code left is the boot on-ramp that has to be: the multiboot entry stage and the AP startup trampoline. An x86 CPU starts in real mode, GRUB hands over in 32-bit protected mode, and an application processor comes out of SIPI in real mode — those `.code16`/`.code32` blocks are how long mode is reached in the first place. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+The kernel runs in 64-bit long mode and so does userspace: ring-3 tasks execute as static-PIE `EM_X86_64` images, relocated at load. The kernel lives in the higher half at `0xFFFFFFFF80000000`, so no user mapping can share an address with kernel state *by construction*. The only 32-bit code left is the boot on-ramp that must be — the multiboot entry stage and the AP startup trampoline. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ---
 
 ## Capabilities & security at a glance
 
-- **Transitive, system-wide revocation.** Revoking a capability nullifies it and every derived copy across every task's cspace *and* the kernel root cnode in a single atomic Rust sweep, then bumps a lineage generation counter — so a stale bit pattern that escaped the structural sweep still fails at point of use. Task slots are **zeroed on reuse**, so a newly spawned task cannot inherit the dead task's capabilities. Revocation is **descendant-only** — it nulls the target's derivation subtree, not the grantor or unrelated same-object capabilities ([audit A1](docs/AUDIT-2026-07.md), fixed).
-- **Centralized authorization.** Syscall dispatch is a descriptor table that enforces each call's required capability at one choke point; an unlisted syscall number fails closed, and a compile-time assertion forbids adding a syscall without a table slot.
-- **Least-privilege delegation.** A supervisor (e.g. `init`) holds a child's `CAP_TCB` from the spawn and hands it exactly the capabilities it needs with `SYS_CAP_GRANT`; `SYS_KILL` and `SYS_SIGNAL` are gated on holding that `CAP_TCB`.
-- **Hardware isolation.** Ring 0/3 separation with per-task page tables, and the kernel in the higher half so a user mapping cannot share an address with kernel state; **SMEP**, **SMAP** and **UMIP** engaged when advertised; **W^X** enforced via `EFER.NXE` and the PTE NX bit (non-executable stacks; ELF `PT_LOAD` segments honour their `p_flags`) — and applied to the **kernel's own image** too, which maps its `.text` read-only and its `.rodata`/`.data`/`.bss` non-executable, with `CR0.WP` set so ring 0 actually honours it.
-- **Full register-file isolation.** A task's x87/SSE registers are saved and restored around every kernel entry, so no task can read what another left in `xmm` — and the kernel is built `-mno-sse`, holding no FPU state of its own to leak.
-- **Modern cryptography, safe Rust.** Argon2id (RFC 9106) memory-hard password hashing on an in-house BLAKE2b, HKDF-SHA256 key derivation, a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD for storage, and a ChaCha20 fast-key-erasure CSPRNG seeded from RDRAND and timing jitter — all validated against published/reference vectors.
-- **Tamper-evident audit log.** Each event is bound by an HMAC keyed to a per-boot secret, and a running hash-chain head commits to the entire ordered history; `SYS_AUDIT_DIGEST` exposes the digest and verify status for an external monitor.
+- **Transitive, descendant-only revocation.** Revoking a capability nulls it and its exact **derivation subtree** across every task's cspace *and* the kernel root cnode in one atomic Rust sweep, then bumps a per-serial lineage generation — so a stale bit pattern that escaped the structural sweep still fails at point of use. It does *not* touch ancestors, siblings, or independent same-object peers ([audit A1](docs/AUDIT-2026-07.md), fixed; Kani-proved). Task slots are zeroed on reuse.
+- **Centralized authorization.** Syscall dispatch is a descriptor table that enforces each call's required capability at one choke point; an unlisted number fails closed, and a `_Static_assert` forbids adding a syscall without a table slot.
+- **Hardware isolation.** Ring 0/3 separation with per-task page tables; **SMEP/SMAP/UMIP** engaged when advertised; **W^X** via `EFER.NXE` + the PTE NX bit — for user memory *and* the kernel's own image (`.text` r-x, `.rodata` r--, `.data`/`.bss` rw-NX, `CR0.WP` set). Every task kernel stack, boot stack, and IST fault stack sits above an unmapped guard page.
+- **Register-file isolation.** A task's x87/SSE registers are saved/restored around every ring-3 kernel entry; the kernel is built `-mno-sse` and holds no FPU state of its own to leak.
+- **Side-channel hardening.** `CR4.TSD` disables ring-3 `RDTSC`; **flush-on-switch** evicts IBPB / L1D / MDS state between distrusting tasks; **SMT is disabled in software** (sibling threads parked) so no untrusted work co-resides on a core.
+- **Modern cryptography, safe Rust.** Argon2id (RFC 9106) password hashing on an in-house BLAKE2b, HKDF-SHA256 key derivation, a ChaCha20 + HMAC-SHA256 Encrypt-then-MAC AEAD for storage, and a ChaCha20 fast-key-erasure CSPRNG — all validated against reference vectors.
+- **Forward-secure audit log.** Per-entry MAC keys are ratcheted one-way and erased, so history *before* a compromise is cryptographically unforgeable even if the current key is read; a hash-chain head commits to the whole ordered history and `SYS_AUDIT_DIGEST` exposes it for an external monitor.
+- **Measured boot + TPM-sealed storage.** A TPM 2.0 TIS driver extends the reproducible boot hash chain (kernel identity → `PCR[8]`, each verified boot module → `PCR[9]`); on a TPM-formatted volume the disk KEK is sealed under `PolicyPCR` and released only by a measured-good boot.
 
 Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 
@@ -110,48 +104,51 @@ Full posture and threat model: **[SECURITY.md](SECURITY.md)**.
 
 | Subsystem | State |
 |---|---|
-| Multiboot2 boot (x86-64 long mode), kernel in the higher half | ✅ Working |
+| Multiboot2 boot into x86-64 long mode, kernel in the higher half | ✅ Working |
 | 64-bit ring-3 ABI (`EM_X86_64` static-PIE, RELA relocation at load) | ✅ Working |
-| Console (VGA text + serial) driven by a **ring-3 server** (`console_server`), reached over IPC | ✅ Working |
-| GDT / IDT / TSS, hardware user/kernel isolation | ✅ Working |
-| Paging, per-task address spaces, memory isolation | ✅ Working |
-| Capability mint / transfer / move / revoke | ✅ Working |
-| Transitive cross-task revocation + lineage (use-after-revoke prevention) | ✅ Working |
-| SMEP / SMAP / UMIP hardening (when CPU advertises, CI-gated in CR4) | ✅ Working |
-| W^X (user) — non-executable stacks + ELF `p_flags` honoured | ✅ Working |
-| W^X (kernel) — own image mapped `.text` r-x, `.rodata` r--, `.data`/`.bss` rw-NX, `CR0.WP` set | ✅ Working |
+| Console (VGA text + serial) driven by a **ring-3 server** (`console_server`) over IPC | ✅ Working |
+| Linux-style timestamped boot log + root-only `dmesg` (`SYS_DMESG`) | ✅ Working |
+| GDT/IDT/TSS, hardware user/kernel isolation; kernel + IST + task stack guard pages | ✅ Working |
+| Paging, per-task address spaces, higher-half kernel | ✅ Working |
+| Capability mint / transfer / move / grant / revoke | ✅ Working |
+| Transitive, **descendant-only** revocation + per-serial lineage (audit A1, Kani-proved) | ✅ Working |
+| SMEP / SMAP / UMIP hardening (when advertised, CI-gated in CR4) | ✅ Working |
+| W^X for user memory **and** the kernel's own image (`CR0.WP` + NX, full leaf sweep) | ✅ Working |
 | Per-task x87/SSE context (FXSAVE/FXRSTOR on the ring-3 boundary) | ✅ Working |
-| Kernel stack protector (`-fstack-protector-strong`, CSPRNG-seeded guard) | ✅ Working |
-| ASLR — per-spawn stack, heap, **and PIE image base** (relocated at load; 30 bits, image placed in a 4 TiB window above 16 GiB) | ✅ Working |
-| Table-driven syscall dispatch (central capability gate, 0–81) | ✅ Working |
+| ASLR — per-spawn stack, heap, and PIE image base (30 bits, 4 TiB window above 16 GiB) | ✅ Working |
+| Table-driven syscall dispatch (central capability gate, 0–88) | ✅ Working |
 | User authentication + lockout (Argon2id memory-hard hashing) | ✅ Working |
-| Tamper-evident audit log (HMAC chain + `SYS_AUDIT_DIGEST`) | ✅ Working |
-| Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256) | ✅ Working |
+| **Forward-secure** audit log (ratcheted per-entry MAC + chain head + `SYS_AUDIT_DIGEST`) | ✅ Working |
+| Encryption-at-rest AEAD (ChaCha20 + HMAC-SHA256, per-block HKDF keys) | ✅ Working |
+| **Measured boot** (TPM 2.0 TIS, PCR 8/9) + **TPM-sealed** vdisk KEK | ✅ Working |
 | PS/2 keyboard input | ✅ Working |
 | Preemptive round-robin scheduling (timer-driven, ring-3) | ✅ Working |
-| Fault signals (ring-3 handler on fault instead of kill) | ✅ Working |
-| Async task-to-task signals (`SYS_SIGNAL` / `SYS_SIGMASK` / `SYS_SIGALTSTACK`, `CAP_TCB`-gated) | ✅ Working |
+| **Flush-on-switch** between distrusting tasks (IBPB / L1D / MDS) | ✅ Working |
+| **SMT disabled in software** (sibling threads parked; close co-residency) | ✅ Working |
+| `CR4.TSD` — ring-3 `RDTSC` disabled | ✅ Working |
+| Fault signals + async task-to-task signals (`CAP_TCB`-gated, mask, altstack) | ✅ Working |
 | Ring-3 process control — spawn/exec/kill/exit/wait/grant + image exec | ✅ Working |
-| Ring-3 `init` (PID 1) — spawns, endows (`SYS_CAP_GRANT`) and blocking-supervises the shell | ✅ Working |
-| Userspace filesystem server (ring-3 IPC server over encrypted object store) | ✅ Working |
+| Ring-3 `init` (PID 1) supervising the shell | ✅ Working |
+| Userspace filesystem server over the encrypted object store (single filesystem) | ✅ Working |
 | Per-file POSIX ownership & permissions (zero-trust, kernel-attested identity) | ✅ Working |
 | Multi-client `fs_server` concurrency (identity-routed replies via `SYS_IPC_REPLY_TO`) | ✅ Working |
 | Crash-atomic filesystem (write-ahead redo journal + mount-time `fsck`) | ✅ Working |
-| Large files (direct + single- + double-indirect blocks, 16 MiB volume, multi-block bitmap) | ✅ Working |
+| Large files (direct + single- + double-indirect blocks, 16 MiB volume) | ✅ Working |
 | Disk-backed persistent storage (ATA probe at boot; RAM vdisk fallback) | ✅ Working |
-| newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`) | ✅ Working |
-| ELF loader parse (header, program headers, i386 + x86-64 relocations) in memory-safe Rust | ✅ Working |
-| Driver privilege separation — VGA/serial console runs as a ring-3 server (`console_server`, `CAP_IO_DEVICE`) | ✅ Working |
+| newlib libc port over a per-process POSIX fd layer | ✅ Working |
+| **Shell pipelines** over bounded in-kernel pipes (`SYS_PIPE*`, stdio wired at spawn) | ✅ Working |
+| ELF loader parse (header, phdrs, i386 + x86-64 relocations) in memory-safe Rust | ✅ Working |
+| Boot-module integrity: SHA-256 manifest embedded in the kernel (audit A4) | ✅ Working |
+| Driver privilege separation — console runs as a ring-3 server (`CAP_IO_DEVICE`) | ✅ Working |
 | Symmetric multiprocessing (AP bringup, per-CPU preemption, TLB-shootdown IPIs) | ✅ Working *(default-on; `SMP=0` compiles it out)* |
-| Rust security-core unit tests (78) + GitHub Actions CI (41 jobs, 38 gating) | ✅ Working |
-| Headless QEMU self-tests (31): boot, kernel W^X sweep (single- and multi-core), CR4 protections, CR4.TSD, E820 pool sizing, ELF/W^X (32- and 64-bit), ASLR, preemption, signals, process-control, COW, notifications, address-space reclaim, capability conformance, session, SMP, fs (×7), newlib, the coreutils shipped from the filesystem as boot modules (modules, coreutils-shell), and the driver-isolation suite (map-phys, port-I/O, IRQ bridge, console server, console fault containment) | ✅ Working |
-| Scripted integration session: drives the real ring-3 shell over serial (auth + least privilege) | ✅ Working |
 | Reproducible builds | ✅ Working |
-| Userspace shell and commands | 🟡 Partial |
 | Async notifications (`SYS_NOTIFY` / `SYS_WAIT_NOTIFY`, badge-carrying) | ✅ Working |
-| Endpoint-based IPC (single-slot, non-blocking) | 🟡 Partial |
-| Copy-on-write paging | 🟡 Partial |
-| SMP scheduler maturity (per-CPU run queues, priorities, flush-on-switch) | ⬜ Not yet (SMP itself is default-on) |
+| Copy-on-write paging (shared zero page + generic non-zero break) | ✅ Working |
+| Userspace shell breadth (many commands; coverage uneven) | 🟡 Partial |
+| Endpoint IPC (single-slot mailbox; multi-client replies routed by identity) | 🟡 Partial |
+| SMP scheduler *performance* maturity (per-CPU run queues, priorities, affinity) | ⬜ Not yet |
+
+> The two **security**-relevant SMP items — flush-on-switch and SMT co-residency — are done; what remains is *performance* scheduler maturity (a single shared runnable pool, no per-CPU queues or priorities). See [ROADMAP.md](docs/ROADMAP.md) Track 3.
 
 ---
 
@@ -180,7 +177,7 @@ Default login: `user` / `password` (or `root` / `rootpass`).
 ### Verify it
 
 ```bash
-make test               # Rust unit tests (78) + a clean full build
+make test               # Rust unit tests (91) + a clean full build
 make smoke              # headless QEMU boot to the ring-3 login prompt, no fault
 make smoke-proc         # ring-3 process control: exit/kill/spawn/exec/grant/signal/wait
 make reproducible-build # byte-for-byte deterministic kernel.elf
@@ -193,9 +190,10 @@ make reproducible-build # byte-for-byte deterministic kernel.elf
 | `DEBUG_SHELL` | `0` | Enable the in-kernel debug shell |
 | `MINIMAL_SECURE` | `0` | Strip non-essential kernel features (smaller attack surface) |
 | `RUST_ENABLED` | `1` | Link the Rust security core (`0` uses C stub shims) |
-| `SMP` | `1` | Bring up the application processors (multi-core); default-on. `SMP=0` compiles the subsystem out and boots single-core |
-| `STORAGE_ATA` | `0` | Prefer the ATA path in smoke/self-test builds; runtime always probes for a disk and falls back to the RAM vdisk when none is present |
-| `*_SELFTEST` | `0` | Boot-time self-tests: `ELF_`, `ELF64_`, `ASLR_`, `PREEMPT_`, `SIGNAL_`, `PROC_`, `COW_`, `NOTIFY_`, `FS_`, `INIT_FS_`, `PERSIST_`, `PERM_`, `CONC_`, `BIGFILE_`, `NEWLIB_`, `SMP_` |
+| `SMP` | `1` | Bring up the application processors; default-on. `SMP=0` boots single-core |
+| `STORAGE_ATA` | `0` | Prefer the ATA path in smoke builds; runtime always probes and falls back to the RAM vdisk |
+| `COREUTILS_MODULES` | `0` | Ship the ported GNU coreutils + man pages as GRUB boot modules |
+| `*_SELFTEST` | `0` | Boot-time self-tests (`ELF_`, `ASLR_`, `PREEMPT_`, `SIGNAL_`, `PROC_`, `COW_`, `FS_`, `SMP_`, `WX_`, …) |
 
 Horus is x86-64 only. See [docs/BUILDING.md](docs/BUILDING.md) for the full toolchain reference, all targets, and troubleshooting.
 
@@ -206,11 +204,11 @@ Horus is x86-64 only. See [docs/BUILDING.md](docs/BUILDING.md) for the full tool
 | Document | Contents |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, subsystem internals, capability model, memory layout |
-| [docs/SYSCALLS.md](docs/SYSCALLS.md) | Per-syscall reference: numbers, capability requirements, notes |
+| [docs/SYSCALLS.md](docs/SYSCALLS.md) | Per-syscall reference (0–88): numbers, capability requirements, notes |
 | [docs/BUILDING.md](docs/BUILDING.md) | Toolchain setup, build targets, build flags, QEMU configuration |
 | [SECURITY.md](SECURITY.md) | Security posture, hardening in place, threat model, disclosure |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Honest breakdown of what works and what does not |
-| [docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md) | July 2026 security & engineering audit findings (kernel + process) |
+| [docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md) | July 2026 security & engineering audit findings + status |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Audit-driven remediation tracks and open contribution areas |
 | [TESTS.md](TESTS.md) | Test coverage today and what is still needed |
 | [CHANGES.md](CHANGES.md) | Changelog (state of the `main` branch) |
@@ -219,7 +217,7 @@ Horus is x86-64 only. See [docs/BUILDING.md](docs/BUILDING.md) for the full tool
 
 ## Contributing
 
-Horus is at an early stage, and there is meaningful work across kernel C, safe Rust, and tooling. Contributions of all sizes are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and [docs/ROADMAP.md](docs/ROADMAP.md) for prioritized areas.
+Horus is at an early stage, with meaningful work across kernel C, safe Rust, and tooling. Contributions of all sizes are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Security
 

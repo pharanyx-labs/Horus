@@ -8,10 +8,12 @@ review, supply-chain provenance — not yet commensurate with the high-assurance
 goals the kernel pursues. It also surfaced a real capability-algebra defect. Those
 findings now set the priority order.
 
-The plan is three **audit-remediation tracks** at the top (do these first), then
-the ongoing capability-maturity work (SMP, userspace, verification, driver
-isolation) that continues underneath them. A record of completed foundations is at
-the end.
+The plan was three **audit-remediation tracks** at the top; the capability-model
+(Track 1) and boot-integrity (Track 2) findings are now fixed, and Track 0's code
+controls (branch protection, CodeQL, Dependabot) are in place — leaving P2
+(independent review) and P4 (attested builds) as the open high-priority items,
+alongside the ongoing capability-maturity work (SMP performance, userspace,
+verification, driver isolation). A record of completed foundations is at the end.
 
 Nothing here is a commitment — priorities shift as contributors join. If you want
 to work on something, open an issue first; coordination saves effort. Finding IDs
@@ -35,10 +37,10 @@ the capability engine.
 
 | Track | Theme | Blocking finding(s) | Priority |
 |---|---|---|---|
-| **0** | Assurance & governance | P1, P2, P3, P4, P5 | **Now — highest leverage** |
-| **1** | Capability-model correctness | A1, A2, A3 | **Now — real defect** |
-| **2** | Boot & supply-chain integrity | A4, P4 | Next |
-| **3** | SMP maturity | — | Ongoing |
+| **0** | Assurance & governance | P1, P2, P3, P4, P5 | **Now — highest leverage** (P2/P4 open) |
+| **1** | Capability-model correctness | A1, A2, A3 | **Done** (A1/A2/A3 fixed; residual is the lineage hash) |
+| **2** | Boot & supply-chain integrity | A4, P4 | **Done** (A4 + measured boot; residual is P4) |
+| **3** | SMP maturity | — | Ongoing (security items done; perf remains) |
 | **4** | Userspace ecosystem | — | Ongoing |
 | **5** | Verification & assurance scaffolding | expands Track 1 | Ongoing |
 | **6** | Driver privilege separation | — | Ongoing |
@@ -162,17 +164,26 @@ legitimately endows a dominated child's low slots (e.g. a server's IPC gate at s
 or a dedicated `SYS_CAP_GRANT_RIGHTS`) so a supervisor can delegate with reduced
 rights and, by default, without `CAP_RIGHT_REVOKE`.
 
-### 1.3 — Make lineage generations exact (A3) — *deferred (latent)*
+### 1.3 — Activate and correctly key the lineage backstop (A3 / finding 3.3) — *done (activation); residual is the hash*
 
-Investigation during the A1 fix established that the generation mechanism is
-**dormant**: no code path assigns a capability a non-zero `generation`, and
-`lineage_check` treats generation 0 as "untracked / always valid", so the
-object-keyed generation check never rejects a real capability and its hash
-collisions cannot invalidate anything today. Structural (descendant-only)
-revocation is the sole enforcement. If per-lineage generations are ever *activated*
-as real use-after-revoke defense-in-depth, store the generation per-object (exact)
-rather than in the shared 4096-slot hash so activation does not reintroduce
-over-invalidation. Until then, no action is required.
+The generation mechanism used to be **dormant**: every capability was created with
+generation 0, `lineage_check` treated 0 as "untracked / always valid", and the
+table was keyed by `object` (so two independent same-object caps shared a cell).
+Finding 3.3 fixed all three: the table is now keyed by a capability's
+globally-unique **`serial`**, the check is **strict equality** with no gen-0 escape
+hatch, and every C creation site stamps `generation = rust_lineage_current(serial)`.
+The backstop is therefore a genuine, independent second mechanism alongside the
+structural nulling — a revoked capability is invalidated both by having its slot
+nulled *and* by having its serial bumped. Proved over the whole `u32` input space by
+two Kani harnesses (`revoke_invalidates_recorded_generation`,
+`revoke_does_not_touch_a_distinct_lineage_cell`) and regression-tested by
+`test_gen0_snapshot_invalidated_after_revoke_finding_3_3`.
+
+*Residual:* the 4096-slot table is still a lossy hash, so distinct serials can
+collide into one cell and bumping one lineage can spuriously invalidate a colliding
+serial's live caps at next use — an availability-only, fail-safe effect. The fix is
+exact per-serial generation storage (a collision-free map rather than a hash); until
+then, no correctness action is required.
 
 ---
 
@@ -290,13 +301,22 @@ byte-for-byte identical (the kernel-identity token is a build-time constant).
 
 The SMP foundation is in place and default-on (ACPI-MADT CPU count, per-CPU
 LAPIC-timer preemption, cross-CPU IPC/notification locking, acknowledged
-TLB-shootdown IPIs). Remaining, in priority order:
+TLB-shootdown IPIs). The two **security**-relevant items are now **done**:
+
+- **Flush-on-switch between mutually distrusting tasks** — *done*. On a switch to a
+  different ring-3 task the scheduler evicts IBPB / L1D / MDS state at the single
+  chokepoint (`set_current_task`), each CPUID-gated. `make smoke-flush`.
+- **SMT co-residency** — *done*. Sibling hyperthreads are parked at AP bringup
+  (disable-SMT in software), so no untrusted work co-resides on a core.
+  `make smoke-smt`.
+
+Remaining is *performance/quality* scheduler maturity, in priority order:
 
 - **Per-CPU run queues** with explicit load-balancing/migration, replacing the
-  shared runnable pool; then **scheduling priorities and fairness**.
-- **Flush-on-switch between mutually distrusting tasks** — the microarchitectural
-  side-channel the audit and [../SECURITY.md](../SECURITY.md) both flag. This is the
-  security-relevant SMP item, not just a performance one.
+  shared runnable pool; then **scheduling priorities, fairness, and CPU affinity**.
+- **Cache partitioning** (e.g. CAT) so the primary thread's own successive tasks do
+  not share a warmed cache between the flush and the next eviction — the residual
+  side-channel [../SECURITY.md](../SECURITY.md) flags.
 
 ---
 
@@ -396,12 +416,13 @@ record; see the git history and [ARCHITECTURE.md](ARCHITECTURE.md) for detail.
 
 ## Contributing
 
-**The highest-value work right now is Track 0** (assurance & governance) and
-**Track 1** (capability-model correctness) — the two the audit made urgent. Track 0
-is mostly repository configuration and CI, approachable without deep kernel
-knowledge; Track 1 is the meatiest kernel/Rust work and the most security-critical.
+The audit's code findings (A1–A4) are now fixed, so **the highest-value remaining
+work is Track 0** (assurance & governance) — specifically P2 (independent review,
+gated on a second maintainer) and P4 (pinned, attested, signed builds). Track 0 is
+mostly repository configuration and CI, approachable without deep kernel knowledge.
 Track 4 (userspace ecosystem) remains the most self-contained on-ramp for a first
-contribution.
+contribution; Track 5 (verification) is where the exact per-serial lineage store and
+the TLA+/Kani expansion live.
 
 See [../CONTRIBUTING.md](../CONTRIBUTING.md) for environment setup and how to submit
 work, and [AUDIT-2026-07.md](AUDIT-2026-07.md) for the full findings behind the

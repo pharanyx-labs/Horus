@@ -509,15 +509,50 @@ void print(const char* str) {
 
 void println(const char* str) { print(str); print("\n"); }
 
-/* Linux-style kernel-log timestamp prefix: "[ sssss.mmm] " where the clock is the
- * 100 Hz system tick (10 ms resolution). Before the timer starts (most of early
- * boot) this reads "[    0.000]", exactly like the first printk lines on Linux.
- * `kmsg_begin()` emits just the prefix (for lines that then print interpolated
- * values); `kmsg()` emits a whole "[ts] msg" line. */
+/* ---- Linux-style boot/kernel-log timestamps -------------------------------
+ *
+ * The prefix is "[    S.uuuuuu] " with MICROSECOND resolution, sourced from the
+ * TSC (like Linux). The 100 Hz PIT tick is not running for most of early boot
+ * (interrupts come up late), so a tick-based clock reads 0.000000 for every
+ * early line; the TSC increments from the first instruction. `kmsg_clock_init()`
+ * calibrates the TSC frequency once against PIT channel 2 -- the same ~10 ms
+ * gate `lapic_timer_calibrate` uses -- and records the boot epoch. Call it once,
+ * early, before the first kmsg. Under TCG the TSC is virtual but self-consistent
+ * with the emulated PIT, so timestamps still advance monotonically. */
+static uint64_t boot_tsc0  = 0;
+static uint64_t tsc_per_us = 0;   /* 0 until calibrated => timestamps read 0 */
+
+static inline uint64_t rd_tsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+void kmsg_clock_init(void) {
+    /* PIT channel 2, mode 0, counting ~10 ms (11932 ticks @ 1.193182 MHz). We
+     * poll OUT2 (port 0x61 bit 5) rather than take an interrupt, so this runs
+     * before the PIC/IDT are up. The speaker stays disabled and port 0x61 is
+     * restored afterwards. */
+    uint8_t p61 = inb(0x61);
+    outb(0x61, (uint8_t)((p61 & 0xFC) | 0x01));    /* gate2 on, speaker off */
+    outb(0x43, 0xB0);                              /* ch2, lo/hi, mode 0 */
+    outb(0x42, (uint8_t)(11932u & 0xFF));
+    outb(0x42, (uint8_t)(11932u >> 8));
+    uint64_t t0 = rd_tsc();
+    while (!(inb(0x61) & 0x20)) { }                /* wait for OUT2 high */
+    uint64_t cycles = rd_tsc() - t0;               /* TSC ticks in ~10 ms */
+    outb(0x61, p61);                               /* restore port 0x61 */
+    tsc_per_us = cycles / 10000u;                  /* 10 ms == 10000 us */
+    if (tsc_per_us == 0) tsc_per_us = 1;           /* guard div-by-zero */
+    boot_tsc0 = rd_tsc();
+}
+
+/* `kmsg_begin()` emits just the "[    S.uuuuuu] " prefix (for lines that then
+ * print interpolated values); `kmsg()` emits a whole "[ts] msg" line. */
 void kmsg_begin(void) {
-    uint32_t t   = get_system_ticks();      /* 100 Hz */
-    uint32_t sec = t / 100u;
-    uint32_t ms  = (t % 100u) * 10u;        /* 0..990 in 10 ms steps */
+    uint64_t us   = tsc_per_us ? (rd_tsc() - boot_tsc0) / tsc_per_us : 0;
+    uint32_t sec  = (uint32_t)(us / 1000000u);
+    uint32_t frac = (uint32_t)(us % 1000000u);     /* microseconds */
     char buf[24];
     int n = 0;
     buf[n++] = '[';
@@ -536,9 +571,8 @@ void kmsg_begin(void) {
     for (int i = dl; i < 5; i++) buf[n++] = ' ';
     for (int i = 0; i < dl; i++) buf[n++] = digits[i];
     buf[n++] = '.';
-    buf[n++] = (char)('0' + (ms / 100u) % 10u);
-    buf[n++] = (char)('0' + (ms / 10u) % 10u);
-    buf[n++] = (char)('0' + ms % 10u);
+    /* six-digit zero-padded microseconds */
+    for (uint32_t d = 100000u; d >= 1u; d /= 10u) buf[n++] = (char)('0' + (frac / d) % 10u);
     buf[n++] = ']';
     buf[n++] = ' ';
     buf[n]   = 0;

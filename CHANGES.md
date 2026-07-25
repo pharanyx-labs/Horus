@@ -8,6 +8,31 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — boot log cleanup: microsecond TSC timestamps, no address noise, no stray AP digits
+
+Follow-up polish to the Linux-style boot log:
+
+- **Timestamps now advance.** They were sourced from the 100 Hz PIT tick, which
+  is not running for most of early boot (interrupts come up late), so every line
+  read `[    0.000]`. The clock is now the **TSC** (like Linux), calibrated once
+  against PIT channel 2 (`kmsg_clock_init`, the same ~10 ms gate
+  `lapic_timer_calibrate` uses), with **microsecond** resolution — e.g.
+  `[    0.001804] mem: …`, `[    1.429916] smp: …`.
+- **Address noise removed.** `boot: high-half OK, kernel at 0x… phys 0x…` is now
+  `boot: high-half relocation verified`; the per-module `name@0x…` dump is now
+  `boot: N boot modules loaded` (the manifest-verification line already reports
+  the count); `smp: CPUs online` prints **decimal** `4` instead of
+  `0x0000000000000004`.
+- **Stray digits gone.** Under SMP the boot log showed a run of bare digits
+  (`112323123`) before the `smp:` line — the AP trampoline
+  (`ap_trampoline.S`) wrote `'1'`/`'2'`/`'3'` progress markers straight to COM1 at
+  each real-/protected-/long-mode transition (3 APs × 3 stages). These debug
+  writes are removed.
+
+Verified: `make smoke` (uniprocessor, timestamps advance), `make smoke-console-smp`
+(no stray digits, `CPUs online 4`, banner intact), `make smoke-session` (dmesg +
+least-privilege), `make smoke-modules` (provisioning). Build stays reproducible.
+
 ### Added — Linux-style timestamped boot log + a root-only `dmesg` command
 
 The kernel boot messages were an ad-hoc mix of `[tag]` prefixes (`[mem]`, `[smp]`,

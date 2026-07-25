@@ -338,6 +338,7 @@ typedef struct platform_info {
     int has_ibpb;        /* CPUID.7.0:EDX[26] — IA32_PRED_CMD indirect-branch barrier */
     int has_md_clear;    /* CPUID.7.0:EDX[10] — VERW clears store/fill/load buffers (MDS) */
     int has_htt;         /* CPUID.1:EDX[28]  — HT/SMT capable (co-residency caveat) */
+    int smt_shift;       /* # of low APIC-ID bits identifying the SMT thread within a core (0 = no SMT) */
     int has_aesni;
     int has_tsc;
     int has_sse;

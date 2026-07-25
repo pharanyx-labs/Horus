@@ -8,6 +8,38 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — SMT sibling threads are parked (disable-SMT in software; closes the co-residency side channel)
+
+Flush-on-switch (previous entry) closes the *time-sliced* cache/predictor side
+channel, but a sibling **hyperthread** shares its core's L1/L2 *concurrently*, so a
+spy on the sibling can snoop the primary thread's live state — which a time-slice
+flush cannot cover. Horus now **disables SMT in software** by parking sibling
+threads:
+
+- **Topology detection.** `cpu_detect_features` reads CPUID leaf 0x0B subleaf 0 to
+  learn how many low APIC-id bits identify the SMT thread within a core
+  (`platform.smt_shift`). A logical processor whose those bits are non-zero is a
+  secondary (sibling) thread; the primary of each core (and the BSP) has them zero.
+- **Parking.** At AP bringup (`ap_entry64`), a sibling does the full early
+  setup — GDT/IDT/CR4/TSS and `lapic_enable` — then **parks** (`sti; hlt` forever)
+  *before* starting its scheduler timer. It never enters the scheduler, so no
+  ring-3 task ever runs on it and no untrusted work co-resides on a core; its
+  core-partner (the primary) does all the work. It keeps interrupts on so it stays
+  TLB-coherent and services TLB-shootdown IPIs.
+- **Shootdown accounting.** Parked siblings still receive the all-excluding-self
+  shootdown broadcast and ack it, so the ack total is now `present = online +
+  parked` (not just the schedulable `online`) — under-counting would let an
+  initiator return before a parked sibling flushed.
+- Boot logs `smp: N cores online, K SMT siblings parked (co-residency avoided)`.
+
+Verified: new gated **`make smoke-smt`** boots a 2-core × 2-thread topology and
+asserts the two siblings are parked *and* the system still boots to the shell
+(parked siblings + shootdown do not wedge); `make smoke-smp` (default `-smp 4`,
+no SMT — `smt_shift == 0`, nothing parked) is unchanged and passes; default boot
+unaffected; clean build. `docs/LIMITATIONS.md` + `SECURITY.md` updated (SMT
+co-residency moves from residual to handled; the cost is the siblings' compute, and
+core-scheduling to reclaim it for same-domain work is future work).
+
 ### Added — flush-on-switch between distrusting tasks (SMP scheduler maturity #1, side-channel hardening)
 
 The scheduler preempts and time-slices mutually distrusting ring-3 tasks on a

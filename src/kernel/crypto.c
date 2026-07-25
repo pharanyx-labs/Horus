@@ -71,6 +71,18 @@ void cpu_detect_features(void) {
      * on the same core, so this is reported and treated as a residual (disable SMT
      * or core-schedule for full isolation). */
     platform.has_htt = (cpu_features_edx & (1 << 28)) != 0;
+
+    /* SMT topology for co-residency handling (disable-SMT / park-siblings in
+     * smp.c). CPUID leaf 0x0B subleaf 0 enumerates the SMT level: EAX[4:0] is the
+     * number of low APIC-ID bits that identify the thread within a core, so a
+     * logical processor whose those bits are non-zero is a sibling (secondary)
+     * thread. 0 (or a non-SMT level type, or the leaf absent) means no SMT. */
+    platform.smt_shift = 0;
+    {
+        uint32_t la, lb, lc, ld;
+        cpuid_count(0x0B, 0, &la, &lb, &lc, &ld);
+        if (((lc >> 8) & 0xFF) == 1 /* level type: SMT */) platform.smt_shift = (int)(la & 0x1F);
+    }
 }
 
 /*

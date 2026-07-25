@@ -367,8 +367,9 @@ void kernel_main(uint32_t mb_info) {
     if (platform.has_md_clear)  print(" MDS");
     if (!platform.has_ibpb && !platform.has_l1d_flush && !platform.has_md_clear)
         print(" none-available");
-    if (platform.has_htt) print(" (SMT present: sibling co-residency not covered)");
     print("\n");
+    /* (SMT co-residency is handled separately: sibling threads are parked at AP
+     * bringup — see the "smp:" line below.) */
 #ifdef CPU_SELFTEST
     cpu_protections_selftest();   /* boot continues; make smoke-cpu asserts on it */
 #endif

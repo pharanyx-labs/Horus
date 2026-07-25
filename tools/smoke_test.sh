@@ -68,8 +68,12 @@ if [ -n "${SMOKE_DISK:-}" ]; then
 fi
 
 # SMP_CPUS=<n> boots the guest with n logical CPUs (for the SMP self-test).
+# QEMU_SMP=<spec> overrides the whole -smp argument (e.g. a topology like
+# "4,cores=2,threads=2" for the SMT sibling-parking test).
 SMP_ARG=""
-if [ -n "${SMP_CPUS:-}" ]; then
+if [ -n "${QEMU_SMP:-}" ]; then
+    SMP_ARG="-smp ${QEMU_SMP}"
+elif [ -n "${SMP_CPUS:-}" ]; then
     SMP_ARG="-smp $SMP_CPUS"
 fi
 

@@ -987,6 +987,20 @@ smoke-flush:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='FLUSH_SELFTEST: PASS' \
 		FAIL_MARKER='FLUSH_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
+# SMT co-residency: boot the shipped kernel under an SMT topology (2 cores x 2
+# threads) and assert the two sibling threads are PARKED -- never scheduled -- so
+# no untrusted ring-3 work co-resides on a core. Also proves the parked siblings
+# + TLB-shootdown accounting do not wedge boot (the marker only appears if the
+# system reached the login prompt). Uses the default (shipped) kernel; parking is
+# always-on, not a build flag.
+.PHONY: smoke-smt
+smoke-smt:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) QEMU_SMP='4,cores=2,threads=2' \
+		REQUIRE_MARKER='SMT siblings parked' \
+		FAIL_MARKER='SMT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-stackguard
 smoke-stackguard:
 	@$(MAKE) --no-print-directory clean

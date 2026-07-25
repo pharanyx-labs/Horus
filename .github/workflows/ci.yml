@@ -925,9 +925,18 @@ jobs:
   # rust/KANI.md). Non-gating by design — Kani is a heavy separate toolchain
   # (its own nightly + a ~140 MB CBMC bundle), so a slow or flaky setup must not
   # redden the pipeline. The hard gates stay rust, kernel, smoke, reproducible.
+  #
+  # MANUAL-ONLY for now: a full `cargo kani` (all harnesses, incl. the serial-keyed
+  # lineage proofs that build a large SAT instance) now exceeds GitHub's 6-hour job
+  # ceiling and stalls every pipeline. Gate it to `workflow_dispatch` so it no
+  # longer runs on push/PR; run it on demand via "Run workflow". A `timeout-minutes`
+  # bound stops even a manual run from hanging. Re-enable automatic runs once
+  # trimmed to a bounded harness subset / per-harness time limit (see rust/KANI.md).
   kani:
     name: Formal verification (Kani, advisory)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
 

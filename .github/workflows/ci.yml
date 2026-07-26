@@ -291,6 +291,25 @@ jobs:
       - name: Drive head/wc/seq through the real ring-3 shell over serial
         run: make smoke-coreutils-shell
 
+  smoke-tcc:
+    name: QEMU TCC (Tiny C Compiler) runs from /bin over the shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The ~1 MiB tcc image loads block-by-block over the fs_server, so the
+      # runtime step needs a far larger budget than the 40s default.
+      - name: Provision /bin/tcc and run `tcc -v` through the real ring-3 shell
+        run: make smoke-tcc SMOKE_TIMEOUT=320
+
   smoke-cpu:
     name: QEMU CPU-protection self-test (SMEP/SMAP actually in CR4)
     runs-on: ubuntu-latest

@@ -103,5 +103,8 @@ int  posix_link  (const char *oldpath, const char *newpath);
  * SYS_ERR_*. */
 int  posix_ftruncate(int fd, uint32_t length);
 int  posix_isatty(int fd);
+/* Console geometry (rows/cols) for ioctl(TIOCGWINSZ). Returns 0; fills the
+ * server-reported size, or the conventional fallback if unreachable. */
+int  posix_console_winsize(unsigned short *rows, unsigned short *cols);
 
 #endif /* HORUS_POSIX_H */

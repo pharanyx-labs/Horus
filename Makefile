@@ -357,6 +357,14 @@ BOOT_MODULES    += userspace/tcc.bin:bin/tcc userspace/man/tcc:usr/share/man/tcc
 BOOT_MODULE_DEP += userspace/tcc.bin userspace/man/tcc
 endif
 
+# TERM_MODULE=1 ships termtest into /bin — the raw-terminal-layer proof driven by
+# smoke-term. Not part of a normal boot.
+TERM_MODULE ?= 0
+ifeq ($(TERM_MODULE),1)
+BOOT_MODULES    += userspace/termtest.bin:bin/termtest
+BOOT_MODULE_DEP += userspace/termtest.bin
+endif
+
 # NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
 # a sender) to prove the async SYS_NOTIFY / SYS_WAIT_NOTIFY badge round-trip works
 # end-to-end (prints NOTIFY_SELFTEST: PASS to serial). Gated off the ship kernel.
@@ -759,7 +767,9 @@ userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) userspace/pie.ld
 # crt0.o provides _start → posix_init() → main().
 NEWLIB_INC      = newlib/install/x86_64-elf/include
 NEWLIB_LIB      = newlib/install/x86_64-elf/lib
-NEWLIB_CFLAGS   = $(USERSPACE_CFLAGS) -I $(NEWLIB_INC)
+# -I userspace/include supplies the Horus libc extensions newlib lacks (termios,
+# sys/ioctl) — after the newlib headers so it only fills gaps, never shadows.
+NEWLIB_CFLAGS   = $(USERSPACE_CFLAGS) -I $(NEWLIB_INC) -I userspace/include
 NEWLIB_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
                    userspace/posix.o userspace/crt0.o
 
@@ -778,6 +788,13 @@ userspace/newlib_glue.o: userspace/newlib_glue.c $(NEWLIB_LIB)/libc.a
 userspace/newlib_glue64.o: userspace/newlib_glue64.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
 
+# posix.o is shared libc glue linked into every newlib program. It needs the
+# Horus termios/ioctl headers (userspace/include) so its struct termios is the
+# same one curses/nano see — before the host's, which -ffreestanding does not
+# suppress. Explicit rule so the generic userspace/%.o (no such -I) is not used.
+userspace/posix.o: userspace/posix.c
+	$(CC) $(USERSPACE_CFLAGS) -I userspace/include -c $< -o $@
+
 userspace/crt0.o: userspace/crt0.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
 
@@ -793,6 +810,21 @@ userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
 
 userspace/hello_newlib.bin: userspace/hello_newlib.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "hello_newlib"
+
+# termtest — exercises the console raw-terminal layer (termios + winsize + raw
+# read/write) end to end; shipped as a /bin module by TERM_MODULE=1 (smoke-term).
+userspace/termtest.o: userspace/termtest.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/termtest.pie.elf: userspace/termtest.o $(NEWLIB_GLUE_OBJS) \
+                            userspace/malloc.o userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o userspace/termtest.o userspace/newlib_glue.o \
+	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
+	    -L$(NEWLIB_LIB) -lc
+
+userspace/termtest.bin: userspace/termtest.pie.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "termtest"
 
 # ---- GNU coreutils port (userspace/ports/coreutils) -------------------------
 # Unmodified upstream coreutils sources compiled against a small Horus port shim
@@ -1370,6 +1402,16 @@ smoke-tcc:
 	@$(MAKE) --no-print-directory TCC_MODULE=1
 	@$(MAKE) --no-print-directory TCC_MODULE=1 boot.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/tcc_session.py boot.iso
+
+# smoke-term proves the console raw-terminal layer (termios raw mode, TIOCGWINSZ,
+# raw read/write through the ring-3 console_server) by running termtest from /bin,
+# sending it one key over serial, and asserting on the geometry + key + PASS.
+.PHONY: smoke-term
+smoke-term:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TERM_MODULE=1
+	@$(MAKE) --no-print-directory TERM_MODULE=1 boot.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/term_session.py boot.iso
 
 # Build with the gated large-file self-test, boot headless, and require the
 # in-kernel test to report PASS -- runtime proof that a single inode can map

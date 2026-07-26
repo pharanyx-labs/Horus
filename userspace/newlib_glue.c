@@ -34,6 +34,7 @@
 #include <stddef.h>
 
 #include "../include/posix.h"
+#include <sys/ioctl.h>   /* struct winsize, TIOCGWINSZ (Horus userspace libc ext) */
 #include "../include/syscall.h"
 #include "../include/dirent.h"
 
@@ -438,7 +439,18 @@ int ioctl(int fd, unsigned long request, ...) {
     posix_init();
     posix_stat_t st;
     if (posix_fstat(fd, &st) < 0) { errno = EBADF; return -1; }
-    (void)request;
+    /* The one ioctl Horus answers: a full-screen (curses) program asking the
+     * console its size. Everything else stays ENOTTY (see the note above). */
+    if (request == TIOCGWINSZ) {
+        va_list ap;
+        va_start(ap, request);
+        struct winsize *ws = va_arg(ap, struct winsize *);
+        va_end(ap);
+        if (!ws) { errno = EINVAL; return -1; }
+        posix_console_winsize(&ws->ws_row, &ws->ws_col);
+        ws->ws_xpixel = ws->ws_ypixel = 0;
+        return 0;
+    }
     errno = ENOTTY;
     return -1;
 }

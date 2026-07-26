@@ -1,0 +1,55 @@
+TCC(1)                         User Commands                         TCC(1)
+
+NAME
+    tcc - Tiny C Compiler
+
+SYNOPSIS
+    tcc [options] file...
+    tcc -v
+
+DESCRIPTION
+    TCC is a small, fast C compiler. On Horus it is the unmodified upstream
+    TinyCC 0.9.27 (x86-64 target), ported to run as a ring-3 program from
+    /bin/tcc over the fs_server. Its assembler and linker are built in, so it
+    needs no external toolchain: TCC alone turns C into an object or an
+    executable.
+
+    TCC emits x86-64 ELF, the same format Horus's own loader consumes.
+
+OPTIONS
+    -v             show the version; -vv is more verbose
+    -c             compile only, producing an object file (.o), no link
+    -o outfile     write output to outfile
+    -Idir          add dir to the #include search path
+    -Dsym[=val]    define a preprocessor macro
+    -Uym           undefine a preprocessor macro
+    -Ldir          add dir to the library search path
+    -llib          link against liblib
+    -g             generate debug information
+    -w             suppress warnings
+
+    Run `tcc -h` for the full option list.
+
+HORUS NOTES
+    This build targets x86-64 only and uses TCC's integrated assembler and
+    linker; there is no external `as`/`ld` on Horus and none is needed.
+
+    The in-process `-run` mode is NOT supported: it requires writable+
+    executable (RWX) memory, which Horus's W^X policy forbids by design.
+    Compile to a file and run that instead.
+
+    Compiling a complete program on Horus additionally needs the C headers
+    and library (and a C runtime) provisioned onto the filesystem under
+    /usr/include and /usr/lib; that provisioning is a work in progress. Until
+    it lands, `tcc -v`, option/usage output, and preprocessing/compilation of
+    self-contained translation units to an object (`tcc -c`) work from the
+    store.
+
+EXIT STATUS
+    0 on success, non-zero on error.
+
+SEE ALSO
+    cc(1), hier(7)
+
+    TinyCC is free software under the GNU LGPL v2.1; see
+    /usr/share/doc or userspace/ports/tcc/COPYING in the source tree.

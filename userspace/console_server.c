@@ -114,6 +114,30 @@ static int con_getline(uint8_t *out, unsigned max, int mask) {
     return (int)len;
 }
 
+/* ---- raw ("full-screen") terminal mode ------------------------------------- */
+/* Read raw key bytes: block for the first, then drain the rest of the burst that
+ * is already sitting in the UART, so a multi-byte key (an arrow is ESC '[' 'A')
+ * comes back in one reply and a curses program can decode it without a timer. No
+ * echo and no line editing — the program owns the screen. */
+static int con_read_raw(uint8_t *out, unsigned max) {
+    if (max == 0) return 0;
+    if (max > CON_LINE_MAX) max = CON_LINE_MAX;
+    unsigned n = 0;
+    out[n++] = (uint8_t)con_getc();                 /* block for at least one byte */
+    while (n < max && (inb(COM1_LSR) & 0x01))        /* grab the rest of the burst */
+        out[n++] = inb(COM1);
+    return (int)n;
+}
+
+/* Emit bytes verbatim to the serial terminal — no '\n'->'\r\n' translation, since
+ * a full-screen app manages its own line endings and cursor escapes. Serial only:
+ * the interactive VT terminal is on the serial line, and passing escape bytes to
+ * the VGA text grid would just render them as glyphs (VGA is not the surface a
+ * curses app targets, and `make run` runs with -display none). */
+static void con_write_raw(const uint8_t *data, unsigned len) {
+    for (unsigned i = 0; i < len; i++) ser_putc((char)data[i]);
+}
+
 /* ---- helpers --------------------------------------------------------------- */
 static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
 static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
@@ -209,6 +233,14 @@ void _start(void) {
         } else if (rq.op == CON_OP_GETPASS) {
             rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 1);
             was_pass = 1;
+        } else if (rq.op == CON_OP_READ_RAW) {
+            rp.rc = con_read_raw(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1));
+        } else if (rq.op == CON_OP_WRITE_RAW) {
+            unsigned n = rq.len; if (n > CON_IO_MAX) n = CON_IO_MAX;
+            con_write_raw(rq.data, n);
+            rp.rc = (int)n;
+        } else if (rq.op == CON_OP_WINSZ) {
+            rp.rc = (CON_ROWS << 16) | CON_COLS;
         } else {
             rp.rc = -1;
         }

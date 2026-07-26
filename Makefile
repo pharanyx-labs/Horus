@@ -344,6 +344,19 @@ BOOT_MODULE_DEP     += userspace/man/hier \
                        $(foreach p,$(COREUTILS_MODULE_SET),userspace/man/$(p))
 endif
 
+# TCC (Tiny C Compiler) — a native C compiler ported to run as a ring-3 program
+# on Horus. Like the coreutils it is NOT baked into the kernel image: TCC_MODULE=1
+# ships it as a GRUB multiboot2 module the fs_server provisions into /bin, plus its
+# man page. Vendored (LGPL 2.1) source lives in $(TCC_DIR); see its README. Off by
+# default (the release ISO carries no ported binary); `make run` and smoke-tcc
+# turn it on. Compiling *on* Horus additionally needs headers+libc+crt on the FS —
+# a follow-up; today /bin/tcc runs (version/help, -c to an object) from the store.
+TCC_MODULE ?= 0
+ifeq ($(TCC_MODULE),1)
+BOOT_MODULES    += userspace/tcc.bin:bin/tcc userspace/man/tcc:usr/share/man/tcc
+BOOT_MODULE_DEP += userspace/tcc.bin userspace/man/tcc
+endif
+
 # NOTIFY_SELFTEST=1 embeds notifytest and, at boot, spawns it twice (a waiter and
 # a sender) to prove the async SYS_NOTIFY / SYS_WAIT_NOTIFY badge round-trip works
 # end-to-end (prints NOTIFY_SELFTEST: PASS to serial). Gated off the ship kernel.
@@ -632,7 +645,7 @@ endif
 # module-free regardless.
 RUN_MODULES ?= 1
 run: kernel.elf
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) TCC_MODULE=$(RUN_MODULES) boot.iso
 	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \
 		-smp $(SMP_CPUS) \
@@ -832,6 +845,40 @@ userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
 # utility name ("cat"), not the coreutils_ file prefix.
 userspace/coreutils_%.bin: userspace/coreutils_%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
+
+# ---- TCC (Tiny C Compiler) port ---------------------------------------------
+# Vendored 0.9.27 x86_64 subset (9 units) + a small Horus glue file, linked with
+# the same newlib crt0/glue/malloc as the coreutils into a Horus static-PIE.
+TCC_DIR   = userspace/ports/tcc
+TCC_UNITS = libtcc tccpp tccgen tccelf tccasm x86_64-gen x86_64-link i386-asm tcc
+TCC_OBJS  = $(addprefix $(TCC_DIR)/build/,$(addsuffix .o,$(TCC_UNITS))) \
+            $(TCC_DIR)/build/horus_glue.o
+# Unmodified upstream, compiled -w. Deliberately NO `-I include`: TCC must resolve
+# <errno.h>/<stdio.h> to newlib, not the kernel's SYS_ERR_* header. CONFIG_TCC_STATIC
+# drops <dlfcn.h>; the -run JIT (tccrun.c) is excluded and its symbols are stubbed
+# in port/horus_glue.c. getcwd/file-I/O come from posix.c + newlib_glue*.c.
+TCC_CFLAGS = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector -mno-red-zone \
+             -O2 -std=gnu99 -fno-builtin -w \
+             -I $(NEWLIB_INC) -I $(TCC_DIR) -I $(TCC_DIR)/port
+TCC_DEFS   = -DTCC_TARGET_X86_64 -DCONFIG_TCC_STATIC -DONE_SOURCE=0 \
+             -DCONFIG_TCCDIR='"/usr/lib/tcc"'
+
+$(TCC_DIR)/build/%.o: $(TCC_DIR)/%.c $(NEWLIB_LIB)/libc.a
+	@mkdir -p $(TCC_DIR)/build
+	$(CC) $(TCC_CFLAGS) $(TCC_DEFS) -c $< -o $@
+
+$(TCC_DIR)/build/horus_glue.o: $(TCC_DIR)/port/horus_glue.c $(NEWLIB_LIB)/libc.a
+	@mkdir -p $(TCC_DIR)/build
+	$(CC) $(TCC_CFLAGS) $(TCC_DEFS) -c $< -o $@
+
+userspace/tcc.pie.elf: $(TCC_OBJS) $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o $(TCC_OBJS) \
+	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
+	    userspace/malloc.o -L$(NEWLIB_LIB) -lc
+
+userspace/tcc.bin: userspace/tcc.pie.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "tcc"
 
 # Fixed-base flat link (used by the gated selftest payloads that are embedded
 # raw and loaded at USER_AREA_BASE without relocation).
@@ -1307,12 +1354,22 @@ smoke-modules:
 # /bin/<name>, loading the ~450-610 KiB image over the fs_server, spawning it with
 # argv, the utility opening a file through its own fs_server connection, and
 # waiting for it to finish -- all from a filesystem, not the kernel image.
-.PHONY: smoke-coreutils-shell
+.PHONY: smoke-coreutils-shell smoke-tcc
 smoke-coreutils-shell:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc"
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc" boot.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/coreutils_session.py boot.iso
+
+# smoke-tcc ships the ported Tiny C Compiler as a boot module, has the fs_server
+# provision it into /bin, then runs `tcc -v` through the real ring-3 shell and
+# asserts on tcc's own version banner — proving /bin/tcc loads and runs on Horus.
+# The ~1 MiB image loads slowly over the fs_server, so this uses a longer budget.
+smoke-tcc:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TCC_MODULE=1
+	@$(MAKE) --no-print-directory TCC_MODULE=1 boot.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/tcc_session.py boot.iso
 
 # Build with the gated large-file self-test, boot headless, and require the
 # in-kernel test to report PASS -- runtime proof that a single inode can map

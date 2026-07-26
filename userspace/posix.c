@@ -23,6 +23,7 @@
 #include "../include/posix.h"
 #include "../include/syscall.h"
 #include "../include/console_proto.h"
+#include <sys/termios.h>
 #include "fs_proto.h"
 
 /* ----- internal helpers ----------------------------------------------- */
@@ -346,6 +347,21 @@ int posix_open(const char *path, int flags, int mode) {
     return fd;
 }
 
+/* ---- raw ("full-screen") console mode -------------------------------------- */
+/* The console is a real VT/ANSI terminal on the serial line. A curses program
+ * puts it into raw mode via tcsetattr() (canonical + echo off); we track that as
+ * a single flag and route console read()/write() through the console_server's
+ * raw ops, so key bytes arrive un-edited and escape sequences pass through.
+ * Declared here (before posix_read/posix_write use them); defined below. */
+static int g_console_raw = 0;
+static struct termios g_con_tio = {
+    .c_iflag = ICRNL | IXON, .c_oflag = OPOST | ONLCR,
+    .c_cflag = CS8 | CREAD | CLOCAL, .c_lflag = ISIG | ICANON | ECHO | IEXTEN,
+    .c_ispeed = B38400, .c_ospeed = B38400,
+};
+static int con_server_read_raw(void *buf, size_t len);
+static int con_server_write_raw(const void *buf, size_t len);
+
 int posix_read(int fd, void *buf, size_t len) {
     ENSURE_INIT();
     if (!fd_valid(fd))   return -1;
@@ -357,8 +373,11 @@ int posix_read(int fd, void *buf, size_t len) {
     if ((e->flags & O_ACCMODE) == O_WRONLY) return -1;
 
     if (e->type == FD_CONSOLE_IN) {
-        int r = sys_read(0, buf, len);
-        return r;
+        /* Raw mode: a full-screen app reads un-edited key bytes from the server
+         * that owns the hardware. Cooked mode keeps the kernel line-read path. */
+        if (g_console_raw && sys_console_owned())
+            return con_server_read_raw(buf, len);
+        return sys_read(0, buf, len);
     }
 
     if (e->type == FD_PIPE) {
@@ -444,6 +463,52 @@ static int con_server_write(const void *buf, size_t len) {
     return (int)off;
 }
 
+/* One raw read: up to `len` bytes, no echo/edit; blocks in the server for the
+ * first byte, returns the immediately-available burst (so a multi-byte key like
+ * an arrow comes back whole). */
+static int con_server_read_raw(void *buf, size_t len) {
+    unsigned n = (unsigned)len;
+    if (n > CON_LINE_MAX - 1) n = CON_LINE_MAX - 1;
+    g_con_rq.magic = CON_PROTO_MAGIC;
+    g_con_rq.op    = CON_OP_READ_RAW;
+    g_con_rq.len   = n;
+    int rc = -1;
+    for (int tries = 0; tries < 20000; tries++) {
+        rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+        if (rc >= 0) break;
+        sys_yield();
+    }
+    if (rc < 0 || g_con_rp.magic != CON_PROTO_MAGIC || g_con_rp.rc < 0) return -1;
+    int got = g_con_rp.rc;
+    if (got > (int)n) got = (int)n;
+    for (int i = 0; i < got; i++) ((unsigned char *)buf)[i] = g_con_rp.data[i];
+    return got;
+}
+
+/* Verbatim write (no '\n'->'\r\n'), for escape sequences and screen output. */
+static int con_server_write_raw(const void *buf, size_t len) {
+    const unsigned char *s = (const unsigned char *)buf;
+    size_t off = 0;
+    while (off < len) {
+        unsigned n = (unsigned)(len - off);
+        if (n > CON_IO_MAX) n = CON_IO_MAX;
+        g_con_rq.magic = CON_PROTO_MAGIC;
+        g_con_rq.op    = CON_OP_WRITE_RAW;
+        g_con_rq.len   = n;
+        for (unsigned i = 0; i < n; i++) g_con_rq.data[i] = s[off + i];
+        int rc = -1;
+        for (int tries = 0; tries < 20000; tries++) {
+            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+            if (rc >= 0) break;
+            sys_yield();
+        }
+        if (rc < 0 || g_con_rp.magic != CON_PROTO_MAGIC || g_con_rp.rc != (int)n)
+            return (off > 0) ? (int)off : -1;
+        off += n;
+    }
+    return (int)off;
+}
+
 int posix_write(int fd, const void *buf, size_t len) {
     ENSURE_INIT();
     if (!fd_valid(fd))  return -1;
@@ -476,7 +541,8 @@ int posix_write(int fd, const void *buf, size_t len) {
          * no console_server), the kernel drives the console directly — take that
          * path so those images don't block on an IPC nobody answers. */
         if (sys_console_owned()) {
-            int n = con_server_write(buf, len);
+            int n = g_console_raw ? con_server_write_raw(buf, len)
+                                  : con_server_write(buf, len);
             if (n >= 0) return n;
             /* server unreachable: fall through to the in-kernel path */
         }
@@ -937,4 +1003,65 @@ int posix_isatty(int fd) {
     if (!fd_valid(fd)) return 0;
     return (g_fdt[fd].type == FD_CONSOLE_IN ||
             g_fdt[fd].type == FD_CONSOLE_OUT) ? 1 : 0;
+}
+
+/* ---- termios / ioctl (console raw-mode control) ---------------------------- */
+/* A curses program calls tcsetattr() with canonical input and echo turned off to
+ * enter full-screen mode; that is the only distinction Horus's serial console
+ * makes, so we record it as g_console_raw and let read()/write() route through the
+ * raw console ops. The termios struct is otherwise stored and handed back intact. */
+int tcgetattr(int fd, struct termios *t) {
+    ENSURE_INIT();
+    if (!posix_isatty(fd) || !t) return -1;
+    *t = g_con_tio;
+    return 0;
+}
+int tcsetattr(int fd, int actions, const struct termios *t) {
+    (void)actions;
+    ENSURE_INIT();
+    if (!posix_isatty(fd) || !t) return -1;
+    g_con_tio = *t;
+    g_console_raw = ((t->c_lflag & (ICANON | ECHO)) == 0) ? 1 : 0;
+    return 0;
+}
+int tcflush(int fd, int queue) { (void)queue; return posix_isatty(fd) ? 0 : -1; }
+void cfmakeraw(struct termios *t) {
+    if (!t) return;
+    t->c_iflag &= ~(ICRNL | INLCR | IXON | ISTRIP | BRKINT | IGNBRK);
+    t->c_oflag &= ~OPOST;
+    t->c_lflag &= ~(ICANON | ECHO | ECHOE | ECHONL | ISIG | IEXTEN);
+    t->c_cflag |= CS8;
+    t->c_cc[VMIN] = 1;
+    t->c_cc[VTIME] = 0;
+}
+speed_t cfgetispeed(const struct termios *t) { return t->c_ispeed; }
+speed_t cfgetospeed(const struct termios *t) { return t->c_ospeed; }
+int cfsetispeed(struct termios *t, speed_t s) { t->c_ispeed = s; return 0; }
+int cfsetospeed(struct termios *t, speed_t s) { t->c_ospeed = s; return 0; }
+
+/* Console geometry for ioctl(TIOCGWINSZ). The single ioctl() entry point lives in
+ * newlib_glue.c; it calls this for the winsize request. Returns the server's
+ * reported size, or the conventional fallback if the server is unreachable. */
+int posix_console_winsize(unsigned short *rows, unsigned short *cols) {
+    ENSURE_INIT();
+    if (!rows || !cols) return -1;
+    int rc = -1;
+    if (sys_console_owned()) {
+        g_con_rq.magic = CON_PROTO_MAGIC;
+        g_con_rq.op    = CON_OP_WINSZ;
+        g_con_rq.len   = 0;
+        for (int tries = 0; tries < 20000; tries++) {
+            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+            if (rc >= 0) break;
+            sys_yield();
+        }
+    }
+    if (rc >= 0 && g_con_rp.magic == CON_PROTO_MAGIC && g_con_rp.rc > 0) {
+        *rows = (unsigned short)((g_con_rp.rc >> 16) & 0xFFFF);
+        *cols = (unsigned short)(g_con_rp.rc & 0xFFFF);
+    } else {
+        *rows = CON_ROWS;           /* fallback: the console's conventional size */
+        *cols = CON_COLS;
+    }
+    return 0;
 }

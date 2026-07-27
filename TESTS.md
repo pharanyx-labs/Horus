@@ -107,7 +107,7 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 | `smoke-smt` | SMT sibling threads are parked, closing same-core co-residency. |
 | `smoke-flush` | Flush-on-switch detection matches CPUID, the gated barriers execute without faulting, and the **policy** flushes only on a genuine task change. (Barriers are no-ops under TCG; they engage on hardware or KVM.) |
 | `smoke-tsd` | A ring-3 `RDTSC` faults under `CR4.TSD`. |
-| `smoke-proc` | Process control: spawn, wait, kill, and the `CAP_TCB` authority behind them. |
+| `smoke-proc` | Process control: spawn, wait, kill, signals (incl. mask/unmask and altstack delivery), and the `CAP_TCB` authority behind them. |
 | `smoke-notify` | Async notifications wake a blocked waiter with the accumulated badge. |
 
 ## ELF loading

@@ -1470,7 +1470,14 @@ void fs_selftest(void) {
      * object-store gate. */
     cap_install_from_root(srv, CAPSLOT_FS_LISTEN, 13, FS_EP_REQ);  /* fs listen (READ|WRITE) */
     cap_install_from_root(srv, 6, 6, 0);          /* root_cnode[6] = CAP_USER (ALL) */
-    cap_install_from_root(srv, 7, 8, 0);          /* root_cnode[8] = ALL rights     */
+    /* The object-store capability, BY TYPE (finding I-1). This used to install
+     * root_cnode[8] — a CAP_CONSOLE — into slot 7, and it worked only because the
+     * dispatch table passed the CAP_BLOCK_DEV type constant in the RIGHTS field
+     * with ctype = SC_ANYTYPE, so the gate never checked the type at all. Now the
+     * store syscalls require CAP_ENCRYPTED_STORAGE (root_cnode[9]) by type, which
+     * is what fs_server is actually meant to hold. */
+    cap_install_from_root(srv, CAPSLOT_AUDIT,       9,  0);   /* CAP_ENCRYPTED_STORAGE */
+    cap_install_from_root(srv, CAPSLOT_BOOT_MODULE, 16, 0);   /* CAP_BOOT_MODULE       */
 
 #ifdef CONC_SELFTEST
     /* Multi-client concurrency test: spawn a coordinator (spawn arg 0) plus three
@@ -1484,6 +1491,13 @@ void fs_selftest(void) {
         if (c <= 0) { print("CONC_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
         tasks[c].uid       = 0;
         tasks[c].spawn_arg = (uint32_t)i;       /* 0 = coordinator, 1..3 = workers */
+        /* Only the coordinator polls the OTHER clients' task state to know when
+         * they have finished. Cross-task introspection now requires a real
+         * CAP_AUDIT (finding I-1) — it used to work merely because the caller was
+         * uid 0, which is exactly the ambient authority that was removed. The
+         * workers are deliberately NOT given it: least privilege, and it keeps
+         * this harness an honest exercise of the capability model. */
+        if (i == 0) cap_install_from_root(c, CAPSLOT_AUDIT, 7, 0);   /* CAP_AUDIT */
     }
 #else
     int cli = fs_spawn_embedded(embedded_fsclient_bin_start, embedded_fsclient_bin_end, "fsclient");
@@ -1677,7 +1691,8 @@ void newlib_selftest(void) {
     tasks[srv].uid = 0;
     cap_install_from_root(srv, CAPSLOT_FS_LISTEN, 13, FS_EP_REQ);  /* fs listen (READ|WRITE) */
     cap_install_from_root(srv, 6, 6, 0);
-    cap_install_from_root(srv, 7, 8, 0);
+    cap_install_from_root(srv, CAPSLOT_AUDIT,       9,  0);   /* CAP_ENCRYPTED_STORAGE (by type) */
+    cap_install_from_root(srv, CAPSLOT_BOOT_MODULE, 16, 0);   /* CAP_BOOT_MODULE                 */
 
     int pid = fs_spawn_embedded(embedded_hello_newlib_bin_start,
                                 embedded_hello_newlib_bin_end,

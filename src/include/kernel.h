@@ -298,6 +298,8 @@ static inline int reply_ep_for_task(int tid) {
 #define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE (console_server only)        */
 #define CAPSLOT_NOTIFY     11    /* CAP_NOTIFICATION: fs-ready rendezvous      */
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
+#define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG   (dmesg; shell)            */
+#define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE  (provisioning; fs_server) */
 
 /* Task states. */
 #define TASK_DEAD          0
@@ -576,6 +578,17 @@ struct boot_module_info {
  * end. Only a task holding the end cap can read/write that pipe (zero-trust). The
  * capability algebra treats the type opaquely, so this is a C-side type only. */
 #define CAP_PIPE                13
+
+/* Authority that used to be ambient `uid == 0` (audit finding I-1).
+ *
+ * Nine syscall handlers gated on the caller's uid rather than on a held
+ * capability, so root was a second authority axis running parallel to the
+ * capability graph — which meant the graph was NOT a complete description of who
+ * could do what, defeating much of the point of having one. Each of these types
+ * replaces one of those gates, is minted once in the primordial root cnode, and
+ * is delegated by init to exactly the task that needs it. */
+#define CAP_KERNEL_LOG          14   /* SYS_DMESG: read the kernel message ring   */
+#define CAP_BOOT_MODULE         15   /* SYS_BOOT_MODULE_INFO / _READ               */
 
 #define CAP_RIGHT_READ          (1u << 0)
 #define CAP_RIGHT_WRITE         (1u << 1)

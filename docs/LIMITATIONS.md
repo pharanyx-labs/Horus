@@ -56,17 +56,26 @@ rather than lying to it.
 Fixing this is the top roadmap item. Until it lands, **treat Horus as offering no isolation
 between mutually distrusting ring-3 programs.**
 
-### 1.2 Root is an ambient authority parallel to capabilities — **[I-1]**
+### 1.2 ~~Root is an ambient authority parallel to capabilities~~ — **FIXED 2026-07-27** — **[I-1]**
 
-Nine syscall handlers gate on `tasks[current].uid != 0` rather than on a held capability
-(`SYS_DMESG`, the boot-module read surface, and the object-store API).
-`SYS_GET_TASK_INFO` additionally promotes uid 0 to full introspection over every task.
+**Resolved.** Every `tasks[current].uid != 0` gate is gone, replaced by a held capability:
+`CAP_KERNEL_LOG` for `SYS_DMESG`, `CAP_BOOT_MODULE` for the boot-module surface, and
+`CAP_ENCRYPTED_STORAGE` (enforced **by type**) for the object-store API. `SYS_GET_TASK_INFO`
+no longer promotes uid 0. **The capability graph is now a complete description of kernel
+authority** — the precondition for any confinement or MAC story later.
 
-The capability graph is therefore *not* a complete description of who can do what. Two
-parallel authority systems defeat much of the point of having a capability system, and make
-confinement and any future mandatory-access-control story significantly harder.
+Two things fell out of the fix. The gates were additionally *type-confused* — the dispatch
+table passed a type constant in the rights field with `ctype = SC_ANYTYPE`, so they never
+checked the type at all (**[I-1a]**). And delegating the kernel log to the shell would have
+handed it to every logged-in user, since capabilities are per-task and the shell serves
+successive logins; the shell now enforces the per-user policy itself, with the kernel
+enforcing possession. `smoke-session` caught that.
 
-### 1.3 `SYS_GET_TASK_INFO` discloses another task's instruction pointer — **[I-4]**
+Note that `uid` still exists and still matters — it is the *identity* `fs_server` authorises
+file access against (`SYS_IPC_SENDER`). What is gone is uid as a source of **kernel**
+authority.
+
+### 1.3 ~~`SYS_GET_TASK_INFO` discloses another task's instruction pointer~~ — **FIXED** — **[I-4]**
 
 `info.cr3` is correctly zeroed with an explicit comment about not leaking physical layout,
 but `info.eip` is returned verbatim, defeating userspace ASLR for any task a privileged

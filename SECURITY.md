@@ -144,6 +144,7 @@ Stated as claims, with the mechanism and its witness, so each can be checked.
 | S13 | A server can determine a client's true identity | `SYS_IPC_SENDER` returns the kernel-recorded uid, gated on the receive right | `smoke-fs-perms`, `smoke-captest` |
 | S13a | A task can operate on an IPC object only via a capability naming it | Slot-resolved `ipc_ep_from_slot` / `ipc_notif_from_slot` | `make smoke-captest` (12 refusal checks) |
 | S13b | A client cannot intercept or forge a server's replies | Clients minted WRITE-only; `recv`/`reply_to` need READ | `make smoke-captest` |
+| S18 | Being uid 0 confers no kernel authority by itself | Every ambient `uid == 0` gate replaced by a typed capability | `make smoke-captest` (6 refusal checks, run as uid 0) |
 | S14 | File permissions are enforced against that identity | `fs_server` reference monitor | `make smoke-fs-perms` |
 | S15 | An address-space slot rebuilt after task death leaks nothing | Cspace zeroed on reuse; page pool reclaimed | `make smoke-aspace` |
 | S16 | A task cannot read another's XMM register file | `fxsave`/`fxrstor` across ring transitions | — |

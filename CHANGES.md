@@ -94,11 +94,9 @@ that keep interrupts masked deliberately — task teardown is reached from the
 page-fault handler, and spawn runs inside the ring-3 startup handshake — and
 `spin_unlock` ends with an unconditional `sti` (finding **[C-3.1]**).
 
-The result was a **flaky `smoke-console-smp`**: the shell banner sometimes never
-arrived within the timeout. Measured rather than assumed — the branch scored 1
-pass / 1 fail over two runs where `main` scored 2 / 2, which is the same
-signature the reverted per-CPU-lock attempt produced (roadmap 1.1) and for the
-same underlying reason.
+The symptom was `smoke-console-smp` failing: the shell banner never arrived
+within the timeout, the same signature the reverted per-CPU-lock attempt produced
+(roadmap 1.1) and for the same underlying reason.
 
 The fix makes the untyped critical section **IF-transparent**: `ut_lock` /
 `ut_unlock` save and restore `RFLAGS` around the region, so `spin_unlock`'s `sti`
@@ -107,10 +105,23 @@ rather than as a `pushfq`/`popfq` bracket at each call site, since the number of
 call sites will only grow. It becomes redundant — not wrong — once 1.1 makes
 `spin_unlock` IF-preserving.
 
+Measured, because `smoke-console-smp` turns out to be flaky on `main` too and a
+small sample would have concluded almost anything:
+
+| Build | Runs | Failures |
+|---|---|---|
+| `main` | 6 | 2 |
+| this branch, before the IF fix | 3 | 2 |
+| this branch, after the IF fix | 6 | 1 |
+
+So the regression was real — the pre-fix branch was materially worse than `main`
+— and the fix restores parity. It does **not** fix the underlying flake, which
+predates this work; see the `smoke-console-smp` note in `TESTS.md`.
+
 `untyped.c` also defers *arming* that lock until the end of `scheduler_init`, so
 no lock is taken during early boot at all. Between the deferral and the
 IF-transparency, this is the third subsystem to work *around* C-3.1 rather than
-fix it, and the first to have a CI failure attributable to it.
+fix it.
 
 This completes **Track 0** of the roadmap.
 

@@ -96,6 +96,34 @@ and lands on the two gates that actually matter. Defence in depth is why the fir
 survived; it is also why a falsification that "passes" must be read as a broken test, not as
 a strong kernel.
 
+### Known flaky: `smoke-console-smp`
+
+**`smoke-console-smp` fails roughly a third of the time on `main`** — measured at 2 failures
+in 6 consecutive runs (2026-07-27, TCG, no KVM). The failure is always the same: boot reaches
+`[console_server] ready` and the shell banner never arrives within the 40 s timeout. The
+`HHoorruuss` doubled-banner `FAIL_MARKER` does *not* trip, so this is not the single-writer
+regression the test was written to catch.
+
+This is recorded rather than quietly retried because of what it costs. The test's purpose is
+to guard the ring-3 startup handshake, which is precisely the thing roadmap 1.1 has to
+instrument and change — and a test that fails a third of the time for unrelated reasons cannot
+distinguish a real handshake regression from noise. It is the same defect class as **[I-11]**
+in `smoke-fs-wal`: *a genuine regression and a harness artefact produce identical output.*
+
+It was found while landing roadmap 0.3, and it made that work substantially harder. A real
+C-3.1 regression in the untyped locking was masked by it, and separating the two took eighteen
+QEMU boots across three builds:
+
+| Build | Runs | Failures |
+|---|---|---|
+| `main` | 6 | 2 |
+| 0.3 branch, before the IF-transparency fix | 3 | 2 |
+| 0.3 branch, after the fix | 6 | 1 |
+
+A single run of any of those three would have supported the wrong conclusion. **Treat a
+`smoke-console-smp` result as evidence only in aggregate**, and fix or characterise it before
+1.1 begins.
+
 ## Memory protection and isolation
 
 | Target | Proves |

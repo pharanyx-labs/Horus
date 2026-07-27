@@ -412,11 +412,19 @@ is an exercise of authority the capability graph describes.
 Track 1.1 is the next blocking item, and 0.3 raised its priority with evidence rather than
 argument. Moving cspaces onto untyped memory made `create_task` take a spinlock for the first
 time, and `task_teardown` likewise — both on paths that keep interrupts masked deliberately.
-`spin_unlock`'s unconditional `sti` (**[C-3.1]**) turned that into a **flaky
-`smoke-console-smp`**, measured at 1 pass / 1 fail on the branch against 2 / 2 on `main`. It
-is the same signature as the reverted per-CPU-lock attempt, from the same cause.
+`spin_unlock`'s unconditional `sti` (**[C-3.1]**) turned that into `smoke-console-smp`
+failures with the same signature as the reverted per-CPU-lock attempt, from the same cause:
+2 failures in 3 runs, against 2 in 6 on `main`. An IF-transparent critical section in
+`untyped.c`, plus deferring the lock's arming past boot, restored parity (1 failure in 6).
 
-The workaround — an IF-transparent critical section in `untyped.c`, plus deferring the lock's
-arming past boot — is sound, but it is the third subsystem to route around C-3.1 rather than
-fix it, and the first with a CI failure attributable to it. Each such workaround is another
-place that has to be revisited when 1.1 finally lands.
+That is a workaround, and it is the third subsystem to route around C-3.1 rather than fix it.
+Each one is another place that has to be revisited when 1.1 lands. The episode also says
+something about cost: a change that touches task creation now has to reason about interrupt
+policy that is nowhere written down, and the only way to tell a real regression from noise was
+eighteen QEMU boots.
+
+**A prerequisite that surfaced doing this: `smoke-console-smp` is itself flaky on `main`**, at
+2 failures in 6 runs. Any measurement of the startup handshake — which is exactly what 1.1
+must instrument — is being taken through a test that fails a third of the time for reasons
+unrelated to the change under test. Stabilising it, or at minimum characterising it, belongs
+*before* step 1 of 1.1 rather than after. See `TESTS.md`.

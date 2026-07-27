@@ -298,6 +298,12 @@ Switching is a kernel-`%rsp` swap: save the outgoing frame pointer, install the 
 task's CR3 and TSS RSP0, and hand its saved frame to the ISR epilogue, which pops and
 `iretq`s into it.
 
+**Spawn is suspended.** `do_spawn` returns a child that is *not* schedulable; the supervisor
+endows it (`SYS_CAP_GRANT`) and then calls `SYS_TASK_RESUME`. This is structural, not
+advisory: a child cannot observe a partially-populated cspace because it cannot run at all
+until its supervisor says so. Three separate SMP races were traced to the old
+publish-immediately behaviour before the pattern was recognised (finding **[I-13]**).
+
 **One mechanism, four entry points.** Timer preemption, blocking IPC (`ipc_block_switch`),
 voluntary yield (`sched_yield_switch`), and first entry (`sched_enter_user`) all go through
 the same saved-trap-frame path. First entry works by *fabricating* the frame a preemption

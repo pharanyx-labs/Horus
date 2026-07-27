@@ -184,19 +184,33 @@ create_user_pagedir(id);
     tasks[id].cspace[3].serial = (0xB0000000U | ((uint32_t)id << 16) | 3U);
     tasks[id].cspace[3].generation = rust_lineage_current(tasks[id].cspace[3].serial);
 
-    tasks[id].cspace[4].type   = CAP_ENDPOINT;
-    tasks[id].cspace[4].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
-    tasks[id].cspace[4].object = 0;
-    tasks[id].cspace[4].badge  = 0;
-    tasks[id].cspace[4].serial = (0xB0000000U | ((uint32_t)id << 16) | 4U);
-    tasks[id].cspace[4].generation = rust_lineage_current(tasks[id].cspace[4].serial);
-
-    tasks[id].cspace[5].type   = CAP_ENDPOINT;
-    tasks[id].cspace[5].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
-    tasks[id].cspace[5].object = 1;
-    tasks[id].cspace[5].badge  = 0;
-    tasks[id].cspace[5].serial = (0xB0000000U | ((uint32_t)id << 16) | 5U);
-    tasks[id].cspace[5].generation = rust_lineage_current(tasks[id].cspace[5].serial);
+    /* Slot 4: this task's PRIVATE reply endpoint, and the ONLY endpoint
+     * capability a task is born with (audit finding C-1).
+     *
+     * Slots 4 and 5 used to hold ambient CAP_ENDPOINTs for objects 0 and 1, given
+     * unconditionally to every task with READ|WRITE. Combined with the IPC
+     * syscalls taking a raw object index rather than a slot, that meant authority
+     * over an endpoint was universal: any task could receive on, send to, and
+     * forge replies on any endpoint, including a server's. Both ambient grants are
+     * gone. A task now reaches a service only via a capability something
+     * DELEGATED to it (SYS_CAP_GRANT from its supervisor, or the connect path).
+     *
+     * The reply endpoint is per-task (reply_ep_for_task) and is what SYS_IPC_CALL
+     * parks on. It is deliberately never handed to anyone else, so nothing can
+     * intercept this task's replies or wake it spuriously. READ|WRITE: the task
+     * receives its own replies (READ) and the kernel's delivery path is expressed
+     * as a send (WRITE). */
+    {
+        int rep = reply_ep_for_task(id);
+        if (rep >= 0) {
+            tasks[id].cspace[4].type   = CAP_ENDPOINT;
+            tasks[id].cspace[4].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+            tasks[id].cspace[4].object = (uint64_t)rep;
+            tasks[id].cspace[4].badge  = 0;
+            tasks[id].cspace[4].serial = (0xB0000000U | ((uint32_t)id << 16) | 4U);
+            tasks[id].cspace[4].generation = rust_lineage_current(tasks[id].cspace[4].serial);
+        }
+    }
 
     
     if (id == 0) {

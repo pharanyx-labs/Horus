@@ -46,13 +46,27 @@ emulation is slow, and CI runners are slower; a timeout is usually not a real fa
 
 | Target | Proves |
 |---|---|
-| `smoke-captest` | **29 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. The central conformance suite. |
+| `smoke-captest` | **41 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve of them cover capability-addressed IPC (finding C-1) — see below. The central conformance suite. |
 | `cargo test` (`rust/src/capability.rs`) | Mint masks rights and cannot widen them; transfer shares lineage; system-wide revoke reaches another task's cspace; an unrelated capability survives; primordial roots cannot be revoked; the generation counter skips the pristine sentinel on wrap; serial allocation never yields 0 or a reserved value. |
 | Kani proofs | Revocation nulls **exactly** the target's derivation subtree — no descendant survives, no non-descendant is touched. |
 
-**Known gap.** No test asserts that holding an endpoint capability for object *N* denies
-access to endpoint *M*. That absence is exactly why finding **[C-1]** survived. Adding it is
-part of roadmap item 0.1.
+**The C-1 refusal checks, and why they are asserted precisely.** Twelve checks in
+`smoke-captest` cover capability-addressed IPC: a `CAP_FRAME` (the pre-fix authorisation
+gate) authorises no IPC operation; a WRITE-only client capability is refused `recv`,
+`reply_to`, and `sender` — the interception and reply-forgery halves of the finding; endpoint
+and notification capabilities do not authorise each other's operations; empty slots are
+refused.
+
+Each asserts the **exact** code `SYS_ERR_PERM`, never merely "negative". `sys_ipc_recv`
+returns `-2` for an empty mailbox, so a `< 0` assertion cannot distinguish "the kernel refused
+me" from "I was allowed to read, and nothing was there" — and under the pre-fix kernel these
+probes hit empty endpoints and returned `-2`. The first draft of the suite used `< 0` and
+**passed with the vulnerable handler deliberately restored**, proving nothing.
+
+The fix was therefore verified by falsification: reintroduce the pre-fix handler, confirm the
+suite fails (`CAPTEST: FAIL ipc-recv-on-unheld-slot-allowed`), restore it, confirm 41/41.
+**A test that cannot fail on the bug it targets is not evidence** — the same defect class as
+**[I-11]** in `smoke-fs-wal`.
 
 ## Memory protection and isolation
 

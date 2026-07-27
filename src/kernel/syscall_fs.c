@@ -108,9 +108,24 @@ void h_connect_fs_server(struct interrupt_frame64 *r) {
      * A fresh serial + generation is required or cap_lookup treats the slot as
      * empty and the client cannot pass the IPC capability gate. Rights are masked
      * to R/W/GRANT here so the connect policy lives at the policy site. */
-    uint32_t ep_rights = rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT);
+    /* WRITE ONLY — never READ (audit finding C-1).
+     *
+     * READ is the RECEIVE right on an endpoint. A client minted with READ on the
+     * server's listen endpoint could dequeue other clients' requests
+     * (SYS_IPC_RECV) and, because SYS_IPC_REPLY_TO also requires READ, forge the
+     * server's replies into a victim's blocked SYS_IPC_CALL buffer. That is
+     * exactly the C-1 attack. A client only ever needs to SEND to the service, so
+     * it is minted WRITE-only and the caller-supplied `rights` cannot widen that.
+     *
+     * The client's replies come back on its own private reply endpoint, for which
+     * it already holds a capability (slot 4) that nobody else has.
+     *
+     * Policy note: any task may still connect. The fs_server is a reference
+     * monitor that authorises every request against the caller's kernel-attested
+     * uid (SYS_IPC_SENDER), so a send-only channel to it confers no file access. */
+    (void)rights;
     bool ok = cap_install_endpoint(dest_slot, (uint32_t)fs_server_listen_ep_idx,
-                                   ep_rights, 0xF51A0000U);
+                                   CAP_RIGHT_WRITE, 0xF51A0000U);
     r->rax = ok ? 0 : -2;
 }
 

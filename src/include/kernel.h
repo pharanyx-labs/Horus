@@ -245,8 +245,59 @@ extern uint8_t stack_top[];
 uint32_t rust_get_user_page_protection(uint32_t t, uint64_t v);
 bool rust_user_page_is_noexec(uint64_t vaddr);
 int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, const uint8_t *name, size_t nlen);
-#define MAX_ENDPOINTS 64
-#define IPC_MSG_MAX   256
+/* Endpoint index space.
+ *
+ * [0, REPLY_EP_BASE)                  service endpoints (well-known + general)
+ * [REPLY_EP_BASE, REPLY_EP_BASE+MAX_TASKS)  one PRIVATE reply endpoint per task
+ *
+ * The per-task reply region exists because a blocking SYS_IPC_CALL parks the
+ * caller on a reply endpoint's single `blocked_waiter` field. Clients used to
+ * share one well-known reply endpoint (FS_EP_REP), so two concurrent callers
+ * overwrote each other's waiter; correctness survived only because
+ * SYS_IPC_REPLY_TO routes by kernel-recorded sender identity and never consulted
+ * that field. Giving every task its own reply endpoint removes the collision
+ * structurally, and — with capability addressing (finding C-1) — means a task can
+ * only ever block on, and be woken through, an endpoint no other task holds a
+ * capability for. reply_ep_for_task() is the single mapping. */
+#define MAX_ENDPOINTS   128
+#define REPLY_EP_BASE   64
+#define IPC_MSG_MAX     256
+
+/* The private reply endpoint belonging to task `tid`, or -1 if out of range. */
+static inline int reply_ep_for_task(int tid) {
+    return (tid > 0 && tid < MAX_TASKS) ? (REPLY_EP_BASE + tid) : -1;
+}
+
+/* Well-known service endpoint / notification objects. These MUST match the
+ * userspace protocol headers (include/fs_proto.h, include/console_proto.h) —
+ * they name the same kernel objects from the other side of the syscall boundary.
+ *
+ * NB: these are OBJECT indices, not cspace slots. Since finding C-1 they are no
+ * longer reachable by naming them in a syscall: a task must hold a CAP_ENDPOINT
+ * (or CAP_NOTIFICATION) whose `object` is one of these. They are declared here
+ * only so the kernel can mint the primordial roots. */
+#define FS_EP_REQ       4    /* filesystem service request endpoint  */
+#define CON_EP_REQ      6    /* console service request endpoint     */
+#define NOTIF_FS_READY  0    /* init <-> fs_server provisioning rendezvous */
+
+/* ---- Canonical capability slot map ----------------------------------------
+ *
+ * The slots the kernel installs directly, and the slots init delegates into. A
+ * single authority for both sides; userspace mirrors these in include/syscall.h
+ * as CAPSLOT_*. Everything not listed is free for a task's own use.
+ *
+ * Slots 0-3 are kernel-reserved (mint/transfer refuse to write them). */
+#define CAPSLOT_TCB         0    /* CAP_TCB on self                            */
+#define CAPSLOT_FRAME       3    /* CAP_FRAME for the task's image window      */
+#define CAPSLOT_REPLY_EP    4    /* CAP_ENDPOINT: this task's PRIVATE reply ep */
+#define CAPSLOT_CONSOLE_EP  5    /* CAP_ENDPOINT: console service              */
+#define CAPSLOT_USER        6    /* CAP_USER admin                             */
+#define CAPSLOT_AUDIT       7    /* CAP_AUDIT / object-store (server-specific)  */
+#define CAPSLOT_CONSOLE     8    /* CAP_CONSOLE                                */
+#define CAPSLOT_STORAGE     9    /* CAP_ENCRYPTED_STORAGE                      */
+#define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE (console_server only)        */
+#define CAPSLOT_NOTIFY     11    /* CAP_NOTIFICATION: fs-ready rendezvous      */
+#define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
 
 /* Task states. */
 #define TASK_DEAD          0
@@ -1381,6 +1432,15 @@ void console_isolation_selftest(void);
 int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
 #endif
 
+
+/* Capability-addressed IPC object resolution (audit finding C-1). Resolve a
+ * CSPACE SLOT to the endpoint / notification index the capability there names,
+ * enforcing type, the required right, and the lineage-generation check in one
+ * place. Return 0 and write *out on success, negative on any failure. Defined in
+ * syscall_ipc.c; the sole path from a userspace-supplied slot to a kernel IPC
+ * object. */
+int  ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep);
+int  ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot);
 
 int  sys_ipc_send(uint32_t ep_slot, const void *msg, size_t len);
 int  sys_ipc_recv(uint32_t ep_slot, void *msg, size_t max_len);

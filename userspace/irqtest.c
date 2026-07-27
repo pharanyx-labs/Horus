@@ -23,7 +23,7 @@
 static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
 static void wr(const char *s) { sys_write(1, s, slen(s)); }
 
-#define NOTIF_SLOT 0
+#define NOTIF_SLOT CAPSLOT_NOTIFY   /* cspace slot holding a CAP_NOTIFICATION */
 #define IRQ_TIMER  0
 #define BADGE      0x0000CAFEu
 

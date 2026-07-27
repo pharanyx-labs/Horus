@@ -40,7 +40,7 @@ static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { 
 static int rpc(struct fs_request *rq, struct fs_response *rp) {
     rq->magic = FS_PROTO_MAGIC;
     int r;
-    while ((r = sys_ipc_call(FS_EP_REQ, FS_EP_REP, rq, sizeof(*rq), rp)) < 0) spin_delay();
+    while ((r = sys_ipc_call(CAPSLOT_FS_EP, 0, rq, sizeof(*rq), rp)) < 0) spin_delay();
     if (rp->magic != FS_PROTO_MAGIC) return -102;
     return rp->rc;
 }
@@ -103,7 +103,7 @@ void _start(void) {
     /* Our slot-3 endpoint cap was delegated by the spawner (see fs_selftest), so
      * IPC works immediately. The first rpc() polls until the server is serving.
      * (A best-effort connect also publishes discovery for real clients.) */
-    (void)sys_connect_fs_server(4, CAP_R_W);
+    (void)sys_connect_fs_server(CAPSLOT_FS_EP, CAP_R_W);
 
 #ifdef CONC_SELFTEST
     /* Multi-client concurrency test. Several client tasks hammer the one

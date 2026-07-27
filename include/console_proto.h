@@ -22,12 +22,15 @@
 
 #define CON_PROTO_MAGIC   0x48435052u   /* "HCPR" */
 
-/* Well-known endpoint indices for the console service (distinct from the FS
- * server's 4/5 so the two can run side by side). Requests go to CON_EP_REQ;
- * replies are routed back to each caller by identity via SYS_IPC_REPLY_TO, so
- * CON_EP_REP is only the endpoint a client parks its SYS_IPC_CALL block on. */
-#define CON_EP_REQ   6   /* client -> server requests */
-#define CON_EP_REP   7   /* client's SYS_IPC_CALL reply-wait endpoint */
+/* The console service's request endpoint OBJECT index.
+ *
+ * As with FS_EP_REQ, userspace no longer names this in a syscall (audit finding
+ * C-1): IPC takes cspace SLOTS and the kernel derives the object from the
+ * capability there. A client reaches the console through CAPSLOT_CONSOLE_EP,
+ * which init delegates to the shell and do_spawn propagates (send-only) to every
+ * child. CON_EP_REP is gone — replies land on the caller's private reply
+ * endpoint. */
+#define CON_EP_REQ   6   /* client -> server requests (object index, not a slot) */
 
 /* Operations. */
 #define CON_OP_WRITE    1   /* data[len]  -> rc = bytes written; emit bytes to the console

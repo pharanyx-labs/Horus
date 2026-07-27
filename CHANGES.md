@@ -8,6 +8,93 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — kernel objects are carved from untyped memory (`CAP_UNTYPED`, roadmap 0.3, finding **[I-7]**)
+
+Every kernel object used to be an entry in a fixed `.bss` array — `tasks[64]`,
+`endpoints[128]`, `notifications[64]`, `cspace_pool[64][256]`. The problem was
+never that the numbers were small. It was that the capability graph could not
+answer *"who may create a kernel object?"*, because the answer was "everyone, and
+the storage already exists". Object creation sat outside the model the entire
+security argument is stated over.
+
+Following seL4, a **`CAP_UNTYPED`** capability now names a region of physical
+memory, and **`SYS_RETYPE`** carves typed objects out of it:
+
+- **Attributable.** A task can only create objects in a region it holds a
+  capability for, so "which authority paid for this kernel memory" is answerable
+  by inspecting the capability graph.
+- **Preventable.** Delegating a small region to a task is a hard bound on the
+  kernel memory it can ever consume — the first confinement property the system
+  can state without an asterisk.
+- **Capability-governed lifetime.** An object exists exactly as long as some
+  capability names it, instead of forever because an array slot is never
+  reclaimed.
+
+**The arena and the split.** 4 MiB is reserved from the physical pool at boot —
+the same pattern the loader staging buffer and the RAM vdisk already use, and for
+the same reason: a kernel object table in `.bss` is charged against the
+`__bss_end <= USER_PHYS_BASE` linker assertion whether or not it is used. It is
+split once into `UNTYPED_KERNEL`, which backs per-task cspaces and for which **no
+capability is ever minted**, and `UNTYPED_ROOT`, which `init` holds and delegates
+onward. With a single shared region, "userspace exhausted kernel memory" and "the
+system can no longer create a task" would be the same event.
+
+**Bump allocation, deliberately.** Within a region the watermark never moves
+backwards; destroying an object does not return its bytes. This is a safety
+property, not a simplification. With a free list, an object's bytes can be handed
+straight back out and retyped as a *different* class while a stale capability
+still names the old address — type confusion through reuse. A monotonic watermark
+makes bytes reusable only after every capability into the region has been
+revoked, which is the same event that invalidates the stale reference.
+
+**What moved.** Per-task cspaces are now `KOBJ_CNODE`s from untyped memory,
+removing **516,096 bytes (504 KiB) of `.bss`**. Endpoints and notifications are
+retypable from ring 3 into an index range above the static tables, which remain
+as a compatibility shim for the well-known service objects the boot protocol
+names by index; `endpoint_by_index` / `notification_by_index` are the single
+resolvers and return `NULL` for a destroyed object, so IPC fails closed on a
+stale capability at the same choke point that enforces the capability.
+
+**Destruction by reachability, not refcounts.** `kobj_gc` mark-and-sweeps the
+capability graph from `cap_revoke` and `task_teardown`. A refcount would have to
+be maintained at every mint, transfer, move, grant, revoke, null and teardown site
+across *both* the C and safe-Rust halves of the capability implementation, where
+one missed site is a leak and one double-decrement is a use-after-free reachable
+from ring 3. Reachability is computed from the same graph the security argument
+is already stated over, so the two cannot disagree.
+
+**Capability-addressed, like IPC.** `SYS_RETYPE` (90) and `SYS_UNTYPED_INFO` (91)
+are `SC_NONE` in the dispatch table and resolve their region from the caller's
+slot argument. A fixed table slot would repeat finding **[C-1]** exactly: gating
+on a capability every task happens to hold while never consulting the one that
+names the resource.
+
+**Witnesses.** `captest` 41 → 84 checks, covering both directions — a held
+`CAP_UNTYPED` really does create usable, distinct, destroyable endpoints, and
+every malformed request is refused *without spending any of the region*, since a
+refusal that consumes what it refused is a denial-of-service primitive. Four
+independent gates were falsified against the patched kernel to prove the suite
+detects their removal: the reserved-slot floor, the cspace range checks, the
+capability-type check together with the kernel-reserve guard, and `kobj_gc`
+itself. (An earlier falsification attempt on the type check *alone* was **not**
+caught — the range check masked it — which is why the wrong-type probe now uses a
+`CAP_NOTIFICATION` whose `object` is a valid untyped index.)
+
+**Not migrated.** `tasks[]` — a TCB is reachable from the scheduler's hot path
+and from every trap frame. Retyping a `KOBJ_CNODE` from ring 3 is refused: no
+capability type names a CNode and no syscall installs one as a task's cspace.
+Reclaiming a dead task's cspace needs `cap_lookup`'s NULL-cspace → root-cnode
+fallback removed first, or freeing one would be an authority *escalation* rather
+than a crash.
+
+**Note for roadmap 1.1.** `untyped.c` defers arming its own spinlock until the end
+of `scheduler_init`, because `spin_unlock` ends with an unconditional `sti`
+(finding **[C-3.1]**) and locking during early boot would enable interrupts at a
+point the boot code never asked for. That is the third subsystem to work *around*
+C-3.1 rather than fix it.
+
+This completes **Track 0** of the roadmap.
+
 ### Added — SMT sibling threads are parked (disable-SMT in software; closes the co-residency side channel)
 
 Flush-on-switch (previous entry) closes the *time-sliced* cache/predictor side

@@ -14,6 +14,12 @@
 rust/src/capability.rs          @pharanyx-labs
 rust/src/memory.rs              @pharanyx-labs
 src/kernel/capability.c         @pharanyx-labs
+# untyped.c decides who may create a kernel object and when one is destroyed --
+# the authority-to-allocate half of the capability model (finding [I-7]).
+src/kernel/untyped.c            @pharanyx-labs
+# The conformance suite IS the evidence for the capability claims; weakening a
+# check there is as security-relevant as weakening the kernel it tests.
+userspace/captest.c             @pharanyx-labs
 
 # ---- Syscall dispatch and authorisation -------------------------------------
 # All the syscall*.c files, not just the dispatcher: syscall_ipc.c holds the IPC

@@ -206,6 +206,25 @@ void cap_init(void) {
     root_cnode[14].serial = 0xC0DE000EU;
     root_cnode[14].generation = 0;
 
+    /* Untyped memory (roadmap 0.3, finding I-7): authority to CREATE kernel
+     * objects, which until now was not authority anyone held — object storage
+     * was a `.bss` array and creation was ambient. This names UNTYPED_ROOT, the
+     * user-facing half of the arena; init is endowed with a copy and delegates
+     * bounded regions onward.
+     *
+     * UNTYPED_KERNEL deliberately has NO primordial capability. The kernel's own
+     * cspace reserve must not be nameable from ring 3 at all — not narrowed, not
+     * gated, not present — so that no userspace allocation pattern can starve
+     * task creation. untyped_from_slot refuses it a second time in case one ever
+     * appears by other means. */
+    root_cnode[17].type   = CAP_UNTYPED;
+    root_cnode[17].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT |
+                            CAP_RIGHT_MINT | CAP_RIGHT_REVOKE;
+    root_cnode[17].object = UNTYPED_ROOT;
+    root_cnode[17].badge  = 0;
+    root_cnode[17].serial = 0xC0DE0011U;
+    root_cnode[17].generation = 0;
+
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;
@@ -247,8 +266,8 @@ static bool caller_has_authority(void); /* defined below; the no-ambient guard *
  * races a concurrent rust_cap_revoke_global sweep under SMP and never counts
  * against MAX_CAPS_PER_TASK. Returns false on authority failure, a reserved or
  * out-of-range slot, or when the task is at its capability ceiling. */
-bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
-                          uint32_t rights, uint32_t badge) {
+bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
+                        uint32_t rights, uint32_t badge) {
     /* Allocate the serial before taking cap_lock: cap_alloc_fresh_serial()
      * takes the same (non-recursive) lock, so ordering it inside would deadlock
      * (mirrors cap_create_revocation_set). */
@@ -267,7 +286,7 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
         spin_unlock(&cap_lock);
         return false;
     }
-    cspace[dest_slot].type       = CAP_ENDPOINT;
+    cspace[dest_slot].type       = type;
     cspace[dest_slot].rights     = rights;
     cspace[dest_slot].object     = object;
     cspace[dest_slot].badge      = badge;
@@ -277,6 +296,13 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
     spin_unlock(&cap_lock);
     return true;
 }
+
+bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
+                          uint32_t rights, uint32_t badge) {
+    return cap_install_object(dest_slot, CAP_ENDPOINT, (uint64_t)object, rights, badge);
+}
+
+const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
 
 struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
     if (slot >= CNODE_SIZE) return NULL;
@@ -577,6 +603,20 @@ bool cap_revoke(uint32_t slot) {
             rev_sets[r].valid = 0;
         }
     }
+    /* A revoke can have removed the last capability naming a retyped kernel
+     * object, and an object no capability names is unreachable — so this is the
+     * point at which object lifetimes become capability-governed rather than
+     * index-governed (roadmap 0.3, audit I-7).
+     *
+     * Deliberately INSIDE cap_lock. The sweep decides an object's fate by
+     * reading every cspace, and cap-writes are field-by-field, so running it
+     * unlocked would let it observe a slot mid-install — type already written,
+     * `object` still stale — and conclude a live object is unreachable. Holding
+     * cap_lock makes every cspace it reads quiescent. Lock order is cap_lock ->
+     * untyped_lock and is the same everywhere (untyped_retype releases the
+     * untyped lock before taking cap_lock), so this cannot deadlock. */
+    kobj_gc();
+
     spin_unlock(&cap_lock);
     return ok;
 }

@@ -89,7 +89,7 @@ promotion in `SYS_GET_TASK_INFO` and zero `info.eip` for other tasks (**[I-4]**)
 **Security impact.** Makes the capability graph a *complete* description of authority, which
 is the precondition for any confinement, sandboxing, or MAC story.
 
-### 0.3 ⬜ Kernel objects from untyped memory (`CAP_UNTYPED`) — **[I-7]**
+### 0.3 ✅ Kernel objects from untyped memory (`CAP_UNTYPED`) — **[I-7]** — *landed 2026-07-27*
 
 **Problem.** `tasks[64]`, `endpoints[64]`, `notifications[64]`, `cspace_pool[64][256]` are
 `.bss` arrays under a hard 16 MiB linker ceiling. No retyping discipline, no per-task
@@ -106,6 +106,37 @@ compatibility shim during migration.
 **Security impact.** Kernel-memory exhaustion becomes attributable and preventable — a task
 can only consume kernel memory it holds untyped capability for. Object lifetimes become
 capability-governed. This is the prerequisite for a general-purpose OS.
+
+**Delivered.** A 4 MiB untyped arena reserved from the physical pool (`src/kernel/untyped.c`),
+split once at boot into `UNTYPED_KERNEL` — the per-task cspace reserve, for which *no
+capability is ever minted*, so ring 3 cannot starve task creation — and `UNTYPED_ROOT`, which
+`init` holds and delegates onward. Allocation within a region is seL4's monotonic bump
+pointer: destroying an object does not return its bytes, so bytes only become reusable once
+every capability into the region is gone, and type-confusion-through-reuse is structurally
+impossible rather than merely avoided.
+
+`SYS_RETYPE` / `SYS_UNTYPED_INFO` are capability-*addressed* like the IPC syscalls — the slot
+argument is the gate, both are `SC_NONE` in the dispatch table. Per-task cspaces are now
+`KOBJ_CNODE`s from untyped memory, removing **516,096 bytes (504 KiB) of `.bss`**; endpoints
+and notifications are retypable from ring 3 into an index range above the static tables, which
+remain as a shim for the well-known service objects the boot protocol names by index.
+`endpoint_by_index` / `notification_by_index` are the single resolvers.
+
+Object destruction is a mark-and-sweep over the capability graph (`kobj_gc`, run from
+`cap_revoke` and `task_teardown`) rather than a refcount — reachability is computed from the
+same graph the security argument is stated over, so the two cannot disagree, and there is no
+mint/transfer/grant/revoke site across the C and Rust halves that can be missed.
+
+`captest` 41 → 84 checks. Four independent gates were falsified against the patched kernel to
+prove the suite detects their removal: the reserved-slot floor, the cspace range checks, the
+capability-type check together with the kernel-reserve guard, and `kobj_gc` itself.
+
+**Not migrated.** `tasks[]` — a TCB is reachable from the scheduler's hot path and from every
+trap frame. Retyping a `KOBJ_CNODE` from ring 3 is refused: the object is allocatable but no
+capability type names it and no syscall installs one as a task's cspace, so minting one would
+be authority with no defined meaning (revisit with 2.3). Reclaiming a dead task's cspace
+needs `cap_lookup`'s NULL-cspace → root-cnode fallback removed first, or freeing one would be
+an authority escalation rather than a crash.
 
 ---
 
@@ -192,7 +223,7 @@ independent capability.
 
 ---
 
-## Track 2 — Toward a complete OS 🔒 *(gated on Track 0)*
+## Track 2 — Toward a complete OS *(Track 0 complete)*
 
 ### 2.1 ⬜ Virtual memory objects and shared memory — **[F-2.1]**
 
@@ -373,3 +404,11 @@ Concretely — Track 0 in full, then Track 1.2–1.4, then Track 2 in order, wit
 items landing alongside. The single highest-leverage non-technical change remains finding a
 second reviewer for the capability paths; automated verification has already been pushed
 about as far as it goes without one.
+
+**Track 0 is now complete** (0.1, 0.2, 0.3 all landed 2026-07-27). The object model is true:
+IPC is capability-addressed, ambient root authority is retired, and creating a kernel object
+is an exercise of authority the capability graph describes. Track 1.1 — the boot-time
+interrupt policy that has to precede the spinlock fix — is the next blocking item, and it is
+blocking in a stronger sense than before: `untyped.c` had to defer its own locking to a boot
+milestone specifically because `spin_unlock`'s unconditional `sti` makes early locking unsafe,
+which is the third subsystem to work around **[C-3.1]** rather than fix it.

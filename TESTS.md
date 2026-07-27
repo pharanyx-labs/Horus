@@ -46,7 +46,7 @@ emulation is slow, and CI runners are slower; a timeout is usually not a real fa
 
 | Target | Proves |
 |---|---|
-| `smoke-captest` | **41 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve of them cover capability-addressed IPC (finding C-1) — see below. The central conformance suite. |
+| `smoke-captest` | **84 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1) and twenty-two cover untyped memory and retyping (finding I-7) — see below. The central conformance suite. |
 | `cargo test` (`rust/src/capability.rs`) | Mint masks rights and cannot widen them; transfer shares lineage; system-wide revoke reaches another task's cspace; an unrelated capability survives; primordial roots cannot be revoked; the generation counter skips the pristine sentinel on wrap; serial allocation never yields 0 or a reserved value. |
 | Kani proofs | Revocation nulls **exactly** the target's derivation subtree — no descendant survives, no non-descendant is touched. |
 
@@ -67,6 +67,34 @@ The fix was therefore verified by falsification: reintroduce the pre-fix handler
 suite fails (`CAPTEST: FAIL ipc-recv-on-unheld-slot-allowed`), restore it, confirm 41/41.
 **A test that cannot fail on the bug it targets is not evidence** — the same defect class as
 **[I-11]** in `smoke-fs-wal`.
+
+**The I-7 untyped-memory checks.** Twenty-two checks cover `CAP_UNTYPED` and `SYS_RETYPE`,
+and unlike the C-1 set they deliberately run in **both directions**. `captest` is endowed with
+a real `CAP_UNTYPED` (`captest_selftest`), so the suite asserts that a held capability actually
+creates usable, mutually distinct endpoints — a refusal-only suite would be passed by a kernel
+whose `SYS_RETYPE` returned `SYS_ERR_PERM` unconditionally. It then asserts every malformed
+request is refused, that no refused call spends any of the region (a refusal that consumes what
+it refused is a denial-of-service primitive against the caller's own budget), and that revoking
+the last capability to a retyped endpoint **destroys the object** while leaving its sibling
+intact.
+
+Four gates were falsified against the patched kernel, each in isolation:
+
+| Removed | Check that fired |
+|---|---|
+| the reserved-slot floor | `retype-into-reserved-slot-allowed` |
+| the cspace range checks | `retype-past-cspace-end-allowed` |
+| the capability-type check **and** the kernel-reserve guard | `retype-allowed-through-notification-cap-onto-kernel-reserve` |
+| `kobj_gc` from `cap_revoke` | `revoked-endpoint-object-not-destroyed` |
+
+The third row is the instructive one. Removing the type check *alone* was **not** detected:
+the probes used a `CAP_FRAME` and a `CAP_ENDPOINT`, whose `object` fields fall far outside the
+untyped index space, so the range check caught them and the type gate was never the thing
+under test. The probe was rewritten to use a `CAP_NOTIFICATION` whose `object` is `0` — a
+*valid* untyped index, and specifically the kernel's own cspace reserve — which passes range
+and lands on the two gates that actually matter. Defence in depth is why the first attempt
+survived; it is also why a falsification that "passes" must be read as a broken test, not as
+a strong kernel.
 
 ## Memory protection and isolation
 

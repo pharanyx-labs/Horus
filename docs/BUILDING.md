@@ -1,160 +1,238 @@
 # Building Horus
 
-Toolchain requirements, build targets, build flags, and how to run Horus under QEMU. Horus is **x86-64 only** — the kernel runs in 64-bit long mode and there is no 32-bit kernel build.
+Toolchain, build targets, configuration flags, and how to run Horus under QEMU or on
+hardware.
+
+Horus is **x86-64 only**. The kernel runs in 64-bit long mode; there is no 32-bit kernel
+build. Boot is Multiboot2 via GRUB (BIOS); UEFI is not supported.
 
 ---
 
-## Toolchain requirements
+## Requirements
 
-### Required (all builds)
-
-| Tool | Purpose | Minimum |
-|---|---|---|
-| GCC | C compiler and assembler driver | 9.x |
-| GNU Binutils (`ld`, `objcopy`) | Linker and binary tools | 2.34 |
-| GNU Make | Build system | 4.x |
-| Rust + Cargo | Rust security core | stable (2021 edition) |
-
-### Required for ISO and QEMU
-
-| Tool | Purpose |
-|---|---|
-| `xorriso` | ISO image creation |
-| `grub-pc-bin` / `grub-common` | GRUB2 Multiboot2 modules + `grub-mkrescue` |
-| `mtools` | `mformat`, required by `grub-mkrescue` |
-| `qemu-system-x86_64` | Emulation / boot tests |
-
-### Optional
-
-| Tool | Purpose |
-|---|---|
-| `swtpm` | Software TPM 2.0, required only by the `smoke-tpm*` targets (measured boot / sealing) |
-
-### Installing on Debian / Ubuntu
+A Linux host with an x86-64 native toolchain. No cross-compiler is needed — the kernel is
+built freestanding with your system `gcc`.
 
 ```bash
-sudo apt-get update
-sudo apt-get install \
-    build-essential gcc binutils make \
+sudo apt-get install -y --no-install-recommends \
+    build-essential binutils make \
     xorriso grub-pc-bin grub-common mtools \
-    qemu-system-x86 swtpm
+    qemu-system-x86
 
-# Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
 rustup target add x86_64-unknown-none
 ```
 
----
-
-## Build targets
-
-### `make` / `make all`
-
-Builds `kernel.elf` (x86-64): compiles the Rust crate to `libhorus_shell.a`, all C/assembly and the core userspace binaries, and links with `linker64.ld`.
-
-### `make run`
-
-Builds `boot.iso` and launches QEMU: 512 MB RAM, `qemu64` CPU with AES/RDRAND/SMEP/SMAP, `-machine accel=kvm:tcg` (KVM when available), no display, console + monitor multiplexed onto stdio (`-serial mon:stdio`; Ctrl-A X quits, Ctrl-A C reaches the monitor). It also ships the ported GNU coreutils and their man pages as boot modules by default (`RUN_MODULES=1`), so `/bin` comes up populated and `man <name>` reads `/usr/share/man`; set `RUN_MODULES=0` for a module-free boot. Default login: `user` / `password` (or `root` / `rootpass`).
-
-### `make boot.iso` / `make clean`
-
-`boot.iso` builds the bootable ISO without launching QEMU. `clean` removes compiled objects, the Rust build cache, and `tools/mkheadered` (it keeps the untracked `boot.iso` and the gitignored `newlib/install`).
-
-### `make test`
-
-Runs the **91** Rust unit tests across the security core (see [TESTS.md](../TESTS.md)), then a clean full build to verify compilation.
-
-### `make reproducible-build`
-
-Clean-builds twice with a fixed `SOURCE_DATE_EPOCH` (2021-01-01 UTC) and fails if the two `kernel.elf`/`boot.iso` are not byte-for-byte identical; checksums recorded to `.build.sha`.
-
-### `make security`
-
-Runs the security scanners (Semgrep, Trivy, gitleaks, cppcheck, flawfinder, `cargo-audit`) and emits a CycloneDX SBOM. Advisory (non-blocking in CI).
-
-### Headless self-tests
-
-Each does a clean build with the relevant flag, boots headless under QEMU (`tools/smoke_test.sh`, software TCG — no host KVM needed), and asserts on a serial marker. `SMOKE_TIMEOUT=<seconds>` overrides the default. There are ~45 `smoke-*` targets, all CI-gated; the main ones:
-
-| Target | Asserts |
+| Tool | Purpose |
 |---|---|
-| `make smoke` | Boots to the ring-3 login prompt with no fault/panic — the end-to-end boot check |
-| `make smoke-cpu` | SMEP/SMAP/UMIP are detected *and* present in CR4 |
-| `make smoke-tsd` | Ring-3 `RDTSC` raises `#GP` (CR4.TSD) and is delivered as a fault signal |
-| `make smoke-wx` / `-wx-smp` | Whole-address-space W^X leaf sweep + stack guard pages (single- and multi-core) |
-| `make smoke-stackguard` | Kernel/IST stack guard pages fault on overflow |
-| `make smoke-elf` / `-elf64` | Loader + W^X + relocation for ELFCLASS32 (`R_386_RELATIVE`) and ELFCLASS64 (`R_X86_64_RELATIVE`) static-PIE images |
-| `make smoke-aslr` | The loader randomises the image base across spawns (8 distinct high bases, > 1 GiB span) |
-| `make smoke-preempt` | The timer time-slices two non-yielding ring-3 tasks |
-| `make smoke-signal` | A deliberate fault runs the registered handler instead of killing the task |
-| `make smoke-proc` | Ring-3 process control: exit + kill + spawn + exec + grant + signal + wait |
-| `make smoke-cow` / `-nzcow` | The demand-zero/COW user contract, and the generic non-zero COW break |
-| `make smoke-notify` | Async badge-carrying notifications incl. the blocking wait |
-| `make smoke-pipe` | Bounded in-kernel pipes with EAGAIN + yield back-pressure |
-| `make smoke-flush` | Flush-on-switch detection + policy (IBPB / L1D / MDS) |
-| `make smoke-smp` / `-smt` | APs come online and run tasks; SMT siblings are parked |
-| `make smoke-captest` | Capability/syscall conformance, asserting mostly on refusals |
-| `make smoke-session` / `-session-smp` | Scripted integration: drives the real ring-3 shell over serial (auth + least privilege) |
-| `make smoke-fs` (`STORAGE=ata`) | The ring-3 `fs_server` + a client drive the full path over IPC |
-| `make smoke-fs-persist` / `-perms` / `-conc` / `-wal` / `-large` | Persistence across reboot, POSIX permissions, multi-client concurrency, journal replay, large/double-indirect files (`-conc` also regresses per-task x87/SSE context) |
-| `make smoke-init-fs` | The `init`-delegated `fs_server` driven end-to-end |
-| `make smoke-newlib` | The newlib libc port over the POSIX fd layer (first run fetches + builds newlib) |
-| `make smoke-console` / `-console-isolation` / `-console-smp` | The ring-3 console server; a console-driver fault is contained |
-| `make smoke-mapphys` / `-ioport` / `-irq` | The three device-delegation mechanisms (`CAP_IO_DEVICE`) |
-| `make smoke-modules` / `-coreutils-shell` / `-modules-tamper` | Coreutils shipped as GRUB modules, provisioned into `/bin` and run; and refusal of a tampered module (SHA-256 manifest) |
-| `make smoke-tpm` / `-tpm-tamper` / `-tpm-seal` / `-tpm-seal-roundtrip` | Measured boot (PCR 8/9 vs host-recomputed) + TPM-sealed vdisk KEK (needs `swtpm`) |
-| `make smoke-e820` / `-aspace` | E820 pool sizing; address-space reclaim on task-slot reuse |
-
-### The newlib dependency
-
-`newlib/` is an upstream dependency (gitignored, absent from a fresh clone). The first target that needs the libc port runs `tools/build_newlib.sh`, which fetches newlib 4.5.0 from sourceware (verifying a pinned SHA-256), builds it against `newlib/tools/x86_64-elf-*` (thin wrappers aiming the host gcc at a 64-bit freestanding target, flags kept in sync with `USERSPACE_CFLAGS`), and installs under `newlib/install`. Under a minute; no-ops once built; `make clean` keeps it; CI caches it on the script's hash.
+| `gcc`, `binutils`, `make` | Compile and link the kernel and userspace |
+| `rustup` + `x86_64-unknown-none` | The `no_std` security core |
+| `xorriso`, `grub-pc-bin`, `grub-common`, `mtools` | Build the bootable ISO |
+| `qemu-system-x86` | Run and test |
+| `swtpm`, `swtpm-tools` *(optional)* | Measured-boot and sealed-key testing |
+| `python3` *(optional)* | Scripted shell sessions and PCR recomputation |
 
 ---
 
-## Build flags
+## Building
 
-Pass as `make FLAG=VALUE`.
+```bash
+make            # kernel.elf
+make iso        # boot.iso (implies kernel.elf)
+make clean      # remove build products
+make clean-rust # also clear the Cargo target directory
+```
+
+The build links the Rust staticlib with `--whole-archive` (so `#[no_mangle]` FFI symbols
+survive), then the C kernel objects, under `linker64.ld`.
+
+**Kernel compile flags of note:**
+
+```
+-ffreestanding -fno-pic -fno-pie -mcmodel=kernel
+-mno-sse -mno-mmx -mno-80387        # the kernel never touches FP/SIMD registers
+-fstack-protector-strong -mstack-protector-guard=global
+-Wall -Wextra -Wformat-security -Werror=vla
+-frandom-seed=horus -fdebug-prefix-map=...   # reproducibility
+```
+
+The kernel is built without SSE deliberately: ring-3 owns the FPU/SIMD register file, and the
+kernel's only job is to save and restore it. `fxsave`/`fxrstor` are therefore inline
+assembly, since the compiler is forbidden from emitting SSE.
+
+---
+
+## Running
+
+```bash
+make run        # boot boot.iso under QEMU with a serial console
+make run-tpm    # same, under an emulated TPM (requires swtpm)
+```
+
+Log in as **`root`** / **`horus`**.
+
+Useful once you are in:
+
+```
+ls /bin              # the provisioned coreutils and test programs
+dmesg                # the kernel message ring (root only)
+ps                   # tasks, including the userspace servers
+cat /etc/motd | wc -l
+tcc -v
+help
+```
+
+`Ctrl-A X` exits QEMU.
+
+### On real hardware
+
+`boot.iso` is a standard El Torito BIOS-boot ISO. Write it to a USB stick with `dd` and boot a
+machine in legacy/CSM mode. Horus expects a serial port for its console; without one you get
+VGA text output only. This is genuinely exercised, but expect rough edges — driver coverage
+is minimal (ATA PIO and PS/2 only).
+
+---
+
+## Configuration flags
+
+Pass as `make VAR=value`. Each toggles `#ifdef` regions, so a flag change forces a rebuild of
+the affected objects.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `RUST_ENABLED` | `1` | If `0`, links C stub shims instead of the Rust library |
-| `DEBUG_SHELL` | `0` | Enables the in-kernel debug shell |
-| `MINIMAL_SECURE` | `0` | Strips optional kernel features for a smaller attack surface |
-| `SMP` | `1` | **Default-on.** Brings up the application processors; `SMP_CPUS` sets the guest core count. `SMP=0` compiles the subsystem out and boots single-core |
-| `STORAGE_ATA` | `0` | FS smoke/self-test targets prefer the ATA path; at runtime the kernel always probes for a disk and falls back to the RAM vdisk. `BLOCKS_PER_DISK` sizes the volume |
-| `COREUTILS_MODULES` | `0` | Ships the ported GNU coreutils **and man pages** as GRUB modules (not baked into the kernel); the `fs_server` provisions binaries into `/bin` and man pages into `/usr/share/man` at boot. `COREUTILS_MODULE_SET` selects utilities (default: all; the 16 MiB volume holds every one). `make run` enables it by default (`RUN_MODULES=1`) |
-| `*_SELFTEST` | `0` | Boot-time self-tests: `ELF_`, `ELF64_`, `ASLR_`, `PREEMPT_`, `SIGNAL_`, `PROC_`, `COW_`, `NOTIFY_`, `FS_`, `INIT_FS_`, `PERSIST_`, `PERM_`, `CONC_`, `BIGFILE_`, `NEWLIB_`, `SMP_`, `WX_`, `TSD_`, `PIPE_`, and the TPM ones — each embeds and runs the matching in-kernel test at boot |
+| `SMP` | `1` | Multi-core: ACPI MADT enumeration, AP bringup, per-CPU LAPIC timers, TLB shootdown, SMT parking. `SMP=0` compiles it all out. |
+| `DEBUG_SHELL` | off | In-kernel debug shell and command-execution syscall. **Development only** — it widens the syscall surface. |
+| `MINIMAL_SECURE` | off | Reduced-surface build for security experiments. |
 
-> The `DEBUG_SHELL=1`, `MINIMAL_SECURE=1`, and `SMP=1` configurations are covered by a CI build matrix (the `altconfigs` job).
+CI builds `SMP=1`, `SMP=0` (via the default job), `DEBUG_SHELL=1`, and `MINIMAL_SECURE=1`, so
+all four keep compiling.
+
+### Self-test builds
+
+Each security self-test is a separate kernel configuration whose test-only code is **absent**
+from the default build (and whose test-only syscalls therefore fail closed). You rarely
+invoke these directly — the `make smoke-*` targets build and run them for you.
+
+`WX_SELFTEST`, `ELF_SELFTEST`, `ELF64_SELFTEST`, `PREEMPT_SELFTEST`, `SIGNAL_SELFTEST`,
+`TSD_SELFTEST`, `E820_SELFTEST`, `SMP_SELFTEST`, `FLUSH_SELFTEST`, `CAPTEST_SELFTEST`,
+`PERM_SELFTEST`, and others.
 
 ---
 
-## Userspace programs
-
-Core userspace (`init`, `shell`, `fs_server`, `console_server`, `hello`, `captest`, plus self-test drivers) are compiled as **static-PIE** 64-bit ELF binaries (`EM_X86_64`, `ET_DYN`, linked with `userspace/pie.ld`) running under the GDT's 64-bit user code segment. `do_spawn` picks a random page-aligned load base and the loader applies `R_X86_64_RELATIVE` relocations there; `tools/mkheadered` prepends the custom program header the loader consumes. A flat-binary fallback remains for non-ELF images. Larger programs link against the newlib libc port over a per-process POSIX fd layer (`malloc`/`sbrk`/`brk`).
-
-The loader still supports ELFCLASS32 (`R_386_RELATIVE`); `userspace/elftest.o` is deliberately built 32-bit (`USERSPACE_CFLAGS_32`) so `make smoke-elf` keeps gating that path.
+## Testing
 
 ```bash
-make userspace       # build all userspace binaries
+make smoke      # headless boot; asserts the ring-3 shell banner and login prompt
+make test       # the full local sweep
 ```
 
-The kernel image bundles only the core binaries above, so rebuilding after changing one requires re-running `make` from the top. The **ported GNU coreutils are not bundled** — they ship as GRUB modules (`COREUTILS_MODULES=1`) loaded into RAM outside the kernel image, provisioned into `/bin` at boot. See `userspace/ports/coreutils/README.md`.
+Individual self-tests are `make smoke-<name>`. A few of the important ones:
+
+| Target | Asserts |
+|---|---|
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (29 checks) |
+| `smoke-wx` | No kernel page is both writable and executable (sweeps every leaf PTE) |
+| `smoke-cpu` | SMEP and SMAP are actually set in CR4 |
+| `smoke-smp` | APs run scheduled tasks; TLB shootdown completes |
+| `smoke-aspace` | A rebuilt task slot leaks no physical pages |
+| `smoke-cow` | Copy-on-write breaks correctly |
+| `smoke-modules-tamper` | A corrupted boot module is refused |
+| `smoke-tpm-tamper` | A corrupted module additionally diverges the measured PCRs |
+| `smoke-tpm-seal` | A changed PCR leaves the volume locked |
+| `smoke-fs-perms` | POSIX rwx is enforced against the kernel-attested uid |
+| `smoke-fs-wal` | The journal recovers a crash-interrupted write |
+
+The full catalogue is in [`../TESTS.md`](../TESTS.md).
+
+Tests that need a TPM (`smoke-tpm*`) require `swtpm`; they drive it through
+`tools/run_with_swtpm.sh`. Note that QEMU's `tpmdev` wants `swtpm --ctrl` on a socket, not
+`--server`.
+
+**Timeouts.** Some targets need a larger budget than the 40 s default — for example
+`make smoke-tcc SMOKE_TIMEOUT=320`, because the ~1 MiB `tcc` image loads block-by-block over
+the FS server. Under TCG emulation everything is slow, and four cores are measurably *slower*
+than one.
 
 ---
 
-## Rust crate details
+## Reproducible builds
 
-The crate at `rust/` builds as a `staticlib` with `panic = "abort"`, `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `strip = true`; the resulting `libhorus_shell.a` is linked `--whole-archive`. A missing Cargo or `x86_64-unknown-none` target fails the build with an explicit error.
+```bash
+make reproducible-build   # build twice from clean and diff kernel.elf
+make verify-build         # alias
+```
+
+This is a required CI check. Reproducibility comes from `-frandom-seed`,
+`-fdebug-prefix-map`, `--build-id=none`, and avoiding any timestamp or path leakage into the
+image.
+
+**A reproducible build is a supply-chain control, not a nicety:** it is what lets a third
+party confirm that a binary corresponds to the source beside it. Note that the repository
+currently also *commits* a prebuilt `kernel.elf`, which undercuts that — see
+`docs/LIMITATIONS.md` §5.6. Always rebuild rather than trusting the committed artifact.
+
+---
+
+## Boot modules
+
+Program images reach the system as GRUB `module2` entries rather than being compiled into
+`kernel.elf`, so they cost nothing against the `__bss_end <= USER_PHYS_BASE` (16 MiB) linker
+assertion.
+
+At build time, `tools/gen_module_manifest.sh` hashes each module and generates
+`src/kernel/boot_module_manifest.h`, which is compiled **into the kernel image**. At boot the
+kernel re-hashes each module and compares. A module that does not match is reported as an
+empty slot and its payload cannot be read — so it can never be provisioned into `/bin` as an
+executable.
+
+`init` reads verified modules over `SYS_BOOT_MODULE_READ` and writes them into the encrypted
+store. Destinations are constrained to `/bin` and `/usr/share/man`. Nothing ever executes a
+module in place.
+
+To add one: build a PIE binary into `userspace/`, add a `module2` line to `grub.cfg`, and
+rebuild. The manifest regenerates automatically.
+
+---
+
+## Rust core
+
+```bash
+cargo test   --manifest-path rust/Cargo.toml --release
+cargo clippy --manifest-path rust/Cargo.toml --release --all-targets -- -D warnings
+```
+
+Both are CI hard gates — clippy warnings fail the build.
+
+Fuzzing (nightly toolchain):
+
+```bash
+cargo +nightly fuzz run <target>    # targets in rust/fuzz/
+```
+
+Kani proofs over the capability algebra run under `cargo kani`.
+
+The crate has **no external runtime dependencies**. That is deliberate: it keeps the
+supply-chain graph empty. Dependabot is configured for Cargo anyway, so it lights up the
+moment one is added.
 
 ---
 
 ## Troubleshooting
 
-- **`grub-mkrescue failed`** — install `grub-pc-bin grub-common xorriso mtools`.
-- **`cargo not found`** — install Rust via `rustup`.
-- **`rust target x86_64-unknown-none missing`** — `rustup target add x86_64-unknown-none`.
-- **Linker errors about missing `rust_*` symbols** — ensure `RUST_ENABLED=1` (default) or the crate built; pass `RUST_ENABLED=0` to use the C stubs.
-- **`smoke-tpm*` fails to start** — install `swtpm`; those targets need a software TPM 2.0.
-- **QEMU shows nothing / serial only** — the boot configures GRUB's terminal to serial; connect via `nc localhost 4445`.
+**`error: linker ... cannot find -lhorus_shell`** — the Rust staticlib did not build. Run
+`cargo build --manifest-path rust/Cargo.toml --release --target x86_64-unknown-none` and read
+the error.
+
+**`can't find target x86_64-unknown-none`** — `rustup target add x86_64-unknown-none`.
+
+**`xorriso: command not found` on `make iso`** — install `xorriso grub-pc-bin grub-common
+mtools`.
+
+**QEMU boots to a blank screen** — Horus's console is on serial. Use `make run`, which wires
+`-serial mon:stdio`, rather than invoking QEMU by hand.
+
+**A smoke test times out** — raise the budget (`make smoke-x SMOKE_TIMEOUT=180`). CI runners
+and TCG are slow; this is usually not a real failure.
+
+**Linker assertion `__bss_end <= USER_PHYS_BASE`** — you added a large static array. Move it
+into a physical-pool reservation instead (see how `loader_staging` and `g_vdisk_backing` are
+handled in `src/include/kernel.h`).

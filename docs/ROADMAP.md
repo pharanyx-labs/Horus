@@ -1,429 +1,349 @@
 # Horus Roadmap
 
-This roadmap is organised around a single objective: **close the gap between what
-Horus's code achieves and what its engineering process guarantees.** A July 2026
-audit ([AUDIT-2026-07.md](AUDIT-2026-07.md)) found the kernel to be disciplined
-research-grade work, but the *ecosystem that produces it* — branch protection,
-review, supply-chain provenance — not yet commensurate with the high-assurance
-goals the kernel pursues. It also surfaced a real capability-algebra defect. Those
-findings now set the priority order.
+**Objective: a complete operating system built from the ground up, on a kernel small enough
+to be verified and a capability model strong enough to be relied on.**
 
-The plan was three **audit-remediation tracks** at the top; the capability-model
-(Track 1) and boot-integrity (Track 2) findings are now fixed, and Track 0's code
-controls (branch protection, CodeQL, Dependabot) are in place — leaving P2
-(independent review) and P4 (attested builds) as the open high-priority items,
-alongside the ongoing capability-maturity work (SMP performance, userspace,
-verification, driver isolation). A record of completed foundations is at the end.
+The roadmap is ordered by *assurance value*, not by demo value. A feature that runs on an
+unenforced foundation adds surface without adding capability, and increases the cost of
+fixing the foundation later. So the sequence is: **make the object model true, make kernel
+objects allocatable, then grow the OS on top.**
 
-Nothing here is a commitment — priorities shift as contributors join. If you want
-to work on something, open an issue first; coordination saves effort. Finding IDs
-(A1–A4, P1–P5) reference [AUDIT-2026-07.md](AUDIT-2026-07.md).
+Findings referenced as **[C-n]** / **[I-n]** / **[F-n]** are from
+[`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
 
 ---
 
-## Where things stand
+## Status legend
 
-Horus is a working x86-64 capability microkernel that boots a ring-3 `init`
-supervising a ring-3 shell across multiple cores, with a userspace filesystem
-server over an encrypted, persistent, crash-atomic store, a newlib libc port,
-ring-3 process control, and a safe-Rust security core (capability algebra, page
-refcounting, the whole ELF-loader parse, the crypto primitives). It passes a broad
-headless QEMU self-test suite in CI. The completed foundations are summarised at
-the bottom of this document; the audit did not dispute any of that — it found that
-the surrounding **assurance chain** is the weak link, plus one correctness defect in
-the capability engine.
-
-**Priority framing after the audit:**
-
-| Track | Theme | Blocking finding(s) | Priority |
-|---|---|---|---|
-| **0** | Assurance & governance | P1, P2, P3, P4, P5 | **Now — highest leverage** (P2/P4 open) |
-| **1** | Capability-model correctness | A1, A2, A3 | **Done** (A1/A2/A3 fixed; residual is the lineage hash) |
-| **2** | Boot & supply-chain integrity | A4, P4 | **Done** (A4 + measured boot; residual is P4) |
-| **3** | SMP maturity | — | Ongoing (security items done; perf remains) |
-| **4** | Userspace ecosystem | — | Ongoing |
-| **5** | Verification & assurance scaffolding | expands Track 1 | Ongoing |
-| **6** | Driver privilege separation | — | Ongoing |
+| | |
+|---|---|
+| ✅ | Done and tested in CI |
+| 🚧 | In progress |
+| ⬜ | Not started |
+| 🔒 | Blocked on an earlier item |
 
 ---
 
-## Track 0 — Assurance & governance *(highest priority)*
+## Track 0 — Fix the object model (blocking everything else)
 
-The kernel's runtime claims can be no stronger than the pipeline that builds and
-ships it. Right now several controls the repository *documents* are not *enforced*.
-This track makes the process match the promise. None of it touches kernel code, and
-all of it is high-leverage.
+This track is the difference between "a capability-based microkernel" and "a microkernel
+that has capabilities in it". Nothing in Tracks 2–4 should land before it.
 
-### 0.1 — Enforce `main` (P1) — *mostly done*
+### 0.1 ⬜ Capability-addressed IPC — **[C-1]**, **[C-2]** — *Critical*
 
-`main` is now branch-protected. Enabled:
+**Problem.** Endpoints and notifications are addressed by an unmediated integer index; a
+`CAP_ENDPOINT`'s `object` field is never consulted on an IPC operation. Any task can
+intercept or forge messages to any userspace server.
 
-- **Required status checks** (the hard gates): *Rust unit tests + clippy
-  (deny-warnings gate)*, *Build kernel.elf + bootable ISO (x86_64)*, *QEMU
-  smoke-boot (headless)*, and *Verify reproducible kernel build* — a PR cannot
-  merge while any is red.
-- **Enforce for administrators** (the rule is not owner-bypassable).
-- **Block force-push and branch deletion** (history cannot be rewritten).
-- **Linear history** (merges are squash/rebase, no merge commits).
+**Change.** Make the first argument of every IPC syscall a *cspace slot*, not an object
+index, and resolve it through the capability:
 
-*Deferred:* **required CODEOWNERS review** is intentionally **not** enabled while
-the project has a single maintainer — a required review with no second reviewer
-would deadlock all merges. This is the P2 gap, documented as an accepted risk in
-[../SECURITY.md](../SECURITY.md); turn required review on the moment a second
-reviewer exists. (`strict`/up-to-date-before-merge is also off for now, to avoid
-serial-rebase friction.)
+```c
+static int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
+    struct capability *c = cap_lookup(slot, need_rights);
+    if (!c || c->type != CAP_ENDPOINT) return -1;
+    if (c->object >= MAX_ENDPOINTS)    return -1;
+    *out_ep = (uint32_t)c->object;
+    return 0;
+}
+```
 
-### 0.2 — Independent review (P2)
+Apply to `SEND` (WRITE), `RECV` (READ), `CALL` (both endpoints), `REPLY`, `REPLY_TO`,
+`IPC_SENDER`, and to `NOTIFY`/`WAIT_NOTIFY` against `CAP_NOTIFICATION`. **Remove the slot-3
+entries from the dispatch table for those syscalls** — the per-slot lookup *is* the gate, and
+leaving the table entry would re-admit the `CAP_FRAME` every task holds there.
 
-Add at least one independent reviewer for the security-critical paths
-(`capability.*`, `paging.c`, `scheduler.c`, `crypto.*`, `.github/workflows/`).
-Until a second engineer exists, **document the single-maintainer risk as an
-accepted limitation** in [../SECURITY.md](../SECURITY.md) rather than leaving
-"CODEOWNERS review" to imply four-eyes that does not happen. Consolidate the four
-committer identities and **require signed commits** (P5).
+**Migration.**
+- `create_task` stops installing ambient endpoint capabilities; slots 4/5 become `CAP_NULL`
+  and are populated only by delegation from `init`.
+- `SYS_CONNECT_FS_SERVER` becomes the legitimate acquisition path and mints
+  **`CAP_RIGHT_WRITE` only**, so a client can send to the server but never receive on the
+  server's endpoint.
+- Each client gets a *private* reply endpoint allocated at connect time, retiring the shared
+  global `FS_EP_REP` and fixing the `blocked_waiter` collision (**[I-5]**).
+- Update `include/syscall.h` wrappers, `fs_server`, `console_server`, `init`.
 
-### 0.3 — Turn on the native security controls (P3) — *mostly done*
+**Security impact.** Restores confidentiality and integrity for every ring-3 service.
+Converts `fs_server`'s reference-monitor design and the `SYS_IPC_SENDER` identity anchor from
+aspirational to enforced.
 
-- **Dependabot vulnerability alerts + automated security updates** enabled at the
-  repository level, and the **cargo** ecosystem (`/rust`) added to
-  `.github/dependabot.yml` alongside GitHub Actions.
-- **CodeQL** workflow added (`.github/workflows/codeql.yml`): it builds the C
-  kernel under CodeQL's tracer (`security-and-quality` suite) and uploads SARIF to
-  the Security tab. Advisory, not a merge hard-gate.
-- *Remaining:* promote a **fast, deterministic Kani/fuzz subset** (pinned nightly,
-  fixed seed corpus) to a **required** check so a regression in a proven invariant
-  — `mint_never_escalates_rights`, `serial_never_reserved_or_zero`, the ELF
-  validators — cannot merge green.
+**Witness to add.** Negative conformance tests in `userspace/captest.c`: a task holding an
+endpoint capability for object *N* is refused `send`/`recv` on every other endpoint; a task
+with no endpoint capability is refused all IPC. *The absence of exactly this test is what let
+the defect stand.*
 
-### 0.4 — Hermetic, attestable builds (P4)
+**Do not bundle this with feature work.** It is a focused, breaking, reviewable change.
 
-- Pin the toolchain: `rust-toolchain.toml` plus a **digest-pinned container or Nix
-  flake** for the C/binutils/GRUB toolchain, so "reproducible" means reproducible
-  *across time*, not only within one ephemeral runner image.
-- Emit **SLSA provenance** for `kernel.elf` / `boot.iso` and **sign the artifacts**
-  (cosign / sigstore), recording the reference hashes alongside the existing
-  `.build.sha`.
+### 0.2 ⬜ Retire ambient `uid == 0` authority — **[I-1]**
 
-### 0.5 — Repository hygiene (P5) — *partially done*
+Replace each `tasks[cur].uid != 0` gate with a distinct capability type — `CAP_KERNEL_LOG`
+(dmesg), `CAP_BOOT_MODULE` (module read surface), `CAP_OBJECT_STORE` (the encrypted store
+API) — minted by `init` and delegated to exactly the server that needs it. Remove the root
+promotion in `SYS_GET_TASK_INFO` and zero `info.eip` for other tasks (**[I-4]**).
 
-- **`delete_branch_on_merge` enabled** — merged PR branches are auto-deleted going
-  forward.
-- *Remaining:* prune the ~55 already-merged feature branches (a bulk-delete the
-  maintainer should run — e.g. `git branch -r --merged origin/main | ... | xargs
-  git push origin --delete`); consolidate the committer identities and **require
-  signed commits** (P2/P5).
+**Security impact.** Makes the capability graph a *complete* description of authority, which
+is the precondition for any confinement, sandboxing, or MAC story.
 
----
+### 0.3 ⬜ Kernel objects from untyped memory (`CAP_UNTYPED`) — **[I-7]**
 
-## Track 1 — Capability-model correctness *(highest priority)*
+**Problem.** `tasks[64]`, `endpoints[64]`, `notifications[64]`, `cspace_pool[64][256]` are
+`.bss` arrays under a hard 16 MiB linker ceiling. No retyping discipline, no per-task
+kernel-memory accounting, hard ceiling on system size.
 
-The audit found the revocation algebra revokes an **equivalence set**, not a
-**derivation subtree** (A1), the grant path skips the locked write discipline (A2),
-and the lineage table is a lossy hash (A3). These are correctness defects in the
-system's core security mechanism. A1 fails safe (it over-revokes) but violates the
-advertised least-privilege-delegation and transitive-revocation semantics.
+**Change.** Follow seL4. `CAP_UNTYPED` names a physical region;
+`SYS_RETYPE(untyped, type, count, dest_slots)` carves typed objects — TCB, CNode, Endpoint,
+Notification, Frame, PageTable — out of it. Objects are destroyed when the last capability to
+them is revoked.
 
-### 1.1 — Replace equivalence-set revocation with a derivation tree (A1) — *done*
+Start by moving cspaces and endpoints off `.bss`, keeping the existing tables as a
+compatibility shim during migration.
 
-`revoke_matching_in`/`lineage_matches` were replaced by `revoke_subtree`, which
-computes the exact **derivation subtree** of the target: seed a bounded worklist
-with the target's serial, then close it under "child (`badge`) of an already-revoked
-serial", and null exactly those. Ancestors, siblings, and independent same-`object`
-capabilities are left intact (this builds on the A2 fix, which makes every derived
-cap record its immediate parent's serial in `badge`). Completeness is a fail-safe:
-if a subtree exceeds the worklist (`MAX_REVOKE_LINEAGE = 256`, never in practice),
-the null pass also sweeps every cap sharing the target's `object` — a complete
-superset, so no descendant can survive.
-
-Regression tests landed: revoking a child leaves the parent and siblings intact;
-two independent same-object caps are independent; the overflow fallback revokes a
-whole oversized subtree; the existing transitive-chain / other-cspace / grant tests
-still pass. Covered on real hardware by `smoke-captest` / `smoke-proc` /
-`smoke-aspace` / `smoke-session` / `smoke-fs-conc`.
-
-*Follow-up:* an explicit CDT with parent pointers would remove the (documented,
-never-hit) worklist bound; extend the Kani harnesses to the revised revocation once
-the shared mutable state is modelled (Track 5).
-
-### 1.2 — Route `SYS_CAP_GRANT` through the locked discipline (A2) — *done*
-
-Replaced the raw `tasks[target].cspace[dest_slot] = granted` store with
-`cap_grant_into` (C) → `rust_cap_grant_into` (safe Rust): the source lookup and
-destination store now happen together under `cap_lock` (SMP-safe against a
-concurrent revoke), the write is counted against the target's `caps_in_use`
-ceiling, rights are masked to `new_rights & src.rights` (rights-reduction plumbing
-in place; the 3-arg `SYS_CAP_GRANT` ABI still passes full rights for
-compatibility), and the grantee records the grantor's cap as its parent
-(`badge = src.serial`) so the derivation tree the A1 fix relies on is well-formed.
-The originally-reported "reserved-slot floor" sub-point was withdrawn — grant
-legitimately endows a dominated child's low slots (e.g. a server's IPC gate at slot
-3). Covered by new Rust unit tests and the `smoke-proc` / `smoke-captest` /
-`smoke-init-fs` / `smoke-session` self-tests.
-
-*Follow-up:* expose the `new_rights` mask through the syscall ABI (a 4th argument
-or a dedicated `SYS_CAP_GRANT_RIGHTS`) so a supervisor can delegate with reduced
-rights and, by default, without `CAP_RIGHT_REVOKE`.
-
-### 1.3 — Activate and correctly key the lineage backstop (A3 / finding 3.3) — *done (activation); residual is the hash*
-
-The generation mechanism used to be **dormant**: every capability was created with
-generation 0, `lineage_check` treated 0 as "untracked / always valid", and the
-table was keyed by `object` (so two independent same-object caps shared a cell).
-Finding 3.3 fixed all three: the table is now keyed by a capability's
-globally-unique **`serial`**, the check is **strict equality** with no gen-0 escape
-hatch, and every C creation site stamps `generation = rust_lineage_current(serial)`.
-The backstop is therefore a genuine, independent second mechanism alongside the
-structural nulling — a revoked capability is invalidated both by having its slot
-nulled *and* by having its serial bumped. Proved over the whole `u32` input space by
-two Kani harnesses (`revoke_invalidates_recorded_generation`,
-`revoke_does_not_touch_a_distinct_lineage_cell`) and regression-tested by
-`test_gen0_snapshot_invalidated_after_revoke_finding_3_3`.
-
-*Residual:* the 4096-slot table is still a lossy hash, so distinct serials can
-collide into one cell and bumping one lineage can spuriously invalidate a colliding
-serial's live caps at next use — an availability-only, fail-safe effect. The fix is
-exact per-serial generation storage (a collision-free map rather than a hash); until
-then, no correctness action is required.
+**Security impact.** Kernel-memory exhaustion becomes attributable and preventable — a task
+can only consume kernel memory it holds untyped capability for. Object lifetimes become
+capability-governed. This is the prerequisite for a general-purpose OS.
 
 ---
 
-## Track 2 — Boot & supply-chain integrity
+## Track 1 — Correctness and performance foundations
 
-### 2.1 — Verify the boot modules (A4) — *done*
+### 1.1 ⬜ Make boot-time interrupt enablement explicit, *then* fix the spinlock — **[C-3]**, **[C-3.1]**
 
-**Landed.** The kernel now embeds a **SHA-256 manifest** of exactly the modules it
-was built to ship, generated at build time by `tools/gen_module_manifest.sh` from
-the same `BOOT_MODULES` list the ISO is assembled from
-(`src/kernel/boot_module_manifest.h`, generated — not checked in). At boot, right
-after the multiboot tag walk and before any userspace exists,
-`boot_module_verify_all()` hashes every module where GRUB left it and requires an
-exact **(destination path, size, SHA-256)** match. Unmatched modules are marked
-unverified, and the two syscalls that expose them fail closed:
-`SYS_BOOT_MODULE_INFO` reports an empty slot (so the `fs_server` provisioning loop
-skips it) and `SYS_BOOT_MODULE_READ` refuses the payload — so an unverified module
-can never be provisioned into `/bin` as a root-owned executable.
+The IRQ nesting depth is a single global shared across CPUs, with non-atomic increments and
+an unconditional `sti` on release. Under SMP one CPU's release can re-enable interrupts while
+another still holds a lock, and the unconditional `sti` re-enables interrupts inside a
+caller's own `cli` region — including `user_copy`'s CR3 window, where a preemption leaves a
+stale CR3 to restore.
 
-Design notes: no key is involved by choice — the manifest ships *inside* the
-reproducible kernel image, so the image is the root of trust and any embedded key
-would be equally readable. A build that ships no modules gets an **empty** manifest
-and therefore refuses every module it is handed (fail closed, and correct: such a
-kernel never attested to any). Verification runs once at boot, so the syscalls only
-test a flag.
+**The obvious fix was attempted on 2026-07-27 and reverted.** Per-CPU depth plus per-CPU saved
+`RFLAGS.IF` passes every local gate and then breaks the ring-3 startup handshake in CI
+(`smoke-modules` timed out waiting for provisioning; `smoke-coreutils-shell` failed with
+`ls: spawn fs_server first`). Base rate on `main` is ~0 — 14 of 15 recent runs fully green —
+and the patched branch failed 2 for 2.
 
-Gated by **`make smoke-modules-tamper`** (CI): it builds the kernel with the
-manifest, assembles a second ISO carrying the *same kernel* but one module payload
-corrupted (one byte flipped — size unchanged, so only the hash differs), and
-asserts the kernel refuses exactly that module and still boots. Falsification-
-tested: with the verification neutered the tampered module provisions happily and
-the gate goes red. `make reproducible-build` remains byte-for-byte identical.
+Cause (**[C-3.1]**): the unconditional `sti` means every lock taken with interrupts already
+masked *enables* them as a side effect. Boot and early init take many such locks, so the
+timer preemption the `init` → `fs_server` → shell handshake depends on is a consequence of
+the locking defect, not of any stated policy. **The bug is load-bearing.**
 
-*Remaining for a full A4 close:* the manifest's integrity rests on the kernel image
-being unmodified, which is Track 0.4's job (pinned toolchain, SLSA provenance,
-signed artifacts) and 2.2's (measured boot). Signing the kernel image itself would
-also let the manifest be decoupled from the build (an embedded public key + a
-separately-shipped signed manifest), which needs ed25519 in the Rust core.
+Required order:
 
-#### Design record — why the embedded hash manifest, not a signed one
+1. Make boot-time interrupt enablement explicit — find every window relying on the accidental
+   `sti`, issue or defer `sti` deliberately, and write the policy down.
+2. Add a self-test asserting `IF` state at the boot milestones so the dependency cannot
+   silently return.
+3. Then land the per-CPU, IF-preserving lock.
 
-Two designs were scoped. The **embedded per-module hash manifest** (chosen) needs
-no new crypto: the build hashes each module and bakes the table into `kernel.elf`,
-so security rests on the kernel image being the reproducible root of trust. Its one
-real cost is that the kernel build must learn the module hashes before it compiles
-— handled by generating the header from `BOOT_MODULES` as a prerequisite of
-`main.o`, with an empty manifest (and no rebuild churn) when no modules ship, so a
-plain `make` and the `reproducible` job are unaffected.
+Own PR, with the startup handshake instrumented. Do not attempt step 3 alone.
 
-The alternative — an embedded **ed25519 public key** plus a separately-shipped
-signed manifest — decouples the kernel build from module contents, but requires
-adding curve25519/ed25519 verification to the Rust core: a substantial,
-security-sensitive primitive the crate does not have. (A symmetric HMAC key would
-be pointless: it would sit readable inside the reproducible image.) That remains
-the upgrade path once the kernel image itself is signed (Track 0.4).
+### 1.2 ⬜ `%gs`-based per-CPU data — **[I-6]**
 
-#### Companion — destination allowlist
+`swapgs` at every ring transition; `%gs:0` holds CPU id, the current TCB pointer, and the
+per-CPU IRQ-nesting state. Removes an uncached LAPIC MMIO read from the hottest kernel path
+(currently several per syscall). Initialise `IA32_KERNEL_GS_BASE` per CPU at AP bringup.
 
-`module_dest_ok` in `fs_server.c` constrains *where* a module may land: only a bare
-name (→ `/bin`), a path under `bin/`, or one under `usr/share/man/`; absolute paths
-and any empty, `.` or `..` component are refused, and a rejected module is skipped
-with a log line. With 2.1's content check this closes both halves — **what** a
-module contains and **where** it may go.
+### 1.3 ⬜ Multi-slot endpoint queues and a reply-capability primitive — **[I-5]**
 
-### 2.2 — Measured boot + TPM-sealed vdisk KEK — *done*
+A bounded FIFO per endpoint, plus a **one-shot reply capability** minted at call time and
+consumed on reply (seL4's reply object). This makes reply forgery *structurally* impossible
+rather than merely gated, removes the poll-on-contention busy-wait, and is the precondition
+for priority inheritance.
 
-**Landed.** A minimal TPM 2.0 TIS (FIFO) driver (`src/kernel/tpm.c`), driven once on
-the BSP right after `boot_module_verify_all()`, records the reproducible boot hash
-chain into the OS-owned PCRs of the SHA-256 bank:
+### 1.4 ⬜ Fail-closed user copies — **[C-4]**
 
-- `PCR[8] ← extend( H("horus-measured-boot-v1" ‖ serialized module manifest) )` — a
-  kernel-identity token bound to the exact module set the reproducible image
-  attests to (the 2.1 embedded manifest).
-- `PCR[9] ← extend(` each **verified** boot module's SHA-256, in manifest order `)` —
-  a module that fails 2.1 verification is not measured, so tampering with a payload
-  provably moves `PCR[9]`.
+`copy_from_user`/`copy_to_user` currently clamp to `USER_MEM_MAX_COPY` and return success.
+Refuse instead; add an explicit partial-copy API if a caller genuinely needs one.
 
-On top of the measurement, the encrypted store's KEK is **sealed to the TPM**. The
-`disk_key` is AEAD-wrapped by a KEK that, for a volume formatted in **TPM mode**
-(superblock v6, chosen when a TPM is present), is two-factor:
-`KEK = HKDF(password-KEK, tpm_secret)`, where `tpm_secret` is TPM2-sealed under a
-`PolicyPCR(PCR[8],PCR[9])` and released **only** by a measured-good boot. A tampered
-module → different `PCR[9]` → the TPM itself refuses the unseal → the wrong KEK is
-produced → `disk_key` never unwraps → the volume stays **locked** (the same
-fail-closed surface as a wrong password, and enforced by the TPM, not by an `if`).
+### 1.5 ⬜ 64-bit-clean heap arithmetic — **[I-2]**
 
-**Best-effort:** on a machine with no TPM (the default, and the plain release
-`boot.iso`) the whole subsystem is a no-op and boot continues; a password-mode
-volume (`tpm_mode = 0`, unchanged) is unaffected. The storage primary is an ECC
-P-256 parent recreated deterministically from the Owner seed each boot, so nothing
-is kept in TPM NV — only the sealed `(public,private)` blob is persisted (its own
-block in the v6 layout). No HMAC/parameter-encryption sessions are used
-(authorization is password/empty for the storage hierarchy and a bare policy
-session for the unseal); the transport is the in-process swtpm/QEMU channel.
+`SYS_SBRK`/`SYS_BRK` must be `uint64_t` end-to-end with an explicit overflow check before the
+range test. Latent today; sharp the moment the user address space widens past 4 GiB.
 
-Gated in CI (all under an emulated **swtpm**):
-- **`make smoke-tpm`** — assert the guest-measured `PCR[8]/PCR[9]` equal the values
-  recomputed on the host from the reproducible manifest (`tools/tpm_expected_pcr.py`)
-  — external verification, not the guest's own word.
-- **`make smoke-tpm-tamper`** — corrupt one module payload; require it be refused
-  **and** the measured PCRs diverge (measurement is load-bearing).
-- **`make smoke-tpm-seal-roundtrip`** — seal a secret under `PolicyPCR(8,9)`, unseal
-  it, then perturb `PCR[9]` and require the same blob be **denied**.
-- **`make smoke-tpm-seal`** — format the vdisk in TPM mode, unlock it, then require a
-  changed `PCR[9]` to leave it **locked**.
+### 1.6 ⬜ Unbounded revocation closure — **[I-3]**
 
-*Remaining for a hardware deployment:* session parameter-encryption (the in-process
-emulated bus does not need it), and — for remote attestation rather than local
-sealing — a `TPM2_Quote` with an attestation key. `make reproducible-build` stays
-byte-for-byte identical (the kernel-identity token is a build-time constant).
+Replace the fixed 256-entry worklist with an iterate-to-fixpoint or mark-and-sweep closure,
+removing the object-wide overflow fallback and with it the denial-of-service on a peer's
+independent capability.
 
 ---
 
-## Track 3 — SMP maturity
+## Track 2 — Toward a complete OS 🔒 *(gated on Track 0)*
 
-The SMP foundation is in place and default-on (ACPI-MADT CPU count, per-CPU
-LAPIC-timer preemption, cross-CPU IPC/notification locking, acknowledged
-TLB-shootdown IPIs). The two **security**-relevant items are now **done**:
+### 2.1 ⬜ Virtual memory objects and shared memory — **[F-2.1]**
 
-- **Flush-on-switch between mutually distrusting tasks** — *done*. On a switch to a
-  different ring-3 task the scheduler evicts IBPB / L1D / MDS state at the single
-  chokepoint (`set_current_task`), each CPUID-gated. `make smoke-flush`.
-- **SMT co-residency** — *done*. Sibling hyperthreads are parked at AP bringup
-  (disable-SMT in software), so no untrusted work co-resides on a core.
-  `make smoke-smt`.
+Frame capabilities backed by real pool frames; `SYS_MAP_FRAME(frame_cap, vaddr, rights)` and
+unmapping. Gives genuine shared memory between mutually distrusting tasks, with rights that
+narrow on delegation. Prerequisite for `mmap`, a windowing system, zero-copy network buffers,
+and real `fork`.
 
-Remaining is *performance/quality* scheduler maturity, in priority order:
+### 2.2 ⬜ Time, timers, and a monotonic clock — **[F-2.6]**
 
-- **Per-CPU run queues** with explicit load-balancing/migration, replacing the
-  shared runnable pool; then **scheduling priorities, fairness, and CPU affinity**.
-- **Cache partitioning** (e.g. CAT) so the primary thread's own successive tasks do
-  not share a warmed cache between the flush and the next eviction — the residual
-  side-channel [../SECURITY.md](../SECURITY.md) flags.
+`SYS_CLOCK_GETTIME`, per-task timers as notification sources, tickless operation.
+Prerequisite for IPC timeouts, anything real-time, and sane userspace scheduling.
 
----
+### 2.3 ⬜ Process and session model — **[F-2.4]**
 
-## Track 4 — Userspace ecosystem
+Real `fork`/`exec` semantics, process groups, job control, and a `/proc`-equivalent served
+over IPC. Needed before the shell can become a usable OS interface.
 
-The libc surface for a coreutils/binutils port is complete, eleven coreutils are
-ported and load from the filesystem as boot modules, and program-size caps are
-lifted (`MAX_PROGRAM_SIZE` = 8 MiB). Forward work:
+### 2.4 ⬜ A VFS layer above `fs_server` — **[F-2.2]**
 
-- **Port binutils** (now shippable as a signed module once Track 2 lands).
-- **More servers**, each following the capability-delegation model: a network-stack
-  server, a block-device driver server (see Track 6), and a name server.
-- **Multi-slot / worker-pool IPC** so a server can process requests in parallel
-  rather than one-in-flight-at-a-time; add IPC send/recv timeouts.
-- Continue growing the `captest` conformance exerciser — especially new **refusal**
-  cases for the revised revocation and grant semantics (Track 1).
+Mount points, multiple filesystem servers, and a device-file namespace. Each server holds
+only the object-store capabilities for its own subtree — per-mount isolation that a
+monolithic VFS structurally cannot provide.
 
----
+### 2.5 ⬜ Dynamic linking and a shared libc — **[F-2.5]**
 
-## Track 5 — Verification & assurance scaffolding
+Every binary currently statically links newlib (~450 KiB each; 11 in `/bin`). A shared-object
+loader with capability-mediated mapping cuts the store requirement by an order of magnitude
+and makes a larger userspace practical.
 
-Cross-cutting work that should grow alongside every track, and the natural home for
-proving the Track 1 fixes.
+### 2.6 ⬜ Network stack as a ring-3 server — **[F-2.3]**
 
-- **Wire the TLA+ specs into CI.** `docs/cap_algebra.tla` and
-  `docs/paging_isolation.tla` exist but are not model-checked; run TLC on every PR
-  and extend `cap_algebra.tla` to the **revised (CDT) revocation** so the fix is
-  specified, not just coded.
-- **Extend Kani to the revocation paths** — *done for the A1 invariant*. Two new
-  harnesses prove, over the **entire** serial space, that revoking a descendant
-  never nulls its ancestors (`revoke_descendant_never_nulls_ancestors`) and that
-  revoking a root nulls every descendant (`revoke_root_nulls_every_descendant`) —
-  together pinning revocation to exactly the target's subtree. Six harnesses now
-  verify. *Remaining:* a multi-cspace + overflow-fallback model, and the
-  lineage-generation paths (they mutate a shared static needing a heavier model);
-  keep the deterministic subset in the required check from 0.3.
-- **Syscall-boundary fuzzer** under QEMU (syzkaller-style), complementing the
-  existing host FFI fuzzers.
-- **Broaden the scripted session harness** (`tools/session_test.py`): add
-  W^X-violation and IPC/FS round-trip scenarios, and — once Track 1 lands — an
-  end-to-end negative test proving a granted-then-revoked capability does **not**
-  disturb the grantor.
+A user-mode TCP/IP server holding `CAP_IO_DEVICE` for one NIC, with per-application socket
+capabilities. A network-stack compromise is then contained to one address space with no
+kernel authority — the highest-visibility demonstration of the architecture's value.
+
+### 2.7 ⬜ Real device drivers as ring-3 servers
+
+Following the `console_server` pattern: an AHCI/NVMe storage driver, a keyboard/mouse
+server, and a framebuffer server. Each holds only the `CAP_IO_DEVICE` for its own hardware.
 
 ---
 
-## Track 6 — Driver privilege separation
+## Track 3 — Assurance and observability
 
-The console is out of the kernel (ring-3 `console_server`, `CAP_IO_DEVICE`-gated,
-fault-contained). Continue shrinking the flat trust domain:
+### 3.1 ✅ Reproducible builds
 
-- Move **PS/2 keyboard input** into the console server.
-- Separate the **block/ATA driver** into a ring-3 server the same way, so a storage
-  driver bug is a contained ring-3 fault rather than kernel-wide — this is the
-  larger remaining slice of the "one bug = whole-kernel blast radius" problem the
-  audit and [LIMITATIONS.md](LIMITATIONS.md) describe.
+`make reproducible-build` builds twice and diffs `kernel.elf`; gated in CI.
+
+### 3.2 ✅ Measured boot and sealed volume key
+
+TPM 2.0 PCR 8/9 measurement of kernel and modules; vdisk KEK sealed under `PolicyPCR`.
+Adversarially tested: `smoke-tpm-tamper`, `smoke-tpm-seal`.
+
+### 3.3 ✅ Boot-module integrity manifest
+
+SHA-256 manifest embedded in the kernel image; unverified modules cannot be read, hence never
+provisioned as executables. Adversarially tested: `smoke-modules-tamper`.
+
+### 3.4 ✅ Kani proofs on capability revocation
+
+Proves revocation hits exactly the target's derivation subtree.
+
+### 3.5 ⬜ Extend proofs to the full capability algebra — **[F-3.1]**
+
+Prove: mint never widens rights; grant preserves the derivation tree; lookup refuses
+type-mismatched capabilities; and — once 0.1 lands — that IPC authority implies a held
+endpoint capability naming that endpoint. Model-check the existing TLA+ specifications
+(`cap_algebra.tla`, `paging_isolation.tla`) **in CI** rather than merely committing them.
+
+### 3.6 ⬜ A debug/observability capability — **[F-3.2]**
+
+`CAP_DEBUG` gating task introspection, a ring buffer of capability operations, and
+`SYS_CAP_ENUMERATE` backing a userspace `capview` tool. Replaces the ad-hoc root
+introspection in `SYS_GET_TASK_INFO` with an explicit, revocable authority — and makes the
+capability graph *visible*, which is essential for auditing a system whose security argument
+rests on that graph.
+
+### 3.7 ⬜ Deterministic replay harness — **[F-3.3]**
+
+Record syscall and IPC traces under QEMU and replay them, making SMP race reproduction
+tractable and turning intermittent CI failures into artifacts.
+
+### 3.8 ⬜ KASLR, CFI, and sanitizers — **[F-3.5]**
+
+Kernel address-space randomisation, control-flow integrity on indirect calls in the C
+kernel, and a sanitizer pass over the Rust core in CI.
+
+### 3.9 ⬜ Virtualisation hooks (VT-x) — **[F-3.4]**
+
+A `CAP_VCPU` object and an EPT-backed guest address space, so Horus can host a guest OS as a
+ring-3 VMM holding only the capabilities for its guest's resources. The credible bridge from
+research kernel to real workloads without compromising the model.
 
 ---
 
-## Completed foundations *(record)*
+## Track 4 — Repository, governance, and SSDLC
 
-These landed before the audit and were not disputed by it. Kept here as a status
-record; see the git history and [ARCHITECTURE.md](ARCHITECTURE.md) for detail.
+Ordered as in the audit's §7.5.
 
-- **Process lifecycle** — ring-3 `init` (PID 1) spawns, capability-endows (purely
-  via `SYS_CAP_GRANT`), and blocking-supervises the shell; full `argv`; signals
-  (`SYS_SIGNAL`/`SIGMASK`/`SIGALTSTACK`); exec-from-a-file
-  (`SYS_SPAWN_IMAGE`/`EXEC_IMAGE`); `fork` a deliberate non-goal. (`smoke-proc`,
-  `smoke-init-fs`.)
-- **Production filesystem** — ring-3 `fs_server` over an encrypted object store:
-  persistent on ATA (sealed until login), per-file POSIX ownership/permissions
-  against a kernel-attested identity, multi-client (identity-routed replies),
-  crash-atomic (write-ahead redo journal + mount-time `fsck`), large files
-  (double-indirect), 16 MiB volume (multi-block bitmap). Legacy capfs removed.
-  (`smoke-fs`, `-perms`, `-conc`, `-persist`, `-wal`, `-large`.)
-- **SMP** — default-on, ACPI-MADT CPU count, per-CPU preemption, TLB-shootdown IPIs
-  (the *maturity* work is Track 3). (`smoke-smp`.)
-- **Cryptography** — from-scratch, vector-validated Argon2id / BLAKE2b, HKDF/HMAC
-  over SHA-256, a ChaCha20 fast-key-erasure CSPRNG (fail-closed seeding), and a
-  ChaCha20 + HMAC-SHA256 AEAD for encryption-at-rest — all safe `no_std` Rust.
-- **Userspace runtime** — 64-bit `EM_X86_64` static-PIE with demand-paged heap,
-  userspace `malloc`, and an `x86_64-elf` newlib libc port; eleven coreutils ported
-  and loaded from the filesystem as boot modules. (`smoke-newlib`, `smoke-modules`,
-  `smoke-coreutils-shell`.)
-- **Security core in safe Rust** — the capability algebra, the page-refcount trust
-  boundary, the crypto primitives, and the **entire ELF-loader parse** (header,
-  program headers, i386 + x86-64 relocations) run memory-safe in Rust, with Kani
-  proofs and `cargo-fuzz` targets over the FFI predicates.
-- **Driver privilege separation (console)** — the VGA/serial console runs as a
-  ring-3 server; a bug in it is a contained ring-3 fault. (`smoke-console`,
-  `smoke-console-isolation`.)
-- **Hardening** — higher-half kernel (no kernel address is a user address);
-  SMEP/SMAP/UMIP/`CR4.TSD`; W^X for user *and* kernel memory (whole-address-space
-  leaf sweep); guarded kernel/IST stacks; CSPRNG-seeded stack canary; image-base
-  ASLR; reproducible builds. All CI-gated.
+### P0
+
+- **4.1 ⬜ Require reviewer approval — [C-5].** `required_approving_review_count: 1`,
+  `require_code_owner_review: true`, `dismiss_stale_reviews_on_push: true`,
+  `require_last_push_approval: true`, `required_review_thread_resolution: true`. Repair the
+  stale `CODEOWNERS` paths (seven files listed do not exist; the files containing **[C-1]**
+  are uncovered).
+  *If a second reviewer is genuinely unavailable, say so in `SECURITY.md` and scope the
+  assurance claim accordingly — that is already done, and it is a mitigation, not a fix.*
+- **4.2 ⬜ Gate the security tests — [C-6].** Promote every `smoke-*` security self-test and
+  CodeQL to required status checks; set `strict_required_status_checks_policy: true`.
+- **4.3 ⬜ Hard-fail `gitleaks` and `cargo-audit`** (keep Semgrep/Trivy advisory until their
+  false-positive rate on a freestanding kernel is characterised).
+
+### P1
+
+- **4.4 ⬜ Build provenance and signed artifacts — [I-9].**
+  `actions/attest-build-provenance` (SLSA v1) plus cosign signatures on `kernel.elf` and
+  `boot.iso`.
+- **4.5 ⬜ Tagged releases** carrying artifacts, SBOM, provenance, and the expected
+  PCR[8]/PCR[9] values, so a relying party can pre-compute the measured-boot quote.
+- **4.6 ⬜ Move `horus.py` under `tools/` — [M-2].** Minor; the index is otherwise clean.
+- **4.7 ✅ Governance files — [M-3].** *Landed 2026-07-27.* PR template moved to
+  `.github/pull_request_template.md` (it was in `docs/`, where GitHub never looked for it,
+  so no contributor had ever seen it); `.github/ISSUE_TEMPLATE/` added with security-report
+  and bug-report forms; `CODE_OF_CONDUCT.md` added; `.github/CODEOWNERS` corrected — it
+  listed seven files that do not exist and omitted the files containing the IPC
+  authorisation logic (**[I-8]**).
+
+### P2
+
+- **4.8 ⬜ Enable secret-scanning non-provider patterns and validity checks — [M-4].**
+- **4.9 ⬜ `.mailmap`** consolidating the five author identities — [M-9].
+- **4.10 ⬜ Pin vendored `newlib`** by upstream URL and SHA-256 in a `THIRD_PARTY.md`, or
+  fetch it at build time with verification instead of committing `.deb`s.
+- **4.11 ⬜ `verify-release.sh`** a third party can run: rebuild from a tag, diff against the
+  published artifact, check the signature, recompute the PCRs.
+- **4.12 ⬜ A security-invariant registry — [F-4.1].** A machine-readable `invariants.yaml`
+  naming each claimed property, the code enforcing it, and the test or proof witnessing it;
+  CI fails if an invariant has no witness. This directly attacks the failure mode that
+  produced **[C-1]**: a documented property with no test binding it to the code.
+- **4.13 ⬜ Publish the threat model — [F-4.3]** as a versioned first-class document.
+- **4.14 ⬜ Nightly long-running fuzz and Kani** in a scheduled workflow, filing findings as
+  issues automatically.
 
 ---
 
-## Contributing
+## Completed milestones
 
-The audit's code findings (A1–A4) are now fixed, so **the highest-value remaining
-work is Track 0** (assurance & governance) — specifically P2 (independent review,
-gated on a second maintainer) and P4 (pinned, attested, signed builds). Track 0 is
-mostly repository configuration and CI, approachable without deep kernel knowledge.
-Track 4 (userspace ecosystem) remains the most self-contained on-ramp for a first
-contribution; Track 5 (verification) is where the exact per-serial lineage store and
-the TLA+/Kani expansion live.
+| | Milestone |
+|---|---|
+| ✅ | 64-bit long mode, higher-half kernel, Multiboot2 |
+| ✅ | Per-task 4-level page tables, demand paging, COW, NX stacks, kernel W^X |
+| ✅ | Capability system with rights masking and system-wide subtree revocation |
+| ✅ | Serial-keyed lineage generations (use-after-revoke backstop) |
+| ✅ | Preemptive scheduling on a unified trap-frame switch path |
+| ✅ | SMP by default: MADT enumeration, AP bringup, TLB shootdown, SMT parking |
+| ✅ | Flush-on-switch microarchitectural barriers |
+| ✅ | Ring-3 `fs_server` over an encrypted object store, with journal and fsck |
+| ✅ | Ring-3 `console_server` owning UART and framebuffer; raw terminal mode |
+| ✅ | ELF loader (header, phdrs, i386 and x86-64 relocations) in safe Rust |
+| ✅ | ChaCha20 CSPRNG replacing an LCG-plus-TSC construction |
+| ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
+| ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
+| ✅ | Reproducible builds, SBOM, CodeQL, Dependabot, signed commits, protected `main` |
+| ✅ | 30+ QEMU integration self-tests, several adversarial |
+| ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
-See [../CONTRIBUTING.md](../CONTRIBUTING.md) for environment setup and how to submit
-work, and [AUDIT-2026-07.md](AUDIT-2026-07.md) for the full findings behind the
-tracks above.
+---
+
+## The shape of the next year
+
+If one sentence had to describe the plan: **stop adding userspace until the capability
+system means what the documentation says it means, then build the OS on a foundation that
+holds.**
+
+Concretely — Track 0 in full, then Track 1.2–1.4, then Track 2 in order, with Track 3 and 4
+items landing alongside. The single highest-leverage non-technical change remains finding a
+second reviewer for the capability paths; automated verification has already been pushed
+about as far as it goes without one.

@@ -87,11 +87,30 @@ Reclaiming a dead task's cspace needs `cap_lookup`'s NULL-cspace → root-cnode
 fallback removed first, or freeing one would be an authority *escalation* rather
 than a crash.
 
-**Note for roadmap 1.1.** `untyped.c` defers arming its own spinlock until the end
-of `scheduler_init`, because `spin_unlock` ends with an unconditional `sti`
-(finding **[C-3.1]**) and locking during early boot would enable interrupts at a
-point the boot code never asked for. That is the third subsystem to work *around*
-C-3.1 rather than fix it.
+**Note for roadmap 1.1 — C-3.1 bit during this change, and was measured.**
+`create_task` now calls `kobj_alloc`, which made task creation take a spinlock
+for the first time; `task_teardown` likewise, via `kobj_gc`. Both run on paths
+that keep interrupts masked deliberately — task teardown is reached from the
+page-fault handler, and spawn runs inside the ring-3 startup handshake — and
+`spin_unlock` ends with an unconditional `sti` (finding **[C-3.1]**).
+
+The result was a **flaky `smoke-console-smp`**: the shell banner sometimes never
+arrived within the timeout. Measured rather than assumed — the branch scored 1
+pass / 1 fail over two runs where `main` scored 2 / 2, which is the same
+signature the reverted per-CPU-lock attempt produced (roadmap 1.1) and for the
+same underlying reason.
+
+The fix makes the untyped critical section **IF-transparent**: `ut_lock` /
+`ut_unlock` save and restore `RFLAGS` around the region, so `spin_unlock`'s `sti`
+is a no-op for every caller whatever state it was in. Done once in the helper
+rather than as a `pushfq`/`popfq` bracket at each call site, since the number of
+call sites will only grow. It becomes redundant — not wrong — once 1.1 makes
+`spin_unlock` IF-preserving.
+
+`untyped.c` also defers *arming* that lock until the end of `scheduler_init`, so
+no lock is taken during early boot at all. Between the deferral and the
+IF-transparency, this is the third subsystem to work *around* C-3.1 rather than
+fix it, and the first to have a CI failure attributable to it.
 
 This completes **Track 0** of the roadmap.
 

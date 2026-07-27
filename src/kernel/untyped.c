@@ -94,10 +94,46 @@ static struct kobj_slot dyn_notifs[MAX_DYN_NOTIFICATIONS];
 static spinlock_t untyped_lock;
 static volatile int untyped_locking_armed = 0;
 
+/* Armed at the END of scheduler_init: after create_task(0), the last unlocked
+ * boot mutation, and before anything that can run concurrently. Set exactly
+ * once, from single-threaded boot code, at a point where no ut_lock region is in
+ * flight -- so lock and unlock always observe the same value and there is no
+ * unlock-without-lock. */
 void untyped_arm_locking(void) { untyped_locking_armed = 1; }
 
-static inline void ut_lock(void)   { if (untyped_locking_armed) spin_lock(&untyped_lock); }
-static inline void ut_unlock(void) { if (untyped_locking_armed) spin_unlock(&untyped_lock); }
+/* IF-TRANSPARENT critical section. This is the important part, not a flourish.
+ *
+ * spin_unlock() ends with an UNCONDITIONAL `sti` once the global nesting depth
+ * reaches zero (finding C-3.1). kobj_alloc is called from create_task, and
+ * kobj_gc from task_teardown -- neither of which took ANY lock before this
+ * change, and both of which run on paths that keep interrupts masked
+ * deliberately (task_teardown is reached from the page-fault handler; spawn runs
+ * inside the ring-3 startup handshake). Letting the raw spin_unlock through made
+ * `make smoke-console-smp` flaky: the shell banner sometimes never arrived
+ * within the timeout, which is the same signature the reverted per-CPU-lock
+ * attempt produced (roadmap 1.1) and for the same underlying reason.
+ *
+ * Saving and restoring RFLAGS around the region makes the sti a no-op for every
+ * caller, whatever IF state it was in. It fixes the hazard once, in the helper,
+ * instead of relying on each of the (currently four, later more) call sites to
+ * remember a pushfq/popfq bracket.
+ *
+ * Nesting is correct in both directions: with cap_lock already held (kobj_gc
+ * from cap_revoke) the depth goes 1->2->1 so no sti fires and popfq restores the
+ * masked state; standalone it goes 0->1->0, the sti fires, and popfq undoes it.
+ *
+ * This becomes redundant -- not wrong -- once roadmap 1.1 makes spin_unlock
+ * IF-preserving. Do not remove it before then. */
+static inline uint64_t ut_lock(void) {
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    if (untyped_locking_armed) spin_lock(&untyped_lock);
+    return fl;
+}
+static inline void ut_unlock(uint64_t fl) {
+    if (untyped_locking_armed) spin_unlock(&untyped_lock);
+    __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
+}
 
 /* ------------------------------------------------------------------------- *
  *  Object sizes and the bump allocator.
@@ -190,7 +226,7 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
     uint64_t need = kobj_size(kobj_type);
     if (need == 0) return 0;
 
-    ut_lock();
+    uint64_t fl = ut_lock();
     struct untyped *u = &untypeds[untyped_index];
 
     /* Claim the index BEFORE bumping the watermark: an index table that is full
@@ -199,14 +235,14 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
     int idx = -1;
     if (kobj_type == KOBJ_ENDPOINT) {
         idx = dyn_ep_alloc_index();
-        if (idx < 0) { ut_unlock(); return 0; }
+        if (idx < 0) { ut_unlock(fl); return 0; }
     } else if (kobj_type == KOBJ_NOTIFICATION) {
         idx = dyn_notif_alloc_index();
-        if (idx < 0) { ut_unlock(); return 0; }
+        if (idx < 0) { ut_unlock(fl); return 0; }
     }
 
     void *mem = untyped_bump(u, need);
-    if (!mem) { ut_unlock(); return 0; }
+    if (!mem) { ut_unlock(fl); return 0; }
 
     if (kobj_type == KOBJ_ENDPOINT) {
         struct endpoint *e = (struct endpoint *)mem;
@@ -231,7 +267,7 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
     }
 
     u->objects++;
-    ut_unlock();
+    ut_unlock(fl);
     return mem;
 }
 
@@ -348,13 +384,13 @@ static uint8_t gc_ep_marks[MAX_DYN_ENDPOINTS];
 static uint8_t gc_nt_marks[MAX_DYN_NOTIFICATIONS];
 
 void kobj_gc(void) {
-    ut_lock();
+    uint64_t fl = ut_lock();
     mark_reachable(gc_ep_marks, gc_nt_marks);
     for (int i = 0; i < MAX_DYN_ENDPOINTS; i++)
         if (dyn_eps[i].mem && !gc_ep_marks[i]) destroy_dyn_endpoint(i);
     for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++)
         if (dyn_notifs[i].mem && !gc_nt_marks[i]) destroy_dyn_notification(i);
-    ut_unlock();
+    ut_unlock(fl);
 }
 
 /* ------------------------------------------------------------------------- *
@@ -470,12 +506,12 @@ int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
              * so nothing will ever name this object. Drop it now rather than
              * leaking an unreachable object until the next sweep. Under the
              * untyped lock, like every other mutation of the index tables. */
-            ut_lock();
+            uint64_t dfl = ut_lock();
             if (kobj_type == KOBJ_ENDPOINT)
                 destroy_dyn_endpoint((int)(obj_index - DYN_EP_BASE));
             else
                 destroy_dyn_notification((int)(obj_index - DYN_NOTIF_BASE));
-            ut_unlock();
+            ut_unlock(dfl);
             break;
         }
         created++;

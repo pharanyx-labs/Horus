@@ -407,8 +407,16 @@ about as far as it goes without one.
 
 **Track 0 is now complete** (0.1, 0.2, 0.3 all landed 2026-07-27). The object model is true:
 IPC is capability-addressed, ambient root authority is retired, and creating a kernel object
-is an exercise of authority the capability graph describes. Track 1.1 — the boot-time
-interrupt policy that has to precede the spinlock fix — is the next blocking item, and it is
-blocking in a stronger sense than before: `untyped.c` had to defer its own locking to a boot
-milestone specifically because `spin_unlock`'s unconditional `sti` makes early locking unsafe,
-which is the third subsystem to work around **[C-3.1]** rather than fix it.
+is an exercise of authority the capability graph describes.
+
+Track 1.1 is the next blocking item, and 0.3 raised its priority with evidence rather than
+argument. Moving cspaces onto untyped memory made `create_task` take a spinlock for the first
+time, and `task_teardown` likewise — both on paths that keep interrupts masked deliberately.
+`spin_unlock`'s unconditional `sti` (**[C-3.1]**) turned that into a **flaky
+`smoke-console-smp`**, measured at 1 pass / 1 fail on the branch against 2 / 2 on `main`. It
+is the same signature as the reverted per-CPU-lock attempt, from the same cause.
+
+The workaround — an IF-transparent critical section in `untyped.c`, plus deferring the lock's
+arming past boot — is sound, but it is the third subsystem to route around C-3.1 rather than
+fix it, and the first with a CI failure attributable to it. Each such workaround is another
+place that has to be revisited when 1.1 finally lands.

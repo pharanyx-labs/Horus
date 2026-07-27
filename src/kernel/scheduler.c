@@ -886,21 +886,12 @@ void task_teardown(int id) {
      * Ordering matters: state is already 0 above, so the sweep correctly treats
      * this task's cspace as unreachable.
      *
-     * The IF save/restore is load-bearing and not defensive noise. kobj_gc takes
-     * a spinlock, and spin_unlock ends with an UNCONDITIONAL `sti` when the
-     * global nesting depth reaches zero (finding C-3.1). task_teardown is reached
-     * from the page-fault handler (idt.c) with interrupts deliberately masked,
-     * and it is the first thing on that path to take a lock at all — so without
-     * this, killing a faulting task would silently enable interrupts inside the
-     * fault handler. Same pushfq/popfq bracket sys_ipc_send uses around its
-     * transient current-task switch. Delete it only once roadmap 1.1 has made
-     * spin_unlock IF-preserving. */
-    {
-        uint64_t fl;
-        __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
-        kobj_gc();
-        __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
-    }
+     * Safe to call with interrupts masked — task_teardown is reached from the
+     * page-fault handler (idt.c), and it is the first thing on that path to take
+     * a lock at all. kobj_gc's critical section is IF-transparent (ut_lock /
+     * ut_unlock in untyped.c) precisely so this call cannot enable interrupts
+     * inside a fault handler via spin_unlock's unconditional `sti` (C-3.1). */
+    kobj_gc();
 }
 
 /* Switch away from a task that has just terminated (SYS_EXIT / SYS_KILL-self),

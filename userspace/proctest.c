@@ -85,6 +85,7 @@ void _start(void) {
      * exits (old behaviour: a signal never lands on a blocked task, so it would
      * hang). Done before we kill the looper it is parked on. --- */
     int sw = sys_spawn_named_arg("sigwaiter", (uint32_t)loop);
+    if (sw > 0) sys_task_resume(sw);   /* spawn leaves the child suspended */
     if (sw <= 0) { report("PROC_SELFTEST: FAIL sigwait-spawn\n"); sys_exit(); }
     for (int i = 0; i < 4000; i++) settle();   /* let it register + block in the wait */
     if (sys_send_signal(sw, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sigwait-send\n"); sys_exit(); }
@@ -107,6 +108,7 @@ void _start(void) {
 
     /* --- ring-3 spawn: the driver spawns a child itself, which then exits --- */
     int child = sys_spawn_named("hello");
+    if (child > 0) sys_task_resume(child);   /* spawn leaves the child suspended */
     if (child <= 0) { report("PROC_SELFTEST: FAIL r3-spawn\n"); sys_exit(); }
     int reaped = 0;
     struct task_info ci;
@@ -127,6 +129,7 @@ void _start(void) {
      * the kernel fault detector). Observing the child cleanly gone, with neither,
      * confirms exec transferred control into the replaced image. --- */
     int ec = sys_spawn_named("exectest");
+    if (ec > 0) sys_task_resume(ec);   /* spawn leaves the child suspended */
     if (ec <= 0) { report("PROC_SELFTEST: FAIL exec-spawn\n"); sys_exit(); }
     int ec_gone = 0;
     struct task_info ei;
@@ -144,6 +147,10 @@ void _start(void) {
     int gp = sys_spawn_named("grantee");
     if (gp <= 0) { report("PROC_SELFTEST: FAIL grant-spawn\n"); sys_exit(); }
     if (sys_cap_grant(gp, 7, 7) != 0) { report("PROC_SELFTEST: FAIL grant-rc\n"); sys_exit(); }
+    /* Resume only AFTER the grant. This is exactly the ordering spawn-suspended
+     * exists to guarantee: the child asserts the granted cap is present, so
+     * resuming first would race the grant and fail intermittently. */
+    if (sys_task_resume(gp) != 0) { report("PROC_SELFTEST: FAIL grant-resume\n"); sys_exit(); }
     int gg = 0;
     struct task_info gi;
     for (int i = 0; i < 12000; i++) {
@@ -161,6 +168,7 @@ void _start(void) {
      * child's teardown wakes us. sys_wait must return 0 only once the child is
      * actually dead (an early/spurious wake while it is still alive is a bug). */
     int wc = sys_spawn_named("hello");
+    if (wc > 0) sys_task_resume(wc);   /* spawn leaves the child suspended */
     if (wc <= 0) { report("PROC_SELFTEST: FAIL wait-spawn\n"); sys_exit(); }
     if (sys_wait(wc) != 0) { report("PROC_SELFTEST: FAIL wait-rc\n"); sys_exit(); }
     struct task_info wi;
@@ -175,6 +183,7 @@ void _start(void) {
      * blocking init relies on to relaunch a shell that *faulted*, not only one
      * that exited. sys_wait must return 0 with the child confirmed dead. --- */
     int fc = sys_spawn_named("faulter");
+    if (fc > 0) sys_task_resume(fc);   /* spawn leaves the child suspended */
     if (fc <= 0) { report("PROC_SELFTEST: FAIL fault-spawn\n"); sys_exit(); }
     if (sys_wait(fc) != 0) { report("PROC_SELFTEST: FAIL fault-wait-rc\n"); sys_exit(); }
     struct task_info fi;
@@ -189,6 +198,7 @@ void _start(void) {
     char *av[3];
     av[0] = "argtest"; av[1] = "alpha"; av[2] = "bravo";
     int at = sys_spawn_named_argv("argtest", 3, av);
+    if (at > 0) sys_task_resume(at);   /* spawn leaves the child suspended */
     if (at <= 0) { report("PROC_SELFTEST: FAIL argv-spawn\n"); sys_exit(); }
     int atd = 0;
     struct task_info ati;
@@ -207,6 +217,7 @@ void _start(void) {
      * (arm_image_from_user) with this path and its image-replace tail with the
      * already-tested SYS_EXEC_NAMED. --- */
     int ii = sys_spawn_image(hello_image, hello_image_len, 0, 0);
+    if (ii > 0) sys_task_resume(ii);   /* spawn leaves the child suspended */
     if (ii <= 0) { report("PROC_SELFTEST: FAIL image-spawn\n"); sys_exit(); }
     int ii_gone = 0;
     struct task_info iii;
@@ -234,6 +245,7 @@ void _start(void) {
      * "+signal" pass marker (only reachable via handler delivery — an unhandled
      * signal would terminate it silently) and exits. Confirm it reaches dead. --- */
     int sp = sys_spawn_named("sigtarget");
+    if (sp > 0) sys_task_resume(sp);   /* spawn leaves the child suspended */
     if (sp <= 0) { report("PROC_SELFTEST: FAIL sig-spawn\n"); sys_exit(); }
     for (int i = 0; i < 3000; i++) settle();   /* let it register its handler */
     if (sys_send_signal(sp, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sig-send\n"); sys_exit(); }
@@ -244,6 +256,37 @@ void _start(void) {
         poll_wait();
     }
     if (!sg) { report("PROC_SELFTEST: FAIL sig-stuck\n"); sys_exit(); }
+
+    /* --- SPAWN IS SUSPENDED: a child must not run until it is resumed. ---
+     *
+     * The witness for the fix that closed the endowment race class. A supervisor
+     * endows a child with `spawn -> grant... -> resume`, which is only safe if the
+     * child genuinely cannot execute in between. Spawn "hello" (it exits promptly
+     * once running), wait long enough that it would certainly have finished, and
+     * assert it has NOT — then resume and assert it does. On the pre-fix kernel
+     * the first assertion fails, so this cannot pass on a racy kernel.
+     *
+     * Deliberately LAST. Holding a task slot in the suspended state delays its
+     * reuse and shifts the ids handed to later spawns; placed mid-file it
+     * perturbed the signal sub-test's timing-coupled choreography above. Running
+     * it after everything else keeps the witness honest without making the rest
+     * of the harness depend on it. */
+    {
+        int susp = sys_spawn_named("hello");
+        if (susp <= 0) { report("PROC_SELFTEST: FAIL susp-spawn\n"); sys_exit(); }
+        struct task_info su;
+        for (int i = 0; i < 4000; i++) settle();   /* ample time to run and exit */
+        if (sys_get_task_info(susp, &su) != 0) { report("PROC_SELFTEST: FAIL susp-info\n"); sys_exit(); }
+        if (su.state == 0) { report("PROC_SELFTEST: FAIL susp-child-ran-before-resume\n"); sys_exit(); }
+        if (sys_task_resume(susp) != 0) { report("PROC_SELFTEST: FAIL susp-resume\n"); sys_exit(); }
+        int sd = 0;
+        for (int i = 0; i < 40000; i++) {
+            if (sys_get_task_info(susp, &su) == 0 && su.state == 0) { sd = 1; break; }
+            poll_wait();
+        }
+        if (!sd) { report("PROC_SELFTEST: FAIL susp-no-run-after-resume\n"); sys_exit(); }
+        report("PROC_SELFTEST: suspend OK\n");
+    }
     /* sigtarget's handler printed the final "+signal" PASS marker on delivery. */
     sys_exit();
 }

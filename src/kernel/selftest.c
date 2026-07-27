@@ -3,6 +3,18 @@
  * only under its -D*_SELFTEST switch, so the default build yields an (almost)
  * empty object. Split out of syscall.c. */
 #include "syscall_internal.h"
+
+/* Resume every task this harness spawned.
+ *
+ * do_spawn leaves children SUSPENDED so a supervisor can endow them before they
+ * run (see the comment there). The in-kernel self-test harnesses do all of their
+ * endowment synchronously, before enabling preemption, so a single sweep here is
+ * the harness equivalent of the SYS_TASK_RESUME a ring-3 supervisor issues.
+ * Only tasks with a fabricated context are touched. */
+__attribute__((unused)) static void selftest_resume_all(void) {
+    for (int t = 1; t < MAX_TASKS; t++)
+        if (tasks[t].state && tasks[t].saved_ksp) tasks[t].runnable_ctx = 1;
+}
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
 #include "fs_proto.h"   /* FS_EP_REQ for the FS self-test harnesses */
 #endif
@@ -980,6 +992,7 @@ void preempt_selftest(void) {
 
     /* Launch task A into ring 3 via its fabricated trap frame; the timer then
      * time-slices A and B. Does not return. */
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(a);
 }
@@ -1041,6 +1054,7 @@ void smp_selftest(void) {
     print("SMP_SELFTEST: spawned="); print_decimal(spawned); print(" workers\n");
 
     /* Arm preemption and open the gate: the APs now pull workers on each tick. */
+    selftest_resume_all();
     sched_enable_preemption();
     smp_sched_enabled = 1;
 
@@ -1148,6 +1162,7 @@ void proc_selftest(void) {
     cap_install_from_root(a, 16, 0, (uint32_t)loop_id);  /* CAP_TCB -> captest   */
     tasks[a].uid = 0;
 
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(a);
 }
@@ -1186,6 +1201,7 @@ void signal_selftest(void) {
     if (a <= 0) { print("SIGNAL_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
     /* Launch into ring 3 via the fabricated full trap frame. */
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(a);
 }
@@ -1225,6 +1241,7 @@ void tsd_selftest(void) {
     if (a <= 0) { print("TSD_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
     /* Launch into ring 3 via the fabricated full trap frame. */
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(a);
 }
@@ -1267,6 +1284,7 @@ void mapphys_selftest(void) {
     volatile uint16_t *vga = (volatile uint16_t *)PHYS_KVA(0xB8000);
     vga[1000] = 0x0741;
 
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(a);
 }
@@ -1297,6 +1315,7 @@ void ioport_selftest(void) {
         print("IOPORT_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(a);
 }
@@ -1330,6 +1349,7 @@ void irq_selftest(void) {
         print("IRQ_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(a);
 }
@@ -1373,6 +1393,7 @@ void console_selftest(void) {
 
     /* Launch the server; when it blocks in IPC the full-context path runs the
      * client. Does not return. */
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(srv);
 }
@@ -1403,6 +1424,7 @@ void console_isolation_selftest(void) {
         print("CONSOLE_ISOLATION: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(srv);
 }
@@ -1511,6 +1533,7 @@ void fs_selftest(void) {
 
     /* Launch the server; when it blocks in IPC the full-context path runs the
      * client(s). Does not return. */
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(srv);
 }
@@ -1710,6 +1733,7 @@ void newlib_selftest(void) {
     /* Enter the server; when it blocks in IPC recv the full-context path runs
      * the client, whose FS requests wake the server. Does not return. */
     print("NEWLIB_SELFTEST: launching\n");
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(srv);
 }
@@ -1743,6 +1767,7 @@ void notify_selftest(void) {
 
     /* Enter the waiter; it blocks in SYS_WAIT_NOTIFY and the full-context path
      * runs the sender, whose SYS_NOTIFY wakes it with the badge. Does not return. */
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(waiter);
 }
@@ -1764,6 +1789,7 @@ void cow_selftest(void) {
     if (pid <= 0) { print("COW_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
     tasks[pid].uid = 0;
 
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(pid);   /* cowtest prints the PASS/FAIL marker; does not return */
 }
@@ -1815,6 +1841,7 @@ void captest_selftest(void) {
     cap_install_from_root(pid, 21, 11, CON_EP_REQ);       /* listen: READ|WRITE     */
 
     print("CAPTEST_SELFTEST: launching\n");
+    selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(pid);   /* captest prints the PASS/FAIL marker; does not return */
 }

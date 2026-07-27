@@ -66,6 +66,9 @@ static int launch_fs_server(void) {
     /* Boot-module read surface. Formerly ambient uid==0 (finding I-1); now an
      * explicit, revocable capability held only by the task that provisions /bin. */
     if (sys_cap_grant(srv, INIT_BOOT_MODULE, CAPSLOT_BOOT_MODULE) != 0) return -6;
+    /* Fully endowed: let it run. Spawn leaves a child suspended precisely so this
+     * ordering is guaranteed rather than raced (see do_spawn). */
+    if (sys_task_resume(srv) != 0) return -7;
     return srv;
 }
 
@@ -83,6 +86,7 @@ static int launch_console_server(void) {
      * console server gets this; clients get the WRITE-only copy below. */
     if (sys_cap_grant(csrv, INIT_CON_LISTEN,    CAPSLOT_CONSOLE_EP) != 0) return -2;
     if (sys_cap_grant(csrv, CAP_SLOT_IO_DEVICE, CAPSLOT_IO_DEVICE)  != 0) return -3;
+    if (sys_task_resume(csrv) != 0) return -4;
     return csrv;
 }
 
@@ -107,6 +111,10 @@ static int launch_shell(void) {
     /* `ps` reads other tasks' info, which now requires a real capability rather
      * than uid 0 (finding I-1). CAP_AUDIT is the read-only introspection right. */
     if (sys_cap_grant(sh, CAPSLOT_AUDIT, CAPSLOT_AUDIT) != 0) return -6;
+    /* The shell's console capability is granted above; resuming only now is what
+     * guarantees it can never start writing before it holds one. That race is
+     * what made the shell come up silent under SMP and time out CI. */
+    if (sys_task_resume(sh) != 0) return -7;
     return sh;
 }
 
@@ -127,6 +135,7 @@ void _start(void) {
     if (sys_cap_grant(cli, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) {
         report("INIT_FS_SELFTEST: FAIL grant-client\n"); for (;;) settle();
     }
+    if (sys_task_resume(cli) != 0) { report("INIT_FS_SELFTEST: FAIL resume-client\n"); for (;;) settle(); }
     sys_wait(cli);   /* block until the client finishes driving the server */
     report("INIT_FS_SELFTEST: init supervised fs client to exit\n");
     for (;;) settle();

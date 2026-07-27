@@ -427,6 +427,27 @@ static void h_signal(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+/* SYS_TASK_RESUME(tid): make a spawned-but-suspended child schedulable.
+ *
+ * Authorised exactly like SYS_KILL / SYS_SIGNAL: the caller must hold a CAP_TCB
+ * for the target (do_spawn grants the spawner one per child) or CAP_USER admin.
+ * A task therefore only ever resumes a child it supervises.
+ *
+ * Idempotent, and safe on an already-running task: it only re-asserts
+ * runnable_ctx, which a live task already has. Refuses a task with no fabricated
+ * context (saved_ksp == 0), since making that schedulable would hand the
+ * scheduler a null frame. */
+void h_task_resume(struct interrupt_frame64 *r) {
+    int target = (int)r->rbx;
+    if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    if (!task_kill_authorized(target)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (!tasks[target].saved_ksp)      { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    tasks[target].runnable_ctx = 1;
+    r->rax = SYS_OK;
+}
+
 /* SYS_WAIT (17): block until task `tid` exits.
  *
  * Records a pending block only; ipc_block_switch saves the trap frame first and
@@ -845,7 +866,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 89
+#define SYSCALL_TABLE_SIZE 90
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -990,6 +1011,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_PIPE_CLOSE]              = { h_pipe_close,              SC_NONE, 0, SC_ANYTYPE },
     [SYS_STDIO_INFO]              = { h_stdio_info,              SC_NONE, 0, SC_ANYTYPE },
     [SYS_DMESG]                   = { h_dmesg,  CAPSLOT_KERNEL_LOG, CAP_RIGHT_READ, CAP_KERNEL_LOG },
+    /* CAP_TCB-to-target / admin checked in the handler, as for SYS_KILL. */
+    [SYS_TASK_RESUME]             = { h_task_resume,             SC_NONE, 0, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -1001,7 +1024,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_DMESG + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_TASK_RESUME + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -64,7 +64,13 @@ static inline void ipc_unlock(void) { }
 int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
     struct capability *c = cap_lookup(slot, need_rights);
     if (!c || c->type != CAP_ENDPOINT) return -1;
-    if (c->object >= MAX_ENDPOINTS)    return -1;
+    if (c->object >= EP_INDEX_MAX)     return -1;
+    /* The index may name a RETYPED endpoint (roadmap 0.3), so bounds-checking it
+     * is no longer sufficient — a retyped object can be destroyed while a stale
+     * capability still names its index. Resolve it here so every IPC syscall
+     * fails closed on a dead object at the same choke point that enforces the
+     * capability, rather than each handler having to remember to check. */
+    if (!endpoint_by_index((uint32_t)c->object)) return -1;
     if (out_ep) *out_ep = (uint32_t)c->object;
     return 0;
 }
@@ -76,7 +82,8 @@ int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
 int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot) {
     struct capability *c = cap_lookup(slot, need_rights);
     if (!c || c->type != CAP_NOTIFICATION)  return -1;
-    if (c->object >= MAX_NOTIFICATIONS)     return -1;
+    if (c->object >= NOTIF_INDEX_MAX)       return -1;
+    if (!notification_by_index((uint32_t)c->object)) return -1;   /* see ipc_ep_from_slot */
     if (out_slot) *out_slot = (uint32_t)c->object;
     return 0;
 }
@@ -102,13 +109,16 @@ int ipc_publish_pending_block(int cur) {
 
     if (kind == TASK_BLOCKED_IPC) {
         int reply_ep = tasks[cur].blocked_on;
-        if (reply_ep < 0 || reply_ep >= MAX_ENDPOINTS) {
+        struct endpoint *e = (reply_ep < 0) ? 0 : endpoint_by_index((uint32_t)reply_ep);
+        if (!e) {
+            /* Out of range, or a retyped endpoint destroyed while this task was
+             * on its way to blocking on it. Either way there is nothing to wait
+             * on: resume rather than park on an object that cannot be signalled. */
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
             return 0;
         }
         ipc_lock();
-        struct endpoint *e = &endpoints[reply_ep];
         /* Reply raced in as a mailbox message before we published the waiter. */
         if (e->has_message) {
             int len = e->msg_len;
@@ -154,13 +164,13 @@ int ipc_publish_pending_block(int cur) {
 
     if (kind == TASK_BLOCKED_NOTIF) {
         int slot = tasks[cur].blocked_on_notif;
-        if (slot < 0 || slot >= MAX_NOTIFICATIONS) {
+        struct notification *n = (slot < 0) ? 0 : notification_by_index((uint32_t)slot);
+        if (!n) {
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
             return 0;
         }
         ipc_lock();
-        struct notification *n = &notifications[slot];
         if (n->pending_badge != 0) {
             uint32_t b = n->pending_badge;
             n->pending_badge = 0;
@@ -192,8 +202,8 @@ void ipc_unpublish_block(int cur) {
     if (st == TASK_BLOCKED_IPC) {
         int ep = tasks[cur].blocked_on;
         ipc_lock();
-        if (ep >= 0 && ep < MAX_ENDPOINTS && endpoints[ep].blocked_waiter == cur)
-            endpoints[ep].blocked_waiter = -1;
+        struct endpoint *e = (ep < 0) ? 0 : endpoint_by_index((uint32_t)ep);
+        if (e && e->blocked_waiter == cur) e->blocked_waiter = -1;
         ipc_unlock();
         tasks[cur].blocked_on = -1;
     } else if (st == TASK_BLOCKED_WAIT) {
@@ -204,9 +214,8 @@ void ipc_unpublish_block(int cur) {
     } else if (st == TASK_BLOCKED_NOTIF) {
         int slot = tasks[cur].blocked_on_notif;
         ipc_lock();
-        if (slot >= 0 && slot < MAX_NOTIFICATIONS &&
-            notifications[slot].blocked_waiter == cur)
-            notifications[slot].blocked_waiter = -1;
+        struct notification *n = (slot < 0) ? 0 : notification_by_index((uint32_t)slot);
+        if (n && n->blocked_waiter == cur) n->blocked_waiter = -1;
         ipc_unlock();
     }
     tasks[cur].state        = TASK_RUNNABLE;
@@ -214,9 +223,9 @@ void ipc_unpublish_block(int cur) {
 }
 
 int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
-    if (ep >= MAX_ENDPOINTS) return -1;
+    struct endpoint *e = endpoint_by_index(ep);
+    if (!e) return -1;
     if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
-    struct endpoint *e = &endpoints[ep];
 
     /* Snapshot the authorizing write capability (slot 3) so we can confirm it
      * still holds the same identity after the yield loop below. Strictly
@@ -301,8 +310,8 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
 }
 
 int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
-    if (ep >= MAX_ENDPOINTS) return -1;
-    struct endpoint *e = &endpoints[ep];
+    struct endpoint *e = endpoint_by_index(ep);
+    if (!e) return -1;
 
     /* See sys_ipc_send: snapshot the authorizing read capability and revalidate
      * it after the yield loop so a revoke mid-spin aborts the receive. */
@@ -344,8 +353,8 @@ struct notification notifications[MAX_NOTIFICATIONS];
  *
  * Multiple notify() calls before a wait() accumulate badges via OR. */
 int sys_notify(uint32_t notif_slot, uint32_t badge) {
-    if (notif_slot >= MAX_NOTIFICATIONS) return -1;
-    struct notification *n = &notifications[notif_slot];
+    struct notification *n = notification_by_index(notif_slot);
+    if (!n) return -1;
 
     ipc_lock();
     n->pending_badge |= badge;
@@ -379,8 +388,8 @@ int sys_notify(uint32_t notif_slot, uint32_t badge) {
  * record a pending block; ipc_block_switch saves the frame then publishes the
  * notif waiter so a concurrent sys_notify cannot race a null saved_ksp. */
 int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
-    if (notif_slot >= MAX_NOTIFICATIONS) return -1;
-    struct notification *n = &notifications[notif_slot];
+    struct notification *n = notification_by_index(notif_slot);
+    if (!n) return -1;
 
     ipc_lock();
     if (n->pending_badge != 0) {
@@ -493,7 +502,9 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
     if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ep) != 0) {
         r->rax = (uint32_t)-1; return;
     }
-    int t = endpoints[ep].last_sender;
+    struct endpoint *e = endpoint_by_index(ep);
+    if (!e) { r->rax = (uint32_t)-1; return; }
+    int t = e->last_sender;
     if (t <= 0 || t >= MAX_TASKS || tasks[t].state == 0) { r->rax = (uint32_t)-1; return; }
     if (r->rcx) {
         uint32_t g = tasks[t].gid;
@@ -537,7 +548,10 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
     }
     if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
 
-    int t = endpoints[req_ep].last_sender;
+    struct endpoint *req = endpoint_by_index(req_ep);
+    if (!req) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    int t = req->last_sender;
     if (t <= 0 || t >= MAX_TASKS || tasks[t].state == TASK_DEAD || tasks[t].state == 0) {
         r->rax = 0; return;   /* client gone: nothing to reply to */
     }
@@ -581,8 +595,8 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
      * (only if it still points to this task; a concurrent client may have
      * overwritten it — harmless, as delivery routed by identity, not by it). */
     int rep = tasks[t].blocked_on;
-    if (rep >= 0 && rep < MAX_ENDPOINTS && endpoints[rep].blocked_waiter == t)
-        endpoints[rep].blocked_waiter = -1;
+    struct endpoint *repe = (rep < 0) ? 0 : endpoint_by_index((uint32_t)rep);
+    if (repe && repe->blocked_waiter == t) repe->blocked_waiter = -1;
     tasks[t].blocked_on = -1;
     __asm__ volatile ("" ::: "memory");
     tasks[t].state        = TASK_RUNNABLE;

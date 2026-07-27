@@ -93,10 +93,11 @@ Everything else — the shell, coreutils, tcc, user programs — is outside the 
 ### Physical memory
 
 The pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and is sized at boot
-from the E820 map, falling back to 64 MiB. Two regions are reserved at the base before the
-free list begins: the 8 MiB loader staging buffer and the RAM vdisk backing store. Both used
-to be `.bss` arrays, which capped them against the `__bss_end <= USER_PHYS_BASE` linker
-assertion; moving them into the pool decoupled their size from that ceiling entirely.
+from the E820 map, falling back to 64 MiB. Three regions are reserved at the base before the
+free list begins: the 8 MiB loader staging buffer, the RAM vdisk backing store, and the 4 MiB
+untyped arena (§4). All three used to be `.bss` arrays, which capped them against the
+`__bss_end <= USER_PHYS_BASE` linker assertion; moving them into the pool decoupled their
+size from that ceiling entirely.
 
 Boot-module frames are also held back from the free list — GRUB places modules wherever it
 likes, typically inside the pool, and handing one out as an anonymous user page would
@@ -164,10 +165,55 @@ typedef struct capability {
 
 Object types: `CAP_TCB`, `CAP_NOTIFICATION`, `CAP_ENDPOINT`, `CAP_FRAME`, `CAP_USER`,
 `CAP_AUDIT`, `CAP_CONSOLE`, `CAP_ENCRYPTED_STORAGE`, `CAP_REVOCATION`, `CAP_BLOCK_DEV`,
-`CAP_IO_DEVICE`, `CAP_PIPE`.
+`CAP_IO_DEVICE`, `CAP_PIPE`, `CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_UNTYPED`.
 
 Each task has a 256-slot cspace. Userspace names a capability by slot index and never sees
 the struct, so capabilities cannot be forged or guessed.
+
+### Untyped memory
+
+Kernel objects are not entries in fixed arrays. A `CAP_UNTYPED` names a region of physical
+memory, and `SYS_RETYPE(untyped_slot, kobj_type, count, dest_slot)` carves typed objects out
+of it, installing a capability for each into the caller's cspace. A task holding no
+`CAP_UNTYPED` cannot create a kernel object at all, and the region a task does hold is a hard
+bound on the kernel memory it can ever consume — which is what makes kernel-memory
+consumption attributable and exhaustion preventable.
+
+The arena is split once at boot:
+
+| Region | Backs | Reachable from ring 3 |
+|---|---|---|
+| `UNTYPED_KERNEL` | per-task cspaces (`KOBJ_CNODE`) | never — no capability is ever minted for it |
+| `UNTYPED_ROOT` | everything userspace allocates | `init` holds the primordial capability and delegates onward |
+
+The split is deliberate. With one shared region, "userspace exhausted kernel memory" and "the
+system can no longer create a task" would be the same event.
+
+Allocation within a region is a **monotonic bump pointer**, following seL4. Destroying an
+object does not return its bytes; reclaiming a region means revoking the untyped capability
+itself. This is a safety property, not a simplification: with a free list, an object's bytes
+can be handed straight back out and retyped as a different class while a stale capability
+still names the old address. A watermark that never moves backwards makes bytes reusable only
+after every capability into the region has been revoked — the same event that invalidates the
+stale reference.
+
+Retyped endpoints and notifications live in an index range above the static tables, which
+remain as a compatibility shim for the well-known service objects the boot protocol names by
+index; `endpoint_by_index` / `notification_by_index` are the single resolvers, and both return
+`NULL` for a destroyed object so IPC fails closed on a stale capability.
+
+`tasks[]` is not yet migrated: a TCB is reachable from the scheduler's hot path and from every
+trap frame. `KOBJ_CNODE` is allocatable by the kernel but refused to ring 3 — no capability
+type names a CNode and no syscall installs one as a task's cspace, so minting one would be
+authority with no defined meaning.
+
+**Object lifetime is capability-governed.** An object exists exactly as long as some
+capability names it. This is computed by a mark-and-sweep over the capability graph
+(`kobj_gc`, run from `cap_revoke` and `task_teardown`), not by a refcount — a refcount would
+have to be maintained at every mint, transfer, move, grant, revoke, null and teardown site
+across both the C and safe-Rust halves of the implementation, where one missed site is a leak
+and one double-decrement is a use-after-free reachable from ring 3. Reachability is computed
+from the same graph the security argument is already stated over, so the two cannot disagree.
 
 ### Serials, badges, and the derivation tree
 
@@ -470,7 +516,7 @@ centrally**, before the handler runs — so a syscall physically cannot execute 
 - A compile-time assertion ties the table size to the highest syscall number:
 
 ```c
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_DMESG + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNTYPED_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1)");
 ```
 
@@ -486,9 +532,11 @@ The complete ABI is in [`SYSCALLS.md`](SYSCALLS.md).
 
 PID 1, uid 0, and the **delegation root**. `kshell` endows it from the primordial root cnode
 with exactly what it must wield or delegate: `CAP_AUDIT`, `CAP_CONSOLE`,
-`CAP_ENCRYPTED_STORAGE`, `CAP_USER` (admin), two `CAP_ENDPOINT`s, and `CAP_IO_DEVICE`. It
-launches `fs_server` and `console_server` and hands each only its own subset via
-`SYS_CAP_GRANT`.
+`CAP_ENCRYPTED_STORAGE`, `CAP_USER` (admin), the service `CAP_ENDPOINT`s, `CAP_IO_DEVICE`,
+`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, and `CAP_UNTYPED` over `UNTYPED_ROOT`. It launches
+`fs_server` and `console_server` and hands each only its own subset via `SYS_CAP_GRANT` —
+including, in principle, a bounded share of kernel-object memory, which is what makes "this
+server may consume at most this much of the kernel" expressible.
 
 ### `fs_server`
 
@@ -603,11 +651,13 @@ promotes root to full cross-task introspection. Two authority axes means the cap
 graph is not a complete description of who can do what — which defeats the main reason to
 have one. Finding **[I-1]**.
 
-**G-3 — Kernel objects are fixed-size `.bss` tables.** `tasks[64]`, `endpoints[64]`,
-`notifications[64]`, and a ~1.5 MiB `cspace_pool[64][256]`. There is no retyping discipline,
-no per-task kernel-memory accounting, and a hard compile-time ceiling on system size. This is
-the main structural obstacle to becoming a general-purpose OS. Finding **[I-7]**; the fix is
-a seL4-style `CAP_UNTYPED` retyping model.
+**G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
+**[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
+carved from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an
+exercise of authority the capability graph describes. What remains is `tasks[]` — a TCB is
+reachable from the scheduler's hot path and from every trap frame, so migrating it is its own
+change — and reclaiming a dead task's cspace, which needs `cap_lookup`'s NULL-cspace →
+root-cnode fallback removed first.
 
 **G-4 — Endpoints are single-slot with no queue.** Callers poll on contention, fair service
 cannot be expressed, and priority inheritance is impossible. (The shared global reply endpoint
@@ -616,8 +666,11 @@ closed, but the missing queue is not.) Roadmap item **F-1.2**: a bounded FIFO pl
 reply capability, which would make reply forgery structurally impossible rather than
 right-gated.
 
-**G-5 — No kernel object lifecycle.** Endpoints and notifications are never reference-counted
-or destroyed; nothing ties an object's existence to a capability holding it alive.
+**G-5 — No kernel object lifecycle.** *Closed for retyped objects* (roadmap 0.3). A retyped
+endpoint or notification is destroyed when no capability names it any more, computed by
+mark-and-sweep over the capability graph (§4). The statically-allocated well-known service
+objects are still immortal by construction — they are named by the boot protocol rather than
+by any single capability — and will stop being so as they migrate to retyped objects.
 
 **G-6 — `this_cpu()` reads LAPIC MMIO on every call**, and `get_current_task()` calls it
 several times per syscall. The fix is `%gs`-based per-CPU data. Finding **[I-6]**.

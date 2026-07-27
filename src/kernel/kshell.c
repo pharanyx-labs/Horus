@@ -415,6 +415,12 @@ void spawn_initial_userspace_init(void) {
          * launches (userspace/init.c), so that server can own the console hardware
          * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy. */
         cap_install_from_root(pid, 12, 10, 0);  /* root[10] = CAP_IO_DEVICE                 */
+        /* CAP_UNTYPED (root[17], roadmap 0.3): authority to CREATE kernel objects.
+         * init holds the user-facing region and can delegate bounded sub-authority
+         * onward with SYS_CAP_GRANT — which is what makes "this server may consume
+         * at most this much kernel memory" expressible for the first time. Note the
+         * object must be restated, per the NB above. */
+        cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
 
         /* do_spawn leaves the child SUSPENDED so a supervisor can endow it
          * before it runs (SYS_TASK_RESUME). init's endowment is complete above,

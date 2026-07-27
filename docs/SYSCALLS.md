@@ -174,6 +174,37 @@ siblings, and independent capabilities to the same object intact.
 Kernel-reserved slots 0–3 cannot be minted into. Primordial root capabilities (serial prefix
 `0xC0DE`) cannot be revoked.
 
+## Untyped memory
+
+| # | Name | Arguments | Authorisation *(as checked)* |
+|---|---|---|---|
+| 90 | `SYS_RETYPE` | `untyped_slot`, `kobj_type`, `count`, `dest_slot` | `CAP_UNTYPED` at `untyped_slot`: WRITE |
+| 91 | `SYS_UNTYPED_INFO` | `untyped_slot`, `struct untyped_info *` | `CAP_UNTYPED` at `untyped_slot`: READ |
+
+Both are capability-**addressed** like the IPC calls: the slot argument *is* the gate, and
+both are `SC_NONE` in the dispatch table. A fixed table slot would repeat finding **[C-1]** —
+gating on a capability every task happens to hold while never consulting the one that names
+the resource.
+
+`kobj_type` is `KOBJ_ENDPOINT` (2) or `KOBJ_NOTIFICATION` (3). `KOBJ_CNODE` (1) is allocatable
+by the kernel but **refused to ring 3**: no capability type names a CNode and no syscall
+installs one as a task's cspace, so minting one would be authority with no defined meaning.
+
+`SYS_RETYPE` returns the number of objects created — which may be fewer than `count` if the
+region runs out — or a negative error. It refuses outright, without consuming any of the
+region, on: a destination below `KERNEL_RESERVED_CAPS` (`SYS_ERR_PERM`), a run that would
+overrun the cspace (`SYS_ERR_RANGE`), and an unknown type or zero count (`SYS_ERR_INVAL`). A
+refusal that spent budget would be a denial-of-service primitive against the caller's own
+region, so `captest` asserts the watermark is unchanged after every refused call.
+
+Each new object's capability carries READ|WRITE|GRANT|MINT|REVOKE — the creator is its only
+holder, so nothing can be surprised by a later revoke, and revoking the last capability to an
+object **destroys it**.
+
+Allocation is a monotonic bump pointer: destroying an object does not return its bytes. See
+[`ARCHITECTURE.md` §4](ARCHITECTURE.md) for why that is a safety property rather than a
+simplification.
+
 ## IPC
 
 | # | Name | Arguments | Authorisation *(as checked)* |

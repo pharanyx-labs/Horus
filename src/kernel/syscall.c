@@ -859,6 +859,34 @@ static void h_dmesg(struct interrupt_frame64 *r) {
     r->rax = n;
 }
 
+/* SYS_RETYPE (90): carve kernel objects out of untyped memory (roadmap 0.3).
+ * Args: rbx = cspace slot of a CAP_UNTYPED, rcx = KOBJ_* class, rdx = count,
+ * rsi = first destination slot. Returns the number of objects created, or a
+ * negative SYS_ERR_*.
+ *
+ * SC_NONE in the dispatch table, for the same reason the IPC syscalls are: the
+ * authorizing capability is the one the CALLER NAMES, so a fixed table slot
+ * would authorise the wrong thing (finding C-1). untyped_retype resolves rbx
+ * through cap_lookup and refuses anything that is not a CAP_UNTYPED with WRITE. */
+static void h_retype(struct interrupt_frame64 *r) {
+    r->rax = (uint64_t)(uint32_t)untyped_retype((uint32_t)r->rbx, (uint32_t)r->rcx,
+                                                (uint32_t)r->rdx, (uint32_t)r->rsi);
+}
+
+/* SYS_UNTYPED_INFO (91): rbx = cspace slot of a CAP_UNTYPED (READ),
+ * rcx = user struct untyped_info *. Lets a task see how much of its own kernel
+ * memory budget it has spent — a budget it cannot observe is one it cannot
+ * manage. Same slot-is-the-gate discipline as SYS_RETYPE. */
+static void h_untyped_info(struct interrupt_frame64 *r) {
+    struct untyped_info info;
+    int rc = untyped_info((uint32_t)r->rbx, &info);
+    if (rc != 0) { r->rax = (uint64_t)(uint32_t)rc; return; }
+    if (copy_to_user((void *)(addr_t)r->rcx, &info, sizeof(info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
+    }
+    r->rax = 0;
+}
+
 typedef struct {
     void   (*fn)(struct interrupt_frame64 *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
@@ -866,7 +894,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 90
+#define SYSCALL_TABLE_SIZE 92
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1013,18 +1041,25 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_DMESG]                   = { h_dmesg,  CAPSLOT_KERNEL_LOG, CAP_RIGHT_READ, CAP_KERNEL_LOG },
     /* CAP_TCB-to-target / admin checked in the handler, as for SYS_KILL. */
     [SYS_TASK_RESUME]             = { h_task_resume,             SC_NONE, 0, SC_ANYTYPE },
+    /* Untyped memory (roadmap 0.3). MUST stay SC_NONE: the authorizing
+     * capability is the one named by the caller's first argument, and a fixed
+     * table slot here would repeat exactly the C-1 mistake — gating on a
+     * capability every task happens to hold while never consulting the one that
+     * actually names the resource. untyped_retype / untyped_info do the lookup. */
+    [SYS_RETYPE]                  = { h_retype,                  SC_NONE, 0, SC_ANYTYPE },
+    [SYS_UNTYPED_INFO]            = { h_untyped_info,            SC_NONE, 0, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_DMESG is currently the highest syscall number. Adding a higher one
+ * SYS_UNTYPED_INFO is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_TASK_RESUME + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNTYPED_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

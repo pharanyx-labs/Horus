@@ -78,6 +78,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/crypto.o \
        src/kernel/tpm.o \
        src/kernel/pipe.o \
+       src/kernel/untyped.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0

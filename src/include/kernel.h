@@ -109,8 +109,24 @@ extern uint8_t *loader_staging;                               /* set at boot -> 
 #define VDISK_PAGES             (VDISK_BYTES / PAGE_SIZE)
 extern uint8_t *g_vdisk_backing;                             /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES) */
 
+/* The untyped-memory arena: the RAM every retypable kernel object is carved out
+ * of (roadmap 0.3, audit finding I-7). Reserved contiguously at the base of the
+ * physical pool, right after the RAM vdisk, and reached through PHYS_KVA — the
+ * same pattern loader_staging and g_vdisk_backing already use, and for the same
+ * reason: kernel objects that live in `.bss` are bounded by the
+ * `__bss_end <= USER_PHYS_BASE` (16 MiB) linker ASSERT, so every static object
+ * table is a hard ceiling on system size that costs image budget whether or not
+ * it is used. Pool RAM costs neither.
+ *
+ * 4 MiB holds 512 CNodes, or ~15000 endpoints, against the 512 KiB of `.bss` the
+ * static cspace_pool alone used to cost. Sized generously because it is pool
+ * frames out of a ~495 MiB E820 pool, not image bytes. */
+#define UNTYPED_ARENA_BYTES     (4u * 1024u * 1024u)
+#define UNTYPED_ARENA_PAGES     (UNTYPED_ARENA_BYTES / PAGE_SIZE)
+extern uint8_t *g_untyped_arena;   /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES + VDISK_BYTES) */
+
 /* Total pool frames held back at the base before the free list starts. */
-#define POOL_RESERVE_PAGES      (LOADER_STAGING_PAGES + VDISK_PAGES)
+#define POOL_RESERVE_PAGES      (LOADER_STAGING_PAGES + VDISK_PAGES + UNTYPED_ARENA_PAGES)
 
 /* Boot modules. GRUB loads each `module2` line in grub.cfg into physical RAM and
  * describes it with a multiboot2 type-3 tag; mb_scan_boot_info() records them
@@ -263,6 +279,20 @@ int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, c
 #define REPLY_EP_BASE   64
 #define IPC_MSG_MAX     256
 
+/* Retyped endpoints live in their own index range ABOVE the static table, so an
+ * object index unambiguously says which storage it names and the migration can
+ * proceed one object type at a time (roadmap 0.3). endpoint_by_index() is the
+ * single resolver; nothing indexes endpoints[] directly any more.
+ *
+ * The dynamic range is not a second fixed table — the ceiling below only bounds
+ * the descriptor array, and the OBJECTS are carved from untyped memory a task
+ * must hold a CAP_UNTYPED for. That is the whole point of I-7: a task's kernel
+ * memory is attributable to authority it holds, not to a global array everyone
+ * shares. */
+#define MAX_DYN_ENDPOINTS      256
+#define DYN_EP_BASE            MAX_ENDPOINTS
+#define EP_INDEX_MAX           (DYN_EP_BASE + MAX_DYN_ENDPOINTS)
+
 /* The private reply endpoint belonging to task `tid`, or -1 if out of range. */
 static inline int reply_ep_for_task(int tid) {
     return (tid > 0 && tid < MAX_TASKS) ? (REPLY_EP_BASE + tid) : -1;
@@ -300,6 +330,7 @@ static inline int reply_ep_for_task(int tid) {
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG   (dmesg; shell)            */
 #define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE  (provisioning; fs_server) */
+#define CAPSLOT_UNTYPED    18    /* CAP_UNTYPED: kernel-object memory (init)   */
 
 /* Task states. */
 #define TASK_DEAD          0
@@ -317,6 +348,13 @@ struct endpoint {
     uint8_t  msg[IPC_MSG_MAX];
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
+
+/* Resolve an endpoint object index to its storage: the static compat table below
+ * DYN_EP_BASE, an untyped-backed retyped object above it. NULL if the index is
+ * out of range or names a dynamic slot that holds no live object — callers must
+ * check, because a retyped endpoint can be destroyed while an index derived from
+ * a stale capability still names it. */
+struct endpoint *endpoint_by_index(uint32_t idx);
 
 /* ---- Pipes (shell pipelines) ---------------------------------------------
  * A bounded, in-kernel byte pipe. Ends are capabilities (CAP_PIPE, direction in
@@ -360,6 +398,129 @@ struct notification {
     int      blocked_waiter;   /* task id blocked in SYS_WAIT_NOTIFY here, -1=none */
 };
 extern struct notification notifications[MAX_NOTIFICATIONS];
+
+/* Retyped notifications, same split as endpoints above. */
+#define MAX_DYN_NOTIFICATIONS  256
+#define DYN_NOTIF_BASE         MAX_NOTIFICATIONS
+#define NOTIF_INDEX_MAX        (DYN_NOTIF_BASE + MAX_DYN_NOTIFICATIONS)
+struct notification *notification_by_index(uint32_t idx);
+
+/* ---- Untyped memory and retyping (roadmap 0.3, audit finding I-7) ----------
+ *
+ * Every kernel object used to be an entry in a fixed `.bss` array — tasks[64],
+ * endpoints[128], notifications[64], cspace_pool[64][256]. That has three
+ * consequences, and none of them is about size:
+ *
+ *   1. There is no retyping discipline. An object's storage is decided at
+ *      compile time, so "who may create a kernel object" is not a question the
+ *      capability graph can answer.
+ *   2. There is no per-task kernel-memory accounting. A task that allocates
+ *      endpoints consumes a system-wide resource no capability names, so
+ *      kernel-memory exhaustion is neither attributable nor preventable.
+ *   3. The ceiling is global and unmovable. Raising any table costs `.bss`
+ *      against a 16 MiB linker ASSERT that the whole image shares.
+ *
+ * Following seL4: a CAP_UNTYPED capability names a physical region, and
+ * SYS_RETYPE carves typed objects out of it. A task can only create kernel
+ * objects in memory it holds untyped authority over, and the object's lifetime
+ * is governed by the capabilities naming it, not by a slot index being free.
+ *
+ * Allocation within an untyped region is a BUMP POINTER, exactly as in seL4:
+ * destroying an object does not return its bytes. Reclaiming a region means
+ * revoking the untyped capability itself, which destroys every object derived
+ * from it and resets the watermark. That is what makes reclamation safe without
+ * a free list: there is no moment at which a live object shares bytes with a
+ * fresh one, so a stale capability can never be resolved onto a reallocated
+ * object of a different type.
+ */
+#define CAP_UNTYPED             16
+
+/* Retypable object classes. Values are ABI: they are the `type` argument of
+ * SYS_RETYPE and are mirrored in include/syscall.h. */
+#define KOBJ_CNODE              1    /* CNODE_SIZE capability slots (a cspace)  */
+#define KOBJ_ENDPOINT           2    /* struct endpoint                          */
+#define KOBJ_NOTIFICATION       3    /* struct notification                      */
+#define KOBJ_TYPE_MAX           3
+
+/* How many untyped regions the kernel can describe. Small by design: this bounds
+ * the DESCRIPTORS, not the memory they govern — one descriptor can name an
+ * arbitrarily large region. Index 0 is the kernel's own bootstrap region and no
+ * capability is ever minted for it. */
+#define MAX_UNTYPED             8
+#define UNTYPED_KERNEL          0    /* kernel bootstrap: per-task cspaces. Unreachable from ring 3. */
+#define UNTYPED_ROOT            1    /* the user-facing region; init holds the primordial cap */
+
+struct untyped {
+    uint64_t base;        /* arena offset of the region, bytes                  */
+    uint64_t size;        /* extent of the region, bytes                        */
+    uint64_t watermark;   /* bytes handed out; never decreases except on reset  */
+    uint32_t objects;     /* live objects carved from this region               */
+    int      in_use;
+};
+extern struct untyped untypeds[MAX_UNTYPED];
+
+/* The SYS_UNTYPED_INFO payload. MUST stay byte-identical to the copy in
+ * include/syscall.h — the kernel fills this layout and ring-3 reads it across
+ * copy_to_user, exactly like struct task_info. */
+struct untyped_info {
+    uint64_t size;        /* total bytes in the region      */
+    uint64_t watermark;   /* bytes consumed                 */
+    uint64_t free;        /* size - watermark               */
+    uint32_t objects;     /* live objects carved from it    */
+    uint32_t reserved;    /* pad to an 8-byte multiple      */
+};
+
+/* Carve up the arena and publish the two boot regions. Called from kernel_main
+ * after paging_init (which sets g_untyped_arena) and before scheduler_init
+ * (which needs UNTYPED_KERNEL to allocate task 0's cspace). */
+void untyped_init(void);
+
+/* Allocate one KOBJ_* object from untyped region `u`, returning a pointer into
+ * the arena (zeroed) or NULL if the region cannot satisfy it. `out_index` gets
+ * the object index a capability will name (a dynamic endpoint/notification
+ * index; unused for KOBJ_CNODE). Kernel-internal: the syscall path goes through
+ * untyped_retype(), which additionally enforces the capability. */
+void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index);
+
+/* The SYS_RETYPE body: carve `count` objects of `kobj_type` out of the untyped
+ * region named by `untyped_slot` in the CALLER's cspace, installing a capability
+ * for each into dest_slot..dest_slot+count-1. Returns the number created, or a
+ * negative SYS_ERR_*. Authority is the CAP_UNTYPED in `untyped_slot` — the slot
+ * argument IS the gate, as for the IPC syscalls (finding C-1). */
+int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
+                   uint32_t dest_slot);
+
+/* Fill *out for the untyped region named by `untyped_slot` in the caller's
+ * cspace. Returns 0, or a negative SYS_ERR_*. */
+int untyped_info(uint32_t untyped_slot, struct untyped_info *out);
+
+/* Mark-and-sweep the capability graph and destroy every retyped endpoint /
+ * notification no live capability names any more. This is what makes object
+ * lifetimes capability-governed rather than index-governed. Called after any
+ * operation that can drop the last capability to an object: cap_revoke and
+ * task_teardown. Cheap enough to run unconditionally — a revoke already sweeps
+ * every cspace in the system.
+ *
+ * Deliberately a sweep and not a refcount: a refcount has to be incremented on
+ * every mint/transfer/grant and decremented on every revoke/null across both the
+ * C and Rust halves of the capability implementation, and a single missed site is
+ * either a leak or a use-after-free. Reachability is computed from the same graph
+ * the security argument is stated over, so it cannot disagree with it. */
+void kobj_gc(void);
+
+/* Live retyped-object counts, for the self-test to assert destruction actually
+ * happened rather than assuming it. */
+uint32_t kobj_live_count(uint32_t kobj_type);
+
+/* Arm the untyped tables' spinlock. Called at the END of scheduler_init: every
+ * mutation before that point is single-threaded boot code, and locking there
+ * would trip the unconditional `sti` in spin_unlock (finding C-3.1). See the
+ * locking note at the top of src/kernel/untyped.c before changing this. */
+void untyped_arm_locking(void);
+
+#ifdef UNTYPED_SELFTEST
+void untyped_selftest(void);
+#endif
 /* Canonical task_info ABI. MUST stay byte-identical to the copy in
  * include/syscall.h — the kernel fills this
  * layout and ring-3 reads it across copy_to_user (SYS_GET_TASK_INFO). A prior
@@ -503,6 +664,8 @@ void users_init(void);
 #define SYS_PIPE_CLOSE         86   /* (slot) -> 0; drop a pipe-end cap and unref that end (EOF/EPIPE to the peer when it hits 0) */
 #define SYS_STDIO_INFO         87   /* () -> bit0: stdin is a pipe (slot 8); bit1: stdout is a pipe (slot 9); read by posix_init */
 #define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
+#define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
+#define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
 /* Reserved cspace slots a spawner wires a child's pipe stdio into (do_spawn),
@@ -1145,6 +1308,18 @@ void cap_init(void);
 capability_t *cap_lookup(uint32_t slot, uint32_t required_rights);
 bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
 bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint32_t badge);
+/* Install a freshly-minted capability of `type` naming `object` into the CURRENT
+ * task's own cspace, under cap_lock and with the same authority guard,
+ * reserved-slot rule and MAX_CAPS_PER_TASK accounting as cap_mint. The general
+ * form of cap_install_endpoint, used by SYS_RETYPE to name a newly created
+ * kernel object. */
+bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
+                        uint32_t rights, uint32_t badge);
+/* Read-only view of the kernel root cnode, so the object-reachability sweep in
+ * untyped.c can see kernel-held capabilities too. root_cnode is otherwise
+ * file-private to capability.c and must stay that way: handing out a mutable
+ * pointer would be an unaudited path around every locked cap-write. */
+const capability_t *cap_root_cnode_ref(void);
 bool cap_transfer(uint32_t dest_slot, uint32_t src_slot);
 bool cap_move(uint32_t dest_slot, uint32_t src_slot);
 /* Delegate the caller's src_slot into a supervised target's dest_slot through the

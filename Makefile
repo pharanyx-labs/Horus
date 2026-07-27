@@ -1454,7 +1454,12 @@ smoke-proc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
 	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: PASS exit+kill+spawn+exec+grant+image+altstack+signal' \
+	@# Require the LAST marker proctest prints. The '+signal' marker is emitted by
+	@# sigtarget partway through; requiring it let the harness kill QEMU before the
+	@# closing spawn-suspend witness ever ran, so that check was dead code. The
+	@# suspend marker strictly follows it (proctest waits for sigtarget to exit
+	@# first), so requiring it proves the whole chain completed.
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: suspend OK' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 # Build with the gated notification self-test, boot headless, and require the

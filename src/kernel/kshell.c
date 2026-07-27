@@ -416,6 +416,11 @@ void spawn_initial_userspace_init(void) {
          * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy. */
         cap_install_from_root(pid, 12, 10, 0);  /* root[10] = CAP_IO_DEVICE                 */
 
+        /* do_spawn leaves the child SUSPENDED so a supervisor can endow it
+         * before it runs (SYS_TASK_RESUME). init's endowment is complete above,
+         * so make it schedulable before entering it. */
+        tasks[pid].runnable_ctx = 1;
+
         /* do_spawn already fabricated a full trap frame; enter via the same
          * pop+iretq path every later resume uses. */
         sched_enable_preemption();

@@ -380,6 +380,7 @@ static int try_run_from_bin(const char *cmd) {
     if (sh_read_file(ino, buf, size) != 0) { print(argv[0]); println(": read failed"); free(buf); return 1; }
 
     int pid = sys_spawn_image(buf, size, argc, argv);
+    if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
     free(buf);                                            /* kernel already staged the image */
     if (pid < 0) { print(argv[0]); println(": failed to spawn"); return 1; }
     /* Block until the child finishes so its output lands before the next prompt.
@@ -483,6 +484,7 @@ static int try_run_pipeline(const char *cmd) {
         uint32_t in_slot  = (i > 0)          ? rslot[i - 1] : 0;   /* 0 = console */
         uint32_t out_slot = (i < nstage - 1) ? wslot[i]     : 0;
         pid[i] = sys_spawn_image_stdio(buf, size, argc, argv, in_slot, out_slot);
+        if (pid[i] > 0) sys_task_resume(pid[i]);   /* spawn leaves the child suspended */
         free(buf);
         if (pid[i] < 0) { print(argv[0]); println(": failed to spawn"); }
     }
@@ -1976,6 +1978,7 @@ static void handle_command(char *cmd) {
             const char *name = cmd + 6;
             while (*name == ' ') name++;
             pid = sys_spawn_named(name);
+            if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
             if (pid == SYS_ERR_NOENT) {
                 print("spawn: unknown binary '");
                 print(name);
@@ -1984,6 +1987,7 @@ static void handle_command(char *cmd) {
             }
         } else {
             pid = sys_spawn();
+            if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
         }
         if (pid > 0) {
             print("Spawned new task pid=");
@@ -2000,6 +2004,7 @@ static void handle_command(char *cmd) {
             return;
         }
         int pid = sys_spawn();
+        if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
         if (pid > 0) {
             print("Loaded '");
             print(h.name);
@@ -2057,6 +2062,7 @@ static void handle_command(char *cmd) {
         if (sh_read_file(ino, buf, size) != 0) { println("run: read failed"); free(buf); return; }
 
         int pid = sys_spawn_image(buf, size, 0, 0);
+        if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
         free(buf);                                 /* kernel already staged the image */
         if (pid <= 0) { println("run: exec failed (not a valid program image?)"); return; }
         print("run: pid="); print_decimal(pid); println("");

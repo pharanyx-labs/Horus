@@ -141,6 +141,7 @@ struct audit_event {
 #define SYS_PIPE_WRITE         85   /* (slot, buf, len) -> bytes; SYS_ERR_AGAIN = full-but-reader-open, SYS_ERR_PIPE = no reader */
 #define SYS_PIPE_CLOSE         86   /* (slot) -> 0; drop a pipe-end cap and unref that end */
 #define SYS_STDIO_INFO         87   /* () -> bit0 stdin-is-pipe, bit1 stdout-is-pipe (spawner-wired); read by posix_init */
+#define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
@@ -802,6 +803,20 @@ static inline int sys_audit_digest(void *out) {
  * `buf`, starting `offset` bytes from the oldest retained byte. Returns the
  * number of bytes copied (0 at/after the end), or SYS_ERR_PERM for a non-root
  * caller. Read in a loop advancing `offset` by the return value. Backs `dmesg`. */
+/* Make a spawned-but-suspended child schedulable.
+ *
+ * sys_spawn_* return a child that is NOT yet running, so its supervisor can
+ * endow it (sys_cap_grant) before it executes. Call this once the child's
+ * capabilities are in place. Requires a CAP_TCB to the target, which the spawn
+ * granted you.
+ *
+ * Forgetting it is a deterministic hang (the child never runs) rather than an
+ * intermittent race — which is the point: the safe ordering is the only one the
+ * API can express. */
+static inline int sys_task_resume(int tid) {
+    return syscall(SYS_TASK_RESUME, (uint32_t)tid, 0, 0);
+}
+
 static inline int sys_dmesg(void *buf, uint32_t offset, uint32_t max) {
     return syscall(SYS_DMESG, (uint32_t)(unsigned long)buf, offset, max);
 }

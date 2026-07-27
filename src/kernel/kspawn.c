@@ -221,6 +221,31 @@ static int do_spawn_inner(void) {
     sched_prepare_user_context(new_id, tasks[new_id].eip,
                                tasks[new_id].esp ? tasks[new_id].esp : 0x007ff000ULL);
 
+    /* SPAWN SUSPENDED. sched_prepare_user_context just set runnable_ctx = 1,
+     * which is what makes a task schedulable; clear it so the child cannot run
+     * until its supervisor explicitly resumes it (SYS_TASK_RESUME).
+     *
+     * This closes a whole BUG CLASS, not one bug. A supervisor's only way to
+     * endow a child is `spawn -> sys_cap_grant... -> child runs`, but spawn used
+     * to publish the child as runnable immediately, so under SMP it genuinely
+     * started executing on another core BEFORE the grants landed. The child then
+     * ran with a partially-populated cspace and failed in whatever way its
+     * missing capability implied. Three separate instances of this were found and
+     * individually papered over with retry loops before the pattern was
+     * recognised: fs_server's registration, posix's fs_connect, and finally the
+     * shell's console capability — which had no retry, so the shell simply never
+     * printed its banner and CI timed out.
+     *
+     * Retrying in each client is whack-a-mole: it needs every current AND future
+     * client to anticipate a race it cannot see. Suspending the child instead
+     * makes the safe ordering the ONLY expressible one.
+     *
+     * The failure mode also improves, which is the real point. Forgetting to
+     * resume is a DETERMINISTIC hang — the child never runs, every time, locally
+     * as well as in CI. Racing an endowment was intermittent, and intermittent
+     * failures get re-run rather than fixed. */
+    tasks[new_id].runnable_ctx = 0;
+
     return new_id;
 }
 

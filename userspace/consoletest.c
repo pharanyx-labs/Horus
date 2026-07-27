@@ -28,7 +28,7 @@ static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { 
 static int rpc(struct con_request *rq, struct con_response *rp) {
     rq->magic = CON_PROTO_MAGIC;
     int r;
-    while ((r = sys_ipc_call(CON_EP_REQ, CON_EP_REP, rq, sizeof(*rq), rp)) < 0) spin_delay();
+    while ((r = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, rq, sizeof(*rq), rp)) < 0) spin_delay();
     if (rp->magic != CON_PROTO_MAGIC) return -102;
     return rp->rc;
 }

@@ -13,9 +13,15 @@ Findings referenced as **[C-n]** / **[I-n]** are from
 
 ## 1. Security properties that are claimed elsewhere but not enforced
 
-### 1.1 IPC is not capability-mediated — **critical** — **[C-1]**
+### 1.1 ~~IPC is not capability-mediated~~ — **FIXED 2026-07-27** — **[C-1]**
 
-This is the most important entry in this document.
+**Resolved.** IPC is now capability-addressed: every IPC syscall takes a cspace slot and the
+kernel derives the endpoint or notification from the capability there, checking type, right,
+and lineage. A task is born with only its own private reply endpoint; everything else arrives
+by delegation. Clients receive WRITE-only capabilities, so they can send to a service but
+never intercept its traffic or forge its replies. `captest` grew from 29 to 41 checks, twelve
+of them asserting these refusals, and the suite was falsified against the pre-fix kernel to
+confirm it detects the bug. The original description follows for the record.
 
 Endpoints (`MAX_ENDPOINTS = 64`) and notifications (`MAX_NOTIFICATIONS = 64`) are flat global
 arrays addressed by an integer taken directly from a userspace register. The index is
@@ -123,10 +129,8 @@ One in-flight message per endpoint, no queue. `SYS_IPC_SEND`/`RECV` return `-2` 
 userspace to poll, so contention is a busy-wait. Fair service and priority inheritance cannot
 be expressed.
 
-`FS_EP_REP = 5` is a *shared global* reply endpoint on which every client parks its
-`SYS_IPC_CALL`, so concurrent clients overwrite each other's `blocked_waiter`. Correctness
-survives today only because `SYS_IPC_REPLY_TO` routes by kernel-recorded sender identity
-instead of by that field.
+*(The shared global reply endpoint that used to compound this is gone: every task now has a
+private one, so **[I-5]** is closed. The missing queue is not.)*
 
 ### 2.25 The write-ahead journal is not durable on real hardware — **[I-10]**
 

@@ -557,11 +557,46 @@ static void provision_boot_modules(void) {
 /* The gate endpoint init shares with us (slot 3, object 0), and the badge we
  * fire on it once startup provisioning is done, so init can launch the shell.
  * init blocks in SYS_WAIT_NOTIFY on the same endpoint object until this arrives. */
-#define FS_GATE_SLOT   3
+#define FS_GATE_SLOT   CAPSLOT_NOTIFY   /* CAP_NOTIFICATION: the fs-ready rendezvous */
 #define FS_READY_BADGE 0x5D0Eu
 
 void _start(void) {
     println("[fs_server] userspace FS server starting (encrypted object store).");
+
+    /* Register FIRST, before any provisioning work.
+     *
+     * Registration publishes the service so clients can acquire a capability to
+     * it with SYS_CONNECT_FS_SERVER. Since IPC became capability-addressed
+     * (finding C-1) that is the ONLY way a client reaches this server — the
+     * ambient endpoint capability every task used to be born with is gone. So a
+     * client that starts before registration completes cannot connect at all,
+     * where previously it would simply have sent to the well-known endpoint and
+     * waited. Registration is a couple of stores; provisioning copies megabytes
+     * block-by-block through the encrypted store. Doing the cheap publish first
+     * removes the window entirely rather than leaving clients to race it. */
+    /* Retry until the capability arrives.
+     *
+     * A spawned task becomes runnable before its supervisor has finished
+     * endowing it, and under SMP it genuinely runs first on another core — so
+     * this registration can execute before init's SYS_CAP_GRANT of the listen
+     * capability into CAPSLOT_FS_LISTEN has landed. Registration then fails for
+     * want of a capability that is merely late, not absent.
+     *
+     * That window has always existed; it was hidden while registration happened
+     * after the multi-megabyte provisioning copy, which gave init ample time.
+     * Registering first (so clients can connect promptly — see above) exposes it,
+     * so wait for the grant rather than racing it. Bounded, and yields between
+     * attempts so the granting task actually gets the CPU on a single core. */
+    {
+        int reg = -1;
+        for (int attempt = 0; attempt < 2000; attempt++) {
+            reg = sys_register_fs_server(CAPSLOT_FS_LISTEN);
+            if (reg == 0) break;
+            sys_yield();
+        }
+        if (reg == 0) println("[fs_server] registered; serving.");
+        else          println("[fs_server] warning: registration failed; serving anyway.");
+    }
 
     /* Provision /bin from the boot modules with the CPU to ourselves, BEFORE the
      * shell exists. The shell reads the console with an unpreemptible ring-0 spin
@@ -576,18 +611,9 @@ void _start(void) {
         if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
     }
     /* Always signal, even if there was nothing to provision or the store is still
-     * locked, so init never waits forever. init consumes the badge on the shared
-     * gate endpoint whether it fires before or after init blocks. */
+     * locked, so init never waits forever. The badge accumulates whether it fires
+     * before or after init blocks. */
     sys_notify(FS_GATE_SLOT, FS_READY_BADGE);
-
-    /* Registration is best-effort: it publishes the service for clients that
-     * discover it via sys_connect_fs_server, but the request/reply endpoints
-     * themselves are the well-known FS_EP_REQ / FS_EP_REP. */
-    if (sys_register_fs_server(FS_EP_REQ) == 0) {
-        println("[fs_server] registered; serving on endpoints 4 (req) / 5 (rep).");
-    } else {
-        println("[fs_server] warning: registration failed; serving anyway.");
-    }
 
     struct fs_request  rq;
     struct fs_response rp;
@@ -599,7 +625,7 @@ void _start(void) {
             struct fs_stat root_st;
             if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
         }
-        int r = sys_ipc_recv(FS_EP_REQ, (char *)&rq, sizeof(rq));
+        int r = sys_ipc_recv(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
         if (r < 0) { spin_delay(); continue; }          /* no request yet */
 
         /* Take the caller's identity from the kernel, not from the request: this
@@ -607,7 +633,7 @@ void _start(void) {
          * therefore cannot claim to be another user. Fail closed if the kernel
          * reports no valid sender. */
         uint32_t cgid = 0;
-        uint32_t cuid = sys_ipc_sender(FS_EP_REQ, &cgid);
+        uint32_t cuid = sys_ipc_sender(CAPSLOT_FS_LISTEN, &cgid);
         if (cuid == (uint32_t)-1) {
             umemset(&rp, 0, sizeof(rp));
             rp.magic = FS_PROTO_MAGIC;
@@ -620,6 +646,6 @@ void _start(void) {
          * replies. A negative return is a transient "client still blocking" race
          * (SMP); retry until delivered. Must precede the next recv, which would
          * overwrite last_sender. */
-        while (sys_ipc_reply_to(FS_EP_REQ, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
+        while (sys_ipc_reply_to(CAPSLOT_FS_LISTEN, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
     }
 }

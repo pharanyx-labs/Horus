@@ -60,11 +60,21 @@ static void check(int ok, const char *what) {
  * are NOT granted by default, which is what makes them useful negative probes.
  */
 #define SLOT_TCB_SELF   0
-#define SLOT_FRAME      3
-#define SLOT_ENDPOINT   4
-#define SLOT_ENDPOINT2  5
+#define SLOT_FRAME      3    /* CAP_FRAME — a live cap, but NOT an endpoint */
+#define SLOT_REPLY_EP   4    /* CAP_ENDPOINT: this task's private reply ep (READ|WRITE) */
+#define SLOT_CLIENT_EP  5    /* CAP_ENDPOINT: console service, WRITE ONLY (a client cap) */
 #define SLOT_BLOCKDEV   7    /* deliberately not held */
+#define SLOT_NOTIFY     11   /* CAP_NOTIFICATION */
+#define SLOT_SECOND_EP  21   /* CAP_ENDPOINT: a second, distinct endpoint (READ|WRITE) */
 #define SLOT_EMPTY_HI   200  /* never populated */
+
+/* Non-blocking probe: SYS_WAIT_NOTIFY on a slot that holds no CAP_NOTIFICATION
+ * must be refused outright (it returns before any blocking decision is made), so
+ * this can never hang the test. */
+static int sys_wait_notify_nb(int slot) {
+    uint32_t badge = 0;
+    return sys_wait_notify(slot, &badge);
+}
 
 void _start(void) {
     out("CAPTEST: begin\n");
@@ -117,18 +127,89 @@ void _start(void) {
      * wildcard or read out of bounds. */
     check(sys_cap_revoke(SLOT_EMPTY_HI) != 0, "revoke-empty-slot-succeeded");
 
-    /* ---- 4. IPC is capability-gated ---------------------------------- */
+    /* ---- 4. IPC is capability-ADDRESSED (audit finding C-1) ----------- *
+     *
+     * The property under test: a task may operate on an IPC object only if it
+     * holds a capability OF THE RIGHT TYPE, NAMING THAT OBJECT, carrying the
+     * RIGHT for the direction.
+     *
+     * Every check below failed before the fix. IPC took a raw object index from
+     * a register and was gated on "hold something in slot 3" — and slot 3 holds
+     * a CAP_FRAME in every task — so any task could receive on, send to, and
+     * forge replies on any endpoint in the system, including a server's. The
+     * old suite never caught it because it only asserted that HELD capabilities
+     * work and UNHELD slots are refused; it never asserted that a capability for
+     * one object denies another, nor that a non-endpoint type is refused. */
 
-    /* Slot 4 is a real endpoint, so a non-blocking recv on it is legitimate: it
-     * either finds nothing (would-block) or a message, but must not be refused
-     * for lack of authority. */
     char msg[64];
-    int rc = sys_ipc_recv(SLOT_ENDPOINT, msg, sizeof(msg));
+
+    /* (a) The task's own reply endpoint (slot 4, READ|WRITE) is legitimate: the
+     * non-blocking recv either finds nothing (would-block) or a message, but is
+     * not refused for lack of authority. */
+    int rc = sys_ipc_recv(SLOT_REPLY_EP, msg, sizeof(msg));
     check(rc == -2 || rc >= 0, "ipc-recv-on-held-endpoint-refused");
 
-    /* Slot 7 holds no endpoint, so the same call must be refused. */
-    check(sys_ipc_recv(SLOT_BLOCKDEV, msg, sizeof(msg)) < 0,
+    /* NOTE ON PRECISION. Every refusal below is asserted as EXACTLY
+     * SYS_ERR_PERM (-1), never merely "negative". sys_ipc_recv returns -2 for an
+     * empty mailbox, so a `< 0` assertion cannot tell "the kernel refused me" from
+     * "the endpoint I was allowed to read happened to be empty" — and under the
+     * pre-fix kernel, which treated the argument as a raw object index, these
+     * probes hit empty endpoints and returned -2. A `< 0` test therefore passes on
+     * BOTH the fixed and the broken kernel and proves nothing. (Confirmed
+     * empirically: an earlier draft of this suite used `< 0`, and the whole
+     * section still passed with the vulnerable handler restored.) Asserting the
+     * exact code is what makes these genuine regression tests. */
+
+    /* (b) A slot holding no capability at all is refused. */
+    check(sys_ipc_recv(SLOT_BLOCKDEV, msg, sizeof(msg)) == SYS_ERR_PERM,
           "ipc-recv-on-unheld-slot-allowed");
+    check(sys_ipc_recv(SLOT_EMPTY_HI, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "ipc-recv-on-empty-slot-allowed");
+    check(sys_ipc_send(SLOT_EMPTY_HI, msg, 4) == SYS_ERR_PERM,
+          "ipc-send-on-empty-slot-allowed");
+
+    /* (c) THE REGRESSION TEST FOR C-1. Slot 3 holds a CAP_FRAME — a real,
+     * live capability, just not an endpoint. It must be refused for every IPC
+     * operation. This exact slot was the old authorisation gate, so under the
+     * pre-fix kernel all four of these SUCCEEDED and thereby authorised IPC to
+     * an arbitrary endpoint. Type confusion is the whole bug. */
+    check(sys_ipc_recv(SLOT_FRAME, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "ipc-recv-authorised-by-CAP_FRAME");
+    check(sys_ipc_send(SLOT_FRAME, msg, 4) == SYS_ERR_PERM,
+          "ipc-send-authorised-by-CAP_FRAME");
+    check(sys_ipc_reply_to(SLOT_FRAME, msg, 4) == SYS_ERR_PERM,
+          "ipc-reply-to-authorised-by-CAP_FRAME");
+    check(sys_ipc_sender(SLOT_FRAME, 0) == (uint32_t)-1,
+          "ipc-sender-authorised-by-CAP_FRAME");
+
+    /* (d) A WRITE-only capability confers SEND and nothing else — the
+     * client/server split that makes a shared service safe.
+     *
+     * Slot 5 holds a send-only capability to the console service, exactly what a
+     * client is given (and what SYS_CONNECT_FS_SERVER mints). The refusals are
+     * the C-1 attack itself:
+     *   - recv would let a client DEQUEUE other clients' requests to the server,
+     *     both disclosing them and starving the real server;
+     *   - reply_to would let a client FORGE the server's replies straight into a
+     *     victim's blocked SYS_IPC_CALL buffer — forged file contents, forged
+     *     permission outcomes, arbitrary bytes served as a program's image.
+     * Both require CAP_RIGHT_READ (the receive right), which a client never has. */
+    check(sys_ipc_recv(SLOT_CLIENT_EP, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "client-cap-allowed-recv-INTERCEPTION");
+    check(sys_ipc_reply_to(SLOT_CLIENT_EP, msg, 4) == SYS_ERR_PERM,
+          "client-cap-allowed-reply-to-FORGERY");
+    check(sys_ipc_sender(SLOT_CLIENT_EP, 0) == (uint32_t)-1,
+          "client-cap-allowed-sender-query");
+
+    /* (e) A CAP_NOTIFICATION does not authorise ENDPOINT operations, and an
+     * endpoint capability does not authorise NOTIFICATION operations. The two
+     * namespaces are separate objects and the type check must keep them so. */
+    check(sys_ipc_recv(SLOT_NOTIFY, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "notification-cap-authorised-endpoint-recv");
+    check(sys_notify(SLOT_REPLY_EP, 0x1u) == SYS_ERR_PERM,
+          "endpoint-cap-authorised-notify");
+    check(sys_wait_notify_nb(SLOT_REPLY_EP) == SYS_ERR_PERM,
+          "endpoint-cap-authorised-wait-notify");
 
     /* ---- 5. signals: own-task operations ----------------------------- */
 
@@ -162,7 +243,7 @@ void _start(void) {
     /* SYS_CAP_GRANT may only push a capability *down* into a task we spawned
      * (hold a CAP_TCB for). Granting to a task we do not supervise must fail —
      * otherwise any task could hand authority to any other. */
-    check(sys_cap_grant(1 << 20, SLOT_ENDPOINT, 20) != 0,
+    check(sys_cap_grant(1 << 20, SLOT_REPLY_EP, 20) != 0,
           "grant-to-unsupervised-task-allowed");
 
     /* Granting from a slot we hold nothing in must fail too: there is no
@@ -178,16 +259,16 @@ void _start(void) {
      * endpoint could revoke it out from under the service that delegated it.
      * This is the distinction between having a capability and having authority
      * over it, and it is the one a possession-only model gets wrong. */
-    check(sys_cap_revoke(SLOT_ENDPOINT2) != 0, "revoke-succeeded-without-revoke-right");
+    check(sys_cap_revoke(SLOT_SECOND_EP) != 0, "revoke-succeeded-without-revoke-right");
 
     /* A refused operation must have no side effects: the endpoint it declined to
      * revoke has to still work. A partial revoke that fails the rights check
      * after clearing the slot would pass the check above and break this one. */
-    rc = sys_ipc_recv(SLOT_ENDPOINT2, msg, sizeof(msg));
+    rc = sys_ipc_recv(SLOT_SECOND_EP, msg, sizeof(msg));
     check(rc == -2 || rc >= 0, "endpoint-broken-by-refused-revoke");
 
     /* The unrelated endpoint is likewise untouched. */
-    rc = sys_ipc_recv(SLOT_ENDPOINT, msg, sizeof(msg));
+    rc = sys_ipc_recv(SLOT_REPLY_EP, msg, sizeof(msg));
     check(rc == -2 || rc >= 0, "unrelated-endpoint-broken-by-refused-revoke");
 
     /* ---- 8. the audit log is capability-gated ------------------------ */

@@ -119,7 +119,15 @@ void h_irq_register(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     int irq = (int)r->rbx;
-    if (irq_notify_register(irq, cur, (uint32_t)r->rcx, (uint32_t)r->rdx) != 0) {
+    /* rcx is a cspace slot holding a CAP_NOTIFICATION with WRITE, not a raw
+     * notification index (finding C-2). Routing a hardware IRQ at an arbitrary
+     * notification slot would let the holder of CAP_IO_DEVICE aim real interrupts
+     * at any task's rendezvous; it must name a notification it actually holds. */
+    uint32_t ns;
+    if (ipc_notif_from_slot((uint32_t)r->rcx, CAP_RIGHT_WRITE, &ns) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    if (irq_notify_register(irq, cur, ns, (uint32_t)r->rdx) != 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
     r->rax = 0;

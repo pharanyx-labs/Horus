@@ -37,9 +37,11 @@ static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 #define CAP_SLOT_USER       6    /* CAP_USER admin cap (SYS_REGISTER_FS_SERVER gate) */
 #define CAP_SLOT_CONSOLE    8    /* CAP_CONSOLE                                      */
 #define CAP_SLOT_STORAGE    9    /* CAP_ENCRYPTED_STORAGE (also the object-store cap)*/
-#define INIT_EP_GATE_SLOT   10   /* CAP_ENDPOINT, object 0         (coarse IPC gate) */
-#define INIT_EP_LISTEN_SLOT 11   /* CAP_ENDPOINT, object FS_EP_REQ (server listen)   */
+#define INIT_FS_LISTEN      11   /* CAP_ENDPOINT FS_EP_REQ,  READ|WRITE (fs listen)  */
 #define CAP_SLOT_IO_DEVICE  12   /* CAP_IO_DEVICE (console_server hardware authority) */
+#define INIT_CON_LISTEN     13   /* CAP_ENDPOINT CON_EP_REQ, READ|WRITE (con listen) */
+#define INIT_CON_CLIENT     14   /* CAP_ENDPOINT CON_EP_REQ, WRITE only (client)     */
+#define INIT_NOTIFY         15   /* CAP_NOTIFICATION fs-ready rendezvous             */
 
 /* Launch the userspace fs_server and provision it entirely by delegation: init
  * grants the server all four capabilities it needs — the coarse IPC gate (slot
@@ -51,10 +53,14 @@ static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 static int launch_fs_server(void) {
     int srv = sys_spawn_named("fs_server");
     if (srv <= 0) return -1;
-    if (sys_cap_grant(srv, INIT_EP_GATE_SLOT,   3) != 0) return -2;  /* IPC gate            */
-    if (sys_cap_grant(srv, INIT_EP_LISTEN_SLOT, 4) != 0) return -3;  /* listen endpoint     */
-    if (sys_cap_grant(srv, CAP_SLOT_USER,       6) != 0) return -4;  /* SYS_REGISTER_FS gate */
-    if (sys_cap_grant(srv, CAP_SLOT_STORAGE,    7) != 0) return -5;  /* object-store gate   */
+    /* The fs LISTEN capability (carries READ, the receive right) goes to the
+     * server and to nobody else — that is what makes it, and only it, able to
+     * dequeue requests and answer them with SYS_IPC_REPLY_TO. Clients get a
+     * WRITE-only capability from SYS_CONNECT_FS_SERVER instead. */
+    if (sys_cap_grant(srv, INIT_FS_LISTEN, CAPSLOT_FS_LISTEN) != 0) return -2;
+    if (sys_cap_grant(srv, CAP_SLOT_USER,  CAPSLOT_USER)      != 0) return -3;  /* registration gate */
+    if (sys_cap_grant(srv, CAP_SLOT_STORAGE, CAPSLOT_AUDIT)   != 0) return -4;  /* object store      */
+    if (sys_cap_grant(srv, INIT_NOTIFY,    CAPSLOT_NOTIFY)    != 0) return -5;  /* ready rendezvous  */
     return srv;
 }
 
@@ -68,8 +74,10 @@ static int launch_fs_server(void) {
 static int launch_console_server(void) {
     int csrv = sys_spawn_named("console_server");
     if (csrv <= 0) return -1;
-    if (sys_cap_grant(csrv, INIT_EP_GATE_SLOT,  3)  != 0) return -2;  /* IPC gate -> slot 3   */
-    if (sys_cap_grant(csrv, CAP_SLOT_IO_DEVICE, 10) != 0) return -3;  /* CAP_IO_DEVICE -> 10  */
+    /* Console LISTEN capability: the receive right on CON_EP_REQ. Only the
+     * console server gets this; clients get the WRITE-only copy below. */
+    if (sys_cap_grant(csrv, INIT_CON_LISTEN,    CAPSLOT_CONSOLE_EP) != 0) return -2;
+    if (sys_cap_grant(csrv, CAP_SLOT_IO_DEVICE, CAPSLOT_IO_DEVICE)  != 0) return -3;
     return csrv;
 }
 
@@ -83,6 +91,10 @@ static int launch_shell(void) {
      * init holds a CAP_TCB to the shell from the spawn, so the grants pass. */
     if (sys_cap_grant(sh, CAP_SLOT_CONSOLE, CAP_SLOT_CONSOLE) != 0) return -2;
     if (sys_cap_grant(sh, CAP_SLOT_STORAGE, CAP_SLOT_STORAGE) != 0) return -3;
+    /* The console CLIENT capability: WRITE only, so the shell can send to the
+     * console server but never receive on its endpoint. do_spawn propagates a
+     * send-only copy to every utility the shell runs. */
+    if (sys_cap_grant(sh, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) return -4;
     return sh;
 }
 
@@ -100,7 +112,7 @@ void _start(void) {
     report("INIT_FS_SELFTEST: init launched fs_server by delegation; driving client\n");
     int cli = sys_spawn_named("fsclient");
     if (cli <= 0) { report("INIT_FS_SELFTEST: FAIL spawn-client\n"); for (;;) settle(); }
-    if (sys_cap_grant(cli, INIT_EP_GATE_SLOT, 3) != 0) {
+    if (sys_cap_grant(cli, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) {
         report("INIT_FS_SELFTEST: FAIL grant-client\n"); for (;;) settle();
     }
     sys_wait(cli);   /* block until the client finishes driving the server */
@@ -122,7 +134,7 @@ void _start(void) {
      * convention notifytest uses. */
     {
         uint32_t ready_badge = 0;
-        sys_wait_notify(3, &ready_badge);
+        sys_wait_notify(INIT_NOTIFY, &ready_badge);
         report("init: fs_server ready\n");
     }
 

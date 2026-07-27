@@ -388,17 +388,25 @@ void spawn_initial_userspace_init(void) {
         cap_install_from_root(pid, 7, 7, 0);   /* root[7] = CAP_AUDIT             */
         cap_install_from_root(pid, 8, 8, 0);   /* root[8] = CAP_CONSOLE           */
         cap_install_from_root(pid, 9, 9, 0);   /* root[9] = CAP_ENCRYPTED_STORAGE */
-        /* init is the delegation root for the userspace servers it launches: it
-         * holds a CAP_USER admin cap (slot 6, the SYS_REGISTER_FS_SERVER gate) and
-         * two CAP_ENDPOINT caps for a server's coarse IPC gate (slot 3) and its
-         * listen endpoint (slot 4, object FS_EP_REQ=4). The object-store authority
-         * it delegates for the server's slot 7 comes from the CAP_ENCRYPTED_STORAGE
-         * cap already at slot 9. It hands these to fs_server with SYS_CAP_GRANT —
-         * see launch_fs_server() in userspace/init.c. Slots 10-11 are free slots
-         * init delegates from. */
-        cap_install_from_root(pid, 6, 6, 0);    /* root[6] = CAP_USER (ALL)                 */
-        cap_install_from_root(pid, 10, 2, 0);   /* root[2] = CAP_ENDPOINT, object 0 (gate)  */
-        cap_install_from_root(pid, 11, 2, 4);   /* root[2] = CAP_ENDPOINT, object FS_EP_REQ */
+        /* init is the delegation root for every userspace server. It holds no
+         * ambient authority of its own beyond this endowment, and each server
+         * receives a strict subset by SYS_CAP_GRANT (see userspace/init.c).
+         *
+         * Since finding C-1 the service endpoints are here explicitly, split into
+         * LISTEN (carries READ — the receive right, so the holder may dequeue
+         * requests and answer them) and CLIENT (WRITE only — may send, nothing
+         * else). Handing a client the listen capability is what would let it
+         * intercept its peers and forge the server's replies, so the two never
+         * meet: init gives the listen cap to the server and the client cap to the
+         * shell, and nothing holds both. */
+        /* NB: cap_install_from_root's 4th argument OVERRIDES the copied
+         * capability's `object`, so each service cap must restate the object it
+         * names — passing 0 would silently retarget it at endpoint 0. */
+        cap_install_from_root(pid, 6, 6, 0);                  /* root[6]  = CAP_USER (ALL)                   */
+        cap_install_from_root(pid, 11, 13, FS_EP_REQ);        /* root[13] = CAP_ENDPOINT FS_EP_REQ  (listen) */
+        cap_install_from_root(pid, 13, 11, CON_EP_REQ);       /* root[11] = CAP_ENDPOINT CON_EP_REQ (listen) */
+        cap_install_from_root(pid, 14, 12, CON_EP_REQ);       /* root[12] = CAP_ENDPOINT CON_EP_REQ (client) */
+        cap_install_from_root(pid, 15, 14, NOTIF_FS_READY);   /* root[14] = CAP_NOTIFICATION fs-ready        */
         /* CAP_IO_DEVICE (root[10]): init delegates this to the console_server it
          * launches (userspace/init.c), so that server can own the console hardware
          * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy. */

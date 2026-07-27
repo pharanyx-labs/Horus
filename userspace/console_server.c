@@ -212,7 +212,7 @@ void _start(void) {
     struct con_request  rq;
     struct con_response rp;
     for (;;) {
-        int r = sys_ipc_recv(CON_EP_REQ, (char *)&rq, sizeof(rq));
+        int r = sys_ipc_recv(CAPSLOT_CONSOLE_EP, (char *)&rq, sizeof(rq));
         if (r < 0) { sys_yield(); continue; }          /* no request yet: yield the CPU
                                                         * (don't busy-spin — a second
                                                         * busy-spin server alongside
@@ -246,7 +246,7 @@ void _start(void) {
         }
         /* Reply to THIS request's sender by kernel-recorded identity; retry on a
          * transient "client still blocking" race, before the next recv. */
-        while (sys_ipc_reply_to(CON_EP_REQ, (const char *)&rp, sizeof(rp)) < 0) sys_yield();
+        while (sys_ipc_reply_to(CAPSLOT_CONSOLE_EP, (const char *)&rp, sizeof(rp)) < 0) sys_yield();
         /* Do not let a just-read password linger in the reply buffer between
          * requests (it was already delivered to the caller). */
         if (was_pass) umemset(rp.data, 0, sizeof(rp.data));

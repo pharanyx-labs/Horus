@@ -30,6 +30,57 @@ static inline void ipc_lock(void) { }
 static inline void ipc_unlock(void) { }
 #endif
 
+/* ------------------------------------------------------------------------- *
+ *  Capability-addressed IPC (audit finding C-1).
+ *
+ *  Every IPC syscall names its object by a CSPACE SLOT, and the kernel derives
+ *  the endpoint/notification index from the capability found there. Userspace
+ *  never supplies an object index.
+ *
+ *  This is the fix for the audit's headline finding. Previously the dispatch
+ *  table gated IPC on "hold something in slot 3" (with SC_ANYTYPE, and every task
+ *  is created holding a CAP_FRAME there), and the endpoint index came straight
+ *  out of a userspace register, bounds-checked only against MAX_ENDPOINTS. The
+ *  `object` field of CAP_ENDPOINT — the field that names WHICH endpoint — was
+ *  written, delegated, revoked and lineage-tracked, and then never consulted at
+ *  the point of use. Any ring-3 task could therefore receive on, send to, and
+ *  forge replies on any endpoint in the system, including the filesystem
+ *  server's, which defeated the whole ring-3 server isolation story.
+ *
+ *  The two resolvers below are the choke point. Because they call cap_lookup(),
+ *  each one enforces, in one place:
+ *    - the slot actually holds a live capability (non-null, serial != 0);
+ *    - of the RIGHT TYPE (CAP_ENDPOINT / CAP_NOTIFICATION) — so a CAP_FRAME can
+ *      no longer authorise IPC;
+ *    - carrying the required RIGHT for the direction (READ to receive, WRITE to
+ *      send), so a send-only client capability cannot be used to intercept;
+ *    - that passes the serial-keyed lineage generation check, so a revoked or
+ *      stale capability fails here exactly as it does everywhere else.
+ *  Only then is `object` trusted, and it is re-bounds-checked before use.
+ * ------------------------------------------------------------------------- */
+
+/* Resolve an endpoint capability slot to the endpoint index it names.
+ * Returns 0 and writes *out_ep on success; negative on any failure. */
+int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
+    struct capability *c = cap_lookup(slot, need_rights);
+    if (!c || c->type != CAP_ENDPOINT) return -1;
+    if (c->object >= MAX_ENDPOINTS)    return -1;
+    if (out_ep) *out_ep = (uint32_t)c->object;
+    return 0;
+}
+
+/* Resolve a notification capability slot to the notification index it names.
+ * Same discipline as ipc_ep_from_slot; notifications were ambient in exactly the
+ * same way (finding C-2), which let any task forge IRQ delivery to a ring-3
+ * driver, since SYS_IRQ_REGISTER routes hardware interrupts to these slots. */
+int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot) {
+    struct capability *c = cap_lookup(slot, need_rights);
+    if (!c || c->type != CAP_NOTIFICATION)  return -1;
+    if (c->object >= MAX_NOTIFICATIONS)     return -1;
+    if (out_slot) *out_slot = (uint32_t)c->object;
+    return 0;
+}
+
 /* After tasks[cur].saved_ksp is published: turn pending_block into a real
  * wake-visible wait, or complete immediately if the event already arrived
  * (reply in mailbox / target already dead / badge pending). Returns 1 if the
@@ -350,30 +401,48 @@ int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
 }
 
 
+/* SYS_IPC_SEND (21): rbx = cspace slot of a CAP_ENDPOINT with WRITE. */
 void h_ipc_send(struct interrupt_frame64 *r) {
-    r->rax = sys_ipc_send(r->rbx, (const void*)(addr_t)r->rcx, r->rdx);
+    uint32_t ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    r->rax = sys_ipc_send(ep, (const void*)(addr_t)r->rcx, r->rdx);
 }
 
 /* SYS_IPC_CALL (23): atomic send-then-block-until-reply.
- *   ebx = send endpoint index
- *   ecx = reply endpoint index
- *   edx = userspace ptr to message to send
- *   esi = send length
- *   edi = userspace ptr to reply buffer
- * The handler deposits the message and records a pending block only — the
- * reply endpoint's blocked_waiter is *not* published here. interrupt_handler64
- * calls ipc_block_switch, which saves the trap frame first and only then
- * publishes the waiter (so a cross-CPU reply cannot race a null saved_ksp). */
+ *   rbx = cspace slot of a CAP_ENDPOINT with WRITE (the service to call)
+ *   rcx = IGNORED (was: reply endpoint index — see below)
+ *   rdx = userspace ptr to message to send
+ *   rsi = send length
+ *   rdi = userspace ptr to reply buffer
+ *
+ * The reply endpoint is NO LONGER caller-supplied: it is always this task's own
+ * private reply endpoint (reply_ep_for_task). A caller cannot name someone
+ * else's reply endpoint to park on, and — since no task holds a capability to
+ * another task's reply endpoint — cannot be woken through one either. That
+ * deletes a forgery surface rather than merely gating it, and retires the shared
+ * global FS_EP_REP on which concurrent clients used to collide (finding I-5).
+ *
+ * rcx is accepted and ignored so the 5-argument ABI and the existing userspace
+ * wrapper shape are unchanged; the argument is now vestigial.
+ *
+ * The handler deposits the message and records a pending block only — the reply
+ * endpoint's blocked_waiter is *not* published here. interrupt_handler64 calls
+ * ipc_block_switch, which saves the trap frame first and only then publishes the
+ * waiter (so a cross-CPU reply cannot race a null saved_ksp). */
 void h_ipc_call(struct interrupt_frame64 *r) {
-    uint32_t send_ep  = r->rbx;
-    uint32_t reply_ep = r->rcx;
     const void *msg   = (const void *)(addr_t)r->rdx;
     size_t   send_len = (size_t)r->rsi;
     uint64_t reply_buf = r->rdi;   /* waiter's reply buffer: a user address, may be high */
 
-    if (send_ep >= MAX_ENDPOINTS || reply_ep >= MAX_ENDPOINTS) {
-        r->rax = (uint32_t)-1; return;
+    uint32_t send_ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &send_ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
+    int rep = reply_ep_for_task(get_current_task());
+    if (rep < 0) { r->rax = (uint32_t)-1; return; }
+    uint32_t reply_ep = (uint32_t)rep;
 
     /* Deposit the outgoing message into send_ep. */
     int rc = sys_ipc_send(send_ep, msg, send_len);
@@ -389,13 +458,23 @@ void h_ipc_call(struct interrupt_frame64 *r) {
      * saved_ksp->rax with the reply length. */
     r->rax = 0;
 }
-/* SYS_IPC_RECV (22): slot-3 READ enforced by the table. */
+/* SYS_IPC_RECV (22): rbx = cspace slot of a CAP_ENDPOINT with READ.
+ * READ is the receive right: a client minted WRITE-only (the connect path) can
+ * send to a server but can never dequeue that server's traffic. */
 void h_ipc_recv(struct interrupt_frame64 *r) {
-    r->rax = sys_ipc_recv(r->rbx, (void*)(addr_t)r->rcx, r->rdx);
+    uint32_t ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    r->rax = sys_ipc_recv(ep, (void*)(addr_t)r->rcx, r->rdx);
 }
-/* SYS_IPC_REPLY (24): slot-3 WRITE enforced by the table. */
+/* SYS_IPC_REPLY (24): rbx = cspace slot of a CAP_ENDPOINT with WRITE. */
 void h_ipc_reply(struct interrupt_frame64 *r) {
-    r->rax = sys_ipc_reply(r->rbx, (const void*)(addr_t)r->rcx, r->rdx);
+    uint32_t ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    r->rax = sys_ipc_reply(ep, (const void*)(addr_t)r->rcx, r->rdx);
 }
 
 /* SYS_IPC_SENDER (73): return the authenticated uid of the task that sent the
@@ -408,8 +487,12 @@ void h_ipc_reply(struct interrupt_frame64 *r) {
  * since exited). Slot-3 READ is enforced by the dispatch table, so only a task
  * that can legitimately receive on the endpoint may query its sender. */
 void h_ipc_sender(struct interrupt_frame64 *r) {
-    uint32_t ep = r->rbx;
-    if (ep >= MAX_ENDPOINTS) { r->rax = (uint32_t)-1; return; }
+    uint32_t ep;
+    /* READ (the receive right): only a task that can legitimately receive on
+     * this endpoint may ask who last sent to it. */
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ep) != 0) {
+        r->rax = (uint32_t)-1; return;
+    }
     int t = endpoints[ep].last_sender;
     if (t <= 0 || t >= MAX_TASKS || tasks[t].state == 0) { r->rax = (uint32_t)-1; return; }
     if (r->rcx) {
@@ -435,10 +518,23 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
  * sender is always already blocked by the time the server runs, so no retry
  * occurs. Mirrors the blocked-waiter delivery in sys_ipc_send. */
 void h_ipc_reply_to(struct interrupt_frame64 *r) {
-    uint32_t req_ep = r->rbx;
     const void *msg = (const void *)(addr_t)r->rcx;
     size_t len      = (size_t)r->rdx;
-    if (req_ep >= MAX_ENDPOINTS) { r->rax = (uint32_t)-1; return; }
+
+    /* CAP_RIGHT_READ — the RECEIVE right — not WRITE.
+     *
+     * This is the reply-forgery primitive: it writes the caller's buffer directly
+     * into the recorded sender's blocked SYS_IPC_CALL reply buffer and wakes it.
+     * Only the task that legitimately RECEIVES requests on this endpoint (i.e.
+     * the server) may answer them. Requiring WRITE here would be wrong — WRITE is
+     * what every client holds in order to send, so a client could use it to
+     * impersonate the server to another client, which is precisely the C-1
+     * attack. Clients are minted WRITE-only by the connect path and are refused
+     * here. */
+    uint32_t req_ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &req_ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
     if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
 
     int t = endpoints[req_ep].last_sender;
@@ -495,17 +591,25 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
-/* SYS_NOTIFY (25): slot-3 WRITE enforced by the table. */
+/* SYS_NOTIFY (25): rbx = cspace slot of a CAP_NOTIFICATION with WRITE. */
 void h_notify(struct interrupt_frame64 *r) {
-    r->rax = sys_notify(r->rbx, r->rcx);
+    uint32_t ns;
+    if (ipc_notif_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &ns) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    r->rax = sys_notify(ns, r->rcx);
 }
 /* SYS_WAIT_NOTIFY (26): slot-3 READ enforced by the table.
  * The badge is returned in r->rbx so interrupt_handler64 writes it into
  * frame->rbx; the userspace wrapper reads it from the ebx output constraint.
  * For the blocking path r->rbx is patched in sys_notify via saved_ksp->rbx. */
 void h_wait_notify(struct interrupt_frame64 *r) {
+    uint32_t ns;
+    if (ipc_notif_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ns) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; r->rbx = 0; return;
+    }
     uint32_t badge = 0;
-    r->rax = sys_wait_notify(r->rbx, &badge);
+    r->rax = sys_wait_notify(ns, &badge);
     r->rbx = badge;
 }
 

@@ -403,17 +403,37 @@ Bounded in-kernel byte streams with `CAP_PIPE` capabilities for each end, `EAGAI
 back-pressure, and EOF/EPIPE on peer close. `task_teardown` releases a dying task's ends so a
 pipeline stage cannot wedge its peer.
 
-### The authorisation gap
+### Capability addressing
 
-**Endpoint and notification indices are taken directly from a userspace register and
-bounds-checked only against the table size.** The `object` field of `CAP_ENDPOINT` — which
-names *which* endpoint — is consulted at registration and connect time but never on an IPC
-operation. The dispatch table gates IPC on holding *something* in cspace slot 3, and every
-task is created with a `CAP_FRAME` there.
+Every IPC syscall names its object by a **cspace slot**, never by an object index. The
+kernel resolves it through `ipc_ep_from_slot` / `ipc_notif_from_slot`
+(`src/kernel/syscall_ipc.c`), which are the single choke point and enforce, in one place:
 
-This means IPC authority is currently *type*-scoped, not *instance*-scoped: any ring-3 task
-can send to, receive from, and forge replies on any endpoint. See finding **[C-1]** in
-`docs/AUDIT-2026-07-27.md` for the full analysis, exploit path, and the fix.
+- the slot holds a live capability (non-null, serial != 0);
+- of the right **type** — `CAP_ENDPOINT` or `CAP_NOTIFICATION`, so a `CAP_FRAME` cannot
+  authorise IPC;
+- carrying the **right for the direction** — `READ` to receive, `WRITE` to send;
+- that passes the serial-keyed **lineage** check, so a revoked capability fails here exactly
+  as everywhere else.
+
+Only then is `object` trusted, and it is re-bounds-checked.
+
+**The read/write split is the isolation boundary.** `READ` is the receive right. A *listen*
+capability (`READ|WRITE`) belongs to the server: it may dequeue requests and answer them with
+`SYS_IPC_REPLY_TO`, which also requires `READ` because it writes straight into the recorded
+sender's blocked reply buffer. A *client* capability is `WRITE` only — it may send and
+nothing else. `SYS_CONNECT_FS_SERVER` mints WRITE-only, and `do_spawn` propagates the console
+capability to children masked to WRITE, so the receive right cannot escape the one task meant
+to hold it.
+
+**A task is born with exactly one endpoint capability:** its own private reply endpoint
+(`reply_ep_for_task`, slot `CAPSLOT_REPLY_EP`). It is what `SYS_IPC_CALL` parks on, no other
+task holds a capability for it, and the caller cannot name a different one — so replies
+cannot be intercepted and a blocked caller cannot be woken spuriously. This also retires the
+shared `FS_EP_REP` on which concurrent clients used to collide.
+
+Until 2026-07-27 none of this held: indices came straight from a register and the dispatch
+table gated IPC on slot 3, which holds a `CAP_FRAME` in every task. See finding **[C-1]**.
 
 ---
 
@@ -571,9 +591,6 @@ disabled; DMA-capable devices (no IOMMU); and any channel through the shared L2/
 These are design-level, not bugs to be patched in place. Each is tracked in
 [`ROADMAP.md`](ROADMAP.md) and analysed in [`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
 
-**G-1 — IPC authority is type-scoped, not instance-scoped.** The central gap. See
-[§8](#the-authorisation-gap) and finding **[C-1]**.
-
 **G-2 — Ambient `uid == 0` authority runs parallel to the capability system.** Nine syscall
 handlers gate on the caller's uid rather than on a capability, and `SYS_GET_TASK_INFO`
 promotes root to full cross-task introspection. Two authority axes means the capability
@@ -587,8 +604,11 @@ the main structural obstacle to becoming a general-purpose OS. Finding **[I-7]**
 a seL4-style `CAP_UNTYPED` retyping model.
 
 **G-4 — Endpoints are single-slot with no queue.** Callers poll on contention, fair service
-cannot be expressed, and priority inheritance is impossible. The shared global reply endpoint
-`FS_EP_REP` compounds this. Findings **[I-5]**, roadmap item **F-1.2**.
+cannot be expressed, and priority inheritance is impossible. (The shared global reply endpoint
+that used to compound this is gone — every task now has a private one — so **[I-5]** is
+closed, but the missing queue is not.) Roadmap item **F-1.2**: a bounded FIFO plus a one-shot
+reply capability, which would make reply forgery structurally impossible rather than
+right-gated.
 
 **G-5 — No kernel object lifecycle.** Endpoints and notifications are never reference-counted
 or destroyed; nothing ties an object's existence to a capability holding it alive.

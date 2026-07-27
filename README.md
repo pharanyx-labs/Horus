@@ -16,13 +16,15 @@ measurements.
 
 > ### Assurance status
 >
-> Horus is **research-grade**, not production-ready. It has a known **critical** defect in
-> its IPC authorisation layer: endpoints are not capability-addressed, so any ring-3 task
-> can intercept or forge messages to any userspace server. See finding **[C-1]** in
-> [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md) and
-> [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). Fixing it is the top roadmap item.
+> Horus is **research-grade**, not production-ready, and has not been independently audited.
 >
-> **Do not deploy Horus where isolation between mutually distrusting programs matters.**
+> The 2026-07 audit's critical finding — IPC endpoints were not capability-addressed, so any
+> ring-3 task could intercept or forge messages to any userspace server — is **fixed as of
+> 2026-07-27** ([C-1]/[C-2] in [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md)).
+> Open findings are tracked in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and
+> [`docs/ROADMAP.md`](docs/ROADMAP.md); the notable remaining ones are ambient `uid == 0`
+> authority (**[I-1]**), fixed-size kernel object tables (**[I-7]**), an unflushed write-ahead
+> journal (**[I-10]**), and no independent review of security-critical changes (**[C-5]**).
 
 ---
 
@@ -78,15 +80,17 @@ need not be.
 
 The path from here is ordered by assurance rather than by demo value:
 
-1. **Make the object model true.** Capabilities must mediate *which* object, not merely
-   *which kind* of object. This is the current blocker (finding **[C-1]**).
-2. **Kernel objects from untyped memory.** Replace fixed `.bss` tables with a retyping
+1. ~~**Make the object model true.**~~ **Done (2026-07-27):** capabilities now mediate
+   *which* object, not merely which kind — see **[C-1]**.
+2. **Retire ambient `uid == 0` authority** so the capability graph is a complete description
+   of who can do what (**[I-1]**).
+3. **Kernel objects from untyped memory.** Replace fixed `.bss` tables with a retyping
    discipline, so the system is not capped at 64 tasks and kernel memory is accounted per
    task.
-3. **Real virtual-memory objects.** Frame capabilities, shared memory, `mmap`.
-4. **Userspace services on top:** a VFS with multiple filesystems, a network stack as a
+4. **Real virtual-memory objects.** Frame capabilities, shared memory, `mmap`.
+5. **Userspace services on top:** a VFS with multiple filesystems, a network stack as a
    ring-3 server, a process and session model, dynamic linking.
-5. **Assurance scaffolding throughout:** extend the proofs, publish the threat model, attest
+6. **Assurance scaffolding throughout:** extend the proofs, publish the threat model, attest
    the artifacts.
 
 [`docs/ROADMAP.md`](docs/ROADMAP.md) has the full plan, with rationale and security impact
@@ -103,7 +107,7 @@ per item.
 | **Capabilities** | 13 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop |
 | **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
 | **SMP** | Default on; ACPI MADT enumeration, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
-| **IPC** | Synchronous send/recv/call/reply over single-slot endpoints, async notifications, bounded byte-stream pipes — *see the caveat below* |
+| **IPC** | Capability-addressed synchronous send/recv/call/reply over single-slot endpoints, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
 | **Filesystem** | `fs_server` in ring 3 over an AEAD-encrypted kernel object store; POSIX rwx against kernel-attested uid/gid; write-ahead journal and mount-time fsck; double-indirect large files |
 | **Console** | `console_server` in ring 3 owning the UART and VGA framebuffer; raw terminal mode (termios + winsize) |
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, hierarchical rollback MAC; key material never leaves the kernel |
@@ -111,11 +115,12 @@ per item.
 | **Userspace** | newlib libc, a shell with pipelines, GNU coreutils, TCC |
 | **Security core** | `no_std` Rust: ELF parsing and relocation, capability algebra, ChaCha20 CSPRNG, BLAKE2b/SHA-256, AEAD, Argon2 |
 
-**IPC caveat.** Endpoints and notifications are addressed by a raw integer index and are
-*not* bound to the capability that names them. The authorisation check confirms the caller
-holds *something* in a fixed cspace slot — not that it holds a capability for *that*
-endpoint. Isolation between userspace servers and their clients is therefore not currently
-enforced. This is finding **[C-1]**, the top-priority fix.
+**IPC is capability-addressed.** Every IPC syscall takes a cspace slot; the kernel derives
+the endpoint or notification from the capability there, checking its type, the right for the
+direction, and its lineage generation. A task is born holding exactly one endpoint capability
+— its own private reply endpoint — and reaches a service only through a capability something
+delegated to it. Clients get WRITE-only capabilities, so a client can send to a server but
+can never receive its traffic or forge its replies.
 
 ---
 

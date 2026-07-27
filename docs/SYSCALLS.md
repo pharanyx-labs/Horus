@@ -37,16 +37,19 @@ performs its own check; the reason is noted per entry in `src/kernel/syscall.c`.
 - A compile-time assertion ties the table size to the highest syscall number, so adding a
   syscall without its entry is a build failure.
 
-> ### Authorisation caveat — finding [C-1]
+> ### IPC arguments are cspace slots, not object indices
 >
-> The IPC syscalls declare cspace **slot 3** with `SC_ANYTYPE`, and `create_task` gives every
-> task a `CAP_FRAME` in slot 3. The endpoint or notification index is then taken directly
-> from `rbx` and bounds-checked only against the table size — the capability's `object` field
-> is never consulted.
+> Every IPC syscall's first argument is a **cspace slot**. The kernel resolves it through
+> `ipc_ep_from_slot` / `ipc_notif_from_slot`, checking the capability's type, the right for
+> the direction (`READ` to receive, `WRITE` to send), and its lineage generation before
+> trusting `object`. A task therefore reaches a service only via a capability naming that
+> service's endpoint.
 >
-> **IPC authority is therefore type-scoped, not instance-scoped: any task can operate on any
-> endpoint.** The "Authorisation" column below records what the kernel *checks*, not what the
-> design intends. See [`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md) and roadmap item 0.1.
+> `READ` is the receive right, so it is what separates a server from its clients:
+> `SYS_IPC_RECV`, `SYS_IPC_REPLY_TO`, and `SYS_IPC_SENDER` all require it, and clients are
+> minted `WRITE`-only. Replies land on the caller's private per-task reply endpoint, which no
+> other task can name. Fixed 2026-07-27 — see **[C-1]** in
+> [`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
 
 ## Return values
 
@@ -170,17 +173,22 @@ Kernel-reserved slots 0–3 cannot be minted into. Primordial root capabilities 
 
 | # | Name | Arguments | Authorisation *(as checked)* |
 |---|---|---|---|
-| 21 | `SYS_IPC_SEND` | `ep`, `msg`, `len` | slot 3: WRITE |
-| 22 | `SYS_IPC_RECV` | `ep`, `buf`, `max` | slot 3: READ |
-| 23 | `SYS_IPC_CALL` | `send_ep`, `reply_ep`, `msg`, `len`, `reply_buf` | slot 3: WRITE |
-| 24 | `SYS_IPC_REPLY` | `ep`, `msg`, `len` | slot 3: WRITE |
-| 25 | `SYS_NOTIFY` | `notif_slot`, `badge` | slot 3: WRITE |
-| 26 | `SYS_WAIT_NOTIFY` | `notif_slot` | slot 3: READ |
-| 73 | `SYS_IPC_SENDER` | `ep`, `uint32_t *out_gid` | slot 3: READ |
-| 75 | `SYS_IPC_REPLY_TO` | `req_ep`, `msg`, `len` | slot 3: WRITE |
+| 21 | `SYS_IPC_SEND` | `ep_slot`, `msg`, `len` | `CAP_ENDPOINT` at `ep_slot`: WRITE |
+| 22 | `SYS_IPC_RECV` | `ep_slot`, `buf`, `max` | `CAP_ENDPOINT` at `ep_slot`: **READ** |
+| 23 | `SYS_IPC_CALL` | `send_slot`, *(ignored)*, `msg`, `len`, `reply_buf` | `CAP_ENDPOINT` at `send_slot`: WRITE |
+| 24 | `SYS_IPC_REPLY` | `ep_slot`, `msg`, `len` | `CAP_ENDPOINT` at `ep_slot`: WRITE |
+| 25 | `SYS_NOTIFY` | `notif_slot`, `badge` | `CAP_NOTIFICATION` at `notif_slot`: WRITE |
+| 26 | `SYS_WAIT_NOTIFY` | `notif_slot` | `CAP_NOTIFICATION` at `notif_slot`: READ |
+| 73 | `SYS_IPC_SENDER` | `ep_slot`, `uint32_t *out_gid` | `CAP_ENDPOINT` at `ep_slot`: **READ** |
+| 75 | `SYS_IPC_REPLY_TO` | `req_slot`, `msg`, `len` | `CAP_ENDPOINT` at `req_slot`: **READ** |
 
-**See the authorisation caveat above.** The `ep` / `notif_slot` argument is an object index,
-not a capability slot, and is not bound to any capability the caller holds.
+`SYS_IPC_REPLY_TO` requires **READ**, not WRITE: it writes directly into the recorded
+sender's blocked reply buffer, so only the task that legitimately *receives* requests on the
+endpoint may answer them. Requiring WRITE would let any client — every client holds WRITE in
+order to send — impersonate the server to another client.
+
+`SYS_IPC_CALL`'s second argument is vestigial and ignored; the reply always lands on the
+caller's own private reply endpoint. Pass 0.
 
 `SEND` and `RECV` are **non-blocking**: they return `-2` when the single-slot mailbox is full
 or empty, and the caller polls from ring 3 where timer preemption guarantees progress.
@@ -279,7 +287,7 @@ grants it to exactly one task.
 |---|---|---|
 | 79 | `SYS_MAP_PHYS` | `paddr`, `vaddr`, `len`, `flags` — map an **allowlisted** device frame |
 | 80 | `SYS_IOPORT_GRANT` | — grant native ring-3 `in`/`out` on the console ports via the TSS I/O bitmap |
-| 81 | `SYS_IRQ_REGISTER` | `irq`, `notif_slot`, `badge` — route a hardware IRQ to a notification |
+| 81 | `SYS_IRQ_REGISTER` | `irq`, `notif_slot`, `badge` — route a hardware IRQ to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (needs WRITE) |
 
 `SYS_MAP_PHYS` additionally checks the requested frame against a fixed allowlist in the
 handler, so the capability grants access to *device* memory, not to arbitrary physical
@@ -327,4 +335,6 @@ compromise.
 4. Grow `SYSCALL_TABLE_SIZE`. The `_Static_assert` will tell you if you forgot.
 5. Add a userspace wrapper in `include/syscall.h`.
 6. **Add a negative test to `userspace/captest.c`** proving the call is refused without its
-   capability. This is not optional — see `CONTRIBUTING.md`.
+   capability. This is not optional — see `CONTRIBUTING.md`. Assert the **exact** error code,
+   not merely a negative return: `sys_ipc_recv` returns `-2` for an empty mailbox, so a
+   `< 0` check cannot tell a refusal from an empty object and will pass on a broken kernel.

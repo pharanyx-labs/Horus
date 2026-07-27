@@ -21,7 +21,7 @@ static void report(const char *s) {
  * the test is that the badge VALUE reaches userspace (returned in ebx), which is
  * exactly the part the async-notification ABI hinges on.
  */
-#define NOTIF_SLOT 0
+#define NOTIF_SLOT CAPSLOT_NOTIFY   /* cspace slot holding a CAP_NOTIFICATION */
 #define BADGE      0x0000BADEu
 
 void _start(void) {

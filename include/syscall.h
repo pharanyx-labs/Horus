@@ -339,18 +339,52 @@ static inline int sys_console_owned(void) {
     return syscall(SYS_CONSOLE_OWNED, 0, 0, 0);
 }
 
+/* ---- Capability slot map (mirrors src/include/kernel.h CAPSLOT_*) ----------
+ *
+ * IPC is capability-ADDRESSED (audit finding C-1): every IPC syscall's first
+ * argument is a CSPACE SLOT, and the kernel derives the endpoint/notification
+ * from the capability there — checking its type, the required right, and its
+ * lineage. Userspace can no longer name a kernel IPC object directly, so a task
+ * can only talk to services something delegated to it.
+ *
+ * A task is born with exactly one endpoint capability: its own private reply
+ * endpoint. Everything else arrives by delegation (SYS_CAP_GRANT from a
+ * supervisor, propagation at spawn, or SYS_CONNECT_FS_SERVER). */
+#define CAPSLOT_TCB         0    /* CAP_TCB on self                            */
+#define CAPSLOT_FRAME       3    /* CAP_FRAME for the task's image window      */
+#define CAPSLOT_REPLY_EP    4    /* CAP_ENDPOINT: this task's PRIVATE reply ep */
+#define CAPSLOT_CONSOLE_EP  5    /* CAP_ENDPOINT: console service (send-only for clients) */
+#define CAPSLOT_USER        6    /* CAP_USER admin                             */
+#define CAPSLOT_AUDIT       7    /* CAP_AUDIT / object-store (server-specific) */
+#define CAPSLOT_CONSOLE     8    /* CAP_CONSOLE                                */
+#define CAPSLOT_STORAGE     9    /* CAP_ENCRYPTED_STORAGE                      */
+#define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE (console_server only)        */
+#define CAPSLOT_NOTIFY     11    /* CAP_NOTIFICATION: fs-ready rendezvous      */
+#define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
+#define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: fs service (sys_connect_fs_server) */
+
+/* Send to the endpoint named by the CAP_ENDPOINT in `ep_slot` (needs WRITE). */
 static inline int sys_ipc_send(int ep_slot, const void *msg, size_t len) {
     return syscall(SYS_IPC_SEND, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)len);
 }
 
+/* Receive on the endpoint named by the CAP_ENDPOINT in `ep_slot` (needs READ —
+ * the receive right, which only a service holder has). */
 static inline int sys_ipc_recv(int ep_slot, void *msg, size_t max_len) {
     return syscall(SYS_IPC_RECV, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)max_len);
 }
 
-/* Blocking send-then-receive: sends to send_ep, blocks until a message arrives
- * on reply_ep, copies at most IPC_MSG_MAX bytes into rbuf.  Returns the number
- * of bytes received, or a negative error code.
- * Uses EBX=send_ep, ECX=reply_ep, EDX=msg, ESI=len, EDI=rbuf (5 data args,
+/* Blocking send-then-receive: sends to the endpoint named by the CAP_ENDPOINT in
+ * `send_slot` (needs WRITE), blocks until the reply arrives, copies at most
+ * IPC_MSG_MAX bytes into rbuf. Returns bytes received, or a negative error.
+ *
+ * `reply_ep` is VESTIGIAL and ignored by the kernel. The reply always lands on
+ * the caller's own private reply endpoint, which the kernel picks and no other
+ * task holds a capability for — so a caller can neither park on someone else's
+ * reply endpoint nor be woken through one (finding C-1 / I-5). The argument is
+ * retained so the 5-register ABI and existing call sites are unchanged; pass 0.
+ *
+ * Uses EBX=send_slot, ECX=(ignored), EDX=msg, ESI=len, EDI=rbuf (5 data args,
  * no EBP needed so -fno-omit-frame-pointer builds are safe). */
 static inline int sys_ipc_call(int send_ep, int reply_ep,
                                const void *msg, uint32_t len,
@@ -378,8 +412,13 @@ static inline int sys_ipc_reply(int ep_slot, const void *msg, size_t len) {
  * clients without their replies colliding. Returns 0 on delivery (or if the
  * client has gone). A negative return means "retry" (the client raced and hasn't
  * finished blocking yet); a server loops until it succeeds. */
-static inline int sys_ipc_reply_to(int req_ep, const void *msg, size_t len) {
-    return syscall(SYS_IPC_REPLY_TO, (uint32_t)req_ep, (uint64_t)(uintptr_t)msg, (uint32_t)len);
+/* `req_slot` must hold a CAP_ENDPOINT with READ — the RECEIVE right. This is the
+ * reply-forgery primitive (it writes straight into the recorded sender's blocked
+ * reply buffer), so only the task that legitimately receives requests on the
+ * endpoint may answer them. Clients hold WRITE-only capabilities and are
+ * refused. */
+static inline int sys_ipc_reply_to(int req_slot, const void *msg, size_t len) {
+    return syscall(SYS_IPC_REPLY_TO, (uint32_t)req_slot, (uint64_t)(uintptr_t)msg, (uint32_t)len);
 }
 
 /* Kernel-attested identity of the task that last sent on endpoint `ep`: returns

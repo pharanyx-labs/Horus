@@ -1,89 +1,201 @@
 # Contributing to Horus
 
-Horus is an early-stage research microkernel with meaningful work at every level — from filling in shell command stubs to maturing the SMP scheduler. Contributions of all sizes are welcome.
+Horus is a research microkernel with meaningful work at every level — from userspace
+utilities to the capability algebra. Contributions of all sizes are welcome.
+
+This document explains how to contribute, and the one rule that is stricter here than in most
+projects: **on security-critical paths, a change must state the invariant it preserves and
+ship the test that witnesses it.**
 
 ---
 
 ## Before you start
 
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for what is and is not working — it will help you pick work that fits the project's direction. For anything non-trivial, open an issue first to discuss the approach.
+Read, in this order:
+
+1. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the system is built and why.
+2. [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — what does not work. Many good ideas are
+   already known gaps.
+3. [`docs/ROADMAP.md`](docs/ROADMAP.md) — what is planned, and in what order.
+4. [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md) — the open findings.
+
+If you want high-impact work, the roadmap's **Track 0** items are the ones that matter most,
+and **Track 0.1** (capability-addressed IPC) is the single most valuable change available.
 
 ---
 
 ## Setting up
 
 ```bash
-git clone https://github.com/pharanyx-labs/Horus
+git clone https://github.com/pharanyx-labs/Horus.git
 cd Horus
-
-sudo apt-get install build-essential gcc binutils make xorriso grub-pc-bin mtools qemu-system-x86 swtpm
-
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
 rustup target add x86_64-unknown-none
+sudo apt-get install -y build-essential binutils make \
+    xorriso grub-pc-bin grub-common mtools qemu-system-x86
 
-make
-make run            # console on serial: nc localhost 4445
+make          # build
+make smoke    # headless boot; asserts the ring-3 shell comes up
+make test     # the full local self-test sweep
 ```
 
-See [docs/BUILDING.md](docs/BUILDING.md) for the full target/flag reference.
+[`docs/BUILDING.md`](docs/BUILDING.md) has the complete build reference.
 
 ---
 
-## Where help is needed
+## The workflow
 
-The [ROADMAP](docs/ROADMAP.md) lists work in priority order. The July 2026 audit's ([docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md)) **code** findings (A1–A4) are now fixed; the highest-value remaining work is:
+1. **Open an issue first** for anything non-trivial, so the design can be discussed before
+   you write code. Small fixes can go straight to a PR.
+2. **Branch from `main`** using a conventional prefix: `feat/`, `fix/`, `docs/`, `ci/`,
+   `refactor/`, `harden/`, `verify/`, `test/`, `chore/`.
+3. **Keep the change focused.** One concern per PR. Security-model changes in particular must
+   not be bundled with feature work — they need to be reviewable in isolation.
+4. **Run the relevant tests locally** before pushing. At minimum `make smoke` and
+   `make smoke-captest`; run whichever `smoke-*` targets cover the subsystem you touched.
+5. **Open a PR** against `main` and fill in the template.
 
-- **Track 0 — Assurance & governance** (mostly repository config + CI): the open items are **P2** (add a second reviewer so required CODEOWNERS review can be turned on — it is deliberately off today because with one maintainer it would deadlock every merge) and **P4** (a hermetic, pinned, signed build with SLSA provenance). Branch protection, CodeQL, and Dependabot are already in place.
+`main` is protected: linear history, signed commits, no force pushes, and required status
+checks. Your commits **must be signed** — see
+[GitHub's signing guide](https://docs.github.com/en/authentication/managing-commit-signature-verification).
 
-Specific areas by skill set:
+---
 
-### C kernel work
+## Commit messages
 
-- **SMP performance maturity** (`src/kernel/scheduler.c`): the security-relevant items (flush-on-switch, SMT parking) are done; multi-core still runs over a *single shared runnable pool*. Per-CPU run queues with load-balancing, then priorities/fairness/affinity, and cache partitioning are the next steps (Roadmap Track 3).
-- **Richer IPC** (`src/kernel/syscall_ipc.c`): endpoints are single-slot mailboxes serving one in-flight request; multi-client service is layered on via `SYS_IPC_REPLY_TO`, and notifications and bounded pipes work. A multi-slot mailbox or a worker-pool `fs_server` would allow genuine parallel request processing; IPC send/recv timeouts are also wanted.
-- **Larger volumes** (`src/kernel/storage.c`): the 16 MiB volume uses a multi-block data bitmap; scaling to multi-GiB wants the *inode* allocator made multi-block too and the crypto-metadata array bootstrapped from the pool rather than sized in `.bss`.
-- **Driver separation** (Roadmap Track 6): move PS/2 keyboard input into the console server, and carve the block/ATA driver into a ring-3 server.
+Conventional-commit prefix, imperative subject, and a body that explains **why**.
 
-### Rust work
+```
+fix(capability): serial-key the lineage generation backstop
 
-- **Exact per-serial lineage generations** (`rust/src/capability.rs`): the use-after-revoke backstop is active and serial-keyed (finding 3.3) but still a lossy 4096-slot hash; a collision-free per-serial map removes the last (fail-safe, availability-only) imprecision (Roadmap Track 1 residual / Track 5).
-- **Argon2 intra-request threading** (`rust/src/argon2.rs`): multi-lane + configurable cost is done, but lanes fill sequentially, so `p > 1` changes the hash without reducing wall-clock time on one core.
-- **Extend the proofs**: grow the Kani harness set (revocation subtree + lineage are proved; a multi-cspace + overflow-fallback model and the TLA+ specs are the next targets), and add hand-rolled property generators over mint/transfer/grant/revoke.
+The generation table was keyed by `object`, so two independent capabilities
+to the same object shared a cell. The only way to keep them independent was
+to treat generation 0 as always-valid — and every capability in the running
+kernel was created with generation 0, so the backstop was dormant: a stale
+snapshot passed the check unconditionally.
 
-### Testing
+Key by `serial` instead and check strict equality, so each capability gets
+its own cell and gen 0 is no longer an escape hatch.
 
-- **Broaden the scripted session** (`tools/session_test.py`): add W^X-violation and IPC/FS round-trip scenarios, and a negative test proving a granted-then-revoked capability does not disturb the grantor.
-- **Syscall fuzzer**: coverage-guided fuzzing of the syscall / FFI boundary (`cargo-fuzz` on the host, or `syzkaller` under QEMU).
-- **More Rust unit tests**: the crate has **91** tests today; property-based generators and serial-wrap fuzzing beyond the current boundary example are worthwhile gaps.
+Invariant preserved: a revoked capability, or any detached snapshot of one,
+fails validation (SECURITY.md S5).
+Witness: rust/src/capability.rs test_revoke_by_values_invalidates_snapshot,
+         make smoke-captest.
+```
 
-### Documentation
+The existing history is a good model. Commit messages here routinely record what was tried,
+what failed, and why the final approach is correct — that is deliberate and worth matching.
 
-- Clarifications to any doc; annotated examples of using the capability API from userspace; TLA+ extensions to `docs/cap_algebra.tla` / `docs/paging_isolation.tla`.
+---
+
+## The invariant rule
+
+Horus's security argument is a list of claims, each with a mechanism and a witness (see the
+table in [`SECURITY.md`](SECURITY.md)). A change to a security-critical path must keep that
+list true.
+
+**If your change touches any of these, your PR must state the invariant it preserves and
+point at the test or proof that witnesses it:**
+
+- `src/kernel/capability.c`, `rust/src/capability.rs` — the capability algebra
+- `src/kernel/syscall*.c` — syscall dispatch and authorisation
+- `src/kernel/paging.c` — address-space isolation, user copies, W^X
+- `src/kernel/scheduler.c` — context switching, locking, flush-on-switch
+- `src/kernel/loader.c`, `rust/src/lib.rs` — ELF loading
+- `src/kernel/storage.c`, `src/kernel/crypto.c`, `src/kernel/tpm.c` — data at rest, measured boot
+- `.github/workflows/`, `Makefile`, `linker64.ld` — the build is part of the TCB
+
+**"No test exists for that" is not an exemption — it is the work.** The project's most
+serious open defect (**[C-1]**) is precisely a documented property with no test binding it to
+the code.
+
+If your change *weakens* an invariant deliberately (e.g. for performance), say so explicitly
+in the PR and in `docs/LIMITATIONS.md`. An honest, documented weakening is fine; a silent one
+is not.
 
 ---
 
 ## Code style
 
-**C** — `snake_case` functions/variables, `UPPER_CASE` constants/macros, types end in `_t`; comments explain *why*, not *what*; no dynamic allocation in the kernel; freestanding (no libc headers except via the kernel header).
+**C (kernel).**
+- C99 (`-std=gnu99`), freestanding. No libc, no floating point (the kernel is built
+  `-mno-sse -mno-mmx -mno-80387`).
+- Builds clean under `-Wall -Wextra -Wformat-security -Werror=vla`. Warnings are not
+  acceptable.
+- 4-space indent, no tabs. Braces on the same line.
+- **Comment the why, not the what.** Explain the invariant a block maintains, the hazard it
+  avoids, or the bug it fixes. The existing code does this well; match it.
+- Fail closed. A path that cannot establish authority returns an error; it does not proceed
+  hopefully.
 
-**Rust** — standard `rustfmt`; all kernel-side Rust is `no_std`, `no_alloc`; FFI functions are `unsafe extern "C"` with `#[no_mangle]`, a `# Safety` contract, and fail-closed argument validation; **no `unsafe` in the logic of `capability.rs`, `memory.rs`, or `lib.rs`** — unsafe belongs exclusively in the C-facing FFI shims.
+**Rust (security core).**
+- `no_std`. Builds clean under `cargo clippy --all-targets -- -D warnings`.
+- `unsafe` only at the FFI boundary, with a `# Safety` doc comment stating the caller's
+  obligations.
+- Every FFI function validates its own inputs. Never assume the C side checked.
+- Unit tests alongside the code. Add a Kani proof where the property is algebraic.
+
+**Assembly.** Comment every non-obvious instruction. Note which registers are clobbered and
+what state the CPU is in.
 
 ---
 
-## Submitting a pull request
+## Testing
 
-1. Fork and branch from `main`.
-2. Keep commits focused — one logical change each.
-3. Ensure `make` succeeds with no new warnings and `make test` passes.
-4. Run the self-test relevant to your change (`make smoke`, `smoke-proc`, `smoke-fs`, …).
-5. Update `docs/ARCHITECTURE.md` (and `docs/SYSCALLS.md` for a new syscall) if the change affects the design.
-6. Open a PR with a clear description (see the PR template).
+Three layers — see [`TESTS.md`](TESTS.md) for the full catalogue.
 
-> **Enforcement.** `main` is branch-protected: the four hard-gate checks (Rust+clippy, kernel+ISO build, QEMU smoke-boot, reproducible build) are **required** and enforced for administrators, and force-push/deletion are blocked. Required CODEOWNERS review is intentionally deferred until a second reviewer exists (Roadmap Track 0 / audit P2), so independent review is currently a contributor convention rather than a technical guarantee. Do not merge a PR with a red pipeline.
+1. **Rust unit tests and Kani proofs** — `cargo test --manifest-path rust/Cargo.toml`.
+2. **QEMU integration self-tests** — `make smoke-<name>`. Each boots a purpose-built kernel
+   configuration and asserts a marker on the serial console.
+3. **Scripted shell sessions** — Python drivers under `tools/` that type into the real ring-3
+   shell and assert on the output.
+
+**Adding a self-test.** Most follow the same shape: a `*_SELFTEST` compile flag guards a
+routine in `src/kernel/selftest.c` (or a ring-3 program in `userspace/`) that prints
+`NAME: PASS`, and a `make smoke-name` target boots it and greps for that marker. Copy an
+existing target.
+
+**Prefer adversarial tests.** `smoke-modules-tamper` corrupts a boot module and asserts it is
+refused; `smoke-tpm-tamper` asserts the PCRs diverge. Testing that a control *fires* is more
+valuable than testing that the happy path works, and this project takes that seriously.
 
 ---
 
-## A note on security changes
+## What makes a PR easy to merge
 
-The capability system, authentication, audit log, and the process-control authority model (`SYS_KILL`/`SYS_SIGNAL`/`SYS_CAP_GRANT` gating) are security-critical and receive closer review. If your change affects security properties — even positively — describe the invariant you preserve or introduce and why existing guarantees still hold. To report a security issue, follow the disclosure process in [SECURITY.md](SECURITY.md).
+- One concern, clearly described.
+- The invariant statement and its witness, where applicable.
+- Tests added, and the `make smoke-*` targets you ran listed in the PR body.
+- No unrelated reformatting.
+- No new warnings.
+- Documentation updated in the same PR when behaviour changes — especially
+  `docs/LIMITATIONS.md` if a limitation is added or removed.
+
+---
+
+## Reporting bugs and vulnerabilities
+
+**Security vulnerabilities: do not open a public issue.** Follow the private disclosure
+process in [`SECURITY.md`](SECURITY.md).
+
+**Ordinary bugs:** open an issue with the commit hash, your build configuration
+(`make`, `make SMP=0`, etc.), the exact command, and the serial output. `dmesg` output from
+inside the running system is often the most useful thing you can attach.
+
+---
+
+## A note on review
+
+Horus is currently maintained by one person, and the branch ruleset does not require reviewer
+approval — a limitation documented honestly in [`SECURITY.md`](SECURITY.md) and tracked as
+roadmap item 4.1.
+
+**If you have kernel, capability-system, or formal-methods background and would be willing to
+review security-critical changes, that is the single most valuable contribution available to
+this project.** Open an issue and say so.
+
+---
+
+## Licence
+
+Contributions are accepted under the [MIT Licence](LICENSE). By submitting a pull request you
+agree that your contribution is licensed under it.

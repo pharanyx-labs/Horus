@@ -1,23 +1,37 @@
-# Tests
+# Host-side tests
 
-This directory holds host-side test code for Horus. The primary suites live elsewhere:
+This directory holds test code compiled and run **on the build host**, outside QEMU, for fast
+iteration on logic that does not need a booted kernel.
 
-- **Rust unit tests** (**91**) in the `rust/` crate — the security core — plus advisory Kani proofs.
-- **Headless QEMU self-tests** driven by the Makefile via `tools/smoke_test.sh` — ~45 `smoke-*` targets, all run in CI (covering boot, W^X leaf sweep single- and multi-core, CR4/TSD protections, stack guards, ELF loader for both classes, ASLR, preemption, signals, process control, COW + non-zero COW, notifications, pipes, flush-on-switch, SMT parking, SMP, capability conformance, the filesystem/libc suite, the console-server / device-delegation suite, coreutils-from-modules incl. tamper rejection, and TPM measured boot + sealing). See [BUILDING.md](../docs/BUILDING.md) for the full list.
-- **Scripted integration session** — `make smoke-session` (`tools/session_test.py`) drives the real ring-3 shell over serial (login, identity, least-privilege enforcement) and asserts on the responses; `smoke-session-smp` runs it under `-smp 4`.
-
-## Contents
-
-| File | Description |
+| File | Covers |
 |---|---|
-| `test_capability.c` | Standalone host illustration. It reimplements a simplified `cap_lookup` and is **not** linked against the kernel's `capability.c`, nor built by the Makefile — treat it as a reference for intended syscall sequences, not coverage. |
+| `test_capability.c` | Capability lookup, mint, and revocation logic against the C structures |
 
 ## Running
 
 ```bash
-cargo test --manifest-path rust/Cargo.toml --release
+make test     # runs these along with the full self-test sweep
 ```
 
-A wiring-up opportunity: a host harness linking the real `src/kernel/capability.c` against mocked `tasks[]` / `get_current_task()` would give the C-side capability guards genuine regression coverage. `test_capability.c` is a starting point.
+## Where the real coverage lives
 
-See [TESTS.md](../TESTS.md) at the project root for the full picture of current coverage and what is needed.
+Host-side C tests are a convenience, not the authority. The binding tests for Horus's
+security properties are elsewhere:
+
+| Suite | Location | Run with |
+|---|---|---|
+| Capability algebra unit tests | `rust/src/capability.rs` | `cargo test --manifest-path rust/Cargo.toml` |
+| Kani proofs (revocation subtree) | `rust/src/` | `cargo kani` |
+| FFI boundary fuzzing | `rust/fuzz/` | `cargo +nightly fuzz run <target>` |
+| Kernel integration self-tests | `src/kernel/selftest.c`, `userspace/` | `make smoke-<name>` |
+| Capability conformance (29 checks) | `userspace/captest.c` | `make smoke-captest` |
+| Scripted shell sessions | `tools/*_session.py` | `make smoke-session` |
+
+See [`../TESTS.md`](../TESTS.md) for the full catalogue and what each test proves.
+
+## Adding a test here
+
+Only add a host-side test when the logic genuinely does not depend on a running kernel — no
+page tables, no scheduler, no real cspaces. Anything that touches kernel state belongs in a
+QEMU self-test, and anything algebraic belongs in the Rust crate where it can also carry a
+Kani proof.

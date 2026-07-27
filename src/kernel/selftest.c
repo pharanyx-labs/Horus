@@ -1321,9 +1321,11 @@ void irq_selftest(void) {
     if (a <= 0) { print("IRQ_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
     tasks[a].uid = 0;
 
-    /* slot 3 = CAP_ENDPOINT (READ|WRITE) gates SYS_WAIT_NOTIFY; slot 10 =
-     * CAP_IO_DEVICE gates SYS_IRQ_REGISTER. Nothing else gets the device cap. */
-    cap_install_from_root(a, 3, 2, 0);
+    /* Notifications are capability-addressed (finding C-2): SYS_IRQ_REGISTER and
+     * SYS_WAIT_NOTIFY both take a cspace slot holding a CAP_NOTIFICATION, so the
+     * test needs one. slot 10 = CAP_IO_DEVICE gates SYS_IRQ_REGISTER; nothing
+     * else gets the device cap. */
+    cap_install_from_root(a, CAPSLOT_NOTIFY, 14, NOTIF_FS_READY);
     if (cap_install_from_root(a, 10, 10, 0) != 0) {
         print("IRQ_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
@@ -1354,10 +1356,11 @@ void console_selftest(void) {
                                 embedded_console_server_bin_end, "console_server");
     if (srv <= 0) { print("CONSOLE_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
     tasks[srv].uid = 0;
-    /* slot 3 = CAP_ENDPOINT (READ|WRITE) gates the IPC recv/reply; slot 10 =
+    /* The console LISTEN capability (READ = the receive right) lets the server
+     * recv requests and answer them with SYS_IPC_REPLY_TO; slot 10 =
      * CAP_IO_DEVICE gates SYS_MAP_PHYS / SYS_IOPORT_GRANT. Nothing else gets the
      * device cap — only the console server owns the hardware. */
-    cap_install_from_root(srv, 3, 2, 0);
+    cap_install_from_root(srv, CAPSLOT_CONSOLE_EP, 11, CON_EP_REQ);
     if (cap_install_from_root(srv, 10, 10, 0) != 0) {
         print("CONSOLE_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
@@ -1366,7 +1369,7 @@ void console_selftest(void) {
                                 embedded_consoletest_bin_end, "consoletest");
     if (cli <= 0) { print("CONSOLE_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     tasks[cli].uid = 0;
-    cap_install_from_root(cli, 3, 2, 0);   /* endpoint cap for the IPC gate */
+    cap_install_from_root(cli, CAPSLOT_CONSOLE_EP, 12, CON_EP_REQ);  /* client: WRITE only */
 
     /* Launch the server; when it blocks in IPC the full-context path runs the
      * client. Does not return. */
@@ -1395,7 +1398,7 @@ void console_isolation_selftest(void) {
                                 embedded_console_server_bin_end, "console_server");
     if (srv <= 0) { print("CONSOLE_ISOLATION: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
     tasks[srv].uid = 0;
-    cap_install_from_root(srv, 3, 2, 0);
+    cap_install_from_root(srv, CAPSLOT_CONSOLE_EP, 11, CON_EP_REQ);  /* console listen */
     if (cap_install_from_root(srv, 10, 10, 0) != 0) {
         print("CONSOLE_ISOLATION: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
@@ -1465,8 +1468,7 @@ void fs_selftest(void) {
      * registration (slot 4, bound to FS_EP_REQ), a CAP_USER admin cap (slot 6)
      * for SYS_REGISTER_FS_SERVER, and an all-rights cap (slot 7) to satisfy the
      * object-store gate. */
-    cap_install_from_root(srv, 3, 2, 0);          /* root_cnode[2] = CAP_ENDPOINT   */
-    cap_install_from_root(srv, 4, 2, FS_EP_REQ);
+    cap_install_from_root(srv, CAPSLOT_FS_LISTEN, 13, FS_EP_REQ);  /* fs listen (READ|WRITE) */
     cap_install_from_root(srv, 6, 6, 0);          /* root_cnode[6] = CAP_USER (ALL) */
     cap_install_from_root(srv, 7, 8, 0);          /* root_cnode[8] = ALL rights     */
 
@@ -1482,18 +1484,15 @@ void fs_selftest(void) {
         if (c <= 0) { print("CONC_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
         tasks[c].uid       = 0;
         tasks[c].spawn_arg = (uint32_t)i;       /* 0 = coordinator, 1..3 = workers */
-        cap_install_from_root(c, 3, 2, 0);      /* endpoint cap for the IPC gate */
     }
 #else
     int cli = fs_spawn_embedded(embedded_fsclient_bin_start, embedded_fsclient_bin_end, "fsclient");
     if (cli <= 0) { print("FS_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     tasks[cli].uid = 0;
-    /* Delegate an endpoint cap into the client's slot 3 so its IPC calls pass
-     * the capability gate. (This is the spawner delegating authority — the
-     * capability model in practice. sys_connect_fs_server can't target slot 3,
-     * which slots 0-3 reserve; reconciling that with the slot-3 IPC gate is a
-     * follow-up.) */
-    cap_install_from_root(cli, 3, 2, 0);
+    /* No endpoint endowment needed: the client acquires a WRITE-only capability
+     * to the fs service itself via SYS_CONNECT_FS_SERVER (into CAPSLOT_FS_EP).
+     * That is now the only way a client reaches a server — the ambient slot-3
+     * endpoint capability this used to rely on no longer exists (finding C-1). */
 #endif
 
     /* Launch the server; when it blocks in IPC the full-context path runs the
@@ -1676,8 +1675,7 @@ void newlib_selftest(void) {
     int srv = fs_spawn_embedded(embedded_fsserver_bin_start, embedded_fsserver_bin_end, "fsserver");
     if (srv <= 0) { print("NEWLIB_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
     tasks[srv].uid = 0;
-    cap_install_from_root(srv, 3, 2, 0);
-    cap_install_from_root(srv, 4, 2, FS_EP_REQ);
+    cap_install_from_root(srv, CAPSLOT_FS_LISTEN, 13, FS_EP_REQ);  /* fs listen (READ|WRITE) */
     cap_install_from_root(srv, 6, 6, 0);
     cap_install_from_root(srv, 7, 8, 0);
 
@@ -1690,10 +1688,9 @@ void newlib_selftest(void) {
         for (;;) asm volatile("hlt");
     }
     tasks[pid].uid = 0;
-    /* Delegate an endpoint cap into the client's slot 3 so its fs_server IPC
-     * passes the capability gate (the RAM store is auto-unlocked at boot and the
-     * client is kernel-attested uid 0, so no login is needed). */
-    cap_install_from_root(pid, 3, 2, 0);
+    /* The client acquires its fs capability itself via SYS_CONNECT_FS_SERVER
+     * (the RAM store is auto-unlocked at boot and the client is kernel-attested
+     * uid 0, so no login is needed). */
 
     /* Enter the server; when it blocks in IPC recv the full-context path runs
      * the client, whose FS requests wake the server. Does not return. */
@@ -1720,14 +1717,14 @@ void notify_selftest(void) {
     if (waiter <= 0) { print("NOTIFY_SELFTEST: FAIL spawn-waiter\n"); for (;;) asm volatile("hlt"); }
     tasks[waiter].uid       = 0;
     tasks[waiter].spawn_arg = 0;                    /* role 0 = waiter */
-    cap_install_from_root(waiter, 3, 2, 0);         /* slot 3 = CAP_ENDPOINT (READ|WRITE) */
+    cap_install_from_root(waiter, CAPSLOT_NOTIFY, 14, NOTIF_FS_READY);  /* CAP_NOTIFICATION */
 
     int sender = fs_spawn_embedded(embedded_notifytest_bin_start,
                                    embedded_notifytest_bin_end, "notifysender");
     if (sender <= 0) { print("NOTIFY_SELFTEST: FAIL spawn-sender\n"); for (;;) asm volatile("hlt"); }
     tasks[sender].uid       = 0;
     tasks[sender].spawn_arg = 1;                    /* role 1 = sender */
-    cap_install_from_root(sender, 3, 2, 0);
+    cap_install_from_root(sender, CAPSLOT_NOTIFY, 14, NOTIF_FS_READY);  /* CAP_NOTIFICATION */
 
     /* Enter the waiter; it blocks in SYS_WAIT_NOTIFY and the full-context path
      * runs the sender, whose SYS_NOTIFY wakes it with the badge. Does not return. */
@@ -1782,6 +1779,25 @@ void captest_selftest(void) {
         print("CAPTEST: FAIL spawn\n");
         for (;;) asm volatile("hlt");
     }
+
+    /* Endow exactly the capabilities the C-1 conformance checks probe. The task
+     * already holds its private reply endpoint (slot 4) from create_task.
+     *
+     *  slot 5  — a WRITE-ONLY endpoint capability, i.e. a CLIENT capability, the
+     *            shape SYS_CONNECT_FS_SERVER mints. captest asserts it permits
+     *            send and REFUSES recv / reply_to / sender: those refusals are
+     *            the interception and reply-forgery halves of C-1.
+     *  slot 11 — a CAP_NOTIFICATION, so the type-separation checks can prove an
+     *            endpoint capability does not authorise notify/wait_notify and
+     *            vice versa.
+     *  slot 21 — a second, distinct READ|WRITE endpoint capability, so "holding
+     *            a capability is not authority over it" (the revoke-rights
+     *            checks) is tested against a real endpoint rather than the
+     *            task's own reply endpoint. */
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    cap_install_from_root(pid, 5,  12, CON_EP_REQ);       /* client: WRITE only     */
+    cap_install_from_root(pid, 11, 14, NOTIF_FS_READY);   /* CAP_NOTIFICATION       */
+    cap_install_from_root(pid, 21, 11, CON_EP_REQ);       /* listen: READ|WRITE     */
 
     print("CAPTEST_SELFTEST: launching\n");
     sched_enable_preemption();

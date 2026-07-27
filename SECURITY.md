@@ -25,25 +25,23 @@ There is no bug-bounty programme.
 Horus is a **research microkernel**. It is not production-ready, has not been independently
 audited by a third party, and has known unfixed security defects.
 
-> ### Known critical defect: IPC is not capability-addressed
+> ### The 2026-07 critical finding is fixed
 >
-> Endpoints and notifications are addressed by a raw integer index taken from a userspace
-> register. The `object` field of `CAP_ENDPOINT` — which names *which* endpoint a capability
-> confers authority over — is never consulted by any IPC syscall. The authorisation check
-> confirms only that the caller holds *something* in a fixed cspace slot, and every task is
-> created holding a `CAP_FRAME` there.
->
-> **Consequence.** Any unprivileged ring-3 program can receive on, send to, and forge
-> replies on any endpoint in the system — including the filesystem server's well-known
-> request endpoint. It can therefore intercept another user's filesystem requests and forge
-> the server's replies, defeating the POSIX permission model that `fs_server` enforces.
->
-> Full analysis, exploit path, and fix: finding **[C-1]** in
-> [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md). This is the top roadmap item.
+> IPC endpoints and notifications used to be addressed by a raw integer index, with the
+> `CAP_ENDPOINT.object` field never consulted — so any unprivileged program could intercept
+> and forge messages to any userspace server. **Fixed 2026-07-27** ([C-1]/[C-2]): IPC is now
+> capability-addressed, clients hold send-only capabilities, and every task has a private
+> reply endpoint. The regression suite was falsified against the pre-fix kernel to confirm it
+> detects the bug.
 
-**Do not deploy Horus where isolation between mutually distrusting programs matters.**
-Its current appropriate uses are research, education, and the development of the capability
-model itself.
+Horus remains **research-grade**. It has not been independently audited, no security-critical
+change has ever been reviewed by a second person (**[C-5]**), and the security-specific CI
+jobs are not merge-gating (**[C-6]**). Other open findings — ambient `uid == 0` authority,
+an unflushed write-ahead journal, fixed-size kernel object tables — are in
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+
+Its appropriate uses are research, education, and development of the capability model
+itself.
 
 Every other known limitation is documented openly in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). Horus does not conceal its weaknesses; an
@@ -69,8 +67,10 @@ honest account of what is not enforced is more useful than a confident one that 
 
 **A1 — Unprivileged ring-3 program.** Runs arbitrary code with a normal cspace. Wants kernel
 compromise, another task's memory, another user's files, or privilege escalation.
-*Status: partially defended.* Memory isolation and syscall authorisation hold; **IPC
-isolation does not** (see above).
+*Status: defended for memory isolation, syscall authorisation, and — since 2026-07-27 — IPC
+isolation.* A task can reach a service only through a delegated capability naming that
+service's endpoint, and a client capability confers send only. Not defended against denial of
+service (no CPU or kernel-memory quotas).
 
 **A2 — Compromised userspace server.** `fs_server` or `console_server` under attacker
 control. Confined to its own address space and its delegated capabilities; cannot reach
@@ -141,15 +141,17 @@ Stated as claims, with the mechanism and its witness, so each can be checked.
 | S10 | A boot module that fails its hash check cannot be executed | Manifest verified at boot; read path refuses unverified | `make smoke-modules-tamper` |
 | S11 | Tampering with the boot chain is detectable | TPM PCR 8/9 measurement | `make smoke-tpm`, `smoke-tpm-tamper` |
 | S12 | A tampered boot cannot unlock the volume | KEK sealed under `PolicyPCR(8,9)` | `make smoke-tpm-seal` |
-| S13 | A server can determine a client's true identity | `SYS_IPC_SENDER` returns the kernel-recorded uid | `smoke-fs-perms` |
+| S13 | A server can determine a client's true identity | `SYS_IPC_SENDER` returns the kernel-recorded uid, gated on the receive right | `smoke-fs-perms`, `smoke-captest` |
+| S13a | A task can operate on an IPC object only via a capability naming it | Slot-resolved `ipc_ep_from_slot` / `ipc_notif_from_slot` | `make smoke-captest` (12 refusal checks) |
+| S13b | A client cannot intercept or forge a server's replies | Clients minted WRITE-only; `recv`/`reply_to` need READ | `make smoke-captest` |
 | S14 | File permissions are enforced against that identity | `fs_server` reference monitor | `make smoke-fs-perms` |
 | S15 | An address-space slot rebuilt after task death leaks nothing | Cspace zeroed on reuse; page pool reclaimed | `make smoke-aspace` |
 | S16 | A task cannot read another's XMM register file | `fxsave`/`fxrstor` across ring transitions | — |
 | S17 | The shipped binary corresponds to the published source | Byte-for-byte reproducible build | `make reproducible-build` (CI-gated) |
 
-**S13 and S14 are currently undermined by the [C-1] IPC defect**, because an attacker can
-impersonate the server rather than lie to it. The mechanisms are correct; the transport
-beneath them is not authenticated.
+S13 and S14 were undermined until 2026-07-27 by the [C-1] defect — an attacker could
+impersonate the server rather than lie to it. S13a and S13b are the properties that now hold
+the transport up, and are tested by the refusal checks in `smoke-captest`.
 
 ---
 

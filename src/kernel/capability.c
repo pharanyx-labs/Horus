@@ -136,6 +136,58 @@ void cap_init(void) {
     root_cnode[10].serial = 0xC0DE000AU;
     root_cnode[10].generation = 0;
 
+    /* ---- Service endpoint roots (audit finding C-1) -----------------------
+     *
+     * With IPC capability-addressed, a task can only reach a service through a
+     * capability naming that service's endpoint. These are the primordial
+     * originals; init is endowed with copies (cap_install_from_root) and
+     * delegates them onward to exactly the servers and clients that need them.
+     *
+     * The listen/client split is what enforces the direction of trust. A LISTEN
+     * capability carries READ (the receive right), so its holder may dequeue
+     * requests and answer them with SYS_IPC_REPLY_TO — that is the server. A
+     * CLIENT capability carries WRITE only, so its holder may send and nothing
+     * else. Without the split, any client holding the same capability as the
+     * server could intercept its peers' requests and forge its replies, which was
+     * exactly the C-1 attack. */
+
+    /* Console service listen (console_server): receive + reply. */
+    root_cnode[11].type   = CAP_ENDPOINT;
+    root_cnode[11].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+    root_cnode[11].object = CON_EP_REQ;
+    root_cnode[11].badge  = 0;
+    root_cnode[11].serial = 0xC0DE000BU;
+    root_cnode[11].generation = 0;
+
+    /* Console service client (shell and its descendants): send only. */
+    root_cnode[12].type   = CAP_ENDPOINT;
+    root_cnode[12].rights = CAP_RIGHT_WRITE;
+    root_cnode[12].object = CON_EP_REQ;
+    root_cnode[12].badge  = 0;
+    root_cnode[12].serial = 0xC0DE000CU;
+    root_cnode[12].generation = 0;
+
+    /* Filesystem service listen (fs_server): receive + reply. Clients do NOT get
+     * a copy of this — they acquire a WRITE-only capability at runtime through
+     * SYS_CONNECT_FS_SERVER. */
+    root_cnode[13].type   = CAP_ENDPOINT;
+    root_cnode[13].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+    root_cnode[13].object = FS_EP_REQ;
+    root_cnode[13].badge  = 0;
+    root_cnode[13].serial = 0xC0DE000DU;
+    root_cnode[13].generation = 0;
+
+    /* The init <-> fs_server "provisioning finished" rendezvous notification.
+     * Notifications are capability-addressed too (finding C-2): without this,
+     * any task could forge the ready badge, or forge IRQ delivery to a ring-3
+     * driver, since SYS_IRQ_REGISTER routes hardware interrupts to these slots. */
+    root_cnode[14].type   = CAP_NOTIFICATION;
+    root_cnode[14].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+    root_cnode[14].object = NOTIF_FS_READY;
+    root_cnode[14].badge  = 0;
+    root_cnode[14].serial = 0xC0DE000EU;
+    root_cnode[14].generation = 0;
+
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;

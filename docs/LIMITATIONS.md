@@ -13,9 +13,15 @@ Findings referenced as **[C-n]** / **[I-n]** are from
 
 ## 1. Security properties that are claimed elsewhere but not enforced
 
-### 1.1 IPC is not capability-mediated — **critical** — **[C-1]**
+### 1.1 ~~IPC is not capability-mediated~~ — **FIXED 2026-07-27** — **[C-1]**
 
-This is the most important entry in this document.
+**Resolved.** IPC is now capability-addressed: every IPC syscall takes a cspace slot and the
+kernel derives the endpoint or notification from the capability there, checking type, right,
+and lineage. A task is born with only its own private reply endpoint; everything else arrives
+by delegation. Clients receive WRITE-only capabilities, so they can send to a service but
+never intercept its traffic or forge its replies. `captest` grew from 29 to 41 checks, twelve
+of them asserting these refusals, and the suite was falsified against the pre-fix kernel to
+confirm it detects the bug. The original description follows for the record.
 
 Endpoints (`MAX_ENDPOINTS = 64`) and notifications (`MAX_NOTIFICATIONS = 64`) are flat global
 arrays addressed by an integer taken directly from a userspace register. The index is

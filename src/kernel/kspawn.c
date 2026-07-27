@@ -267,6 +267,35 @@ int do_spawn(void) {
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
 
     if (pid > 0) grant_child_tcb_cap(caller_task, pid);
+
+    /* Propagate the console service capability to the child, SEND-ONLY.
+     *
+     * Since finding C-1 a task can only reach the console server through a
+     * capability naming its endpoint, and a task is born with none. The shell
+     * must therefore pass one to every utility it spawns, or `ls`, `cat`, `tcc`
+     * and friends have no stdout. This is delegation by inheritance — the same
+     * shape as POSIX fd inheritance.
+     *
+     * Rights are masked to WRITE whatever the parent holds, so a child can only
+     * ever SEND to the console. Even console_server (which holds READ|WRITE to
+     * receive requests) hands a child a send-only copy, so the receive right
+     * cannot escape the one task meant to have it. The copy is a derived
+     * capability, so revoking the parent's sweeps every child's with it.
+     *
+     * This MUST be here, after set_current_task(caller_task), and not inside
+     * do_spawn_inner: load_staged_image_into leaves the CHILD current so its
+     * copy_to_user targets the right address space, and cap_grant_into resolves
+     * its source slot in the CURRENT task's cspace. Run any earlier and it reads
+     * the child's own (empty) cspace and silently propagates nothing — which is
+     * exactly what happened on the first attempt, and cost a `printf` with no
+     * output in smoke-modules. */
+    if (pid > 0) {
+        struct capability *con = cap_lookup(CAPSLOT_CONSOLE_EP, CAP_RIGHT_WRITE);
+        if (con && con->type == CAP_ENDPOINT) {
+            cap_grant_into(pid, CAPSLOT_CONSOLE_EP, CAPSLOT_CONSOLE_EP,
+                           CAP_RIGHT_WRITE);
+        }
+    }
     /* A child runs as its spawner's identity. This is what lets init's uid-0
      * fs_server pass the object-store's uid==0 gate, and it closes a latent
      * privilege bug: previously a child kept its (BSS-zero) task-slot uid, so a

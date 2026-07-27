@@ -89,7 +89,7 @@ static void fd_free(int fd) {
 /* ----- fs_server IPC -------------------------------------------------- */
 
 /* ep slot for the fs_server capability (must be >= 4 per kernel rule). */
-#define FSS_CAP_SLOT 20u
+#define FSS_CAP_SLOT CAPSLOT_FS_EP
 
 static void fs_connect(void) {
     if (g_fs_connected) return;
@@ -106,7 +106,7 @@ static int fss_rpc(struct fs_request *rq, struct fs_response *rp) {
     rq->magic = FS_PROTO_MAGIC;
     _umemset(rp, 0, sizeof(*rp));
 
-    int r = sys_ipc_call(FS_EP_REQ, FS_EP_REP,
+    int r = sys_ipc_call(CAPSLOT_FS_EP, 0,
                          (const void *)rq, (uint32_t)sizeof(*rq),
                          (void *)rp);
     if (r < 0)                        return -1;
@@ -451,7 +451,7 @@ static int con_server_write(const void *buf, size_t len) {
 
         int rc = -1;
         for (int tries = 0; tries < 20000; tries++) {
-            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP,
+            rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0,
                               &g_con_rq, sizeof(g_con_rq), &g_con_rp);
             if (rc >= 0) break;
             sys_yield();          /* mailbox full: yield and retry */
@@ -474,7 +474,7 @@ static int con_server_read_raw(void *buf, size_t len) {
     g_con_rq.len   = n;
     int rc = -1;
     for (int tries = 0; tries < 20000; tries++) {
-        rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+        rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
         if (rc >= 0) break;
         sys_yield();
     }
@@ -498,7 +498,7 @@ static int con_server_write_raw(const void *buf, size_t len) {
         for (unsigned i = 0; i < n; i++) g_con_rq.data[i] = s[off + i];
         int rc = -1;
         for (int tries = 0; tries < 20000; tries++) {
-            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+            rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
             if (rc >= 0) break;
             sys_yield();
         }
@@ -1051,7 +1051,7 @@ int posix_console_winsize(unsigned short *rows, unsigned short *cols) {
         g_con_rq.op    = CON_OP_WINSZ;
         g_con_rq.len   = 0;
         for (int tries = 0; tries < 20000; tries++) {
-            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+            rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
             if (rc >= 0) break;
             sys_yield();
         }

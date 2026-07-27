@@ -22,15 +22,25 @@
 
 #define FS_PROTO_MAGIC   0x48465250u   /* "HFRP" */
 
-/* Well-known endpoint indices for the FS service. Requests go to FS_EP_REQ;
- * replies are routed back to each caller by identity via SYS_IPC_REPLY_TO (see
- * above), so FS_EP_REP is only the endpoint a client parks its SYS_IPC_CALL block
- * on — not a shared mailbox other clients could read a reply from. */
-#define FS_EP_REQ   4   /* client -> server requests */
-#define FS_EP_REP   5   /* client's SYS_IPC_CALL reply-wait endpoint */
+/* The FS service's request endpoint OBJECT index.
+ *
+ * Since the capability-addressed IPC change (audit finding C-1) userspace does
+ * NOT name this in a syscall: IPC arguments are cspace SLOTS, and the kernel
+ * derives the object from the capability found there. The constant remains only
+ * because the kernel mints the primordial capability against it (it is mirrored
+ * in src/include/kernel.h) and the server names it when registering.
+ *
+ * FS_EP_REP is GONE. Clients used to park their blocking SYS_IPC_CALL on one
+ * shared reply endpoint, so concurrent callers overwrote each other's waiter
+ * (finding I-5). Every task now has a private kernel-allocated reply endpoint
+ * (CAPSLOT_REPLY_EP), chosen by the kernel and nameable by no one else. */
+#define FS_EP_REQ   4   /* client -> server requests (object index, not a slot) */
 
-/* Rights a client requests when connecting (CAP_RIGHT_READ | CAP_RIGHT_WRITE),
- * enough to send requests and receive replies. */
+/* Legacy rights word for sys_connect_fs_server. Ignored by the kernel, which
+ * now always mints the client capability WRITE-only — a client that could also
+ * RECEIVE on the server's endpoint could dequeue its peers' requests and forge
+ * the server's replies, which was the C-1 attack. Kept so existing callers
+ * compile unchanged. */
 #define CAP_R_W     0x3u
 
 /* Operations. Access is enforced by the server against the caller's

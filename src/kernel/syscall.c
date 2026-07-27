@@ -882,12 +882,21 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_WAIT]                     = { h_wait,                    SC_NONE, 0, SC_ANYTYPE },
     [SYS_GET_TASK_INFO]            = { h_task_info,               SC_NONE, 0, SC_ANYTYPE }, /* self, or admin/audit in handler */
     [SYS_EXEC]                     = { h_run,                     3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
-    [SYS_IPC_SEND]                 = { h_ipc_send,                3, CAP_RIGHT_WRITE, SC_ANYTYPE },
-    [SYS_IPC_RECV]                 = { h_ipc_recv,                3, CAP_RIGHT_READ,  SC_ANYTYPE },
-    [SYS_IPC_CALL]                 = { h_ipc_call,                3, CAP_RIGHT_WRITE, SC_ANYTYPE },
-    [SYS_IPC_REPLY]                = { h_ipc_reply,               3, CAP_RIGHT_WRITE, SC_ANYTYPE },
-    [SYS_NOTIFY]                   = { h_notify,                  3, CAP_RIGHT_WRITE, SC_ANYTYPE },
-    [SYS_WAIT_NOTIFY]              = { h_wait_notify,             3, CAP_RIGHT_READ,  SC_ANYTYPE },
+    /* IPC is capability-ADDRESSED (audit finding C-1): the first argument is a
+     * cspace slot, and the handler resolves it through cap_lookup to the endpoint
+     * or notification it names — checking type, right, and lineage in one place
+     * (ipc_ep_from_slot / ipc_notif_from_slot in syscall_ipc.c).
+     *
+     * These entries MUST stay SC_NONE. A fixed slot-3 gate here would be worse
+     * than redundant: slot 3 holds a CAP_FRAME in every task, so the old entry
+     * authorised IPC for everyone and the per-object capability was never
+     * consulted. The per-slot lookup in the handler IS the gate. */
+    [SYS_IPC_SEND]                 = { h_ipc_send,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_IPC_RECV]                 = { h_ipc_recv,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_IPC_CALL]                 = { h_ipc_call,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_IPC_REPLY]                = { h_ipc_reply,               SC_NONE, 0, SC_ANYTYPE },
+    [SYS_NOTIFY]                   = { h_notify,                  SC_NONE, 0, SC_ANYTYPE },
+    [SYS_WAIT_NOTIFY]              = { h_wait_notify,             SC_NONE, 0, SC_ANYTYPE },
     [SYS_RECEIVE_PROGRAM]          = { h_receive_program,         3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_SPAWN]                    = { h_spawn,                   3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_EXEC_NAMED]               = { h_exec_named,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
@@ -905,13 +914,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     /* Zero-trust identity: a receiver reads the kernel-attested uid of an
      * endpoint's last sender. Slot-3 READ (same as SYS_IPC_RECV) so only a
      * legitimate receiver on the endpoint can query it. */
-    [SYS_IPC_SENDER]               = { h_ipc_sender,              3, CAP_RIGHT_READ, SC_ANYTYPE },
+    [SYS_IPC_SENDER]               = { h_ipc_sender,              SC_NONE, 0, SC_ANYTYPE },
     /* Object-store owner/mode persistence — same gate as the rest of the store
      * (CAP_BLOCK_DEV slot 7 + uid 0 in the handler): filesystem server only. */
     [SYS_FS_SET_META]              = { h_fs_set_meta,             7, CAP_BLOCK_DEV, SC_ANYTYPE },
     /* Reply routed to the request's kernel-recorded sender (multi-client safe).
      * Slot-3 WRITE, same as the other send/reply paths. */
-    [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            SC_NONE, 0, SC_ANYTYPE },
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_GETPID]                   = { h_getpid,                  SC_NONE, 0, SC_ANYTYPE }, /* own id: self-authorizing */
     [SYS_CONSOLE_OWNED]            = { h_console_owned,           SC_NONE, 0, SC_ANYTYPE }, /* console status: read-only, self-authorizing */

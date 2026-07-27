@@ -29,7 +29,7 @@ Findings referenced as **[C-n]** / **[I-n]** / **[F-n]** are from
 This track is the difference between "a capability-based microkernel" and "a microkernel
 that has capabilities in it". Nothing in Tracks 2–4 should land before it.
 
-### 0.1 ⬜ Capability-addressed IPC — **[C-1]**, **[C-2]** — *Critical*
+### 0.1 ✅ Capability-addressed IPC — **[C-1]**, **[C-2]** — *landed 2026-07-27*
 
 **Problem.** Endpoints and notifications are addressed by an unmediated integer index; a
 `CAP_ENDPOINT`'s `object` field is never consulted on an IPC operation. Any task can
@@ -72,7 +72,12 @@ endpoint capability for object *N* is refused `send`/`recv` on every other endpo
 with no endpoint capability is refused all IPC. *The absence of exactly this test is what let
 the defect stand.*
 
-**Do not bundle this with feature work.** It is a focused, breaking, reviewable change.
+**Delivered.** `ipc_ep_from_slot` / `ipc_notif_from_slot` are the single choke point; the
+slot-3 dispatch entries are gone; `create_task` grants only a private per-task reply
+endpoint; `SYS_CONNECT_FS_SERVER` mints WRITE-only; `SYS_IPC_REPLY_TO` requires the receive
+right; `SYS_IRQ_REGISTER` takes a notification capability. `captest` 29 → 41 checks, and the
+suite was falsified against the pre-fix kernel to prove it detects the bug. Retires **[I-5]**
+(the shared reply endpoint) as a side effect.
 
 ### 0.2 ⬜ Retire ambient `uid == 0` authority — **[I-1]**
 

@@ -45,7 +45,7 @@ static int con_write_all(const char *s, size_t len) {
 
         int rc = -1;
         for (int tries = 0; tries < CON_MAX_RETRY; tries++) {
-            rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP,
+            rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0,
                               &con_rq, sizeof(con_rq), &con_rp);
             if (rc >= 0) break;
             sys_yield();   /* mailbox full: let console_server drain it */
@@ -76,7 +76,7 @@ static int con_read_line(uint32_t op, char *buf, unsigned max) {
     con_rq.len   = max;
     int rc = -1;
     for (int tries = 0; tries < CON_MAX_RETRY; tries++) {
-        rc = sys_ipc_call(CON_EP_REQ, CON_EP_REP, &con_rq, sizeof(con_rq), &con_rp);
+        rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &con_rq, sizeof(con_rq), &con_rp);
         if (rc >= 0) break;
         sys_yield();
     }
@@ -135,11 +135,11 @@ static void fss_strcpy(char *d, const char *s) { while((*d++ = *s++)); }
 
 static int fss_connect(void) {
     if (fss_connected) return 0;
-    fss_ep_slot = 20;
+    fss_ep_slot = CAPSLOT_FS_EP;
     /* sys_connect_fs_server mints a cap in slot fss_ep_slot so the kernel's
      * slot-3 check passes for SYS_IPC_CALL.  The actual send/receive uses the
      * well-known endpoint indices directly (FS_EP_REQ / FS_EP_REP). */
-    int rc = sys_connect_fs_server(fss_ep_slot, 3);
+    int rc = sys_connect_fs_server(fss_ep_slot, CAP_R_W);
     if (rc == 0) {
         fss_connected = 1;
         return 0;
@@ -154,7 +154,7 @@ static int fss_call(struct fs_request *req, struct fs_response *rep) {
     req->magic = FS_PROTO_MAGIC;
     /* Blocking IPC: send on FS_EP_REQ (4), block until reply arrives on
      * FS_EP_REP (5).  The kernel unblocks us and fills *rep atomically. */
-    int r = sys_ipc_call(FS_EP_REQ, FS_EP_REP,
+    int r = sys_ipc_call(CAPSLOT_FS_EP, 0,
                          (const char *)req, sizeof(*req), (char *)rep);
     return (r < 0) ? r : 0;
 }

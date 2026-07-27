@@ -114,9 +114,27 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-init-fs` | `init` provisions the filesystem at boot. |
 | `smoke-fs-perms` | POSIX rwx is enforced against the **kernel-attested** uid/gid, not a client-supplied one. |
 | `smoke-fs-persist` | Data survives a reboot (two-boot test). |
-| `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). |
+| `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). **Known flaky and known weak — see below.** |
 | `smoke-fs-conc` | Multiple clients are served concurrently without cross-talk, via `SYS_IPC_REPLY_TO`. |
 | `smoke-fs-large` | Double-indirect blocks address large files. |
+
+> **`smoke-fs-wal` — two known defects (findings [I-10], [I-11]).**
+>
+> **It is nondeterministic.** The harness kills QEMU the moment boot 1's marker appears on
+> serial, then reboots on the same image. The marker proves the guest *reached* that point,
+> not that its journal writes completed — serial and IDE are independent paths, and
+> `cache=writethrough` only makes *completed* writes durable. On a loaded runner boot 2 fails
+> with `WAL_CRASHTEST: FAIL read` against an unmodified kernel. It is a **required** status
+> check, so it blocks merges spuriously.
+>
+> **It cannot detect the bug it exists to catch.** The kernel issues no ATA `FLUSH CACHE`
+> (0xE7) — ever. On real hardware the commit record can sit in the drive's volatile cache and
+> be lost to a power failure. `cache=writethrough` hides this completely: the emulator
+> supplies the durability the kernel omits. The test therefore verifies crash-atomicity in
+> the one configuration where it is guaranteed by something other than the code under test.
+>
+> A green `smoke-fs-wal` is not evidence of crash-atomicity on hardware. Fixing it needs a
+> `cache=writeback` variant *and* a real flush in the driver.
 
 ## Device delegation and the console
 

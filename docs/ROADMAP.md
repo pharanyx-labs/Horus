@@ -158,6 +158,27 @@ Refuse instead; add an explicit partial-copy API if a caller genuinely needs one
 `SYS_SBRK`/`SYS_BRK` must be `uint64_t` end-to-end with an explicit overflow check before the
 range test. Latent today; sharp the moment the user address space widens past 4 GiB.
 
+### 1.55 ⬜ Make the write-ahead journal actually durable — **[I-10]**, **[I-11]**
+
+The kernel issues no ATA `FLUSH CACHE` (0xE7) — the driver's entire command set is
+`READ(0x20)`, `WRITE(0x30)`, `IDENTIFY(0xEC)`. On real hardware the journal's commit record
+can sit in the drive's volatile write cache and be lost to a power failure, so the
+crash-atomicity guarantee does not hold outside emulation.
+
+It has gone unnoticed because `smoke-fs-wal` runs QEMU with `cache=writethrough`, where the
+emulator provides the durability the kernel omits — the test verifies the property in the one
+configuration where the code under test cannot fail it.
+
+Two halves, both needed:
+
+1. Issue `FLUSH CACHE` after the commit record and after the checkpoint that retires it,
+   polling BSY (a real drive can take seconds).
+2. Add a `cache=writeback` variant of the test, so the guarantee is exercised where the
+   emulator is not silently supplying it. Fix the harness race at the same time (**[I-11]**):
+   have boot 1 halt itself via `isa-debug-exit` once the write is genuinely durable, and have
+   the harness wait for QEMU to *exit* rather than killing it on a serial string — currently
+   a genuine WAL regression and a harness race produce identical output.
+
 ### 1.6 ⬜ Unbounded revocation closure — **[I-3]**
 
 Replace the fixed 256-entry worklist with an iterate-to-fixpoint or mark-and-sweep closure,

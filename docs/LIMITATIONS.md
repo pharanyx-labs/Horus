@@ -128,6 +128,23 @@ be expressed.
 survives today only because `SYS_IPC_REPLY_TO` routes by kernel-recorded sender identity
 instead of by that field.
 
+### 2.25 The write-ahead journal is not durable on real hardware — **[I-10]**
+
+`src/kernel/ata.c` issues exactly three ATA commands: `READ SECTORS` (0x20), `WRITE SECTORS`
+(0x30), and `IDENTIFY` (0xEC). There is **no `FLUSH CACHE` (0xE7)** anywhere in the kernel.
+
+`WRITE SECTORS` completes once the data reaches the drive's volatile write cache, which is
+enabled by default on essentially every ATA/SATA device. Without a flush after the journal's
+commit record, a power failure between commit and platter-write loses the record, and
+recovery lands in the state the WAL exists to prevent — the transaction neither applied nor
+journalled.
+
+**This is invisible to the test suite.** `smoke-fs-wal` runs QEMU with `cache=writethrough`,
+so the emulator supplies the durability the kernel omits. The "crash-atomic" claim is
+verified only in the configuration where it is guaranteed by something other than the code
+under test. Treat filesystem crash-atomicity as **demonstrated under emulation, unproven on
+hardware**.
+
 ### 2.3 No kernel object lifecycle
 
 Endpoints and notifications are never reference-counted or destroyed. Nothing ties a kernel
@@ -224,6 +241,20 @@ green. The required set is inverted: functional tests block merges, security tes
 Additionally, `strict_required_status_checks_policy` is false (stale-base merges are
 permitted), and every SAST tool in the security job runs under `continue-on-error`, so
 Semgrep, Trivy, gitleaks, and cargo-audit findings are advisory only.
+
+### 5.2b One required check is nondeterministic by construction — **[I-11]**
+
+`smoke-fs-wal` (a *gating* context) kills QEMU the instant a marker appears on the serial
+console, then reboots on the same disk image. The marker proves the guest reached that point,
+not that its journal writes completed — the serial and IDE paths are independent, and
+`cache=writethrough` only makes *completed* writes durable. On a loaded runner the
+interleaving shifts and boot 2 fails with `WAL_CRASHTEST: FAIL read` against an unmodified
+kernel.
+
+The worse consequence is not the spurious failure but that **a real WAL regression is
+indistinguishable from the race** — both produce the same output. A test that cannot tell
+"the code is broken" from "the harness was too quick" is not evidence for the property it
+claims to establish.
 
 ### 5.3 No release provenance — **[I-9]**
 

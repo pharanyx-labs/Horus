@@ -1838,11 +1838,23 @@ static void handle_command(char *cmd) {
         print(" gid=100");
         println("");
     } else if (strcmp(cmd, "dmesg") == 0) {
-        /* Print the kernel message ring (boot + kernel log). ROOT ONLY: the
-         * kernel enforces uid==0 against the caller's attested identity and
-         * returns SYS_ERR_PERM otherwise -- the shell just reports it. Read in
-         * small chunks so no multi-KiB user buffer is needed (the kernel log is
-         * text and holds no NULs, so a chunk is safe to NUL-terminate + print). */
+        /* Print the kernel message ring (boot + kernel log). ROOT ONLY.
+         *
+         * Two independent gates, answering two different questions:
+         *   - the KERNEL asks "does this task hold CAP_KERNEL_LOG?" (finding I-1
+         *     replaced the old ambient uid==0 check with a real capability);
+         *   - the SHELL asks "is the user at this terminal allowed to use it?".
+         *
+         * The shell's check is not redundant. Capabilities are per-TASK, and the
+         * shell is a single long-lived task serving successive logins, so its
+         * capability cannot by itself express "only while root is logged in".
+         * The session manager is the only component that knows who is logged in,
+         * so the per-user policy belongs here. Without this, delegating
+         * CAP_KERNEL_LOG to the shell would hand every standard user the kernel
+         * log — a privilege WIDENING versus the uid==0 gate it replaced. */
+        if (sys_getuid() != 0) {
+            println("dmesg: permission denied (root only)");
+        } else {
         char buf[512];
         uint32_t off = 0;
         for (;;) {
@@ -1853,6 +1865,7 @@ static void handle_command(char *cmd) {
             buf[n] = 0;
             print(buf);
             off += (uint32_t)n;
+        }
         }
     } else if (strcmp(cmd, "sudo") == 0 || strncmp(cmd, "sudo ", 5) == 0) {
         /* The password is PROMPTED for, never taken from the command line.

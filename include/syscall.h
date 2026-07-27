@@ -361,6 +361,8 @@ static inline int sys_console_owned(void) {
 #define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE (console_server only)        */
 #define CAPSLOT_NOTIFY     11    /* CAP_NOTIFICATION: fs-ready rendezvous      */
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
+#define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG:  SYS_DMESG                 */
+#define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE: boot-module read surface  */
 #define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: fs service (sys_connect_fs_server) */
 
 /* Send to the endpoint named by the CAP_ENDPOINT in `ep_slot` (needs WRITE). */

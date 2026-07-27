@@ -177,6 +177,24 @@ void cap_init(void) {
     root_cnode[13].serial = 0xC0DE000DU;
     root_cnode[13].generation = 0;
 
+    /* Authority formerly carried by ambient `uid == 0` (finding I-1). Minted
+     * here so it can be delegated explicitly and, crucially, REVOKED — an
+     * ambient uid check can never be withdrawn from one task without changing
+     * its identity, which is why root was such a blunt instrument. */
+    root_cnode[15].type   = CAP_KERNEL_LOG;
+    root_cnode[15].rights = CAP_RIGHT_READ;
+    root_cnode[15].object = 0;
+    root_cnode[15].badge  = 0;
+    root_cnode[15].serial = 0xC0DE000FU;
+    root_cnode[15].generation = 0;
+
+    root_cnode[16].type   = CAP_BOOT_MODULE;
+    root_cnode[16].rights = CAP_RIGHT_READ;
+    root_cnode[16].object = 0;
+    root_cnode[16].badge  = 0;
+    root_cnode[16].serial = 0xC0DE0010U;
+    root_cnode[16].generation = 0;
+
     /* The init <-> fs_server "provisioning finished" rendezvous notification.
      * Notifications are capability-addressed too (finding C-2): without this,
      * any task could forge the ready badge, or forge IRQ delivery to a ring-3

@@ -81,7 +81,7 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 | 0 | `SYS_YIELD` | — | none (self) |
 | 2 | `SYS_EXIT` | — | none (self) |
 | 17 | `SYS_WAIT` | `tid` | none (self) |
-| 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` / uid 0 |
+| 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` |
 | 19 | `SYS_EXEC` | `load_base`, `entry` | slot 3: WRITE\|EXEC |
 | 20 | `SYS_GETPID` | — | none (self-authorising) |
 | 28 | `SYS_SPAWN` | — | slot 3: WRITE\|EXEC |
@@ -94,8 +94,10 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 | 27 | `SYS_RECEIVE_PROGRAM` | `struct program_header *` | slot 3: WRITE\|EXEC |
 
 `SYS_GET_TASK_INFO` reports `cr3` as 0 deliberately — disclosing the page-table physical base
-would reveal the physical memory layout. It does still report `eip` for other tasks, which is
-a known ASLR leak (finding **[I-4]**).
+would reveal the physical memory layout — and since **[I-4]** reports `eip` only for the
+calling task, zeroed for any other, so it cannot be used to defeat another task's ASLR. Being
+uid 0 is no longer sufficient for cross-task introspection; a `CAP_USER` or `CAP_AUDIT` is
+required (**[I-1]**).
 
 `SYS_SPAWN_IMAGE` / `SYS_EXEC_IMAGE` are the `execve`-from-memory path. The image is validated
 by the Rust ELF loader exactly like a named binary.
@@ -137,16 +139,19 @@ Both currently perform 32-bit arithmetic on 64-bit heap bounds — finding **[I-
 | 12 | `SYS_READ` | `fd`, `buf`, `len` | fd 0 ambient; fd ≥ 3 needs slot 3 READ |
 | 13 | `SYS_OPEN` | `name`, `flags` | slot 3: READ |
 | 82 | `SYS_CONSOLE_OWNED` | — | none (read-only status) |
-| 88 | `SYS_DMESG` | `buf`, `offset`, `max` | **uid 0 only** |
+| 88 | `SYS_DMESG` | `buf`, `offset`, `max` | `CAP_KERNEL_LOG` at `CAPSLOT_KERNEL_LOG` |
 
 `SYS_GET_LINE` and the fd-0 path of `SYS_READ` **fail closed while a ring-3 console server
 owns the UART** (`console_hw_owned()`). A kernel-side read would race the owner and steal
 bytes from a typed line, so clients must route input through the server. The in-kernel path
 exists only for before handoff and after the owner dies.
 
-`SYS_DMESG` is gated on the caller's kernel-attested uid — the same `dmesg_restrict` posture
-Linux takes, because the kernel log discloses addresses and boot detail. It is read in small
-chunks (offset + max), so no shared kernel buffer is exposed.
+`SYS_DMESG` requires a `CAP_KERNEL_LOG` capability, which `init` delegates to the shell
+(finding **[I-1]**; it was previously an ambient `uid == 0` check). The kernel log discloses
+addresses and boot detail, so the shell additionally restricts the `dmesg` *command* to root
+— capabilities are per-task and the shell serves successive logins, so only the session
+manager can express a per-user policy. It is read in small chunks (offset + max), so no
+shared kernel buffer is exposed.
 
 ## Capabilities
 
@@ -242,7 +247,10 @@ Passwords are Argon2-hashed. Failed authentication is rate-limited per task
 
 ## Object store — `fs_server` only
 
-Gated on `CAP_BLOCK_DEV` in slot 7 (dispatch table) **plus** `uid == 0` in the handler. The
+Gated on a `CAP_ENCRYPTED_STORAGE` capability at `CAPSLOT_AUDIT`, required **by type**. The
+ambient `uid == 0` check that used to accompany it is gone (**[I-1]**), and the type is now
+actually enforced — these entries previously passed the type constant in the *rights* field
+with `ctype = SC_ANYTYPE`, so any capability with `READ|WRITE|GRANT` passed (**[I-1a]**). The
 AEAD stays entirely in the kernel; the server addresses storage as `(inode, logical block)`
 and never sees key material.
 
@@ -256,8 +264,8 @@ and never sees key material.
 | 60 | `SYS_FS_STAT` | `ino`, `struct fs_stat *` |
 | 61 | `SYS_FS_SET_SIZE` | `ino`, `size` |
 | 74 | `SYS_FS_SET_META` | `ino`, `mode`, `uid`, `gid` |
-| 77 | `SYS_BOOT_MODULE_INFO` | `index`, `struct boot_module_info *` → count |
-| 78 | `SYS_BOOT_MODULE_READ` | `index`, `offset`, `buf`, `len` |
+| 77 | `SYS_BOOT_MODULE_INFO` | `index`, `struct boot_module_info *` → count *(needs `CAP_BOOT_MODULE`)* |
+| 78 | `SYS_BOOT_MODULE_READ` | `index`, `offset`, `buf`, `len` *(needs `CAP_BOOT_MODULE`)* |
 
 `SYS_BOOT_MODULE_READ` **refuses any module that failed its manifest hash check**. Since
 provisioning into `/bin` goes through this path, an unverified module can never become a

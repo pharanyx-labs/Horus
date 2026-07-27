@@ -211,6 +211,38 @@ void _start(void) {
     check(sys_wait_notify_nb(SLOT_REPLY_EP) == SYS_ERR_PERM,
           "endpoint-cap-authorised-wait-notify");
 
+    /* ---- 4b. root is NOT authority (audit finding I-1) ---------------- *
+     *
+     * captest runs as uid 0 in the self-test harness but is deliberately NOT
+     * given the object-store, kernel-log or boot-module capabilities. Every call
+     * below used to succeed for any uid-0 task through an ambient
+     * `tasks[cur].uid != 0` gate that ran parallel to the capability system —
+     * which meant the capability graph was not a complete description of
+     * authority. They are now gated on held capabilities, by TYPE, and must be
+     * refused however privileged the caller's identity is.
+     *
+     * Asserted as exactly SYS_ERR_PERM (see the note above): a `< 0` check would
+     * also match a legitimate "no such object" and prove nothing. */
+    check(sys_getuid() == 0, "captest-not-uid0-so-I-1-checks-are-vacuous");
+
+    unsigned char logbuf[64];
+    check(sys_dmesg(logbuf, 0, sizeof(logbuf)) == SYS_ERR_PERM,
+          "dmesg-allowed-by-uid0-without-CAP_KERNEL_LOG");
+    check(sys_boot_module_info(0, 0) == SYS_ERR_PERM,
+          "boot-module-info-allowed-by-uid0-without-CAP_BOOT_MODULE");
+    check(sys_boot_module_read(0, 0, logbuf, sizeof(logbuf)) == SYS_ERR_PERM,
+          "boot-module-read-allowed-by-uid0-without-CAP_BOOT_MODULE");
+
+    /* The object-store API. These were additionally type-confused: the dispatch
+     * table passed the CAP_BLOCK_DEV *type constant* in the RIGHTS field with
+     * ctype = SC_ANYTYPE, so the gate really demanded rights 0b1011 on a
+     * capability of any type. Now required by type. */
+    struct fs_stat st;
+    check(sys_fs_stat(0, &st) == SYS_ERR_PERM,
+          "fs-stat-allowed-without-CAP_ENCRYPTED_STORAGE");
+    check(sys_fs_inode_alloc(1) == SYS_ERR_PERM,
+          "inode-alloc-allowed-without-CAP_ENCRYPTED_STORAGE");
+
     /* ---- 5. signals: own-task operations ----------------------------- */
 
     /* Masking is a task's own business and always permitted. */

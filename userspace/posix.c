@@ -93,9 +93,27 @@ static void fd_free(int fd) {
 
 static void fs_connect(void) {
     if (g_fs_connected) return;
-    /* Mint a badge cap so the kernel knows we're authorised.  Failure is
-     * tolerated — the first RPC will fail with a non-magic reply instead. */
-    sys_connect_fs_server(FSS_CAP_SLOT, CAP_R_W);
+    /* Acquire a (WRITE-only) capability to the fs service.
+     *
+     * Retry until it succeeds. Since IPC became capability-addressed (finding
+     * C-1) this is the ONLY way a client reaches the server: there is no ambient
+     * endpoint capability to fall back on, so a failed connect is not a
+     * degraded-but-working state, it is no filesystem at all. And the call can
+     * legitimately fail for a moment — SYS_CONNECT_FS_SERVER needs the server to
+     * have registered, and a client spawned early (or scheduled first on another
+     * core under SMP) can run before that. Both parties therefore wait for each
+     * other rather than racing: the server retries its registration, the client
+     * retries its connect. Bounded, with a yield so the server actually gets the
+     * CPU on a single core. */
+    for (int attempt = 0; attempt < 2000; attempt++) {
+        if (sys_connect_fs_server(FSS_CAP_SLOT, CAP_R_W) == 0) {
+            g_fs_connected = 1;
+            return;
+        }
+        sys_yield();
+    }
+    /* Give up after a bounded wait: the first RPC then fails with a non-magic
+     * reply, which callers already handle, rather than spinning forever. */
     g_fs_connected = 1;
 }
 

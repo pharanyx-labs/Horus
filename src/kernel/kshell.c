@@ -407,6 +407,10 @@ void spawn_initial_userspace_init(void) {
         cap_install_from_root(pid, 13, 11, CON_EP_REQ);       /* root[11] = CAP_ENDPOINT CON_EP_REQ (listen) */
         cap_install_from_root(pid, 14, 12, CON_EP_REQ);       /* root[12] = CAP_ENDPOINT CON_EP_REQ (client) */
         cap_install_from_root(pid, 15, 14, NOTIF_FS_READY);   /* root[14] = CAP_NOTIFICATION fs-ready        */
+        /* Formerly-ambient root authority (finding I-1): init delegates the
+         * kernel log to the shell and the boot-module surface to fs_server. */
+        cap_install_from_root(pid, CAPSLOT_KERNEL_LOG,  15, 0);  /* root[15] = CAP_KERNEL_LOG  */
+        cap_install_from_root(pid, CAPSLOT_BOOT_MODULE, 16, 0);  /* root[16] = CAP_BOOT_MODULE */
         /* CAP_IO_DEVICE (root[10]): init delegates this to the console_server it
          * launches (userspace/init.c), so that server can own the console hardware
          * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy. */

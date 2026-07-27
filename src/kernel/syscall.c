@@ -461,11 +461,10 @@ static void h_task_info(struct interrupt_frame64 *r) {
         c = cap_lookup(7, CAP_RIGHT_READ);
         if (c && c->type == CAP_AUDIT) is_privileged = 1;
     }
-    /* root (uid 0) is the system administrator and may inspect every task, the
-     * same uid==0 authority the block/object-store syscalls enforce. This is what
-     * lets the root shell's `ps` list the servers init launched, even though the
-     * shell was not delegated a CAP_USER/CAP_AUDIT of its own. */
-    if (!is_privileged && tasks[get_current_task()].uid == 0) is_privileged = 1;
+    /* No root promotion (finding I-1). Cross-task introspection requires a
+     * CAP_USER or CAP_AUDIT capability, checked above — being uid 0 is not
+     * authority. The shell's `ps` works because init delegates it a CAP_AUDIT,
+     * which is revocable; uid 0 was not. */
 
     if (!is_privileged && tid != get_current_task()) {
         r->rax = -3;
@@ -486,7 +485,10 @@ static void h_task_info(struct interrupt_frame64 *r) {
     for (int k = 0; k < 31 && tasks[tid].name[k]; k++)
         info.name[k] = tasks[tid].name[k];
     info.name[31] = 0;
-    info.eip = tasks[tid].eip;
+    /* Do not disclose ANOTHER task's instruction pointer (finding I-4): it is a
+     * live code address and defeats that task's ASLR. `cr3` is suppressed just
+     * above for the same reason. A task may still see its own. */
+    info.eip = (tid == get_current_task()) ? tasks[tid].eip : 0;
     info.blocked_on = tasks[tid].blocked_on;
     info.blocked_on_notif = tasks[tid].blocked_on_notif;
     info.in_kernel = tasks[tid].in_kernel;
@@ -762,7 +764,6 @@ static void h_sigaltstack(struct interrupt_frame64 *r) {
  * modules are bootloader-supplied images at the same trust tier as the block
  * store, so read-only exposure to that owner is not an escalation. */
 static void h_boot_module_info(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint32_t index = (uint32_t)r->rbx;
     void    *uout  = (void *)(addr_t)r->rcx;
     uint32_t count = boot_module_count();
@@ -794,7 +795,6 @@ static void h_boot_module_info(struct interrupt_frame64 *r) {
  * SYS_BOOT_MODULE_INFO. offset/len are bounded to the module extent, so a crafted
  * request cannot read past it. */
 static void h_boot_module_read(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint32_t index  = (uint32_t)r->rbx;
     uint32_t offset = (uint32_t)r->rcx;
     void    *ubuf   = (void *)(addr_t)r->rdx;
@@ -828,7 +828,6 @@ static void h_boot_module_read(struct interrupt_frame64 *r) {
  * Args: rbx = user buffer, rcx = offset, rdx = max. Returns bytes copied
  * (0 at end), or SYS_ERR_PERM / SYS_ERR_FAULT. */
 static void h_dmesg(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     void *ubuf     = (void *)(addr_t)r->rbx;
     uint32_t offset = (uint32_t)r->rcx;
     uint32_t max    = (uint32_t)r->rdx;
@@ -917,7 +916,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_IPC_SENDER]               = { h_ipc_sender,              SC_NONE, 0, SC_ANYTYPE },
     /* Object-store owner/mode persistence — same gate as the rest of the store
      * (CAP_BLOCK_DEV slot 7 + uid 0 in the handler): filesystem server only. */
-    [SYS_FS_SET_META]              = { h_fs_set_meta,             7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    /* NB: `rights` and `ctype` are DISTINCT fields. These entries used to pass
+     * CAP_BLOCK_DEV (the type constant, 11) in the RIGHTS position with
+     * ctype = SC_ANYTYPE — so the gate actually demanded rights 0b1011
+     * (READ|WRITE|GRANT) on a capability of ANY type. Type confusion in an
+     * authorisation check, the same class as finding C-1. They now require the
+     * object-store capability BY TYPE. */
+    [SYS_FS_SET_META]              = { h_fs_set_meta,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     /* Reply routed to the request's kernel-recorded sender (multi-client safe).
      * Slot-3 WRITE, same as the other send/reply paths. */
     [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            SC_NONE, 0, SC_ANYTYPE },
@@ -938,8 +943,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * numbers are left reserved (not reused) so no future syscall silently
      * inherits an old ring-3 caller. */
     [SYS_REGISTER_STORAGE_BACKEND] = { h_register_storage_backend, SC_NONE, 0, SC_ANYTYPE },
-    [SYS_BLOCK_READ]               = { h_block_read,              7, CAP_BLOCK_DEV, SC_ANYTYPE }, /* + uid 0 in handler */
-    [SYS_BLOCK_WRITE]              = { h_block_write,             7, CAP_BLOCK_DEV, SC_ANYTYPE }, /* + uid 0 in handler */
+    [SYS_BLOCK_READ]               = { h_block_read,              CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* + uid 0 in handler */
+    [SYS_BLOCK_WRITE]              = { h_block_write,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* + uid 0 in handler */
     [SYS_REGISTER_FS_SERVER]       = { h_register_fs_server,      6, CAP_RIGHT_ALL, CAP_USER }, /* + ep lookup in handler */
     [SYS_CONNECT_FS_SERVER]        = { h_connect_fs_server,       SC_NONE, 0, SC_ANYTYPE },
     [SYS_CAP_REVOKE]               = { h_cap_revoke,              SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_revoke */
@@ -952,18 +957,18 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SIGRETURN]                = { h_sigreturn_stub,          SC_NONE, 0, SC_ANYTYPE }, /* real work in interrupt_handler64 */
     /* Encrypted object-store API — same gate as the raw block syscalls
      * (CAP_BLOCK_DEV slot 7 here + uid 0 in the handler). */
-    [SYS_FS_INODE_ALLOC]           = { h_fs_inode_alloc,          7, CAP_BLOCK_DEV, SC_ANYTYPE },
-    [SYS_FS_INODE_FREE]            = { h_fs_inode_free,           7, CAP_BLOCK_DEV, SC_ANYTYPE },
-    [SYS_FS_INODE_LINK]            = { h_fs_inode_link,           7, CAP_BLOCK_DEV, SC_ANYTYPE },
-    [SYS_FBLOCK_READ]              = { h_fblock_read,             7, CAP_BLOCK_DEV, SC_ANYTYPE },
-    [SYS_FBLOCK_WRITE]             = { h_fblock_write,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
-    [SYS_FS_STAT]                  = { h_fs_stat,                 7, CAP_BLOCK_DEV, SC_ANYTYPE },
-    [SYS_FS_SET_SIZE]              = { h_fs_set_size,            7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_FS_INODE_ALLOC]           = { h_fs_inode_alloc,          CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+    [SYS_FS_INODE_FREE]            = { h_fs_inode_free,           CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+    [SYS_FS_INODE_LINK]            = { h_fs_inode_link,           CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+    [SYS_FBLOCK_READ]              = { h_fblock_read,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+    [SYS_FBLOCK_WRITE]             = { h_fblock_write,            CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+    [SYS_FS_STAT]                  = { h_fs_stat,                 CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+    [SYS_FS_SET_SIZE]              = { h_fs_set_size,            CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_BRK]                     = { h_brk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, demand-paged */
     /* Boot-module read surface — same gate as the object store (CAP_BLOCK_DEV
      * slot 7 here + uid 0 in the handler), so only the FS server reaches it. */
-    [SYS_BOOT_MODULE_INFO]        = { h_boot_module_info,        7, CAP_BLOCK_DEV, SC_ANYTYPE },
-    [SYS_BOOT_MODULE_READ]        = { h_boot_module_read,        7, CAP_BLOCK_DEV, SC_ANYTYPE },
+    [SYS_BOOT_MODULE_INFO]        = { h_boot_module_info,  CAPSLOT_BOOT_MODULE, CAP_RIGHT_READ, CAP_BOOT_MODULE },
+    [SYS_BOOT_MODULE_READ]        = { h_boot_module_read,  CAPSLOT_BOOT_MODULE, CAP_RIGHT_READ, CAP_BOOT_MODULE },
     /* Console/driver hardware delegation (syscall_hw.c): map an allowlisted
      * device frame into the caller's own address space. Gated on a CAP_IO_DEVICE
      * capability with WRITE right in slot 10 -- only the console server is ever
@@ -984,7 +989,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_PIPE_WRITE]              = { h_pipe_write,              SC_NONE, 0, SC_ANYTYPE },
     [SYS_PIPE_CLOSE]              = { h_pipe_close,              SC_NONE, 0, SC_ANYTYPE },
     [SYS_STDIO_INFO]              = { h_stdio_info,              SC_NONE, 0, SC_ANYTYPE },
-    [SYS_DMESG]                   = { h_dmesg,                   SC_NONE, 0, SC_ANYTYPE }, /* uid==0 gate in handler */
+    [SYS_DMESG]                   = { h_dmesg,  CAPSLOT_KERNEL_LOG, CAP_RIGHT_READ, CAP_KERNEL_LOG },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so

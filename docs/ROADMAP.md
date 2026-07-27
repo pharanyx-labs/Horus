@@ -79,7 +79,7 @@ right; `SYS_IRQ_REGISTER` takes a notification capability. `captest` 29 → 41 c
 suite was falsified against the pre-fix kernel to prove it detects the bug. Retires **[I-5]**
 (the shared reply endpoint) as a side effect.
 
-### 0.2 ⬜ Retire ambient `uid == 0` authority — **[I-1]**
+### 0.2 ✅ Retire ambient `uid == 0` authority — **[I-1]** — *landed 2026-07-27*
 
 Replace each `tasks[cur].uid != 0` gate with a distinct capability type — `CAP_KERNEL_LOG`
 (dmesg), `CAP_BOOT_MODULE` (module read surface), `CAP_OBJECT_STORE` (the encrypted store

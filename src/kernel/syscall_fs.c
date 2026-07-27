@@ -36,10 +36,6 @@ void h_block_read(struct interrupt_frame64 *r) {
     uint64_t block = ((uint64_t)r->rbx << 32) | r->rcx;
     void *buf = (void*)(addr_t)r->rdx;
     uint32_t len = r->rsi;
-    if (tasks[get_current_task()].uid != 0) {
-        r->rax = -2;
-        return;
-    }
     uint8_t kbuf[BLOCK_SIZE];
     uint32_t to = len > BLOCK_SIZE ? BLOCK_SIZE : len;
     int rc = storage_block_read(block, kbuf);
@@ -54,14 +50,11 @@ void h_block_read(struct interrupt_frame64 *r) {
     }
 }
 
-/* SYS_BLOCK_WRITE: raw block write. The slot-7 CAP_BLOCK_DEV capability is
- * enforced centrally by the dispatch table; the uid==0 gate stays here (its
- * distinct -2 return is part of the ABI). */
+/* SYS_BLOCK_WRITE: raw block write. Authorised solely by the object-store
+ * capability (CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, by type) enforced centrally
+ * in the dispatch table. The ambient uid==0 gate that used to sit here is gone
+ * (finding I-1): authority is the capability, not the identity. */
 void h_block_write(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) {
-        r->rax = -2;
-        return;
-    }
     uint64_t block = ((uint64_t)r->rbx << 32) | r->rcx;
     const void *buf = (const void*)(addr_t)r->rdx;
     uint32_t len = r->rsi;
@@ -139,7 +132,6 @@ void h_connect_fs_server(struct interrupt_frame64 *r) {
  * the uid==0 check below — so only a privileged storage server can call them. */
 
 void h_fs_inode_alloc(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint32_t type = r->rbx;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
@@ -170,7 +162,6 @@ void h_fs_inode_alloc(struct interrupt_frame64 *r) {
  * and frees, exactly as before. A stored count of 0 or 1 frees, so a corrupt or
  * legacy inode can never be pinned unfreeable. */
 void h_fs_inode_free(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino = r->rbx;
     if (ino == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* never free root */
     struct mounted_fs *mfs = storage_get_mounted_fs();
@@ -193,7 +184,6 @@ void h_fs_inode_free(struct interrupt_frame64 *r) {
  * gate as the rest of the object-store API. A directory is refused — hard links
  * to directories would let a client build a cycle the tree walk cannot bound. */
 void h_fs_inode_link(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino = r->rbx;
     if (ino == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* root is not hard-linked */
     struct mounted_fs *mfs = storage_get_mounted_fs();
@@ -210,7 +200,6 @@ void h_fs_inode_link(struct interrupt_frame64 *r) {
 }
 
 void h_fblock_read(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino   = r->rbx;
     uint64_t block = r->rcx;
     void    *ubuf  = (void *)(addr_t)r->rdx;
@@ -226,7 +215,6 @@ void h_fblock_read(struct interrupt_frame64 *r) {
 }
 
 void h_fblock_write(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino   = r->rbx;
     uint64_t block = r->rcx;
     const void *ubuf = (const void *)(addr_t)r->rdx;
@@ -245,7 +233,6 @@ void h_fblock_write(struct interrupt_frame64 *r) {
 }
 
 void h_fs_set_size(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino  = r->rbx;
     uint64_t size = r->rcx;
     struct mounted_fs *mfs = storage_get_mounted_fs();
@@ -266,7 +253,6 @@ void h_fs_set_size(struct interrupt_frame64 *r) {
  * are caller-settable; the file-type bits are preserved, so a chmod can never
  * turn a directory into a regular file. */
 void h_fs_set_meta(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino  = r->rbx;
     uint32_t mode = r->rcx;
     uint32_t uid  = r->rdx;
@@ -283,7 +269,6 @@ void h_fs_set_meta(struct interrupt_frame64 *r) {
 }
 
 void h_fs_stat(struct interrupt_frame64 *r) {
-    if (tasks[get_current_task()].uid != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t ino  = r->rbx;
     void    *uout = (void *)(addr_t)r->rcx;
     struct mounted_fs *mfs = storage_get_mounted_fs();

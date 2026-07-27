@@ -42,6 +42,8 @@ static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 #define INIT_CON_LISTEN     13   /* CAP_ENDPOINT CON_EP_REQ, READ|WRITE (con listen) */
 #define INIT_CON_CLIENT     14   /* CAP_ENDPOINT CON_EP_REQ, WRITE only (client)     */
 #define INIT_NOTIFY         15   /* CAP_NOTIFICATION fs-ready rendezvous             */
+#define INIT_KERNEL_LOG     CAPSLOT_KERNEL_LOG   /* CAP_KERNEL_LOG  -> the shell     */
+#define INIT_BOOT_MODULE    CAPSLOT_BOOT_MODULE  /* CAP_BOOT_MODULE -> fs_server     */
 
 /* Launch the userspace fs_server and provision it entirely by delegation: init
  * grants the server all four capabilities it needs — the coarse IPC gate (slot
@@ -61,6 +63,9 @@ static int launch_fs_server(void) {
     if (sys_cap_grant(srv, CAP_SLOT_USER,  CAPSLOT_USER)      != 0) return -3;  /* registration gate */
     if (sys_cap_grant(srv, CAP_SLOT_STORAGE, CAPSLOT_AUDIT)   != 0) return -4;  /* object store      */
     if (sys_cap_grant(srv, INIT_NOTIFY,    CAPSLOT_NOTIFY)    != 0) return -5;  /* ready rendezvous  */
+    /* Boot-module read surface. Formerly ambient uid==0 (finding I-1); now an
+     * explicit, revocable capability held only by the task that provisions /bin. */
+    if (sys_cap_grant(srv, INIT_BOOT_MODULE, CAPSLOT_BOOT_MODULE) != 0) return -6;
     return srv;
 }
 
@@ -95,6 +100,13 @@ static int launch_shell(void) {
      * console server but never receive on its endpoint. do_spawn propagates a
      * send-only copy to every utility the shell runs. */
     if (sys_cap_grant(sh, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) return -4;
+    /* The kernel log (`dmesg`). Formerly ambient uid==0 (finding I-1). Delegating
+     * it explicitly means it can be withdrawn from the shell without changing who
+     * the shell is — which an identity check could never do. */
+    if (sys_cap_grant(sh, INIT_KERNEL_LOG, CAPSLOT_KERNEL_LOG) != 0) return -5;
+    /* `ps` reads other tasks' info, which now requires a real capability rather
+     * than uid 0 (finding I-1). CAP_AUDIT is the read-only introspection right. */
+    if (sys_cap_grant(sh, CAPSLOT_AUDIT, CAPSLOT_AUDIT) != 0) return -6;
     return sh;
 }
 

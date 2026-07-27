@@ -43,6 +43,23 @@ static int find_alive(const char *name) {
 /* Ring-3 spin (preemptible) so the timer can run/reap the children. */
 static void settle(void) { for (volatile int d = 0; d < 20000; d++) { } }
 
+/* Poll delay for a loop that is WAITING ON ANOTHER TASK.
+ *
+ * Yield first, then spin. Busy-spinning here is actively counter-productive: the
+ * awaited task can only make progress if it gets the CPU, and every iteration of
+ * these loops also issues a syscall — which runs in ring 0, where a timer tick
+ * never switches tasks (see preempt_on_tick). A syscall-heavy spin therefore
+ * holds a disproportionate share of the CPU and starves exactly the task it is
+ * waiting for.
+ *
+ * That is not hypothetical. `sig-stuck` failed on a loaded CI runner while
+ * passing 5/5 locally: proctest's 12000-iteration budget only had to outlast
+ * sigtarget's 8000-unit masked window — a 1.5x margin — and syscall overhead
+ * under TCG (several uncached LAPIC MMIO reads per call, audit finding I-6) ate
+ * it. Yielding hands the CPU straight to the awaited task and removes the
+ * dependence on that margin entirely. */
+static void poll_wait(void) { sys_yield(); settle(); }
+
 /* Scratch stack for the SYS_SIGALTSTACK argument-validation checks (a user
  * vaddr in our own image, so it satisfies the in-user-space range check). */
 static char probe_stk[4096];
@@ -72,9 +89,9 @@ void _start(void) {
     for (int i = 0; i < 4000; i++) settle();   /* let it register + block in the wait */
     if (sys_send_signal(sw, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sigwait-send\n"); sys_exit(); }
     int swd = 0; struct task_info swi;
-    for (int i = 0; i < 12000; i++) {
+    for (int i = 0; i < 40000; i++) {
         if (sys_get_task_info(sw, &swi) == 0 && swi.state == 0) { swd = 1; break; }
-        settle();
+        poll_wait();
     }
     if (!swd) { report("PROC_SELFTEST: FAIL sigwait-stuck\n"); sys_exit(); }
 
@@ -222,9 +239,9 @@ void _start(void) {
     if (sys_send_signal(sp, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sig-send\n"); sys_exit(); }
     int sg = 0;
     struct task_info si;
-    for (int i = 0; i < 12000; i++) {
+    for (int i = 0; i < 40000; i++) {
         if (sys_get_task_info(sp, &si) == 0 && si.state == 0) { sg = 1; break; }
-        settle();
+        poll_wait();
     }
     if (!sg) { report("PROC_SELFTEST: FAIL sig-stuck\n"); sys_exit(); }
     /* sigtarget's handler printed the final "+signal" PASS marker on delivery. */

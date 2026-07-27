@@ -1834,11 +1834,18 @@ void captest_selftest(void) {
      *  slot 21 — a second, distinct READ|WRITE endpoint capability, so "holding
      *            a capability is not authority over it" (the revoke-rights
      *            checks) is tested against a real endpoint rather than the
-     *            task's own reply endpoint. */
+     *            task's own reply endpoint.
+     *  slot 18 — a CAP_UNTYPED over the user-facing region (roadmap 0.3), so the
+     *            retype checks can exercise BOTH directions: that a held untyped
+     *            actually creates usable objects, and that it refuses every
+     *            malformed request. Without it the retype checks would only ever
+     *            prove "a task with no authority is refused", which a kernel that
+     *            refused everything would also pass. */
     extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
     cap_install_from_root(pid, 5,  12, CON_EP_REQ);       /* client: WRITE only     */
     cap_install_from_root(pid, 11, 14, NOTIF_FS_READY);   /* CAP_NOTIFICATION       */
     cap_install_from_root(pid, 21, 11, CON_EP_REQ);       /* listen: READ|WRITE     */
+    cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);  /* CAP_UNTYPED  */
 
     print("CAPTEST_SELFTEST: launching\n");
     selftest_resume_all();

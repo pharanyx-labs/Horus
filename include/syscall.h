@@ -142,6 +142,8 @@ struct audit_event {
 #define SYS_PIPE_CLOSE         86   /* (slot) -> 0; drop a pipe-end cap and unref that end */
 #define SYS_STDIO_INFO         87   /* () -> bit0 stdin-is-pipe, bit1 stdout-is-pipe (spawner-wired); read by posix_init */
 #define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
+#define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
+#define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
@@ -364,7 +366,52 @@ static inline int sys_console_owned(void) {
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG:  SYS_DMESG                 */
 #define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE: boot-module read surface  */
+#define CAPSLOT_UNTYPED    18    /* CAP_UNTYPED: kernel-object memory (init)   */
 #define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: fs service (sys_connect_fs_server) */
+
+/* ---- Untyped memory (roadmap 0.3, audit finding I-7) ----------------------
+ *
+ * Creating a kernel object is an exercise of authority, and CAP_UNTYPED is that
+ * authority. A task holding one may retype part of the region it names into
+ * endpoints and notifications; a task holding none cannot create a kernel object
+ * at all. The region is a hard bound on the kernel memory that task can ever
+ * consume, so delegating a small one is a confinement primitive.
+ *
+ * Allocation inside a region is a bump pointer that never moves backwards
+ * (seL4's discipline): destroying an object does not return its bytes. That is
+ * what makes reuse safe — bytes only become reusable once every capability into
+ * the region has been revoked, which is the same event that invalidates any
+ * stale reference to an object in it. */
+#define KOBJ_CNODE          1    /* a cspace; not retypable from ring 3 yet    */
+#define KOBJ_ENDPOINT       2    /* struct endpoint  -> CAP_ENDPOINT           */
+#define KOBJ_NOTIFICATION   3    /* struct notification -> CAP_NOTIFICATION    */
+
+/* MUST stay byte-identical to struct untyped_info in src/include/kernel.h — the
+ * kernel fills this layout and copies it out across copy_to_user. */
+struct untyped_info {
+    uint64_t size;        /* total bytes in the region   */
+    uint64_t watermark;   /* bytes consumed              */
+    uint64_t free;        /* size - watermark            */
+    uint32_t objects;     /* live objects carved from it */
+    uint32_t reserved;
+};
+
+/* Carve `count` objects of `kobj_type` out of the untyped region named by the
+ * CAP_UNTYPED in `untyped_slot` (needs WRITE), installing a capability for each
+ * into dest_slot..dest_slot+count-1 of the caller's own cspace. Returns the
+ * number created (which may be fewer than asked if the region runs out), or a
+ * negative SYS_ERR_*. */
+static inline int sys_retype(int untyped_slot, int kobj_type, int count, int dest_slot) {
+    return (int)syscall6(SYS_RETYPE, (uint32_t)untyped_slot, (uint32_t)kobj_type,
+                         (uint32_t)count, (uint32_t)dest_slot, 0, 0);
+}
+
+/* How much of the region named at `untyped_slot` (needs READ) is left. A budget
+ * a task cannot observe is one it cannot manage. */
+static inline int sys_untyped_info(int untyped_slot, struct untyped_info *out) {
+    return (int)syscall(SYS_UNTYPED_INFO, (uint32_t)untyped_slot,
+                        (uint64_t)(uintptr_t)out, 0);
+}
 
 /* Send to the endpoint named by the CAP_ENDPOINT in `ep_slot` (needs WRITE). */
 static inline int sys_ipc_send(int ep_slot, const void *msg, size_t len) {

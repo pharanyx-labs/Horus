@@ -66,6 +66,9 @@ static void check(int ok, const char *what) {
 #define SLOT_BLOCKDEV   7    /* deliberately not held */
 #define SLOT_NOTIFY     11   /* CAP_NOTIFICATION */
 #define SLOT_SECOND_EP  21   /* CAP_ENDPOINT: a second, distinct endpoint (READ|WRITE) */
+#define SLOT_UNTYPED    CAPSLOT_UNTYPED  /* CAP_UNTYPED over the user-facing region */
+#define SLOT_RETYPED_EP  40  /* destination for the first SYS_RETYPE  */
+#define SLOT_RETYPED_EP2 41  /* destination for the second           */
 #define SLOT_EMPTY_HI   200  /* never populated */
 
 /* Non-blocking probe: SYS_WAIT_NOTIFY on a slot that holds no CAP_NOTIFICATION
@@ -314,6 +317,162 @@ void _start(void) {
     check(sys_audit_digest(digest) < 0, "audit-digest-allowed-without-cap");
     static struct audit_event ev[2];
     check(sys_read_audit(ev, 2) < 0, "audit-read-allowed-without-cap");
+
+    struct untyped_info uinfo;
+
+    /* ---- 8b. creating a kernel object requires untyped authority ------
+     *
+     * Roadmap 0.3 / audit finding I-7. Before this, every kernel object was an
+     * entry in a fixed .bss array and creating one exercised no authority at
+     * all — so "which task may consume kernel memory, and how much" was a
+     * question the capability graph could not answer. CAP_UNTYPED is that
+     * authority, and SYS_RETYPE is the only way to spend it.
+     *
+     * captest is endowed with a CAP_UNTYPED over the user-facing region
+     * (captest_selftest in src/kernel/selftest.c) precisely so the positive
+     * direction is covered too: a suite that only checked refusals would be
+     * passed by a kernel whose SYS_RETYPE returned SYS_ERR_PERM unconditionally.
+     */
+
+    /* Retype through a slot holding NOTHING. There is no capability to spend,
+     * so there is no authority — this is the base case the whole model rests on
+     * and it must be PERM, not "created it anyway". */
+    check(sys_retype(SLOT_EMPTY_HI, KOBJ_ENDPOINT, 1, 40) == SYS_ERR_PERM,
+          "retype-allowed-without-untyped-cap");
+
+    /* Retype through a live capability of the WRONG TYPE. This is the exact
+     * shape of finding C-1: a check that a slot holds *something* rather than
+     * that it holds the thing that names the resource. Slot 3 holds a CAP_FRAME
+     * in every task, so a kernel that gated on possession rather than type would
+     * hand every task in the system unlimited object creation. */
+    check(sys_retype(SLOT_FRAME, KOBJ_ENDPOINT, 1, 40) == SYS_ERR_PERM,
+          "retype-allowed-through-frame-cap");
+    check(sys_retype(SLOT_REPLY_EP, KOBJ_ENDPOINT, 1, 40) == SYS_ERR_PERM,
+          "retype-allowed-through-endpoint-cap");
+
+    /* The sharpest wrong-type probe available: a CAP_NOTIFICATION whose `object`
+     * is 0, which IS a valid untyped region index — the kernel's own cspace
+     * reserve. The two capabilities above name objects far outside the untyped
+     * index space, so a kernel that dropped the type check would still refuse
+     * them on range alone; this one would sail through range and land on
+     * UNTYPED_KERNEL. It therefore witnesses two properties at once: retype
+     * checks the capability TYPE, and the kernel reserve is unreachable from
+     * ring 3 even when something resolves onto its index. */
+    check(sys_retype(SLOT_NOTIFY, KOBJ_ENDPOINT, 1, 40) == SYS_ERR_PERM,
+          "retype-allowed-through-notification-cap-onto-kernel-reserve");
+    check(sys_untyped_info(SLOT_FRAME, &uinfo) == SYS_ERR_PERM,
+          "untyped-info-allowed-through-frame-cap");
+    check(sys_untyped_info(SLOT_EMPTY_HI, &uinfo) == SYS_ERR_PERM,
+          "untyped-info-allowed-without-untyped-cap");
+
+    /* With the capability held, the region is observable. */
+    check(sys_untyped_info(SLOT_UNTYPED, &uinfo) == 0, "untyped-info-refused-with-cap");
+    check(uinfo.size > 0, "untyped-region-reported-empty");
+    check(uinfo.free <= uinfo.size, "untyped-free-exceeds-size");
+    uint64_t free_before = uinfo.free;
+
+    /* ...and malformed requests are still refused, one reason at a time. A held
+     * capability authorises the OPERATION, never the arguments. */
+    check(sys_retype(SLOT_UNTYPED, 0, 1, 40) == SYS_ERR_INVAL,
+          "retype-accepted-object-type-0");
+    check(sys_retype(SLOT_UNTYPED, 99, 1, 40) == SYS_ERR_INVAL,
+          "retype-accepted-unknown-object-type");
+    /* A CNode is allocatable by the kernel but has no capability type naming it
+     * and no syscall that installs one, so minting one would be authority with
+     * no defined meaning. Refused until there is something to refuse it for. */
+    check(sys_retype(SLOT_UNTYPED, KOBJ_CNODE, 1, 40) == SYS_ERR_INVAL,
+          "retype-accepted-cnode-from-ring3");
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 0, 40) == SYS_ERR_INVAL,
+          "retype-accepted-zero-count");
+    /* Destination must clear the kernel-reserved slots: a task must not be able
+     * to overwrite its own CAP_TCB or CAP_FRAME with a fresh endpoint. */
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 1, 0) == SYS_ERR_PERM,
+          "retype-into-reserved-slot-allowed");
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 1, SLOT_FRAME) == SYS_ERR_PERM,
+          "retype-into-frame-slot-allowed");
+    /* A run that would walk off the end of the cspace is refused OUTRIGHT rather
+     * than truncated: a partially-applied allocation leaves the caller unable to
+     * say which of its slots were written. */
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 4, 254) == SYS_ERR_RANGE,
+          "retype-past-cspace-end-allowed");
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 100000, 40) == SYS_ERR_RANGE,
+          "retype-huge-count-allowed");
+
+    /* None of those refusals may have spent any of the budget. A refusal that
+     * consumes the resource it refused is a denial-of-service primitive: a task
+     * could exhaust its own (or a delegated) region with calls that all failed. */
+    check(sys_untyped_info(SLOT_UNTYPED, &uinfo) == 0, "untyped-info-broken-after-refusals");
+    check(uinfo.free == free_before, "refused-retype-consumed-untyped-memory");
+
+    /* The positive direction: a held CAP_UNTYPED really does create an object,
+     * and the capability it installs really does name a working endpoint. */
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 1, SLOT_RETYPED_EP) == 1,
+          "retype-endpoint-refused-with-untyped-cap");
+    check(sys_untyped_info(SLOT_UNTYPED, &uinfo) == 0, "untyped-info-broken-after-retype");
+    check(uinfo.free < free_before, "retype-consumed-no-untyped-memory");
+
+    /* A fresh endpoint is empty, so recv reports "nothing there" (-2) rather
+     * than failing the capability check (-1). This is the difference between an
+     * object that exists and a capability that resolves to nothing. */
+    rc = sys_ipc_recv(SLOT_RETYPED_EP, msg, sizeof(msg));
+    check(rc == -2, "retyped-endpoint-not-usable");
+
+    /* Round-trip through it: what we send is what we receive. The object is real
+     * storage carved from untyped memory, not a handle onto a shared table. */
+    static const char probe[] = "untyped";
+    check(sys_ipc_send(SLOT_RETYPED_EP, probe, sizeof(probe)) == 0,
+          "retyped-endpoint-send-failed");
+    rc = sys_ipc_recv(SLOT_RETYPED_EP, msg, sizeof(msg));
+    check(rc == (int)sizeof(probe), "retyped-endpoint-recv-wrong-length");
+    check(msg[0] == 'u' && msg[6] == 'd', "retyped-endpoint-corrupted-message");
+
+    /* And it is a DISTINCT object: the task's own reply endpoint must not have
+     * received what was sent to the retyped one. A retype that handed back an
+     * alias of an existing endpoint would pass every check above. */
+    rc = sys_ipc_recv(SLOT_REPLY_EP, msg, sizeof(msg));
+    check(rc == -2, "retyped-endpoint-aliases-reply-endpoint");
+
+    /* Retyping again yields yet another distinct object, not the same one. */
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 1, SLOT_RETYPED_EP2) == 1,
+          "second-retype-refused");
+    check(sys_ipc_send(SLOT_RETYPED_EP, probe, sizeof(probe)) == 0,
+          "retyped-endpoint-send-failed-2");
+    rc = sys_ipc_recv(SLOT_RETYPED_EP2, msg, sizeof(msg));
+    check(rc == -2, "two-retyped-endpoints-alias-each-other");
+
+    /* ---- 8c. object lifetime is capability-governed -------------------
+     *
+     * The third property of I-7, and the one that distinguishes this from "the
+     * arrays moved": an object exists exactly as long as some capability names
+     * it. Revoking the only capability to a retyped endpoint must DESTROY it,
+     * not merely make the slot unusable — otherwise objects accumulate forever
+     * and the memory bound the untyped region is supposed to enforce leaks away
+     * one dead object at a time.
+     *
+     * `objects` in the region's info is the observable: it counts live objects
+     * carved from the region, so it is a direct reading of whether destruction
+     * actually happened rather than an inference from a call failing. */
+    check(sys_untyped_info(SLOT_UNTYPED, &uinfo) == 0, "untyped-info-broken-before-revoke");
+    uint32_t objects_before = uinfo.objects;
+    check(objects_before >= 2, "retyped-objects-not-counted");
+
+    /* A retyped object's creator holds REVOKE on it — it is the only holder, so
+     * there is nobody the revoke could surprise. (Contrast the delegated
+     * endpoints in section 7, which carry READ|WRITE only.) */
+    check(sys_cap_revoke(SLOT_RETYPED_EP2) == 0, "revoke-of-own-retyped-endpoint-refused");
+    check(sys_untyped_info(SLOT_UNTYPED, &uinfo) == 0, "untyped-info-broken-after-revoke");
+    check(uinfo.objects == objects_before - 1, "revoked-endpoint-object-not-destroyed");
+
+    /* The revoked capability is dead, so IPC through it is refused at the
+     * capability check (-1), not merely empty (-2). */
+    check(sys_ipc_recv(SLOT_RETYPED_EP2, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "revoked-retyped-endpoint-still-usable");
+
+    /* And revocation was surgical: the OTHER retyped endpoint is untouched. An
+     * implementation that swept by region rather than by object would have
+     * destroyed both, and every check so far would still have passed. */
+    rc = sys_ipc_recv(SLOT_RETYPED_EP, msg, sizeof(msg));
+    check(rc == (int)sizeof(probe), "sibling-retyped-endpoint-destroyed-by-revoke");
 
     /* ---- 9. invalid input is refused, not fatal ---------------------- */
 

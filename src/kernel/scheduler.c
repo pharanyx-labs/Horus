@@ -103,6 +103,11 @@ void scheduler_init(void) {
     storage_lock = (spinlock_t){0};
 
     current_kernel_stack_top = KERNEL_TSS_STACK;
+
+    /* Last unlocked boot mutation of the untyped tables is create_task(0) above;
+     * from here on allocation can be concurrent, so arm the lock. Deliberately
+     * not armed earlier — see the locking note at the top of untyped.c. */
+    untyped_arm_locking();
 }
 
 void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
@@ -149,15 +154,38 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
 
 create_user_pagedir(id);
 
-    static struct capability cspace_pool[MAX_TASKS][256];
-    tasks[id].cspace = cspace_pool[id];
-    tasks[id].cspace_size = 256;
+    /* The task's cspace is a KOBJ_CNODE carved from the kernel's untyped region
+     * (roadmap 0.3, finding I-7). It used to be `static struct capability
+     * cspace_pool[MAX_TASKS][256]` — 512 KiB of `.bss` charged against the
+     * `__bss_end <= USER_PHYS_BASE` linker ASSERT, present in the image whether
+     * or not a single task ever ran, and a hard ceiling of MAX_TASKS cspaces that
+     * could only be raised by spending more of the 16 MiB image budget.
+     *
+     * Allocated once per task id and kept for the life of the boot, which is
+     * exactly the lifetime cspace_pool[id] had. Freeing it at teardown would be a
+     * genuine reclaim, but `tasks[id].cspace == NULL` is the sentinel cap_lookup
+     * reads as "fall back to the kernel root cnode" — so a freed-and-nulled
+     * cspace on a slot anything still consults would be an authority ESCALATION,
+     * not a crash. Reclaiming cspaces needs that fallback removed first; it is
+     * not blocking the memory model this change is about. */
+    if (!tasks[id].cspace) {
+        void *cn = kobj_alloc(UNTYPED_KERNEL, KOBJ_CNODE, 0);
+        if (!cn) {
+            /* The kernel reserve is sized for MAX_TASKS cspaces by construction
+             * (untyped_init), so this is unreachable rather than a resource
+             * limit. Refuse to run a task with no cspace: cap_lookup would fall
+             * back to the root cnode and hand it every primordial capability. */
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+        tasks[id].cspace = (struct capability *)cn;
+    }
+    tasks[id].cspace_size = CNODE_SIZE;
 
     /* Zero the entire cspace before installing initial capabilities.
-     * cspace_pool is static (zeroed at BSS init) but task slots are reused:
-     * a dead task's CAP_USER/CAP_CONSOLE/etc. would otherwise survive into
-     * the next task spawned at the same index, granting it unearned authority. */
-    for (int s = 0; s < 256; s++) {
+     * kobj_alloc hands back zeroed memory, but task slots are reused: a dead
+     * task's CAP_USER/CAP_CONSOLE/etc. would otherwise survive into the next task
+     * spawned at the same index, granting it unearned authority. */
+    for (int s = 0; s < CNODE_SIZE; s++) {
         tasks[id].cspace[s].type       = CAP_NULL;
         tasks[id].cspace[s].rights     = 0;
         tasks[id].cspace[s].object     = 0;
@@ -848,6 +876,22 @@ void task_teardown(int id) {
 #ifdef SMP
     task_running_cpu[id]  = -1;  /* release the SMP mutual-exclusion guard */
 #endif
+
+    /* A dead task's capabilities stop counting: its cspace is no longer swept by
+     * revocation and nothing in it can be used again. So this is the other point
+     * at which a retyped kernel object can lose its last name, and the sweep has
+     * to run here too — otherwise an object created by a task that then exited
+     * would live until some unrelated task happened to revoke something.
+     *
+     * Ordering matters: state is already 0 above, so the sweep correctly treats
+     * this task's cspace as unreachable.
+     *
+     * Safe to call with interrupts masked — task_teardown is reached from the
+     * page-fault handler (idt.c), and it is the first thing on that path to take
+     * a lock at all. kobj_gc's critical section is IF-transparent (ut_lock /
+     * ut_unlock in untyped.c) precisely so this call cannot enable interrupts
+     * inside a fault handler via spin_unlock's unconditional `sti` (C-3.1). */
+    kobj_gc();
 }
 
 /* Switch away from a task that has just terminated (SYS_EXIT / SYS_KILL-self),

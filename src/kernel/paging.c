@@ -104,6 +104,13 @@ static void init_user_page_allocator(void) {
      * whole volume, which is why the volume can grow past 2 MiB without touching
      * the .bss ceiling. */
     g_vdisk_backing = (uint8_t *)PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES);
+    /* The untyped arena follows the vdisk in the base reserve. Every retypable
+     * kernel object is carved out of it (roadmap 0.3), which is what lets the
+     * cspace pool — 512 KiB of `.bss` under the 16 MiB linker ASSERT — become
+     * pool RAM instead. Same reason as the two reserves above: a kernel object
+     * table that lives in the image is a ceiling on system size that costs image
+     * budget whether used or not. */
+    g_untyped_arena = (uint8_t *)PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES + VDISK_BYTES);
     if (g_phys_pool_pages <= POOL_RESERVE_PAGES) {
         for (;;) { __asm__ volatile("cli; hlt"); }   /* pool too small for the base reserves: refuse to run */
     }

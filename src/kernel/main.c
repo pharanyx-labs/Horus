@@ -320,6 +320,12 @@ void kernel_main(uint32_t mb_info) {
 
     paging_init();
 
+    /* Untyped memory (roadmap 0.3, finding I-7). Must run after paging_init —
+     * which reserves the arena and sets g_untyped_arena — and before
+     * scheduler_init, whose create_task(0) allocates the first cspace out of it.
+     * Nothing between the two allocates a kernel object. */
+    untyped_init();
+
     /* Measured boot (roadmap 2.2): record the reproducible boot hash chain — a
      * kernel-identity token and the just-verified boot-module manifest — into the
      * TPM's PCRs, so the boot state can be attested at runtime. Placed right after

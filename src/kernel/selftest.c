@@ -4,7 +4,7 @@
  * empty object. Split out of syscall.c. */
 #include "syscall_internal.h"
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
-#include "fs_proto.h"   /* FS_EP_REQ/FS_EP_REP for the FS self-test harnesses */
+#include "fs_proto.h"   /* FS_EP_REQ for the FS self-test harnesses */
 #endif
 
 #ifdef ASPACE_SELFTEST

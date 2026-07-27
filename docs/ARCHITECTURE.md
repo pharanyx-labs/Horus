@@ -604,8 +604,11 @@ the main structural obstacle to becoming a general-purpose OS. Finding **[I-7]**
 a seL4-style `CAP_UNTYPED` retyping model.
 
 **G-4 — Endpoints are single-slot with no queue.** Callers poll on contention, fair service
-cannot be expressed, and priority inheritance is impossible. The shared global reply endpoint
-`FS_EP_REP` compounds this. Findings **[I-5]**, roadmap item **F-1.2**.
+cannot be expressed, and priority inheritance is impossible. (The shared global reply endpoint
+that used to compound this is gone — every task now has a private one — so **[I-5]** is
+closed, but the missing queue is not.) Roadmap item **F-1.2**: a bounded FIFO plus a one-shot
+reply capability, which would make reply forgery structurally impossible rather than
+right-gated.
 
 **G-5 — No kernel object lifecycle.** Endpoints and notifications are never reference-counted
 or destroyed; nothing ties an object's existence to a capability holding it alive.

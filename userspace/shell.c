@@ -138,7 +138,8 @@ static int fss_connect(void) {
     fss_ep_slot = CAPSLOT_FS_EP;
     /* sys_connect_fs_server mints a cap in slot fss_ep_slot so the kernel's
      * slot-3 check passes for SYS_IPC_CALL.  The actual send/receive uses the
-     * well-known endpoint indices directly (FS_EP_REQ / FS_EP_REP). */
+     * capability it mints into CAPSLOT_FS_EP — the only way to reach the server
+     * now that IPC is capability-addressed (finding C-1). */
     int rc = sys_connect_fs_server(fss_ep_slot, CAP_R_W);
     if (rc == 0) {
         fss_connected = 1;
@@ -153,7 +154,8 @@ static int fss_call(struct fs_request *req, struct fs_response *rep) {
     }
     req->magic = FS_PROTO_MAGIC;
     /* Blocking IPC: send on FS_EP_REQ (4), block until reply arrives on
-     * FS_EP_REP (5).  The kernel unblocks us and fills *rep atomically. */
+     * its own private reply endpoint. The kernel unblocks us and fills *rep
+     * atomically. */
     int r = sys_ipc_call(CAPSLOT_FS_EP, 0,
                          (const char *)req, sizeof(*req), (char *)rep);
     return (r < 0) ? r : 0;

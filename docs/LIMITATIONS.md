@@ -129,10 +129,8 @@ One in-flight message per endpoint, no queue. `SYS_IPC_SEND`/`RECV` return `-2` 
 userspace to poll, so contention is a busy-wait. Fair service and priority inheritance cannot
 be expressed.
 
-`FS_EP_REP = 5` is a *shared global* reply endpoint on which every client parks its
-`SYS_IPC_CALL`, so concurrent clients overwrite each other's `blocked_waiter`. Correctness
-survives today only because `SYS_IPC_REPLY_TO` routes by kernel-recorded sender identity
-instead of by that field.
+*(The shared global reply endpoint that used to compound this is gone: every task now has a
+private one, so **[I-5]** is closed. The missing queue is not.)*
 
 ### 2.25 The write-ahead journal is not durable on real hardware — **[I-10]**
 

@@ -414,8 +414,15 @@ int this_cpu(void);   /* defined below */
  * immediately, but they only start *pulling runnable tasks* once the BSP has
  * populated the runnable pool and set this — which closes the window where an
  * AP could grab a task the BSP launched (via sched_enter_user) but not yet
- * claimed. Normal SMP boot leaves it 0 (APs idle, BSP runs the shell); the SMP
- * self-test turns it on after spawning its pool of workers. */
+ * claimed.
+ *
+ * Set by smp_bringup() once every AP is parked and the runnable pool is
+ * consistent — i.e. it is 1 for the whole of a normal SMP boot, well before any
+ * ring-3 task exists. (The SMP self-test sets it on its own path for the same
+ * reason.) A previous version of this comment claimed "normal SMP boot leaves it
+ * 0", which is the opposite of what smp.c does; that sent at least one
+ * investigation of the console-smp hang down a blind alley before gdb showed the
+ * flag set. Actual preemption still waits on `preempt_enabled`. */
 volatile int smp_sched_enabled = 0;
 
 /* Raw test-and-set on the scheduler lock for use *inside* an interrupt handler,
@@ -502,14 +509,46 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     int cpu = this_cpu();
     if (!smp_sched_enabled) return frame_rsp;
     int ring3 = ((interrupted_cs & 3) == 3);
-    /* Protect the BSP's ring-0 kernel work from the timer (it preserves the
-     * single-CPU boot flow). Exception: a BSP genuinely parked in ap_idle_loop
-     * (percpu_idle) must still be reschedulable, so a task that blocked it into
-     * idle and was then woken cross-core gets picked back up here instead of the
-     * BSP stranding idle forever. Syscalls run with interrupts cleared, so a ring-0
-     * tick never lands mid-syscall; the only ring-0 ticks are on idle or in-kernel
-     * spin loops (the SMP self-test), and only the former sets percpu_idle. */
-    if (!ring3 && cpu == 0 && !percpu_idle[cpu]) return frame_rsp;
+    /* ---- Never switch a CPU away from a live ring-0 context -----------------
+     *
+     * This path can save exactly one thing: a ring-3 trap frame. It has no way to
+     * preserve an in-flight KERNEL context — the C call stack a syscall is
+     * executing on, and any lock it holds. So a CPU may only be switched away
+     * when it is either in ring 3 (frame saveable, below) or parked in an idle
+     * loop (nothing to save).
+     *
+     * This guard used to apply to `cpu == 0` only, on the stated reasoning that
+     * "syscalls run with interrupts cleared, so a ring-0 tick never lands
+     * mid-syscall". That reasoning does not hold: spin_unlock() ends with an
+     * UNCONDITIONAL `sti` once the nesting depth reaches zero (finding C-3.1), so
+     * the first lock a syscall takes and releases re-enables interrupts for the
+     * rest of that syscall. A timer tick then lands in ring 0 with a live task,
+     * and on an AP the old guard let it through.
+     *
+     * What followed was the smoke-console-smp hang. The tick would select another
+     * task and switch to it, but the save-and-release block below is gated on
+     * `ring3`, so the abandoned task was never released: task_running_cpu[cur]
+     * stayed pointing at this CPU forever. Every selection loop skips a claimed
+     * candidate, so that task — still RUNNABLE, still holding a valid frame —
+     * became unschedulable by every CPU in the system, including this one. The
+     * observed end state was a livelock: timer ticking, tasks spin-yielding, one
+     * task stranded, and in the worst capture a single CPU holding claims on
+     * three different tasks it was not running.
+     *
+     * Note the leaked claim was the SYMPTOM. Underneath it, a syscall had been
+     * abandoned mid-flight with its kernel stack discarded — and because
+     * `tasks[cur].saved_ksp` still held the stale ring-3 frame from its last
+     * save, "fixing" the leak by clearing the claim would have resumed the task
+     * from that stale frame, silently dropping the syscall's work and any lock it
+     * still held. The leak was masking a memory-safety bug rather than causing
+     * one. That is why this is fixed here, at the abandonment, and not by
+     * scrubbing the claim afterwards.
+     *
+     * Applying the guard to every CPU is also what the BSP already relied on, so
+     * this removes a special case rather than adding one. `percpu_idle` is set by
+     * enter_cpu_idle() and by an AP parking at bringup (smp.c), and cleared by
+     * set_current_task() the moment a CPU takes a real task. */
+    if (!ring3 && !percpu_idle[cpu]) return frame_rsp;
 
     sched_raw_lock();
     int cur = percpu_current_task[cpu];
@@ -758,6 +797,29 @@ void yield(void) {
 /* Idle the current CPU. The only way between tasks is the full-context path
  * (timer preemption, ipc_block_switch, sched_yield_switch, sched_enter_user). */
 void __attribute__((noreturn)) kernel_idle(void) {
+#ifdef SMP
+    /* Declare this CPU parked before looping. It is reached when a task exits or
+     * faults and nothing else is runnable (task_exit_switch returned 0, so the
+     * fault path resumed here on task 0's stack), which leaves
+     * percpu_current_task[] still naming the DEAD task and percpu_idle clear —
+     * i.e. the CPU describing itself as busy with a task that no longer exists.
+     *
+     * That matters because preempt_on_tick only lets a ring-0 tick switch an
+     * IDLE CPU away. Without this, a CPU that reaped the last runnable task would
+     * sit in this loop declining every tick, and would never pick up work again
+     * even once another CPU made a task runnable. This loop holds no state — it
+     * is `sti; hlt` — so it is exactly the context a tick may abandon.
+     *
+     * NB the DEBUG_SHELL build's resume_shell_after_fault runs the interactive
+     * in-kernel shell instead of calling this, and so stays correctly marked
+     * busy: real kernel work must not be abandoned. */
+    int cpu = this_cpu();
+    if (cpu >= 0 && cpu < MAX_CPUS) {
+        percpu_current_task[cpu] = 0;
+        percpu_idle[cpu]         = 1;
+    }
+    if (cpu == 0) current_task = 0;
+#endif
     for (;;) __asm__ volatile ("sti; hlt");
 }
 

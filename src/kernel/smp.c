@@ -13,6 +13,12 @@ int this_cpu(void);
 #ifdef SMP
 extern int task_running_cpu[MAX_TASKS];
 extern volatile int smp_sched_enabled;   /* scheduler.c: master switch for the SMP branch */
+/* scheduler.c: "this CPU is parked in an idle loop and holds no task context".
+ * preempt_on_tick consults it to decide whether a ring-0 tick may switch this CPU
+ * away: an idle context has nothing worth preserving, any other ring-0 context
+ * does. An AP that parks without setting this would take ring-0 ticks that the
+ * scheduler declines to act on, and would therefore never pull work at all. */
+extern int percpu_idle[MAX_CPUS];
 #endif
 
 /* ===== SMP: application-processor bringup ================================== *
@@ -198,9 +204,23 @@ void ap_entry64(void) {
      * timer that would drive scheduling is left off. This is "disable SMT" done in
      * software, without needing to suppress the AP in firmware. */
     if (apic_is_smt_sibling((uint32_t)cpu)) {
+        /* Parked and holding no task, like any other idle CPU. This one never
+         * starts its timer so preempt_on_tick never runs here, but the flag is
+         * the honest description of the state and keeps the claim invariant
+         * (scheduler.c) uniform across every parked CPU. */
+        percpu_idle[cpu] = 1;
         __sync_fetch_and_add(&smp_siblings_parked, 1);
         for (;;) __asm__ volatile ("sti; hlt");
     }
+
+    /* Mark this CPU idle BEFORE starting its timer. preempt_on_tick only lets a
+     * ring-0 tick switch a CPU away when the CPU is idle-parked; an AP that
+     * reached its idle loop without this flag would decline every tick and sit
+     * there forever with runnable work available. Setting it before the timer
+     * starts closes the window where the first tick could arrive and find the
+     * CPU describing itself as busy. set_current_task() clears it the moment
+     * this CPU picks up a real task. */
+    percpu_idle[cpu] = 1;
 
     lapic_timer_start_periodic();
 

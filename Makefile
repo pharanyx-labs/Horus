@@ -1599,6 +1599,25 @@ smoke-console-smp:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='HHoorruuss' \
 		tools/smoke_test.sh boot.iso
 
+# Same boot, N times, on ONE build, with QEMU pinned to a small host CPU set.
+#
+# smoke-console-smp guards the ring-3 startup handshake, and the failure modes it
+# is meant to catch are races: they show up in a fraction of boots and not at all
+# on an idle many-core host, where each guest vCPU gets a core of its own and the
+# window never opens. A single green run of the target above is therefore weak
+# evidence about a scheduling change -- which is exactly the evidence roadmap 1.1
+# will be leaning on when it instruments this handshake.
+#
+# STRESS_RUNS boots, STRESS_CPUSET host CPUs (default 2, matching a CI runner),
+# STRESS_MAX_FAIL permitted failures (default 0). See tools/stress_boot.sh.
+.PHONY: smoke-console-smp-stress
+smoke-console-smp-stress:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory boot.iso
+	@SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) FAIL_MARKER='HHoorruuss' \
+		tools/stress_boot.sh boot.iso
+
 .PHONY: test
 test:
 	@cargo test --manifest-path rust/Cargo.toml --release || true

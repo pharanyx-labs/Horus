@@ -124,6 +124,34 @@ A single run of any of those three would have supported the wrong conclusion. **
 `smoke-console-smp` result as evidence only in aggregate**, and fix or characterise it before
 1.1 begins.
 
+*Diagnosis and fix in progress; see `make smoke-console-smp-stress` below.*
+
+### Measuring an intermittent failure: `make smoke-console-smp-stress`
+
+```sh
+make smoke-console-smp-stress                        # 20 boots, must be 20/20
+STRESS_RUNS=40 make smoke-console-smp-stress         # tighter bound
+STRESS_MAX_FAIL=2 make smoke-console-smp-stress      # characterise, don't gate
+```
+
+Builds once, then boots that ISO N times with QEMU pinned to a small host CPU set, and
+reports a **rate**. Two design points, both learned the hard way:
+
+**It builds once.** Every `make smoke-*` target starts with `clean` and a full rebuild, so
+looping one spends nearly all its wall time in the compiler rather than in the kernel under
+test.
+
+**It pins the CPUs, and this is not a detail.** Under TCG each guest vCPU is a host thread.
+On an idle workstation a 4-vCPU guest gets a core each, the scheduling windows never open, and
+the failing build above scores **10/10 green**. Pinned to 2 host cores — what a CI runner
+actually has — the same build hangs repeatedly. An unpinned stress run reporting 20/20 on a
+kernel that fails a third of the time in CI is worse than no measurement, because it converts
+absence of evidence into a claim. `STRESS_CPUSET=` disables pinning and the script says so
+loudly when it does.
+
+The corollary for reviewers: **a scheduling or IPC change is not evidenced by one green CI
+run.** Ask for a rate.
+
 ## Memory protection and isolation
 
 | Target | Proves |

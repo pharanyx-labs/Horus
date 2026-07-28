@@ -96,35 +96,41 @@ and lands on the two gates that actually matter. Defence in depth is why the fir
 survived; it is also why a falsification that "passes" must be read as a broken test, not as
 a strong kernel.
 
-### Known flaky: `smoke-console-smp`
+### `smoke-console-smp`: was flaky, was a real kernel bug, now fixed
 
-**`smoke-console-smp` fails roughly a third of the time on `main`** — measured at 2 failures
-in 6 consecutive runs (2026-07-27, TCG, no KVM). The failure is always the same: boot reaches
-`[console_server] ready` and the shell banner never arrives within the 40 s timeout. The
-`HHoorruuss` doubled-banner `FAIL_MARKER` does *not* trip, so this is not the single-writer
-regression the test was written to catch.
+**Resolved 2026-07-28.** For a long time this test failed roughly a third of the time and was
+treated as flaky. It was not flaky. It was correctly reporting an intermittent **kernel
+deadlock**, and every "just retry it" was a real defect going unlogged.
 
-This is recorded rather than quietly retried because of what it costs. The test's purpose is
-to guard the ring-3 startup handshake, which is precisely the thing roadmap 1.1 has to
-instrument and change — and a test that fails a third of the time for unrelated reasons cannot
-distinguish a real handshake regression from noise. It is the same defect class as **[I-11]**
-in `smoke-fs-wal`: *a genuine regression and a harness artefact produce identical output.*
+The symptom: boot reaches `[console_server] ready`, the shell banner never arrives, and the
+`HHoorruuss` doubled-banner `FAIL_MARKER` does *not* trip — so it was visibly not the
+single-writer regression the test was written to catch, and nobody looked further.
 
-It was found while landing roadmap 0.3, and it made that work substantially harder. A real
-C-3.1 regression in the untyped locking was masked by it, and separating the two took eighteen
-QEMU boots across three builds:
+What it actually was: `preempt_on_tick` claimed an incoming task unconditionally but released
+the outgoing one only on a ring-3 tick, so a ring-0 tick leaked a claim in
+`task_running_cpu[]`. Every selection loop skips a claimed task, so the victim stayed
+`RUNNABLE`, kept a valid resumable context, and became unschedulable **by every CPU including
+the one holding the claim**. Fixed by never switching a CPU away from a live ring-0 context.
 
 | Build | Runs | Failures |
 |---|---|---|
-| `main` | 6 | 2 |
-| 0.3 branch, before the IF-transparency fix | 3 | 2 |
-| 0.3 branch, after the fix | 6 | 1 |
+| before the fix | 12 | **6** |
+| after the fix | 24 | **0** |
+| after the fix (independent re-run) | 24 | **0** |
+| after the fix (clean build, 30 boots) | 30 | **0** |
 
-A single run of any of those three would have supported the wrong conclusion. **Treat a
-`smoke-console-smp` result as evidence only in aggregate**, and fix or characterise it before
-1.1 begins.
+The reason it read as flaky rather than as a bug is worth keeping: under TCG each guest vCPU
+is a host thread, so on an idle many-core workstation the race window never opens and the
+failing kernel scores 10/10 green. It only fails where vCPUs outnumber host cores — which is
+what CI runners are. **The environment that made it look like noise was the developer
+workstation.**
 
-*Diagnosis and fix in progress; see `make smoke-console-smp-stress` below.*
+Two lessons this cost:
+
+- **"Flaky" is a hypothesis, not a diagnosis.** This one hid a deadlock for months of CI runs.
+  Before labelling a test flaky, get a *rate*, then explain the failure.
+- **A single green run proves nothing about a scheduling change.** Ask for a rate; see the
+  stress harness below.
 
 ### Measuring an intermittent failure: `make smoke-console-smp-stress`
 

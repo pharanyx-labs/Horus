@@ -152,6 +152,56 @@ loudly when it does.
 The corollary for reviewers: **a scheduling or IPC change is not evidenced by one green CI
 run.** Ask for a rate.
 
+### `make smoke-sched-invariants` — and an open finding
+
+`SCHED_INVARIANTS=1` machine-checks the scheduler's claim invariant
+
+```
+task_running_cpu[t] == c  <=>  percpu_current_task[c] == t     (t > 0)
+```
+
+at every timer tick, panicking with the offending task, CPU and observer instead of
+livelocking silently thousands of ticks later. Off in the ship kernel; **not wired into CI,
+because on today's `main` it fails.**
+
+**Open finding (not root-caused).** In roughly one boot in five it reports:
+
+```
+stale scheduler claim at preempt_on_tick: task 1 claimed by cpu N
+but that cpu was running 4 (persisted across two audits)
+```
+
+`init`, blocked in `sys_wait()` on the shell, remains claimed by a CPU that has moved on to
+the shell. Provenance instrumentation puts the claim at `preempt_on_tick`'s selection. It is
+**real** — it survives two audits ~10 ms apart — and **latent rather than fatal**: a blocked
+task is not selectable, so nothing livelocks until something wakes it, at which point `init`
+would never be rescheduled and would never reap its child. It is *not* the console-smp hang,
+which is fixed and holds 24/24 on the stress harness. Root-causing it is follow-up work and
+should happen before roadmap 1.1 touches this path.
+
+**Three things this checker cost to get right, all worth knowing before extending it:**
+
+1. **It must not panic on first sight.** Not every writer of `task_running_cpu[]` holds the
+   scheduler lock, so an auditor on another core legitimately catches mid-flight updates. The
+   check requires a violation to survive two audits. A first-sight version reported failures
+   on a correct kernel.
+2. **It must not print through `print()`.** Once a ring-3 console server owns the console the
+   kernel's `print()` is suppressed, and during handover both writers touch COM1 from
+   different cores — the panic arrived as `PA[NIC: console_server] ready`, i.e. the one
+   message that had to survive was the one that did not, and the halt then looked like an
+   ordinary timeout. It writes bytes to the UART directly.
+3. **Dead tasks are exempt.** `task_teardown` releases the claim but the CPU keeps naming the
+   task until `task_exit_switch` runs, and in between it does a full capability-graph sweep —
+   long enough to span several audits. Exempting them costs nothing, since selection requires
+   `state == 1`.
+
+**And one thing the checker's own development established, by measurement:** "defensively"
+clearing a stale claim makes things *worse*, not better. Two such repairs — sweeping claims
+in `enter_cpu_idle`, and marking a CPU idle early in `task_exit_switch` — took the stress
+harness from **24/24 to 13/20**, because a stale claim marks a task whose kernel context was
+abandoned, and freeing it resumes that task from a stale frame. Both are now recorded as
+explicit "do not do this" comments at the sites that invited them.
+
 ## Memory protection and isolation
 
 | Target | Proves |

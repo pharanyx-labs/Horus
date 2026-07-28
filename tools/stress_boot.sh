@@ -64,6 +64,21 @@ if [ -n "$CPUSET" ]; then
 fi
 CMD+=("$HERE/smoke_test.sh" "$ISO")
 
+# A second QEMU on the same pinned cores starves this one into the timeout, and
+# the run then reports failures that belong to the measurement, not the kernel.
+# That is not hypothetical -- it invalidated a 20-boot run during the work that
+# produced this script. Refuse to produce a number that cannot be trusted.
+if command -v pgrep >/dev/null 2>&1; then
+    others="$(pgrep -c -f qemu-system-x86_64 2>/dev/null || echo 0)"
+    if [ "${others:-0}" -gt 0 ]; then
+        echo "STRESS FAIL: $others other qemu-system-x86_64 process(es) already running." >&2
+        echo "STRESS FAIL: they compete for the same pinned cores and would make this" >&2
+        echo "STRESS FAIL: measurement meaningless. Stop them, or set STRESS_ALLOW_BUSY=1" >&2
+        echo "STRESS FAIL: if you know they are pinned elsewhere." >&2
+        [ -z "${STRESS_ALLOW_BUSY:-}" ] && exit 1
+    fi
+fi
+
 echo "stress: $RUNS boots of '$ISO' (${SMP_CPUS} vCPUs, host cpus '${CPUSET:-all}', ${SMOKE_TIMEOUT}s each)"
 
 pass=0

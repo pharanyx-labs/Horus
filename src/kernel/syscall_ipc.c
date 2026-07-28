@@ -5,6 +5,32 @@
 
 #define IPC_SPIN_LIMIT 200000
 
+/* Bracket the two places that transiently make a BLOCKED peer the current task so
+ * copy_to_user resolves through that peer's CR3. Inside the bracket
+ * percpu_current_task[] deliberately misdescribes what this CPU is running, so
+ * the scheduler's claim auditor (SCHED_INVARIANTS) must skip this CPU. Interrupts
+ * are already masked by the callers, so this CPU cannot be interrupted mid-window;
+ * the flag exists purely for auditors on OTHER cores.
+ *
+ * Compiled to nothing without SMP, where there is no other core to observe it. */
+#ifdef SMP
+extern volatile int percpu_in_user_copy[MAX_CPUS];
+int this_cpu(void);   /* scheduler.c */
+static inline void ipc_user_copy_enter(void) {
+    int c = this_cpu();
+    if (c >= 0 && c < MAX_CPUS) percpu_in_user_copy[c] = 1;
+    __sync_synchronize();
+}
+static inline void ipc_user_copy_exit(void) {
+    __sync_synchronize();
+    int c = this_cpu();
+    if (c >= 0 && c < MAX_CPUS) percpu_in_user_copy[c] = 0;
+}
+#else
+static inline void ipc_user_copy_enter(void) { }
+static inline void ipc_user_copy_exit(void) { }
+#endif
+
 /* Serialise endpoint + notification operations across CPUs. A raw test-and-set
  * (endpoint_lock) is used because these run inside the int-0x80 handler with IF
  * already clear. In the single-CPU default build these compile to nothing, so
@@ -263,14 +289,18 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
              * through the sender's page tables and written into the sender's
              * address space, so a SYS_IPC_CALL caller (the shell) only ever saw a
              * zeroed reply. Interrupts are masked so a timer tick cannot observe
-             * the transient current-task. */
+             * the transient current-task ON THIS CPU -- but an auditor on ANOTHER
+             * core can, which is what percpu_in_user_copy tells it to skip
+             * (scheduler.c). */
             uint64_t fl;
             __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
             int sender = get_current_task();
+            ipc_user_copy_enter();
             set_current_task(waiter);
             copy_to_user((void *)(addr_t)tasks[waiter].ipc_reply_buf, kbuf,
                          (size_t)copy_len);
             set_current_task(sender);
+            ipc_user_copy_exit();
             __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
         }
 
@@ -577,13 +607,16 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
         /* Deliver into the waiter's reply buffer, which resolves through the
          * waiter's CR3 — so make it the current task across the copy (see the
          * identical dance in sys_ipc_send). Interrupts masked so a tick can't
-         * observe the transient current-task. */
+         * observe the transient current-task on this CPU; percpu_in_user_copy
+         * tells an auditor on another core to skip us. */
         uint64_t fl;
         __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
         int sender = get_current_task();
+        ipc_user_copy_enter();
         set_current_task(t);
         copy_to_user((void *)(addr_t)tasks[t].ipc_reply_buf, kbuf, (size_t)copy_len);
         set_current_task(sender);
+        ipc_user_copy_exit();
         __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
     }
 

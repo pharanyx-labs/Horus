@@ -381,6 +381,35 @@ SMP is **on by default**. `SMP=0` compiles it out.
 - Each CPU takes its own LAPIC timer tick and pulls from a **shared runnable pool**.
 - `task_running_cpu[]` is the mutual-exclusion guard: a CPU only claims a task whose entry is
   `-1`, so a task's single kernel stack and saved trap frame are never touched by two CPUs.
+
+### The claim invariant
+
+```
+task_running_cpu[t] == c   <=>   percpu_current_task[c] == t     (t > 0)
+```
+
+Both directions carry weight, and they fail differently:
+
+- **A claim held by a CPU not running the task** makes that task unschedulable by *every* CPU,
+  including the holder — every selection loop skips a claimed candidate. The task stays
+  `RUNNABLE` with a valid context and simply never runs again: a silent livelock, not a crash.
+- **A task run without a claim** can be selected by a second CPU, so two cores execute one
+  task's kernel stack and trap frame concurrently.
+
+The asymmetry to watch for is a path that **claims unconditionally but releases
+conditionally**; that is exactly the shape of the deadlock fixed on 2026-07-28, where a ring-0
+timer tick leaked a claim because the release was gated on `ring3`.
+
+**A CPU is only ever switched away from a ring-3 context or an idle loop.** The tick path can
+save a ring-3 trap frame and nothing else — it cannot preserve an in-flight kernel context or
+a lock that context holds — so a ring-0 tick on a CPU with a live task returns without
+switching (`percpu_idle` distinguishes a genuinely parked CPU, which has nothing to save).
+
+Consequently **a stale claim must never simply be cleared.** A claim is stale precisely when
+its task was abandoned mid-kernel, so freeing it lets the task resume from a stale trap frame,
+discarding kernel work that may include a held lock. Treat a stale claim as a symptom to
+diagnose, never a value to correct; `SCHED_INVARIANTS=1` machine-checks the invariant and
+panics with the offending task, CPU and observer.
 - TLB shootdown is an acknowledged IPI.
 - **SMT siblings are parked in software** — a disable-SMT-in-software measure that closes
   same-core co-residency, the strongest available mitigation against cross-thread
@@ -674,3 +703,12 @@ by any single capability — and will stop being so as they migrate to retyped o
 
 **G-6 — `this_cpu()` reads LAPIC MMIO on every call**, and `get_current_task()` calls it
 several times per syscall. The fix is `%gs`-based per-CPU data. Finding **[I-6]**.
+
+**G-7 — a blocked task can be left holding a scheduler claim.** Found 2026-07-28 by the new
+`SCHED_INVARIANTS=1` checker and **not yet root-caused**: in roughly one boot in five, `init`
+— blocked in `sys_wait()` on the shell — remains claimed by a CPU that has moved on, with the
+claim originating in `preempt_on_tick`'s selection. Latent rather than fatal, because a
+blocked task is not selectable, so nothing livelocks until something wakes it; at that point
+`init` would never be rescheduled and would never reap its child. Distinct from the
+ring-0-preemption deadlock fixed the same day, which is closed and holds 30/30 under
+`make smoke-console-smp-stress`. Root-cause before roadmap 1.1 changes this path.

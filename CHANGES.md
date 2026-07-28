@@ -8,6 +8,89 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — an intermittent SMP scheduling deadlock that had been dismissed as a flaky test
+
+`smoke-console-smp` failed roughly a third of the time and had been treated as
+flaky. It was not flaky. It was correctly reporting an intermittent **kernel
+deadlock**, and every retry was a real defect going unlogged.
+
+**The bug.** `preempt_on_tick` claimed the incoming task unconditionally but
+released the outgoing one only on a ring-3 tick:
+
+```c
+if (cur > 0 && cur < MAX_TASKS && ring3) {   /* release: gated on ring3   */
+    task_running_cpu[cur] = -1;
+}
+task_running_cpu[next] = cpu;                /* claim:   unconditional    */
+```
+
+A ring-0 tick therefore switched the CPU to `next` while leaving `cur` claimed
+forever. Every selection loop skips a claimed candidate, so the victim stayed
+`RUNNABLE`, kept a valid resumable context, and became unschedulable **by every
+CPU in the system, including the one holding the claim**. The result was a
+livelock: timer ticking, surviving tasks spin-yielding, one task stranded.
+
+The guard that should have prevented it was scoped to the BSP, on the reasoning
+that "syscalls run with interrupts cleared, so a ring-0 tick never lands
+mid-syscall". That reasoning does not hold: `spin_unlock` ends with an
+unconditional `sti` (**[C-3.1]**), so the first lock a syscall takes and releases
+re-enables interrupts for the rest of that syscall.
+
+**The fix.** Never switch a CPU away from a live ring-0 context — the tick path
+can save a ring-3 trap frame and nothing else, so a CPU may only be switched away
+when it is in ring 3 or parked in an idle loop. This applies the BSP's existing
+guard to every CPU, *removing* a special case rather than adding one. APs now
+mark themselves idle when they park, without which they would have declined every
+tick and SMP would have silently degraded to one CPU.
+
+| Build | Runs | Failures |
+|---|---|---|
+| before | 12 | **6** |
+| after | 24 + 24 + 30 | **0** |
+
+**Why it looked like flakiness.** Under TCG each guest vCPU is a host thread. On
+an idle many-core workstation a 4-vCPU guest gets a core each, the window never
+opens, and the *broken* kernel scores 10/10 green. It fails only where vCPUs
+outnumber host cores — which is what CI runners are. The environment that made it
+look like noise was the developer workstation.
+
+**Why the leaked claim mattered more than the hang.** Underneath it, a syscall had
+been abandoned mid-flight with its kernel stack discarded while `saved_ksp` still
+held a stale ring-3 frame. So "repairing" the stale claim would have been strictly
+worse: the task becomes schedulable again and resumes from that frame, discarding
+the syscall's work — including, if it was abandoned inside a critical section, a
+lock it will never release. `cap_lock` is taken by every capability mutation, so a
+task abandoned holding it deadlocks every capability operation in the system,
+reachable from ring 3 with no capability required. Two such "defensive" repairs
+were written during this work and measured: they took the stress harness from
+**24/24 to 13/20**. Both sites now carry a "do not do this" comment with the
+numbers.
+
+As a security property this was an availability failure reachable with **no
+capability at all** — ordinary scheduling could render another task permanently
+unschedulable, entirely outside the capability model that is meant to describe all
+authority. Same shape as **[I-3]**.
+
+**Also in this series.**
+
+- `make smoke-console-smp-stress` — builds once, boots N times with QEMU pinned to
+  a small host CPU set, reports a *rate*. Validated against the bug it measures
+  (6/12 before, 0/30 after). Refuses to run when another QEMU competes for the
+  same cores, which had silently contaminated a 20-boot measurement.
+- `SCHED_INVARIANTS=1` — machine-checks
+  `task_running_cpu[t] == c <=> percpu_current_task[c] == t` at every tick,
+  panicking with the task, CPU and observer. **Not wired into CI**: it reports a
+  real, not-yet-root-caused violation in which `init`, blocked in `sys_wait()`,
+  stays claimed by a CPU that has moved on (~1 boot in 5). Latent — a blocked task
+  is not selectable — but it must be root-caused before roadmap 1.1 touches this
+  path.
+- `scheduler_init` now initialises `blocked_waiter` to `-1` instead of leaving the
+  `.bss` zero, which claimed task 0 was blocked on every static endpoint. Benign
+  only because every consumer happened to test `> 0` rather than `>= 0`.
+- The comment on `smp_sched_enabled` claimed "normal SMP boot leaves it 0".
+  `smp_bringup()` sets it on every SMP boot; the stale comment sent an
+  investigation of this very hang down a blind alley before gdb showed it set.
+
 ### Added — kernel objects are carved from untyped memory (`CAP_UNTYPED`, roadmap 0.3, finding **[I-7]**)
 
 Every kernel object used to be an entry in a fixed `.bss` array — `tasks[64]`,
@@ -105,8 +188,8 @@ rather than as a `pushfq`/`popfq` bracket at each call site, since the number of
 call sites will only grow. It becomes redundant — not wrong — once 1.1 makes
 `spin_unlock` IF-preserving.
 
-Measured, because `smoke-console-smp` turns out to be flaky on `main` too and a
-small sample would have concluded almost anything:
+Measured, because `smoke-console-smp` was failing on `main` too and a small sample
+would have concluded almost anything:
 
 | Build | Runs | Failures |
 |---|---|---|
@@ -115,8 +198,13 @@ small sample would have concluded almost anything:
 | this branch, after the IF fix | 6 | 1 |
 
 So the regression was real — the pre-fix branch was materially worse than `main`
-— and the fix restores parity. It does **not** fix the underlying flake, which
-predates this work; see the `smoke-console-smp` note in `TESTS.md`.
+— and the fix restored parity.
+
+*Postscript (2026-07-28):* the residual failures on `main` above were called a
+"flake" here. They were not. They were an intermittent SMP scheduling deadlock,
+diagnosed and fixed the next day — see the entry at the top of this file. The
+IF-transparency fix in this entry remains correct and necessary; only the
+characterisation of the background failures was wrong.
 
 `untyped.c` also defers *arming* that lock until the end of `scheduler_init`, so
 no lock is taken during early boot at all. Between the deferral and the

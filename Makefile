@@ -538,6 +538,18 @@ ASFLAGS += -DSMP
 AP_TRAMPOLINE_DEP = src/boot/ap_trampoline.bin
 endif
 
+# SCHED_INVARIANTS=1 machine-checks the scheduler's claim invariant
+#   task_running_cpu[t] == c  <=>  percpu_current_task[c] == t
+# at every tick and at each idle-park, panicking with the offending task and CPU
+# instead of livelocking silently thousands of ticks later. Off in the ship
+# kernel (it costs a MAX_TASKS + MAX_CPUS scan per tick, under the scheduler
+# lock); on for the SMP smoke jobs, which is where the races are.
+SCHED_INVARIANTS ?= 0
+ifeq ($(SCHED_INVARIANTS),1)
+CFLAGS  += -DSCHED_INVARIANTS
+ASFLAGS += -DSCHED_INVARIANTS
+endif
+
 OBJS += src/kernel/lowlevel64.o
 
 all: kernel.elf
@@ -1617,6 +1629,33 @@ smoke-console-smp-stress:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) FAIL_MARKER='HHoorruuss' \
 		tools/stress_boot.sh boot.iso
+
+# The same startup handshake with the scheduler's claim invariant machine-checked
+# (SCHED_INVARIANTS=1): a violation panics naming the task, the CPU and the site,
+# turning "the boot hung and everything still looks RUNNABLE" into an attributable
+# failure.
+#
+# DELIBERATELY NOT IN CI, AND CURRENTLY EXPECTED TO FAIL. On today's main it
+# reports, in roughly one boot in five:
+#
+#   stale scheduler claim: task 1 claimed by cpu N but that cpu was running 4
+#
+# i.e. `init`, blocked in sys_wait() on the shell, stays claimed by a CPU that has
+# moved on. That is a REAL violation and it is not yet root-caused. It is latent
+# rather than fatal — a blocked task is not selectable, so nothing livelocks until
+# something wakes it, at which point init would never be rescheduled and would
+# never reap its child. It is NOT the console-smp hang, which is fixed and holds
+# 24/24 under smoke-console-smp-stress.
+#
+# Run this when working on the scheduler; see the note in TESTS.md before
+# concluding anything from a failure.
+.PHONY: smoke-sched-invariants
+smoke-sched-invariants:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='PANIC:' \
+		tools/smoke_test.sh boot.iso
 
 .PHONY: test
 test:

@@ -423,8 +423,32 @@ something about cost: a change that touches task creation now has to reason abou
 policy that is nowhere written down, and the only way to tell a real regression from noise was
 eighteen QEMU boots.
 
-**A prerequisite that surfaced doing this: `smoke-console-smp` is itself flaky on `main`**, at
-2 failures in 6 runs. Any measurement of the startup handshake — which is exactly what 1.1
-must instrument — is being taken through a test that fails a third of the time for reasons
-unrelated to the change under test. Stabilising it, or at minimum characterising it, belongs
-*before* step 1 of 1.1 rather than after. See `TESTS.md`.
+**That prerequisite is now met — and it was not a flaky test.** `smoke-console-smp` had been
+failing about a third of the time and was treated as noise. It was correctly reporting an
+intermittent **SMP scheduling deadlock**: `preempt_on_tick` claimed an incoming task
+unconditionally but released the outgoing one only on a ring-3 tick, so a ring-0 tick leaked a
+claim in `task_running_cpu[]` and left the victim `RUNNABLE`, resumable, and unschedulable by
+every CPU — including the one holding the claim. Landed 2026-07-28 (PRs #112–#115):
+
+| Build | Runs | Failures |
+|---|---|---|
+| before | 12 | **6** |
+| after | 24 + 24 + 30 | **0** |
+
+Three things from that episode bear directly on how 1.1 should be run:
+
+1. **The startup-handshake measurement is now trustworthy**, which it was not before. `make
+   smoke-console-smp-stress` reports a rate over N pinned boots, and 1.1 should quote one.
+2. **Pin the CPUs when measuring.** On an idle workstation each guest vCPU gets a host core,
+   the window never opens, and the *broken* kernel scored 10/10 green. The bug only appears
+   where vCPUs outnumber cores — i.e. on CI runners. A green local run is not evidence.
+3. **Do not "repair" a stale claim.** Two defensive repairs were written and measured: they
+   took the harness from 24/24 to 13/20, because a claim is stale precisely when its task was
+   abandoned mid-kernel, so freeing it resumes that task from a stale trap frame. Fix
+   abandonment, never the bookkeeping. This is the same trap 1.1 will walk past.
+
+**Still open**, found by the new `SCHED_INVARIANTS=1` checker and not yet root-caused: `init`,
+blocked in `sys_wait()`, is sometimes left claimed by a CPU that has moved on (~1 boot in 5).
+Latent — a blocked task is not selectable, so nothing livelocks until it is woken, at which
+point `init` would never be rescheduled. **Root-cause this before 1.1 changes this path**, and
+see `TESTS.md`.

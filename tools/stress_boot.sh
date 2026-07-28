@@ -69,7 +69,9 @@ CMD+=("$HERE/smoke_test.sh" "$ISO")
 # That is not hypothetical -- it invalidated a 20-boot run during the work that
 # produced this script. Refuse to produce a number that cannot be trusted.
 if command -v pgrep >/dev/null 2>&1; then
-    others="$(pgrep -c -f qemu-system-x86_64 2>/dev/null || echo 0)"
+    # `pgrep -c` exits non-zero with no matches, so a naive `|| echo 0` appends a
+    # second line and the test below dies on "0\n0". Count lines instead.
+    others="$(pgrep -f qemu-system-x86_64 2>/dev/null | wc -l | tr -d ' ')"
     if [ "${others:-0}" -gt 0 ]; then
         echo "STRESS FAIL: $others other qemu-system-x86_64 process(es) already running." >&2
         echo "STRESS FAIL: they compete for the same pinned cores and would make this" >&2

@@ -15,6 +15,22 @@ int percpu_current_task[MAX_CPUS];
 int percpu_idle[MAX_CPUS];
 /* The last ring-3 task each CPU ran, for flush-on-switch (0 = none yet). */
 int percpu_last_user_task[MAX_CPUS];
+
+/* "This CPU is transiently impersonating another task to resolve a user address."
+ *
+ * copy_to_user/user_copy translate through tasks[get_current_task()].cr3, so
+ * delivering an IPC reply into a *blocked peer's* buffer requires briefly making
+ * that peer the current task (sys_ipc_send and h_ipc_reply_to both do this, with
+ * interrupts masked, restoring the real task immediately afterwards).
+ *
+ * For that window percpu_current_task[] deliberately does NOT describe what the
+ * CPU is running, so the claim invariant does not hold and an auditor on another
+ * core must not read it. The window is otherwise harmless — the impersonated task
+ * is blocked (so never selectable) and the real task stays claimed — but it is
+ * exactly the kind of deliberate, undocumented exception that a checker has to be
+ * told about rather than tripping over. Found by SCHED_INVARIANTS itself, which
+ * false-positived here before this flag existed. */
+volatile int percpu_in_user_copy[MAX_CPUS];
 #endif
 
 #ifdef SMP
@@ -456,6 +472,154 @@ static void deliver_pending_signal(uint64_t frame_ptr, int tid) {
     }
 }
 
+#if defined(SMP) && defined(SCHED_INVARIANTS)
+/* ---- Machine-checked claim invariant (SCHED_INVARIANTS=1 builds only) -------
+ *
+ * Asserts, in both directions:
+ *
+ *     task_running_cpu[t] == c   <=>   percpu_current_task[c] == t     (t > 0)
+ *
+ * This exists because the failure mode of a violated claim invariant is a silent
+ * livelock forty seconds and several thousand timer ticks after the mistake, with
+ * every task still marked RUNNABLE and nothing in the log. Diagnosing one
+ * instance of that took a gdb stub, a custom kernel with counters, and eighteen
+ * QEMU boots. This turns the same defect into an immediate panic naming the task,
+ * the CPU, and the code path -- an intermittent hang becomes an attributable
+ * failure.
+ *
+ * The caller must hold sched_raw_lock, so the snapshot is quiescent: every path
+ * that mutates a claim does so under that lock, and each leaves the invariant
+ * true at its exit even though it is transiently false in the middle (between
+ * releasing the outgoing task and claiming the incoming one).
+ *
+ * Compiled out entirely by default -- the ship kernel pays nothing -- and turned
+ * on for the SMP jobs in CI, which is where the races actually occur. */
+/* Two-strike state: the (task, cpu) pair flagged by the previous audit, or -1. */
+static int sched_susp_task = -1;
+static int sched_susp_cpu  = -1;
+
+/* ---- Panic output, straight to the UART -----------------------------------
+ *
+ * NOT print(). Once a ring-3 console server owns the console, kernel print() is
+ * suppressed, and while it is coming up both writers touch COM1 concurrently
+ * from different CPUs. A panic emitted through print() therefore arrived
+ * interleaved and truncated -- literally "PA[NIC: console_server] ready" -- so
+ * the one message that has to survive was the one that did not. That reads as a
+ * hang rather than a detected violation, which is precisely the confusion this
+ * whole facility exists to remove.
+ *
+ * Everything below writes bytes to COM1 itself, with interrupts already off and
+ * every other CPU about to be halted. It bypasses the console ownership rules
+ * deliberately: there is no owner left to be polite to. */
+static void panic_ch(char ch) {
+    while ((inb(0x3FD) & 0x20) == 0) { }
+    outb(0x3F8, (uint8_t)ch);
+}
+static void panic_str(const char *s) { while (*s) panic_ch(*s++); }
+static void panic_dec(int v) {
+    char buf[12];
+    int i = 0, neg = (v < 0);
+    unsigned u = neg ? (unsigned)(-v) : (unsigned)v;
+    if (!u) buf[i++] = '0';
+    while (u) { buf[i++] = (char)('0' + (u % 10)); u /= 10; }
+    if (neg) panic_ch('-');
+    while (i) panic_ch(buf[--i]);
+}
+
+/* Report and halt. Split out so both directions read identically. */
+static void sched_claim_panic(const char *what, const char *where,
+                              int t, int c, int seen) {
+    panic_str("\nPANIC: "); panic_str(what);
+    panic_str(" at "); panic_str(where);
+    panic_str(": task "); panic_dec(t);
+    panic_str(" claimed by cpu "); panic_dec(c);
+    panic_str(" but that cpu was running "); panic_dec(seen);
+    panic_str(" (persisted across two audits; observed by cpu ");
+    panic_dec(this_cpu());
+    panic_str(")\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
+static void sched_assert_claims(const char *where) {
+    /* ---- Why this takes TWO strikes -------------------------------------
+     *
+     * A momentarily inconsistent pair is not a bug. Not every writer of
+     * task_running_cpu[] holds the scheduler lock -- task_teardown releases a
+     * claim from syscall and fault context without it -- so an auditor on
+     * another core can catch a genuine, harmless mid-flight update. Panicking on
+     * that would make the checker cry wolf on correct code, which is worse than
+     * having no checker: it trains you to disbelieve it.
+     *
+     * The failure this exists to catch is a claim that is stuck FOREVER. So the
+     * first sighting of an inconsistent pair only arms a suspicion; it must still
+     * be true at the next audit -- a different tick, ~10ms later at 100Hz, an
+     * eternity next to the microseconds any real switch takes -- before it counts.
+     *
+     * An earlier version panicked on first sight and reported failures on a
+     * kernel that was in fact correct. */
+    /* -> A claim must be held by a CPU that is really running that task. A stale
+     *    claim makes the task unschedulable by EVERY CPU, including the holder. */
+    /* ---- Dead tasks are exempt ------------------------------------------
+     *
+     * task_teardown() releases the claim, but the CPU that was running the task
+     * keeps naming it in percpu_current_task[] until task_exit_switch() runs --
+     * and in between it does real work, including a full capability-graph sweep
+     * (kobj_gc). That window is long enough to span several audits, so it would
+     * otherwise be reported as persistent.
+     *
+     * Exempting dead tasks costs nothing, because the property being protected is
+     * "a RUNNABLE task must remain selectable". Selection requires state == 1, so
+     * a dead task can never be the subject of the livelock this guards against.
+     */
+    for (int t = 1; t < MAX_TASKS; t++) {
+        if (tasks[t].state == 0) continue;
+        int c = task_running_cpu[t];
+        if (c < 0) continue;
+        if (c >= MAX_CPUS) {
+            print("PANIC: scheduler claim names a bogus cpu at "); print(where);
+            print(": task "); print_decimal((uint64_t)t);
+            print(" claimed by cpu "); print_decimal((uint64_t)c); println("");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+        if (percpu_in_user_copy[c]) continue;
+        /* Snapshot the value actually compared and report THAT. Re-reading it for
+         * the message lets a concurrent update make the panic text
+         * self-contradictory ("task 1 claimed by cpu 0 which is running 1") --
+         * which an earlier version printed, and which sends you hunting for the
+         * wrong bug. */
+        int seen = percpu_current_task[c];
+        if (seen != t) {
+            if (sched_susp_task == t && sched_susp_cpu == c)
+                sched_claim_panic("stale scheduler claim", where, t, c, seen);
+            sched_susp_task = t;      /* first sighting: arm, do not accuse */
+            sched_susp_cpu  = c;
+            return;
+        }
+    }
+    /* <- A task a CPU is running must be claimed by it, or a second CPU can
+     *    select it and two cores execute one kernel stack concurrently. */
+    for (int c = 0; c < MAX_CPUS; c++) {
+        if (percpu_in_user_copy[c]) continue;   /* see above */
+        int t = percpu_current_task[c];
+        if (t <= 0 || t >= MAX_TASKS) continue;
+        if (tasks[t].state == 0) continue;      /* teardown window; see above */
+        int seen = task_running_cpu[t];         /* snapshot; see above */
+        if (seen != c) {
+            if (sched_susp_task == t && sched_susp_cpu == c)
+                sched_claim_panic("unclaimed running task", where, t, c, seen);
+            sched_susp_task = t;
+            sched_susp_cpu  = c;
+            return;
+        }
+    }
+    /* Fully consistent: drop any armed suspicion. */
+    sched_susp_task = -1;
+    sched_susp_cpu  = -1;
+}
+#else
+#define sched_assert_claims(where) ((void)0)
+#endif
+
 /* Called from the timer ISR. Returns the kernel %rsp the ISR epilogue should
  * resume on: the same frame when we don't switch, or the next task's saved
  * frame when we do. */
@@ -551,6 +715,15 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!ring3 && !percpu_idle[cpu]) return frame_rsp;
 
     sched_raw_lock();
+
+    /* Periodic system-wide audit of the claim invariant. One call site covers
+     * every path that can violate it, because a leak left behind anywhere is
+     * observed by the next tick on any CPU — within ~10ms at 100Hz — rather than
+     * forty seconds later as an unexplained hang. Placed before the defensive
+     * claim below so that claim cannot paper over a violation it did not cause.
+     * Compiled out unless SCHED_INVARIANTS=1. */
+    sched_assert_claims("preempt_on_tick");
+
     int cur = percpu_current_task[cpu];
 
     /* Defensively claim the task we are currently running, so another CPU cannot
@@ -614,6 +787,13 @@ extern void ap_idle_loop(void);               /* smp.c */
  * ISR epilogue expects, on this CPU's idle stack, resuming at ap_idle_loop with
  * interrupts enabled. Caller holds sched_raw_lock and must publish the blocked task
  * as schedulable (task_running_cpu = -1) before calling. */
+/* NB: this deliberately does NOT sweep task_running_cpu[] for claims held by the
+ * parking CPU, though an earlier draft did. Clearing a stale claim makes its task
+ * schedulable again — and a claim is stale precisely when its task was abandoned,
+ * so the task then resumes from a stale trap frame, discarding kernel work that
+ * may include a held lock. Measured, not theorised: adding that sweep took the
+ * pinned stress harness from 24/24 to 13/20. See the note at task_running_cpu[];
+ * a stale claim is a symptom to diagnose, never a value to correct. */
 static uint64_t enter_cpu_idle(int cpu) {
     uint8_t *top = ap_idle_stack_top(cpu);
     struct interrupt_frame64 *f =
@@ -630,6 +810,7 @@ static uint64_t enter_cpu_idle(int cpu) {
     percpu_current_task[cpu] = 0;       /* this CPU now idle (no task) */
     percpu_idle[cpu] = 1;               /* ...and parked in ap_idle_loop */
     if (cpu == 0) current_task = 0;
+    sched_assert_claims("enter_cpu_idle");
     return (uint64_t)(uintptr_t)f;
 }
 #endif
@@ -1030,6 +1211,14 @@ uint64_t task_exit_switch(int dead) {
     }
     if (next < 0) {
 #ifdef SMP
+        /* Deliberately does NOT mark this CPU idle here, though an earlier draft
+         * did. The caller still has kernel work to finish (it returns through the
+         * fault/exit path before reaching kernel_idle), and percpu_idle is exactly
+         * the flag that permits a ring-0 tick to switch a CPU away — so setting it
+         * this early re-opens the abandonment window the ring-0 preemption guard
+         * closes. Measured: it cost 7 failures in 20 on the pinned stress harness.
+         * kernel_idle() sets it at the point the CPU genuinely has nothing left to
+         * do, which is the correct place. */
         sched_raw_unlock();
 #endif
         return 0;   /* nothing else to run — caller idles */

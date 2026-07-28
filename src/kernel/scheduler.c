@@ -21,7 +21,40 @@ int percpu_last_user_task[MAX_CPUS];
 /* Which CPU is currently running each task (-1 == not running anywhere). The SMP
  * scheduler's mutual-exclusion guard: preempt_on_tick only ever claims a task
  * whose entry is -1, so a task's single kernel stack + saved trap frame are
- * never touched by two CPUs at once. Managed under the scheduler lock. */
+ * never touched by two CPUs at once. Managed under the scheduler lock.
+ *
+ * ---- THE CLAIM INVARIANT ----------------------------------------------------
+ *
+ *     task_running_cpu[t] == c   <=>   percpu_current_task[c] == t     (t > 0)
+ *
+ * A claim is a two-way binding, and BOTH directions carry weight:
+ *
+ *   ->  If a task is claimed by CPU c, that CPU must actually be running it.
+ *       Every selection loop in this file (preempt_on_tick, sched_yield_switch,
+ *       ipc_block_switch) skips any candidate whose entry is not -1. So a claim
+ *       held by a CPU that is NOT running the task makes that task unschedulable
+ *       *by every CPU in the system, including the one holding the claim*. The
+ *       task stays RUNNABLE with a valid resumable context and simply never runs
+ *       again: not a crash, not a halt, a silent livelock in which the remaining
+ *       tasks spin-yield against each other forever.
+ *
+ *   <-  If a CPU is running a task, that task must be claimed by it. Otherwise a
+ *       second CPU may select the same task and two cores execute one task's
+ *       single kernel stack and trap frame concurrently — memory corruption
+ *       across a privilege boundary, which is far worse than the hang.
+ *
+ * The dangerous asymmetry to watch for is a path that CLAIMS unconditionally but
+ * RELEASES conditionally. Releasing on a narrower condition than claiming leaks a
+ * claim on every path the condition excludes.
+ *
+ * Note that a leaked claim is not merely a lost task: it is usually the visible
+ * symptom of a CPU having abandoned a live kernel context (see the ring-0
+ * preemption guard in preempt_on_tick). Restoring the invariant by clearing the
+ * stale entry WITHOUT fixing the abandonment makes the task schedulable again —
+ * and it then resumes from a stale trap frame, discarding whatever kernel work
+ * was in flight, possibly including a lock it still holds. Fix the abandonment
+ * first; treat a stale claim as a symptom to be diagnosed, never as a value to be
+ * quietly corrected. */
 int task_running_cpu[MAX_TASKS];
 
 /* Bitmask of CPUs that have run at least one user task (bit c == CPU c). The SMP
@@ -84,11 +117,28 @@ void scheduler_init(void) {
 
     users_init();
 
+    /* Endpoints and notifications start with NO waiter. -1 is the documented
+     * "nobody" sentinel for all three of these fields; 0 is a real task id (the
+     * boot/idle task), so leaving them at their .bss zero states "task 0 is
+     * blocked here", which is false for every endpoint in the system.
+     *
+     * Benign today only because every consumer happens to test `waiter > 0`
+     * rather than `waiter >= 0` — i.e. the code is correct by coincidence at each
+     * use site rather than by construction at the source. One future reader
+     * writing the more natural `>= 0` gets a wake sent to task 0. Initialise to
+     * the sentinel the field is documented to use. (Retyped endpoints from
+     * untyped memory already do this in kobj_alloc; this is the static tables
+     * catching up.) */
     for (int i = 0; i < MAX_ENDPOINTS; i++) {
-        endpoints[i].has_message = 0;
-        endpoints[i].msg_len = 0;
-        endpoints[i].sender_task = -1;
-        endpoints[i].last_sender = -1;
+        endpoints[i].has_message   = 0;
+        endpoints[i].msg_len       = 0;
+        endpoints[i].sender_task   = -1;
+        endpoints[i].last_sender   = -1;
+        endpoints[i].blocked_waiter = -1;
+    }
+    for (int i = 0; i < MAX_NOTIFICATIONS; i++) {
+        notifications[i].pending_badge  = 0;
+        notifications[i].blocked_waiter = -1;
     }
 
     

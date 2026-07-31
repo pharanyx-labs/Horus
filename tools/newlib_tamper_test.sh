@@ -89,6 +89,7 @@ fi
 # the negative control alone cannot tell "rejects tampering" from "always fails",
 # so its absence is reported loudly rather than passed over in silence.
 REAL=$ROOT/newlib/newlib-${VER}.tar.gz
+positive_ran=0
 if [ -f "$REAL" ] && echo "$SHA  $REAL" | sha256sum -c - >/dev/null 2>&1; then
     rm -f "$TARBALL.rejected"
     cp "$REAL" "$TARBALL"
@@ -97,6 +98,7 @@ if [ -f "$REAL" ] && echo "$SHA  $REAL" | sha256sum -c - >/dev/null 2>&1; then
     out=$(timeout 120 "$WORK/tools/build_newlib.sh" 2>&1) && rc=0 || rc=$?
     if printf '%s' "$out" | grep -q "checksum OK"; then
         echo "TAMPER: [ok] genuine tarball PASSED verification (gate is not refusing everything)"
+        positive_ran=1
     else
         echo "TAMPER: FAIL genuine tarball did not pass verification; output was:" >&2
         printf '%s\n' "$out" | head -20 >&2
@@ -113,4 +115,11 @@ if [ "$fails" -ne 0 ]; then
     echo "NEWLIB_TAMPER: FAIL $fails control(s) failed" >&2
     exit 1
 fi
-echo "NEWLIB_TAMPER: PASS supply-chain pin refuses tampered artifacts and accepts the genuine one"
+# Report exactly what was demonstrated. Saying "and accepts the genuine one" when
+# the positive control never ran would assert an untested property -- precisely
+# the overclaiming this test exists to catch elsewhere.
+if [ "$positive_ran" -eq 1 ]; then
+    echo "NEWLIB_TAMPER: PASS refuses tampered artifacts (before unpacking, quarantined) and accepts the genuine one"
+else
+    echo "NEWLIB_TAMPER: PASS refuses tampered artifacts (before unpacking, quarantined); positive control SKIPPED, not proven here"
+fi

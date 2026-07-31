@@ -481,6 +481,19 @@ CFLAGS  += -DCPU_SELFTEST
 ASFLAGS += -DCPU_SELFTEST
 endif
 
+# PERCPU_SELFTEST=1 proves this_cpu()'s TSS-selector derivation (finding [I-6]:
+# it replaced an uncached LAPIC MMIO read on the hottest kernel path) agrees with
+# the LAPIC on EVERY core that comes online, and that EFER.SCE stays clear so the
+# staged-but-not-SMP-safe SYSCALL path remains unreachable. Implies SMP=1: on a
+# single core the mapping (TR - 0x38)/0x10 is right by accident, so a UP run
+# would prove nothing and the test fails rather than passing vacuously.
+PERCPU_SELFTEST ?= 0
+ifeq ($(PERCPU_SELFTEST),1)
+CFLAGS  += -DPERCPU_SELFTEST
+ASFLAGS += -DPERCPU_SELFTEST
+SMP := 1
+endif
+
 # FLUSH_SELFTEST=1 makes kernel_main verify the side-channel flush-on-switch
 # mechanism (detection matches CPUID, the gated IBPB/L1D/VERW barriers execute
 # without #GP, and the switch policy flushes on a task change only). Prints
@@ -1064,6 +1077,20 @@ smoke-cpu:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CPU_SELFTEST: PASS' \
 		FAIL_MARKER='CPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
+# Per-CPU identity self-test. Boots multi-core and requires every online core to
+# have confirmed, on itself, that the TSS-selector derivation in this_cpu()
+# agrees with the LAPIC -- the independent oracle it replaced (finding [I-6]).
+# Multi-core is the point: on one CPU the mapping (TR - 0x38)/0x10 yields 0 for
+# the only right answer, so a UP run cannot fail and the test refuses to pass.
+# Also asserts EFER.SCE is clear, keeping the staged SYSCALL path unreachable.
+.PHONY: smoke-percpu
+smoke-percpu:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERCPU_SELFTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='PERCPU_SELFTEST: PASS' \
+		FAIL_MARKER='PERCPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
 # Flush-on-switch self-test. NOTE: TCG (the CI accelerator -- no KVM) does not
 # emulate the IBPB / L1D-flush / MDS CPUID features, so under CI they read absent
 # and the gated barriers are skipped (which is exactly why the gating is safe: no
@@ -1591,6 +1618,40 @@ smoke-session-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory boot.iso
 	@QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py boot.iso
+
+# Soak of the above. The IPC lost-reply race this gates against (see CHANGES.md:
+# a reply delivered while the client was committed to blocking but not yet
+# visibly blocked was dropped AND reported to the server as delivered) wedged the
+# shell mid-print on roughly 1 boot in 5. A single run therefore MISSES it four
+# times out of five — which is exactly how it survived: every individual smoke
+# job was green most of the time, and the one that wasn't looked like flakiness.
+#
+# N boots give 1 - 0.8^N detection: 89% at 10, 96% at 15, 99.6% at 25. Measured
+# against the pre-fix kernel it failed 9 times in 45 interleaved boots; the fixed
+# kernel was 25/25 and 0 failures across every soak since.
+#
+# This is the honest gate for a probabilistic defect: one boot cannot witness it,
+# so the test does not pretend a single green boot is evidence. Requires ALL runs
+# to pass — one hang is a failure, never a retry.
+SOAK_RUNS ?= 15
+.PHONY: smoke-session-smp-soak
+smoke-session-smp-soak:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@echo "[soak] $(SOAK_RUNS) boots; any single hang fails the gate"
+	@fail=0; \
+	for i in $$(seq 1 $(SOAK_RUNS)); do \
+	    if QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py boot.iso >/dev/null 2>&1; then \
+	        echo "[soak] run $$i/$(SOAK_RUNS): pass"; \
+	    else \
+	        echo "[soak] run $$i/$(SOAK_RUNS): FAIL"; \
+	        fail=$$((fail+1)); \
+	    fi; \
+	done; \
+	if [ $$fail -ne 0 ]; then \
+	    echo "SESSION_SOAK: FAIL $$fail/$(SOAK_RUNS) boots hung"; exit 1; \
+	fi; \
+	echo "SESSION_SOAK: PASS $(SOAK_RUNS)/$(SOAK_RUNS) boots completed the session"
 
 # Regression guard for the SMP console-output corruption: boot the SHIPPED kernel
 # (no self-test flag) under -smp 4 and require it to reach the ring-3 login banner

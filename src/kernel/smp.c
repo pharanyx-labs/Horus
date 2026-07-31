@@ -10,7 +10,10 @@
 
 /* Defined in scheduler.c (the scheduling core). */
 int this_cpu(void);
+int this_cpu_lapic(void);
 #ifdef SMP
+void percpu_id_verify_self(void);
+extern volatile unsigned percpu_id_verified;
 extern int task_running_cpu[MAX_TASKS];
 extern volatile int smp_sched_enabled;   /* scheduler.c: master switch for the SMP branch */
 /* scheduler.c: "this CPU is parked in an idle loop and holds no task context".
@@ -187,10 +190,17 @@ void ap_entry64(void) {
      * any AP started, so this sets the same bits the BSP has. */
     cpu_enable_protections();
 
+    /* TR is still 0 here -- this AP has no TSS yet -- so this_cpu() answers from
+     * the LAPIC, which is exactly the bootstrap case its fallback exists for. */
     int cpu = this_cpu();
     uintptr_t idle_top = (uintptr_t)&ap_idle_stacks[0][0]
                        + (uintptr_t)(cpu + 1) * AP_IDLE_STACK_SIZE;
     setup_ap_tss(cpu, idle_top);  /* per-CPU TSS + IST, ltr'd */
+
+    /* TR now holds this AP's selector, so this_cpu() switches to the STR path.
+     * Confirm on this core that it agrees with the LAPIC before anything relies
+     * on it -- from here on every get_current_task() here trusts the derivation. */
+    percpu_id_verify_self();
 
     lapic_enable();
 
@@ -299,6 +309,11 @@ void smp_bringup(void) {
      * per-CPU TSS routing can turn on before any AP or context switch runs. */
     smp_active = 1;
 
+    /* The BSP's TSS (selector 0x38) was ltr'd by setup_tss64 in the boot asm, so
+     * its STR path is already live; this is the first point the LAPIC oracle is
+     * safe to read, which is what the check needs to compare against. */
+    percpu_id_verify_self();
+
     /* No task is running on any CPU yet. Done unconditionally (before the count
      * branch) because the BSP's own preempt_on_tick consults task_running_cpu[]
      * even when there are no APs — leaving it zero would read as "task N running
@@ -335,6 +350,13 @@ void smp_bringup(void) {
      * Actual preemption still waits for preempt_enabled (set as the shell starts),
      * so setting it here only arms the mechanism; it does not switch anything yet. */
     smp_sched_enabled = 1;
+
+#ifdef PERCPU_SELFTEST
+    /* Gated: every AP has now run percpu_id_verify_self() on itself during
+     * bringup, so the witness bitmask is complete and can be checked for gaps.
+     * Prints and boot continues; make smoke-percpu asserts on the marker. */
+    percpu_selftest();
+#endif
 #endif
 
     kmsg("kernel ready, starting init (PID 1)");

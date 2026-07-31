@@ -238,6 +238,43 @@ early_exception64:
     hlt
     jmp .
 
+/* ---- SYSCALL/SYSRET fast path -- STAGED, NOT ENABLED ----------------------
+ *
+ * UNREACHABLE BY DESIGN. init_syscall_instruction_path() (src/kernel/crypto.c)
+ * programs STAR/LSTAR/SFMASK, but nothing ever sets EFER.SCE (bit 0) -- the boot
+ * paths set only LME|NXE (src/boot/multiboot.S, src/boot/ap_trampoline.S). With
+ * SCE clear the SYSCALL instruction raises #UD, so ring 3 reaches the kernel
+ * exclusively through `int $0x80` -> isr128 -> isr_common_stub64. The live
+ * syscall path is the ISR one; this is staging for a future fast path.
+ *
+ * DO NOT set EFER.SCE without first fixing the following. Each is live here:
+ *
+ *   1. Per-CPU kernel stack. `current_kernel_stack_top` is a single global that
+ *      the SMP scheduler updates only for CPU 0 (`if (cpu == 0) ...` in
+ *      sched_yield_switch / ipc_block_switch / preempt_on_tick). An AP entering
+ *      here would load CPU 0's kernel stack and two cores would execute on one
+ *      stack -- the same cross-CPU corruption the claim invariant in
+ *      scheduler.c exists to prevent, arriving by a path it does not watch.
+ *      Needs the RSP0-equivalent to become per-CPU first.
+ *
+ *   2. %rcx / %r11. SYSCALL puts the return RIP in %rcx and RFLAGS in %r11, and
+ *      SYSRET restores them from there. This stub saves %rcx but never preserves
+ *      %r11 across the C call, so RFLAGS returns to ring 3 as whatever the
+ *      compiler left in a caller-saved register.
+ *
+ *   3. Non-canonical %rcx. SYSRET #GPs in ring 0 if %rcx is non-canonical, which
+ *      ring 3 controls. Needs the canonical check (or IRET fallback) every
+ *      x86-64 kernel carries here.
+ *
+ * The `swapgs` pair below is symmetric but currently inert: this kernel keeps no
+ * per-CPU GS base (this_cpu() derives the CPU id from TR via `str` -- see the
+ * note on this_cpu() in scheduler.c), so both GS bases are 0 and the swap is a
+ * no-op. It is kept balanced rather than deleted so that whoever does introduce
+ * a GS base inherits a correct entry/exit pair instead of a one-sided swap that
+ * hands the kernel's per-CPU pointer to ring 3 on the first syscall. Note the
+ * ordering on exit: the swap must come AFTER any load of a user selector into
+ * %gs (loading a selector zeroes the GS base in long mode) and immediately
+ * before SYSRET. */
 .global syscall_entry
 syscall_entry:
     swapgs
@@ -245,19 +282,21 @@ syscall_entry:
     movq %rsp, %r14
     movq %rcx, %r15
 
-    
+
     movabs $current_kernel_stack_top, %rax
     movq (%rax), %rsp
     testq %rsp, %rsp
     jnz 1f
-    movabs $syscall_entry_kstack_top, %rsp   
+    movabs $syscall_entry_kstack_top, %rsp
 1:
-    subq $128, %rsp   
+    subq $128, %rsp
 
     call syscall_handler64
 
     movq %r14, %rsp
     movq %r15, %rcx
+
+    swapgs
 
     sysretq
 

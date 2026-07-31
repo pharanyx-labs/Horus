@@ -8,6 +8,145 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — an IPC lost-reply race that wedged the shell mid-print under SMP
+
+A client blocking in `SYS_IPC_CALL` could have its reply **silently discarded and
+the discard reported to the server as a successful delivery**. The client then
+parked forever on a reply that could never arrive. It reproduced as an
+intermittent console hang under `-smp 4` — the shell stopped partway through a
+line with the console server idle and the system otherwise alive — on roughly
+**1 boot in 5**.
+
+**The bug.** `h_ipc_reply_to` classifies the client three ways:
+
+| client shows | meaning | action |
+|---|---|---|
+| `state == TASK_BLOCKED_IPC` | blocked and waiting | deliver |
+| `pending_block == TASK_BLOCKED_IPC` | committed, not yet published | return `-2`, server retries |
+| neither | not waiting on us | return `0`, drop the reply |
+
+That third case is correct only if "neither" genuinely means *not waiting*. There
+were two intervals where a client that was very much waiting showed neither:
+
+1. **`h_ipc_call` published the request before the intent.** `sys_ipc_send()`
+   made the request visible under `ipc_lock`, and only afterwards was
+   `pending_block` set. A server on another CPU could receive, service and reply
+   inside that gap — landing in case 3.
+
+2. **`ipc_publish_pending_block` cleared `pending_block` outside the lock**, then
+   set `state` inside it. For the instructions in between, the task again
+   advertised neither.
+
+Both `console_server` and `fs_server` reply with `SYS_IPC_REPLY_TO`, so both were
+exposed. The mailbox path (`sys_ipc_reply` → `sys_ipc_send`) was never affected:
+`ipc_publish_pending_block` re-checks `has_message`, which is the same
+double-check discipline the reply-to path was missing.
+
+**The fix.** Make the declaration cover the whole interval. `h_ipc_call` now sets
+`pending_block` *before* the request becomes visible (and withdraws it if the
+send fails), and `ipc_publish_pending_block` clears it **under `ipc_lock`,
+atomically with the state write** — the same lock `h_ipc_reply_to` takes, so from
+another CPU the transition is indivisible. A client is now always either
+`BLOCKED_IPC` or `pending_block`-committed from the moment its request can be
+seen until it is genuinely done waiting.
+
+**Why it hit the login-failure path.** That path issues several `print`s
+back-to-back with no intervening read, so the server is already parked in `recv`
+and answers at its fastest — which is precisely when it can reply inside the
+window. The hang always appeared mid-`"Login incorrect ("`.
+
+| Kernel | Interleaved boots | Hangs |
+|---|---|---|
+| before | 45 | **9** (20%) |
+| after  | 25 | **0** |
+
+Measured by alternating both ISOs in one loop so host load hit each arm equally;
+an earlier non-interleaved comparison produced a misleading 3-vs-0 in the other
+direction and was discarded. Fisher's exact on the interleaved data, p ≈ 0.014.
+
+**Witness.** `make smoke-session-smp-soak` (`SOAK_RUNS`, default 15). A single
+boot cannot witness a 1-in-5 defect — it passes four times in five, which is
+exactly how this survived every green smoke job — so the gate requires N
+consecutive clean sessions and treats one hang as a failure, never a retry. It
+was falsified against the pre-fix kernel: 2/10 boots hung, gate red.
+
+### Changed — `this_cpu()` no longer reads LAPIC MMIO on every call (**[I-6]**)
+
+`get_current_task()` is the kernel's "who is the subject" accessor: ~110 call
+sites across `capability.c`, `syscall*.c`, `paging.c`, `kaudit.c`, `storage.c`
+and the fault handlers, hit several times per syscall. Every one of those calls
+went through `this_cpu()`, which read the LAPIC ID register at `0xFEE00020` — an
+uncacheable mapping, hundreds of cycles per read. It was, by a wide margin, the
+dominant avoidable cost in the syscall path.
+
+**The fix.** The CPU already carries its own identity in a register. Every CPU
+`ltr`s a *different* TSS — it has to, because RSP0 and the IST stacks are loaded
+from the running CPU's TSS on a ring-3 → ring-0 transition — and those selectors
+are laid out linearly: `0x38` for the BSP (`setup_tss64`, `src/boot/multiboot.S`)
+and `0x48/0x58/0x68` for APs 1..3 (`ap_tss_selector`, `src/kernel/gdt.c`). So
+
+```
+cpu = (str() - 0x38) / 0x10
+```
+
+`str` is a register read: no memory reference, no serialisation, legal at CPL 0
+(UMIP blocks it at CPL 3 only). TR is written once per CPU at bringup and never
+again, so the answer cannot go stale mid-syscall. In the non-SMP build the
+function compiles to `return 0` — the read was answering a question that had a
+compile-time answer.
+
+**Why not the `%gs`-based per-CPU block** that roadmap 1.2 / **F-1.1** sketches:
+making a per-CPU base survive a ring transition requires `swapgs` in every ISR
+entry and exit. The ring-3 return paths (`scheduler.c`'s iretq epilogue and
+`drop_to_ring3`) load `0x33` into `%gs`, and loading a selector into `%gs` zeroes
+the GS base in long mode — so a base installed without `swapgs` does not survive
+the first return to ring 3. Doing it properly means a CS-conditional swap on
+every entry (exceptions arrive from ring 0 too), matching swaps on every exit
+including the epilogue that `iretq`s into a *different* task's frame, and the
+NMI/IST re-entrancy hazard that has produced a long line of CVEs in kernels with
+more reviewers than this one. `str` gets essentially the same win for none of
+that risk, and does not preclude doing `%gs` later — roadmap 1.2's other half
+(per-CPU IRQ-nesting state for **[C-3]**) still wants it.
+
+**The witness.** The derivation is a claim about a GDT layout owned by two other
+files, tied to this one by nothing the compiler checks. If either moves,
+`this_cpu()` starts returning another CPU's index and every `get_current_task()`
+on that core silently names the wrong task — one core reading and writing
+another's current-task slot, the claim invariant violated from a direction no
+scheduler assertion watches. So `percpu_id_verify_self()` runs **on each core**,
+at the moment that core's TSS is loaded, and compares the `str` derivation
+against the LAPIC — the independent oracle it replaced. Disagreement panics
+there, naming both answers, before any task has run. This is not gated behind a
+self-test flag: it costs one MMIO read once per CPU at bringup.
+
+`PERCPU_SELFTEST` (`make smoke-percpu`) then asserts the witness bitmask shows
+the comparison actually *happened* on every online CPU, so a core that skipped it
+fails rather than passing by absence. It requires ≥2 cores: on one CPU the
+mapping yields 0 for the only right answer, so a UP run cannot fail and the test
+refuses to pass vacuously.
+
+Both halves were falsified before landing — a deliberately wrong stride panicked
+at AP bringup (`TR=0x48 str-derived=2 lapic=1`), and setting `EFER.SCE` tripped
+the `FAIL` marker.
+
+### Fixed — a one-sided `swapgs` in the staged SYSCALL entry path
+
+Found while tracing the above. `syscall_entry` (`src/kernel/lowlevel64.S`)
+executed `swapgs` on entry with no matching swap before `sysretq`. It is
+currently unreachable — `init_syscall_instruction_path()` programs
+STAR/LSTAR/SFMASK but nothing sets `EFER.SCE`, so `SYSCALL` raises #UD and ring 3
+reaches the kernel exclusively via `int $0x80` — and inert, because the kernel
+keeps no per-CPU GS base for the swap to move. But it is armed: whoever enables
+`SCE` or introduces a GS base inherits a swap that hands the kernel's per-CPU
+pointer to ring 3 on the first syscall.
+
+The pair is now balanced, and the stub documents the three preconditions that
+still make enabling `SCE` unsafe — chiefly that `current_kernel_stack_top` is a
+single global the SMP scheduler updates only for CPU 0, so an AP entering there
+would load CPU 0's kernel stack and two cores would execute on one stack.
+`PERCPU_SELFTEST` asserts `EFER.SCE` stays clear, turning a plausible one-line
+"optimisation" into a red CI run rather than cross-CPU stack corruption.
+
 ### Fixed — an intermittent SMP scheduling deadlock that had been dismissed as a flaky test
 
 `smoke-console-smp` failed roughly a third of the time and had been treated as

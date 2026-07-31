@@ -1270,14 +1270,137 @@ uint64_t exec_reenter_switch(int t) {
     return ksp;
 }
 
-int this_cpu(void) {
+/* ---- Which CPU am I? -------------------------------------------------------
+ *
+ * get_current_task() calls this, and get_current_task() is the kernel's "who is
+ * the subject" accessor: ~110 call sites across capability.c, syscall*.c,
+ * paging.c, kaudit.c, storage.c and the fault handlers, several per syscall. So
+ * whatever this function costs, the syscall path pays a multiple of it.
+ *
+ * It used to cost an uncached LAPIC MMIO read (finding [I-6]): hundreds of
+ * cycles on a UC mapping, and by a wide margin the dominant avoidable cost in
+ * the syscall path.
+ *
+ * Two observations remove it.
+ *
+ * 1. In a single-CPU build (SMP=0, e.g. MINIMAL_SECURE) there is exactly one CPU
+ *    and its id is 0 by construction: scheduler_init seeds
+ *    percpu_current_task[0], and set_current_task mirrors into current_task only
+ *    for c == 0. There, the MMIO read was answering a question that had a
+ *    compile-time answer. (The shipped default is SMP=1, so the STR path below
+ *    is the one that actually runs.)
+ *
+ * 2. Under SMP the CPU already carries its own identity in a register. Every CPU
+ *    ltr's a DIFFERENT TSS -- it has to, because RSP0 and the IST stacks are
+ *    loaded from the running CPU's TSS on a ring-3 -> ring-0 transition (see
+ *    gdt.c). Those selectors are laid out linearly: 0x38 for the BSP
+ *    (multiboot.S: setup_tss64) and 0x48/0x58/0x68 for APs 1..3 (gdt.c:
+ *    ap_tss_selector = 0x48 + (cpu-1)*16). So `str` -- a register read, no
+ *    memory reference, no serialisation -- plus a subtract and a shift IS the
+ *    CPU id. TR is written once per CPU at bringup and never again, so the
+ *    answer cannot go stale mid-syscall.
+ *
+ * Why not the `%gs`-based per-CPU block the roadmap sketches (F-1.1)? Because
+ * getting the per-CPU base to survive a ring transition requires `swapgs` in
+ * every ISR entry and exit -- the ring-3 return paths in this file and in
+ * drop_to_ring3() load 0x33 into %gs, and loading a selector into %gs ZEROES the
+ * GS base in long mode, so a base installed without swapgs does not survive the
+ * first return to ring 3. Adding swapgs means a CS-conditional swap on every
+ * entry (exceptions can arrive from ring 0), matching swaps on every exit
+ * including the epilogue that iretq's into a DIFFERENT task's frame, and the
+ * NMI/IST re-entrancy hazard that has produced a long line of CVEs in kernels
+ * with more reviewers than this one. STR gets essentially the same win for none
+ * of that risk, and does not preclude doing %gs later.
+ *
+ * UMIP (CR4.11, set in cpu_enable_protections) blocks STR at CPL 3 only; this
+ * runs at CPL 0.
+ *
+ * Selector of CPU c's TSS: 0x38 + c*0x10. Keep in sync with setup_tss64
+ * (src/boot/multiboot.S) and ap_tss_selector() (src/kernel/gdt.c); the
+ * PERCPU_SELFTEST cross-checks the mapping against the LAPIC on every CPU that
+ * comes online, so a divergence here is caught rather than assumed away. */
+#define TSS_SEL_CPU0   0x38u
+#define TSS_SEL_STRIDE 0x10u
 
+/* The original LAPIC-MMIO derivation. Still the bootstrap answer -- an AP has
+ * TR == 0 until setup_ap_tss() ltr's its TSS, and ap_entry64() must know which
+ * CPU it is in order to pick that TSS -- and still the independent oracle the
+ * self-test falsifies the fast path against. */
+int this_cpu_lapic(void) {
     volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
     uint32_t id_reg = lapic[0x20 / 4];
     uint32_t cpu = (id_reg >> 24) & 0xFF;
     if (cpu >= MAX_CPUS) cpu = 0;
     return (int)cpu;
 }
+
+int this_cpu(void) {
+#ifndef SMP
+    /* One CPU, and the rest of this file already indexes it as 0. */
+    return 0;
+#else
+    uint16_t tr;
+    __asm__ volatile ("str %0" : "=r"(tr));
+
+    /* TR carries no RPL/TI of its own, but mask rather than trust that. */
+    unsigned sel = (unsigned)tr & 0xFFF8u;
+    if (sel >= TSS_SEL_CPU0) {
+        unsigned d = sel - TSS_SEL_CPU0;
+        if ((d % TSS_SEL_STRIDE) == 0) {
+            unsigned c = d / TSS_SEL_STRIDE;
+            if (c < MAX_CPUS) return (int)c;
+        }
+    }
+
+    /* No TSS loaded yet (early AP bringup) or an unrecognised selector: fall
+     * back rather than guess. Wrong here is a CPU running another CPU's task. */
+    return this_cpu_lapic();
+#endif
+}
+
+#ifdef SMP
+/* Bit c set once CPU c has, running on itself, confirmed that its STR-derived id
+ * matches the LAPIC's. Read by PERCPU_SELFTEST, which needs a witness that the
+ * agreement was established on every core rather than inferred on one. */
+volatile unsigned percpu_id_verified = 0;
+
+/* Cross-check the TSS-selector derivation against the LAPIC, on this CPU, once,
+ * at the point its TSS is loaded.
+ *
+ * This is the falsifiable half of the STR fast path: the mapping 0x38 + c*0x10
+ * is a claim about two files this one does not include (multiboot.S's
+ * setup_tss64 and gdt.c's ap_tss_selector), and a claim about a layout a future
+ * GDT edit could silently break. If either moves, every get_current_task() on
+ * that CPU starts naming another CPU's task -- one core reading and writing
+ * another's current-task slot, which is the claim invariant violated from a
+ * direction no scheduler assertion watches.
+ *
+ * So this fails closed rather than degrading: a mismatch means the derivation is
+ * unsound on this hardware, and continuing means silently misattributing every
+ * subsequent syscall. Not gated behind a self-test flag -- it runs once per CPU
+ * at bringup, costs one MMIO read, and the failure it catches is not one to ship
+ * unchecked. */
+void percpu_id_verify_self(void) {
+    uint16_t tr;
+    __asm__ volatile ("str %0" : "=r"(tr));
+
+    int from_tss   = this_cpu();
+    int from_lapic = this_cpu_lapic();
+
+    if (from_tss != from_lapic || from_tss < 0 || from_tss >= MAX_CPUS) {
+        print("PANIC: per-CPU id mismatch: TR=");
+        print_hex((uint32_t)tr);
+        print(" str-derived=");
+        print_decimal(from_tss);
+        print(" lapic=");
+        print_decimal(from_lapic);
+        print(" -- TSS selector layout disagrees with gdt.c/multiboot.S\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+
+    __sync_fetch_and_or(&percpu_id_verified, 1u << (unsigned)from_tss);
+}
+#endif /* SMP */
 
 int get_current_task(void) {
     int c = this_cpu();

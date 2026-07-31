@@ -171,11 +171,28 @@ Required order:
 
 Own PR, with the startup handshake instrumented. Do not attempt step 3 alone.
 
-### 1.2 ⬜ `%gs`-based per-CPU data — **[I-6]**
+### 1.2 ◧ `%gs`-based per-CPU data — **[I-6]** performance goal met by other means
 
-`swapgs` at every ring transition; `%gs:0` holds CPU id, the current TCB pointer, and the
-per-CPU IRQ-nesting state. Removes an uncached LAPIC MMIO read from the hottest kernel path
-(currently several per syscall). Initialise `IA32_KERNEL_GS_BASE` per CPU at AP bringup.
+**Done, differently.** The MMIO read is off the hot path: `this_cpu()` derives the CPU id
+from the TSS selector in `TR` (`cpu = (str() - 0x38) / 0x10`) rather than reading the LAPIC.
+Every CPU already `ltr`s a distinct TSS, so the identity was already in a register; `str`
+costs a register read against the hundreds of cycles an uncacheable MMIO read costs. Verified
+per-core against the LAPIC at bringup (`percpu_id_verify_self`, `make smoke-percpu`).
+
+**Why not `swapgs` first.** The ring-3 return paths (`scheduler.c`'s iretq epilogue,
+`drop_to_ring3`) load `0x33` into `%gs`, and loading a selector into `%gs` zeroes the GS base
+in long mode — so a per-CPU base installed without `swapgs` does not survive the first return
+to ring 3. Doing it properly needs a CS-conditional swap on every ISR entry (exceptions
+arrive from ring 0), matching swaps on every exit including the epilogue that `iretq`s into a
+*different* task's frame, and the NMI/IST re-entrancy hazard behind a long line of CVEs. That
+is a large, high-risk change to the most safety-critical assembly in the tree, and the
+performance argument for it is now spent.
+
+**Still open.** A per-CPU *block* — somewhere to put the per-CPU IRQ-nesting state that
+**[C-3]**'s per-CPU lock needs, and a current-TCB pointer. That is the remaining reason to do
+this, and it should be justified by 1.1's needs rather than by syscall cost. Note the staged
+`syscall_entry` stub already carries a balanced `swapgs` pair for whoever takes it on; the
+preconditions blocking `EFER.SCE` are documented there and asserted by `smoke-percpu`.
 
 ### 1.3 ⬜ Multi-slot endpoint queues and a reply-capability primitive — **[I-5]**
 

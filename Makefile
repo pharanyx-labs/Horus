@@ -1299,13 +1299,43 @@ smoke-fs-wal:
 		tools/smoke_test.sh boot.iso
 	@echo "[wal] PASS — committed transaction replayed after a crash"
 
+# CONC_SELFTEST drives several concurrent clients through the fs_server and waits
+# for all of them, so it runs longer than the single-client smoke tests the 40s
+# default was sized for. On a loaded machine it exceeded that budget and failed as
+# a TIMEOUT with no CONC_SELFTEST: FAIL -- i.e. the test never reached a verdict,
+# which reads as a red gate but is not evidence of a defect. Give it its own
+# budget, as smoke-fs-persist / smoke-fs-wal already do with PERSIST_TIMEOUT.
+#
+# This is a max-wait, not a sleep: a healthy run still finishes in seconds, so the
+# larger budget costs nothing when things are working and only buys headroom when
+# the host is starved. It deliberately does NOT weaken the verdict -- a real
+# CONC_SELFTEST: FAIL still fails immediately, and a genuine hang still fails,
+# just after a wait long enough to distinguish "hung" from "slow".
+CONC_TIMEOUT ?= 120
 .PHONY: smoke-fs-conc
 smoke-fs-conc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONC_SELFTEST=1
 	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONC_SELFTEST: PASS' \
+	@SMOKE_TIMEOUT=$(CONC_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONC_SELFTEST: PASS' \
 		FAIL_MARKER='CONC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Supply-chain falsification: prove the pinned newlib SHA-256 actually refuses a
+# tampered artifact, and still accepts the genuine one.
+#
+# tools/build_newlib.sh downloads a 9 MiB tarball and pins its hash. That pin is
+# the only thing between a compromised upstream and the libc every userspace
+# binary links against. An unexercised pin is an assumption, not a control -- and
+# the failure mode is silent, because a gate that has quietly stopped checking
+# looks exactly like a gate that has nothing to reject.
+#
+# Runs both directions: bad bytes must be refused (before unpacking, with the
+# artifact quarantined so it cannot wedge the next build), and the genuine
+# tarball must pass -- because a gate that refuses everything would sail through
+# the negative case alone. Needs no network for the negative control.
+.PHONY: smoke-newlib-tamper
+smoke-newlib-tamper:
+	@tools/newlib_tamper_test.sh
 
 .PHONY: smoke-newlib
 smoke-newlib:
@@ -1634,24 +1664,46 @@ smoke-session-smp:
 # so the test does not pretend a single green boot is evidence. Requires ALL runs
 # to pass — one hang is a failure, never a retry.
 SOAK_RUNS ?= 15
+# Minimum [ok] steps a run must report before it counts as a pass.
+#
+# A green exit status is not evidence that the work happened. If session_test.py
+# ever degrades -- an expect loop that matches nothing, a step list that silently
+# empties -- it can exit 0 having proven nothing, and a soak built on exit status
+# alone would report N/N green over N boots that tested air. So each run must
+# also emit the SESSION_TEST: PASS marker AND clear this floor; a run that exits
+# 0 with too few checks is reported as VACUOUS and fails the gate, which is the
+# loudest possible version of "this test stopped testing".
+#
+# Set below the current step count (~14 under SMP) so ordinary additions do not
+# trip it, but far enough above zero to catch a collapse.
+SOAK_MIN_CHECKS ?= 8
 .PHONY: smoke-session-smp-soak
 smoke-session-smp-soak:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory boot.iso
 	@echo "[soak] $(SOAK_RUNS) boots; any single hang fails the gate"
-	@fail=0; \
+	@fail=0; vacuous=0; log=$$(mktemp); \
 	for i in $$(seq 1 $(SOAK_RUNS)); do \
-	    if QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py boot.iso >/dev/null 2>&1; then \
-	        echo "[soak] run $$i/$(SOAK_RUNS): pass"; \
+	    rc=0; \
+	    QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py boot.iso >"$$log" 2>&1 || rc=$$?; \
+	    checks=$$(grep -c '\[ok\]' "$$log" 2>/dev/null || echo 0); \
+	    if [ $$rc -eq 0 ] && grep -q 'SESSION_TEST: PASS' "$$log" && [ "$$checks" -ge $(SOAK_MIN_CHECKS) ]; then \
+	        echo "[soak] run $$i/$(SOAK_RUNS): pass ($$checks checks)"; \
+	    elif [ $$rc -eq 0 ] && grep -q 'SESSION_TEST: PASS' "$$log"; then \
+	        echo "[soak] run $$i/$(SOAK_RUNS): VACUOUS - exited 0 with only $$checks checks (expected >= $(SOAK_MIN_CHECKS))"; \
+	        tail -20 "$$log"; \
+	        vacuous=$$((vacuous+1)); \
 	    else \
-	        echo "[soak] run $$i/$(SOAK_RUNS): FAIL"; \
+	        echo "[soak] run $$i/$(SOAK_RUNS): FAIL (exit $$rc, $$checks checks)"; \
+	        echo "----- failing run, last 20 lines -----"; tail -20 "$$log"; \
+	        echo "--------------------------------------"; \
 	        fail=$$((fail+1)); \
 	    fi; \
-	done; \
-	if [ $$fail -ne 0 ]; then \
-	    echo "SESSION_SOAK: FAIL $$fail/$(SOAK_RUNS) boots hung"; exit 1; \
+	done; rm -f "$$log"; \
+	if [ $$fail -ne 0 ] || [ $$vacuous -ne 0 ]; then \
+	    echo "SESSION_SOAK: FAIL $$fail/$(SOAK_RUNS) hung, $$vacuous/$(SOAK_RUNS) vacuous"; exit 1; \
 	fi; \
-	echo "SESSION_SOAK: PASS $(SOAK_RUNS)/$(SOAK_RUNS) boots completed the session"
+	echo "SESSION_SOAK: PASS $(SOAK_RUNS)/$(SOAK_RUNS) boots completed the session (>= $(SOAK_MIN_CHECKS) checks each)"
 
 # Regression guard for the SMP console-output corruption: boot the SHIPPED kernel
 # (no self-test flag) under -smp 4 and require it to reach the ring-3 login banner

@@ -1138,6 +1138,19 @@ extern spinlock_t page_lock;
 
 int  get_current_task(void);
 void set_current_task(int v);
+
+/* Which CPU is executing this code. Derived from the TSS selector in TR (`str`)
+ * rather than an uncached LAPIC MMIO read -- see the long note on this_cpu() in
+ * scheduler.c for why, and why not %gs. this_cpu_lapic() is the original MMIO
+ * derivation, kept as the bootstrap answer (an AP has no TSS until setup_ap_tss)
+ * and as the independent oracle percpu_id_verify_self() falsifies against. */
+int  this_cpu(void);
+int  this_cpu_lapic(void);
+#ifdef SMP
+/* Run once per CPU, on that CPU, as its TSS is loaded: panics if the two
+ * derivations disagree, and records the core in percpu_id_verified. */
+void percpu_id_verify_self(void);
+#endif
 /* Request a voluntary yield from a syscall handler; interrupt_handler64 performs
  * the full-context switch via sched_yield_switch. Not a cooperative mid-kernel switch. */
 void yield(void);
@@ -1544,6 +1557,9 @@ void elf_loader_selftest(void);
 #endif
 #ifdef CPU_SELFTEST
 void cpu_protections_selftest(void);
+#endif
+#ifdef PERCPU_SELFTEST
+void percpu_selftest(void);   /* STR-derived CPU id vs the LAPIC, on every core */
 #endif
 #ifdef WX_SELFTEST
 void wx_selftest(void);

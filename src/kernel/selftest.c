@@ -454,6 +454,84 @@ void cpu_protections_selftest(void) {
 }
 #endif /* CPU_SELFTEST */
 
+#ifdef PERCPU_SELFTEST
+/* Gated: prove the per-CPU identity fast path is sound on every core, and that
+ * the staged SYSCALL path stays unreachable.
+ *
+ * this_cpu() answers "which CPU am I" from the TSS selector in TR (`str`,
+ * cpu = (TR - 0x38) / 0x10) instead of the uncached LAPIC MMIO read it used to
+ * do -- finding [I-6], the dominant avoidable cost in the syscall path, paid
+ * several times per syscall because get_current_task() sits on ~110 call sites.
+ *
+ * That derivation is a claim about a GDT layout owned by two OTHER files
+ * (setup_tss64 in src/boot/multiboot.S pins the BSP at 0x38; ap_tss_selector in
+ * src/kernel/gdt.c pins APs at 0x48/0x58/0x68). Nothing in the type system ties
+ * them together. If either moves, this_cpu() starts returning another CPU's
+ * index and every get_current_task() on that core silently names the wrong
+ * task -- one core reading and writing another's current-task slot.
+ *
+ * WHAT MAKES THIS EVIDENCE RATHER THAN AGREEMENT WITH ITSELF: it does not ask
+ * this_cpu() to confirm this_cpu(). percpu_id_verify_self() runs ON each core,
+ * at the moment that core's TSS is loaded, and compares the STR derivation
+ * against the LAPIC -- an independent oracle, the one the code used before.
+ * Disagreement panics there; this test asserts the witness bitmask shows the
+ * comparison actually HAPPENED on every online CPU, so a core that skipped the
+ * check (or never came up) fails rather than passing by absence.
+ *
+ * The harness boots this with -smp 4, so `online` is expected > 1: a build where
+ * the APs never start would otherwise pass this test having proven the mapping
+ * on the BSP alone, which is the one case where 0x38 - 0x38 == 0 is right by
+ * accident.
+ *
+ * It also asserts EFER.SCE is clear. STAR/LSTAR/SFMASK are programmed
+ * (init_syscall_instruction_path) while SCE is not set, which is what keeps
+ * syscall_entry -- staged, and still carrying a CPU-0-only kernel stack -- out
+ * of reach. Setting SCE is a plausible one-line "optimisation"; this turns that
+ * into a red CI run instead of two cores sharing a kernel stack. */
+void percpu_selftest(void) {
+    extern volatile unsigned percpu_id_verified;
+
+    int ok = 1;
+    const char *why = "";
+
+    int online = smp_get_online_count();
+    unsigned mask = percpu_id_verified;
+    unsigned want = 0;
+    for (int c = 0; c < online && c < MAX_CPUS; c++) want |= 1u << (unsigned)c;
+
+    /* Every CPU that came online must have run the comparison on itself. */
+    if (online < 2) {
+        ok = 0; why = "single-cpu-run-mapping-unproven";
+    } else if ((mask & want) != want) {
+        ok = 0; why = "cpu-missing-from-id-witness";
+    }
+
+    /* The BSP's own answer, checked here against the constant it must be. */
+    if (ok && this_cpu() != this_cpu_lapic()) {
+        ok = 0; why = "bsp-str-lapic-disagree";
+    }
+
+    /* EFER.SCE must be clear: the staged SYSCALL path is not SMP-safe. */
+    if (ok) {
+        uint32_t efer_lo, efer_hi;
+        __asm__ volatile ("rdmsr" : "=a"(efer_lo), "=d"(efer_hi) : "c"(0xC0000080));
+        (void)efer_hi;
+        if (efer_lo & 1u) { ok = 0; why = "efer-sce-set-syscall-path-not-smp-safe"; }
+    }
+
+    if (ok) {
+        print("PERCPU_SELFTEST: PASS online="); print_decimal(online);
+        print(" id-witness="); print_hex(mask);
+        print(" str==lapic on every cpu, EFER.SCE clear\n");
+    } else {
+        print("PERCPU_SELFTEST: FAIL "); print(why);
+        print(" online="); print_decimal(online);
+        print(" id-witness="); print_hex(mask);
+        print("\n");
+    }
+}
+#endif /* PERCPU_SELFTEST */
+
 #ifdef STACKGUARD_SELFTEST
 /* Assert the stack-protector canary was actually re-seeded at boot.
  *

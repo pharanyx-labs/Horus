@@ -141,6 +141,17 @@ be expressed.
 *(The shared global reply endpoint that used to compound this is gone: every task now has a
 private one, so **[I-5]** is closed. The missing queue is not.)*
 
+The block/wake protocol around these mailboxes is the delicate part, and it has now produced
+two defects of the same shape. A caller becomes wake-visible in stages — `pending_block` set,
+`saved_ksp` written, then `state` published — and any interval in which it is committed to
+blocking without advertising it is a window where a wake can be lost. The publish-after-save
+ordering covers `saved_ksp`; a reply arriving before `pending_block` was set, or between it
+being cleared and `state` being written, used to be **dropped and reported as delivered**
+(see CHANGES.md). Both are closed, and the declaration now spans the whole interval, but the
+staged design means the next primitive added here has to reason about the same thing. A
+proper reply capability consumed on reply (roadmap 1.3) would retire the class rather than
+patch instances of it.
+
 ### 2.25 The write-ahead journal is not durable on real hardware — **[I-10]**
 
 `src/kernel/ata.c` issues exactly three ATA commands: `READ SECTORS` (0x20), `WRITE SECTORS`
@@ -192,11 +203,25 @@ no per-task kernel-memory accounting, so kernel memory exhaustion is not attribu
 preventable. **An OS cannot have a compile-time limit of 64 tasks** — this is the main
 structural obstacle to Horus becoming general-purpose.
 
-### 3.2 `this_cpu()` reads LAPIC MMIO on every call — **[I-6]**
+### 3.2 ~~`this_cpu()` reads LAPIC MMIO on every call~~ — **[I-6]**, fixed
 
-`get_current_task()` calls it, several times per syscall, and each is an uncached MMIO read
-costing hundreds of cycles. This is the dominant avoidable cost in the syscall path. The fix
-is `%gs`-based per-CPU data.
+`this_cpu()` now derives the CPU id from the TSS selector in `TR` — `cpu = (str() - 0x38) /
+0x10`, a register read — instead of the uncached LAPIC MMIO read it used to do on every
+`get_current_task()`. Every CPU already `ltr`s a distinct TSS (RSP0 and the IST stacks are
+loaded from the running CPU's TSS), and the selectors are linear: `0x38` for the BSP,
+`0x48/0x58/0x68` for the APs. In the non-SMP build it compiles to `return 0`.
+
+`percpu_id_verify_self()` cross-checks the derivation against the LAPIC on each core as its
+TSS is loaded and panics on disagreement; `make smoke-percpu` asserts that check ran on every
+online CPU (and requires ≥2 cores, since on one CPU the mapping is right by accident).
+
+**What remains.** This took the MMIO read off the syscall path, which is what made **[I-6]**
+a performance/DoS finding. It did *not* introduce the `%gs`-based per-CPU block itself, so
+roadmap 1.2's other half — per-CPU IRQ-nesting state for **[C-3]**'s per-CPU lock — still
+needs somewhere to live. See the note on `this_cpu()` in `src/kernel/scheduler.c` for why
+`%gs` was not the right first step: the ring-3 return paths load a user selector into `%gs`,
+which zeroes the GS base, so a per-CPU base only survives with `swapgs` in every ISR entry
+and exit.
 
 ### 3.3 SMP scheduling is naive
 

@@ -317,7 +317,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-fs-perms` | POSIX rwx is enforced against the **kernel-attested** uid/gid, not a client-supplied one. |
 | `smoke-fs-persist` | Data survives a reboot (two-boot test). |
 | `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). **Known flaky and known weak — see below.** |
-| `smoke-fs-conc` | Multiple clients are served concurrently without cross-talk, via `SYS_IPC_REPLY_TO`. |
+| `smoke-fs-conc` | Multiple clients are served concurrently without cross-talk, via `SYS_IPC_REPLY_TO`. Uses `CONC_TIMEOUT` (default 120s), not the 40s default: it waits on several clients, and on a loaded host it exceeded the shorter budget and failed as a *timeout* — never reaching a verdict, which reads red without being evidence of a defect. A real `CONC_SELFTEST: FAIL` still fails immediately. |
 | `smoke-fs-large` | Double-indirect blocks address large files. |
 
 > **`smoke-fs-wal` — two known defects (findings [I-10], [I-11]).**
@@ -355,12 +355,13 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | Target | Proves |
 |---|---|
 | `smoke-newlib` | The newlib libc works in ring 3. |
+| `smoke-newlib-tamper` | The pinned newlib SHA-256 **refuses** a tampered tarball — before unpacking it, and quarantining it so it cannot wedge the next build. Also asserts the genuine tarball still *passes*, because a gate that refused everything would sail through the negative case alone. No network or QEMU needed. Falsified by disabling the checksum gate: 3 controls fail. |
 | `smoke-pipe` | Bounded pipes with `EAGAIN` back-pressure and EOF/EPIPE on close. |
 | `smoke-coreutils-shell` | `head`, `wc`, and `seq` run on real files, driven through the actual ring-3 shell. |
 | `smoke-tcc` | TCC is provisioned into `/bin` and `tcc -v` runs. (Needs `SMOKE_TIMEOUT=320`.) |
 | `smoke-session` | A scripted session drives the real shell over serial and asserts on output. |
 | `smoke-session-smp` | The same under SMP. |
-| `smoke-session-smp-soak` | `SOAK_RUNS` (default 15) consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails the gate; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. |
+| `smoke-session-smp-soak` | `SOAK_RUNS` (default 15) consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails the gate; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. |
 
 ## Build integrity
 

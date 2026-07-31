@@ -37,19 +37,50 @@ mkdir -p "$NEWLIB_DIR"
 
 # Fetch and verify. The checksum is pinned: this is a network dependency in a
 # repo that otherwise pins every action by SHA, so it gets the same treatment.
+#
+# --retry-all-errors is load-bearing, not belt-and-braces. Plain `--retry N`
+# retries only what curl calls a TRANSIENT error: a timeout, an FTP 4xx, or an
+# HTTP 408/429/500/502/503/504. A connection that dies mid-body is CURLE_RECV_ERROR
+# (exit 56), which is NOT in that set -- so `--retry 3` alone never fired for it,
+# and a single dropped read reddened CI with a build failure that had nothing to
+# do with the tree. That is exactly what happened on PR #116. --retry-all-errors
+# widens the retry to any failure; -C - resumes the partial transfer rather than
+# restarting a 9 MiB download from zero.
+#
+# Resuming into a partial file is only safe BECAUSE the checksum below is
+# unconditional: a resumed-but-corrupt tarball cannot reach the build, it can
+# only fail verification. Verification runs on every invocation, not just after a
+# fetch, so a tarball that arrived by any means -- resumed, cached, or dropped in
+# by hand -- is checked before it is trusted.
 if [ ! -f "$TARBALL" ]; then
 	echo "newlib: fetching $NEWLIB_URL"
-	curl -sfL --retry 3 --max-time 600 -o "$TARBALL.tmp" "$NEWLIB_URL"
+	curl -sfL --retry 5 --retry-delay 3 --retry-all-errors \
+	     --connect-timeout 30 --max-time 900 -C - -o "$TARBALL.tmp" "$NEWLIB_URL" || {
+		echo "newlib: fetch failed (curl exit $?) -- leaving the partial file for resume" >&2
+		exit 1
+	}
 	mv "$TARBALL.tmp" "$TARBALL"
 fi
 
+# Fail closed, and fail CLEAN. Quarantining the rejected artifact matters: the
+# fetch above is skipped whenever $TARBALL exists, so leaving a bad tarball in
+# place wedges the tree -- every subsequent build re-reads the same bad bytes and
+# fails identically, with no path back other than a manual rm. Moving it aside
+# lets the next run re-fetch, while still keeping the evidence for inspection and
+# still refusing to build from it now.
 echo "newlib: verifying tarball checksum"
-echo "$NEWLIB_SHA256  $TARBALL" | sha256sum -c - || {
+if ! echo "$NEWLIB_SHA256  $TARBALL" | sha256sum -c - >/dev/null 2>&1; then
+	got=$(sha256sum "$TARBALL" 2>/dev/null | cut -d' ' -f1)
+	mv -f "$TARBALL" "$TARBALL.rejected" 2>/dev/null || true
 	echo "newlib: CHECKSUM MISMATCH -- refusing to build" >&2
 	echo "newlib: expected $NEWLIB_SHA256" >&2
-	echo "newlib: got      $(sha256sum "$TARBALL" | cut -d' ' -f1)" >&2
+	echo "newlib: got      ${got:-<unreadable>}" >&2
+	echo "newlib: quarantined the rejected artifact at $TARBALL.rejected" >&2
+	echo "newlib: a re-run will re-fetch; if it mismatches again, do NOT bypass this --" >&2
+	echo "newlib: either upstream changed the artifact or the download is being tampered with." >&2
 	exit 1
-}
+fi
+echo "newlib: checksum OK ($NEWLIB_SHA256)"
 
 if [ ! -f "$SRC/configure" ]; then
 	echo "newlib: extracting"

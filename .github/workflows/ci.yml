@@ -930,6 +930,17 @@ jobs:
       - name: Boot INIT_FS_SELFTEST kernel and assert the fs_server works when init spawns and endows it
         run: make smoke-init-fs
 
+  smoke-newlib-tamper:
+    name: Supply-chain falsification (a tampered newlib tarball is refused)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # No QEMU, no kernel build, no network: the negative control only needs the
+      # fetch to be skipped, which happens whenever the tarball already exists.
+      # Runs in seconds and gates a control that is otherwise never exercised.
+      - name: Assert the pinned newlib SHA-256 refuses tampered bytes, before unpacking
+        run: make smoke-newlib-tamper
+
   smoke-newlib:
     name: QEMU newlib libc self-test (headless)
     runs-on: ubuntu-latest

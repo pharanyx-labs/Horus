@@ -121,13 +121,29 @@ int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot)
 int ipc_publish_pending_block(int cur) {
     if (cur <= 0 || cur >= MAX_TASKS) return 0;
     uint32_t kind = tasks[cur].pending_block;
-    tasks[cur].pending_block = 0;
     if (kind == 0) return 0;
+
+    /* NB: pending_block is deliberately NOT cleared here.
+     *
+     * It is this task's public declaration of "I am committed to blocking, I am
+     * just not visibly blocked yet", and h_ipc_reply_to reads it to decide
+     * between retrying (-2) and dropping a reply as unwanted (0). Clearing it
+     * before the state transition below reopens exactly the window it exists to
+     * cover: for the instructions between the clear and `state = TASK_BLOCKED_*`
+     * the task would advertise neither "blocked" nor "about to block", and a
+     * server replying from another CPU in that gap would drop the reply, report
+     * success, and leave the client parked forever.
+     *
+     * So every path below clears it at the point the outcome is decided, and for
+     * the endpoint/notification cases that clear happens UNDER ipc_lock together
+     * with the state write — the same lock h_ipc_reply_to takes — so the two are
+     * one atomic transition from any other CPU's point of view. */
 
     struct interrupt_frame64 *f =
         (struct interrupt_frame64 *)tasks[cur].saved_ksp;
     if (!f) {
         /* No frame: refuse to publish a waiter (would be a use-after-stale). */
+        tasks[cur].pending_block = 0;
         tasks[cur].state        = TASK_RUNNABLE;
         tasks[cur].runnable_ctx = 1;
         return 0;
@@ -140,11 +156,13 @@ int ipc_publish_pending_block(int cur) {
             /* Out of range, or a retyped endpoint destroyed while this task was
              * on its way to blocking on it. Either way there is nothing to wait
              * on: resume rather than park on an object that cannot be signalled. */
+            tasks[cur].pending_block = 0;
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
             return 0;
         }
         ipc_lock();
+        tasks[cur].pending_block = 0;   /* under the lock: see the note above */
         /* Reply raced in as a mailbox message before we published the waiter. */
         if (e->has_message) {
             int len = e->msg_len;
@@ -175,6 +193,7 @@ int ipc_publish_pending_block(int cur) {
         int tid = tasks[cur].blocked_on;
         /* Re-check: target may have exited after the handler looked. */
         if (tid < 0 || tid >= MAX_TASKS || tasks[tid].state == TASK_DEAD) {
+            tasks[cur].pending_block = 0;
             f->rax = 0;
             tasks[cur].state        = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
@@ -182,6 +201,7 @@ int ipc_publish_pending_block(int cur) {
             return 0;
         }
         tasks[tid].waiter       = cur;
+        tasks[cur].pending_block = 0;
         tasks[cur].state        = TASK_BLOCKED_WAIT;
         tasks[cur].runnable_ctx = 0;
         __asm__ volatile ("" ::: "memory");
@@ -192,11 +212,13 @@ int ipc_publish_pending_block(int cur) {
         int slot = tasks[cur].blocked_on_notif;
         struct notification *n = (slot < 0) ? 0 : notification_by_index((uint32_t)slot);
         if (!n) {
+            tasks[cur].pending_block = 0;
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
             return 0;
         }
         ipc_lock();
+        tasks[cur].pending_block = 0;   /* under the lock: see the note above */
         if (n->pending_badge != 0) {
             uint32_t b = n->pending_badge;
             n->pending_badge = 0;
@@ -215,6 +237,7 @@ int ipc_publish_pending_block(int cur) {
         return 1;
     }
 
+    tasks[cur].pending_block = 0;
     tasks[cur].state        = TASK_RUNNABLE;
     tasks[cur].runnable_ctx = 1;
     return 0;
@@ -479,20 +502,51 @@ void h_ipc_call(struct interrupt_frame64 *r) {
     if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &send_ep) != 0) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
-    int rep = reply_ep_for_task(get_current_task());
+    int cur = get_current_task();
+    int rep = reply_ep_for_task(cur);
     if (rep < 0) { r->rax = (uint32_t)-1; return; }
     uint32_t reply_ep = (uint32_t)rep;
 
-    /* Deposit the outgoing message into send_ep. */
-    int rc = sys_ipc_send(send_ep, msg, send_len);
-    if (rc < 0) { r->rax = (uint32_t)rc; return; }
-
-    int cur = get_current_task();
-
-    /* Intent only — not wake-visible until ipc_publish_pending_block. */
+    /* Declare the intent to block BEFORE the request becomes visible.
+     *
+     * Ordering is the whole point here. sys_ipc_send() publishes the request
+     * under ipc_lock, and the moment it does, a server on another CPU may
+     * receive it, service it, and reply -- all before this handler's next
+     * instruction retires. h_ipc_reply_to() decides what to do with that reply
+     * by looking at this task: TASK_BLOCKED_IPC means deliver, pending_block ==
+     * TASK_BLOCKED_IPC means "committed but not published yet, retry (-2)", and
+     * neither means "not waiting on us, drop it (0)".
+     *
+     * With the send first, there was a window in which the request was visible
+     * but pending_block was still 0, so a fast reply landed in the third case:
+     * dropped, reported to the server as delivered, and the client then parked
+     * on a reply that could never arrive. It reproduced as an intermittent
+     * console hang under SMP -- the shell wedged mid-print with the server idle,
+     * most often on back-to-back writes (the login-failure path), which is
+     * exactly where the server is already in recv and answers fastest.
+     *
+     * Setting the intent first closes it: the request cannot be seen before the
+     * declaration that accompanies it. sys_ipc_send's ipc_lock acquire/release
+     * pairs with the reader's, so a CPU that observes the request also observes
+     * pending_block. */
     tasks[cur].ipc_reply_buf = reply_buf;
     tasks[cur].blocked_on    = (int)reply_ep;
     tasks[cur].pending_block = TASK_BLOCKED_IPC;
+    __asm__ volatile ("" ::: "memory");
+
+    /* Deposit the outgoing message into send_ep. */
+    int rc = sys_ipc_send(send_ep, msg, send_len);
+    if (rc < 0) {
+        /* Nothing was published, so nobody can reply: withdraw the declaration
+         * rather than park on an endpoint no request was sent to. Callers retry
+         * -2 (mailbox full) from ring 3. */
+        tasks[cur].pending_block = 0;
+        tasks[cur].blocked_on    = -1;
+        tasks[cur].ipc_reply_buf = 0;
+        r->rax = (uint32_t)rc;
+        return;
+    }
+
     /* r->rax is set by interrupt_handler64 after we return; a wake patches
      * saved_ksp->rax with the reply length. */
     r->rax = 0;

@@ -344,6 +344,23 @@ jobs:
       - name: Boot under -cpu +smep,+smap and assert both are detected and set in CR4
         run: make smoke-cpu
 
+  smoke-percpu:
+    name: QEMU per-CPU identity self-test (TR-derived cpu id == LAPIC, every core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot multi-core and assert every core's TR-derived id matches the LAPIC
+        run: make smoke-percpu
+
   smoke-flush:
     name: QEMU flush-on-switch self-test (side-channel barriers detection + policy)
     runs-on: ubuntu-latest
@@ -734,6 +751,26 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Drive the ring-3 shell over serial under -smp 4 and assert login + coreutils + least-privilege hold
         run: make smoke-session-smp
+
+  smoke-session-smp-soak:
+    name: SMP session soak (N consecutive boots; gates the IPC lost-reply race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # A 1-in-5 hang passes a single boot four times out of five, which is how the
+      # lost-reply race survived every green smoke job. Only repetition witnesses it.
+      - name: Require SOAK_RUNS consecutive clean SMP sessions (one hang fails; no retry)
+        run: make smoke-session-smp-soak SOAK_RUNS=15
 
   smoke-fs:
     name: QEMU filesystem self-test (headless)

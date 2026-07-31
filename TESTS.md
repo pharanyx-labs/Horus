@@ -215,6 +215,7 @@ explicit "do not do this" comments at the sites that invited them.
 | `smoke-wx` | The kernel image is r-x / r-- / rw-, and a sweep of **every leaf PTE** finds no writable-and-executable page. |
 | `smoke-wx-smp` | The same under SMP, and that every AP's IST fault stack sits above an unmapped guard page. |
 | `smoke-cpu` | SMEP and SMAP are detected **and actually set in CR4** — not merely attempted. Boots under `-cpu +smep,+smap`. |
+| `smoke-percpu` | `this_cpu()`'s TSS-selector derivation agrees with the LAPIC **on every core that came online**, checked on each core as its TSS is loaded, and `EFER.SCE` is clear so the staged SYSCALL path stays unreachable. Needs ≥2 cores: on one CPU the mapping is right by accident, so a UP run fails rather than passing vacuously. |
 | `smoke-aspace` | Rebuilding a task slot repeatedly returns every physical page to the pool — a dead task's address space leaks nothing. |
 | `smoke-cow` | Copy-on-write breaks correctly for the shared zero page. |
 | `smoke-nzcow` | The generic (non-zero) COW break is correct — added after a real bug in that path. |
@@ -312,6 +313,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-tcc` | TCC is provisioned into `/bin` and `tcc -v` runs. (Needs `SMOKE_TIMEOUT=320`.) |
 | `smoke-session` | A scripted session drives the real shell over serial and asserts on output. |
 | `smoke-session-smp` | The same under SMP. |
+| `smoke-session-smp-soak` | `SOAK_RUNS` (default 15) consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails the gate; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. |
 
 ## Build integrity
 

@@ -8,6 +8,61 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — verify the build's own inputs and gates, not just the kernel's
+
+Three follow-ups from the **[I-6]** / IPC-race work, all the same shape: something
+was being trusted that had never been checked.
+
+**The newlib fetch retried the wrong error class.** `tools/build_newlib.sh`
+downloads a 9 MiB tarball and passed `--retry 3` — but curl's plain `--retry`
+covers only what it calls *transient*: a timeout, an FTP 4xx, or HTTP
+408/429/500/502/503/504. A connection that dies mid-body is `CURLE_RECV_ERROR`
+(exit 56), which is **not** in that set, so the retry never fired for it. One
+dropped read reddened CI on PR #116 with a failure that had nothing to do with
+the tree. Now `--retry-all-errors --retry-delay 3 --retry 5` with `-C -` to resume
+the partial transfer instead of restarting from zero.
+
+Resuming into a partial file is safe only *because* the checksum is
+unconditional, and it is: verification runs on every invocation, not just after a
+fetch, so a tarball that arrived by any route — resumed, cached, or dropped in by
+hand — is checked before it is trusted.
+
+**A rejected artifact used to wedge the tree.** The fetch is skipped whenever the
+tarball exists, so a tarball that failed verification was re-read and re-rejected
+by every subsequent build, with no way out but a manual `rm`. It is now
+quarantined to `.rejected`: the next run re-fetches cleanly, the evidence is kept,
+and the current build still refuses. Failing closed should not also mean failing
+*stuck*.
+
+**The pin itself was never exercised** — `make smoke-newlib-tamper`. That
+SHA-256 is the only thing between a compromised upstream and the libc every
+userspace binary links against, and an unexercised pin is an assumption, not a
+control; a gate that has quietly stopped checking looks exactly like one with
+nothing to reject. The test asserts tampered bytes are refused **before
+unpacking** (tar has had path-traversal bugs; don't touch the payload until it is
+trusted) and that the artifact is quarantined — *and* that the genuine tarball
+still passes, because a gate that refused everything would sail through the
+negative control alone. Falsified by disabling the checksum: 3 controls fail. No
+network or QEMU needed; it runs in seconds.
+
+**The soak gate could have gone green on nothing.** As first written it sent each
+run to `/dev/null` and trusted the exit status, so a `session_test.py` that
+degraded into a no-op would have reported 15/15 green over 15 boots that tested
+air — the same "a test that cannot fail is not evidence" trap the soak exists to
+close, reintroduced by the soak itself. Each run must now emit `SESSION_TEST:
+PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps; a run that exits 0
+with too few is reported `VACUOUS` and fails the gate. Passing runs print their
+check count, and failing runs print their output instead of discarding it.
+Falsified by raising the floor above what the test can produce.
+
+**`smoke-fs-conc` was failing as a timeout, not a defect.** It waits on several
+concurrent clients and was using the 40s default sized for single-client tests;
+on a loaded host it ran out of budget with **zero** `CONC_SELFTEST: FAIL` — it
+never reached a verdict at all. Given its own `CONC_TIMEOUT` (default 120s),
+following the existing `PERSIST_TIMEOUT` precedent. This is a max-wait, not a
+sleep: healthy runs still finish in seconds, and a genuine failure or hang still
+fails — just after a wait long enough to tell "hung" from "slow".
+
 ### Fixed — an IPC lost-reply race that wedged the shell mid-print under SMP
 
 A client blocking in `SYS_IPC_CALL` could have its reply **silently discarded and

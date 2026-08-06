@@ -300,6 +300,14 @@ The build is verified reproducible and an SBOM is produced, but there are no tag
 releases, no signed artifacts, and no SLSA provenance. A third party cannot verify that a
 `boot.iso` they obtained came from this repository's CI.
 
+*Inbound* dependency verification is in better shape than outbound provenance: the one
+network dependency in the build path — the newlib tarball — is pinned by SHA-256, verified on
+every invocation (not merely after a fetch), refused **before** unpacking, and quarantined
+rather than left in place when it fails. `make smoke-newlib-tamper` exercises that gate in
+both directions, so it is a control rather than an assumption. That says nothing about what
+leaves the build, which is what **[I-9]** is actually about; it only means the tree is no
+longer trusting an unverified 9 MiB blob on the way in.
+
 ### 5.4 Cryptography is unaudited
 
 Every primitive — ChaCha20, SHA-256, BLAKE2b, Argon2, the AEAD — is a from-scratch `no_std`

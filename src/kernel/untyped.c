@@ -247,10 +247,16 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
     if (kobj_type == KOBJ_ENDPOINT) {
         struct endpoint *e = (struct endpoint *)mem;
         /* A fresh endpoint must not start life claiming task 0 as its sender or
-         * waiter: zeroed memory means index 0, and 0 is a real task. */
-        e->sender_task    = -1;
+         * waiter: zeroed memory means index 0, and 0 is a real task. The queue
+         * ring needs the same treatment per slot (roadmap 1.3). */
+        e->head           = 0;
+        e->count          = 0;
         e->last_sender    = -1;
         e->blocked_waiter = -1;
+        for (int s = 0; s < EP_QUEUE_SLOTS; s++) {
+            e->q[s].len    = 0;
+            e->q[s].sender = -1;
+        }
         dyn_eps[idx].mem     = mem;
         dyn_eps[idx].untyped = untyped_index;
         if (out_index) *out_index = DYN_EP_BASE + (uint32_t)idx;

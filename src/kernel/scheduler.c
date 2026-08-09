@@ -169,11 +169,14 @@ void scheduler_init(void) {
      * untyped memory already do this in kobj_alloc; this is the static tables
      * catching up.) */
     for (int i = 0; i < MAX_ENDPOINTS; i++) {
-        endpoints[i].has_message   = 0;
-        endpoints[i].msg_len       = 0;
-        endpoints[i].sender_task   = -1;
-        endpoints[i].last_sender   = -1;
+        endpoints[i].head           = 0;
+        endpoints[i].count          = 0;
+        endpoints[i].last_sender    = -1;
         endpoints[i].blocked_waiter = -1;
+        for (int s = 0; s < EP_QUEUE_SLOTS; s++) {
+            endpoints[i].q[s].len    = 0;
+            endpoints[i].q[s].sender = -1;
+        }
     }
     for (int i = 0; i < MAX_NOTIFICATIONS; i++) {
         notifications[i].pending_badge  = 0;
@@ -508,14 +511,21 @@ static void watchdog_dump(int seq) {
          * is -1, not 0: an earlier version tested `last_sender == 0` and so
          * skipped nothing, printing all 128 and flushing the later dumps out of
          * the capture window. */
-        if (!e->has_message && e->blocked_waiter < 0 &&
-            e->last_sender <= 0 && e->sender_task <= 0) continue;
+        if (e->count == 0 && e->blocked_waiter < 0 && e->last_sender <= 0) continue;
         panic_str("ep "); panic_dec((int)i);
-        panic_str(": has_msg=");  panic_dec(e->has_message);
-        panic_str(" len=");       panic_dec(e->msg_len);
-        panic_str(" sender=");    panic_dec(e->sender_task);
+        panic_str(": queued=");   panic_dec((int)e->count);
+        panic_str("/");           panic_dec(EP_QUEUE_SLOTS);
+        panic_str(" head=");      panic_dec((int)e->head);
         panic_str(" last=");      panic_dec(e->last_sender);
         panic_str(" blkwaiter="); panic_dec(e->blocked_waiter);
+        /* Who is waiting in the ring, in service order. A full queue whose head
+         * never advances is a stalled server; a queue that is always empty while
+         * clients spin is the opposite problem. */
+        for (uint32_t k = 0; k < e->count; k++) {
+            struct ep_msg *m = &e->q[(e->head + k) % EP_QUEUE_SLOTS];
+            panic_str(k ? "," : " senders=");
+            panic_dec(m->sender);
+        }
         panic_str("\n");
     }
     panic_str("==== END HANG WATCHDOG ====\n");

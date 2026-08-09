@@ -339,13 +339,48 @@ static inline int reply_ep_for_task(int tid) {
 #define TASK_BLOCKED_NOTIF 3   /* blocked inside SYS_WAIT_NOTIFY waiting for a badge */
 #define TASK_BLOCKED_WAIT  4   /* blocked inside SYS_WAIT until the target task exits */
 
+/* ---- Endpoints: a bounded FIFO, not a single mailbox slot (roadmap 1.3, [I-5])
+ *
+ * An endpoint used to hold exactly ONE in-flight message. Every additional
+ * sender got -2 ("try again") and polled from ring 3, so N clients on one server
+ * spent their slices colliding rather than working: contention was a busy-wait,
+ * and fair service could not be expressed at all — the queue that would order
+ * requests did not exist, so "who goes next" was decided by whoever the scheduler
+ * happened to run.
+ *
+ * Now each endpoint owns a bounded ring of EP_QUEUE_SLOTS messages. A sender only
+ * sees -2 when the queue is genuinely FULL, which under normal service it is not,
+ * so the common contention case stops being a retry loop and becomes an enqueue.
+ * Bounded is the point: the depth is fixed at compile time, so a sender cannot
+ * make the kernel allocate, and a server that stops receiving cannot be used to
+ * grow kernel memory without limit. Back-pressure at the bound is still -2.
+ *
+ * Each slot carries its OWN sender id. That is not bookkeeping convenience: the
+ * reply path authorises by kernel-recorded sender identity, so a queued message
+ * has to remember who sent it rather than sharing one field that the next sender
+ * would overwrite. `last_sender` remains the identity of the most recently
+ * DEQUEUED message — what SYS_IPC_SENDER and SYS_IPC_REPLY_TO answer about. */
+/* Overridable so the depth can be A/B'd against the behaviour it replaced:
+ * EP_QUEUE_SLOTS=1 degenerates the ring to exactly the old single-slot mailbox,
+ * which is what the queue's benefit is measured against. A knob that can restore
+ * the previous design is also the cheapest falsification of the claim that the
+ * new one is an improvement. */
+#ifndef EP_QUEUE_SLOTS
+#define EP_QUEUE_SLOTS  4
+#endif
+
+struct ep_msg {
+    int32_t  len;                  /* payload length in bytes */
+    int32_t  sender;               /* task that deposited it (kernel-recorded) */
+    uint8_t  data[IPC_MSG_MAX];
+};
+
 struct endpoint {
-    int      has_message;
-    int      msg_len;
-    int      sender_task;
-    int      last_sender;
+    struct ep_msg q[EP_QUEUE_SLOTS];
+    uint32_t head;             /* index of the next message to dequeue */
+    uint32_t count;            /* messages currently queued (0..EP_QUEUE_SLOTS) */
+    int      last_sender;      /* sender of the most recently dequeued message */
     int      blocked_waiter;   /* task id blocked in SYS_IPC_CALL on this endpoint, -1=none */
-    uint8_t  msg[IPC_MSG_MAX];
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
 

@@ -194,13 +194,25 @@ this, and it should be justified by 1.1's needs rather than by syscall cost. Not
 `syscall_entry` stub already carries a balanced `swapgs` pair for whoever takes it on; the
 preconditions blocking `EFER.SCE` are documented there and asserted by `smoke-percpu`.
 
-### 1.3 ⬜ Multi-slot endpoint queues and a reply-capability primitive — **[I-5]**
+### 1.3 ◧ Multi-slot endpoint queues and a reply-capability primitive — **[I-5]**
 
 *(A note here previously raised this item to a correctness fix on the strength of finding
 **G-8** signature C. That diagnosis was wrong — C was a startup race plus a userspace loop
 retrying `SYS_ERR_PERM` forever, not endpoint contention, and it is fixed in userspace. This
 item returns to its original standing: the poll-on-contention busy-wait remains a real
 limitation with no witness of it causing a hang. See `TESTS.md` for the corrected finding.)*
+
+**Queues landed 2026-08-10; the reply capability has not.** Each endpoint now holds a bounded
+FIFO of `EP_QUEUE_SLOTS` (4), so concurrent senders enqueue rather than collide. Measured on
+the 4-client concurrency test under single-core starvation: mean **7042 ms → 5162 ms**, and the
+single-slot build's completion times came in three discrete clusters ~520 ms apart — retry
+rounds — which the queue removes entirely. `EP_QUEUE_SLOTS=1` restores the old design exactly,
+which is how the benefit was measured rather than asserted.
+
+**Remaining:** a blocking receive (an empty queue still returns `-2` and the server polls, so
+priority inheritance is still inexpressible), and the one-shot reply capability itself — the
+part that makes reply forgery structurally impossible rather than gated by
+`SYS_IPC_REPLY_TO`'s sender-identity check.
 
 A bounded FIFO per endpoint, plus a **one-shot reply capability** minted at call time and
 consumed on reply (seL4's reply object). This makes reply forgery *structurally* impossible

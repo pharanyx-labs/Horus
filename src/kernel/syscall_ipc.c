@@ -40,6 +40,51 @@ static inline void ipc_lock(void) { }
 static inline void ipc_unlock(void) { }
 #endif
 
+/* ---- Endpoint queue primitives (roadmap 1.3) -------------------------------
+ *
+ * Both must be called with ipc_lock held: they are the only mutators of the ring,
+ * and a torn head/count pair would either lose a message or hand two receivers
+ * the same slot. Kept tiny and side-effect-free for that reason — every policy
+ * decision (rights, revalidation, blocked waiters) lives in the callers.
+ *
+ * ep_enqueue copies from a KERNEL buffer: the caller does copy_from_user first,
+ * so a fault cannot happen with the lock held. */
+static inline int ep_full(const struct endpoint *e)  { return e->count >= EP_QUEUE_SLOTS; }
+static inline int ep_empty(const struct endpoint *e) { return e->count == 0; }
+
+static void ep_enqueue(struct endpoint *e, const uint8_t *src, int len, int sender) {
+    uint32_t slot = (e->head + e->count) % EP_QUEUE_SLOTS;
+    struct ep_msg *m = &e->q[slot];
+    if (len < 0) len = 0;
+    if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
+    for (int i = 0; i < len; i++) m->data[i] = src[i];
+    m->len    = len;
+    m->sender = sender;
+    __asm__ volatile ("" ::: "memory");
+    e->count++;
+}
+
+/* Dequeue into a kernel buffer. Returns the length, and writes the sender id
+ * through `sender` so the caller can publish it as last_sender AFTER the copy to
+ * userspace has succeeded — a failed copy must not advance the reply identity. */
+static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender) {
+    struct ep_msg *m = &e->q[e->head];
+    int len = m->len;
+    if (len < 0) len = 0;
+    if (len > max) len = max;
+    for (int i = 0; i < len; i++) dst[i] = m->data[i];
+    if (sender) *sender = m->sender;
+    /* Scrub the slot before releasing it. An endpoint slot outlives the message
+     * in it, and the next sender may be a different, mutually distrusting task;
+     * leaving the bytes would make the ring a residue channel between them. */
+    for (int i = 0; i < IPC_MSG_MAX; i++) m->data[i] = 0;
+    m->len    = 0;
+    m->sender = -1;
+    e->head = (e->head + 1) % EP_QUEUE_SLOTS;
+    e->count--;
+    return len;
+}
+
 /* ------------------------------------------------------------------------- *
  *  Capability-addressed IPC (audit finding C-1).
  *
@@ -148,16 +193,15 @@ int ipc_publish_pending_block(int cur) {
         ipc_lock();
         tasks[cur].pending_block = 0;   /* under the lock: see the note above */
         /* Reply raced in as a mailbox message before we published the waiter. */
-        if (e->has_message) {
-            int len = e->msg_len;
-            if (len < 0) len = 0;
-            if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
+        if (!ep_empty(e)) {
+            uint8_t kbuf[IPC_MSG_MAX];
+            int sender = -1;
+            int len = ep_dequeue(e, kbuf, IPC_MSG_MAX, &sender);
             if (len > 0 && tasks[cur].ipc_reply_buf != 0) {
-                copy_to_user((void *)(addr_t)tasks[cur].ipc_reply_buf, e->msg,
+                copy_to_user((void *)(addr_t)tasks[cur].ipc_reply_buf, kbuf,
                              (size_t)len);
             }
-            e->has_message = 0;
-            e->last_sender = e->sender_task;
+            e->last_sender = sender;
             f->rax = (uint64_t)(uint32_t)len;
             tasks[cur].state        = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
@@ -329,19 +373,20 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
         return 0;
     }
 
-    /* Non-blocking: if the single mailbox slot is still full, tell the caller to
-     * retry. The old form spun in-kernel calling yield(), but the cooperative
-     * scheduler cannot correctly switch two ring-3 tasks (only timer preemption
-     * can); a caller that polls from ring 3 gets preempted and makes progress. */
-    if (e->has_message) { ipc_unlock(); return -2; }
+    /* Queue it. -2 now means the endpoint's bounded ring is genuinely FULL, not
+     * merely occupied: with EP_QUEUE_SLOTS deep, concurrent clients enqueue
+     * instead of colliding, so the retry path is reached only under real
+     * back-pressure rather than on every second request (roadmap 1.3, [I-5]). */
+    if (ep_full(e)) { ipc_unlock(); return -2; }
 
     if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) { ipc_unlock(); return -1; }
 
-    if (len > 0 && copy_from_user(e->msg, msg, len) != 0) { ipc_unlock(); return -1; }
-    e->msg_len = (int)len;
-    e->sender_task = get_current_task();
-    __asm__ volatile ("" ::: "memory");
-    e->has_message = 1;
+    /* Copy into a kernel buffer BEFORE taking the slot. copy_from_user can fault,
+     * and faulting with a half-filled queue slot published would leave a message
+     * of indeterminate contents visible to the receiver. */
+    uint8_t kbuf2[IPC_MSG_MAX];
+    if (len > 0 && copy_from_user(kbuf2, msg, len) != 0) { ipc_unlock(); return -1; }
+    ep_enqueue(e, kbuf2, (int)len, get_current_task());
     ipc_unlock();
     return 0;
 }
@@ -358,18 +403,23 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
      * 3 and is timer-preempted, rather than spinning on the broken cooperative
      * yield in-kernel. */
     ipc_lock();
-    if (!e->has_message) { ipc_unlock(); return -2; }
+    if (ep_empty(e)) { ipc_unlock(); return -2; }
 
     if (auth.valid && !cap_revalidate(3, CAP_RIGHT_READ, &auth)) { ipc_unlock(); return -1; }
 
-    int len = e->msg_len;
-    if (len > (int)max_len) len = (int)max_len;
-    if (len < 0) len = 0;
-    if (len > 0 && copy_to_user(msg, e->msg, (size_t)len) != 0) { ipc_unlock(); return -1; }
+    /* Dequeue into a kernel buffer first, then copy out. Doing it the other way
+     * round — copying straight from the slot to userspace — would leave the
+     * message dequeued but undelivered if the user copy faulted, silently losing
+     * a request that the sender is blocked waiting for a reply to. */
+    uint8_t kbuf[IPC_MSG_MAX];
+    int sender = -1;
+    int len = ep_dequeue(e, kbuf, (int)max_len, &sender);
+    if (len > 0 && copy_to_user(msg, kbuf, (size_t)len) != 0) { ipc_unlock(); return -1; }
 
-    e->last_sender = e->sender_task;
+    /* Only now is this the message being serviced, so only now does its sender
+     * become the identity SYS_IPC_SENDER and SYS_IPC_REPLY_TO answer about. */
+    e->last_sender = sender;
     __asm__ volatile ("" ::: "memory");
-    e->has_message = 0;
     ipc_unlock();
     return len;
 }

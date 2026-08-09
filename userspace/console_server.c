@@ -244,9 +244,19 @@ void _start(void) {
         } else {
             rp.rc = -1;
         }
-        /* Reply to THIS request's sender by kernel-recorded identity; retry on a
-         * transient "client still blocking" race, before the next recv. */
-        while (sys_ipc_reply_to(CAPSLOT_CONSOLE_EP, (const char *)&rp, sizeof(rp)) < 0) sys_yield();
+        /* Reply to THIS request's sender by kernel-recorded identity; retry on the
+         * transient "client still blocking" race ONLY. A permanent refusal must
+         * not be spun on — the console server wedging silently takes the console
+         * with it. See the IPC retry contract in syscall.h (finding G-8). */
+        {
+            unsigned tries = 0;
+            int rr;
+            while ((rr = sys_ipc_reply_to(CAPSLOT_CONSOLE_EP, (const char *)&rp, sizeof(rp))) < 0) {
+                if (!ipc_transient(rr)) break;          /* permanent: drop the reply */
+                if (++tries > 2000000u) break;          /* transient, but not forever */
+                sys_yield();
+            }
+        }
         /* Do not let a just-read password linger in the reply buffer between
          * requests (it was already delivered to the caller). */
         if (was_pass) umemset(rp.data, 0, sizeof(rp.data));

@@ -439,12 +439,24 @@ static void panic_dec(int v) {
 #ifndef HANG_WATCHDOG_TICKS
 #define HANG_WATCHDOG_TICKS 4000       /* ~40s at 100Hz */
 #endif
-static int watchdog_fired = 0;
+/* Dump more than once, spaced HANG_WATCHDOG_TICKS apart.
+ *
+ * One snapshot cannot tell a LIVELOCK (tasks running hard, state churning, no
+ * forward progress) from a FROZEN state (nothing changing at all), and those have
+ * different causes and different fixes. Successive dumps do: compare them. */
+#ifndef HANG_WATCHDOG_DUMPS
+#define HANG_WATCHDOG_DUMPS 3
+#endif
+static int watchdog_dumps = 0;
 
-static void watchdog_dump(void) {
-    panic_str("\n==== HANG WATCHDOG: no progress after ");
-    panic_dec((int)HANG_WATCHDOG_TICKS);
-    panic_str(" ticks ====\n");
+static void watchdog_dump(int seq) {
+    panic_str("\n==== HANG WATCHDOG dump ");
+    panic_dec(seq);
+    panic_str("/");
+    panic_dec((int)HANG_WATCHDOG_DUMPS);
+    panic_str(" at tick ");
+    panic_dec((int)system_ticks);
+    panic_str(" ====\n");
 #ifdef SMP
     for (int c = 0; c < MAX_CPUS; c++) {
         panic_str("cpu "); panic_dec(c);
@@ -470,18 +482,53 @@ static void watchdog_dump(void) {
 #ifdef SMP
         panic_str(" cpu=");      panic_dec(task_running_cpu[t]);
 #endif
+        /* Where the task is parked. For everything except the CPU's current task
+         * this is the ring-3 rip its trap frame will resume at -- i.e. which spin
+         * loop it is in. That is the difference between "all five tasks are
+         * hammering the same endpoint" and "one of them is somewhere unexpected". */
+        if (tasks[t].saved_ksp) {
+            struct interrupt_frame64 *f =
+                (struct interrupt_frame64 *)tasks[t].saved_ksp;
+            panic_str(" rip=0x");
+            for (int sh = 60; sh >= 0; sh -= 4) {
+                int nyb = (int)((f->rip >> sh) & 0xF);
+                panic_ch((char)(nyb < 10 ? '0' + nyb : 'a' + nyb - 10));
+            }
+        }
         panic_str("\n");
     }
-    panic_str("==== END HANG WATCHDOG (boot continues) ====\n");
+    /* The endpoints themselves. The task table can look entirely healthy -- every
+     * task RUNNABLE, nothing blocked -- while the thing they are all spinning on
+     * is wedged, and that is exactly the state finding G-8 signature C reaches.
+     * Only endpoints carrying state are printed; the rest are noise. */
+    for (uint32_t i = 0; i < MAX_ENDPOINTS; i++) {
+        struct endpoint *e = endpoint_by_index(i);
+        if (!e) continue;
+        /* Skip endpoints that have never carried traffic. NB the idle value here
+         * is -1, not 0: an earlier version tested `last_sender == 0` and so
+         * skipped nothing, printing all 128 and flushing the later dumps out of
+         * the capture window. */
+        if (!e->has_message && e->blocked_waiter < 0 &&
+            e->last_sender <= 0 && e->sender_task <= 0) continue;
+        panic_str("ep "); panic_dec((int)i);
+        panic_str(": has_msg=");  panic_dec(e->has_message);
+        panic_str(" len=");       panic_dec(e->msg_len);
+        panic_str(" sender=");    panic_dec(e->sender_task);
+        panic_str(" last=");      panic_dec(e->last_sender);
+        panic_str(" blkwaiter="); panic_dec(e->blocked_waiter);
+        panic_str("\n");
+    }
+    panic_str("==== END HANG WATCHDOG ====\n");
 }
 #endif /* HANG_WATCHDOG */
 
 void timer_handler(void) {
     system_ticks++;
 #ifdef HANG_WATCHDOG
-    if (!watchdog_fired && system_ticks > (uint32_t)HANG_WATCHDOG_TICKS) {
-        watchdog_fired = 1;            /* set FIRST: the dump is slow (polled UART) */
-        watchdog_dump();
+    if (watchdog_dumps < HANG_WATCHDOG_DUMPS &&
+        system_ticks > (uint32_t)HANG_WATCHDOG_TICKS * (uint32_t)(watchdog_dumps + 1)) {
+        watchdog_dumps++;              /* bump FIRST: the dump is slow (polled UART) */
+        watchdog_dump(watchdog_dumps);
     }
 #endif
 }

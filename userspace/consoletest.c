@@ -28,7 +28,14 @@ static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { 
 static int rpc(struct con_request *rq, struct con_response *rp) {
     rq->magic = CON_PROTO_MAGIC;
     int r;
-    while ((r = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, rq, sizeof(*rq), rp)) < 0) spin_delay();
+    /* Transient only, and bounded. See the IPC retry contract in syscall.h: the
+     * old `while (r < 0)` retried SYS_ERR_PERM forever (finding G-8). */
+    unsigned tries = 0;
+    while ((r = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, rq, sizeof(*rq), rp)) < 0) {
+        if (!ipc_transient(r)) return r;                /* permanent: report up */
+        if (++tries > 2000000u) return -103;
+        spin_delay();
+    }
     if (rp->magic != CON_PROTO_MAGIC) return -102;
     return rp->rc;
 }

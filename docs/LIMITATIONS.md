@@ -138,17 +138,12 @@ One in-flight message per endpoint, no queue. `SYS_IPC_SEND`/`RECV` return `-2` 
 userspace to poll, so contention is a busy-wait. Fair service and priority inheritance cannot
 be expressed.
 
-**This now has a witness, and it is a livelock, not a slowdown — [G-8] signature C.**
-`CONC_SELFTEST` puts four clients and one server on a single endpoint on one CPU. Under CPU
-starvation, **3 boots in 30** never complete: the scheduler's own watchdog shows every task
-`RUNNABLE`, nothing blocked, and the timer alive, while the completion times are bimodal —
-17 runs finish in 6–8 seconds and 3 have not finished after **600**. The pollers settle into an
-interleaving in which a client's send never meets the server's receive, and nothing in the
-design breaks the cycle: no queue to park the message in, no blocking handoff to force
-progress. Raising the timeout does not help, because the affected boots are not slow.
-
-Treat multi-client contention on one endpoint as **unsafe under CPU pressure**, not merely
-inefficient. Roadmap 1.3 is therefore a correctness fix, not a performance one.
+*(An earlier revision of this section claimed finding **[G-8]** signature C was a livelock
+caused by this contention. **That was wrong.** It was a startup race — clients that lost the
+race against `fs_server`'s registration held no endpoint capability, and every IPC then
+returned `SYS_ERR_PERM` into a userspace loop that retried it forever. Evidence: not one byte
+of traffic ever crossed any endpoint in a hung boot, which contention cannot produce. Fixed in
+userspace; see `TESTS.md`. This limitation remains real and unwitnessed.)*
 
 *(The shared global reply endpoint that used to compound this is gone: every task now has a
 private one, so **[I-5]** is closed. The missing queue is not.)*

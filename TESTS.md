@@ -289,48 +289,73 @@ recent serial: "...init: starting, launching shell\r\n
                 [console_server] ready (ring-3; owns serial + VGA framebuffer)\r\n\r\n"
 ```
 
-**Signature C is diagnosed: it is a LIVELOCK, not a slow test.** Reproduced locally at
-**3 in 30 (10%)**, and the mechanism established by two measurements:
+**Signature C is diagnosed — and the first diagnosis of it, published here, was WRONG.**
 
-*The watchdog dump from a hung boot* — every task runnable, nothing blocked, timer alive:
+It is not a livelock on the single-slot endpoint. It is a **startup race whose consequence was
+retried forever**, and the two want completely different fixes.
+
+*What the evidence actually showed.* Three watchdog dumps 1200 ticks apart in one hung boot:
 
 ```
-==== HANG WATCHDOG: no progress after 800 ticks ====
-cpu 0: current=2 idle=0 imp=0
-task 1 'fsserver' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
-task 2 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=0
-task 3 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
-task 4 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
-task 5 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
+==== HANG WATCHDOG dump 1/3 at tick 601 ====
+task 1 'fsserver' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 rip=0x000002696a584ea0
+task 3 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 rip=0x000000dfe6209060
+task 4 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 rip=0x0000019c6aaf1060
+task 5 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 rip=0x0000002c44728060
 ```
 
-No task is `BLOCKED_*`, so no wake was lost. Every task has a resumable context and only one
-holds a CPU claim, so all the others are selectable — no scheduling bug. And the watchdog fired
-at all, so the timer is live and interrupts are on — not a ring-0 lockup. Everything is
-runnable and nothing progresses.
+— and dumps 2 and 3 are **byte-identical** in those instruction pointers. Two facts follow,
+and between them they exclude contention outright:
 
-*The completion-time distribution*, 20 starved boots with the budget raised to 600s:
+1. **No endpoint section printed at all**, in any dump. The dump lists every endpoint carrying
+   a message, a waiter or a recorded sender. None ever did. **Not one byte of IPC traffic
+   crossed any endpoint for the entire boot.** Contention on a single slot would show traffic
+   and *then* stall; zero traffic from the start means the clients never had a capability to
+   send with.
+2. Every task `RUNNABLE`, `pblock=0`, `blkon=-1`. Nobody blocked, nobody waiting, timer alive.
 
-| Outcome | Runs | Time |
+*The mechanism.* `SYS_CONNECT_FS_SERVER` returns `-1` until `fs_server` has completed
+`SYS_REGISTER_FS_SERVER`. The clients are made runnable at the same instant as the server, so
+losing that race is ordinary. The client called connect **once and discarded the result**:
+
+```c
+(void)sys_connect_fs_server(CAPSLOT_FS_EP, CAP_R_W);   /* result ignored */
+...
+while ((r = sys_ipc_call(CAPSLOT_FS_EP, ...)) < 0) spin_delay();   /* forever */
+```
+
+With an empty capability slot every call returns `SYS_ERR_PERM` (**-1**) — a permanent
+condition — into a loop that treats every negative as transient. `SYS_ERR_PERM` is -1 and the
+retryable code is -2; they were always distinguishable, and nothing distinguished them.
+
+*Why this is a security bug and not only a robustness one.* Fail-closed has to mean **stop,
+loudly, where authority was refused**. A refusal retried forever is indistinguishable from a
+hang, so the one event the capability system exists to make visible becomes the one nobody can
+see. Revoke a capability out from under any of these loops today and the task wedges silently
+instead of reporting that it was denied.
+
+*The fix, falsified in both directions.* `syscall.h` now states the retry contract explicitly
+(`IPC_AGAIN` is the only retryable code, `ipc_transient()` the predicate); all four userspace
+loops retry transient-only and bounded; and `fs_connect_retry()` retries the connect, the same
+discipline `fs_server` already applies to its own registration on the other side of the same
+race.
+
+| Build | Starved single-core boots | Result |
 |---|---|---|
-| PASS | 17 | **6–8 s** |
-| FAIL | 3 | **≥600 s** |
+| before | 30 / 30 | **3 and 5 hangs** (two runs) |
+| after | 40 | **0 failures** |
+| race restored, retry discipline kept | 30 | **2 hit the race, 0 silent hangs** — every one reported `FAIL ipc-refused rc=-1` |
 
-**Bimodal, with nothing in between.** Not one run landed at 30s, 90s or 200s. A budget that is
-merely too tight produces a spread of overruns; this is 7 seconds or never, an 85× gap. So
-**raising `CONC_TIMEOUT` would not fix it** — the affected boots are not slow, they are stuck
-in a state the scheduler considers perfectly healthy.
+That third row is the important one: it proves the two halves independently. The connect retry
+is what removes the failure; the retry discipline is what converts a silent unkillable hang
+into a diagnosable message, so the *next* bug of this shape costs minutes instead of a day.
 
-**What it is.** This is **[I-5]** — single-slot endpoint mailboxes — biting for real rather
-than theoretically. `LIMITATIONS.md` §2.2 already says `SYS_IPC_SEND`/`RECV` return `-2` and
-"expect userspace to poll, so contention is a busy-wait" and that "fair service ... cannot be
-expressed". `CONC_SELFTEST` puts **four clients and one server on one single-slot endpoint,
-on one CPU**, which is exactly the configuration that warning describes. Under starvation the
-pollers can settle into an interleaving that never lets a client's send meet the server's
-recv, and nothing in the design breaks the cycle: there is no queue to park a message in and
-no blocking handoff to force progress. **Roadmap 1.3** (multi-slot endpoint queues plus a
-one-shot reply capability) is the fix, and this is the first hard evidence that it is a
-correctness item and not only a performance one.
+*The lesson, which cost a published wrong answer.* "All tasks runnable, nothing blocked" is
+consistent with contention **and** with nobody ever having started — and the first reading
+picked the interesting hypothesis over the boring one without an observation that could
+separate them. The endpoint dump was the observation. **A rate is not a mechanism, and neither
+is a plausible story about one.** This is the fourth wrong hypothesis about intermittent
+failures in this repo, and the first that was written into the docs before it was tested.
 
 **Signature C** — a **uniprocessor** boot that stops dead once the filesystem is up. It has hit
 `smoke-fs-persist` and `smoke-fs-conc`, both of which are *gating*:

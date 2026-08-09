@@ -196,15 +196,11 @@ preconditions blocking `EFER.SCE` are documented there and asserted by `smoke-pe
 
 ### 1.3 ⬜ Multi-slot endpoint queues and a reply-capability primitive — **[I-5]**
 
-**Priority raised 2026-08-09: this is a correctness fix, not a performance one.** The
-poll-on-contention busy-wait can *livelock*, and now has a witness — finding **G-8** signature
-C. Four clients and one server on a single endpoint on one CPU: under CPU starvation 3 boots
-in 30 never complete, with every task `RUNNABLE`, nothing blocked and the timer alive. The
-completion times are bimodal — 17 runs in 6–8 seconds, 3 unfinished after **600** — so it is
-not slowness and no timeout fixes it. The pollers reach an interleaving where a send never
-meets a receive, and there is no queue to park the message in and no blocking handoff to break
-the cycle. It currently fails the *gating* `smoke-fs-conc` and `smoke-fs-persist`
-intermittently. See `TESTS.md`.
+*(A note here previously raised this item to a correctness fix on the strength of finding
+**G-8** signature C. That diagnosis was wrong — C was a startup race plus a userspace loop
+retrying `SYS_ERR_PERM` forever, not endpoint contention, and it is fixed in userspace. This
+item returns to its original standing: the poll-on-contention busy-wait remains a real
+limitation with no witness of it causing a hang. See `TESTS.md` for the corrected finding.)*
 
 A bounded FIFO per endpoint, plus a **one-shot reply capability** minted at call time and
 consumed on reply (seL4's reply object). This makes reply forgery *structurally* impossible

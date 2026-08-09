@@ -646,6 +646,25 @@ void _start(void) {
          * replies. A negative return is a transient "client still blocking" race
          * (SMP); retry until delivered. Must precede the next recv, which would
          * overwrite last_sender. */
-        while (sys_ipc_reply_to(CAPSLOT_FS_LISTEN, (const char *)&rp, sizeof(rp)) < 0) spin_delay();
+        /* Retry only the transient race (-2: the client deposited its request but
+         * has not yet published its block). A permanent failure here — the listen
+         * capability revoked, say — must NOT be retried forever: that would wedge
+         * the server silently and take every client down with it. See the IPC
+         * retry contract in syscall.h (finding G-8). */
+        {
+            unsigned tries = 0;
+            int rr;
+            while ((rr = sys_ipc_reply_to(CAPSLOT_FS_LISTEN, (const char *)&rp, sizeof(rp))) < 0) {
+                if (!ipc_transient(rr)) {
+                    println("[fs_server] reply refused (capability lost?); dropping");
+                    break;
+                }
+                if (++tries > 2000000u) {
+                    println("[fs_server] reply retry exhausted; dropping");
+                    break;
+                }
+                spin_delay();
+            }
+        }
     }
 }

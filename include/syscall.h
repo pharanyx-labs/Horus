@@ -418,6 +418,37 @@ static inline int sys_ipc_send(int ep_slot, const void *msg, size_t len) {
     return syscall(SYS_IPC_SEND, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)len);
 }
 
+/* ---- The IPC retry contract ------------------------------------------------
+ *
+ * The IPC syscalls return exactly ONE retryable code: IPC_AGAIN (-2), meaning
+ * "the single mailbox slot is momentarily full" or "no message yet". It is the
+ * only negative that says try again. Every other negative is PERMANENT —
+ * SYS_ERR_PERM (-1) above all, which means "you hold no capability for this
+ * endpoint" and will be just as true on the millionth attempt as on the first.
+ *
+ * WHY THIS EXISTS. Four separate userspace loops were written as
+ *
+ *     while (sys_ipc_call(...) < 0) spin_delay();
+ *
+ * which retries a permanent authorisation failure forever. That is not a
+ * theoretical concern: it is finding G-8 signature C. A client that lost the
+ * startup race against fs_server's registration got SYS_ERR_PERM from every
+ * call, spun on it for the rest of the boot, and the test hung with every task
+ * RUNNABLE, nothing blocked, and NOT ONE BYTE of IPC traffic ever recorded on
+ * any endpoint. Three watchdog dumps 1200 ticks apart showed byte-identical
+ * instruction pointers.
+ *
+ * It is also a security property, not merely a robustness one. Fail-closed has
+ * to mean STOP, loudly, at the point authority was refused. A refusal that is
+ * retried forever is indistinguishable from a hang, so the one event the
+ * capability system exists to make visible becomes the one event nobody can
+ * see. Revoke a capability out from under a spinning task today and it silently
+ * wedges instead of reporting that it was denied.
+ *
+ * So: retry on ipc_transient() only, and bound even that. */
+#define IPC_AGAIN (-2)
+static inline int ipc_transient(int rc) { return rc == IPC_AGAIN; }
+
 /* Receive on the endpoint named by the CAP_ENDPOINT in `ep_slot` (needs READ —
  * the receive right, which only a service holder has). */
 static inline int sys_ipc_recv(int ep_slot, void *msg, size_t max_len) {

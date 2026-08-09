@@ -78,6 +78,70 @@ Also fixed: two CPUs tripping the checker on the same tick interleaved their out
 byte-by-byte into an unreadable `PANICPANIC: : unbalanced impersostale scheduler
 claim…`. A first-CPU-wins latch now gives the reporter the UART alone. Same failure
 as the earlier `PA[NIC: console_server] ready` episode, one level up.
+### Fixed — a permanent IPC refusal was retried forever, hanging the FS tests (G-8 signature C)
+
+`smoke-fs-conc` and `smoke-fs-persist` — both *gating* — hung intermittently on a
+**uniprocessor** boot: the serial log stopped at `[fs_server] filesystem
+provisioned` and nothing followed. Reproduced at **3 in 30** under single-core
+starvation, and bimodal: 17 boots in 6–8 seconds, 3 unfinished after **600**.
+
+**The mechanism.** `SYS_CONNECT_FS_SERVER` returns `-1` until `fs_server` has
+completed `SYS_REGISTER_FS_SERVER`, and the clients become runnable at the same
+instant as the server, so losing that race is ordinary. The client called connect
+**once and discarded the result**, then issued requests through an empty
+capability slot — and every one returned `SYS_ERR_PERM` (**-1**) into
+
+```c
+while ((r = sys_ipc_call(...)) < 0) spin_delay();   /* retries -1 forever */
+```
+
+`SYS_ERR_PERM` is -1 and the only retryable code is -2. They were always
+distinguishable; nothing distinguished them. Four separate userspace loops had the
+same shape.
+
+**Why this is a security bug, not only a robustness one.** Fail-closed has to mean
+*stop, loudly, where authority was refused*. A refusal retried forever is
+indistinguishable from a hang, so the one event the capability system exists to
+make visible becomes the one nobody can see — revoke a capability out from under
+any of these loops and the task wedges silently instead of reporting denial.
+
+**The fix.** `syscall.h` now states the retry contract explicitly (`IPC_AGAIN` is
+the only retryable code; `ipc_transient()` is the predicate). All four loops —
+`fsclient`, `fs_server`, `console_server`, `consoletest` — retry transient-only and
+bounded, and report permanent refusals. `fs_connect_retry()` retries the connect,
+the same discipline `fs_server` already applied to its own registration on the
+other side of the same race.
+
+| Build | Starved single-core boots | Result |
+|---|---|---|
+| before | 30 / 30 | **3 and 5 hangs** |
+| after | 40 | **0** |
+| race restored, retry discipline kept | 30 | **2 hit the race, 0 silent hangs** — each reported `FAIL ipc-refused rc=-1` |
+
+The third row proves the halves independently: the connect retry removes the
+failure, and the retry discipline converts a silent unkillable hang into a
+diagnosable message.
+
+**A published diagnosis was wrong, and is corrected.** This was first recorded as a
+livelock caused by single-slot endpoint contention (**[I-5]**), and roadmap 1.3 was
+promoted to a correctness item on that basis. It was neither. A hung boot showed
+**not one byte of IPC traffic on any endpoint** — contention produces traffic and
+then stalls; zero traffic means the clients never had a capability. `TESTS.md`,
+`docs/LIMITATIONS.md` §2.2 and `docs/ROADMAP.md` 1.3 are corrected; 1.3 returns to
+its original standing as a real limitation with no witness of it hanging anything.
+
+### Added — `HANG_WATCHDOG`, because the hang left no log to read
+
+The clients in `smoke-fs-conc` print nothing on the happy path, so a wedged boot
+and a slow one produced byte-identical serial output: 120 seconds of silence. The
+watchdog dumps every task's scheduler state, each task's parked instruction
+pointer, and every endpoint carrying traffic, then **lets the boot continue** —
+halting would stop a merely-slow boot from going on to pass, which was the
+hypothesis under test. Three dumps 1200 ticks apart showed byte-identical
+instruction pointers and no endpoint traffic at all, which is what identified the
+mechanism. Off in the ship kernel; falsified by firing it deliberately on a healthy
+boot.
+
 ### Changed — the SMP session soak is advisory until finding G-8 is diagnosed
 
 The soak is reporting a reproducible intermittent failure on `main` at **2–3% per

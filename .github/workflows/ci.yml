@@ -775,9 +775,30 @@ jobs:
         run: make smoke-session-smp
 
   smoke-session-smp-soak:
-    name: SMP session soak (N consecutive boots; gates the IPC lost-reply race)
+    name: SMP session soak (N consecutive boots; ADVISORY -- open finding G-8)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # ADVISORY, NOT GATING -- see finding G-8 in TESTS.md.
+    #
+    # The soak reports a reproducible intermittent failure that is still live on
+    # main: measured 2026-08-09 on e8cc850, 1 in 45 boots pinned to two host cores,
+    # and 1 in 15 on a runner. A run dies as a 120s timeout waiting for the shell
+    # prompt, with the previous command's output truncated mid-line.
+    #
+    # WHAT IT IS HAS NOT BEEN ESTABLISHED, and the two candidates want opposite
+    # fixes. It is either a genuine kernel wedge, or the apropos step exceeding its
+    # 120s budget on a starved host -- the same step, and the same shape, as the
+    # slowness that already forced that budget from 60s to 120s (see the note on
+    # smoke-session-smp in the Makefile). A rate is not a mechanism.
+    #
+    # Gating on it meanwhile would be the worst of both: at ~3% per boot, SOAK_RUNS
+    # goes red often enough to train everyone to hit re-run, which is exactly how
+    # smoke-console-smp's deadlock survived months of CI (TESTS.md). A gate nobody
+    # believes is worse than an advisory job somebody reads.
+    #
+    # Restore it to gating in the same commit that resolves G-8, either way -- and
+    # quote a rate, not a green run.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -791,8 +812,12 @@ jobs:
         run: rustup target add x86_64-unknown-none
       # A 1-in-5 hang passes a single boot four times out of five, which is how the
       # lost-reply race survived every green smoke job. Only repetition witnesses it.
-      - name: Require SOAK_RUNS consecutive clean SMP sessions (one hang fails; no retry)
-        run: make smoke-session-smp-soak SOAK_RUNS=15
+      # Raised 15 -> 45: at the ~3% rate measured for G-8, 15 boots witness it only
+      # ~37% of the time, so an advisory job at 15 would mostly report nothing at
+      # all. 45 boots reach ~75%, and the job is advisory, so a red one costs a read
+      # rather than a re-run. Each boot is a few seconds.
+      - name: Run SOAK_RUNS SMP sessions and report the hang rate (advisory; see G-8)
+        run: make smoke-session-smp-soak SOAK_RUNS=45
 
   smoke-fs:
     name: QEMU filesystem self-test (headless)

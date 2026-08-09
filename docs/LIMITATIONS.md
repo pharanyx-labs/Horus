@@ -294,6 +294,25 @@ indistinguishable from the race** — both produce the same output. A test that 
 "the code is broken" from "the harness was too quick" is not evidence for the property it
 claims to establish.
 
+### 5.2c The SMP session soak is not clean, and the cause is unknown — **[G-8]**
+
+`smoke-session-smp-soak` fails at roughly **3% per boot** on current `main` — 1 hang in 45
+pinned to two host cores, 1 in 15 on a CI runner. A command's output stops partway through a
+line and the shell never returns to its prompt.
+
+It is **not** the IPC lost-reply race (`#116`, the fix, is in every tree measured) and **not**
+the scheduler claim-invariant finding (closed, 30/30). It is genuinely unexplained, and the
+two candidates want opposite fixes: a real kernel wedge in the console/IPC path, or the
+`apropos` step — the heaviest in the session — exceeding its 120s budget on a starved host.
+The second is not hypothetical: that same step already forced the budget from 60s to 120s on a
+loaded runner with no code fault.
+
+**Until it is diagnosed, the CI job is advisory rather than gating**, because at that rate a
+required check goes red on about a third of runs and simply teaches everyone to press re-run —
+the reflex that let the `smoke-console-smp` deadlock survive months of CI. That is a
+mitigation, not a fix, and it is the second required check in this document to be downgraded
+for nondeterminism (see **[I-11]**). See `TESTS.md` for the evidence and the next step.
+
 ### 5.3 No release provenance — **[I-9]**
 
 The build is verified reproducible and an SBOM is produced, but there are no tags, no

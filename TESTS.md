@@ -255,6 +255,62 @@ harness from **24/24 to 13/20**, because a stale claim marks a task whose kernel
 abandoned, and freeing it resumes that task from a stale frame. Both are now recorded as
 explicit "do not do this" comments at the sites that invited them.
 
+### Open finding G-8: the SMP session soak is not clean, and nobody knows why yet
+
+**Status: open, mechanism not established. The CI job is advisory, not gating.**
+
+`smoke-session-smp-soak` fails at roughly **3% per boot** on current `main`:
+
+| Where | Result |
+|---|---|
+| `e8cc850`, pinned to two host cores | **1 hang in 45** |
+| CI runner (PR #117, run 12/15) | **1 hang in 15** |
+
+The failing run always looks the same. A command's output stops partway through a line and
+the shell never returns to its prompt, until `session_test.py` gives up:
+
+```
+[ok] apropos finds pages by keyword
+SESSION_TEST: FAIL — timeout after 120s waiting for 'root@horus#'
+recent serial: "...apropos directory\r\n  ls  (1)  list directory entries\r\n ... rm          "
+```
+
+**What it is not.** It is not the IPC lost-reply race — `#116`, the fix for that, is present in
+every tree measured above. It is not the claim-invariant finding, which is closed and holds
+30/30. It is not caused by PR #117, which changed no kernel source.
+
+**What it might be, and why that matters.** There are two candidates and they want *opposite*
+fixes:
+
+1. **A genuine kernel wedge** — the console/IPC path stalling mid-reply, in which case the
+   fix is in the kernel and the truncated line is the symptom.
+2. **The `apropos` step exceeding its 120s budget on a starved host** — in which case the
+   fix is in the harness and the kernel is fine. This is not a hypothetical: the note on
+   `smoke-session-smp` in the `Makefile` records *that same step* already forcing
+   `SESSION_TIMEOUT` from 60s to 120s on a loaded runner **with no code fault**. `apropos`
+   scans every man page, so it is the heaviest step in the session, and both failures were
+   under deliberate CPU starvation (pinned locally, oversubscribed on CI).
+
+**A rate is not a mechanism.** This repo has now made that mistake in both directions:
+`smoke-console-smp` was a real deadlock dismissed as flaky, and the `SCHED_INVARIANTS` report
+above was a correct kernel accused of a defect. Neither error is cheap, and the second one
+blocked a roadmap item for a fortnight. So this is written down as an open question with a
+measured rate, not as a bug and not as a flake.
+
+**Why advisory rather than gating.** At ~3% per boot, `SOAK_RUNS=15` reddens roughly a third
+of all CI runs. A required check in that state teaches everyone to hit re-run, which is
+precisely the reflex that let the console-smp deadlock survive months of CI. A gate nobody
+believes is worse than an advisory job somebody reads. `SOAK_RUNS` is raised to 45 in CI so
+the advisory job actually witnesses the thing it is reporting (~75% of runs, against ~37% at
+15). **Restore it to gating in the same commit that resolves G-8 — either way — and quote a
+rate, not a green run.**
+
+**To make progress, capture a failing run.** The soak used to send every run to `/dev/null`
+and trust the exit status; it now keeps the failing run's output, which is the only reason the
+signature above is known at all. The next step is a full serial log plus the kernel's own view
+at the moment of the stall — whether the console server is blocked in `recv`, and whether the
+shell is blocked in `SYS_IPC_CALL` — which distinguishes candidate 1 from candidate 2 outright.
+
 ## Memory protection and isolation
 
 | Target | Proves |
@@ -361,7 +417,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-tcc` | TCC is provisioned into `/bin` and `tcc -v` runs. (Needs `SMOKE_TIMEOUT=320`.) |
 | `smoke-session` | A scripted session drives the real shell over serial and asserts on output. |
 | `smoke-session-smp` | The same under SMP. |
-| `smoke-session-smp-soak` | `SOAK_RUNS` (default 15) consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails the gate; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. |
+| `smoke-session-smp-soak` | `SOAK_RUNS` consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. **Currently ADVISORY in CI, not gating — see finding G-8 below.** |
 
 ## Build integrity
 

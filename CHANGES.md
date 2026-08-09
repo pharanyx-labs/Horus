@@ -78,6 +78,29 @@ Also fixed: two CPUs tripping the checker on the same tick interleaved their out
 byte-by-byte into an unreadable `PANICPANIC: : unbalanced impersostale scheduler
 claim…`. A first-CPU-wins latch now gives the reporter the UART alone. Same failure
 as the earlier `PA[NIC: console_server] ready` episode, one level up.
+### Changed — the SMP session soak is advisory until finding G-8 is diagnosed
+
+The soak is reporting a reproducible intermittent failure on `main` — **1 boot in 45**
+pinned to two host cores, 1 in 15 on a runner — in which a command's output stops
+partway through a line and the shell never returns to its prompt.
+
+It is **not** the IPC lost-reply race below (`#116` is present in every tree
+measured) and **not** the scheduler claim-invariant finding (closed, 30/30). What
+it *is* has not been established, and the two candidates want opposite fixes: a
+genuine kernel wedge, or the `apropos` step exceeding its 120s budget on a starved
+host — the same step that already forced that budget from 60s to 120s with no code
+fault. **A rate is not a mechanism**, and this repo has now erred in both
+directions: `smoke-console-smp` was a real deadlock called flaky, and the
+`SCHED_INVARIANTS` report was a correct kernel called broken.
+
+So the job runs on every PR and reports, but no longer blocks, and `SOAK_RUNS`
+rises to 45 in CI so an advisory job actually witnesses what it reports (~75% of
+runs, against ~37% at 15). Gating on a check that reddens a third of the time
+teaches everyone to press re-run, which is the reflex that hid the console-smp
+deadlock for months. Restore it to gating in the same commit that resolves G-8 —
+either way — and quote a rate, not a green run. See `TESTS.md` and
+`docs/LIMITATIONS.md` §5.2c.
+
 ### Changed — verify the build's own inputs and gates, not just the kernel's
 
 Three follow-ups from the **[I-6]** / IPC-race work, all the same shape: something

@@ -1663,6 +1663,30 @@ smoke-session-smp:
 # This is the honest gate for a probabilistic defect: one boot cannot witness it,
 # so the test does not pretend a single green boot is evidence. Requires ALL runs
 # to pass — one hang is a failure, never a retry.
+#
+# ---- OPEN FINDING G-8 (2026-08-09): this soak is not clean on main -------------
+#
+# A residual failure survives at roughly 3% per boot: 1 in 45 pinned to two host
+# cores on e8cc850, 1 in 15 on a CI runner. It is NOT the lost-reply race above --
+# #116 is in every tree measured -- and it is NOT the claim-invariant finding,
+# which is closed and holds 30/30.
+#
+# The mechanism is NOT established, and the two candidates want opposite fixes:
+#
+#   a genuine kernel wedge      -> fix the kernel
+#   the apropos step exceeding  -> fix the budget/harness
+#   its 120s budget on a
+#   starved host
+#
+# The second is live: the note on smoke-session-smp above records that same step
+# already forcing SESSION_TIMEOUT from 60s to 120s on a loaded runner with no code
+# fault. A failure rate is not a diagnosis -- the mistake this repo has now made in
+# both directions (smoke-console-smp was a real deadlock called flaky; the
+# SCHED_INVARIANTS report was a correct kernel called broken).
+#
+# Diagnosing it needs the failing run's serial log, which is why the loop below
+# stopped sending output to /dev/null. The CI job is ADVISORY until this resolves;
+# restore it to gating in the same commit, and quote a rate.
 SOAK_RUNS ?= 15
 # Minimum [ok] steps a run must report before it counts as a pass.
 #

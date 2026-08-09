@@ -358,8 +358,132 @@ void create_user_task(int id, addr_t entry, addr_t stack_top) {
 }
 
 
+/* ---- Direct-to-UART diagnostic output -------------------------------------
+ *
+ * Shared by the claim checker (SCHED_INVARIANTS) and the hang watchdog
+ * (HANG_WATCHDOG). Deliberately NOT gated on SMP: the watchdog exists to
+ * diagnose hangs, and one of the open ones (finding G-8 signature C) happens on
+ * a UNIPROCESSOR boot, where every SMP diagnostic is inapplicable by
+ * construction. */
+#if defined(SCHED_INVARIANTS) || defined(HANG_WATCHDOG)
+/* ---- Panic output, straight to the UART -----------------------------------
+ *
+ * NOT print(). Once a ring-3 console server owns the console, kernel print() is
+ * suppressed, and while it is coming up both writers touch COM1 concurrently
+ * from different CPUs. A panic emitted through print() therefore arrived
+ * interleaved and truncated -- literally "PA[NIC: console_server] ready" -- so
+ * the one message that has to survive was the one that did not. That reads as a
+ * hang rather than a detected violation, which is precisely the confusion this
+ * whole facility exists to remove.
+ *
+ * Everything below writes bytes to COM1 itself, with interrupts already off and
+ * every other CPU about to be halted. It bypasses the console ownership rules
+ * deliberately: there is no owner left to be polite to. */
+static void panic_ch(char ch) {
+    while ((inb(0x3FD) & 0x20) == 0) { }
+    outb(0x3F8, (uint8_t)ch);
+}
+
+/* First CPU to detect a violation gets the UART; the rest halt silently.
+ *
+ * Not defensive tidiness — without it two cores that trip on the same tick
+ * interleave byte-by-byte and the report comes out as
+ * "PANICPANIC: : unbalanced impersostale scheduler claim...", i.e. neither
+ * message is readable and the run looks like a garbled hang. That is the same
+ * failure this facility was built to eliminate (see the note above on why it
+ * writes to COM1 directly rather than through print()), reappearing one level up.
+ * Observed during the falsification runs for the impersonation bracket. */
+static volatile int panic_claimed = 0;
+static void panic_begin(void) {
+    if (__sync_lock_test_and_set(&panic_claimed, 1))
+        for (;;) __asm__ volatile ("cli; hlt");   /* someone else is reporting */
+}
+static void panic_str(const char *s) { while (*s) panic_ch(*s++); }
+static void panic_dec(int v) {
+    char buf[12];
+    int i = 0, neg = (v < 0);
+    unsigned u = neg ? (unsigned)(-v) : (unsigned)v;
+    if (!u) buf[i++] = '0';
+    while (u) { buf[i++] = (char)('0' + (u % 10)); u /= 10; }
+    if (neg) panic_ch('-');
+    while (i) panic_ch(buf[--i]);
+}
+#endif
+
+#ifdef HANG_WATCHDOG
+/* ---- Hang watchdog: turn a silent stall into a state dump -------------------
+ *
+ * Some self-tests print NOTHING between their last setup line and their single
+ * PASS marker. `smoke-fs-conc` is the worst case: the four client tasks are
+ * silent on the happy path, so a boot that wedges anywhere in the workload
+ * produces a serial log identical to a boot that is merely slow, ending at
+ * "[fs_server] filesystem provisioned" with 120 seconds of nothing after it.
+ * That is finding G-8 signature C, and it is undiagnosable from the log alone --
+ * there is no log.
+ *
+ * So once the deadline passes, dump what the scheduler can see: every live task,
+ * whether it is runnable, whether it has a resumable context, and what it is
+ * blocked on. That is enough to separate the cases that matter:
+ *
+ *   every task RUNNABLE, none blocked   -> nobody is stuck; the run was just slow
+ *   a task BLOCKED_IPC with no peer     -> a lost wake / dropped reply
+ *   a task RUNNABLE but not selectable  -> a scheduling bug (claim, ctx, ksp)
+ *
+ * Fires ONCE and lets the boot continue, deliberately. Halting would destroy the
+ * distinction above by preventing a merely-slow run from going on to pass -- and
+ * "it would have passed given another second" is exactly the hypothesis under
+ * test. The harness still fails the boot on its own timeout; this only makes the
+ * serial log say why.
+ *
+ * Compiled out by default; the ship kernel pays nothing. */
+#ifndef HANG_WATCHDOG_TICKS
+#define HANG_WATCHDOG_TICKS 4000       /* ~40s at 100Hz */
+#endif
+static int watchdog_fired = 0;
+
+static void watchdog_dump(void) {
+    panic_str("\n==== HANG WATCHDOG: no progress after ");
+    panic_dec((int)HANG_WATCHDOG_TICKS);
+    panic_str(" ticks ====\n");
+#ifdef SMP
+    for (int c = 0; c < MAX_CPUS; c++) {
+        panic_str("cpu "); panic_dec(c);
+        panic_str(": current="); panic_dec(percpu_current_task[c]);
+        panic_str(" idle=");     panic_dec(percpu_idle[c]);
+        panic_str(" imp=");      panic_dec(percpu_impersonating[c]);
+        panic_str("\n");
+    }
+#else
+    panic_str("uniprocessor; current="); panic_dec(current_task); panic_str("\n");
+#endif
+    for (int t = 0; t < MAX_TASKS; t++) {
+        if (tasks[t].state == 0) continue;
+        panic_str("task "); panic_dec(t);
+        panic_str(" '");
+        for (int k = 0; k < 16 && tasks[t].name[k]; k++) panic_ch(tasks[t].name[k]);
+        panic_str("' state=");   panic_dec((int)tasks[t].state);
+        panic_str(" rctx=");     panic_dec(tasks[t].runnable_ctx ? 1 : 0);
+        panic_str(" ksp=");      panic_dec(tasks[t].saved_ksp ? 1 : 0);
+        panic_str(" pblock=");   panic_dec((int)tasks[t].pending_block);
+        panic_str(" blkon=");    panic_dec(tasks[t].blocked_on);
+        panic_str(" waiter=");   panic_dec(tasks[t].waiter);
+#ifdef SMP
+        panic_str(" cpu=");      panic_dec(task_running_cpu[t]);
+#endif
+        panic_str("\n");
+    }
+    panic_str("==== END HANG WATCHDOG (boot continues) ====\n");
+}
+#endif /* HANG_WATCHDOG */
+
 void timer_handler(void) {
     system_ticks++;
+#ifdef HANG_WATCHDOG
+    if (!watchdog_fired && system_ticks > (uint32_t)HANG_WATCHDOG_TICKS) {
+        watchdog_fired = 1;            /* set FIRST: the dump is slow (polled UART) */
+        watchdog_dump();
+    }
+#endif
 }
 
 uint32_t get_system_ticks(void) {
@@ -501,6 +625,7 @@ static void deliver_pending_signal(uint64_t frame_ptr, int tid) {
     }
 }
 
+
 #if defined(SMP) && defined(SCHED_INVARIANTS)
 /* ---- Machine-checked claim invariant (SCHED_INVARIANTS=1 builds only) -------
  *
@@ -527,48 +652,6 @@ static void deliver_pending_signal(uint64_t frame_ptr, int tid) {
 static int sched_susp_task = -1;
 static int sched_susp_cpu  = -1;
 
-/* ---- Panic output, straight to the UART -----------------------------------
- *
- * NOT print(). Once a ring-3 console server owns the console, kernel print() is
- * suppressed, and while it is coming up both writers touch COM1 concurrently
- * from different CPUs. A panic emitted through print() therefore arrived
- * interleaved and truncated -- literally "PA[NIC: console_server] ready" -- so
- * the one message that has to survive was the one that did not. That reads as a
- * hang rather than a detected violation, which is precisely the confusion this
- * whole facility exists to remove.
- *
- * Everything below writes bytes to COM1 itself, with interrupts already off and
- * every other CPU about to be halted. It bypasses the console ownership rules
- * deliberately: there is no owner left to be polite to. */
-static void panic_ch(char ch) {
-    while ((inb(0x3FD) & 0x20) == 0) { }
-    outb(0x3F8, (uint8_t)ch);
-}
-
-/* First CPU to detect a violation gets the UART; the rest halt silently.
- *
- * Not defensive tidiness — without it two cores that trip on the same tick
- * interleave byte-by-byte and the report comes out as
- * "PANICPANIC: : unbalanced impersostale scheduler claim...", i.e. neither
- * message is readable and the run looks like a garbled hang. That is the same
- * failure this facility was built to eliminate (see the note above on why it
- * writes to COM1 directly rather than through print()), reappearing one level up.
- * Observed during the falsification runs for the impersonation bracket. */
-static volatile int panic_claimed = 0;
-static void panic_begin(void) {
-    if (__sync_lock_test_and_set(&panic_claimed, 1))
-        for (;;) __asm__ volatile ("cli; hlt");   /* someone else is reporting */
-}
-static void panic_str(const char *s) { while (*s) panic_ch(*s++); }
-static void panic_dec(int v) {
-    char buf[12];
-    int i = 0, neg = (v < 0);
-    unsigned u = neg ? (unsigned)(-v) : (unsigned)v;
-    if (!u) buf[i++] = '0';
-    while (u) { buf[i++] = (char)('0' + (u % 10)); u /= 10; }
-    if (neg) panic_ch('-');
-    while (i) panic_ch(buf[--i]);
-}
 
 /* Report and halt. Split out so both directions read identically. */
 static void sched_claim_panic(const char *what, const char *where,

@@ -358,6 +358,39 @@ the page indefinitely.
 4. **Only then** decide whether signature A is the same bug arriving later, or genuinely the
    `apropos` budget. Do not fold them together until the evidence does.
 
+**`HANG_WATCHDOG=1` — because signature C leaves no log to read.** The clients in
+`smoke-fs-conc` print *nothing* on the happy path: a passing boot is
+`[fs_server] filesystem provisioned` followed directly by `CONC_SELFTEST: PASS`. So a wedged
+boot and a merely slow one produce **byte-identical serial logs** — 120 seconds of silence —
+and no amount of staring at CI output can separate them. That is the same "a test that cannot
+distinguish two states is not evidence" defect as **[I-11]**, arriving as an absence rather
+than a race.
+
+The watchdog dumps the scheduler's view of every task once a boot passes
+`HANG_WATCHDOG_TICKS` without finishing, then **lets the boot continue** — halting would stop
+a merely-slow boot from going on to pass, and "it would have finished given another second" is
+precisely the hypothesis under test. The harness's own timeout still fails the boot; this only
+makes the log say why. Enabled on `smoke-fs-conc` and `smoke-fs-persist` (the two targets
+showing signature C) at 6000 ticks, inside a 120s budget. Compiled out of the ship kernel.
+
+It reads like this (positive control, fired deliberately at 50 ticks on a *healthy* boot):
+
+```
+==== HANG WATCHDOG: no progress after 50 ticks ====
+cpu 0: current=2 idle=0 imp=0
+task 1 'fsserver' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
+task 2 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=0
+...
+```
+
+which is enough to split the cases that matter:
+
+| dump shows | means |
+|---|---|
+| every task `state=1`, none blocked | nobody is stuck — the run was slow, fix the budget |
+| a task `state=2/3/4` with no peer to wake it | a lost wake or dropped reply |
+| a task `state=1 rctx=1 ksp=1` never selected | a scheduling bug |
+
 **A gate must assert the property it is named for.** `smoke-sched-invariants-stress` originally
 failed on *any* failed boot, so a hang that never tripped the checker reddened a job whose
 entire claim is "the claim invariant holds" — silently converting a precise gate into one that

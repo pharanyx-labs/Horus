@@ -563,6 +563,26 @@ CFLAGS  += -DSCHED_INVARIANTS
 ASFLAGS += -DSCHED_INVARIANTS
 endif
 
+# HANG_WATCHDOG=1 dumps the scheduler's view of every task once the boot has run
+# HANG_WATCHDOG_TICKS ticks without finishing, then lets it continue.
+#
+# It exists because some self-tests are SILENT on the happy path -- smoke-fs-conc
+# prints nothing at all between "[fs_server] filesystem provisioned" and its single
+# PASS -- so a wedge and a slow run produce byte-identical serial logs, and finding
+# G-8 signature C is exactly that: 120 seconds of nothing, on a uniprocessor boot,
+# with no way to tell which. The dump distinguishes "nobody is stuck, it was slow"
+# from "task N is blocked on an endpoint nobody will ever signal".
+#
+# Deliberately does NOT halt: halting would prevent a merely-slow boot from going
+# on to pass, which is the hypothesis under test. The harness's own timeout still
+# fails the boot; this only makes the log say why. Off in the ship kernel.
+HANG_WATCHDOG ?= 0
+HANG_WATCHDOG_TICKS ?= 4000
+ifeq ($(HANG_WATCHDOG),1)
+CFLAGS  += -DHANG_WATCHDOG -DHANG_WATCHDOG_TICKS=$(HANG_WATCHDOG_TICKS)
+ASFLAGS += -DHANG_WATCHDOG
+endif
+
 OBJS += src/kernel/lowlevel64.o
 
 all: kernel.elf
@@ -1250,7 +1270,7 @@ PERSIST_TIMEOUT ?= 300
 .PHONY: smoke-fs-persist
 smoke-fs-persist:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1
+	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000
 	@$(MAKE) --no-print-directory boot.iso
 	@dd if=/dev/zero of=persist.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[persist] boot 1/2 — write sentinel to a fresh encrypted disk"
@@ -1315,7 +1335,7 @@ CONC_TIMEOUT ?= 120
 .PHONY: smoke-fs-conc
 smoke-fs-conc:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory CONC_SELFTEST=1
+	@$(MAKE) --no-print-directory CONC_SELFTEST=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(CONC_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONC_SELFTEST: PASS' \
 		FAIL_MARKER='CONC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso

@@ -8,6 +8,77 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the scheduler's claim auditor was reading a deliberate impersonation as a leak
+
+`SCHED_INVARIANTS=1` had been reporting, in about 1 boot in 5 — **10 in 20** once
+the boots were pinned to two host cores:
+
+```
+PANIC: stale scheduler claim at preempt_on_tick: task 1 claimed by cpu N
+       but that cpu was running 4 (persisted across two audits)
+```
+
+It was recorded as a real, un-root-caused SMP scheduling defect: `init` blocked in
+`sys_wait()` on the shell, left claimed by a CPU that had moved on. `TESTS.md`,
+`docs/ROADMAP.md` and the `Makefile` all said so, and roadmap item **1.1** was
+blocked behind root-causing it.
+
+**There was no scheduling defect.** The claim invariant
+
+```
+task_running_cpu[t] == c  <=>  percpu_current_task[c] == t
+```
+
+was never violated. What was wrong was the auditor's notion of what
+`percpu_current_task[]` means.
+
+`copy_to_user` resolves through `tasks[get_current_task()].cr3`, so writing into
+another task's address space requires briefly making that task current. Three
+places do it, for the same reason:
+
+| site | impersonates | duration |
+|---|---|---|
+| `sys_ipc_send`, `h_ipc_reply_to` | the blocked peer | ≤256-byte copy, IF masked |
+| `do_spawn` → `load_staged_image_into` | **the child** | the entire ELF load |
+
+The IPC pair had been declared to the checker (a `percpu_in_user_copy` flag, added
+when it false-positived on exactly this). **The spawn window had not** — and it is
+the long one: a ~450 KiB copy plus page-table construction and relocation
+processing, which under TCG spans many timer ticks and so comfortably outlives the
+two audits the checker requires before it accuses.
+
+So `task 1 claimed by cpu N but that cpu was running 4` was `init` (task 1) midway
+through spawning the shell (task 4), correctly claimed by the CPU executing its
+`SYS_SPAWN` in ring 0, while `percpu_current_task[]` deliberately named the child.
+The serial log had been saying so all along: the panic lands two lines after
+`init: console_server launched`, before the shell exists.
+
+**The fix does not switch the checker off for those windows.**
+`sched_impersonate_enter/exit` record the task the CPU is *really* running
+(`percpu_real_task[]`), and the audit is stated over that — so coverage stays
+continuous across the longest operation in the system, which is precisely where a
+genuine leak would be easiest to hide. The bracket is a nesting depth rather than a
+flag, and is itself checked: a CPU that reaches **ring 3** at non-zero depth has an
+`enter()` that lost its `exit()`, and panics saying so. An exemption mechanism with
+no balance check is a hole in the shape of the thing being checked.
+
+| Build | Runs (pinned, 2 host cores) | Failures |
+|---|---|---|
+| before | 20 | **10** |
+| after | 30 | **0** |
+
+Falsified in both directions rather than merely observed green: deleting the claim
+release in `preempt_on_tick` (a genuine leak) still panics 3 boots in 3, and
+deleting `sched_impersonate_exit()` fails 3 in 3, once via the new balance panic.
+
+`make smoke-sched-invariants-stress` — 30 pinned boots reported as a **rate**, not
+a single run — is now a CI check, which is what the finding had been blocking.
+
+Also fixed: two CPUs tripping the checker on the same tick interleaved their output
+byte-by-byte into an unreadable `PANICPANIC: : unbalanced impersostale scheduler
+claim…`. A first-CPU-wins latch now gives the reporter the UART alone. Same failure
+as the earlier `PA[NIC: console_server] ready` episode, one level up.
+
 ### Fixed — an IPC lost-reply race that wedged the shell mid-print under SMP
 
 A client blocking in `SYS_IPC_CALL` could have its reply **silently discarded and

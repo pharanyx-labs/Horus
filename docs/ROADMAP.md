@@ -464,8 +464,29 @@ Three things from that episode bear directly on how 1.1 should be run:
    abandoned mid-kernel, so freeing it resumes that task from a stale trap frame. Fix
    abandonment, never the bookkeeping. This is the same trap 1.1 will walk past.
 
-**Still open**, found by the new `SCHED_INVARIANTS=1` checker and not yet root-caused: `init`,
-blocked in `sys_wait()`, is sometimes left claimed by a CPU that has moved on (~1 boot in 5).
-Latent — a blocked task is not selectable, so nothing livelocks until it is woken, at which
-point `init` would never be rescheduled. **Root-cause this before 1.1 changes this path**, and
-see `TESTS.md`.
+**The last open item on this path is now closed** (2026-08-09), and its resolution is a fourth
+lesson. The `SCHED_INVARIANTS=1` checker had been reporting, in ~1 boot in 5 (10 in 20 once
+pinned), that `init` was left claimed by a CPU that had moved on — read at the time as `init`
+stranded in `sys_wait()`, and made a blocker for 1.1 on that basis.
+
+**It was not a scheduler defect. The checker's model was incomplete.** Task 1 is `init` and
+task 4 is the shell it is in the middle of *spawning*: `do_spawn` → `load_staged_image_into`
+makes the child the CPU's current task for the whole ELF load so the loader's `copy_to_user`
+resolves through the child's address space, while `init` stays correctly claimed by that CPU.
+The two IPC sites that pull the same trick had been declared to the checker; the spawn window
+— by far the longest, hundreds of KiB of copying under TCG — had not.
+
+`sched_impersonate_enter/exit` now record the task a CPU is *really* running, and the audit is
+stated over that rather than skipping the CPU, so coverage stays continuous across a spawn
+instead of going blind exactly where a real leak would be easiest to hide. The bracket is
+balance-checked (a CPU reaching ring 3 mid-window panics). **10 failures in 20 → 0 in 30**,
+pinned, and falsified in both directions: re-introducing a genuine claim leak still panics
+3 boots in 3, and removing the bracket's `exit()` fails 3 in 3. `make
+smoke-sched-invariants-stress` is now **a gating CI check** — 30 pinned boots reported as a
+rate, since one green boot is not evidence about a scheduling change.
+
+4. **A checker that reports a violation is asserting something about the code, and it can be
+   the one that is wrong.** Falsify the checker against the code *and* the code against the
+   checker. This one blocked 1.1 for a fortnight over an invariant that was never violated.
+
+**1.1 is unblocked.**

@@ -266,8 +266,11 @@ explicit "do not do this" comments at the sites that invited them.
 | `e8cc850`, pinned to two host cores | **1 hang in 45** | not captured (main's soak discarded it) |
 | CI runner, PR #117 pre-rebase, run 12/15 | **1 hang in 15** | **A** — 9 checks, stalled at `apropos` |
 | CI runner, PR #117 rebased, run 39/45 | **1 hang in 45** | **B** — 0 checks, stalled at **boot** |
+| CI runner, `smoke-fs-persist` (2026-07-31) | intermittent | **C** — **uniprocessor**, stalled after fs provisioning |
+| CI runner, `smoke-fs-conc` (2026-08-09) | intermittent | **C** — identical |
 
-**Two distinct signatures have been observed, and they are not the same failure.**
+**Three distinct signatures have been observed, and they are not the same failure.**
+Signature C is not even an SMP problem — those boots report `smp: uniprocessor, 1 CPU`.
 
 **Signature A** — the session gets 9 of its 12 checks in, then a command's output stops
 partway through a line and the shell never returns to its prompt:
@@ -285,6 +288,21 @@ SESSION_TEST: FAIL — timeout after 90s waiting for 'horus login:'
 recent serial: "...init: starting, launching shell\r\n
                 [console_server] ready (ring-3; owns serial + VGA framebuffer)\r\n\r\n"
 ```
+
+**Signature C** — a **uniprocessor** boot that stops dead once the filesystem is up. It has hit
+`smoke-fs-persist` and `smoke-fs-conc`, both of which are *gating*:
+
+```
+[    1.393302] smp: uniprocessor, 1 CPU, no APs to start
+FS_SELFTEST: begin
+[fs_server] userspace FS server starting (encrypted object store).
+[fs_server] registered; serving.
+[fs_server] filesystem provisioned
+                                        <- nothing further, until the harness gives up
+```
+
+One CPU means no scheduler race, no claim leak, and no cross-core wake to lose. Whatever C is,
+it is a different animal from A and B, and it is the one currently blocking merges.
 
 **Signature B is the `smoke-console-smp` deadlock signature, verbatim.** Compare the
 description of that bug earlier in this document: *"boot reaches `[console_server] ready`, the
@@ -325,16 +343,29 @@ the page indefinitely.
 
 **The next experiment, in order:**
 
-1. **Run `smoke-sched-invariants-stress` at a sample size matched to ~2%.** The claim-invariant
-   checker holds 30/30, but 30 boots witness a 2% event only ~45% of the time, so that result
-   does **not** currently exclude a leaked claim. `STRESS_RUNS=150` puts detection above 95%.
-   If it panics, signature B is a claim-invariant violation and the console-smp fix is
-   incomplete. If it stays green at that size, the invariant is genuinely intact and the hang
-   is somewhere else — which is worth as much, and is the cheapest discriminator available.
-2. **Get the kernel's own view at the stall.** Whether `console_server` is blocked in `recv`
-   and the shell in `SYS_IPC_CALL` separates a lost wake from a scheduling stall.
-3. **Only then** decide whether signature A is the same bug arriving later, or genuinely the
+1. ~~Run `smoke-sched-invariants-stress` at a sample size matched to ~2%.~~ **Done
+   2026-08-09: 150 boots pinned, 150 pass, no `PANIC`.** At a 2% event that is >95% detection,
+   so **the claim invariant is intact and none of these hangs is a leaked claim.** The
+   console-smp fix is not incomplete in that respect, and the scheduler's claim bookkeeping is
+   excluded as a cause. (30/30 would *not* have supported this conclusion — 30 boots witness a
+   2% event less than half the time. The sample size is the whole argument.)
+2. **Signature C first, because it is the cheapest and it gates merges.** It is uniprocessor,
+   so the entire SMP surface is irrelevant: no claim leak, no cross-core wake, no CPU-idle
+   handoff. That removes most of the search space at zero cost. Suspect the fs_server request
+   path or the `FS_SELFTEST` driver immediately after provisioning.
+3. **Get the kernel's own view at the stall** for A and B. Whether `console_server` is blocked
+   in `recv` and the shell in `SYS_IPC_CALL` separates a lost wake from a scheduling stall.
+4. **Only then** decide whether signature A is the same bug arriving later, or genuinely the
    `apropos` budget. Do not fold them together until the evidence does.
+
+**A gate must assert the property it is named for.** `smoke-sched-invariants-stress` originally
+failed on *any* failed boot, so a hang that never tripped the checker reddened a job whose
+entire claim is "the claim invariant holds" — silently converting a precise gate into one that
+inherits every intermittent in the system, which is the exact defect this section documents. It
+now runs with `STRESS_GATE=marker`: a `PANIC` fails it, a boot that hung without one is
+reported loudly as a G-8 datapoint and does not gate. The stress harness also **prints** the
+failing serial log rather than only saving it to a file — a gating job failed 1-in-30 on CI
+with the one artifact needed to diagnose it sitting in a workspace that was then deleted.
 
 ## Memory protection and isolation
 

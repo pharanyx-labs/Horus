@@ -1817,7 +1817,7 @@ smoke-sched-invariants-stress:
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
 	@STRESS_RUNS=$${STRESS_RUNS:-30} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		FAIL_MARKER='PANIC:' tools/stress_boot.sh boot.iso
+		FAIL_MARKER='PANIC:' STRESS_GATE=marker tools/stress_boot.sh boot.iso
 
 .PHONY: test
 test:

@@ -138,6 +138,13 @@ One in-flight message per endpoint, no queue. `SYS_IPC_SEND`/`RECV` return `-2` 
 userspace to poll, so contention is a busy-wait. Fair service and priority inheritance cannot
 be expressed.
 
+*(An earlier revision of this section claimed finding **[G-8]** signature C was a livelock
+caused by this contention. **That was wrong.** It was a startup race — clients that lost the
+race against `fs_server`'s registration held no endpoint capability, and every IPC then
+returned `SYS_ERR_PERM` into a userspace loop that retried it forever. Evidence: not one byte
+of traffic ever crossed any endpoint in a hung boot, which contention cannot produce. Fixed in
+userspace; see `TESTS.md`. This limitation remains real and unwitnessed.)*
+
 *(The shared global reply endpoint that used to compound this is gone: every task now has a
 private one, so **[I-5]** is closed. The missing queue is not.)*
 
@@ -294,11 +301,42 @@ indistinguishable from the race** — both produce the same output. A test that 
 "the code is broken" from "the harness was too quick" is not evidence for the property it
 claims to establish.
 
+### 5.2c The SMP session soak is not clean, and the cause is unknown — **[G-8]**
+
+`smoke-session-smp-soak` fails at roughly **2–3% per boot** on current `main` — 1 hang in 45
+pinned to two host cores, and 1 in 45 on a CI runner. Two distinct signatures have been
+captured: one where the session completes 9 of 12 checks and then stalls mid-output, and one
+where **boot never reaches the login prompt at all** and the serial log ends at
+`[console_server] ready`.
+
+That second signature is the `smoke-console-smp` deadlock's signature verbatim — a defect
+root-caused and fixed in PRs #112–#115, whose stress harness has held 24/24, 24/24 and 30/30
+since. So the open question is whether that fix is incomplete or a second defect presents
+identically. It is **not** the IPC lost-reply race (`#116` is in every tree measured).
+
+The scheduler claim-invariant checker holds 30/30, but that does **not** exclude a leaked
+claim: 30 boots witness a 2% event less than half the time. Re-running it at
+`STRESS_RUNS=150` is the cheapest discriminator and is the next step.
+
+**Until it is diagnosed, the CI job is advisory rather than gating**, because at that rate a
+required check goes red on about a third of runs and simply teaches everyone to press re-run —
+the reflex that let the `smoke-console-smp` deadlock survive months of CI. That is a
+mitigation, not a fix, and it is the second required check in this document to be downgraded
+for nondeterminism (see **[I-11]**). See `TESTS.md` for the evidence and the next step.
+
 ### 5.3 No release provenance — **[I-9]**
 
 The build is verified reproducible and an SBOM is produced, but there are no tags, no
 releases, no signed artifacts, and no SLSA provenance. A third party cannot verify that a
 `boot.iso` they obtained came from this repository's CI.
+
+*Inbound* dependency verification is in better shape than outbound provenance: the one
+network dependency in the build path — the newlib tarball — is pinned by SHA-256, verified on
+every invocation (not merely after a fetch), refused **before** unpacking, and quarantined
+rather than left in place when it fails. `make smoke-newlib-tamper` exercises that gate in
+both directions, so it is a control rather than an assumption. That says nothing about what
+leaves the build, which is what **[I-9]** is actually about; it only means the tree is no
+longer trusting an unverified 9 MiB blob on the way in.
 
 ### 5.4 Cryptography is unaudited
 

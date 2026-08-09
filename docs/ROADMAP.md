@@ -196,6 +196,12 @@ preconditions blocking `EFER.SCE` are documented there and asserted by `smoke-pe
 
 ### 1.3 ⬜ Multi-slot endpoint queues and a reply-capability primitive — **[I-5]**
 
+*(A note here previously raised this item to a correctness fix on the strength of finding
+**G-8** signature C. That diagnosis was wrong — C was a startup race plus a userspace loop
+retrying `SYS_ERR_PERM` forever, not endpoint contention, and it is fixed in userspace. This
+item returns to its original standing: the poll-on-contention busy-wait remains a real
+limitation with no witness of it causing a hang. See `TESTS.md` for the corrected finding.)*
+
 A bounded FIFO per endpoint, plus a **one-shot reply capability** minted at call time and
 consumed on reply (seL4's reply object). This makes reply forgery *structurally* impossible
 rather than merely gated, removes the poll-on-contention busy-wait, and is the precondition

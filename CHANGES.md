@@ -78,6 +78,153 @@ Also fixed: two CPUs tripping the checker on the same tick interleaved their out
 byte-by-byte into an unreadable `PANICPANIC: : unbalanced impersostale scheduler
 claim…`. A first-CPU-wins latch now gives the reporter the UART alone. Same failure
 as the earlier `PA[NIC: console_server] ready` episode, one level up.
+### Fixed — a permanent IPC refusal was retried forever, hanging the FS tests (G-8 signature C)
+
+`smoke-fs-conc` and `smoke-fs-persist` — both *gating* — hung intermittently on a
+**uniprocessor** boot: the serial log stopped at `[fs_server] filesystem
+provisioned` and nothing followed. Reproduced at **3 in 30** under single-core
+starvation, and bimodal: 17 boots in 6–8 seconds, 3 unfinished after **600**.
+
+**The mechanism.** `SYS_CONNECT_FS_SERVER` returns `-1` until `fs_server` has
+completed `SYS_REGISTER_FS_SERVER`, and the clients become runnable at the same
+instant as the server, so losing that race is ordinary. The client called connect
+**once and discarded the result**, then issued requests through an empty
+capability slot — and every one returned `SYS_ERR_PERM` (**-1**) into
+
+```c
+while ((r = sys_ipc_call(...)) < 0) spin_delay();   /* retries -1 forever */
+```
+
+`SYS_ERR_PERM` is -1 and the only retryable code is -2. They were always
+distinguishable; nothing distinguished them. Four separate userspace loops had the
+same shape.
+
+**Why this is a security bug, not only a robustness one.** Fail-closed has to mean
+*stop, loudly, where authority was refused*. A refusal retried forever is
+indistinguishable from a hang, so the one event the capability system exists to
+make visible becomes the one nobody can see — revoke a capability out from under
+any of these loops and the task wedges silently instead of reporting denial.
+
+**The fix.** `syscall.h` now states the retry contract explicitly (`IPC_AGAIN` is
+the only retryable code; `ipc_transient()` is the predicate). All four loops —
+`fsclient`, `fs_server`, `console_server`, `consoletest` — retry transient-only and
+bounded, and report permanent refusals. `fs_connect_retry()` retries the connect,
+the same discipline `fs_server` already applied to its own registration on the
+other side of the same race.
+
+| Build | Starved single-core boots | Result |
+|---|---|---|
+| before | 30 / 30 | **3 and 5 hangs** |
+| after | 40 | **0** |
+| race restored, retry discipline kept | 30 | **2 hit the race, 0 silent hangs** — each reported `FAIL ipc-refused rc=-1` |
+
+The third row proves the halves independently: the connect retry removes the
+failure, and the retry discipline converts a silent unkillable hang into a
+diagnosable message.
+
+**A published diagnosis was wrong, and is corrected.** This was first recorded as a
+livelock caused by single-slot endpoint contention (**[I-5]**), and roadmap 1.3 was
+promoted to a correctness item on that basis. It was neither. A hung boot showed
+**not one byte of IPC traffic on any endpoint** — contention produces traffic and
+then stalls; zero traffic means the clients never had a capability. `TESTS.md`,
+`docs/LIMITATIONS.md` §2.2 and `docs/ROADMAP.md` 1.3 are corrected; 1.3 returns to
+its original standing as a real limitation with no witness of it hanging anything.
+
+### Added — `HANG_WATCHDOG`, because the hang left no log to read
+
+The clients in `smoke-fs-conc` print nothing on the happy path, so a wedged boot
+and a slow one produced byte-identical serial output: 120 seconds of silence. The
+watchdog dumps every task's scheduler state, each task's parked instruction
+pointer, and every endpoint carrying traffic, then **lets the boot continue** —
+halting would stop a merely-slow boot from going on to pass, which was the
+hypothesis under test. Three dumps 1200 ticks apart showed byte-identical
+instruction pointers and no endpoint traffic at all, which is what identified the
+mechanism. Off in the ship kernel; falsified by firing it deliberately on a healthy
+boot.
+
+### Changed — the SMP session soak is advisory until finding G-8 is diagnosed
+
+The soak is reporting a reproducible intermittent failure on `main` at **2–3% per
+boot** — 1 in 45 pinned to two host cores, 1 in 45 on a runner. **Two distinct
+signatures** have been captured: one stalling mid-output after 9 of 12 checks, and
+one where boot never reaches the login prompt at all, its serial log ending at
+`[console_server] ready`.
+
+That second signature is the `smoke-console-smp` deadlock's, verbatim — fixed in
+PRs #112–#115, stress-green 24/24, 24/24 and 30/30 since. So the open question is
+whether that fix is incomplete or a second defect presents identically. It is
+**not** the IPC lost-reply race below (`#116` is in every tree measured), and the
+claim-invariant checker's 30/30 does not exclude a leaked claim — 30 boots witness
+a 2% event less than half the time.
+
+**A rate is not a mechanism**, and neither is one capture. This repo has erred in
+both directions already — `smoke-console-smp` was a real deadlock called flaky, and
+the `SCHED_INVARIANTS` report was a correct kernel called broken — and this
+finding's own first draft guessed "slow `apropos`" from a single capture, which the
+very next capture falsified. Signatures recorded; mechanism not claimed.
+
+So the job runs on every PR and reports, but no longer blocks, and `SOAK_RUNS`
+rises to 45 in CI so an advisory job actually witnesses what it reports (~75% of
+runs, against ~37% at 15). Gating on a check that reddens a third of the time
+teaches everyone to press re-run, which is the reflex that hid the console-smp
+deadlock for months. Restore it to gating in the same commit that resolves G-8 —
+either way — and quote a rate, not a green run. See `TESTS.md` and
+`docs/LIMITATIONS.md` §5.2c.
+
+### Changed — verify the build's own inputs and gates, not just the kernel's
+
+Three follow-ups from the **[I-6]** / IPC-race work, all the same shape: something
+was being trusted that had never been checked.
+
+**The newlib fetch retried the wrong error class.** `tools/build_newlib.sh`
+downloads a 9 MiB tarball and passed `--retry 3` — but curl's plain `--retry`
+covers only what it calls *transient*: a timeout, an FTP 4xx, or HTTP
+408/429/500/502/503/504. A connection that dies mid-body is `CURLE_RECV_ERROR`
+(exit 56), which is **not** in that set, so the retry never fired for it. One
+dropped read reddened CI on PR #116 with a failure that had nothing to do with
+the tree. Now `--retry-all-errors --retry-delay 3 --retry 5` with `-C -` to resume
+the partial transfer instead of restarting from zero.
+
+Resuming into a partial file is safe only *because* the checksum is
+unconditional, and it is: verification runs on every invocation, not just after a
+fetch, so a tarball that arrived by any route — resumed, cached, or dropped in by
+hand — is checked before it is trusted.
+
+**A rejected artifact used to wedge the tree.** The fetch is skipped whenever the
+tarball exists, so a tarball that failed verification was re-read and re-rejected
+by every subsequent build, with no way out but a manual `rm`. It is now
+quarantined to `.rejected`: the next run re-fetches cleanly, the evidence is kept,
+and the current build still refuses. Failing closed should not also mean failing
+*stuck*.
+
+**The pin itself was never exercised** — `make smoke-newlib-tamper`. That
+SHA-256 is the only thing between a compromised upstream and the libc every
+userspace binary links against, and an unexercised pin is an assumption, not a
+control; a gate that has quietly stopped checking looks exactly like one with
+nothing to reject. The test asserts tampered bytes are refused **before
+unpacking** (tar has had path-traversal bugs; don't touch the payload until it is
+trusted) and that the artifact is quarantined — *and* that the genuine tarball
+still passes, because a gate that refused everything would sail through the
+negative control alone. Falsified by disabling the checksum: 3 controls fail. No
+network or QEMU needed; it runs in seconds.
+
+**The soak gate could have gone green on nothing.** As first written it sent each
+run to `/dev/null` and trusted the exit status, so a `session_test.py` that
+degraded into a no-op would have reported 15/15 green over 15 boots that tested
+air — the same "a test that cannot fail is not evidence" trap the soak exists to
+close, reintroduced by the soak itself. Each run must now emit `SESSION_TEST:
+PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps; a run that exits 0
+with too few is reported `VACUOUS` and fails the gate. Passing runs print their
+check count, and failing runs print their output instead of discarding it.
+Falsified by raising the floor above what the test can produce.
+
+**`smoke-fs-conc` was failing as a timeout, not a defect.** It waits on several
+concurrent clients and was using the 40s default sized for single-client tests;
+on a loaded host it ran out of budget with **zero** `CONC_SELFTEST: FAIL` — it
+never reached a verdict at all. Given its own `CONC_TIMEOUT` (default 120s),
+following the existing `PERSIST_TIMEOUT` precedent. This is a max-wait, not a
+sleep: healthy runs still finish in seconds, and a genuine failure or hang still
+fails — just after a wait long enough to tell "hung" from "slow".
 
 ### Fixed — an IPC lost-reply race that wedged the shell mid-print under SMP
 

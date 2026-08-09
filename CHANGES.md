@@ -71,7 +71,7 @@ Falsified in both directions rather than merely observed green: deleting the cla
 release in `preempt_on_tick` (a genuine leak) still panics 3 boots in 3, and
 deleting `sched_impersonate_exit()` fails 3 in 3, once via the new balance panic.
 
-`make smoke-sched-invariants-stress` — 10 pinned boots reported as a **rate**, not
+`make smoke-sched-invariants-stress` — 30 pinned boots reported as a **rate**, not
 a single run — is now a CI check, which is what the finding had been blocking.
 
 Also fixed: two CPUs tripping the checker on the same tick interleaved their output

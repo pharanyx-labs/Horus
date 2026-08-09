@@ -1720,15 +1720,27 @@ smoke-sched-invariants:
 		tools/smoke_test.sh boot.iso
 
 # The gating form: N pinned boots of the claim-checking kernel, reported as a rate.
-# STRESS_RUNS defaults to 10 here (about five minutes of CI) rather than the 20 the
-# console target uses; the violation this catches ran at ~50% pinned, so 10 boots
-# put the chance of a regression slipping through below one in a thousand.
+#
+# STRESS_RUNS defaults to 30. Sizing it needs a per-boot failure rate to reason
+# from, and the honest one to use is the LOWEST observed, not the most convenient:
+# the violation this gates ran at 10 in 20 pinned to two host cores locally, but
+# was historically reported at ~1 boot in 5 in CI. Take 20%:
+#
+#   10 boots  ->  1 - 0.8^10 = 89%    (better than one run, but ~1 regression in 9
+#                                      would still merge green)
+#   30 boots  ->  1 - 0.8^30 = 99.8%
+#
+# 30 costs about 90 seconds -- the job builds once and each boot exits on its
+# marker in ~2.5s -- so there is no reason to buy the weaker number. An earlier
+# version of this comment claimed 10 boots put a miss "below one in a thousand",
+# which was arithmetic done against the 50% local rate and wrong for the runner
+# this actually gates.
 .PHONY: smoke-sched-invariants-stress
 smoke-sched-invariants-stress:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
-	@STRESS_RUNS=$${STRESS_RUNS:-10} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+	@STRESS_RUNS=$${STRESS_RUNS:-30} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		FAIL_MARKER='PANIC:' tools/stress_boot.sh boot.iso
 
 .PHONY: test

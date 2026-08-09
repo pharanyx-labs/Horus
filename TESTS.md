@@ -168,7 +168,7 @@ task_running_cpu[t] == c  <=>  percpu_current_task[c] == t     (t > 0)
 
 at every timer tick, panicking with the offending task, CPU and observer instead of
 livelocking silently thousands of ticks later. Off in the ship kernel; **gated in CI** via
-`make smoke-sched-invariants-stress` (10 pinned boots, reported as a rate).
+`make smoke-sched-invariants-stress` (30 pinned boots, reported as a rate).
 
 **Resolved 2026-08-09.** This target used to be documented as expected to fail, reporting in
 roughly one boot in five — 10 in 20 once the boots were pinned:

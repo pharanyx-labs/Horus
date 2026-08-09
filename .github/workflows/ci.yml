@@ -549,7 +549,7 @@ jobs:
         run: make smoke-console-smp
 
   smoke-sched-invariants:
-    name: QEMU SMP scheduler claim invariant, 10 boots (headless, -smp 4)
+    name: QEMU SMP scheduler claim invariant, 30 boots (headless, -smp 4)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -565,7 +565,9 @@ jobs:
       # A single boot is weak evidence for an intermittent scheduling defect: the
       # violation this job now holds at zero ran at ~50% of PINNED boots and ~0% of
       # unpinned ones on a spare workstation. So this gates on a rate, not a run.
-      - name: Boot the SCHED_INVARIANTS kernel 10 times and assert the claim invariant holds on every boot
+      # 30 boots, sized against the conservative ~20% historical rate rather than
+      # the 50% local one -- see the note on the Makefile target.
+      - name: Boot the SCHED_INVARIANTS kernel 30 times and assert the claim invariant holds on every boot
         run: make smoke-sched-invariants-stress
 
   smoke-proc:

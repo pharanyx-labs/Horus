@@ -482,7 +482,7 @@ instead of going blind exactly where a real leak would be easiest to hide. The b
 balance-checked (a CPU reaching ring 3 mid-window panics). **10 failures in 20 → 0 in 30**,
 pinned, and falsified in both directions: re-introducing a genuine claim leak still panics
 3 boots in 3, and removing the bracket's `exit()` fails 3 in 3. `make
-smoke-sched-invariants-stress` is now **a gating CI check** — 10 pinned boots reported as a
+smoke-sched-invariants-stress` is now **a gating CI check** — 30 pinned boots reported as a
 rate, since one green boot is not evidence about a scheduling change.
 
 4. **A checker that reports a violation is asserting something about the code, and it can be

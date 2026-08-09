@@ -80,18 +80,24 @@ claim…`. A first-CPU-wins latch now gives the reporter the UART alone. Same fa
 as the earlier `PA[NIC: console_server] ready` episode, one level up.
 ### Changed — the SMP session soak is advisory until finding G-8 is diagnosed
 
-The soak is reporting a reproducible intermittent failure on `main` — **1 boot in 45**
-pinned to two host cores, 1 in 15 on a runner — in which a command's output stops
-partway through a line and the shell never returns to its prompt.
+The soak is reporting a reproducible intermittent failure on `main` at **2–3% per
+boot** — 1 in 45 pinned to two host cores, 1 in 45 on a runner. **Two distinct
+signatures** have been captured: one stalling mid-output after 9 of 12 checks, and
+one where boot never reaches the login prompt at all, its serial log ending at
+`[console_server] ready`.
 
-It is **not** the IPC lost-reply race below (`#116` is present in every tree
-measured) and **not** the scheduler claim-invariant finding (closed, 30/30). What
-it *is* has not been established, and the two candidates want opposite fixes: a
-genuine kernel wedge, or the `apropos` step exceeding its 120s budget on a starved
-host — the same step that already forced that budget from 60s to 120s with no code
-fault. **A rate is not a mechanism**, and this repo has now erred in both
-directions: `smoke-console-smp` was a real deadlock called flaky, and the
-`SCHED_INVARIANTS` report was a correct kernel called broken.
+That second signature is the `smoke-console-smp` deadlock's, verbatim — fixed in
+PRs #112–#115, stress-green 24/24, 24/24 and 30/30 since. So the open question is
+whether that fix is incomplete or a second defect presents identically. It is
+**not** the IPC lost-reply race below (`#116` is in every tree measured), and the
+claim-invariant checker's 30/30 does not exclude a leaked claim — 30 boots witness
+a 2% event less than half the time.
+
+**A rate is not a mechanism**, and neither is one capture. This repo has erred in
+both directions already — `smoke-console-smp` was a real deadlock called flaky, and
+the `SCHED_INVARIANTS` report was a correct kernel called broken — and this
+finding's own first draft guessed "slow `apropos`" from a single capture, which the
+very next capture falsified. Signatures recorded; mechanism not claimed.
 
 So the job runs on every PR and reports, but no longer blocks, and `SOAK_RUNS`
 rises to 45 in CI so an advisory job actually witnesses what it reports (~75% of

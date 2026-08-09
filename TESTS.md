@@ -259,15 +259,18 @@ explicit "do not do this" comments at the sites that invited them.
 
 **Status: open, mechanism not established. The CI job is advisory, not gating.**
 
-`smoke-session-smp-soak` fails at roughly **3% per boot** on current `main`:
+`smoke-session-smp-soak` fails at roughly **2–3% per boot** on current `main`:
 
-| Where | Result |
-|---|---|
-| `e8cc850`, pinned to two host cores | **1 hang in 45** |
-| CI runner (PR #117, run 12/15) | **1 hang in 15** |
+| Where | Result | Signature |
+|---|---|---|
+| `e8cc850`, pinned to two host cores | **1 hang in 45** | not captured (main's soak discarded it) |
+| CI runner, PR #117 pre-rebase, run 12/15 | **1 hang in 15** | **A** — 9 checks, stalled at `apropos` |
+| CI runner, PR #117 rebased, run 39/45 | **1 hang in 45** | **B** — 0 checks, stalled at **boot** |
 
-The failing run always looks the same. A command's output stops partway through a line and
-the shell never returns to its prompt, until `session_test.py` gives up:
+**Two distinct signatures have been observed, and they are not the same failure.**
+
+**Signature A** — the session gets 9 of its 12 checks in, then a command's output stops
+partway through a line and the shell never returns to its prompt:
 
 ```
 [ok] apropos finds pages by keyword
@@ -275,27 +278,36 @@ SESSION_TEST: FAIL — timeout after 120s waiting for 'root@horus#'
 recent serial: "...apropos directory\r\n  ls  (1)  list directory entries\r\n ... rm          "
 ```
 
-**What it is not.** It is not the IPC lost-reply race — `#116`, the fix for that, is present in
-every tree measured above. It is not the claim-invariant finding, which is closed and holds
-30/30. It is not caused by PR #117, which changed no kernel source.
+**Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
-**What it might be, and why that matters.** There are two candidates and they want *opposite*
-fixes:
+```
+SESSION_TEST: FAIL — timeout after 90s waiting for 'horus login:'
+recent serial: "...init: starting, launching shell\r\n
+                [console_server] ready (ring-3; owns serial + VGA framebuffer)\r\n\r\n"
+```
 
-1. **A genuine kernel wedge** — the console/IPC path stalling mid-reply, in which case the
-   fix is in the kernel and the truncated line is the symptom.
-2. **The `apropos` step exceeding its 120s budget on a starved host** — in which case the
-   fix is in the harness and the kernel is fine. This is not a hypothetical: the note on
-   `smoke-session-smp` in the `Makefile` records *that same step* already forcing
-   `SESSION_TIMEOUT` from 60s to 120s on a loaded runner **with no code fault**. `apropos`
-   scans every man page, so it is the heaviest step in the session, and both failures were
-   under deliberate CPU starvation (pinned locally, oversubscribed on CI).
+**Signature B is the `smoke-console-smp` deadlock signature, verbatim.** Compare the
+description of that bug earlier in this document: *"boot reaches `[console_server] ready`, the
+shell banner never arrives."* That defect was root-caused and fixed (PRs #112–#115) and the
+console stress harness has held 24/24, 24/24 and 30/30 since. Yet a boot hang with the same
+observable shape is still occurring at ~2%, which the console harness's sample sizes would
+witness only about half the time.
 
-**A rate is not a mechanism.** This repo has now made that mistake in both directions:
-`smoke-console-smp` was a real deadlock dismissed as flaky, and the `SCHED_INVARIANTS` report
-above was a correct kernel accused of a defect. Neither error is cheap, and the second one
-blocked a roadmap item for a fortnight. So this is written down as an open question with a
-measured rate, not as a bug and not as a flake.
+So the live question is no longer "is this a hang or a slow test" but **"is this the same
+deadlock, incompletely fixed, or a second one that presents identically?"**
+
+**What it is not.** Not the IPC lost-reply race — `#116` is present in every tree measured.
+Not caused by PR #117, which changed no kernel source. And **not** simply the `apropos` budget:
+that remains a plausible explanation for signature A (the note on `smoke-session-smp` in the
+`Makefile` records that same step already forcing `SESSION_TIMEOUT` from 60s to 120s on a
+loaded runner *with no code fault*), but it cannot explain B, where zero commands ran.
+
+**A rate is not a mechanism** — and neither is one capture. This repo has now made that
+mistake in both directions: `smoke-console-smp` was a real deadlock dismissed as flaky, and
+the `SCHED_INVARIANTS` report above was a correct kernel accused of a defect, which blocked a
+roadmap item for a fortnight. The first draft of *this* finding then guessed "slow `apropos`"
+from a single capture, and the very next capture falsified it. Three guesses, three wrong.
+Hence: signatures recorded, mechanism explicitly not claimed.
 
 **Why advisory rather than gating.** At ~3% per boot, `SOAK_RUNS=15` reddens roughly a third
 of all CI runs. A required check in that state teaches everyone to hit re-run, which is
@@ -305,11 +317,24 @@ the advisory job actually witnesses the thing it is reporting (~75% of runs, aga
 15). **Restore it to gating in the same commit that resolves G-8 — either way — and quote a
 rate, not a green run.**
 
-**To make progress, capture a failing run.** The soak used to send every run to `/dev/null`
-and trust the exit status; it now keeps the failing run's output, which is the only reason the
-signature above is known at all. The next step is a full serial log plus the kernel's own view
-at the moment of the stall — whether the console server is blocked in `recv`, and whether the
-shell is blocked in `SYS_IPC_CALL` — which distinguishes candidate 1 from candidate 2 outright.
+**Capturing the failing run is what made this legible.** The soak used to send every run to
+`/dev/null` and trust the exit status. It now keeps the failing run's output — and the first
+CI run after that change produced signature B, which overturned the finding's own initial
+hypothesis within hours. A soak that reports only `FAIL` would have left "slow `apropos`" on
+the page indefinitely.
+
+**The next experiment, in order:**
+
+1. **Run `smoke-sched-invariants-stress` at a sample size matched to ~2%.** The claim-invariant
+   checker holds 30/30, but 30 boots witness a 2% event only ~45% of the time, so that result
+   does **not** currently exclude a leaked claim. `STRESS_RUNS=150` puts detection above 95%.
+   If it panics, signature B is a claim-invariant violation and the console-smp fix is
+   incomplete. If it stays green at that size, the invariant is genuinely intact and the hang
+   is somewhere else — which is worth as much, and is the cheapest discriminator available.
+2. **Get the kernel's own view at the stall.** Whether `console_server` is blocked in `recv`
+   and the shell in `SYS_IPC_CALL` separates a lost wake from a scheduling stall.
+3. **Only then** decide whether signature A is the same bug arriving later, or genuinely the
+   `apropos` budget. Do not fold them together until the evidence does.
 
 ## Memory protection and isolation
 

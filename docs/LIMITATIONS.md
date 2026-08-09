@@ -296,16 +296,20 @@ claims to establish.
 
 ### 5.2c The SMP session soak is not clean, and the cause is unknown — **[G-8]**
 
-`smoke-session-smp-soak` fails at roughly **3% per boot** on current `main` — 1 hang in 45
-pinned to two host cores, 1 in 15 on a CI runner. A command's output stops partway through a
-line and the shell never returns to its prompt.
+`smoke-session-smp-soak` fails at roughly **2–3% per boot** on current `main` — 1 hang in 45
+pinned to two host cores, and 1 in 45 on a CI runner. Two distinct signatures have been
+captured: one where the session completes 9 of 12 checks and then stalls mid-output, and one
+where **boot never reaches the login prompt at all** and the serial log ends at
+`[console_server] ready`.
 
-It is **not** the IPC lost-reply race (`#116`, the fix, is in every tree measured) and **not**
-the scheduler claim-invariant finding (closed, 30/30). It is genuinely unexplained, and the
-two candidates want opposite fixes: a real kernel wedge in the console/IPC path, or the
-`apropos` step — the heaviest in the session — exceeding its 120s budget on a starved host.
-The second is not hypothetical: that same step already forced the budget from 60s to 120s on a
-loaded runner with no code fault.
+That second signature is the `smoke-console-smp` deadlock's signature verbatim — a defect
+root-caused and fixed in PRs #112–#115, whose stress harness has held 24/24, 24/24 and 30/30
+since. So the open question is whether that fix is incomplete or a second defect presents
+identically. It is **not** the IPC lost-reply race (`#116` is in every tree measured).
+
+The scheduler claim-invariant checker holds 30/30, but that does **not** exclude a leaked
+claim: 30 boots witness a 2% event less than half the time. Re-running it at
+`STRESS_RUNS=150` is the cheapest discriminator and is the next step.
 
 **Until it is diagnosed, the CI job is advisory rather than gating**, because at that rate a
 required check goes red on about a third of runs and simply teaches everyone to press re-run —

@@ -1139,6 +1139,16 @@ extern spinlock_t page_lock;
 int  get_current_task(void);
 void set_current_task(int v);
 
+/* Declare a window in which percpu_current_task[] deliberately names a task other
+ * than the one this CPU is running -- IPC reply delivery and the spawn-time image
+ * load both do this so copy_to_user resolves through the target's address space.
+ * enter() goes BEFORE the set_current_task() that installs the impersonated
+ * identity, exit() AFTER the one that restores it. See the long note on
+ * percpu_real_task[] in scheduler.c; without the bracket the scheduler's claim
+ * auditor reads these windows as violations. No-ops without SMP. */
+void sched_impersonate_enter(void);
+void sched_impersonate_exit(void);
+
 /* Which CPU is executing this code. Derived from the TSS selector in TR (`str`)
  * rather than an uncached LAPIC MMIO read -- see the long note on this_cpu() in
  * scheduler.c for why, and why not %gs. this_cpu_lapic() is the original MMIO

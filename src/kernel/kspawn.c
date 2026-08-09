@@ -287,8 +287,24 @@ int do_spawn(void) {
     uint64_t kcr3 = virt_to_phys(pml4);   /* CR3 takes a physical address */
 
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
+    /* Declare the impersonation. do_spawn_inner -> load_staged_image_into installs
+     * the CHILD as this CPU's current task so the loader's copy_to_user lands in
+     * the child's address space, and it stays that way until the restore below.
+     * That is the whole ELF load — a ~450 KiB copy plus page-table construction
+     * and relocation processing — during which percpu_current_task[] names a task
+     * this CPU is not running while the CALLER remains correctly claimed by it.
+     *
+     * Undeclared, that reads to an auditor on another core as a stale claim, and
+     * it did: "task 1 claimed by cpu N but that cpu was running 4" is init midway
+     * through spawning the shell, and it stood open as a suspected scheduling
+     * defect. The window is real, deliberate, and long; the bracket makes it
+     * legible rather than invisible. Balanced within this function on purpose —
+     * an enter() in loader.c paired with an exit() here would be exactly the kind
+     * of split bracket that rots. */
+    sched_impersonate_enter();
     int pid = do_spawn_inner();
     set_current_task(caller_task);
+    sched_impersonate_exit();
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
 
     if (pid > 0) grant_child_tcb_cap(caller_task, pid);

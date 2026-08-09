@@ -158,7 +158,7 @@ loudly when it does.
 The corollary for reviewers: **a scheduling or IPC change is not evidenced by one green CI
 run.** Ask for a rate.
 
-### `make smoke-sched-invariants` — and an open finding
+### `make smoke-sched-invariants` — and the finding that turned out to be the checker
 
 `SCHED_INVARIANTS=1` machine-checks the scheduler's claim invariant
 
@@ -167,23 +167,70 @@ task_running_cpu[t] == c  <=>  percpu_current_task[c] == t     (t > 0)
 ```
 
 at every timer tick, panicking with the offending task, CPU and observer instead of
-livelocking silently thousands of ticks later. Off in the ship kernel; **not wired into CI,
-because on today's `main` it fails.**
+livelocking silently thousands of ticks later. Off in the ship kernel; **gated in CI** via
+`make smoke-sched-invariants-stress` (10 pinned boots, reported as a rate).
 
-**Open finding (not root-caused).** In roughly one boot in five it reports:
+**Resolved 2026-08-09.** This target used to be documented as expected to fail, reporting in
+roughly one boot in five — 10 in 20 once the boots were pinned:
 
 ```
 stale scheduler claim at preempt_on_tick: task 1 claimed by cpu N
 but that cpu was running 4 (persisted across two audits)
 ```
 
-`init`, blocked in `sys_wait()` on the shell, remains claimed by a CPU that has moved on to
-the shell. Provenance instrumentation puts the claim at `preempt_on_tick`'s selection. It is
-**real** — it survives two audits ~10 ms apart — and **latent rather than fatal**: a blocked
-task is not selectable, so nothing livelocks until something wakes it, at which point `init`
-would never be rescheduled and would never reap its child. It is *not* the console-smp hang,
-which is fixed and holds 24/24 on the stress harness. Root-causing it is follow-up work and
-should happen before roadmap 1.1 touches this path.
+It was read as `init`, blocked in `sys_wait()` on the shell, staying claimed by a CPU that had
+moved on. **That reading was wrong, and the giveaway was in the serial log all along:** the
+panic lands immediately after `init: console_server launched` and before the shell ever
+starts. Task 1 is `init` and task 4 is the shell it is in the middle of **spawning**.
+
+`do_spawn` → `load_staged_image_into` installs the *child* as the CPU's current task for the
+whole ELF load, so the loader's `copy_to_user` resolves through the child's address space
+(`kspawn.c` depends on this for capability propagation too). For that window
+`percpu_current_task[]` deliberately does not describe the task the CPU is running — while
+`init` remains correctly and legitimately claimed by it. The claim was live, not stale. The
+auditor was reading a declared-in-code-comments-but-undeclared-to-the-checker impersonation
+as a leak.
+
+The two IPC sites that do the same trick (`sys_ipc_send`, `h_ipc_reply_to`) *had* been
+declared, via a `percpu_in_user_copy` flag added when the checker false-positived on them.
+The spawn window had not — and it is orders of magnitude longer: a ~450 KiB copy plus
+page-table construction and relocation processing, which under TCG spans many ticks, so it
+comfortably survives the two audits the checker requires.
+
+The fix does not switch the checker off for those windows. `sched_impersonate_enter/exit`
+record the task the CPU is *really* running (`percpu_real_task[]`) and the audit is stated
+over that, so coverage stays continuous across the longest operation in the system — which is
+exactly where a real leak would otherwise be easiest to hide. The bracket is a nesting depth,
+not a flag, and is itself checked: a CPU reaching **ring 3** at non-zero depth means an
+`enter()` lost its `exit()`, and panics. An exemption mechanism with no balance check is a
+hole in the shape of the thing being checked.
+
+| Build | Runs (pinned, 2 host cores) | Failures |
+|---|---|---|
+| before | 20 | **10** |
+| after | 30 | **0** |
+
+Falsified in both directions rather than merely observed to pass:
+
+- **Delete the claim release** in `preempt_on_tick`'s save-and-switch block (re-introducing a
+  genuine leak): panics in 3 boots of 3. The checker is still alive.
+- **Delete `sched_impersonate_exit()`** from `do_spawn`: fails in 3 boots of 3, once via the
+  new bracket-balance panic. The bracket cannot rot silently.
+
+Two things this cost that are worth keeping:
+
+- **A checker that reports a violation is making a claim about the code, and it can be the one
+  that is wrong.** This finding sat open for a fortnight as a suspected scheduler defect, and
+  the roadmap blocked item 1.1 behind root-causing it. The invariant was true the whole time;
+  the model of "what this CPU is running" was incomplete.
+- **Read the log around the panic, not just the panic.** `init: console_server launched` two
+  lines above it dated the event to the spawn of task 4 and ruled out `sys_wait()` immediately.
+  The original diagnosis was reached from the message alone.
+
+*(The concurrent-panic garbling that showed up during the falsification runs —
+`PANICPANIC: : unbalanced impersostale scheduler claim...`, two cores tripping on the same
+tick — is fixed with a first-CPU-wins latch. Same failure as the `PA[NIC: console_server]`
+episode below, one level up.)*
 
 **Three things this checker cost to get right, all worth knowing before extending it:**
 

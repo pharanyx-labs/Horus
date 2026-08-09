@@ -289,6 +289,49 @@ recent serial: "...init: starting, launching shell\r\n
                 [console_server] ready (ring-3; owns serial + VGA framebuffer)\r\n\r\n"
 ```
 
+**Signature C is diagnosed: it is a LIVELOCK, not a slow test.** Reproduced locally at
+**3 in 30 (10%)**, and the mechanism established by two measurements:
+
+*The watchdog dump from a hung boot* — every task runnable, nothing blocked, timer alive:
+
+```
+==== HANG WATCHDOG: no progress after 800 ticks ====
+cpu 0: current=2 idle=0 imp=0
+task 1 'fsserver' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
+task 2 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=0
+task 3 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
+task 4 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
+task 5 'fsclient' state=1 rctx=1 ksp=1 pblock=0 blkon=-1 waiter=-1 cpu=-1
+```
+
+No task is `BLOCKED_*`, so no wake was lost. Every task has a resumable context and only one
+holds a CPU claim, so all the others are selectable — no scheduling bug. And the watchdog fired
+at all, so the timer is live and interrupts are on — not a ring-0 lockup. Everything is
+runnable and nothing progresses.
+
+*The completion-time distribution*, 20 starved boots with the budget raised to 600s:
+
+| Outcome | Runs | Time |
+|---|---|---|
+| PASS | 17 | **6–8 s** |
+| FAIL | 3 | **≥600 s** |
+
+**Bimodal, with nothing in between.** Not one run landed at 30s, 90s or 200s. A budget that is
+merely too tight produces a spread of overruns; this is 7 seconds or never, an 85× gap. So
+**raising `CONC_TIMEOUT` would not fix it** — the affected boots are not slow, they are stuck
+in a state the scheduler considers perfectly healthy.
+
+**What it is.** This is **[I-5]** — single-slot endpoint mailboxes — biting for real rather
+than theoretically. `LIMITATIONS.md` §2.2 already says `SYS_IPC_SEND`/`RECV` return `-2` and
+"expect userspace to poll, so contention is a busy-wait" and that "fair service ... cannot be
+expressed". `CONC_SELFTEST` puts **four clients and one server on one single-slot endpoint,
+on one CPU**, which is exactly the configuration that warning describes. Under starvation the
+pollers can settle into an interleaving that never lets a client's send meet the server's
+recv, and nothing in the design breaks the cycle: there is no queue to park a message in and
+no blocking handoff to force progress. **Roadmap 1.3** (multi-slot endpoint queues plus a
+one-shot reply capability) is the fix, and this is the first hard evidence that it is a
+correctness item and not only a performance one.
+
 **Signature C** — a **uniprocessor** boot that stops dead once the filesystem is up. It has hit
 `smoke-fs-persist` and `smoke-fs-conc`, both of which are *gating*:
 

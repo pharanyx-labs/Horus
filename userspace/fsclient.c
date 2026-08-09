@@ -40,9 +40,46 @@ static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { 
 static int rpc(struct fs_request *rq, struct fs_response *rp) {
     rq->magic = FS_PROTO_MAGIC;
     int r;
-    while ((r = sys_ipc_call(CAPSLOT_FS_EP, 0, rq, sizeof(*rq), rp)) < 0) spin_delay();
+    /* Retry ONLY the transient code, and bound even that. The previous form was
+     * `while (r < 0) spin_delay();`, which retries SYS_ERR_PERM -- "you hold no
+     * capability for this endpoint" -- forever. See the IPC retry contract in
+     * syscall.h: that is finding G-8 signature C, and it turned a clean
+     * authorisation refusal into an unkillable silent hang. */
+    unsigned tries = 0;
+    while ((r = sys_ipc_call(CAPSLOT_FS_EP, 0, rq, sizeof(*rq), rp)) < 0) {
+        if (!ipc_transient(r)) {
+            put("FS_SELFTEST: FAIL ipc-refused rc="); put_int(r); put("\n");
+            return r;                       /* permanent: report, never spin */
+        }
+        if (++tries > 2000000u) {           /* transient, but not forever */
+            put("FS_SELFTEST: FAIL ipc-retry-exhausted\n");
+            return -103;
+        }
+        spin_delay();
+    }
     if (rp->magic != FS_PROTO_MAGIC) return -102;
     return rp->rc;
+}
+
+/* Acquire the fs endpoint capability, retrying while the server is not yet
+ * registered.
+ *
+ * SYS_CONNECT_FS_SERVER fails with -1 until fs_server has completed
+ * SYS_REGISTER_FS_SERVER, and the clients are made runnable at the same moment
+ * the server is, so losing that race is ordinary rather than exceptional. The
+ * old code called connect ONCE and discarded the result, leaving the client with
+ * an empty capability slot and no way to ever notice: every later IPC returned
+ * SYS_ERR_PERM into a loop that retried it forever.
+ *
+ * fs_server already retries its own registration for exactly this reason (it can
+ * run before init has granted it the listen capability). This is the same
+ * discipline on the other side of the same race. Returns 0 on success. */
+static int fs_connect_retry(void) {
+    for (unsigned attempt = 0; attempt < 200000u; attempt++) {
+        if (sys_connect_fs_server(CAPSLOT_FS_EP, CAP_R_W) == 0) return 0;
+        sys_yield();
+    }
+    return -1;
 }
 
 #ifdef PERM_SELFTEST
@@ -100,10 +137,16 @@ void _start(void) {
     (void)sys_auth("root", "rootpass", 0);   /* CONC workers are already uid 0 (kernel-set), RAM store unlocked */
 #endif
 
-    /* Our slot-3 endpoint cap was delegated by the spawner (see fs_selftest), so
-     * IPC works immediately. The first rpc() polls until the server is serving.
-     * (A best-effort connect also publishes discovery for real clients.) */
-    (void)sys_connect_fs_server(CAPSLOT_FS_EP, CAP_R_W);
+    /* Acquire the fs endpoint capability before issuing a single request. This is
+     * the ONLY way a client reaches the server since IPC became
+     * capability-addressed (finding C-1): no ambient endpoint cap exists to fall
+     * back on, so a failed connect is not a missed optimisation, it is the
+     * difference between working and hanging forever. Must be retried — see
+     * fs_connect_retry. */
+    if (fs_connect_retry() != 0) {
+        put("FS_SELFTEST: FAIL connect (fs_server never registered)\n");
+        sys_exit();
+    }
 
 #ifdef CONC_SELFTEST
     /* Multi-client concurrency test. Several client tasks hammer the one

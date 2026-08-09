@@ -1696,20 +1696,21 @@ smoke-console-smp-stress:
 # turning "the boot hung and everything still looks RUNNABLE" into an attributable
 # failure.
 #
-# DELIBERATELY NOT IN CI, AND CURRENTLY EXPECTED TO FAIL. On today's main it
-# reports, in roughly one boot in five:
+# This target used to be documented as "expected to fail", reporting
 #
 #   stale scheduler claim: task 1 claimed by cpu N but that cpu was running 4
 #
-# i.e. `init`, blocked in sys_wait() on the shell, stays claimed by a CPU that has
-# moved on. That is a REAL violation and it is not yet root-caused. It is latent
-# rather than fatal — a blocked task is not selectable, so nothing livelocks until
-# something wakes it, at which point init would never be rescheduled and would
-# never reap its child. It is NOT the console-smp hang, which is fixed and holds
-# 24/24 under smoke-console-smp-stress.
+# in about one boot in five. That was NOT a scheduler defect. Task 1 is `init` and
+# task 4 is the shell it was in the middle of SPAWNING: do_spawn installs the child
+# as the CPU's current task for the whole ELF load so the loader's copy_to_user
+# lands in the child's address space, while init stays correctly claimed by that
+# CPU. The auditor was reading a deliberate impersonation as a leak. Declaring the
+# window (sched_impersonate_enter/exit, scheduler.c) took it from 10 failures in 20
+# to 0 in 30, pinned. See TESTS.md.
 #
-# Run this when working on the scheduler; see the note in TESTS.md before
-# concluding anything from a failure.
+# A single boot is weak evidence for an intermittent scheduling bug -- the lesson
+# smoke-console-smp cost -- so CI gates on the -stress variant below, which reports
+# a rate. Use this one for a quick local check while working on the scheduler.
 .PHONY: smoke-sched-invariants
 smoke-sched-invariants:
 	@$(MAKE) --no-print-directory clean
@@ -1717,6 +1718,30 @@ smoke-sched-invariants:
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='PANIC:' \
 		tools/smoke_test.sh boot.iso
+
+# The gating form: N pinned boots of the claim-checking kernel, reported as a rate.
+#
+# STRESS_RUNS defaults to 30. Sizing it needs a per-boot failure rate to reason
+# from, and the honest one to use is the LOWEST observed, not the most convenient:
+# the violation this gates ran at 10 in 20 pinned to two host cores locally, but
+# was historically reported at ~1 boot in 5 in CI. Take 20%:
+#
+#   10 boots  ->  1 - 0.8^10 = 89%    (better than one run, but ~1 regression in 9
+#                                      would still merge green)
+#   30 boots  ->  1 - 0.8^30 = 99.8%
+#
+# 30 costs about 90 seconds -- the job builds once and each boot exits on its
+# marker in ~2.5s -- so there is no reason to buy the weaker number. An earlier
+# version of this comment claimed 10 boots put a miss "below one in a thousand",
+# which was arithmetic done against the 50% local rate and wrong for the runner
+# this actually gates.
+.PHONY: smoke-sched-invariants-stress
+smoke-sched-invariants-stress:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
+	@STRESS_RUNS=$${STRESS_RUNS:-30} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		FAIL_MARKER='PANIC:' tools/stress_boot.sh boot.iso
 
 .PHONY: test
 test:

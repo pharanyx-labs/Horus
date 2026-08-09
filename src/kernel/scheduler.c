@@ -16,21 +16,44 @@ int percpu_idle[MAX_CPUS];
 /* The last ring-3 task each CPU ran, for flush-on-switch (0 = none yet). */
 int percpu_last_user_task[MAX_CPUS];
 
-/* "This CPU is transiently impersonating another task to resolve a user address."
+/* ---- Declared impersonation: when percpu_current_task[] is deliberately lying --
  *
  * copy_to_user/user_copy translate through tasks[get_current_task()].cr3, so
- * delivering an IPC reply into a *blocked peer's* buffer requires briefly making
- * that peer the current task (sys_ipc_send and h_ipc_reply_to both do this, with
- * interrupts masked, restoring the real task immediately afterwards).
+ * writing into ANOTHER task's address space requires briefly making that task the
+ * current one. Two subsystems do this:
  *
- * For that window percpu_current_task[] deliberately does NOT describe what the
- * CPU is running, so the claim invariant does not hold and an auditor on another
- * core must not read it. The window is otherwise harmless — the impersonated task
- * is blocked (so never selectable) and the real task stays claimed — but it is
- * exactly the kind of deliberate, undocumented exception that a checker has to be
- * told about rather than tripping over. Found by SCHED_INVARIANTS itself, which
- * false-positived here before this flag existed. */
-volatile int percpu_in_user_copy[MAX_CPUS];
+ *   - IPC reply delivery (sys_ipc_send, h_ipc_reply_to) impersonates the blocked
+ *     peer across a <=256-byte copy, with interrupts masked. Microseconds.
+ *   - SPAWN (do_spawn -> load_staged_image_into) impersonates the CHILD across the
+ *     whole ELF load, so the loader's copies land in the child's address space.
+ *     That is a ~450 KiB copy plus page-table construction and relocation
+ *     processing: under TCG it spans many timer ticks.
+ *
+ * For those windows percpu_current_task[] does NOT describe the task the CPU is
+ * running, so the raw claim invariant cannot hold and an auditor on another core
+ * would read a violation that is not one.
+ *
+ * The answer is NOT to blind the auditor. `percpu_real_task[]` records the task
+ * the CPU is genuinely running for the duration, and the checker audits against
+ * THAT — so coverage is continuous even across the longest operation in the
+ * system, which is precisely where a real leak would otherwise hide. An
+ * exemption that switches the checker off for the duration of every spawn is a
+ * hole in the shape of the thing being checked.
+ *
+ * `percpu_impersonating[]` is a nesting DEPTH, not a flag: nothing nests these
+ * today, but a depth cannot be silently un-set by an inner bracket if something
+ * ever does. A CPU cannot migrate mid-window — the ring-0 preemption guard in
+ * preempt_on_tick declines to switch a CPU away from a live kernel context — so
+ * enter and exit always run on the same CPU.
+ *
+ * History: the IPC windows were declared (as a `percpu_in_user_copy` flag) when
+ * SCHED_INVARIANTS false-positived on them. The spawn window was NOT, and it
+ * produced the "stale scheduler claim: task 1 claimed by cpu N but that cpu was
+ * running 4" report that stood open as a suspected scheduler defect — task 1 is
+ * `init`, task 4 is the shell it was in the middle of spawning, and the claim on
+ * init was correct and live the whole time. See TESTS.md. */
+volatile int percpu_impersonating[MAX_CPUS];
+volatile int percpu_real_task[MAX_CPUS];
 #endif
 
 #ifdef SMP
@@ -160,6 +183,12 @@ void scheduler_init(void) {
     
     for (int c = 0; c < MAX_CPUS; c++) percpu_current_task[c] = 0;
     for (int c = 0; c < MAX_CPUS; c++) percpu_last_user_task[c] = 0;
+#ifdef SMP
+    /* No CPU is impersonating anyone yet. -1 is "not impersonating", so it must
+     * not be left as 0 (a valid task id, and the idle task's at that). */
+    for (int c = 0; c < MAX_CPUS; c++) { percpu_impersonating[c] = 0;
+                                         percpu_real_task[c]     = -1; }
+#endif
     percpu_current_task[0] = 0;
     current_task = 0;
     scheduler_lock = (spinlock_t){0};
@@ -515,6 +544,21 @@ static void panic_ch(char ch) {
     while ((inb(0x3FD) & 0x20) == 0) { }
     outb(0x3F8, (uint8_t)ch);
 }
+
+/* First CPU to detect a violation gets the UART; the rest halt silently.
+ *
+ * Not defensive tidiness — without it two cores that trip on the same tick
+ * interleave byte-by-byte and the report comes out as
+ * "PANICPANIC: : unbalanced impersostale scheduler claim...", i.e. neither
+ * message is readable and the run looks like a garbled hang. That is the same
+ * failure this facility was built to eliminate (see the note above on why it
+ * writes to COM1 directly rather than through print()), reappearing one level up.
+ * Observed during the falsification runs for the impersonation bracket. */
+static volatile int panic_claimed = 0;
+static void panic_begin(void) {
+    if (__sync_lock_test_and_set(&panic_claimed, 1))
+        for (;;) __asm__ volatile ("cli; hlt");   /* someone else is reporting */
+}
 static void panic_str(const char *s) { while (*s) panic_ch(*s++); }
 static void panic_dec(int v) {
     char buf[12];
@@ -529,6 +573,7 @@ static void panic_dec(int v) {
 /* Report and halt. Split out so both directions read identically. */
 static void sched_claim_panic(const char *what, const char *where,
                               int t, int c, int seen) {
+    panic_begin();
     panic_str("\nPANIC: "); panic_str(what);
     panic_str(" at "); panic_str(where);
     panic_str(": task "); panic_dec(t);
@@ -538,6 +583,41 @@ static void sched_claim_panic(const char *what, const char *where,
     panic_dec(this_cpu());
     panic_str(")\n");
     for (;;) __asm__ volatile ("cli; hlt");
+}
+
+/* An enter() with no matching exit() would reroute every later audit of this CPU
+ * through a percpu_real_task[] that stopped being true long ago -- i.e. it would
+ * turn the mechanism that keeps the checker honest into the thing blinding it.
+ * So the bracket is itself checked: see the ring-3 assertion in preempt_on_tick. */
+static void sched_bracket_panic(const char *where, int cpu, int depth, int real) {
+    panic_begin();
+    panic_str("\nPANIC: unbalanced impersonation bracket at "); panic_str(where);
+    panic_str(": cpu "); panic_dec(cpu);
+    panic_str(" reached ring 3 at depth "); panic_dec(depth);
+    panic_str(" (still claiming to run task "); panic_dec(real);
+    panic_str("; an enter() lost its exit())\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
+/* What CPU `c` is REALLY running, which is what the invariant is stated over.
+ *
+ * Normally percpu_current_task[c]. Inside a declared impersonation window it is
+ * percpu_real_task[c] instead — see the note at the top of this file. Returning
+ * the real task rather than skipping the CPU is what keeps the audit continuous
+ * across a spawn, which is both the longest window and the one a genuine leak
+ * would be easiest to hide in.
+ *
+ * Returns -1 for "cannot tell, do not judge": the two variables are written on
+ * the other CPU without a lock, so an auditor can land between the depth
+ * increment and the snapshot. That is a mid-flight read of a correct kernel, not
+ * a violation, and callers skip it. The two-strike rule covers the rest: the
+ * window is a handful of instructions and cannot repeat 10 ms later. */
+static int sched_running_on(int c) {
+    int d = percpu_impersonating[c];
+    __sync_synchronize();
+    if (d == 0) return percpu_current_task[c];
+    int r = percpu_real_task[c];
+    return (r < 0) ? -1 : r;
 }
 
 static void sched_assert_claims(const char *where) {
@@ -581,13 +661,13 @@ static void sched_assert_claims(const char *where) {
             print(" claimed by cpu "); print_decimal((uint64_t)c); println("");
             for (;;) __asm__ volatile ("cli; hlt");
         }
-        if (percpu_in_user_copy[c]) continue;
         /* Snapshot the value actually compared and report THAT. Re-reading it for
          * the message lets a concurrent update make the panic text
          * self-contradictory ("task 1 claimed by cpu 0 which is running 1") --
          * which an earlier version printed, and which sends you hunting for the
          * wrong bug. */
-        int seen = percpu_current_task[c];
+        int seen = sched_running_on(c);
+        if (seen < 0) continue;                 /* mid-flight; see sched_running_on */
         if (seen != t) {
             if (sched_susp_task == t && sched_susp_cpu == c)
                 sched_claim_panic("stale scheduler claim", where, t, c, seen);
@@ -599,8 +679,7 @@ static void sched_assert_claims(const char *where) {
     /* <- A task a CPU is running must be claimed by it, or a second CPU can
      *    select it and two cores execute one kernel stack concurrently. */
     for (int c = 0; c < MAX_CPUS; c++) {
-        if (percpu_in_user_copy[c]) continue;   /* see above */
-        int t = percpu_current_task[c];
+        int t = sched_running_on(c);            /* the real task; see above */
         if (t <= 0 || t >= MAX_TASKS) continue;
         if (tasks[t].state == 0) continue;      /* teardown window; see above */
         int seen = task_running_cpu[t];         /* snapshot; see above */
@@ -673,6 +752,18 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     int cpu = this_cpu();
     if (!smp_sched_enabled) return frame_rsp;
     int ring3 = ((interrupted_cs & 3) == 3);
+#ifdef SCHED_INVARIANTS
+    /* Balance check for the impersonation bracket, and the reason the bracket can
+     * be trusted as an audit input rather than merely believed. A CPU executing
+     * ring-3 code is definitionally not inside one -- every window is opened and
+     * closed within a single ring-0 syscall -- so a non-zero depth here is an
+     * enter() that lost its exit(). Free, exact, and checked on every ring-3 tick.
+     * Deliberately placed BEFORE the ring-0 guard's early return, which is the
+     * only path out of this function that skips the audit. */
+    if (ring3 && cpu >= 0 && cpu < MAX_CPUS && percpu_impersonating[cpu] != 0)
+        sched_bracket_panic("preempt_on_tick", cpu, percpu_impersonating[cpu],
+                            percpu_real_task[cpu]);
+#endif
     /* ---- Never switch a CPU away from a live ring-0 context -----------------
      *
      * This path can save exactly one thing: a ring-3 trap frame. It has no way to
@@ -1447,6 +1538,36 @@ void set_current_task(int v) {
      * bitmap only for a task holding a port-I/O grant; every other task gets
      * iomap_base past the limit, so a ring-3 in/out #GPs. */
     tss_set_io_allowed(v > 0 && v < MAX_TASKS && tasks[v].io_allowed);
+}
+
+/* Open/close a declared impersonation window: see the long note on
+ * percpu_real_task[] at the top of this file.
+ *
+ * Call enter() BEFORE the set_current_task() that installs the impersonated
+ * identity — it snapshots the task the CPU is really running — and exit() AFTER
+ * the set_current_task() that restores it. Both must run on the same CPU, which
+ * the ring-0 preemption guard guarantees.
+ *
+ * No-ops without SMP, where there is no other core to observe the window. */
+void sched_impersonate_enter(void) {
+#ifdef SMP
+    int c = this_cpu();
+    if (c < 0 || c >= MAX_CPUS) return;
+    if (percpu_impersonating[c] == 0)
+        percpu_real_task[c] = percpu_current_task[c];
+    percpu_impersonating[c]++;
+    __sync_synchronize();
+#endif
+}
+
+void sched_impersonate_exit(void) {
+#ifdef SMP
+    __sync_synchronize();
+    int c = this_cpu();
+    if (c < 0 || c >= MAX_CPUS) return;
+    if (percpu_impersonating[c] > 0 && --percpu_impersonating[c] == 0)
+        percpu_real_task[c] = -1;
+#endif
 }
 
 void scheduler_lock_acquire(void) { spin_lock(&scheduler_lock); }

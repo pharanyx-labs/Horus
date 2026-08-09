@@ -132,18 +132,37 @@ Fixing it requires making boot interrupt enablement explicit first. Roadmap item
 `heap_max` are 64-bit. Correct only while every heap lives below 4 GiB. Widening the user
 address space — a roadmap goal — will make the bounds check pass on a truncated value.
 
-### 2.2 Endpoints are single-slot mailboxes — **[I-5]**
+### 2.2 ~~Endpoints are single-slot mailboxes~~ — **QUEUED 2026-08-10** — **[I-5]**
 
-One in-flight message per endpoint, no queue. `SYS_IPC_SEND`/`RECV` return `-2` and expect
-userspace to poll, so contention is a busy-wait. Fair service and priority inheritance cannot
-be expressed.
+**Half resolved.** Each endpoint now owns a bounded FIFO of `EP_QUEUE_SLOTS` (4) messages, so
+concurrent senders enqueue instead of colliding and `-2` means the ring is genuinely *full*
+rather than merely occupied. Measured on the 4-client concurrency test under single-core
+starvation, 12 boots each:
+
+| Depth | Mean | Spread |
+|---|---|---|
+| 1 (the old single slot) | 7042 ms | 6648–7694 ms, in **three discrete clusters ~520 ms apart** |
+| 4 (the queue) | **5162 ms** | 11 of 12 runs within **15 ms** |
+
+The clustering is the evidence, more than the 27%: single-slot completion times quantised into
+steps, and each step is one more collision-and-retry round. The queue removes the quantisation.
+`EP_QUEUE_SLOTS=1` rebuilds the old behaviour exactly, which is how this was measured rather
+than asserted.
+
+**Still open.** The receive side still polls — `SYS_IPC_RECV` returns `-2` on an empty queue
+rather than blocking — so a server with no work spins instead of sleeping, and priority
+inheritance still cannot be expressed. And the reply path is still authorised by
+kernel-recorded sender identity rather than by a one-shot reply capability consumed on reply,
+which is what would make reply forgery *structurally* impossible instead of gated. Both are the
+remaining half of roadmap 1.3.
 
 *(An earlier revision of this section claimed finding **[G-8]** signature C was a livelock
 caused by this contention. **That was wrong.** It was a startup race — clients that lost the
 race against `fs_server`'s registration held no endpoint capability, and every IPC then
 returned `SYS_ERR_PERM` into a userspace loop that retried it forever. Evidence: not one byte
 of traffic ever crossed any endpoint in a hung boot, which contention cannot produce. Fixed in
-userspace; see `TESTS.md`. This limitation remains real and unwitnessed.)*
+userspace; see `TESTS.md`. The queue above is a real improvement, but it did **not** fix that
+hang and was never what caused it.)*
 
 *(The shared global reply endpoint that used to compound this is gone: every task now has a
 private one, so **[I-5]** is closed. The missing queue is not.)*

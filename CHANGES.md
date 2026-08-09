@@ -78,6 +78,53 @@ Also fixed: two CPUs tripping the checker on the same tick interleaved their out
 byte-by-byte into an unreadable `PANICPANIC: : unbalanced impersostale scheduler
 claim…`. A first-CPU-wins latch now gives the reporter the UART alone. Same failure
 as the earlier `PA[NIC: console_server] ready` episode, one level up.
+### Changed — endpoints are a bounded FIFO, not a single mailbox slot (roadmap 1.3, **[I-5]**)
+
+An endpoint used to hold exactly ONE in-flight message. Every additional sender
+got `-2` and polled from ring 3, so N clients on one server spent their slices
+colliding rather than working — contention was a busy-wait, and fair service could
+not be expressed at all, because the queue that would order requests did not exist.
+
+Each endpoint now owns a bounded ring of `EP_QUEUE_SLOTS` (4) messages. `-2` means
+the ring is genuinely **full**, which under normal service it is not, so the common
+contention case stops being a retry loop and becomes an enqueue. Bounded is the
+point: the depth is fixed at compile time, so a sender cannot make the kernel
+allocate, and a server that stops receiving cannot be used to grow kernel memory
+without limit.
+
+**Measured, not asserted.** `EP_QUEUE_SLOTS=1` rebuilds the previous single-slot
+behaviour exactly, which is the A/B. On the 4-client concurrency test under
+single-core starvation, 12 boots each:
+
+| Depth | Mean | Spread |
+|---|---|---|
+| 1 | 7042 ms | 6648–7694 ms, in **three discrete clusters ~520 ms apart** |
+| 4 | **5162 ms** | 11 of 12 within **15 ms** |
+
+The clustering matters more than the 27%: single-slot completion times quantised
+into steps, each step one more collision-and-retry round. The queue removes the
+quantisation, which is contention disappearing rather than work merely going
+faster.
+
+Three details are security properties rather than conveniences:
+
+- **Each slot carries its own sender id.** The reply path authorises by
+  kernel-recorded sender identity, so a queued message must remember who sent it;
+  one shared `sender_task` field would be overwritten by the next sender, which
+  with a queue becomes cross-client reply misrouting.
+- **Slots are scrubbed on dequeue.** A slot outlives the message in it and the
+  next sender may be a mutually distrusting task — without scrubbing the ring is a
+  residue channel between them.
+- **Both copies go through a kernel buffer.** `copy_from_user` before a slot is
+  taken (a fault must not publish a half-filled message), and dequeue before
+  `copy_to_user` (a faulting copy must not consume a request whose sender is
+  blocked awaiting its reply).
+
+Regression: 16 targets including `captest` (84 checks), `fs-conc`, `fs-perms`,
+`console-isolation`, `session-smp`. **Not** the whole of 1.3 — the receive side
+still polls an empty queue, and the one-shot reply capability that would make reply
+forgery structurally impossible is still to come.
+
 ### Fixed — a permanent IPC refusal was retried forever, hanging the FS tests (G-8 signature C)
 
 `smoke-fs-conc` and `smoke-fs-persist` — both *gating* — hung intermittently on a

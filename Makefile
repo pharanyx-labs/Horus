@@ -576,6 +576,17 @@ endif
 # Deliberately does NOT halt: halting would prevent a merely-slow boot from going
 # on to pass, which is the hypothesis under test. The harness's own timeout still
 # fails the boot; this only makes the log say why. Off in the ship kernel.
+# EP_QUEUE_SLOTS: depth of each endpoint's bounded FIFO (roadmap 1.3, [I-5]).
+#
+# 1 degenerates the ring to the single-slot mailbox it replaced, which is how the
+# queue's benefit is measured rather than asserted. Each slot costs IPC_MSG_MAX + 8
+# bytes per endpoint, so the depth is a real memory/contention trade and belongs in
+# a knob rather than buried in a header.
+EP_QUEUE_SLOTS ?=
+ifneq ($(EP_QUEUE_SLOTS),)
+CFLAGS += -DEP_QUEUE_SLOTS=$(EP_QUEUE_SLOTS)
+endif
+
 HANG_WATCHDOG ?= 0
 HANG_WATCHDOG_TICKS ?= 4000
 ifeq ($(HANG_WATCHDOG),1)

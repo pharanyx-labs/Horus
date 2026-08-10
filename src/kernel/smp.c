@@ -360,6 +360,7 @@ void smp_bringup(void) {
 #endif
 
 #ifdef IRQ_POLICY_AUDIT
+    irq_milestone("kernel-ready");
     irq_policy_report("kernel-ready");
 #endif
     kmsg("kernel ready, starting init (PID 1)");

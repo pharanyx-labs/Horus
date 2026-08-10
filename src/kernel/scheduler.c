@@ -548,6 +548,7 @@ void timer_handler(void) {
         if ((rep == 0 && system_ticks > 40u) || (rep == 1 && system_ticks > 200u)) {
             rep++;
             irq_policy_report_uart(rep == 1 ? "handshake-early" : "handshake-late");
+            if (rep == 1) { irq_milestone_report(); irq_policy_selftest(); }
         }
     }
 #endif
@@ -1774,6 +1775,107 @@ static void irq_record_site(uint64_t ra) {
     }
 }
 #endif /* IRQ_POLICY_AUDIT */
+
+#ifdef IRQ_POLICY_AUDIT
+/* ---- Boot-milestone IF state (roadmap 1.1 step 2) --------------------------
+ *
+ * The kernel's boot-time interrupt enablement is currently an EMERGENT property
+ * of a locking defect rather than a stated design: spin_unlock's unconditional
+ * `sti` turns interrupts on as a side effect of the first lock any syscall takes
+ * (see the audit above). Roadmap 1.1 step 2 asks for a self-test asserting IF at
+ * the boot milestones "so the dependency cannot silently return".
+ *
+ * This records IF at named points. The expected values are NOT invented -- they
+ * are what the kernel actually does today, measured and then written down, so the
+ * test's job is to notice when that changes. Encoding a policy nobody has
+ * implemented would make it fail on a correct kernel, which is the failure mode
+ * TESTS.md keeps warning about. */
+#define IRQ_MILESTONES 8
+struct irq_milestone { const char *name; int if_state; int seen; };
+static struct irq_milestone irq_ms[IRQ_MILESTONES];
+static unsigned irq_ms_n = 0;
+
+void irq_milestone(const char *name) {
+    if (irq_ms_n >= IRQ_MILESTONES) return;
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    for (unsigned i = 0; i < irq_ms_n; i++)
+        if (irq_ms[i].name == name) return;     /* first sighting only */
+    irq_ms[irq_ms_n].name     = name;
+    irq_ms[irq_ms_n].if_state = (fl & 0x200ULL) ? 1 : 0;
+    irq_ms[irq_ms_n].seen     = 1;
+    irq_ms_n++;
+}
+
+/* ---- The gate (roadmap 1.1 step 2) -----------------------------------------
+ *
+ * These expectations are MEASURED, not designed: they are what the kernel does
+ * today, written down so that a change to interrupt policy cannot arrive
+ * silently. Interrupts are off at every boot milestone and at syscall entry (the
+ * int 0x80 gate clears IF), which is why the accidental `sti` in spin_unlock is
+ * load-bearing at all -- every syscall starts masked, so the first lock it
+ * releases turns interrupts on for the remainder.
+ *
+ * When step 3 lands the IF-preserving lock, some of these will change. That is
+ * the point: the diff will have to state which, rather than the handshake quietly
+ * acquiring or losing preemption windows the way it did on 2026-07-27. */
+static const struct { const char *name; int expect; } irq_expect[] = {
+    { "post-idt",            0 },
+    { "post-paging",         0 },
+    { "post-protections",    0 },
+    { "kernel-ready",        0 },
+    { "first-syscall-entry", 0 },
+};
+#define IRQ_EXPECT_N ((int)(sizeof(irq_expect)/sizeof(irq_expect[0])))
+
+static int irq_streq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+/* PASS/FAIL last, and straight to the UART: smoke_test.sh kills QEMU the instant
+ * it sees the marker, so anything printed after it is dead code. */
+void irq_policy_selftest(void) {
+    int checked = 0;
+    for (int e = 0; e < IRQ_EXPECT_N; e++) {
+        int found = 0;
+        for (unsigned i = 0; i < irq_ms_n; i++) {
+            if (!irq_streq(irq_ms[i].name, irq_expect[e].name)) continue;
+            found = 1;
+            if (irq_ms[i].if_state != irq_expect[e].expect) {
+                panic_str("IRQ_POLICY: FAIL "); panic_str(irq_expect[e].name);
+                panic_str(" IF="); panic_dec(irq_ms[i].if_state);
+                panic_str(" expected "); panic_dec(irq_expect[e].expect);
+                panic_str("\n");
+                return;
+            }
+            checked++;
+            break;
+        }
+        if (!found) {
+            /* A milestone that never fired is a silent hole, not a pass: the
+             * boot path may have been reordered so the point no longer exists. */
+            panic_str("IRQ_POLICY: FAIL milestone-never-reached ");
+            panic_str(irq_expect[e].name); panic_str("\n");
+            return;
+        }
+    }
+    panic_str("IRQ_POLICY: PASS ");
+    panic_dec(checked);
+    panic_str(" milestones\n");
+}
+
+/* Straight to the UART: this is reported from the timer, after console_server may
+ * already own the console, where the kernel's print() is suppressed. */
+void irq_milestone_report(void) {
+    panic_str("[irq-policy] boot milestones (IF at each):\n");
+    for (unsigned i = 0; i < irq_ms_n; i++) {
+        panic_str("[irq-policy]   "); panic_str(irq_ms[i].name);
+        panic_str(" IF="); panic_dec(irq_ms[i].if_state);
+        panic_str("\n");
+    }
+}
+#endif
 
 #ifdef IRQ_POLICY_AUDIT
 /* UART variant, safe to call from the timer ISR after console handover. */

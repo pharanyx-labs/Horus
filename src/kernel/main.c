@@ -290,6 +290,9 @@ void kernel_main(uint32_t mb_info) {
     assert_higher_half();
 
     idt_init64();
+#ifdef IRQ_POLICY_AUDIT
+    irq_milestone("post-idt");
+#endif
     pic_init();
 
     /* One walk of the multiboot2 tags before paging_init builds its free list:
@@ -319,6 +322,9 @@ void kernel_main(uint32_t mb_info) {
     boot_module_verify_all();
 
     paging_init();
+#ifdef IRQ_POLICY_AUDIT
+    irq_milestone("post-paging");
+#endif
 
     /* Untyped memory (roadmap 0.3, finding I-7). Must run after paging_init —
      * which reserves the arena and sets g_untyped_arena — and before
@@ -363,6 +369,9 @@ void kernel_main(uint32_t mb_info) {
     cap_init();
     cpu_detect_features();
     cpu_enable_protections();
+#ifdef IRQ_POLICY_AUDIT
+    irq_milestone("post-protections");
+#endif
     /* Report side-channel flush-on-switch coverage (like the CR4-protections
      * gate): which barriers are active, and whether SMT co-residency is a
      * residual the time-slice flush cannot cover. */

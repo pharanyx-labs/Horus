@@ -1210,6 +1210,9 @@ void set_current_task(int v);
  * auditor reads these windows as violations. No-ops without SMP. */
 #ifdef IRQ_POLICY_AUDIT
 void irq_policy_report(const char *when);
+void irq_milestone(const char *name);
+void irq_milestone_report(void);
+void irq_policy_selftest(void);
 #endif
 void sched_impersonate_enter(void);
 void sched_impersonate_exit(void);

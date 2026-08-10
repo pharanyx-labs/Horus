@@ -254,6 +254,9 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
         return (uint64_t)frame;
 #endif
     } else if (vector == 0x80 || vec2 == 0x80) {
+#ifdef IRQ_POLICY_AUDIT
+        irq_milestone("first-syscall-entry");
+#endif
         int scur = get_current_task();
         if ((uint32_t)frame->rax == SYS_SIGRETURN && scur > 0 && scur < MAX_TASKS
             && tasks[scur].in_signal) {

@@ -209,10 +209,15 @@ single-slot build's completion times came in three discrete clusters ~520 ms apa
 rounds — which the queue removes entirely. `EP_QUEUE_SLOTS=1` restores the old design exactly,
 which is how the benefit was measured rather than asserted.
 
-**Remaining:** a blocking receive (an empty queue still returns `-2` and the server polls, so
-priority inheritance is still inexpressible), and the one-shot reply capability itself — the
-part that makes reply forgery structurally impossible rather than gated by
-`SYS_IPC_REPLY_TO`'s sender-identity check.
+**Reply capability landed 2026-08-10.** `CAP_REPLY` is minted by `SYS_IPC_RECV` naming the
+sender of the dequeued message and consumed by `SYS_IPC_REPLY_TO`. Reply forgery is now
+unrepresentable rather than gated: no capability, no reply; the first reply spends it; the
+capability names the client and cannot be retargeted. `captest` 84 → 88 checks, falsified in
+two directions.
+
+**Remaining:** a blocking receive. An empty queue still returns `-2` and the server polls, so a
+server with no work spins instead of sleeping and priority inheritance is still inexpressible.
+That is the last piece of this item.
 
 A bounded FIFO per endpoint, plus a **one-shot reply capability** minted at call time and
 consumed on reply (seL4's reply object). This makes reply forgery *structurally* impossible

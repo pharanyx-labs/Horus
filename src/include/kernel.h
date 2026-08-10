@@ -331,6 +331,9 @@ static inline int reply_ep_for_task(int tid) {
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG   (dmesg; shell)            */
 #define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE  (provisioning; fs_server) */
 #define CAPSLOT_UNTYPED    18    /* CAP_UNTYPED: kernel-object memory (init)   */
+#define CAPSLOT_REPLY      21    /* CAP_REPLY: one-shot right to answer the
+                                 * request just received (minted by RECV,
+                                 * consumed by REPLY_TO). Server-side only. */
 
 /* Task states. */
 #define TASK_DEAD          0
@@ -786,6 +789,30 @@ struct boot_module_info {
  * could do what, defeating much of the point of having one. Each of these types
  * replaces one of those gates, is minted once in the primordial root cnode, and
  * is delegated by init to exactly the task that needs it. */
+/* ---- One-shot reply authority (roadmap 1.3, [I-5]) -------------------------
+ *
+ * `object` = the task blocked in SYS_IPC_CALL that this capability authorises a
+ * reply to. Minted by SYS_IPC_RECV into CAPSLOT_REPLY of the RECEIVING task, and
+ * CONSUMED (the slot nulled) by SYS_IPC_REPLY_TO.
+ *
+ * What this changes. The reply used to be routed by `endpoints[ep].last_sender`
+ * — a mutable field on the endpoint, overwritten by the next receive. Replying
+ * to the right client was therefore a CONVENTION the server had to honour
+ * ("must precede the next recv, which would overwrite last_sender"), not a
+ * property the kernel enforced. The bounded queue made that sharper: a server
+ * may now dequeue several requests, and only the newest was nameable.
+ *
+ * Holding this capability IS the right to reply, so:
+ *   - a task cannot reply to a client it never received from — it has no cap;
+ *   - it cannot reply TWICE to one request — the first reply consumes the cap;
+ *   - it cannot reply to the wrong client — the cap names the client, and
+ *     nothing the server does afterwards can retarget it.
+ *
+ * That is the difference between forgery being gated and forgery being
+ * impossible to express. Note it is deliberately NOT delegatable in any useful
+ * sense: it names one blocked caller and dies on use. */
+#define CAP_REPLY               17
+
 #define CAP_KERNEL_LOG          14   /* SYS_DMESG: read the kernel message ring   */
 #define CAP_BOOT_MODULE         15   /* SYS_BOOT_MODULE_INFO / _READ               */
 
@@ -1373,6 +1400,13 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, 
  * kernel object. */
 bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
                         uint32_t rights, uint32_t badge);
+
+/* Drop a capability the current task holds and return its budget. The
+ * counterpart to cap_install_object: caps_in_use is incremented on NULL ->
+ * occupied and is decremented ONLY here, so a per-operation mint without a
+ * matching consume leaks toward MAX_CAPS_PER_TASK. NOT a revoke — it forgets one
+ * slot in the caller's own cspace and touches no derived capability. */
+bool cap_consume_slot(uint32_t dest_slot);
 /* Read-only view of the kernel root cnode, so the object-reachability sweep in
  * untyped.c can see kernel-held capabilities too. root_cnode is otherwise
  * file-private to capability.c and must stay that way: handing out a mutable

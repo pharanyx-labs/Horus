@@ -1827,6 +1827,19 @@ smoke-console-smp-stress:
 # A single boot is weak evidence for an intermittent scheduling bug -- the lesson
 # smoke-console-smp cost -- so CI gates on the -stress variant below, which reports
 # a rate. Use this one for a quick local check while working on the scheduler.
+# Roadmap 1.1 step 2: assert IF at the boot milestones so a change to interrupt
+# policy cannot arrive silently. The expectations are MEASURED (all zero today),
+# not designed -- see the note above irq_expect[] in scheduler.c. When step 3
+# lands the IF-preserving lock some will change, and the diff will have to say so.
+.PHONY: smoke-irq-policy
+smoke-irq-policy:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1
+	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='IRQ_POLICY: PASS' FAIL_MARKER='IRQ_POLICY: FAIL' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-sched-invariants
 smoke-sched-invariants:
 	@$(MAKE) --no-print-directory clean

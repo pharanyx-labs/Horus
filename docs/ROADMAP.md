@@ -196,8 +196,13 @@ Required order:
 
 1. Make boot-time interrupt enablement explicit — find every window relying on the accidental
    `sti`, issue or defer `sti` deliberately, and write the policy down.
-2. Add a self-test asserting `IF` state at the boot milestones so the dependency cannot
-   silently return.
+2. ~~Add a self-test asserting `IF` state at the boot milestones so the dependency cannot
+   silently return.~~ **Done 2026-08-10** — `make smoke-irq-policy`, gated in CI. Records IF
+   at `post-idt`, `post-paging`, `post-protections`, `kernel-ready` and
+   `first-syscall-entry`; **all measure 0 today**, which is exactly why the accidental `sti`
+   is load-bearing. Falsified both ways: flipping an expectation fails with the mismatch, and
+   deleting a milestone hook fails with `milestone-never-reached` rather than quietly passing
+   on four checks instead of five.
 3. Then land the per-CPU, IF-preserving lock.
 
 Own PR, with the startup handshake instrumented. Do not attempt step 3 alone.

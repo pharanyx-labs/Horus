@@ -487,6 +487,46 @@ reported loudly as a G-8 datapoint and does not gate. The stress harness also **
 failing serial log rather than only saving it to a file — a gating job failed 1-in-30 on CI
 with the one artifact needed to diagnose it sitting in a workspace that was then deleted.
 
+### `make smoke-irq-policy` — the boot interrupt policy, written down
+
+**Roadmap 1.1 step 2.** The kernel's boot-time interrupt enablement is currently an *emergent*
+property of a locking defect rather than a stated design: `spin_unlock`'s unconditional `sti`
+turns interrupts on as a side effect of the first lock any syscall takes (**[C-3.1]**). This
+gate records IF at named boot milestones and asserts it.
+
+| Milestone | IF |
+|---|---|
+| `post-idt` | 0 |
+| `post-paging` | 0 |
+| `post-protections` | 0 |
+| `kernel-ready` | 0 |
+| `first-syscall-entry` | 0 |
+
+**The expectations are measured, not designed.** They are what the kernel does today, written
+down so a change cannot arrive silently. Encoding a policy nobody has implemented would make
+the test fail on a correct kernel — the failure mode this document keeps warning about.
+
+All zero is the whole point: every syscall starts with interrupts masked (the `int 0x80` gate
+clears IF), so the first lock a handler releases turns them on for the rest of that syscall.
+That is why **[C-3.1]** is load-bearing, and it is measurable — `IRQ_POLICY_AUDIT=1` counts
+**99 accidental against 67 benign** depth-zero releases across a session, over seven sites, all
+of them syscall-context lock users.
+
+Falsified in both directions, because a gate that cannot fail is not evidence:
+
+| Break | Result |
+|---|---|
+| flip one expectation | `FAIL post-paging IF=0 expected 1` |
+| delete a milestone hook | `FAIL milestone-never-reached post-protections` |
+
+The second matters more than the first. A milestone that silently stops firing would otherwise
+pass on four checks instead of five, and the gate would report success while measuring less
+than it claims — the same defect as a refusal test that never reaches its probe.
+
+When step 3 lands the IF-preserving lock, some of these values will change. That is the
+intent: the diff will have to say which, rather than the startup handshake quietly acquiring or
+losing preemption windows the way it did on 2026-07-27.
+
 ### Two diagnostics for a corrupted resume `%rsp`
 
 Every return from `interrupt_handler64` is a kernel `%rsp` that `isr_common_stub64` loads and

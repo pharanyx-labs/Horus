@@ -548,6 +548,27 @@ jobs:
       - name: Boot the shipped kernel under -smp 4 and assert the login banner is intact (single console writer)
         run: make smoke-console-smp
 
+  smoke-irq-policy:
+    name: QEMU boot interrupt-policy gate (IF at each milestone)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Roadmap 1.1 step 2. The expectations are MEASURED, not designed: the gate's
+      # job is to make a change to boot interrupt policy state itself in the diff
+      # rather than arrive silently, which is how the reverted 2026-07-27 attempt
+      # went wrong.
+      - name: Assert IF at every boot milestone matches the recorded policy
+        run: make smoke-irq-policy
+
   smoke-sched-invariants:
     name: QEMU SMP scheduler claim invariant, 30 boots (headless, -smp 4)
     runs-on: ubuntu-latest

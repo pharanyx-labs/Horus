@@ -566,6 +566,26 @@ ifeq ($(IRQ_POLICY_AUDIT),1)
 CFLAGS  += -DIRQ_POLICY_AUDIT
 endif
 
+# "Observation only ... boots identically" above is NOT true of the session, and
+# these two knobs are how that was established. The audit reports out of the timer
+# ISR on the polled UART; the tick-200 one lands after ring-3 console_server has
+# taken the serial line, and an audit build fails tools/session_test.py at a rate
+# the ship kernel does not. IRQ_POLICY_REPORT_LATE=0 drops that report (keeping
+# the tick-40 one, which fires while the kernel still owns the console);
+# IRQ_POLICY_REPORT_EVERY=N adds a one-line total every N ticks. See TESTS.md.
+IRQ_POLICY_QUIET ?= 0
+ifneq ($(IRQ_POLICY_QUIET),0)
+CFLAGS  += -DIRQ_POLICY_QUIET=$(IRQ_POLICY_QUIET)
+endif
+IRQ_POLICY_REPORT_LATE ?= 1
+ifneq ($(IRQ_POLICY_REPORT_LATE),1)
+CFLAGS  += -DIRQ_POLICY_REPORT_LATE=$(IRQ_POLICY_REPORT_LATE)
+endif
+IRQ_POLICY_REPORT_EVERY ?= 0
+ifneq ($(IRQ_POLICY_REPORT_EVERY),0)
+CFLAGS  += -DIRQ_POLICY_REPORT_EVERY=$(IRQ_POLICY_REPORT_EVERY)u
+endif
+
 SCHED_INVARIANTS ?= 0
 ifeq ($(SCHED_INVARIANTS),1)
 CFLAGS  += -DSCHED_INVARIANTS

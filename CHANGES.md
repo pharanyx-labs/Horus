@@ -8,6 +8,70 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — roadmap 1.1's own instrument was corrupting the session it measured, and its published numbers came from it
+
+`IRQ_POLICY_AUDIT=1` (roadmap 1.1 step 1) reported through `panic_str`, straight at the
+UART, deliberately bypassing the runtime suppression of `print()`. That suppression
+is not an inconvenience to route around: ring-3 `console_server` owns the serial
+line, and a second writer interleaves. The tick-41 report lands on the login prompt
+and cuts it in half:
+
+```
+root@horus\n[irq-policy] handshake-early @tick=41: accidental_sti=96 benign_sti=65 sites=7
+```
+
+`root@horus#` then appears **nowhere** in the transcript, so `tools/session_test.py`
+waits 180 s for a prompt that was never written contiguously. This is the
+`PA[NIC: console_server] ready` interleaving bug one level up — the same defect the
+single-writer console was introduced to fix, reintroduced by an instrument that
+opted out of it.
+
+**Measured interleaved** — adjacent boots, alternating builds, so no amount of host
+drift can explain the gap — with the unmodified audit build kept in as a positive
+control:
+
+| Build | `session_test.py` failures |
+|---|---|
+| ship kernel (no audit) | **0 of 8** |
+| audit, `IRQ_POLICY_QUIET=1` | **0 of 8** |
+| audit, exactly as shipped | **8 of 8** |
+
+`IRQ_POLICY_QUIET=1` suppresses every timer-driven report and touches nothing else.
+That is not an assertion: `spin_lock` and `spin_unlock` disassemble to **82
+identical instruction lines** under both settings, referencing the same five counter
+symbols the same number of times. The counting was never the problem.
+
+**The numbers step 1 published are withdrawn.** When the prompt is split the harness
+stops issuing commands, so the guest correctly runs nothing more and the counters
+stop climbing. `docs/ROADMAP.md` and `TESTS.md` reported **99 accidental / 67 benign
+over seven sites** as a measurement "across a scripted shell session"; it is the boot
+window of a session that never executed a command. A session the harness can drive
+reads **420 / 224 at tick 201**, and the distribution is materially different — the
+two IPC capability sites are ~90% of accidental `sti`s rather than roughly comparable
+to the rest. The seven *sites* reproduce in both populations and are unchanged.
+
+Reports now carry `@tick=`, because these counters are cumulative and still climbing:
+a figure quoted without its sample point is not a measurement, which is precisely how
+a boot-window snapshot came to be recorded as a session total.
+
+**`make smoke-irq-policy` is unaffected and stays gating** — `MARKER_ONLY=1` means the
+marker alone signals success, so the gate exits at tick 40 and never reaches a prompt.
+Verified as a rate, 8 boots in 8, not a single green run.
+
+Two wrong diagnoses were recorded and corrected along the way, both caught by controls
+rather than by re-reading code: that the periodic reports added while investigating had
+caused the failures (the control failed too), and that the frozen counters beside a live
+timer meant a wedged kernel, possibly **G-8** (they mean an idle one — the guest was
+healthy throughout). An early comparison was also run as time-separated blocks, which
+confounds build with host state; its *p*-value was withdrawn and the experiment redone
+interleaved.
+
+**Roadmap 1.1 step 3 is not unblocked by this.** Quiet mode counts correctly and says
+nothing; the gate prints but never reaches a prompt. Neither yields an honest
+session-scale total, which is the number step 3 needs — the windows it must reason
+about are dominated by IPC sites that only appear under load. A readout through the
+single-writer console, or at guest exit, is the remaining prerequisite.
+
 ### Fixed — the scheduler's claim auditor was reading a deliberate impersonation as a leak
 
 `SCHED_INVARIANTS=1` had been reporting, in about 1 boot in 5 — **10 in 20** once

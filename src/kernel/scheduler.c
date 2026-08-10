@@ -534,6 +534,46 @@ static void watchdog_dump(int seq) {
 
 #ifdef IRQ_POLICY_AUDIT
 void irq_policy_report_uart(const char *when);   /* defined below, next to spin_lock */
+void irq_policy_totals_uart(const char *when);   /* likewise -- one line, no table */
+/* Ticks between `periodic` reports; 0 = off, which is the DEFAULT and is exactly
+ * the behaviour #124 shipped. Periodic reporting is opt-in because it is not free:
+ * these lines go out of the timer ISR on the polled UART, into the same serial the
+ * ring-3 console_server owns once the shell is up. Left on continuously it
+ * perturbs the session it is measuring. Turn it on for a measurement run
+ * (-DIRQ_POLICY_REPORT_EVERY=N), not for a gate. */
+#ifndef IRQ_POLICY_REPORT_EVERY
+#define IRQ_POLICY_REPORT_EVERY 0u
+#endif
+
+/* IRQ_POLICY_QUIET=1 suppresses every timer-driven report, leaving the counting
+ * itself intact.
+ *
+ * These reports go out through panic_str -- straight at the UART, deliberately
+ * bypassing the runtime suppression of print(). That suppression is not an
+ * inconvenience to route around: it exists because ring-3 console_server owns the
+ * serial line, and a second writer interleaves. The tick-41 report lands squarely
+ * on the login prompt and splits it:
+ *
+ *     root@horus\n[irq-policy] handshake-early @tick=41: accidental_sti=96 ...
+ *
+ * so `root@horus#` never appears contiguously and any harness waiting for it
+ * waits forever. The guest is fine; the observer is broken. Measured interleaved
+ * against the ship kernel, adjacent boots: ship 0/10 failures, audit 10/10.
+ * This is the `PA[NIC: console_server] ready` bug one level up.
+ *
+ * So: quiet for anything that drives the shell, loud for the boot-window gate
+ * (smoke-irq-policy exits on its marker at tick 40 and never reaches a prompt). */
+#ifndef IRQ_POLICY_QUIET
+#define IRQ_POLICY_QUIET 0
+#endif
+
+/* The `handshake-late` report at tick 200. 1 = as #124 shipped. This one lands
+ * AFTER console_server has taken the serial line, which is the hypothesis under
+ * test: set to 0 to keep only the tick-40 report (which fires while the kernel
+ * still owns the console) and see whether the session failures go away. */
+#ifndef IRQ_POLICY_REPORT_LATE
+#define IRQ_POLICY_REPORT_LATE 1
+#endif
 #endif
 
 void timer_handler(void) {
@@ -542,13 +582,31 @@ void timer_handler(void) {
     /* Report at two points either side of the init -> fs_server -> console_server
      * -> shell handshake, which is the window roadmap 1.1 says depends on the
      * accidental sti. Straight to the UART: once console_server owns the console
-     * the kernel's print() is suppressed, and a report nobody sees is no report. */
-    {
+     * the kernel's print() is suppressed, and a report nobody sees is no report.
+     *
+     * ...and then periodically for the rest of the boot, because the two fixed
+     * points are NOT a session measurement and were mistaken for one. The
+     * `handshake-early` snapshot at tick 40 covers boot only; roadmap 1.1 and
+     * TESTS.md both attributed its numbers to "a scripted shell session", which
+     * overstates how much of the system they had seen. The counts keep climbing
+     * long after tick 200 -- the two IPC capability sites scale with message
+     * traffic -- so a run has to say WHEN it was sampled for its numbers to mean
+     * anything. `periodic` lines let the last one before shutdown stand as the
+     * session total. */
+    if (!IRQ_POLICY_QUIET) {
         static int rep = 0;
-        if ((rep == 0 && system_ticks > 40u) || (rep == 1 && system_ticks > 200u)) {
+        static uint32_t next_periodic = 0;
+        if ((rep == 0 && system_ticks > 40u) ||
+            (IRQ_POLICY_REPORT_LATE && rep == 1 && system_ticks > 200u)) {
             rep++;
             irq_policy_report_uart(rep == 1 ? "handshake-early" : "handshake-late");
             if (rep == 1) { irq_milestone_report(); irq_policy_selftest(); }
+            if (rep == 2) next_periodic = system_ticks + IRQ_POLICY_REPORT_EVERY;
+        } else if (IRQ_POLICY_REPORT_EVERY && rep >= 2 && system_ticks >= next_periodic) {
+            next_periodic = system_ticks + IRQ_POLICY_REPORT_EVERY;
+            /* Totals only -- the per-site table is ~8 extra UART lines per report
+             * and is what makes continuous reporting disturb the session. */
+            irq_policy_totals_uart("periodic");
         }
     }
 #endif
@@ -1879,12 +1937,20 @@ void irq_milestone_report(void) {
 
 #ifdef IRQ_POLICY_AUDIT
 /* UART variant, safe to call from the timer ISR after console handover. */
-void irq_policy_report_uart(const char *when) {
+/* The one-line form: totals and the sample point, no per-site table. */
+void irq_policy_totals_uart(const char *when) {
     panic_str("\n[irq-policy] "); panic_str(when);
+    /* The sample point, not just the numbers: these counts are cumulative and
+     * still climbing, so a figure quoted without its tick is not a measurement. */
+    panic_str(" @tick="); panic_dec((int)system_ticks);
     panic_str(": accidental_sti="); panic_dec((int)irq_accidental_sti);
     panic_str(" benign_sti=");      panic_dec((int)irq_benign_sti);
     panic_str(" sites=");           panic_dec((int)irq_site_count);
     panic_str("\n");
+}
+
+void irq_policy_report_uart(const char *when) {
+    irq_policy_totals_uart(when);
     for (unsigned i = 0; i < irq_site_count && i < IRQ_SITE_SLOTS; i++) {
         panic_str("[irq-policy]   ra=0x");
         for (int sh = 60; sh >= 0; sh -= 4) {

@@ -302,6 +302,49 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
     return cap_install_object(dest_slot, CAP_ENDPOINT, (uint64_t)object, rights, badge);
 }
 
+/* Drop a capability the CURRENT task holds, returning its slot AND its budget.
+ *
+ * This is the counterpart cap_install_object never had, and its absence is a
+ * trap: `caps_in_use` is incremented whenever a slot goes NULL -> occupied and
+ * was decremented NOWHERE in the tree. Overwriting a slot with a CAP_NULL via
+ * cap_install_object therefore does not free the count — so a per-operation mint
+ * (CAP_REPLY, minted on every SYS_IPC_RECV) would leak one count per receive and
+ * wedge every long-running server at MAX_CAPS_PER_TASK: after 128 requests the
+ * mint fails, the server can no longer answer anyone, and the failure arrives as
+ * a hang thousands of messages after the mistake. Short tests would never see it.
+ *
+ * NOT a revoke. Revocation tears down a derivation subtree across every cspace
+ * (rust_cap_revoke_global); this only forgets one slot in the caller's own. That
+ * is the correct primitive for consuming a one-shot right, and the wrong one for
+ * withdrawing authority you handed to somebody else — do not reach for it there.
+ *
+ * No authority check: a task may always reduce its own authority, and requiring
+ * one would let an unrelated failure strand a consumed capability in place. */
+bool cap_consume_slot(uint32_t dest_slot) {
+    spin_lock(&cap_lock);
+    int cur = get_current_task();
+    struct capability *cspace = tasks[cur].cspace;
+    uint32_t cspace_sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+    if (!cspace || dest_slot < KERNEL_RESERVED_CAPS || dest_slot >= cspace_sz) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    if (cspace[dest_slot].type != CAP_NULL) {
+        cspace[dest_slot].type       = CAP_NULL;
+        cspace[dest_slot].rights     = 0;
+        cspace[dest_slot].object     = 0;
+        cspace[dest_slot].badge      = 0;
+        /* serial 0 is what cap_lookup reads as "empty"; leaving a live serial on
+         * a CAP_NULL slot would make the slot look occupied to the lineage check
+         * while carrying no type. */
+        cspace[dest_slot].serial     = 0;
+        cspace[dest_slot].generation = 0;
+        if (tasks[cur].caps_in_use > 0) tasks[cur].caps_in_use--;
+    }
+    spin_unlock(&cap_lock);
+    return true;
+}
+
 const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
 
 struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {

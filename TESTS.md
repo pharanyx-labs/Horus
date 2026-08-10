@@ -46,7 +46,7 @@ emulation is slow, and CI runners are slower; a timeout is usually not a real fa
 
 | Target | Proves |
 |---|---|
-| `smoke-captest` | **84 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1) and twenty-two cover untyped memory and retyping (finding I-7) — see below. The central conformance suite. |
+| `smoke-captest` | **88 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), and four cover the one-shot reply capability (roadmap 1.3) — see below. The central conformance suite. |
 | `cargo test` (`rust/src/capability.rs`) | Mint masks rights and cannot widen them; transfer shares lineage; system-wide revoke reaches another task's cspace; an unrelated capability survives; primordial roots cannot be revoked; the generation counter skips the pristine sentinel on wrap; serial allocation never yields 0 or a reserved value. |
 | Kani proofs | Revocation nulls **exactly** the target's derivation subtree — no descendant survives, no non-descendant is touched. |
 
@@ -95,6 +95,25 @@ under test. The probe was rewritten to use a `CAP_NOTIFICATION` whose `object` i
 and lands on the two gates that actually matter. Defence in depth is why the first attempt
 survived; it is also why a falsification that "passes" must be read as a broken test, not as
 a strong kernel.
+
+**The one-shot reply-capability checks (roadmap 1.3).** Four checks assert that `CAP_REPLY`
+behaves as a consumable right rather than a standing permission: issuing a reply to a client
+that is not blocked still *spends* the right; a second reply to the same request is refused
+with exactly `SYS_ERR_PERM`; and the spent right is not revived by holding a capability on a
+different endpoint.
+
+Falsified in two directions. Removing the consume on the dropped-reply path fails
+`reply-twice-to-one-request-allowed`; reverting the reply routing to the old mutable
+`last_sender` fails it too.
+
+**One of these checks was renamed because falsification showed it did not test what its name
+claimed.** It was written as `reply-without-having-received-allowed`, asserting that endpoint
+authority does not imply reply authority. It does not: `CAPSLOT_REPLY` is per-**task**, not
+per-endpoint, so the endpoint argument only selects the READ check and never selects which
+reply right is used. Before the earlier replies consumed the right, that same call would have
+succeeded. It is now `consumed-reply-right-revived-by-other-endpoint`, which is the property it
+actually witnesses. A green check whose name overstates it is a worse artifact than no check —
+it is a claim nobody will re-derive.
 
 ### `smoke-console-smp`: was flaky, was a real kernel bug, now fixed
 

@@ -487,6 +487,35 @@ reported loudly as a G-8 datapoint and does not gate. The stress harness also **
 failing serial log rather than only saving it to a file — a gating job failed 1-in-30 on CI
 with the one artifact needed to diagnose it sitting in a workspace that was then deleted.
 
+### Two diagnostics for a corrupted resume `%rsp`
+
+Every return from `interrupt_handler64` is a kernel `%rsp` that `isr_common_stub64` loads and
+immediately pops fifteen registers from. A bogus value there does not fail where the mistake
+was made — it faults *inside the ISR epilogue*, at an address near zero, and the banner names
+the stub. That is almost the least informative place a kernel can fault.
+
+It cost a full reproduce-and-symbolise cycle to learn that `PAGE FAULT at 0x94` meant "the
+dispatcher returned 4": `0x94` is `rsp + 0x90`, the `out->cs` read in `interrupt_handler64`
+itself. Two changes make the kernel say so directly:
+
+- **A guard at the dispatcher choke point.** Kernel stacks are higher-half, so any returned
+  value below that floor is a `0`/`1`/`-1` or something wild, never a frame. It panics with
+  the value, the task, its state and its `pending_block`.
+- **The faulting RIP and RSP in the ring-0 `#PF` banner.** A ring-0 fault previously reported
+  only *that* the kernel dereferenced something bad, never *where* — and the where is the whole
+  diagnosis. Symbolise with `addr2line -e kernel.elf <rip>`.
+
+**Falsified**, because a guard never seen to fire is an assumption rather than a control:
+injecting `rsp = 4` on a ring-3 return produces
+`PANIC: dispatcher returned a bogus resume rsp=` instead of the old `PAGE FAULT at 0x94`.
+
+*A third instrument was written and deliberately NOT kept.* It recorded which dispatcher path
+had returned, in a global — which under SMP another core can overwrite between the panicking
+core's return and its print, so its attribution is unreliable exactly where it would be used.
+It named a path the disassembly then contradicted. Per-CPU it would be sound; global it is
+worse than nothing, because it looks authoritative. Left out rather than shipped with a
+caveat nobody would read at 3am.
+
 ## Memory protection and isolation
 
 | Target | Proves |

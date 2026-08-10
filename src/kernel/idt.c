@@ -297,7 +297,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
             int st = (int)tasks[ipc_caller].state;
             if (tasks[ipc_caller].pending_block != 0 ||
                 st == TASK_BLOCKED_IPC || st == TASK_BLOCKED_NOTIF ||
-                st == TASK_BLOCKED_WAIT) {
+                st == TASK_BLOCKED_WAIT || st == TASK_BLOCKED_RECV) {
                 return ipc_block_switch(ipc_caller, (uint64_t)frame);
             }
             /* SYS_EXIT / SYS_KILL-self: the caller terminated itself. It is dead;

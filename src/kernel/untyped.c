@@ -253,6 +253,7 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
         e->count          = 0;
         e->last_sender    = -1;
         e->blocked_waiter = -1;
+        e->recv_waiter    = -1;
         for (int s = 0; s < EP_QUEUE_SLOTS; s++) {
             e->q[s].len    = 0;
             e->q[s].sender = -1;
@@ -357,6 +358,15 @@ static void destroy_dyn_endpoint(int i) {
         tasks[w].state        = TASK_RUNNABLE;
         tasks[w].runnable_ctx = 1;
         tasks[w].blocked_on   = -1;
+    }
+    /* Same reasoning for a server asleep in SYS_IPC_WAIT_RECV: the object it was
+     * waiting for work on has gone, so no send can ever arrive. Leaving it asleep
+     * would strand it forever on an endpoint that no longer exists. */
+    int rw = e->recv_waiter;
+    if (rw > 0 && rw < MAX_TASKS && tasks[rw].state != 0) {
+        tasks[rw].state        = TASK_RUNNABLE;
+        tasks[rw].runnable_ctx = 1;
+        tasks[rw].blocked_on   = -1;
     }
     /* Scrub before releasing the name: the bytes are not reused until the whole
      * region is reset, but an in-flight message must not outlive the object that

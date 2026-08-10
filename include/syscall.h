@@ -143,6 +143,7 @@ struct audit_event {
 #define SYS_STDIO_INFO         87   /* () -> bit0 stdin-is-pipe, bit1 stdout-is-pipe (spawner-wired); read by posix_init */
 #define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
+#define SYS_IPC_WAIT_RECV      92   /* (ep_slot) -> 0 when the endpoint's queue may be non-empty; sleeps while it is empty. Needs CAP_RIGHT_READ. Opt-in: SYS_IPC_RECV keeps its non-blocking -2 contract. */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
@@ -456,6 +457,24 @@ static inline int ipc_transient(int rc) { return rc == IPC_AGAIN; }
  * the receive right, which only a service holder has). */
 static inline int sys_ipc_recv(int ep_slot, void *msg, size_t max_len) {
     return syscall(SYS_IPC_RECV, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)max_len);
+}
+
+/* Sleep until the endpoint named by the CAP_ENDPOINT in `ep_slot` (needs READ)
+ * may have a message queued; returns 0 then, or SYS_ERR_PERM. Pair it with
+ * sys_ipc_recv rather than replacing it:
+ *
+ *     for (;;) {
+ *         int r = sys_ipc_recv(slot, &rq, sizeof(rq));
+ *         if (r < 0) { sys_ipc_wait_recv(slot); continue; }
+ *         ...
+ *     }
+ *
+ * A return of 0 means "work MAY be available", not "a message is yours" — another
+ * receiver may have taken it first, so the recv above can still report -2 and the
+ * loop simply sleeps again. Treating the wake as a guarantee is the classic way to
+ * turn a condition variable into a bug. */
+static inline int sys_ipc_wait_recv(int ep_slot) {
+    return syscall(SYS_IPC_WAIT_RECV, (uint32_t)ep_slot, 0, 0);
 }
 
 /* Blocking send-then-receive: sends to the endpoint named by the CAP_ENDPOINT in

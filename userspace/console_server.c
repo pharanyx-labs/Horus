@@ -213,11 +213,15 @@ void _start(void) {
     struct con_response rp;
     for (;;) {
         int r = sys_ipc_recv(CAPSLOT_CONSOLE_EP, (char *)&rq, sizeof(rq));
-        if (r < 0) { sys_yield(); continue; }          /* no request yet: yield the CPU
-                                                        * (don't busy-spin — a second
-                                                        * busy-spin server alongside
-                                                        * fs_server starves the shell
-                                                        * under emulation) */
+        if (r < 0) {
+            /* Nothing queued: sleep until a sender enqueues. This used to yield in
+             * a loop, which is still a spin — the comment here recorded that two
+             * busy-spin servers alongside each other starve the shell under
+             * emulation. Now the CPU genuinely goes to whoever has work.
+             * 0 means work MAY be available, so re-receive rather than assume. */
+            sys_ipc_wait_recv(CAPSLOT_CONSOLE_EP);
+            continue;
+        }
 
         umemset(&rp, 0, sizeof(rp));
         rp.magic = CON_PROTO_MAGIC;

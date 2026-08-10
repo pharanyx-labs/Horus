@@ -626,7 +626,14 @@ void _start(void) {
             if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
         }
         int r = sys_ipc_recv(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
-        if (r < 0) { spin_delay(); continue; }          /* no request yet */
+        if (r < 0) {
+            /* Nothing queued: SLEEP rather than burn the CPU. A return of 0 means
+             * work MAY be available -- another receiver could have taken it -- so
+             * this stays a loop and re-receives rather than assuming a message is
+             * ours (roadmap 1.3). */
+            sys_ipc_wait_recv(CAPSLOT_FS_LISTEN);
+            continue;
+        }
 
         /* Take the caller's identity from the kernel, not from the request: this
          * is tasks[sender].uid, fixed at that task's login (SYS_AUTH). A client

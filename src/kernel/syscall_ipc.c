@@ -217,6 +217,46 @@ int ipc_publish_pending_block(int cur) {
         return 1;
     }
 
+    if (kind == TASK_BLOCKED_RECV) {
+        int ep = tasks[cur].blocked_on;
+        struct endpoint *e = (ep < 0) ? 0 : endpoint_by_index((uint32_t)ep);
+        if (!e) {
+            /* Endpoint destroyed on the way here: nothing can ever arrive, so
+             * resume rather than park on an object that cannot be signalled. */
+            tasks[cur].pending_block = 0;
+            tasks[cur].state        = TASK_RUNNABLE;
+            tasks[cur].runnable_ctx = 1;
+            tasks[cur].blocked_on   = -1;
+            f->rax = (uint64_t)(uint32_t)-1;
+            return 0;
+        }
+        ipc_lock();
+        tasks[cur].pending_block = 0;   /* under the lock, with the state write */
+        /* THE DOUBLE-CHECK, and the whole reason this is not a plain "set state
+         * and sleep". Between the syscall handler seeing an empty queue and this
+         * publish, a sender on another CPU may have enqueued and looked for a
+         * recv_waiter to wake -- finding none, because we had not published yet.
+         * Parking now would sleep on a queue that is already non-empty, with
+         * nobody left to wake us. Re-checking under the same lock the sender
+         * takes is what closes that window; it is the identical discipline the
+         * BLOCKED_IPC case above uses for a racing reply, and the shape of the
+         * two lost-wake defects this subsystem has already produced. */
+        if (!ep_empty(e)) {
+            tasks[cur].state        = TASK_RUNNABLE;
+            tasks[cur].runnable_ctx = 1;
+            tasks[cur].blocked_on   = -1;
+            f->rax = 0;                 /* work is available; caller re-receives */
+            ipc_unlock();
+            return 0;
+        }
+        e->recv_waiter          = cur;
+        tasks[cur].state        = TASK_BLOCKED_RECV;
+        tasks[cur].runnable_ctx = 0;
+        __asm__ volatile ("" ::: "memory");
+        ipc_unlock();
+        return 1;
+    }
+
     if (kind == TASK_BLOCKED_WAIT) {
         int tid = tasks[cur].blocked_on;
         /* Re-check: target may have exited after the handler looked. */
@@ -281,6 +321,13 @@ void ipc_unpublish_block(int cur) {
         ipc_lock();
         struct endpoint *e = (ep < 0) ? 0 : endpoint_by_index((uint32_t)ep);
         if (e && e->blocked_waiter == cur) e->blocked_waiter = -1;
+        ipc_unlock();
+        tasks[cur].blocked_on = -1;
+    } else if (st == TASK_BLOCKED_RECV) {
+        int ep = tasks[cur].blocked_on;
+        ipc_lock();
+        struct endpoint *e = (ep < 0) ? 0 : endpoint_by_index((uint32_t)ep);
+        if (e && e->recv_waiter == cur) e->recv_waiter = -1;
         ipc_unlock();
         tasks[cur].blocked_on = -1;
     } else if (st == TASK_BLOCKED_WAIT) {
@@ -387,6 +434,31 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
     uint8_t kbuf2[IPC_MSG_MAX];
     if (len > 0 && copy_from_user(kbuf2, msg, len) != 0) { ipc_unlock(); return -1; }
     ep_enqueue(e, kbuf2, (int)len, get_current_task());
+
+    /* Wake a server asleep in SYS_IPC_WAIT_RECV on this endpoint.
+     *
+     * Deliberately a WAKE, not a delivery. Completing the receive from here would
+     * mean copying into another address space and minting that task's CAP_REPLY
+     * from this task's context — both doable, both subtle, and both on the send
+     * path, which is the hottest and least forgiving code in the kernel. Instead
+     * the sleeper is simply made runnable and re-runs its ordinary receive, which
+     * dequeues and mints the reply capability through exactly the same path every
+     * other receive uses. One extra syscall on wake, against no second
+     * implementation of the delivery logic to keep correct.
+     *
+     * Under the same ipc_lock as the enqueue, so a receiver that publishes its
+     * block concurrently either sees the message in its double-check or is seen
+     * here — never neither, which is the lost wake. */
+    int rw = e->recv_waiter;
+    if (rw > 0 && rw < MAX_TASKS && tasks[rw].state == TASK_BLOCKED_RECV) {
+        e->recv_waiter = -1;
+        struct interrupt_frame64 *wf = (struct interrupt_frame64 *)tasks[rw].saved_ksp;
+        if (wf) wf->rax = 0;            /* "work may be available": re-receive */
+        tasks[rw].blocked_on   = -1;
+        __asm__ volatile ("" ::: "memory");
+        tasks[rw].state        = TASK_RUNNABLE;
+        tasks[rw].runnable_ctx = 1;
+    }
     ipc_unlock();
     return 0;
 }
@@ -612,6 +684,44 @@ void h_ipc_recv(struct interrupt_frame64 *r) {
     }
     r->rax = sys_ipc_recv(ep, (void*)(addr_t)r->rcx, r->rdx);
 }
+/* SYS_IPC_WAIT_RECV (92): rbx = cspace slot of a CAP_ENDPOINT with READ.
+ *
+ * Sleep until this endpoint's queue is non-empty. Returns 0 when work may be
+ * available (the caller then issues an ordinary SYS_IPC_RECV), or SYS_ERR_PERM if
+ * the slot names no receivable endpoint.
+ *
+ * WHY THIS RATHER THAN A BLOCKING RECV. Making SYS_IPC_RECV itself block would
+ * change the meaning of every existing call site, and at least one — captest —
+ * probes an empty endpoint expecting an immediate -2 and would hang forever
+ * instead of reporting. Opt-in keeps the receive semantics, and the retry
+ * contract in syscall.h, exactly as they were.
+ *
+ * The point is that an idle server SLEEPS instead of spinning. console_server's
+ * own comment records why that matters: two busy-spin servers alongside each
+ * other starve the shell under emulation. Records intent only; ipc_block_switch
+ * saves the trap frame first and only then publishes the waiter, so a sender on
+ * another CPU cannot race a null saved_ksp. */
+void h_ipc_wait_recv(struct interrupt_frame64 *r) {
+    uint32_t ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    struct endpoint *e = endpoint_by_index(ep);
+    if (!e) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    /* Fast path: work already queued, so do not sleep at all. Checked under the
+     * lock the senders take, so this cannot observe a half-enqueued message. */
+    ipc_lock();
+    int have = !ep_empty(e);
+    ipc_unlock();
+    if (have) { r->rax = 0; return; }
+
+    int cur = get_current_task();
+    tasks[cur].blocked_on    = (int)ep;
+    tasks[cur].pending_block = TASK_BLOCKED_RECV;
+    r->rax = 0;   /* a wake patches saved_ksp->rax; see sys_ipc_send */
+}
+
 /* SYS_IPC_REPLY (24): rbx = cspace slot of a CAP_ENDPOINT with WRITE. */
 void h_ipc_reply(struct interrupt_frame64 *r) {
     uint32_t ep;

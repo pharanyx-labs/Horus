@@ -173,6 +173,7 @@ void scheduler_init(void) {
         endpoints[i].count          = 0;
         endpoints[i].last_sender    = -1;
         endpoints[i].blocked_waiter = -1;
+        endpoints[i].recv_waiter    = -1;
         for (int s = 0; s < EP_QUEUE_SLOTS; s++) {
             endpoints[i].q[s].len    = 0;
             endpoints[i].q[s].sender = -1;

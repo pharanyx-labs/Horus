@@ -341,6 +341,11 @@ static inline int reply_ep_for_task(int tid) {
 #define TASK_BLOCKED_IPC   2   /* blocked inside SYS_IPC_CALL waiting for a reply */
 #define TASK_BLOCKED_NOTIF 3   /* blocked inside SYS_WAIT_NOTIFY waiting for a badge */
 #define TASK_BLOCKED_WAIT  4   /* blocked inside SYS_WAIT until the target task exits */
+/* Blocked inside SYS_IPC_WAIT_RECV: an endpoint's queue was empty and this task
+ * asked to sleep until it is not. Woken by a sender enqueuing, by the endpoint
+ * being destroyed, or by teardown. Distinct from TASK_BLOCKED_IPC, which is a
+ * CLIENT waiting for a reply; this is a SERVER waiting for work. */
+#define TASK_BLOCKED_RECV  5
 
 /* ---- Endpoints: a bounded FIFO, not a single mailbox slot (roadmap 1.3, [I-5])
  *
@@ -384,6 +389,7 @@ struct endpoint {
     uint32_t count;            /* messages currently queued (0..EP_QUEUE_SLOTS) */
     int      last_sender;      /* sender of the most recently dequeued message */
     int      blocked_waiter;   /* task id blocked in SYS_IPC_CALL on this endpoint, -1=none */
+    int      recv_waiter;      /* task id asleep in SYS_IPC_WAIT_RECV here, -1=none */
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
 
@@ -704,6 +710,7 @@ void users_init(void);
 #define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
+#define SYS_IPC_WAIT_RECV      92   /* (ep_slot) -> 0 when the endpoint's queue may be non-empty; sleeps while empty. CAP_RIGHT_READ. NB: syscall numbers are duplicated in include/syscall.h -- both must be updated. */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
 /* Reserved cspace slots a spawner wires a child's pipe stdio into (do_spawn),

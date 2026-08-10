@@ -157,6 +157,7 @@ void h_register_storage_backend(struct interrupt_frame64 *r);
 void h_ipc_send(struct interrupt_frame64 *r);
 void h_ipc_call(struct interrupt_frame64 *r);
 void h_ipc_recv(struct interrupt_frame64 *r);
+void h_ipc_wait_recv(struct interrupt_frame64 *r);
 void h_ipc_reply(struct interrupt_frame64 *r);
 void h_ipc_sender(struct interrupt_frame64 *r);
 void h_ipc_reply_to(struct interrupt_frame64 *r);

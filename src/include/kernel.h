@@ -1208,6 +1208,9 @@ void set_current_task(int v);
  * identity, exit() AFTER the one that restores it. See the long note on
  * percpu_real_task[] in scheduler.c; without the bracket the scheduler's claim
  * auditor reads these windows as violations. No-ops without SMP. */
+#ifdef IRQ_POLICY_AUDIT
+void irq_policy_report(const char *when);
+#endif
 void sched_impersonate_enter(void);
 void sched_impersonate_exit(void);
 

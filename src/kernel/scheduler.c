@@ -368,7 +368,7 @@ void create_user_task(int id, addr_t entry, addr_t stack_top) {
  * diagnose hangs, and one of the open ones (finding G-8 signature C) happens on
  * a UNIPROCESSOR boot, where every SMP diagnostic is inapplicable by
  * construction. */
-#if defined(SCHED_INVARIANTS) || defined(HANG_WATCHDOG)
+#if defined(SCHED_INVARIANTS) || defined(HANG_WATCHDOG) || defined(IRQ_POLICY_AUDIT)
 /* ---- Panic output, straight to the UART -----------------------------------
  *
  * NOT print(). Once a ring-3 console server owns the console, kernel print() is
@@ -532,8 +532,25 @@ static void watchdog_dump(int seq) {
 }
 #endif /* HANG_WATCHDOG */
 
+#ifdef IRQ_POLICY_AUDIT
+void irq_policy_report_uart(const char *when);   /* defined below, next to spin_lock */
+#endif
+
 void timer_handler(void) {
     system_ticks++;
+#ifdef IRQ_POLICY_AUDIT
+    /* Report at two points either side of the init -> fs_server -> console_server
+     * -> shell handshake, which is the window roadmap 1.1 says depends on the
+     * accidental sti. Straight to the UART: once console_server owns the console
+     * the kernel's print() is suppressed, and a report nobody sees is no report. */
+    {
+        static int rep = 0;
+        if ((rep == 0 && system_ticks > 40u) || (rep == 1 && system_ticks > 200u)) {
+            rep++;
+            irq_policy_report_uart(rep == 1 ? "handshake-early" : "handshake-late");
+        }
+    }
+#endif
 #ifdef HANG_WATCHDOG
     if (watchdog_dumps < HANG_WATCHDOG_DUMPS &&
         system_ticks > (uint32_t)HANG_WATCHDOG_TICKS * (uint32_t)(watchdog_dumps + 1)) {
@@ -1716,8 +1733,94 @@ void scheduler_lock_release(void) { spin_unlock(&scheduler_lock); }
 
 static volatile int irq_lock_depth = 0;
 
+#ifdef IRQ_POLICY_AUDIT
+/* ---- Measuring the accidental `sti` (roadmap 1.1 step 1) -------------------
+ *
+ * spin_unlock re-enables interrupts unconditionally when the nesting depth
+ * reaches zero -- even when the caller had masked them itself and merely happened
+ * to take a lock inside its own `cli` region. Boot and early init take many such
+ * locks, so interrupts come on earlier and more often than any stated policy asks
+ * for, and the init -> fs_server -> console_server -> shell handshake has come to
+ * depend on the timer preemption that results. That is finding C-3.1, and it is
+ * why the obvious per-CPU IF-preserving lock was written, passed every local
+ * gate, and still broke the ring-3 startup handshake in CI.
+ *
+ * The roadmap's step 1 is "find every window relying on the accidental sti". This
+ * measures it instead of reasoning about it: record IF as the OUTERMOST lock is
+ * taken, and count the releases that would flip interrupts from off to on against
+ * the caller's own intent. Those, and only those, are the load-bearing ones -- a
+ * release that restores IF=1 to a caller who already had IF=1 changes nothing.
+ *
+ * Observation only: the `sti` still fires exactly as before, so this build boots
+ * identically to the ship kernel. NB irq_lock_depth is a non-atomic global (that
+ * is part of the defect), so under SMP these counts are indicative, not exact --
+ * which is itself worth knowing before anyone quotes them as a spec. */
+static volatile int      irq_outer_if = 1;   /* IF when the outermost lock was taken */
+volatile unsigned        irq_accidental_sti = 0;
+volatile unsigned        irq_benign_sti     = 0;
+#define IRQ_SITE_SLOTS 12
+volatile uint64_t        irq_accidental_site[IRQ_SITE_SLOTS];
+volatile unsigned        irq_accidental_hits[IRQ_SITE_SLOTS];
+volatile unsigned        irq_site_count = 0;
+
+static void irq_record_site(uint64_t ra) {
+    for (unsigned i = 0; i < irq_site_count && i < IRQ_SITE_SLOTS; i++) {
+        if (irq_accidental_site[i] == ra) { irq_accidental_hits[i]++; return; }
+    }
+    if (irq_site_count < IRQ_SITE_SLOTS) {
+        irq_accidental_site[irq_site_count] = ra;
+        irq_accidental_hits[irq_site_count] = 1;
+        irq_site_count++;
+    }
+}
+#endif /* IRQ_POLICY_AUDIT */
+
+#ifdef IRQ_POLICY_AUDIT
+/* UART variant, safe to call from the timer ISR after console handover. */
+void irq_policy_report_uart(const char *when) {
+    panic_str("\n[irq-policy] "); panic_str(when);
+    panic_str(": accidental_sti="); panic_dec((int)irq_accidental_sti);
+    panic_str(" benign_sti=");      panic_dec((int)irq_benign_sti);
+    panic_str(" sites=");           panic_dec((int)irq_site_count);
+    panic_str("\n");
+    for (unsigned i = 0; i < irq_site_count && i < IRQ_SITE_SLOTS; i++) {
+        panic_str("[irq-policy]   ra=0x");
+        for (int sh = 60; sh >= 0; sh -= 4) {
+            int nyb = (int)((irq_accidental_site[i] >> sh) & 0xF);
+            panic_ch((char)(nyb < 10 ? '0'+nyb : 'a'+nyb-10));
+        }
+        panic_str(" hits="); panic_dec((int)irq_accidental_hits[i]);
+        panic_str("\n");
+    }
+}
+
+/* Report what the audit saw. Called at boot milestones so the numbers can be
+ * attributed to a phase rather than to "the boot" as a whole -- roadmap 1.1 has
+ * to know WHICH windows depend on the accidental sti, not merely that some do. */
+void irq_policy_report(const char *when) {
+    print("[irq-policy] "); print(when);
+    print(": accidental_sti="); print_decimal((uint64_t)irq_accidental_sti);
+    print(" benign_sti=");      print_decimal((uint64_t)irq_benign_sti);
+    print(" sites=");           print_decimal((uint64_t)irq_site_count);
+    print("\n");
+    for (unsigned i = 0; i < irq_site_count && i < IRQ_SITE_SLOTS; i++) {
+        print("[irq-policy]   site ra=");
+        print_hex64(irq_accidental_site[i]);
+        print(" hits="); print_decimal((uint64_t)irq_accidental_hits[i]);
+        print("\n");
+    }
+}
+#endif
+
 void spin_lock(spinlock_t *lock) {
+#ifdef IRQ_POLICY_AUDIT
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+#endif
     __asm__ volatile ("cli" ::: "memory");
+#ifdef IRQ_POLICY_AUDIT
+    if (irq_lock_depth == 0) irq_outer_if = (fl & 0x200ULL) ? 1 : 0;
+#endif
     irq_lock_depth++;
     while (__sync_lock_test_and_set(&lock->locked, 1)) {
         while (lock->locked) { __asm__ volatile ("pause" ::: "memory"); }
@@ -1727,6 +1830,17 @@ void spin_unlock(spinlock_t *lock) {
     __sync_lock_release(&lock->locked);
 
     if (irq_lock_depth > 0 && --irq_lock_depth == 0) {
+#ifdef IRQ_POLICY_AUDIT
+        /* The whole question of 1.1, in one branch: was IF already set when the
+         * outermost lock was taken? If not, this `sti` is enabling interrupts the
+         * caller deliberately masked -- an accident the boot path now relies on. */
+        if (!irq_outer_if) {
+            irq_accidental_sti++;
+            irq_record_site((uint64_t)(uintptr_t)__builtin_return_address(0));
+        } else {
+            irq_benign_sti++;
+        }
+#endif
         __asm__ volatile ("sti" ::: "memory");
     }
 }

@@ -557,6 +557,15 @@ endif
 # instead of livelocking silently thousands of ticks later. Off in the ship
 # kernel (it costs a MAX_TASKS + MAX_CPUS scan per tick, under the scheduler
 # lock); on for the SMP smoke jobs, which is where the races are.
+# IRQ_POLICY_AUDIT=1 measures roadmap 1.1's central question: how often does
+# spin_unlock's unconditional `sti` enable interrupts that the CALLER had masked?
+# Observation only -- the sti still fires exactly as before, so the build boots
+# identically. See the note above spin_lock in scheduler.c.
+IRQ_POLICY_AUDIT ?= 0
+ifeq ($(IRQ_POLICY_AUDIT),1)
+CFLAGS  += -DIRQ_POLICY_AUDIT
+endif
+
 SCHED_INVARIANTS ?= 0
 ifeq ($(SCHED_INVARIANTS),1)
 CFLAGS  += -DSCHED_INVARIANTS

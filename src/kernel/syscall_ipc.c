@@ -417,10 +417,27 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
     if (len > 0 && copy_to_user(msg, kbuf, (size_t)len) != 0) { ipc_unlock(); return -1; }
 
     /* Only now is this the message being serviced, so only now does its sender
-     * become the identity SYS_IPC_SENDER and SYS_IPC_REPLY_TO answer about. */
+     * become the identity SYS_IPC_SENDER answers about. */
     e->last_sender = sender;
     __asm__ volatile ("" ::: "memory");
     ipc_unlock();
+
+    /* Mint the one-shot right to answer THIS request (roadmap 1.3).
+     *
+     * Deliberately after ipc_unlock(): cap_install_object takes cap_lock, and
+     * taking cap_lock underneath endpoint_lock would create a second lock order
+     * between two locks that are otherwise unrelated. Nothing between the unlock
+     * and here can invalidate the mint — `sender` is a value, not a pointer, and
+     * a sender that dies before the reply is handled by the liveness check in
+     * h_ipc_reply_to.
+     *
+     * Overwriting a previous unconsumed CAP_REPLY is correct: a server that
+     * receives twice without replying has abandoned the older request, and the
+     * older caller is woken by its own timeout/teardown path rather than left
+     * nameable forever. */
+    if (sender > 0 && sender < MAX_TASKS)
+        cap_install_object(CAPSLOT_REPLY, CAP_REPLY, (uint64_t)sender,
+                           CAP_RIGHT_WRITE, 0);
     return len;
 }
 
@@ -669,9 +686,30 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
     struct endpoint *req = endpoint_by_index(req_ep);
     if (!req) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
-    int t = req->last_sender;
+    /* ---- The reply target comes from a ONE-SHOT CAPABILITY, not from the
+     * endpoint's last_sender field (roadmap 1.3).
+     *
+     * last_sender is mutable and is overwritten by the next receive, so
+     * "reply to the right client" used to be a convention the server had to
+     * honour rather than something the kernel enforced — and the bounded queue
+     * sharpened that, since a server can now hold several dequeued requests
+     * while only the newest was nameable. The capability names ONE blocked
+     * caller, cannot be retargeted, and is consumed below, so replying twice or
+     * replying to a client this task never received from are both unrepresentable
+     * rather than merely refused. */
+    struct capability *rc_cap = cap_lookup(CAPSLOT_REPLY, CAP_RIGHT_WRITE);
+    if (!rc_cap || rc_cap->type != CAP_REPLY) {
+        /* No outstanding request. Distinct from "client gone": this task has no
+         * right to answer anybody, which is a caller error worth reporting. */
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    int t = (int)rc_cap->object;
     if (t <= 0 || t >= MAX_TASKS || tasks[t].state == TASK_DEAD || tasks[t].state == 0) {
-        r->rax = 0; return;   /* client gone: nothing to reply to */
+        /* Client gone: nothing to deliver, and the right dies with it — leaving
+         * it installed would let a later, unrelated task id reuse land on a
+         * capability minted for a task that no longer exists. */
+        cap_consume_slot(CAPSLOT_REPLY);
+        r->rax = 0; return;
     }
 
     ipc_lock();
@@ -680,7 +718,24 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
          * on us (already replied / never called) -> drop. */
         uint32_t racing = (tasks[t].pending_block == (uint32_t)TASK_BLOCKED_IPC);
         ipc_unlock();
-        r->rax = racing ? (uint32_t)-2 : 0;
+        if (racing) {
+            /* KEEP the right: the caller is committed to blocking and the server
+             * was told to retry, so consuming here would destroy its only means
+             * of completing the reply it is being asked to repeat. */
+            r->rax = (uint32_t)-2;
+            return;
+        }
+        /* Dropped, but ANSWERED: the right is spent either way.
+         *
+         * This path returned 0 without consuming in the first draft, which
+         * quietly preserved the exact hazard the capability exists to remove. A
+         * retained right outlives the request it was minted for, so if that same
+         * client later makes a NEW call and blocks, a reply issued now would be
+         * delivered to it — a stale answer landing on an unrelated request. The
+         * right names one request, and issuing a reply spends it whether or not
+         * anyone was still listening. */
+        cap_consume_slot(CAPSLOT_REPLY);
+        r->rax = 0;
         return;
     }
 
@@ -723,6 +778,14 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
     tasks[t].state        = TASK_RUNNABLE;
     tasks[t].runnable_ctx = 1;
     ipc_unlock();
+
+    /* CONSUME the reply right. This is what makes the capability one-shot, and
+     * it is why a second reply to the same request cannot be expressed: the slot
+     * is empty, so the lookup above fails with SYS_ERR_PERM. Done after
+     * ipc_unlock for the lock-ordering reason given at the mint site, and only
+     * on the path that actually delivered — a -2 retry must leave the right in
+     * place or the server could never complete the reply it was told to retry. */
+    cap_consume_slot(CAPSLOT_REPLY);
     r->rax = 0;
 }
 

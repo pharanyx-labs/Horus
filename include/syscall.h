@@ -367,6 +367,9 @@ static inline int sys_console_owned(void) {
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG:  SYS_DMESG                 */
 #define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE: boot-module read surface  */
 #define CAPSLOT_UNTYPED    18    /* CAP_UNTYPED: kernel-object memory (init)   */
+#define CAPSLOT_REPLY      21    /* CAP_REPLY: one-shot right to answer the
+                                 * request just received (minted by RECV,
+                                 * consumed by REPLY_TO). Server-side only. */
 #define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: fs service (sys_connect_fs_server) */
 
 /* ---- Untyped memory (roadmap 0.3, audit finding I-7) ----------------------

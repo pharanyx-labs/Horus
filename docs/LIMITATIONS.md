@@ -132,9 +132,9 @@ Fixing it requires making boot interrupt enablement explicit first. Roadmap item
 `heap_max` are 64-bit. Correct only while every heap lives below 4 GiB. Widening the user
 address space — a roadmap goal — will make the bounds check pass on a truncated value.
 
-### 2.2 ~~Endpoints are single-slot mailboxes~~ — **QUEUED 2026-08-10** — **[I-5]**
+### 2.2 ~~Endpoints are single-slot mailboxes~~ — **QUEUED + REPLY-CAP 2026-08-10** — **[I-5]**
 
-**Half resolved.** Each endpoint now owns a bounded FIFO of `EP_QUEUE_SLOTS` (4) messages, so
+**Mostly resolved.** Each endpoint now owns a bounded FIFO of `EP_QUEUE_SLOTS` (4) messages, so
 concurrent senders enqueue instead of colliding and `-2` means the ring is genuinely *full*
 rather than merely occupied. Measured on the 4-client concurrency test under single-core
 starvation, 12 boots each:
@@ -149,12 +149,18 @@ steps, and each step is one more collision-and-retry round. The queue removes th
 `EP_QUEUE_SLOTS=1` rebuilds the old behaviour exactly, which is how this was measured rather
 than asserted.
 
+**The reply path is now a one-shot capability.** `SYS_IPC_RECV` mints a `CAP_REPLY` naming the
+sender of the message it dequeued; `SYS_IPC_REPLY_TO` requires it and consumes it. Replying to
+a client you never received from, replying twice to one request, and replying to the wrong
+client are no longer *refused* — they are **unrepresentable**, because the right names one
+blocked caller and dies on use. That retires the convention a server previously had to honour:
+the old routing read the endpoint's mutable `last_sender`, and the bounded queue above made
+that sharper by letting a server hold several dequeued requests while only the newest was
+nameable.
+
 **Still open.** The receive side still polls — `SYS_IPC_RECV` returns `-2` on an empty queue
 rather than blocking — so a server with no work spins instead of sleeping, and priority
-inheritance still cannot be expressed. And the reply path is still authorised by
-kernel-recorded sender identity rather than by a one-shot reply capability consumed on reply,
-which is what would make reply forgery *structurally* impossible instead of gated. Both are the
-remaining half of roadmap 1.3.
+inheritance still cannot be expressed. That is the last remaining piece of roadmap 1.3.
 
 *(An earlier revision of this section claimed finding **[G-8]** signature C was a livelock
 caused by this contention. **That was wrong.** It was a startup race — clients that lost the

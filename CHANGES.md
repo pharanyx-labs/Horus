@@ -78,6 +78,52 @@ Also fixed: two CPUs tripping the checker on the same tick interleaved their out
 byte-by-byte into an unreadable `PANICPANIC: : unbalanced impersostale scheduler
 claim…`. A first-CPU-wins latch now gives the reporter the UART alone. Same failure
 as the earlier `PA[NIC: console_server] ready` episode, one level up.
+### Added — one-shot reply capabilities: reply forgery is now unrepresentable (roadmap 1.3)
+
+`SYS_IPC_RECV` mints a **`CAP_REPLY`** into `CAPSLOT_REPLY` of the receiving task,
+naming the sender of the message it just dequeued. `SYS_IPC_REPLY_TO` requires that
+capability and **consumes** it.
+
+The reply used to be routed by `endpoints[ep].last_sender` — a mutable field
+overwritten by the next receive. Replying to the correct client was therefore a
+**convention** the server had to honour ("must precede the next recv, which would
+overwrite last_sender"), not a property the kernel enforced. The bounded queue in
+the entry below sharpened that: a server can now hold several dequeued requests
+while only the newest was nameable.
+
+Three properties that convention could not provide:
+
+| Attempt | Before | Now |
+|---|---|---|
+| reply to a client you never received from | routed by whatever `last_sender` held | no capability → `SYS_ERR_PERM` |
+| reply twice to one request | permitted | first reply consumed the right |
+| reply to the wrong client | a discipline the server had to keep | the right names the client and cannot be retargeted |
+
+**Two subtleties that were bugs first.**
+
+A *dropped* reply still spends the right. The first draft returned success without
+consuming when the client was no longer blocked — which preserved exactly the
+hazard the capability exists to remove: a retained right outlives its request, so
+if that client later made a **new** call and blocked, a reply issued now would land
+on an unrelated request. Issuing a reply spends the right whether or not anyone was
+still listening. A `-2` retry, by contrast, must *keep* it — the server is being
+asked to repeat that reply.
+
+And `cap_consume_slot()` is new, because `cap_install_object` had no counterpart:
+`caps_in_use` was incremented on NULL → occupied and decremented **nowhere in the
+tree**. Clearing the slot by installing a `CAP_NULL` would have leaked one count
+per receive and wedged every long-running server at `MAX_CAPS_PER_TASK` — the
+failure arriving as a hang thousands of messages after the cause, invisible to every
+short test. It is explicitly *not* a revoke: it forgets one slot in the caller's own
+cspace and touches no derived capability.
+
+**`captest` 84 → 88 checks, falsified in two directions:** removing the drop-path
+consume fails `reply-twice-to-one-request-allowed`, and reverting to `last_sender`
+routing fails it too. One of the four checks was also *renamed* after falsification
+showed it did not test what its name claimed — `CAPSLOT_REPLY` is per-task, not
+per-endpoint, so it witnesses one-shot consumption rather than the independence of
+endpoint and reply authority.
+
 ### Changed — endpoints are a bounded FIFO, not a single mailbox slot (roadmap 1.3, **[I-5]**)
 
 An endpoint used to hold exactly ONE in-flight message. Every additional sender

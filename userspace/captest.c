@@ -69,6 +69,8 @@ static void check(int ok, const char *what) {
 #define SLOT_UNTYPED    CAPSLOT_UNTYPED  /* CAP_UNTYPED over the user-facing region */
 #define SLOT_RETYPED_EP  40  /* destination for the first SYS_RETYPE  */
 #define SLOT_RETYPED_EP2 41  /* destination for the second           */
+#define SLOT_RETYPED_EP3 42  /* a third, never received on: proves endpoint
+                              * authority does not imply reply authority */
 #define SLOT_EMPTY_HI   200  /* never populated */
 
 /* Non-blocking probe: SYS_WAIT_NOTIFY on a slot that holds no CAP_NOTIFICATION
@@ -425,6 +427,53 @@ void _start(void) {
     rc = sys_ipc_recv(SLOT_RETYPED_EP, msg, sizeof(msg));
     check(rc == (int)sizeof(probe), "retyped-endpoint-recv-wrong-length");
     check(msg[0] == 'u' && msg[6] == 'd', "retyped-endpoint-corrupted-message");
+
+    /* ---- 8b. the ONE-SHOT REPLY CAPABILITY (roadmap 1.3) ------------------
+     *
+     * The successful recv above minted a CAP_REPLY into CAPSLOT_REPLY naming the
+     * sender of that message — which, here, is this task itself. That capability
+     * IS the right to answer that one request, and these checks assert it behaves
+     * like a one-shot right rather than a standing permission.
+     *
+     * Why it matters: the reply used to be routed by the endpoint's mutable
+     * `last_sender`, so replying to the correct client was a convention a server
+     * had to honour, not something the kernel enforced. Each check below is a
+     * property that convention could not provide.
+     *
+     * Exact codes, never `< 0`: sys_ipc_reply_to returns -2 to mean "retry, the
+     * client is still publishing its block", so a `< 0` assertion would pass on a
+     * kernel that had merely told us to try again. */
+
+    /* Issuing the reply spends the right. We are not blocked in a CALL, so there
+     * is nobody to deliver to and the reply is dropped — but dropped is still
+     * ANSWERED, and a right that survived being answered could later land a stale
+     * reply on a NEW request from the same client. */
+    check(sys_ipc_reply_to(SLOT_RETYPED_EP, probe, sizeof(probe)) == 0,
+          "reply-to-unblocked-client-not-dropped");
+
+    /* One-shot: the second reply to the same request has no capability left to
+     * authorise it. This is the check that distinguishes a consumed right from a
+     * standing permission to reply on this endpoint. */
+    check(sys_ipc_reply_to(SLOT_RETYPED_EP, probe, sizeof(probe)) == SYS_ERR_PERM,
+          "reply-twice-to-one-request-allowed");
+
+    /* The right stays spent: holding a full READ|WRITE capability on a DIFFERENT
+     * endpoint does not resurrect it.
+     *
+     * Read this check precisely — it is weaker than it first looks, and the
+     * weaker reading is the true one. CAPSLOT_REPLY is per-TASK, not
+     * per-endpoint, so the endpoint slot passed to sys_ipc_reply_to only selects
+     * the READ check; it does not select which reply right is used. This
+     * therefore asserts that the slot is still empty after the two replies above,
+     * which is a third witness of one-shot consumption — NOT that endpoint
+     * authority and reply authority are independent. A version of this comment
+     * claimed the latter, and it was wrong: before the replies above consumed the
+     * right, this same call would have succeeded and answered the earlier
+     * request. */
+    check(sys_retype(SLOT_UNTYPED, KOBJ_ENDPOINT, 1, SLOT_RETYPED_EP3) == 1,
+          "third-retype-refused");
+    check(sys_ipc_reply_to(SLOT_RETYPED_EP3, probe, sizeof(probe)) == SYS_ERR_PERM,
+          "consumed-reply-right-revived-by-other-endpoint");
 
     /* And it is a DISTINCT object: the task's own reply endpoint must not have
      * received what was sent to the retyped one. A retype that handed back an

@@ -164,21 +164,70 @@ the locking defect, not of any stated policy. **The bug is load-bearing.**
 **Step 1 has a measurement now (2026-08-10), not an argument.** `IRQ_POLICY_AUDIT=1`
 records IF as the *outermost* lock is taken and counts the releases that flip interrupts on
 against the caller's own intent — the load-bearing ones. A release restoring IF=1 to a caller
-that already had IF=1 changes nothing and is counted separately. Observation only; the `sti`
-still fires exactly as before, so the build boots identically.
+that already had IF=1 changes nothing and is counted separately. The `sti` still fires exactly
+as before — but "observation only, so the build boots identically" was **wrong**, and the
+numbers this section used to quote were wrong with it. See the correction below.
 
-Across a scripted shell session: **99 accidental against 67 benign — 60% of depth-zero
-releases enable interrupts the caller had masked**, over seven sites:
+**The seven sites reproduce. The totals were withdrawn on re-measurement (2026-08-10, later
+the same day), and the reason is a defect in the instrument.**
 
-| Site | Hits |
+`IRQ_POLICY_AUDIT=1` reports through `panic_str`, straight at the UART, deliberately bypassing
+the runtime suppression of `print()`. That suppression is not an inconvenience to route
+around — it exists because ring-3 `console_server` owns the serial line, and a second writer
+interleaves. The tick-41 report lands on the login prompt and splits it:
+
+```
+root@horus\n[irq-policy] handshake-early @tick=41: accidental_sti=96 benign_sti=65 sites=7
+```
+
+`root@horus#` then never appears contiguously anywhere in the transcript, so any harness
+waiting for it waits forever. **The guest is healthy; the observer is broken.** This is the
+`PA[NIC: console_server] ready` bug one level up — the same interleaving the single-writer
+console was introduced to fix, reintroduced by an instrument that opted out of it.
+
+Measured **interleaved** — adjacent boots, alternating builds, so host drift cannot explain
+it (an earlier blocked design could not have distinguished the two, and its p-value was
+withdrawn):
+
+| Build | `session_test.py` failures |
 |---|---|
-| `cap_install_object` | 32 |
-| `cap_consume_slot` | 31 |
+| ship kernel (no audit) | **0 of 10** |
+| `IRQ_POLICY_AUDIT=1`, as #124 shipped | **10 of 10** |
+
+That in turn explains the published numbers. When the prompt is split, the harness stops
+issuing commands, so the guest legitimately runs nothing more and the counters stop climbing:
+
+| Trajectory | Counters at tick 201 | What it measured |
+|---|---|---|
+| harness sees the prompt | **420 accidental / 224 benign** | boot **plus** a shell session |
+| prompt split by the report | **99 accidental / 67 benign** | boot **plus reaching the login prompt**, zero commands |
+
+**99/67 over seven sites with hit counts 32/31/12/11/7/4/2 is exactly the table this section
+used to publish.** It was never "across a scripted shell session" — it is the boot window of a
+session that never ran a command, and it was mistaken for a session total. Note this is
+*not* a hang, and not **G-8**: an early draft of this correction guessed it might be, on the
+strength of frozen counters plus a live timer, and that guess was wrong. Frozen counters with
+a live timer is exactly what an idle, healthy kernel looks like.
+
+What still stands from step 1, because it reproduces in the healthy population too:
+
+| Site | Hits @tick 201 (healthy) |
+|---|---|
+| `cap_install_object` | 189 |
+| `cap_consume_slot` | 188 |
+| `storage_decrypt_block` | 18 |
 | `cap_grant_into` | 12 |
-| `storage_decrypt_block` | 11 |
 | `storage_encrypt_block` | 7 |
 | `create_task` | 4 |
 | `user_map_device_page` | 2 |
+
+Seven sites, the same seven, no new ones since `cap_consume_slot`. The distribution, though,
+is not the one that was published: the two IPC capability sites are **~90% of all accidental
+`sti`s** in a healthy boot and they scale with message traffic, where the stalled table made
+them look comparable to `cap_grant_into` and the storage pair. The IPC path *is* the startup
+handshake path, which sharpens rather than weakens **[C-3.1]** — but it is a different claim
+from the one the old table supported, and it is the reason the counts must be quoted with the
+tick they were sampled at. They are cumulative and still climbing.
 
 **Every one is a syscall-context lock user**, which is the whole mechanism in one line: `int
 0x80` clears IF on entry, so a syscall handler always starts with interrupts masked, and the
@@ -192,6 +241,27 @@ static: `cap_consume_slot` is second on that list and was added on 2026-08-10 by
 reply capability, so the set grows as the kernel does. Re-measure before changing the lock, not
 once.
 
+A third thing, learned by taking that instruction literally: **re-measuring is what caught the
+instrument.** The site list was stable, so a session that trusted the published table would
+have found nothing wrong and proceeded to build step 3 on a number drawn from a hung boot.
+What exposed it was running a *control* — the ship kernel, same harness, same host — before
+attributing anything. That is the same procedure that separated a real regression from a
+pre-existing one in 1.3, and the same one that showed **G-7**'s checker rather than the
+scheduler was at fault.
+
+**The counting itself is sound** — what was wrong is the readout, and only once the shell is
+up. `IRQ_POLICY_QUIET=1` suppresses every timer-driven report and leaves the counters intact,
+which is both the fix and the falsification: same instrumentation, no printing, and the
+session completes at the ship kernel's rate.
+
+**What step 3 still needs is a non-interleaving readout for session-scale totals.** Quiet mode
+counts correctly and says nothing; the boot-window gate prints at tick 40 and is fine because
+it never reaches a prompt. Neither gives an honest "across a session" figure, which is the
+number step 3 actually wants — it has to know which windows change once the system is doing
+real work, and the two IPC sites that dominate are precisely the ones that only appear under
+load. Reading the counters out through the single-writer console, or at guest exit, is the
+remaining piece.
+
 Required order:
 
 1. Make boot-time interrupt enablement explicit — find every window relying on the accidental
@@ -203,6 +273,9 @@ Required order:
    is load-bearing. Falsified both ways: flipping an expectation fails with the mismatch, and
    deleting a milestone hook fails with `milestone-never-reached` rather than quietly passing
    on four checks instead of five.
+2b. **Re-establish step 1's instrument** (added 2026-08-10 after the correction above).
+   `IRQ_POLICY_AUDIT=1` must not hang the session it measures, and its numbers must carry the
+   tick they were sampled at. Until then step 1's totals are not usable evidence.
 3. Then land the per-CPU, IF-preserving lock.
 
 Own PR, with the startup handshake instrumented. Do not attempt step 3 alone.

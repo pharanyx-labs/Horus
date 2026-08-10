@@ -508,9 +508,39 @@ the test fail on a correct kernel — the failure mode this document keeps warni
 
 All zero is the whole point: every syscall starts with interrupts masked (the `int 0x80` gate
 clears IF), so the first lock a handler releases turns them on for the rest of that syscall.
-That is why **[C-3.1]** is load-bearing, and it is measurable — `IRQ_POLICY_AUDIT=1` counts
-**99 accidental against 67 benign** depth-zero releases across a session, over seven sites, all
-of them syscall-context lock users.
+That is why **[C-3.1]** is load-bearing, and it is measurable — `IRQ_POLICY_AUDIT=1` identifies
+the depth-zero releases that enable interrupts the caller had masked, over seven sites, all of
+them syscall-context lock users.
+
+> **The totals this section used to quote — "99 accidental against 67 benign across a
+> session" — were withdrawn on 2026-08-10.** The audit reports through `panic_str`, straight
+> at the UART, bypassing the runtime suppression of `print()` that exists because ring-3
+> `console_server` owns the serial line. The tick-41 report lands on the login prompt and
+> splits it — `root@horus\n[irq-policy] handshake-early @tick=41: ...` — so `root@horus#`
+> never appears contiguously and `tools/session_test.py` waits for a prompt that was cut in
+> half. Measured **interleaved** — adjacent boots, alternating builds, so host drift cannot
+> account for it — with the unmodified audit build kept in as a positive control:
+>
+> | Build | `session_test.py` failures |
+> |---|---|
+> | ship kernel (no audit) | **0 of 8** |
+> | audit, `IRQ_POLICY_QUIET=1` | **0 of 8** |
+> | audit, exactly as shipped | **8 of 8** |
+>
+> `IRQ_POLICY_QUIET=1` removes the reporting and nothing else — `spin_lock` and `spin_unlock`
+> disassemble to **82 identical instruction lines** under both settings, against the same five
+> counter symbols. Without that check, "quiet passes" would be equally consistent with quiet
+> mode having simply switched the instrument off. The harness then stops issuing commands, the
+> guest correctly runs nothing more, and
+> the counters stop at **99/67** — the boot window of a session that never executed a command.
+> A session the harness *can* drive reads **420/224 at tick 201**. The seven sites reproduce;
+> the totals did not. See `docs/ROADMAP.md` §1.1.
+>
+> Two things this is *not*. It is not a kernel hang — the guest is healthy throughout, and
+> frozen counters beside a live timer is what an idle kernel looks like, not a stalled one. And
+> it is not **G-8**: an early draft of this correction guessed at both, from the same evidence,
+> and was wrong on both. **This gate is unaffected** — it exits on its marker at tick 40 and
+> never reaches a prompt, and the ship kernel it protects carries no audit at all.
 
 Falsified in both directions, because a gate that cannot fail is not evidence:
 

@@ -359,6 +359,9 @@ void smp_bringup(void) {
 #endif
 #endif
 
+#ifdef IRQ_POLICY_AUDIT
+    irq_policy_report("kernel-ready");
+#endif
     kmsg("kernel ready, starting init (PID 1)");
 #ifdef PREEMPT_SELFTEST
     /* Gated: spawn two non-yielding ring-3 tracers and prove the timer

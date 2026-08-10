@@ -161,6 +161,37 @@ masked *enables* them as a side effect. Boot and early init take many such locks
 timer preemption the `init` → `fs_server` → shell handshake depends on is a consequence of
 the locking defect, not of any stated policy. **The bug is load-bearing.**
 
+**Step 1 has a measurement now (2026-08-10), not an argument.** `IRQ_POLICY_AUDIT=1`
+records IF as the *outermost* lock is taken and counts the releases that flip interrupts on
+against the caller's own intent — the load-bearing ones. A release restoring IF=1 to a caller
+that already had IF=1 changes nothing and is counted separately. Observation only; the `sti`
+still fires exactly as before, so the build boots identically.
+
+Across a scripted shell session: **99 accidental against 67 benign — 60% of depth-zero
+releases enable interrupts the caller had masked**, over seven sites:
+
+| Site | Hits |
+|---|---|
+| `cap_install_object` | 32 |
+| `cap_consume_slot` | 31 |
+| `cap_grant_into` | 12 |
+| `storage_decrypt_block` | 11 |
+| `storage_encrypt_block` | 7 |
+| `create_task` | 4 |
+| `user_map_device_page` | 2 |
+
+**Every one is a syscall-context lock user**, which is the whole mechanism in one line: `int
+0x80` clears IF on entry, so a syscall handler always starts with interrupts masked, and the
+first lock it takes and releases turns them back on for the rest of that syscall. That is
+**[C-3.1]** measured rather than argued, and it explains why the ring-0 preemption guard in
+`preempt_on_tick` was needed and why the naive per-CPU lock broke the handshake.
+
+Two things this immediately tells step 3. The list is *short* — seven sites, not a diffuse
+property of the whole kernel — so making each window explicit is tractable. And it is not
+static: `cap_consume_slot` is second on that list and was added on 2026-08-10 by roadmap 1.3's
+reply capability, so the set grows as the kernel does. Re-measure before changing the lock, not
+once.
+
 Required order:
 
 1. Make boot-time interrupt enablement explicit — find every window relying on the accidental

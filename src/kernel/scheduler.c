@@ -979,6 +979,20 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
         if (cand == 0) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
             tasks[cand].runnable_ctx && tasks[cand].saved_ksp && task_running_cpu[cand] < 0) {
+            /* saved_ksp is about to become this CPU's %rsp. Selection only ever
+             * tested it for non-zero, so a CORRUPTED frame pointer sails through
+             * and the failure surfaces as a #PF inside the ISR epilogue, naming
+             * nothing. Kernel stacks are higher-half; anything else is wild. */
+            if (tasks[cand].saved_ksp < 0xFFFF800000000000ULL) {
+                print("PANIC: task "); print_decimal((uint64_t)cand);
+                print(" '"); print(tasks[cand].name);
+                print("' has a wild saved_ksp=");  print_hex64(tasks[cand].saved_ksp);
+                print(" state="); print_decimal((uint64_t)tasks[cand].state);
+                print(" rctx="); print_decimal((uint64_t)tasks[cand].runnable_ctx);
+                print(" blkon="); print_decimal((uint64_t)tasks[cand].blocked_on);
+                print("\n");
+                for (;;) __asm__ volatile ("cli; hlt");
+            }
             next = cand;
             break;
         }

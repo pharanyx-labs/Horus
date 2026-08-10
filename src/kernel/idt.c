@@ -185,6 +185,12 @@ int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
     return 1;
 }
 
+/* Which return path the dispatcher last took, for the resume-rsp guard below.
+ * A bogus %rsp that equals leftover %rax means SOME path returned without
+ * setting a value; this names it instead of leaving it to inference. */
+static const char *g_last_dispatch_path = "none";
+#define DISPATCH_RET(tag, expr) do { g_last_dispatch_path = (tag); return (expr); } while (0)
+
 static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
@@ -211,7 +217,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * before the scheduler decides who runs next, so a newly-runnable waiter
          * is eligible on this same tick. */
         irq_notify_fire(0);
-        return preempt_on_tick((uint64_t)frame, frame->cs);
+        DISPATCH_RET("lapic-timer/preempt_on_tick", preempt_on_tick((uint64_t)frame, frame->cs));
     } else if (vector == 33) {
         if (irq_reg[1].active) {
             /* A userspace driver owns the keyboard: leave the scancode in the PS/2
@@ -283,12 +289,12 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
         if (g_exec_reenter_task > 0) {
             int t = g_exec_reenter_task;
             g_exec_reenter_task = -1;
-            return exec_reenter_switch(t);
+            DISPATCH_RET("exec_reenter_switch", exec_reenter_switch(t));
         }
         /* SYS_YIELD: voluntary full-context switch (same path as preemption). */
         if (g_want_yield == ipc_caller) {
             g_want_yield = -1;
-            return sched_yield_switch(ipc_caller, (uint64_t)frame);
+            DISPATCH_RET("sched_yield_switch", sched_yield_switch(ipc_caller, (uint64_t)frame));
         }
         /* SYS_IPC_CALL / SYS_WAIT_NOTIFY / SYS_WAIT: handlers set pending_block
          * only. ipc_block_switch saves the frame first, then publishes the
@@ -298,7 +304,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
             if (tasks[ipc_caller].pending_block != 0 ||
                 st == TASK_BLOCKED_IPC || st == TASK_BLOCKED_NOTIF ||
                 st == TASK_BLOCKED_WAIT || st == TASK_BLOCKED_RECV) {
-                return ipc_block_switch(ipc_caller, (uint64_t)frame);
+                DISPATCH_RET("ipc_block_switch", ipc_block_switch(ipc_caller, (uint64_t)frame));
             }
             /* SYS_EXIT / SYS_KILL-self: the caller terminated itself. It is dead;
              * do not iretq back into it. Resume the next runnable task via its
@@ -400,6 +406,29 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
     if (from_user) fpu_save(get_current_task());
 
     uint64_t rsp = interrupt_handler64_inner(frame);
+
+    /* Every return from the dispatcher is a kernel %rsp that isr_common_stub64
+     * loads and immediately pops 15 registers from. A bogus value does not fail at
+     * the mistake: it faults inside the ISR epilogue at an address near zero, with
+     * a banner naming the stub and telling you nothing about which switch path
+     * produced it. (Or earlier still, on the out->cs read just below -- rsp==4
+     * faults at 0x94, which is exactly what a reproduce-and-symbolise cycle spent
+     * an hour chasing.) Kernel stacks are higher-half, so anything below that is a
+     * returned 0/1/-1 or a wild value, never a frame. */
+    if (rsp < 0xFFFF800000000000ULL) {
+        println("PANIC: dispatcher returned a bogus resume rsp=");
+        print_hex(rsp);
+        println(" task=");
+        print_hex((uint64_t)get_current_task());
+        println(" path=");
+        println(g_last_dispatch_path);
+        println(" state=");
+        print_hex((uint64_t)tasks[get_current_task()].state);
+        println(" pending_block=");
+        print_hex((uint64_t)tasks[get_current_task()].pending_block);
+        println("");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
 
     struct interrupt_frame64 *out = (struct interrupt_frame64 *)rsp;
     if (out && (out->cs & 3) != 0) fpu_restore(get_current_task());
@@ -652,6 +681,14 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
         print_hex(err);
         println(" task=");
         print_hex(killed);
+        /* The faulting instruction. Without it a ring-0 #PF says only THAT the
+         * kernel dereferenced something bad, never WHERE -- and the where is the
+         * whole diagnosis. Symbolise with:
+         *     nm -n kernel.elf | awk -v a=<rip> '...'   (or addr2line -e kernel.elf) */
+        println(" rip=");
+        print_hex(f64->rip);
+        println(" rsp=");
+        print_hex(f64->rsp);
         println(allowed ? "Approved by validator but unmappable - killing task "
                         : "Rejected by validator - killing task ");
         print_hex(killed);

@@ -75,6 +75,12 @@ jobs:
           - DEBUG_SHELL=1
           - MINIMAL_SECURE=1
           - SMP=1
+          # SMP=0 is the uniprocessor build. It was absent from this matrix and
+          # rotted: the flush-on-switch array was declared inside `#ifdef SMP`
+          # and used outside it, so `make SMP=0` had stopped compiling entirely
+          # and nothing noticed. A configuration nobody builds is a
+          # configuration that does not work.
+          - SMP=0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain

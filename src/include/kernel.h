@@ -705,6 +705,39 @@ void users_init(void);
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
+#define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ), same class as dmesg. */
+
+/* ---- roadmap 1.1: reading the interrupt-policy audit out, in band ----------
+ *
+ * The counters used to be printed from the timer ISR straight at the UART,
+ * around the single-writer console rather than through it. That split the shell
+ * prompt and hung the harness measuring it, and the numbers it did publish were
+ * the boot window of a session that never ran a command (see docs/ROADMAP.md
+ * §1.1). This syscall is the readout that replaces it: userspace asks, whenever
+ * it likes, and prints through console_server like any other program -- so a
+ * session-scale total is obtainable without a second writer existing at all.
+ *
+ * NB the counters are volatile globals updated without atomics under SMP (that
+ * is part of finding C-3 itself), so a snapshot is indicative, not exact. */
+#define IRQ_POLICY_SITE_SLOTS  12
+
+struct irq_policy_site_info {
+    uint64_t ra;                 /* return address of the spin_unlock caller */
+    uint32_t hits;
+    uint32_t _pad;
+};
+
+struct irq_policy_info {
+    uint32_t accidental;         /* depth-0 releases that enabled IF the caller had masked */
+    uint32_t benign;             /* ... that restored IF=1 to a caller who already had it */
+    uint32_t sites;              /* distinct accidental sites recorded (<= IRQ_POLICY_SITE_SLOTS) */
+    uint32_t ticks;              /* system_ticks at the moment of the snapshot */
+    struct irq_policy_site_info site[IRQ_POLICY_SITE_SLOTS];
+};
+
+#ifdef IRQ_POLICY_AUDIT
+void irq_policy_snapshot(struct irq_policy_info *out);
+#endif
 
 /* Reserved cspace slots a spawner wires a child's pipe stdio into (do_spawn),
  * read back by the child's posix_init via SYS_STDIO_INFO. create_task assigns

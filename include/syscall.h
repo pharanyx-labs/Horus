@@ -147,6 +147,7 @@ struct audit_event {
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died. Self-scoped (no capability): waiting already entitled the caller to observe it. */
+#define SYS_IPC_RECV_BLOCK     94   /* (ep_slot, buf, max) -> len; like SYS_IPC_RECV but SLEEPS on an empty queue instead of returning IPC_AGAIN. CAP_ENDPOINT + READ, same gate. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -531,6 +532,24 @@ static inline int ipc_transient(int rc) { return rc == IPC_AGAIN; }
  * the receive right, which only a service holder has). */
 static inline int sys_ipc_recv(int ep_slot, void *msg, size_t max_len) {
     return syscall(SYS_IPC_RECV, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg, (uint32_t)max_len);
+}
+
+/* Blocking receive (roadmap 1.3): identical authority to sys_ipc_recv — the
+ * CAP_ENDPOINT in `ep_slot` must carry READ — but an empty queue SLEEPS the
+ * caller instead of returning IPC_AGAIN.
+ *
+ * Prefer this to a poll loop in any server whose only job is to serve one
+ * endpoint. A polling server is runnable forever: it burns a scheduling slot it
+ * cannot use, and on a single core it takes time away from the very clients it
+ * is waiting for. It never returns IPC_AGAIN, so a caller has nothing transient
+ * to retry (see ipc_transient above) — a negative return is a permanent refusal
+ * and must not be looped on.
+ *
+ * Still returns SYS_ERR_PERM if the capability is missing, wrong-typed, or lacks
+ * READ, and -1 if the endpoint dies underneath the wait. */
+static inline int sys_ipc_recv_block(int ep_slot, void *msg, size_t max_len) {
+    return syscall(SYS_IPC_RECV_BLOCK, (uint32_t)ep_slot, (uint64_t)(uintptr_t)msg,
+                   (uint32_t)max_len);
 }
 
 /* Blocking send-then-receive: sends to the endpoint named by the CAP_ENDPOINT in

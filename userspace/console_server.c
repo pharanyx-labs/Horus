@@ -212,12 +212,25 @@ void _start(void) {
     struct con_request  rq;
     struct con_response rp;
     for (;;) {
-        int r = sys_ipc_recv(CAPSLOT_CONSOLE_EP, (char *)&rq, sizeof(rq));
-        if (r < 0) { sys_yield(); continue; }          /* no request yet: yield the CPU
-                                                        * (don't busy-spin — a second
-                                                        * busy-spin server alongside
-                                                        * fs_server starves the shell
-                                                        * under emulation) */
+        /* Sleep until a request arrives (roadmap 1.3). This used to be a
+         * non-blocking recv plus sys_yield(), with a comment explaining that a
+         * second busy-spin server alongside fs_server starves the shell under
+         * emulation. That comment was describing this item: the yield stopped the
+         * spin from being tight, but the server was still RUNNABLE at every
+         * scheduling decision, competing for turns it had no work to do with.
+         * Blocking removes it from the run queue entirely.
+         *
+         * A negative return is PERMANENT here -- SYS_IPC_RECV_BLOCK never returns
+         * IPC_AGAIN, so there is nothing transient to retry. Looping on it would
+         * be exactly the G-8 wedge: an authority refusal turned into a silent
+         * infinite loop. The only way to get one is to lose the listen
+         * capability, which a console server cannot continue without, so say so
+         * and exit rather than spin invisibly. */
+        int r = sys_ipc_recv_block(CAPSLOT_CONSOLE_EP, (char *)&rq, sizeof(rq));
+        if (r < 0) {
+            ser_puts("[console_server] listen capability lost; exiting\n");
+            sys_exit();
+        }
 
         umemset(&rp, 0, sizeof(rp));
         rp.magic = CON_PROTO_MAGIC;

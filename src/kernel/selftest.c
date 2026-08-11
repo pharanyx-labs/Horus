@@ -1477,6 +1477,56 @@ void console_selftest(void) {
 }
 #endif /* CONSOLE_SELFTEST */
 
+#ifdef RECVBLOCK_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Blocking IPC receive self-test (RECVBLOCK_SELFTEST builds only) --------
+ *
+ * Roadmap 1.3's last item. Stands up two ring-3 tasks around one endpoint: a
+ * server that waits with SYS_IPC_RECV_BLOCK and a client that deliberately
+ * dawdles before each request. The server asserts it made exactly one receive
+ * syscall per message — the witness that it SLEPT rather than polled — and that
+ * the wake left it holding the one-shot reply right. It prints the marker itself
+ * from ring 3, so RECVBLOCK_SELFTEST: PASS on serial is end-to-end proof.
+ *
+ * The endpoint is the console request endpoint, reusing root slots 11 (READ|
+ * WRITE, the receive right) and 12 (WRITE only, the client). Nothing console-
+ * related runs in this build — console_server is not spawned — so the object is
+ * simply a spare endpoint with a ready-made asymmetric capability pair. Adding
+ * root slots for a self-test would mean editing cap_init, and changing the
+ * primordial capability table to test something that is not about the primordial
+ * capability table is a poor trade.
+ *
+ * Note the client holds WRITE only: it can send but can never receive on this
+ * endpoint, so the exchange also depends on the C-1 asymmetry holding. Entry
+ * into ring 3 does not return. */
+void recvblock_selftest(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_recvblocksrv_bin_start[], embedded_recvblocksrv_bin_end[];
+    extern uint8_t embedded_recvblockcli_bin_start[], embedded_recvblockcli_bin_end[];
+
+    print("RECVBLOCK_SELFTEST: begin\n");
+
+    int srv = fs_spawn_embedded(embedded_recvblocksrv_bin_start,
+                                embedded_recvblocksrv_bin_end, "recvblocksrv");
+    if (srv <= 0) { print("RECVBLOCK_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
+    tasks[srv].uid = 0;
+    cap_install_from_root(srv, CAPSLOT_CONSOLE_EP, 11, CON_EP_REQ);   /* READ|WRITE */
+
+    int cli = fs_spawn_embedded(embedded_recvblockcli_bin_start,
+                                embedded_recvblockcli_bin_end, "recvblockcli");
+    if (cli <= 0) { print("RECVBLOCK_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+    tasks[cli].uid = 0;
+    cap_install_from_root(cli, CAPSLOT_CONSOLE_EP, 12, CON_EP_REQ);   /* WRITE only */
+
+    /* Launch the server first: it blocks on an empty endpoint, and the full-
+     * context switch that follows is what runs the client. That ordering is the
+     * point — if the block did not deschedule, the client would never start. */
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(srv);
+}
+#endif /* RECVBLOCK_SELFTEST */
+
 #ifdef CONSOLE_ISOLATION_TEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Console blast-radius self-test (CONSOLE_ISOLATION_TEST builds only) ------
@@ -1528,8 +1578,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE only) ----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {

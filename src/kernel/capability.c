@@ -302,6 +302,42 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
     return cap_install_object(dest_slot, CAP_ENDPOINT, (uint64_t)object, rights, badge);
 }
 
+/* Mint the one-shot reply right into ANOTHER task's cspace — the blocking
+ * receiver's. See the header for why this is not, and must not become, a general
+ * cross-cspace install: type, rights and slot are all fixed here.
+ *
+ * No caller_has_authority() check, and that is the deliberate part. The guard
+ * asks whether the CURRENT task may mint, but the current task here is the
+ * sender, which is not the one acquiring the right — the receiver is, and it
+ * proved its authority by holding READ on the endpoint when it blocked. Applying
+ * the caller's guard would make a receive succeed or fail according to the
+ * authority of whichever client happened to wake it, which is exactly the kind of
+ * ambient-authority coupling roadmap 0.2 removed. The accounting (caps_in_use on
+ * a NULL -> occupied transition, the ceiling) is the receiver's and is kept. */
+bool cap_install_reply_for(int pid, int sender) {
+    if (pid <= 0 || pid >= MAX_TASKS) return false;
+    if (sender <= 0 || sender >= MAX_TASKS) return false;
+    uint32_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
+    spin_lock(&cap_lock);
+    struct capability *cspace = tasks[pid].cspace;
+    uint32_t cspace_sz = tasks[pid].cspace_size ? tasks[pid].cspace_size : CNODE_SIZE;
+    if (!cspace || CAPSLOT_REPLY >= cspace_sz) { spin_unlock(&cap_lock); return false; }
+    bool was_null = (cspace[CAPSLOT_REPLY].type == CAP_NULL);
+    if (was_null && tasks[pid].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    cspace[CAPSLOT_REPLY].type       = CAP_REPLY;
+    cspace[CAPSLOT_REPLY].rights     = CAP_RIGHT_WRITE;
+    cspace[CAPSLOT_REPLY].object     = (uint64_t)sender;
+    cspace[CAPSLOT_REPLY].badge      = 0;
+    cspace[CAPSLOT_REPLY].serial     = serial;
+    cspace[CAPSLOT_REPLY].generation = rust_lineage_current(serial);
+    if (was_null) tasks[pid].caps_in_use++;
+    spin_unlock(&cap_lock);
+    return true;
+}
+
 /* Drop a capability the CURRENT task holds, returning its slot AND its budget.
  *
  * This is the counterpart cap_install_object never had, and its absence is a

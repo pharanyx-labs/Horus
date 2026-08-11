@@ -175,6 +175,10 @@ int ipc_publish_pending_block(int cur) {
         tasks[cur].pending_block = 0;
         tasks[cur].state        = TASK_RUNNABLE;
         tasks[cur].runnable_ctx = 1;
+        /* Withdraw the receive declaration too. A stale ipc_recv_block would make
+         * h_ipc_reply_to refuse every future reply to this task -- a permanent
+         * wedge from an abandoned wait. */
+        tasks[cur].ipc_recv_block = 0;
         return 0;
     }
 
@@ -188,26 +192,47 @@ int ipc_publish_pending_block(int cur) {
             tasks[cur].pending_block = 0;
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
+            tasks[cur].ipc_recv_block = 0;   /* see the !f case above */
             return 0;
         }
         ipc_lock();
         tasks[cur].pending_block = 0;   /* under the lock: see the note above */
-        /* Reply raced in as a mailbox message before we published the waiter. */
+        /* A message raced in before we published the waiter: the reply for a
+         * SYS_IPC_CALL, or -- for a blocking SYS_IPC_RECV_BLOCK -- the very
+         * request this task is waiting for. Either way it is already queued, so
+         * complete inline rather than parking on a non-empty endpoint. */
         if (!ep_empty(e)) {
+            int recv_wait = (tasks[cur].ipc_recv_block != 0);
+            /* A receiver's buffer is only as big as it said; a reply buffer is
+             * IPC_MSG_MAX by contract. */
+            int cap_len = recv_wait ? (int)tasks[cur].ipc_recv_max : IPC_MSG_MAX;
             uint8_t kbuf[IPC_MSG_MAX];
             int sender = -1;
-            int len = ep_dequeue(e, kbuf, IPC_MSG_MAX, &sender);
+            int len = ep_dequeue(e, kbuf, cap_len, &sender);
             if (len > 0 && tasks[cur].ipc_reply_buf != 0) {
                 copy_to_user((void *)(addr_t)tasks[cur].ipc_reply_buf, kbuf,
                              (size_t)len);
             }
             e->last_sender = sender;
             f->rax = (uint64_t)(uint32_t)len;
+            /* Mint BEFORE the task is marked runnable — the same rule the wake
+             * path in sys_ipc_send follows, and for the same reason (see the
+             * long note there; getting it wrong there was a measured hang).
+             *
+             * Strictly this path does not need it: `cur` is the task executing
+             * this very syscall, still claimed by this CPU, so nothing can
+             * observe the gap. It is done anyway so the rule holds without
+             * exception — "a receiver holds its reply right before it is
+             * schedulable". An invariant with one documented exception is one a
+             * later change quietly widens. */
+            if (recv_wait && sender > 0 && sender < MAX_TASKS)
+                cap_install_reply_for(cur, sender);
             tasks[cur].state        = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
             tasks[cur].blocked_on   = -1;
+            tasks[cur].ipc_recv_block = 0;
             ipc_unlock();
-            return 0;   /* resume same task with reply in hand */
+            return 0;   /* resume same task with the message in hand */
         }
         e->blocked_waiter       = cur;
         tasks[cur].state        = TASK_BLOCKED_IPC;
@@ -243,6 +268,7 @@ int ipc_publish_pending_block(int cur) {
             tasks[cur].pending_block = 0;
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
+            tasks[cur].ipc_recv_block = 0;   /* see the !f case above */
             return 0;
         }
         ipc_lock();
@@ -283,6 +309,10 @@ void ipc_unpublish_block(int cur) {
         if (e && e->blocked_waiter == cur) e->blocked_waiter = -1;
         ipc_unlock();
         tasks[cur].blocked_on = -1;
+        /* Un-declare the receive too, or the next wake of this task would be
+         * completed as a receive (minting a reply right, rewriting last_sender)
+         * on the strength of a wait that was withdrawn. */
+        tasks[cur].ipc_recv_block = 0;
     } else if (st == TASK_BLOCKED_WAIT) {
         int tid = tasks[cur].blocked_on;
         if (tid >= 0 && tid < MAX_TASKS && tasks[tid].waiter == cur)
@@ -320,9 +350,23 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * the return value in eax. */
     ipc_lock();
     int waiter = e->blocked_waiter;
+    /* ep_empty is part of the condition, not an optimisation (roadmap 1.3).
+     *
+     * Handing this message straight to a blocked receiver while the queue still
+     * holds older ones would deliver it out of order. It is a no-op for the reply
+     * wait -- ipc_publish_pending_block only parks a caller on an EMPTY endpoint,
+     * completing inline otherwise -- so this tightens the guard for the blocking
+     * receive without changing the SYS_IPC_CALL path at all. */
     if (waiter > 0 && waiter < MAX_TASKS &&
-            tasks[waiter].state == TASK_BLOCKED_IPC) {
+            tasks[waiter].state == TASK_BLOCKED_IPC && ep_empty(e)) {
         if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) { ipc_unlock(); return -1; }
+
+        /* A blocked RECEIVER named its own buffer size; a blocked CALLER's reply
+         * buffer is IPC_MSG_MAX by contract. Truncate to whichever applies rather
+         * than overrunning a receiver that asked for less. */
+        int recv_wait = (tasks[waiter].ipc_recv_block != 0);
+        if (recv_wait && len > (size_t)tasks[waiter].ipc_recv_max)
+            len = (size_t)tasks[waiter].ipc_recv_max;
 
         uint8_t kbuf[IPC_MSG_MAX];
         int copy_len = 0;
@@ -363,6 +407,57 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
             (struct interrupt_frame64 *)tasks[waiter].saved_ksp;
         if (!wf) { ipc_unlock(); return -1; }
         wf->rax = (uint64_t)(uint32_t)copy_len;
+
+        /* ---- Everything the woken server needs, BEFORE it can run ------------
+         *
+         * Completing a blocking RECEIVE, not a reply: the server must end up in
+         * exactly the state the polling SYS_IPC_RECV would have left it in, or
+         * the two receives differ in authority — the interesting half of roadmap
+         * 1.3. So the sender becomes the endpoint's attested identity, and the
+         * server gets the one-shot right to answer it.
+         *
+         * THE ORDER HERE IS LOAD-BEARING, and getting it wrong cost a measured
+         * regression. The first version minted the reply capability after
+         * `state = TASK_RUNNABLE` and after ipc_unlock(), to keep cap_lock out
+         * from under endpoint_lock. But a task is schedulable the instant its
+         * state flips: another CPU picks it up, it returns to ring 3, services
+         * the request and calls SYS_IPC_REPLY_TO — all before the mint lands.
+         * cap_lookup then finds no CAP_REPLY and answers SYS_ERR_PERM, which is
+         * a PERMANENT code, so the server correctly drops the reply (the IPC
+         * retry contract forbids looping on it) and the client waits forever.
+         *
+         * That is not theoretical: instrumenting console_server's permanent-drop
+         * path reproduced it in 4 of 5 failing boots under `-smp 4` with the host
+         * loaded, at ~33% of sessions against 0% for the control. It is invisible
+         * on one CPU, because there is no second CPU to run the server inside the
+         * window — which is exactly why it survived the first round of testing.
+         *
+         * So the mint happens under ipc_lock, before the wake. cap_lock nesting
+         * inside endpoint_lock is a NEW lock order, and it is safe because it is
+         * the only one: no path in the tree takes an IPC lock while holding
+         * cap_lock (capability.c and untyped.c never reference either). Keep it
+         * that way.
+         *
+         * SYS_IPC_RECV and the publish path still mint after their unlock, and
+         * that stays correct for a reason that does not apply here: there the
+         * receiver is the CURRENT task, still executing its own syscall and still
+         * claimed by this CPU, so no one can observe the gap. This mint targets
+         * another task. */
+        if (recv_wait) {
+            int sender_tid = get_current_task();
+            e->last_sender = sender_tid;
+            tasks[waiter].ipc_recv_block = 0;
+            if (!cap_install_reply_for(waiter, sender_tid)) {
+                /* Refuse rather than wake a server into a request it has no
+                 * right to answer — that is the failure this ordering exists to
+                 * prevent, and doing it deliberately would be no better. The
+                 * waiter stays blocked and is woken by the next send; the sender
+                 * gets an error it can report. Reachable only if the receiver is
+                 * at MAX_CAPS_PER_TASK. */
+                ipc_unlock();
+                return -1;
+            }
+        }
 
         e->blocked_waiter = -1;
         __asm__ volatile ("" ::: "memory");
@@ -612,6 +707,75 @@ void h_ipc_recv(struct interrupt_frame64 *r) {
     }
     r->rax = sys_ipc_recv(ep, (void*)(addr_t)r->rcx, r->rdx);
 }
+/* SYS_IPC_RECV_BLOCK (94): rbx = cspace slot of a CAP_ENDPOINT with READ.
+ *
+ * Roadmap 1.3's last piece. SYS_IPC_RECV returns IPC_AGAIN on an empty queue, so
+ * a server with nothing to do polls: it stays RUNNABLE, consumes scheduling
+ * turns it cannot use, and on one core actively delays the clients it is waiting
+ * for. It also makes priority inheritance inexpressible, because the kernel has
+ * no record of who is waiting on what.
+ *
+ * The wait itself reuses the machinery SYS_IPC_CALL already uses -- record the
+ * intent, let interrupt_handler64 save the frame, then publish under ipc_lock --
+ * because the hazard is the same one: a waiter published before its frame is
+ * saved can be woken by another CPU patching a null saved_ksp. The publish
+ * ordering is the load-bearing part and is not duplicated here.
+ *
+ * The empty test and the block intent are set under ONE ipc_lock hold. Dropping
+ * the lock between them would reopen the classic lost-wakeup: a sender could
+ * enqueue and find no waiter in the gap, and this task would then park on a queue
+ * that already had its message. */
+void h_ipc_recv_block(struct interrupt_frame64 *r) {
+    uint32_t ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    struct endpoint *e = endpoint_by_index(ep);
+    if (!e) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)-1; return; }
+
+    for (;;) {
+        ipc_lock();
+        if (!ep_empty(e)) {
+            /* Message already waiting: complete inline, exactly as SYS_IPC_RECV
+             * does. Nothing blocks, so this is the common case for a busy server
+             * and costs it no extra context switch.
+             *
+             * The retry is not decoration. sys_ipc_recv re-acquires ipc_lock, so
+             * a second receiver on this endpoint can drain the queue in between
+             * and leave it answering IPC_AGAIN -- which THIS syscall must never
+             * return. Its whole contract is that a negative result is permanent,
+             * and both ring-3 servers act on that by reporting and exiting, so
+             * leaking a -2 here would kill a server on a benign race rather than
+             * blocking it. Re-decide instead: either there is still a message, or
+             * the endpoint is empty again and blocking is the right answer.
+             * Each iteration means some other receiver got a message, so this
+             * makes progress for the system even when it retries. */
+            ipc_unlock();
+            int rc = sys_ipc_recv(ep, (void *)(addr_t)r->rcx, r->rdx);
+            if (rc == -2) continue;
+            r->rax = (uint32_t)rc;
+            return;
+        }
+
+        /* Empty: commit to blocking. Only intent is recorded here -- the task is
+         * not wake-visible until ipc_publish_pending_block runs with a saved
+         * frame. */
+        tasks[cur].ipc_reply_buf  = (uint64_t)r->rcx;
+        tasks[cur].ipc_recv_max   = (uint32_t)r->rdx;
+        tasks[cur].ipc_recv_block = 1;
+        tasks[cur].blocked_on     = (int)ep;
+        tasks[cur].pending_block  = TASK_BLOCKED_IPC;
+        ipc_unlock();
+
+        /* Overwritten by the waker patching saved_ksp->rax with the length. */
+        r->rax = 0;
+        return;
+    }
+}
+
 /* SYS_IPC_REPLY (24): rbx = cspace slot of a CAP_ENDPOINT with WRITE. */
 void h_ipc_reply(struct interrupt_frame64 *r) {
     uint32_t ep;
@@ -713,10 +877,26 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
     }
 
     ipc_lock();
-    if (tasks[t].state != TASK_BLOCKED_IPC) {
+    /* A task blocked in SYS_IPC_RECV_BLOCK is waiting for a REQUEST, not for a
+     * reply. Delivering here would write the replier's buffer straight into that
+     * task's receive buffer and wake it — a message injected past the endpoint
+     * queue, from a task the receiver never accepted a connection from, and
+     * attributed to whatever last_sender happened to hold. Fail closed and treat
+     * it as "not waiting on us", which also spends the right (see below): a reply
+     * capability naming a task that has moved on to receiving is stale by
+     * construction, and keeping it would let the answer land on a later,
+     * unrelated call. */
+    if (tasks[t].state != TASK_BLOCKED_IPC || tasks[t].ipc_recv_block) {
         /* Not blocked yet: racing publish (SMP) -> retry; otherwise not waiting
          * on us (already replied / never called) -> drop. */
-        uint32_t racing = (tasks[t].pending_block == (uint32_t)TASK_BLOCKED_IPC);
+        /* "Racing" means the target is committed to blocking FOR A REPLY and has
+         * merely not published yet. A task committed to a blocking RECEIVE is not
+         * a reply-waiter and never will be, so reporting -2 for it would be a
+         * retry that can never succeed — and per the IPC contract a server loops
+         * on -2, so that is an unkillable wedge rather than an error. Excluded
+         * explicitly. */
+        uint32_t racing = (tasks[t].pending_block == (uint32_t)TASK_BLOCKED_IPC) &&
+                          !tasks[t].ipc_recv_block;
         ipc_unlock();
         if (racing) {
             /* KEEP the right: the caller is committed to blocking and the server

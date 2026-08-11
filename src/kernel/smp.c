@@ -436,6 +436,13 @@ void smp_bringup(void) {
      * client's line to serial natively (CONSOLE_SELFTEST: PASS). First J5 cutover
      * milestone; see docs/proposals/console-server.md. */
     console_selftest();
+#elif defined(RECVBLOCK_SELFTEST)
+    /* Gated: a ring-3 server waits on an empty endpoint with SYS_IPC_RECV_BLOCK
+     * while a client dawdles before each request; the server proves it made
+     * exactly ONE receive syscall per message (so it slept rather than polled)
+     * and that the wake left it holding the one-shot reply right
+     * (RECVBLOCK_SELFTEST: PASS). Roadmap 1.3's last item. */
+    { extern void recvblock_selftest(void); recvblock_selftest(); }
 #elif defined(CONSOLE_ISOLATION_TEST)
     /* Gated: the ring-3 console_server takes the hardware then deliberately faults;
      * the kernel contains it as a ring-3 fault and stays alive (CONSOLE_ISOLATION:

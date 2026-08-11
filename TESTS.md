@@ -46,7 +46,7 @@ emulation is slow, and CI runners are slower; a timeout is usually not a real fa
 
 | Target | Proves |
 |---|---|
-| `smoke-captest` | **88 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), and four cover the one-shot reply capability (roadmap 1.3) — see below. The central conformance suite. |
+| `smoke-captest` | **96 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), four cover the one-shot reply capability and five the blocking receive (roadmap 1.3) — see below. The central conformance suite. |
 | `cargo test` (`rust/src/capability.rs`) | Mint masks rights and cannot widen them; transfer shares lineage; system-wide revoke reaches another task's cspace; an unrelated capability survives; primordial roots cannot be revoked; the generation counter skips the pristine sentinel on wrap; serial allocation never yields 0 or a reserved value. |
 | Kani proofs | Revocation nulls **exactly** the target's derivation subtree — no descendant survives, no non-descendant is touched. |
 
@@ -86,6 +86,94 @@ Four gates were falsified against the patched kernel, each in isolation:
 | the cspace range checks | `retype-past-cspace-end-allowed` |
 | the capability-type check **and** the kernel-reserve guard | `retype-allowed-through-notification-cap-onto-kernel-reserve` |
 | `kobj_gc` from `cap_revoke` | `revoked-endpoint-object-not-destroyed` |
+
+**The blocking-receive checks (roadmap 1.3), and a lesson about how a test FAILS.**
+`SYS_IPC_RECV_BLOCK` is a second way to receive, so it is a second place the C-1 gate has to
+hold — and it is the one a *server* uses, which is where interception matters. Five checks in
+`smoke-captest` cover it, plus the dedicated `smoke-recvblock`.
+
+Four gates were falsified, each in isolation:
+
+| Removed / changed | Check that fired |
+|---|---|
+| the block itself (return `IPC_AGAIN` on an empty queue) | `recv-block-returned-IPC_AGAIN` |
+| `cap_install_reply_for` on the wake path | `woken-server-holds-no-reply-right` |
+| the server made a *polling* receiver instead | `server-polled-instead-of-sleeping` |
+| the `CAP_RIGHT_READ` requirement | `recv-block-allowed-with-write-only-client-cap` |
+
+The third is the one worth keeping: it falsifies the **instrument**, not the kernel. The
+"exactly one receive syscall per message" assertion is the only thing separating a receiver
+that sleeps from one that spins, so it has to be shown to catch a spinner — and it does.
+
+The fourth taught something that is not about capabilities at all. The first version of that
+check probed an **empty** endpoint, so with the right requirement removed the receive was
+allowed, found nothing, and **blocked forever**: captest is a single task, so the suite
+reported a 60-second timeout rather than the name of the property that broke. A hang is
+indistinguishable from a real hang, which is precisely the confusion **[G-8]** and the
+interrupt-policy episodes cost days to unpick. The check now queues a message first (using the
+WRITE right it legitimately holds), so a kernel that wrongly allows the receive returns a
+*length*, and the suite fails by name with the diagnosis in the log. **Design the failure, not
+just the assertion:** a security test that wedges on the bug it detects has told you almost
+nothing.
+
+#### The lost wakeup none of those gates caught
+
+Every gate above passed, on a build that **hung roughly a third of `-smp 4` sessions under host
+load**. Worth recording in full, because the reason they passed is structural.
+
+`SYS_IPC_RECV_BLOCK` is completed by the *sender's* syscall, so the one-shot `CAP_REPLY` must
+be minted into a cspace that is not the current one. The first version did that after marking
+the waiter `TASK_RUNNABLE` and after dropping `ipc_lock`, to keep `cap_lock` from nesting under
+the endpoint lock. But a task is schedulable the instant its state flips: another CPU picks it
+up, it returns to ring 3, services the request and calls `SYS_IPC_REPLY_TO` — all before the
+mint lands. `cap_lookup` finds no `CAP_REPLY` and returns `SYS_ERR_PERM`, which is **permanent**,
+so the server correctly drops the reply (the retry contract forbids looping on it) and the
+client waits forever.
+
+**Why every gate missed it.** `smoke-recvblock` and `smoke-captest` run on one CPU, where there
+is no second CPU to run the server inside the window, so the ordering cannot be observed to be
+wrong. The full 17-target sweep passed. CI passed 61 of 63 checks. Only a *session under load*
+showed it.
+
+**How it was caught, and the general lesson.** By running the thing the change was supposed to
+improve, against a control, on a **loaded** host — not by running the gates. Interleaved,
+`-smp 4`, pinned: 5 failures in ~15 boots for the new build against 0 for the control. That
+asymmetry is the signal; a one-armed run would have looked like the ambient **G-8** rate.
+
+**How the mechanism was established, rather than guessed.** The first hypothesis (an ordering
+hole in `h_ipc_call`) was wrong — reading the code showed that ordering was already correct and
+documented. The second was confirmed by *instrumenting the silent path*: `console_server` drops
+a permanently-refused reply without printing, so a temporary `ser_puts` was added to that branch
+and the failure reproduced with the marker present in **4 of 5** failing boots. A stall with no
+message is a hypothesis; a stall with `REPLY-PERM-DROP` in the log is a mechanism.
+
+**The reproduction, for anyone who touches this path.** The race needs a second CPU to run the
+woken server *and* needs that CPU descheduled inside the window, so an idle host will not show
+it:
+
+```sh
+for i in 1 2 3; do taskset -c 6 sh -c 'while :; do :; done' & done   # hogs
+QEMU_SMP=4 SESSION_TIMEOUT=120 taskset -c 6 python3 tools/session_test.py boot.iso
+```
+
+Four guest vCPUs squeezed onto one host core, against three hogs. That is the same discipline
+`smoke-console-smp` needed — *an unpinned green run is not evidence* — applied to a race whose
+window is opened by vCPU descheduling rather than by core count.
+
+**The fix** mints the reply right under `ipc_lock`, before the wake, and both completion paths
+now follow one rule without exception: *a receiver holds its reply right before it is
+schedulable.* `cap_lock` nesting inside the endpoint lock is a new lock order and is safe
+because it is the only one — no path in the tree takes an IPC lock while holding `cap_lock`.
+
+Measured with the recipe above, interleaved, 25 boots per arm:
+
+| Build | Failures |
+|---|---|
+| pre-fix | **8/25** |
+| with the ordering fix | **0/25** |
+
+All four falsifications were re-run against the fixed code, because the mint moved and a gate
+that was only ever shown to fire at the old call site proves nothing about the new one.
 
 The third row is the instructive one. Removing the type check *alone* was **not** detected:
 the probes used a `CAP_FRAME` and a `CAP_ENDPOINT`, whose `object` fields fall far outside the
@@ -778,6 +866,8 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 | `smoke-tsd` | A ring-3 `RDTSC` faults under `CR4.TSD`. |
 | `smoke-proc` | Process control: spawn, wait, kill, signals (incl. mask/unmask and altstack delivery), and the `CAP_TCB` authority behind them. |
 | `smoke-notify` | Async notifications wake a blocked waiter with the accumulated badge. |
+| `smoke-recvblock` | A ring-3 server waiting with `SYS_IPC_RECV_BLOCK` makes **exactly one receive syscall per message** while the client dawdles before each send — the witness that it slept rather than polled — and the wake leaves it holding the one-shot reply right. Roadmap 1.3. |
+| `smoke-recvblock-smp` | The same, under `-smp 4`, so the CROSS-CPU wake path runs at all. It does not reliably catch the ordering race that path is prone to — see "The lost wakeup none of those gates caught" — but it is one boot. |
 
 ## ELF loading
 

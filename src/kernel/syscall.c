@@ -943,7 +943,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 94
+#define SYSCALL_TABLE_SIZE 95
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -990,6 +990,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * consulted. The per-slot lookup in the handler IS the gate. */
     [SYS_IPC_SEND]                 = { h_ipc_send,                SC_NONE, 0, SC_ANYTYPE },
     [SYS_IPC_RECV]                 = { h_ipc_recv,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_IPC_RECV_BLOCK]           = { h_ipc_recv_block,          SC_NONE, 0, SC_ANYTYPE },
     [SYS_IPC_CALL]                 = { h_ipc_call,                SC_NONE, 0, SC_ANYTYPE },
     [SYS_IPC_REPLY]                = { h_ipc_reply,               SC_NONE, 0, SC_ANYTYPE },
     [SYS_NOTIFY]                   = { h_notify,                  SC_NONE, 0, SC_ANYTYPE },
@@ -1110,13 +1111,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_TASK_EXIT_INFO is currently the highest syscall number. Adding a higher one
+ * SYS_IPC_RECV_BLOCK is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_TASK_EXIT_INFO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_IPC_RECV_BLOCK + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

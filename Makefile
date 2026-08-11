@@ -442,6 +442,19 @@ CFLAGS  += -DCONSOLE_ISOLATION_TEST
 ASFLAGS += -DCONSOLE_ISOLATION_TEST
 endif
 
+# RECVBLOCK_SELFTEST=1 embeds a server/client pair around one endpoint and, at
+# boot, has the server wait with SYS_IPC_RECV_BLOCK while the client dawdles
+# before each request (roadmap 1.3). The server asserts it made exactly ONE
+# receive syscall per message -- the witness that it slept rather than polled --
+# and that the wake left it holding the one-shot reply right; it prints
+# RECVBLOCK_SELFTEST: PASS from ring 3. Gated off the ship kernel.
+RECVBLOCK_SELFTEST ?= 0
+ifeq ($(RECVBLOCK_SELFTEST),1)
+CFLAGS  += -DRECVBLOCK_SELFTEST
+ASFLAGS += -DRECVBLOCK_SELFTEST
+RECVBLOCK_SELFTEST_DEP = userspace/recvblocksrv.bin userspace/recvblockcli.bin
+endif
+
 # COW_SELFTEST=1 embeds cowtest and, at boot, reads two fresh heap pages (each
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
@@ -693,7 +706,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1053,7 +1066,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -1881,6 +1894,36 @@ smoke-irq-policy:
 	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 IRQ_POLICY_QUIET=0 boot.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IRQ_POLICY: PASS' FAIL_MARKER='IRQ_POLICY: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
+# the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.
+.PHONY: smoke-recvblock
+smoke-recvblock:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='RECVBLOCK_SELFTEST: PASS' \
+		FAIL_MARKER='RECVBLOCK_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# The same gate under -smp 4. The interesting half of the blocking receive is a
+# CROSS-CPU wake: the sender completes the receive, so the reply right has to be
+# minted into a cspace that is not the current one, and the woken server can be
+# picked up by another CPU the instant its state flips. On one CPU that ordering
+# cannot be wrong in a way anything observes, which is exactly why the first
+# version of this feature passed every single-CPU gate and still hung under load.
+# This does not RELIABLY catch that race -- see TESTS.md for the loaded
+# reproduction that does -- but it is the cheap part, and it costs one boot.
+.PHONY: smoke-recvblock-smp
+smoke-recvblock-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1 boot.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='RECVBLOCK_SELFTEST: PASS' \
+		FAIL_MARKER='RECVBLOCK_SELFTEST: FAIL' \
 		tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-sched-invariants

@@ -718,6 +718,24 @@ embedded_consoletest_bin_start:
 embedded_consoletest_bin_end:
 #endif
 
+#ifdef RECVBLOCK_SELFTEST
+/* PIE blocking-receive pair (roadmap 1.3): a server that waits with
+ * SYS_IPC_RECV_BLOCK and a client that delays before each request, so the
+ * server's "one receive syscall per message" assertion witnesses a real sleep. */
+.align 16
+.global embedded_recvblocksrv_bin_start
+embedded_recvblocksrv_bin_start:
+.incbin "userspace/recvblocksrv.bin"
+.global embedded_recvblocksrv_bin_end
+embedded_recvblocksrv_bin_end:
+.align 16
+.global embedded_recvblockcli_bin_start
+embedded_recvblockcli_bin_start:
+.incbin "userspace/recvblockcli.bin"
+.global embedded_recvblockcli_bin_end
+embedded_recvblockcli_bin_end:
+#endif
+
 #ifdef COW_SELFTEST
 /* PIE cowtest binary: reads two fresh heap pages (shared zero page) then writes
  * one, proving copy-on-write hands out a private page without disturbing the

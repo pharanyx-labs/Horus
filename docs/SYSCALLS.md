@@ -46,7 +46,7 @@ performs its own check; the reason is noted per entry in `src/kernel/syscall.c`.
 > service's endpoint.
 >
 > `READ` is the receive right, so it is what separates a server from its clients:
-> `SYS_IPC_RECV`, `SYS_IPC_REPLY_TO`, and `SYS_IPC_SENDER` all require it, and clients are
+> `SYS_IPC_RECV`, `SYS_IPC_RECV_BLOCK`, `SYS_IPC_REPLY_TO`, and `SYS_IPC_SENDER` all require it, and clients are
 > minted `WRITE`-only. Replies land on the caller's private per-task reply endpoint, which no
 > other task can name. Fixed 2026-07-27 — see **[C-1]** in
 > [`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
@@ -211,6 +211,7 @@ simplification.
 |---|---|---|---|
 | 21 | `SYS_IPC_SEND` | `ep_slot`, `msg`, `len` | `CAP_ENDPOINT` at `ep_slot`: WRITE |
 | 22 | `SYS_IPC_RECV` | `ep_slot`, `buf`, `max` | `CAP_ENDPOINT` at `ep_slot`: **READ** |
+| 94 | `SYS_IPC_RECV_BLOCK` | `ep_slot`, `buf`, `max` | `CAP_ENDPOINT` at `ep_slot`: **READ** |
 | 23 | `SYS_IPC_CALL` | `send_slot`, *(ignored)*, `msg`, `len`, `reply_buf` | `CAP_ENDPOINT` at `send_slot`: WRITE |
 | 24 | `SYS_IPC_REPLY` | `ep_slot`, `msg`, `len` | `CAP_ENDPOINT` at `ep_slot`: WRITE |
 | 25 | `SYS_NOTIFY` | `notif_slot`, `badge` | `CAP_NOTIFICATION` at `notif_slot`: WRITE |
@@ -230,6 +231,26 @@ caller's own private reply endpoint. Pass 0.
 genuinely full (`SEND`, `count == EP_QUEUE_SLOTS`) or empty (`RECV`, `count == 0`), and the
 caller polls from ring 3 where timer preemption guarantees progress. Spinning in-kernel would
 not, since the kernel is not preemptible.
+
+`SYS_IPC_RECV_BLOCK` is the **blocking** receive, and it is what a server should use. Same
+capability and same right as `SYS_IPC_RECV` — `CAP_ENDPOINT` with **READ** — and the same
+completion, including minting the one-shot `CAP_REPLY` for the message it hands back; the only
+difference is that an empty queue sleeps the caller instead of answering `-2`. It therefore
+**never returns `IPC_AGAIN`**, so a negative return from it is permanent and must not be
+retried in a loop (see the retry contract below).
+
+Two things about it are worth stating because they are where a blocking receive usually goes
+wrong. The wait is published only *after* the trap frame is saved — the same ordering
+`SYS_IPC_CALL` uses, so a sender on another CPU cannot patch a stale frame. And the wake is
+performed by the *sender's* syscall, in the sender's address space and cspace, so the reply
+right has to be minted into a cspace that is not the current one; getting that wrong would
+hand a woken server a request it holds no authority to answer. `make smoke-recvblock` asserts
+exactly that, and fails if the mint is removed.
+
+A task blocked in `SYS_IPC_RECV_BLOCK` is waiting for a **request**, not a reply, so
+`SYS_IPC_REPLY_TO` refuses to deliver into it: a reply capability naming a task that has moved
+on to receiving is stale by construction, and delivering would inject a message past the
+endpoint queue.
 
 **`-2` is the only retryable IPC code.** It is `IPC_AGAIN` in
 [`include/syscall.h`](../include/syscall.h), tested by `ipc_transient(rc)`, and it is a raw

@@ -46,7 +46,7 @@ emulation is slow, and CI runners are slower; a timeout is usually not a real fa
 
 | Target | Proves |
 |---|---|
-| `smoke-captest` | **88 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), and four cover the one-shot reply capability (roadmap 1.3) — see below. The central conformance suite. |
+| `smoke-captest` | **96 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), four cover the one-shot reply capability and five the blocking receive (roadmap 1.3) — see below. The central conformance suite. |
 | `cargo test` (`rust/src/capability.rs`) | Mint masks rights and cannot widen them; transfer shares lineage; system-wide revoke reaches another task's cspace; an unrelated capability survives; primordial roots cannot be revoked; the generation counter skips the pristine sentinel on wrap; serial allocation never yields 0 or a reserved value. |
 | Kani proofs | Revocation nulls **exactly** the target's derivation subtree — no descendant survives, no non-descendant is touched. |
 
@@ -86,6 +86,35 @@ Four gates were falsified against the patched kernel, each in isolation:
 | the cspace range checks | `retype-past-cspace-end-allowed` |
 | the capability-type check **and** the kernel-reserve guard | `retype-allowed-through-notification-cap-onto-kernel-reserve` |
 | `kobj_gc` from `cap_revoke` | `revoked-endpoint-object-not-destroyed` |
+
+**The blocking-receive checks (roadmap 1.3), and a lesson about how a test FAILS.**
+`SYS_IPC_RECV_BLOCK` is a second way to receive, so it is a second place the C-1 gate has to
+hold — and it is the one a *server* uses, which is where interception matters. Five checks in
+`smoke-captest` cover it, plus the dedicated `smoke-recvblock`.
+
+Four gates were falsified, each in isolation:
+
+| Removed / changed | Check that fired |
+|---|---|
+| the block itself (return `IPC_AGAIN` on an empty queue) | `recv-block-returned-IPC_AGAIN` |
+| `cap_install_reply_for` on the wake path | `woken-server-holds-no-reply-right` |
+| the server made a *polling* receiver instead | `server-polled-instead-of-sleeping` |
+| the `CAP_RIGHT_READ` requirement | `recv-block-allowed-with-write-only-client-cap` |
+
+The third is the one worth keeping: it falsifies the **instrument**, not the kernel. The
+"exactly one receive syscall per message" assertion is the only thing separating a receiver
+that sleeps from one that spins, so it has to be shown to catch a spinner — and it does.
+
+The fourth taught something that is not about capabilities at all. The first version of that
+check probed an **empty** endpoint, so with the right requirement removed the receive was
+allowed, found nothing, and **blocked forever**: captest is a single task, so the suite
+reported a 60-second timeout rather than the name of the property that broke. A hang is
+indistinguishable from a real hang, which is precisely the confusion **[G-8]** and the
+interrupt-policy episodes cost days to unpick. The check now queues a message first (using the
+WRITE right it legitimately holds), so a kernel that wrongly allows the receive returns a
+*length*, and the suite fails by name with the diagnosis in the log. **Design the failure, not
+just the assertion:** a security test that wedges on the bug it detects has told you almost
+nothing.
 
 The third row is the instructive one. Removing the type check *alone* was **not** detected:
 the probes used a `CAP_FRAME` and a `CAP_ENDPOINT`, whose `object` fields fall far outside the
@@ -778,6 +807,7 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 | `smoke-tsd` | A ring-3 `RDTSC` faults under `CR4.TSD`. |
 | `smoke-proc` | Process control: spawn, wait, kill, signals (incl. mask/unmask and altstack delivery), and the `CAP_TCB` authority behind them. |
 | `smoke-notify` | Async notifications wake a blocked waiter with the accumulated badge. |
+| `smoke-recvblock` | A ring-3 server waiting with `SYS_IPC_RECV_BLOCK` makes **exactly one receive syscall per message** while the client dawdles before each send — the witness that it slept rather than polled — and the wake leaves it holding the one-shot reply right. Roadmap 1.3. |
 
 ## ELF loading
 

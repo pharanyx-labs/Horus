@@ -755,6 +755,7 @@ void users_init(void);
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ), same class as dmesg. */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died (finding G-8). Self-scoped: no capability, waiting already entitled the caller to observe it. */
+#define SYS_IPC_RECV_BLOCK     94   /* (ep_slot, buf, max) -> len; blocking SYS_IPC_RECV (roadmap 1.3). CAP_ENDPOINT + READ, enforced per-slot in the handler like every other IPC syscall. */
 
 /* ---- roadmap 1.1: reading the interrupt-policy audit out, in band ----------
  *
@@ -1119,6 +1120,30 @@ typedef struct tcb {
      * the waiter so a cross-CPU notifier cannot patch a stale saved_ksp.
      * Object is in blocked_on (reply ep or wait tid) or blocked_on_notif. */
     uint32_t pending_block;
+
+    /* Blocking RECEIVE (roadmap 1.3). TASK_BLOCKED_IPC covers two waits that use
+     * the same mechanism -- a task parked until a message lands on an endpoint --
+     * but that must complete differently:
+     *
+     *   ipc_recv_block == 0  a CLIENT inside SYS_IPC_CALL waiting for its reply.
+     *   ipc_recv_block == 1  a SERVER inside SYS_IPC_RECV_BLOCK waiting for a
+     *                        request. Completing this one must additionally record
+     *                        the sender as the endpoint's last_sender and mint the
+     *                        one-shot CAP_REPLY naming it, exactly as the polling
+     *                        SYS_IPC_RECV does -- otherwise a server woken from a
+     *                        block would hold no right to answer the request it
+     *                        was just handed.
+     *
+     * A flag rather than a separate TASK_BLOCKED_* state deliberately: every
+     * existing path that handles TASK_BLOCKED_IPC (teardown, ipc_unpublish_block,
+     * the scheduler, the claim auditor) then keeps working unchanged, instead of a
+     * new state having to be added to each of them and one being missed.
+     *
+     * `ipc_recv_max` is the receiver's buffer size. The reply path can use
+     * IPC_MSG_MAX because a reply buffer is always that big by contract; a
+     * receiver names its own, so truncation has to respect it. */
+    uint32_t ipc_recv_block;
+    uint32_t ipc_recv_max;
 
     /* Async signals. `pending_sigs` is a bitmask of queued signals (bit N =
      * signal N pending, 1..31), set by SYS_SIGNAL (gated on a CAP_TCB to this
@@ -1515,6 +1540,21 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
  * matching consume leaks toward MAX_CAPS_PER_TASK. NOT a revoke — it forgets one
  * slot in the caller's own cspace and touches no derived capability. */
 bool cap_consume_slot(uint32_t dest_slot);
+/* Mint the one-shot CAP_REPLY naming `sender` into TASK `pid`'s CAPSLOT_REPLY.
+ *
+ * The blocking-receive counterpart of the cap_install_object call at the end of
+ * SYS_IPC_RECV (roadmap 1.3). It exists because a blocked receiver is completed
+ * by the SENDER's syscall, on the sender's CPU, so the mint cannot go through
+ * cap_install_object -- that installs into get_current_task()'s cspace, which is
+ * the sender's.
+ *
+ * Deliberately NOT a general "install into another task" primitive: the type
+ * (CAP_REPLY), the rights (WRITE), and the destination slot (CAPSLOT_REPLY) are
+ * all fixed here rather than passed in, so it cannot be reused to place arbitrary
+ * authority into an arbitrary cspace. The authority argument is the receiver's,
+ * established when it proved READ on the endpoint to block on it; this only
+ * completes the receive it was already entitled to. */
+bool cap_install_reply_for(int pid, int sender);
 /* Read-only view of the kernel root cnode, so the object-reachability sweep in
  * untyped.c can see kernel-held capabilities too. root_cnode is otherwise
  * file-private to capability.c and must stay that way: handing out a mutable

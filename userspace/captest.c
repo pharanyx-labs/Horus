@@ -556,6 +556,71 @@ void _start(void) {
 #endif
     }
 
+    /* ---- the BLOCKING receive carries the same authority (roadmap 1.3) ----
+     *
+     * SYS_IPC_RECV_BLOCK is a second way to receive, so it is a second place the
+     * C-1 gate has to hold. A blocking variant that skipped the capability check
+     * would reopen the whole finding — and it would do so on the path a SERVER
+     * uses, which is exactly where interception matters.
+     *
+     * Exact codes, never `< 0`: this syscall's own "nothing there" value would be
+     * IPC_AGAIN (-2) if it had one, and SYS_ERR_PERM is -1, so `< 0` could not
+     * tell "refused" from "allowed, queue empty" — the precise mistake the first
+     * C-1 suite made, which passed against a deliberately vulnerable kernel.
+     *
+     * None of these three can block: two are refused before any queue is
+     * consulted, and the third runs against an endpoint known to be non-empty. */
+
+    /* A WRITE-only capability is a CLIENT's. Receiving with it would let a client
+     * dequeue the traffic of every other client of that service.
+     *
+     * The send first is not setup, it is what keeps this check HONEST on a broken
+     * kernel. captest is one task, so if the right check were removed the receive
+     * would find an empty queue and park forever, and the suite would report a
+     * timeout rather than the name of the property that broke — indistinguishable
+     * from a real hang, which is the failure mode TESTS.md keeps warning about.
+     * With a message already queued, a kernel that wrongly allows this returns a
+     * LENGTH, the check fails by name, and the diagnosis is in the log. (WRITE is
+     * exactly the right this capability does have, so the send is legitimate.) */
+    static const char rbdeny[] = "denied";
+    check(sys_ipc_send(SLOT_CLIENT_EP, rbdeny, sizeof(rbdeny)) == 0,
+          "recv-block-deny-setup-send-failed");
+    check(sys_ipc_recv_block(SLOT_CLIENT_EP, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "recv-block-allowed-with-write-only-client-cap");
+
+    /* A live capability of the WRONG TYPE must not authorise IPC either: this is
+     * the CAP_FRAME every task holds in slot 3, which is what made the original
+     * ambient dispatch-table entry so dangerous. */
+    check(sys_ipc_recv_block(SLOT_FRAME, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "recv-block-authorised-by-CAP_FRAME");
+
+    /* And an empty slot names nothing at all. */
+    check(sys_ipc_recv_block(SLOT_EMPTY_HI, msg, sizeof(msg)) == SYS_ERR_PERM,
+          "recv-block-allowed-on-empty-slot");
+
+    /* The positive direction, and the reason it is safe here: a message is
+     * queued FIRST, so the blocking receive completes inline and never parks.
+     * captest is a single task — a receive that actually blocked would wedge the
+     * whole suite, so the send succeeding is a precondition, not a nicety. It is
+     * checked, and check() exits on failure, so the recv below is unreachable
+     * unless the queue is non-empty.
+     *
+     * This also witnesses that the inline path returns the message rather than
+     * IPC_AGAIN — a blocking receive that answered "try again" on a NON-empty
+     * queue would be worse than the polling one.
+     *
+     * Uses slot 4 (this task's own private reply endpoint) rather than
+     * SLOT_SECOND_EP. Slot 21 is BOTH this file's "second endpoint" and the
+     * kernel's CAPSLOT_REPLY, so the one-shot reply rights minted and consumed in
+     * section 8b have long since overwritten the endpoint capability that was
+     * there — by this point slot 21 is NULL and any IPC on it is refused. */
+    static const char rbprobe[] = "blocking";
+    check(sys_ipc_send(SLOT_REPLY_EP, rbprobe, sizeof(rbprobe)) == 0,
+          "recv-block-setup-send-failed");
+    rc = sys_ipc_recv_block(SLOT_REPLY_EP, msg, sizeof(msg));
+    check(rc == (int)sizeof(rbprobe), "recv-block-inline-wrong-length");
+    check(msg[0] == 'b' && msg[7] == 'g', "recv-block-inline-corrupted-message");
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

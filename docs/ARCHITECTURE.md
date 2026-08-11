@@ -163,9 +163,10 @@ typedef struct capability {
 } capability_t;
 ```
 
-Object types: `CAP_TCB`, `CAP_NOTIFICATION`, `CAP_ENDPOINT`, `CAP_FRAME`, `CAP_USER`,
-`CAP_AUDIT`, `CAP_CONSOLE`, `CAP_ENCRYPTED_STORAGE`, `CAP_REVOCATION`, `CAP_BLOCK_DEV`,
-`CAP_IO_DEVICE`, `CAP_PIPE`, `CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_UNTYPED`.
+Sixteen object types, besides the empty `CAP_NULL`: `CAP_TCB`, `CAP_NOTIFICATION`,
+`CAP_ENDPOINT`, `CAP_FRAME`, `CAP_USER`, `CAP_AUDIT`, `CAP_CONSOLE`,
+`CAP_ENCRYPTED_STORAGE`, `CAP_REVOCATION`, `CAP_BLOCK_DEV`, `CAP_IO_DEVICE`, `CAP_PIPE`,
+`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_UNTYPED`, `CAP_REPLY`.
 
 Each task has a 256-slot cspace. Userspace names a capability by slot index and never sees
 the struct, so capabilities cannot be forged or guessed.
@@ -442,17 +443,30 @@ all.
 
 ### Endpoints
 
-`MAX_ENDPOINTS = 64` global endpoints, each a **single-slot mailbox** (256-byte message, one
-in-flight message, one blocked-waiter field).
+`MAX_ENDPOINTS = 128` static endpoints, plus `MAX_DYN_ENDPOINTS = 256` retyped ones above
+`DYN_EP_BASE` (see §4). Each endpoint is a **bounded FIFO**, not a single mailbox slot: a ring
+of `EP_QUEUE_SLOTS` (default 4, overridable at compile time) messages of up to
+`IPC_MSG_MAX = 256` bytes, a head/count pair, one `last_sender`, and one blocked-waiter field.
+Each queued slot carries its *own* sender id, because the reply path authorises by
+kernel-recorded sender identity and a shared field would be overwritten by the next sender;
+`last_sender` is the sender of the most recently **dequeued** message. The depth is fixed at
+compile time, so a sender cannot make the kernel allocate and a server that stops receiving
+cannot be used to grow kernel memory without bound. `EP_QUEUE_SLOTS=1` degenerates the ring
+back to the old single-slot mailbox, which is how the queue's benefit was measured rather than
+asserted (roadmap 1.3, finding **[I-5]**).
 
-- **`SYS_IPC_SEND` / `SYS_IPC_RECV`** are non-blocking: they return `-2` when the mailbox is
-  full or empty and the caller polls from ring 3, where timer preemption guarantees
-  progress. Spinning in-kernel would not, because the kernel is not preemptible.
+- **`SYS_IPC_SEND` / `SYS_IPC_RECV`** are non-blocking: they return `-2` when the queue is
+  genuinely full (`count == EP_QUEUE_SLOTS`) or empty (`count == 0`) and the caller polls from
+  ring 3, where timer preemption guarantees progress. Spinning in-kernel would not, because
+  the kernel is not preemptible. With a queue, concurrent clients enqueue instead of
+  colliding, so the retry path is reached only under real back-pressure.
 - **`SYS_IPC_CALL`** is the blocking send-then-await-reply. It deposits the message and
   records a *pending* block; the actual publish happens later.
 - **`SYS_IPC_REPLY_TO`** delivers a reply directly into the recorded sender's blocked reply
-  buffer, routed by kernel-recorded identity rather than through a shared reply endpoint.
-  This is what makes one server safe for concurrent clients.
+  buffer. The target comes from a **one-shot `CAP_REPLY`** minted by `SYS_IPC_RECV` into
+  `CAPSLOT_REPLY` and consumed by the reply, *not* from the endpoint's mutable `last_sender`.
+  Replying twice, or to a client this task never received from, is therefore unrepresentable
+  rather than merely refused — which is what makes one server safe for concurrent clients.
 
 **The publish-after-save protocol.** A cross-CPU reply must never patch a stale or null
 saved frame. The ordering is therefore:
@@ -614,9 +628,11 @@ kernel — the ring-3 FS server never sees a key.
 - 16 MiB volume (32768 × 512 B blocks), multi-block data allocation bitmap.
 - Backing store is either an ATA disk or a RAM vdisk reserved in the physical pool.
 
-Syscalls are gated twice: `CAP_BLOCK_DEV` in slot 7 by the dispatch table, *plus* a `uid == 0`
-check in the handler. (That second, identity-based gate is a known deviation from the pure
-capability model — see [§14](#14-known-architectural-gaps).)
+Authority is one capability, checked in one place: the dispatch table requires a
+`CAP_ENCRYPTED_STORAGE` carrying `READ|WRITE` at `CAPSLOT_AUDIT` (slot 7) before the handler
+runs. The ambient `uid == 0` check that used to sit alongside it in each handler is gone
+(finding **[I-1]**) — authority is the capability, not the identity — so the store API is
+reachable only by the task `init` endows with that capability.
 
 ---
 
@@ -674,11 +690,15 @@ disabled; DMA-capable devices (no IOMMU); and any channel through the shared L2/
 These are design-level, not bugs to be patched in place. Each is tracked in
 [`ROADMAP.md`](ROADMAP.md) and analysed in [`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
 
-**G-2 — Ambient `uid == 0` authority runs parallel to the capability system.** Nine syscall
-handlers gate on the caller's uid rather than on a capability, and `SYS_GET_TASK_INFO`
-promotes root to full cross-task introspection. Two authority axes means the capability
-graph is not a complete description of who can do what — which defeats the main reason to
-have one. Finding **[I-1]**.
+**G-2 — Ambient `uid == 0` authority runs parallel to the capability system.** *Closed*
+(roadmap 0.2, finding **[I-1]**). Nine syscall handlers used to gate on the caller's uid
+rather than on a capability, so the capability graph was not a complete description of who
+could do what. Each of those gates is now a distinct capability type — `CAP_KERNEL_LOG`
+(dmesg), `CAP_BOOT_MODULE` (the module read surface), `CAP_ENCRYPTED_STORAGE` (the object
+store, §11) — minted once in the primordial root cnode and delegated by `init` to exactly the
+task that needs it. `SYS_GET_TASK_INFO`'s root promotion is gone with them: cross-task
+introspection now needs a `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7), and `info.eip` is
+zeroed for any task but the caller (finding **[I-4]**).
 
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
@@ -688,12 +708,13 @@ reachable from the scheduler's hot path and from every trap frame, so migrating 
 change — and reclaiming a dead task's cspace, which needs `cap_lookup`'s NULL-cspace →
 root-cnode fallback removed first.
 
-**G-4 — Endpoints are single-slot with no queue.** Callers poll on contention, fair service
-cannot be expressed, and priority inheritance is impossible. (The shared global reply endpoint
-that used to compound this is gone — every task now has a private one — so **[I-5]** is
-closed, but the missing queue is not.) Roadmap item **F-1.2**: a bounded FIFO plus a one-shot
-reply capability, which would make reply forgery structurally impossible rather than
-right-gated.
+**G-4 — Endpoints are single-slot with no queue.** *Largely closed* (roadmap 1.3, finding
+**[I-5]**). Endpoints are now bounded FIFOs of `EP_QUEUE_SLOTS` (§8), so concurrent senders
+enqueue instead of colliding, and the one-shot `CAP_REPLY` landed with them — reply forgery is
+structurally impossible rather than right-gated. The shared global reply endpoint that used to
+compound this is also gone; every task has a private one. **What remains is a blocking
+receive:** an empty queue still returns `-2` and the server polls, so a server with no work
+spins instead of sleeping and priority inheritance is still inexpressible.
 
 **G-5 — No kernel object lifecycle.** *Closed for retyped objects* (roadmap 0.3). A retyped
 endpoint or notification is destroyed when no capability names it any more, computed by
@@ -701,14 +722,23 @@ mark-and-sweep over the capability graph (§4). The statically-allocated well-kn
 objects are still immortal by construction — they are named by the boot protocol rather than
 by any single capability — and will stop being so as they migrate to retyped objects.
 
-**G-6 — `this_cpu()` reads LAPIC MMIO on every call**, and `get_current_task()` calls it
-several times per syscall. The fix is `%gs`-based per-CPU data. Finding **[I-6]**.
+**G-6 — `this_cpu()` reads LAPIC MMIO on every call.** *Closed, differently* (roadmap 1.2,
+finding **[I-6]**). The MMIO read is off the hot path: `this_cpu()` derives the CPU id from
+the TSS selector in `TR` rather than reading the LAPIC, verified per-core against the LAPIC at
+bringup (`percpu_id_verify_self`, `make smoke-percpu`). `%gs`-based per-CPU data was *not*
+adopted — the ring-3 return paths load `0x33` into `%gs`, which zeroes the GS base in long
+mode, so doing it properly needs a CS-conditional `swapgs` on every ISR entry and exit plus
+the NMI/IST re-entrancy hazard. What is still wanted is a per-CPU *block* to hold the
+IRQ-nesting state **[C-3]**'s per-CPU lock needs, justified by roadmap 1.1 rather than by
+syscall cost.
 
-**G-7 — a blocked task can be left holding a scheduler claim.** Found 2026-07-28 by the new
-`SCHED_INVARIANTS=1` checker and **not yet root-caused**: in roughly one boot in five, `init`
-— blocked in `sys_wait()` on the shell — remains claimed by a CPU that has moved on, with the
-claim originating in `preempt_on_tick`'s selection. Latent rather than fatal, because a
-blocked task is not selectable, so nothing livelocks until something wakes it; at that point
-`init` would never be rescheduled and would never reap its child. Distinct from the
-ring-0-preemption deadlock fixed the same day, which is closed and holds 30/30 under
-`make smoke-console-smp-stress`. Root-cause before roadmap 1.1 changes this path.
+**G-7 — a blocked task can be left holding a scheduler claim.** *Closed 2026-08-09 — the
+checker was wrong, not the scheduler.* The `SCHED_INVARIANTS=1` reports were not `init`
+blocked in `sys_wait()`; they were `init` mid-`do_spawn`, where `load_staged_image_into`
+deliberately installs the *child* as the CPU's current task for the whole ELF load so the
+loader's `copy_to_user` resolves through the child's address space. The claim was live, not
+stale, and the auditor was reading an undeclared impersonation as a leak.
+`sched_impersonate_enter/exit` now record the task the CPU is *really* running
+(`percpu_real_task[]`) and the audit is stated over that, with the bracket depth itself
+checked. 20 pinned boots before: 10 failures; 30 after: 0. See `TESTS.md`,
+`make smoke-sched-invariants`.

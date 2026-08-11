@@ -887,6 +887,25 @@ static void h_untyped_info(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+#ifdef IRQ_POLICY_AUDIT
+/* SYS_IRQ_POLICY_INFO (92): rbx = user struct irq_policy_info *. Roadmap 1.1
+ * step 2b -- the in-band replacement for printing the audit at the UART from the
+ * timer ISR, which split the login prompt and hung the harness measuring it.
+ *
+ * Gated exactly like SYS_DMESG (CAP_KERNEL_LOG, READ) rather than by a fresh
+ * authority: these are kernel-internal statistics of the same class, and the
+ * return addresses in the site table are kernel text. Absent from the dispatch
+ * table outside IRQ_POLICY_AUDIT builds, so the ship kernel answers NOSYS. */
+static void h_irq_policy_info(struct interrupt_frame64 *r) {
+    struct irq_policy_info info;
+    irq_policy_snapshot(&info);
+    if (copy_to_user((void *)(addr_t)r->rbx, &info, sizeof(info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
+    }
+    r->rax = 0;
+}
+#endif
+
 typedef struct {
     void   (*fn)(struct interrupt_frame64 *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
@@ -894,7 +913,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 92
+#define SYSCALL_TABLE_SIZE 93
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1048,6 +1067,10 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * actually names the resource. untyped_retype / untyped_info do the lookup. */
     [SYS_RETYPE]                  = { h_retype,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_UNTYPED_INFO]            = { h_untyped_info,            SC_NONE, 0, SC_ANYTYPE },
+#ifdef IRQ_POLICY_AUDIT
+    /* Roadmap 1.1 audit readout; absent (fails closed) in the ship kernel. */
+    [SYS_IRQ_POLICY_INFO]         = { h_irq_policy_info, CAPSLOT_KERNEL_LOG, CAP_RIGHT_READ, CAP_KERNEL_LOG },
+#endif
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -1059,7 +1082,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNTYPED_INFO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_IRQ_POLICY_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

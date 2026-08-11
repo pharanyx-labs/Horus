@@ -1023,6 +1023,7 @@ static void show_general_help_us(void) {
     print_cmd("sudo",              "re-authenticate (secure prompt), spawn elevated");
     print_cmd("rotate_keys",       "re-encrypt storage under a fresh key    (root)");
     print_cmd("dmesg",             "print the kernel message log            (root)");
+    print_cmd("irqpolicy",         "interrupt-policy audit counters         (root)");
     print_cmd("useradd <uid> <n>", "create a user account                   (root)");
     print_cmd("userdel <uid>",     "delete a user account                   (root)");
     println("");
@@ -1868,6 +1869,53 @@ static void handle_command(char *cmd) {
             print(buf);
             off += (uint32_t)n;
         }
+        }
+    } else if (strcmp(cmd, "irqpolicy") == 0) {
+        /* Roadmap 1.1 step 2b: read the interrupt-policy audit counters in band.
+         *
+         * The point of this command is WHEN it can be run. The audit used to
+         * report from the timer ISR straight at the UART, around the
+         * single-writer console -- which split the login prompt, hung the
+         * harness, and led to a boot-window snapshot being published as a
+         * session total. Here the kernel writes nothing: we ask, and print
+         * through console_server like any other program. Run it at the end of a
+         * session and the totals cover that session.
+         *
+         * Same two gates as dmesg, for the same reason: the kernel checks the
+         * task holds CAP_KERNEL_LOG, and the shell checks who is logged in --
+         * capabilities are per-task, and one long-lived shell serves successive
+         * logins, so per-user policy has to live here or delegating the
+         * capability would widen authority. */
+        if (sys_getuid() != 0) {
+            println("irqpolicy: permission denied (root only)");
+        } else {
+            struct irq_policy_info info;
+            int rc = sys_irq_policy_info(&info);
+            if (rc == SYS_ERR_NOSYS) {
+                println("irqpolicy: not an IRQ_POLICY_AUDIT build");
+            } else if (rc == SYS_ERR_PERM) {
+                println("irqpolicy: permission denied (root only)");
+            } else if (rc < 0) {
+                println("irqpolicy: read failed");
+            } else {
+                print("irq-policy: accidental_sti="); print_decimal(info.accidental);
+                print(" benign_sti=");                print_decimal(info.benign);
+                print(" sites=");                     print_decimal(info.sites);
+                print(" @tick=");                     print_decimal(info.ticks);
+                println("");
+                for (uint32_t i = 0; i < info.sites && i < IRQ_POLICY_SITE_SLOTS; i++) {
+                    print("irq-policy:   ra=0x");
+                    for (int sh = 60; sh >= 0; sh -= 4) {
+                        int nyb = (int)((info.site[i].ra >> sh) & 0xF);
+                        char c = (char)(nyb < 10 ? '0' + nyb : 'a' + nyb - 10);
+                        char s[2] = { c, 0 };
+                        print(s);
+                    }
+                    print(" hits="); print_decimal(info.site[i].hits);
+                    println("");
+                }
+                println("irq-policy: end");
+            }
         }
     } else if (strcmp(cmd, "sudo") == 0 || strncmp(cmd, "sudo ", 5) == 0) {
         /* The password is PROMPTED for, never taken from the command line.

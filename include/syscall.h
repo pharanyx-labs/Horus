@@ -144,6 +144,7 @@ struct audit_event {
 #define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
+#define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
@@ -414,6 +415,39 @@ static inline int sys_retype(int untyped_slot, int kobj_type, int count, int des
 static inline int sys_untyped_info(int untyped_slot, struct untyped_info *out) {
     return (int)syscall(SYS_UNTYPED_INFO, (uint32_t)untyped_slot,
                         (uint64_t)(uintptr_t)out, 0);
+}
+
+/* ---- roadmap 1.1 interrupt-policy audit readout ----------------------------
+ *
+ * Mirrors struct irq_policy_info in src/include/kernel.h. Present only in
+ * IRQ_POLICY_AUDIT builds; the ship kernel has no dispatch entry and answers
+ * SYS_ERR_NOSYS.
+ *
+ * This exists so the counters can be read *in band*. They used to be printed
+ * from the timer ISR straight at the UART, i.e. around the single-writer console
+ * rather than through it -- which split the shell prompt, hung the harness, and
+ * caused a boot-window snapshot to be published as a session total. Asking for
+ * them and printing them like any other program removes the second writer
+ * entirely. */
+#define IRQ_POLICY_SITE_SLOTS  12
+
+struct irq_policy_site_info {
+    uint64_t ra;
+    uint32_t hits;
+    uint32_t _pad;
+};
+
+struct irq_policy_info {
+    uint32_t accidental;
+    uint32_t benign;
+    uint32_t sites;
+    uint32_t ticks;
+    struct irq_policy_site_info site[IRQ_POLICY_SITE_SLOTS];
+};
+
+/* Needs CAP_KERNEL_LOG (READ) -- same gate and same class as sys_dmesg. */
+static inline int sys_irq_policy_info(struct irq_policy_info *out) {
+    return (int)syscall(SYS_IRQ_POLICY_INFO, (uint64_t)(uintptr_t)out, 0, 0);
 }
 
 /* Send to the endpoint named by the CAP_ENDPOINT in `ep_slot` (needs WRITE). */

@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "exit_reason.h"   /* format_exit_reason(): shared with proctest, which asserts its text */
 
 /*
  * Ring-3 init process (PID-1 role).
@@ -26,6 +27,41 @@
 static void report(const char *s) {
     int n = 0; while (s[n]) n++;
     sys_write(1, s, (unsigned)n);
+}
+
+/* Report why the supervised shell ended, using the record SYS_TASK_EXIT_INFO
+ * hands back after a completed sys_wait().
+ *
+ * This is the whole point of the change: `init` used to print only "shell
+ * exited, relaunching", so a shell that was killed by a page fault mid-write
+ * was indistinguishable in a serial capture from a kernel that had hung — and
+ * G-8 signature A was filed as a livelock on exactly that ambiguity. The kernel
+ * cannot print the reason itself once console_server owns the console (kernel
+ * print() then only reaches the klog, and writing to the UART anyway is finding
+ * #126), so init asks for it and prints it through console_server like any
+ * other program.
+ *
+ * format_exit_reason() is shared with proctest, which asserts the exact text it
+ * produces — so this line is known to render correctly before the failure it
+ * exists to explain ever happens. */
+static void report_shell_exit(void) {
+    struct task_exit_info ei;
+    for (unsigned z = 0; z < sizeof(ei); z++) ((char *)&ei)[z] = 0;
+
+    if (sys_task_exit_info(&ei) != 0) {
+        report("init: shell exited (exit reason unavailable), relaunching\n");
+        return;
+    }
+
+    char why[192];
+    format_exit_reason(why, &ei);
+
+    char line[256];
+    int p = 0;
+    exr_append_str(line, &p, "init: shell exited: ");
+    exr_append_str(line, &p, why);
+    exr_append_str(line, &p, "; relaunching\n");
+    report(line);
 }
 
 /* Preemptible ring-3 spin, used only on the fatal fallback paths below (when
@@ -179,7 +215,10 @@ void _start(void) {
         if (sh < 0) { report("init: FATAL could not launch shell\n"); for (;;) settle(); }
 
         sys_wait(sh);   /* returns once the shell task is dead */
-        report("init: shell exited, relaunching\n");
+        /* Read the cause BEFORE relaunching: launch_shell() may be handed the
+         * dead shell's task slot, and the record is only guaranteed until this
+         * task's next completed wait. */
+        report_shell_exit();
     }
 #endif
 }

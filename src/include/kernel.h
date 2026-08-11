@@ -342,6 +342,54 @@ static inline int reply_ep_for_task(int tid) {
 #define TASK_BLOCKED_NOTIF 3   /* blocked inside SYS_WAIT_NOTIFY waiting for a badge */
 #define TASK_BLOCKED_WAIT  4   /* blocked inside SYS_WAIT until the target task exits */
 
+/* ---- Why a task died (finding G-8) ----------------------------------------
+ *
+ * A task used to disappear without recording a reason anywhere a supervisor
+ * could reach. `SYS_WAIT` returns 0 for every death alike, so `init` could say
+ * only "shell exited, relaunching" — which is why a crashed shell and a hung
+ * one look identical in a serial capture, and why G-8 signature A spent two
+ * days being read as a livelock.
+ *
+ * The kernel did have *something* to say on one of the paths: the generic
+ * ring-3 trap handler prints `[task N '<name>' killed: ...]`. But `print()`
+ * only records to the klog once a ring-3 console server owns the console
+ * (terminal.c) — so during a live session that line never reaches the wire.
+ * The ring-3 #PF kill path does not print at all: its banner is gated on a
+ * ring-0 / task-0 fault. A shell killed by a page fault mid-`write` is
+ * therefore completely silent, which is exactly the observed signature.
+ *
+ * So the cause is recorded here, structurally, and handed to the supervisor
+ * in band via SYS_TASK_EXIT_INFO — where it can be printed through
+ * console_server like any other output, with no second writer on the UART. */
+#define TASK_EXIT_NONE      0   /* no death recorded (nothing has been waited on) */
+#define TASK_EXIT_NORMAL    1   /* SYS_EXIT: the task ended itself                */
+#define TASK_EXIT_KILLED    2   /* SYS_KILL by another task; detail = killer tid  */
+#define TASK_EXIT_SIGNAL    3   /* uncaught signal, default action; detail = signum*/
+#define TASK_EXIT_FAULT     4   /* ring-3 trap, no handler; detail = trap vector  */
+#define TASK_EXIT_PAGEFAULT 5   /* #PF killed the task; detail = 14, addr = CR2   */
+
+/* The cause a teardown site reports. Every task_teardown() call site must state
+ * one: a task can no longer die without saying why. */
+struct task_exit_cause {
+    uint32_t reason;    /* TASK_EXIT_*                                   */
+    uint32_t detail;    /* vector / signum / killer tid, per reason      */
+    uint32_t err;       /* #PF error code; 0 otherwise                   */
+    uint64_t rip;       /* faulting RIP; 0 when not a fault              */
+    uint64_t addr;      /* faulting address (#PF only); 0 otherwise      */
+};
+
+/* What SYS_TASK_EXIT_INFO hands to a supervisor. Mirrors struct task_exit_info
+ * in include/syscall.h — keep the two in step. */
+struct task_exit_info {
+    int32_t  tid;       /* the task that died                            */
+    int32_t  reason;    /* TASK_EXIT_*                                   */
+    uint32_t detail;
+    uint32_t err;
+    uint64_t rip;
+    uint64_t addr;
+    char     name[32];  /* the dead task's name, captured before reuse   */
+};
+
 /* ---- Endpoints: a bounded FIFO, not a single mailbox slot (roadmap 1.3, [I-5])
  *
  * An endpoint used to hold exactly ONE in-flight message. Every additional
@@ -706,6 +754,7 @@ void users_init(void);
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ), same class as dmesg. */
+#define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died (finding G-8). Self-scoped: no capability, waiting already entitled the caller to observe it. */
 
 /* ---- roadmap 1.1: reading the interrupt-policy audit out, in band ----------
  *
@@ -991,6 +1040,20 @@ typedef struct tcb {
     int      blocked_on;
     int      blocked_on_notif;
     int      waiter;
+
+    /* Death record (finding G-8). `exit_info` describes how THIS task died and
+     * is written by task_teardown; it stays valid while the slot reads
+     * TASK_DEAD, which is exactly the window SYS_WAIT's already-dead fast path
+     * needs. `wait_exit_info` is the copy handed to this task as a *supervisor*
+     * — the cause of the last task it waited on.
+     *
+     * Two fields rather than one because a task slot is reused: init relaunches
+     * the shell the moment its wait returns, and do_spawn may hand the corpse's
+     * slot straight to the replacement. Reading the cause out of the dead task's
+     * slot after that point would report the living shell. Copying it onto the
+     * waiter at teardown makes the record outlive the body. */
+    struct task_exit_info exit_info;
+    struct task_exit_info wait_exit_info;
     /* Port-I/O grant (SYS_IOPORT_GRANT, CAP_IO_DEVICE only): while set, this task
      * runs with the TSS I/O bitmap active so it may in/out the console ports. The
      * context switch (set_current_task -> tss_set_io_allowed) flips the running
@@ -1274,10 +1337,16 @@ void __attribute__((noreturn)) kernel_idle(void);
 void __attribute__((noreturn)) sched_enter_user(int tid);
 /* Voluntary yield with a live trap frame; returns the kernel %rsp for the ISR epilogue. */
 uint64_t sched_yield_switch(int cur, uint64_t frame_rsp);
-/* Terminate task `id`: wake any SYS_WAIT waiter, drop its signal handler, mark it
- * dead (state 0) and release its SMP running-CPU guard. Does NOT switch away from
- * the caller — the SYS_EXIT/SYS_KILL paths handle that. */
-void task_teardown(int id);
+/* Terminate task `id`: record why it died, wake any SYS_WAIT waiter (handing it
+ * the cause), drop its signal handler, mark it dead (state 0) and release its SMP
+ * running-CPU guard. Does NOT switch away from the caller — the SYS_EXIT/SYS_KILL
+ * paths handle that.
+ *
+ * `cause` is mandatory and describes the death: it is the only record of why a
+ * task disappeared, so a NULL here would recreate the silence that made G-8
+ * signature A unreadable. A NULL is tolerated (reported as TASK_EXIT_NONE)
+ * rather than dereferenced, since teardown runs from the fault handler. */
+void task_teardown(int id, const struct task_exit_cause *cause);
 /* Resume the next runnable task after `dead` terminated (returns its saved kernel
  * %rsp for the ISR epilogue), or 0 if nothing else is runnable. See scheduler.c. */
 uint64_t task_exit_switch(int dead);

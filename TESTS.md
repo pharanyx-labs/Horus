@@ -334,6 +334,77 @@ as a hung kernel, and frozen audit counters read as a wedge (see `docs/ROADMAP.m
 were "the observer failed", and this one is "the observed process died". None of the three was
 the livelock the finding was originally filed as. Weight the livelock hypothesis accordingly.
 
+**That instrument now exists (2026-08-11). It has not yet caught a G-8 boot.**
+
+`SYS_TASK_EXIT_INFO` (93) records why a task died and hands the record to its `SYS_WAIT`
+supervisor; `init` prints it in band, through `console_server`, as
+
+```
+init: shell exited: faulted on memory access at addr=0x... rip=0x... err=0x...; relaunching
+```
+
+instead of the bare `init: shell exited, relaunching`. Every `task_teardown` call site must
+now state a cause (`TASK_EXIT_NORMAL` / `KILLED` / `SIGNAL` / `FAULT` / `PAGEFAULT`), so a task
+can no longer disappear without saying why. **This is a mechanism, not a diagnosis** — nothing
+below is a claim about what G-8 *is*.
+
+*Why the kernel was silent, which is worth recording on its own.* The generic ring-3 trap path
+already printed `[task N '<name>' killed: ...]` — but `print()` only appends to the klog once
+ring-3 `console_server` owns the console (`terminal.c`), so during a live session that line
+never reaches the wire. The ring-3 **`#PF` kill path printed nothing at all**: its banner is
+gated on a ring-0 / task-0 fault. A shell killed by a page fault mid-`write` was therefore
+completely silent, which is exactly the observed signature. Writing it at the UART anyway is
+finding #126, so the record is read out in band instead — the same fix shape as roadmap 1.1
+step 2b.
+
+*One thing this already narrows, from source rather than from a capture.* `handle_command()`
+holds the shell's only `sys_exit()` (`userspace/shell.c`), and it is reached from exactly one
+call site — which intercepts `exit`/`logout` first and turns them into a **logout**, not a task
+exit. **The shell has no reachable voluntary exit path.** So signature A's `init: shell exited`
+cannot have been a clean `sys_exit`: it was a fault, an uncaught signal, or a kill. The new
+line will say which.
+
+*Falsified, both arms, before being believed* (`make smoke-proc`, which asserts the exact
+reason for a clean `sys_exit` child and for a `ud2` faulter, so a hardcoded constant cannot
+satisfy both):
+
+| Deliberate break | Result |
+|---|---|
+| fault path reports `TASK_EXIT_NORMAL` | `FAIL fault-exitinfo-reason` (clean-exit arm still passed) |
+| teardown never delivers the record | `FAIL exitinfo-normal-reason` |
+| unmodified | `smoke-proc` PASS |
+
+`proctest` also asserts the *rendered text* using the same `format_exit_reason()` that `init`
+prints with, so the diagnostic is not first executed during the failure it exists to explain.
+Session regression, adjacent-boot alternating: **0 failures / 8 boots** on this change and
+**0 / 8** on `main` at `a017e02`, same host, interleaved.
+
+**First soak on the instrumented build: the instrument did NOT fire. Read this before
+assuming signature A is solved.** PR #130's CI soak hung 1 in 45 — the documented rate — at
+run 10/45, 6 checks in, truncating mid-line during `man ls`:
+
+```
+SESSION_TEST: FAIL — timeout after 120s waiting for 'ls - list directory entries'
+recent serial: "...root@horus# man ls\r\n\r\nls(1)          "
+```
+
+**No `init: shell exited:` line anywhere**, and nothing further arrived in the whole 120 s
+window. That is *not* the #127 capture repeated: there, `init: shell exited, relaunching`
+appeared inline. Two readings remain open and this capture does not separate them:
+
+1. **Signature A has more than one mechanism** — this boot's shell did not exit, so the #127
+   capture was one member of a set, not the signature; or
+2. **the shell did exit and `init`'s report never got out** — in which case the *reporting
+   path* is what to investigate (init writes through `console_server`, so a console_server
+   that is itself stuck would swallow the line).
+
+Reading 2 is the one to rule out first, and it is the same lesson as every earlier G-8
+misreading: **check the observer before the observed.** An instrument that is silent proves
+nothing until it is known to be capable of speaking on that path — `proctest` proves the
+kernel-side record and the rendering, but nothing yet proves `init` can get a line out at the
+moment the shell dies under SMP. Do not quote the absence of the line as evidence the shell
+did not exit.
+
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
 ```

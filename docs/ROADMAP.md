@@ -333,7 +333,7 @@ this, and it should be justified by 1.1's needs rather than by syscall cost. Not
 `syscall_entry` stub already carries a balanced `swapgs` pair for whoever takes it on; the
 preconditions blocking `EFER.SCE` are documented there and asserted by `smoke-percpu`.
 
-### 1.3 ◧ Multi-slot endpoint queues and a reply-capability primitive — **[I-5]**
+### 1.3 ✅ Multi-slot endpoint queues, reply capability, and a blocking receive — **[I-5]**
 
 *(A note here previously raised this item to a correctness fix on the strength of finding
 **G-8** signature C. That diagnosis was wrong — C was a startup race plus a userspace loop
@@ -354,9 +354,71 @@ unrepresentable rather than gated: no capability, no reply; the first reply spen
 capability names the client and cannot be retargeted. `captest` 84 → 88 checks, falsified in
 two directions.
 
-**Remaining:** a blocking receive. An empty queue still returns `-2` and the server polls, so a
-server with no work spins instead of sleeping and priority inheritance is still inexpressible.
-That is the last piece of this item.
+**Blocking receive landed 2026-08-11 — this item is complete.** `SYS_IPC_RECV_BLOCK` sleeps on
+an empty queue instead of returning `-2`, and both ring-3 servers use it.
+
+The interesting half is not the sleep, it is the **authority**. A blocking receive is completed
+by the *sender's* syscall, running on the sender's CPU in the sender's cspace, so the one-shot
+`CAP_REPLY` cannot be minted by the path `SYS_IPC_RECV` uses — `cap_install_object` installs
+into `get_current_task()`, which is the wrong task here. `cap_install_reply_for` mints it into
+the receiver's cspace instead, with the type, rights and destination slot all fixed at the call
+site so it cannot become a general "write authority into another cspace" primitive. Get this
+wrong and a woken server holds a request it has no right to answer — a receive that is *not*
+equivalent to the polling one. `make smoke-recvblock` fails if the mint is removed.
+
+Measured on `tools/session_test.py`, interleaved and pinned, both arms completing the same
+checks:
+
+| Build | `-smp 1` mean | `-smp 4` mean | Failures |
+|---|---|---|---|
+| polling servers | **15.18 s** | 4.69 s | 0/10, 0/12 |
+| blocking servers | **6.25 s** | 3.88 s | 0/10, 0/12 |
+
+Single-core ranges do not overlap (slowest blocking boot 6.63 s, fastest polling boot 14.63 s).
+The four-core gain is smaller, which is the expected shape: spare cores absorb the wasted turns.
+`console_server`'s own comment had already named this — "a second busy-spin server alongside
+fs_server starves the shell under emulation" — so the cost was known and the yield was treated
+as the mitigation. It was not; a yielding server is still RUNNABLE at every scheduling decision.
+
+`captest` 89 → 96 checks, and the new suite was falsified in four directions: a receive that
+does not block, a wake that mints no reply right, a *polling* server (which must trip the
+one-syscall-per-message assertion, or the test could not tell the two apart), and a dropped
+READ requirement.
+
+**The first version of this shipped a lost wakeup, and every one of those gates passed on it.**
+Recorded because the reason they passed is structural, not careless.
+
+The mint was placed after `state = TASK_RUNNABLE` and after `ipc_unlock`, to keep `cap_lock`
+from nesting under the endpoint lock. But a task is schedulable the instant its state flips:
+another CPU takes it, it returns to ring 3, services the request and calls `SYS_IPC_REPLY_TO`
+before the mint lands. `cap_lookup` finds no `CAP_REPLY`, answers `SYS_ERR_PERM` — a
+*permanent* code — and the server correctly drops the reply, because the retry contract forbids
+looping on it. The client then waits forever.
+
+Every single-CPU gate is blind to it: with one CPU there is no second CPU to run the server
+inside the window. `smoke-recvblock`, `smoke-captest`, a 17-target sweep and 61 of 63 CI checks
+all passed. What found it was running the thing the change was meant to improve — a session —
+against a control, on a **loaded** host: 5 failures in ~15 boots against 0 for the control.
+The mechanism was then *witnessed* rather than inferred, by instrumenting `console_server`'s
+silent permanent-drop branch and reproducing with the marker present in 4 of 5 failing boots.
+
+The fix mints under `ipc_lock`, before the wake, and both completion paths now obey one rule
+without exception: **a receiver holds its reply right before it is schedulable.** `cap_lock`
+nesting inside the endpoint lock is a new order and is safe because it is the only one — no
+path takes an IPC lock while holding `cap_lock`. `TESTS.md` carries the reproduction recipe
+(four guest vCPUs squeezed onto one host core against three hogs), because an idle host will
+not show it. Interleaved under that recipe, 25 boots per arm: **8/25 failures pre-fix, 0/25
+after.** All four falsifications were re-run against the fixed code, since the mint moved.
+
+Two smaller defects came out of the same review: `SYS_IPC_RECV_BLOCK` could leak `IPC_AGAIN`
+from its inline path if a second receiver drained the queue between the empty test and
+`sys_ipc_recv` — a contract violation its own selftest asserts against, and one both servers
+would treat as fatal — and an abandoned wait could leave `ipc_recv_block` set, which would make
+`SYS_IPC_REPLY_TO` refuse every future reply to that task.
+
+**Still open, and now a different item:** priority inheritance. The kernel records that a task
+is waiting on an endpoint, which is the prerequisite, but nothing propagates priority along
+that edge — and there are no task priorities to propagate yet.
 
 A bounded FIFO per endpoint, plus a **one-shot reply capability** minted at call time and
 consumed on reply (seL4's reply object). This makes reply forgery *structurally* impossible

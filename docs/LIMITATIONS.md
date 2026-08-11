@@ -158,9 +158,38 @@ the old routing read the endpoint's mutable `last_sender`, and the bounded queue
 that sharper by letting a server hold several dequeued requests while only the newest was
 nameable.
 
-**Still open.** The receive side still polls — `SYS_IPC_RECV` returns `-2` on an empty queue
-rather than blocking — so a server with no work spins instead of sleeping, and priority
-inheritance still cannot be expressed. That is the last remaining piece of roadmap 1.3.
+**The receive side no longer has to poll.** `SYS_IPC_RECV_BLOCK` sleeps on an empty queue
+instead of returning `-2`, and `fs_server` and `console_server` both use it. A server with no
+work is now genuinely off the run queue rather than merely yielding between polls.
+
+Measured on `tools/session_test.py`, interleaved (adjacent alternating boots, so host drift
+cannot produce the trend) and pinned to two host cores:
+
+| Build | `-smp 1` mean | `-smp 4` mean | Failures |
+|---|---|---|---|
+| polling servers | **15.18 s** | 4.69 s | 0/10, 0/12 |
+| blocking servers | **6.25 s** | 3.88 s | 0/10, 0/12 |
+
+Both arms complete the same 26 checks (12 under `-smp 4`), so the difference is not a shorter
+test. The single-core ranges do not overlap — slowest blocking boot 6.63 s, fastest polling
+boot 14.63 s. The gain is smaller with four cores because spare cores absorb the wasted turns,
+which is the expected shape if the cause is a runnable server competing for turns it cannot
+use.
+
+**A caution for anyone extending this path.** The interesting hazard is not the sleep, it is
+that a blocked receiver is completed by the *sender's* syscall — on the sender's CPU, with the
+sender's cspace current. The first version of this minted the receiver's one-shot reply right
+after marking it runnable, so under `-smp 4` the woken server could reply before it held the
+right, get `SYS_ERR_PERM`, and correctly drop the reply, hanging the client. It hung 8 of 25
+loaded sessions (0 of 25 after the fix) while passing every single-CPU gate. The rule now is
+**a receiver holds its reply right before it is schedulable**, and `TESTS.md` carries the
+loaded reproduction, since an idle host will not show it.
+
+**Still open.** Priority inheritance still cannot be expressed: the kernel now records that a
+task is waiting on an endpoint, which is the prerequisite, but nothing propagates priority
+along that edge — and there are no task priorities to propagate yet. `fs_server` also still
+polls in one place by design, re-stating the root inode while a sealed ATA volume is locked;
+it blocks only once provisioning has succeeded.
 
 *(An earlier revision of this section claimed finding **[G-8]** signature C was a livelock
 caused by this contention. **That was wrong.** It was a startup race — clients that lost the

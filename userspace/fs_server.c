@@ -625,8 +625,28 @@ void _start(void) {
             struct fs_stat root_st;
             if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
         }
-        int r = sys_ipc_recv(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
-        if (r < 0) { spin_delay(); continue; }          /* no request yet */
+        /* Sleep until a request arrives (roadmap 1.3), but only once the volume
+         * has been provisioned.
+         *
+         * The `if (!provisioned)` fallback above is a POLL: on a sealed ATA
+         * volume it re-stats the root inode every time round this loop, waiting
+         * for a login to unlock it. Blocking unconditionally would park the
+         * server before that ever succeeded and only re-check it one request
+         * later -- so the two are kept apart deliberately, and the server sleeps
+         * exactly when it has nothing left to poll for. That is the whole reason
+         * this is not a one-line substitution.
+         *
+         * As in console_server: a negative return from the blocking receive is
+         * permanent (it never returns IPC_AGAIN), so retrying it in a loop would
+         * be the G-8 wedge rather than back-pressure. */
+        int r;
+        if (provisioned) {
+            r = sys_ipc_recv_block(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
+            if (r < 0) { println("[fs_server] listen capability lost; exiting"); sys_exit(); }
+        } else {
+            r = sys_ipc_recv(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
+            if (r < 0) { spin_delay(); continue; }       /* no request yet */
+        }
 
         /* Take the caller's identity from the kernel, not from the request: this
          * is tasks[sender].uid, fixed at that task's login (SYS_AUTH). A client

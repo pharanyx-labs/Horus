@@ -255,7 +255,10 @@ a code { background: var(--wire-bg); color: var(--wire); }
 /* ---------- section spine --------------------------------------- */
 
 .band { padding: var(--band) 0; border-top: 1px solid var(--rule); }
-.band:first-of-type { border-top: 0; }
+/* Not `.band:first-of-type` — that resolves against the element type, and the
+   hero is the first <section>, so it matched nothing and left a stray rule
+   sitting just under the legend's own bottom border. */
+.hero + .band { border-top: 0; }
 
 /* minmax(0, …) on every track, and min-width:0 on the children. A grid track
    defaults to a min-content minimum, so a single wide descendant (the diagrams,

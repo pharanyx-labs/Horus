@@ -932,13 +932,21 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <p>Where the rule is enforced — the whole of it, in about twenty lines.</p>
       </div>
       <div>
-        <h2>Every one of the 85 syscalls is authorised in the same place.</h2>
+        <h2>Every syscall is authorised in the same place, before its handler runs.</h2>
         <div class="prose">
           <p>
             A security model is only worth as much as the code that enforces it. In Horus the
             enforcement is not spread across handlers — each syscall <em>declares</em> the
             capability it needs in a dispatch table, and one gate checks it before the handler
             exists as far as the caller is concerned.
+          </p>
+          <p>
+            The ABI defines <strong>85 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>75
+            handlers</strong> — the remainder are reserved, or are test-only calls compiled out
+            entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
+            is the fail-closed property, not an oversight: a shipping kernel denies the debug
+            surface exists rather than merely declining to document it.
           </p>
           <p>
             This is what a call actually passes through. Both exits on the left are refusals; a
@@ -1000,21 +1008,22 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </figcaption>
         </figure>
 
-        <h3>Fail closed is the default, not the exception</h3>
+        <h3>The servers get a matching guarantee on the other side</h3>
         <div class="prose">
           <p>
-            Two consequences follow that are worth stating plainly. An unimplemented or reserved
-            syscall number does not reach an arbitrary handler; it returns
-            <code>SYS_ERR_NOSYS</code>. And test-only syscalls are compiled out entirely, so a
-            shipping kernel answers <code>SYS_ERR_NOSYS</code> to the debug surface rather than
-            merely declining to document it.
+            The gate settles what a caller is <em>allowed</em> to do. It says nothing about who
+            the caller is — and a filesystem needs to know that, because POSIX permissions are
+            defined in terms of a user. Letting the client supply its own user ID would hand
+            every program the authority the permissions exist to withhold.
           </p>
           <p>
-            Servers get a matching guarantee on the other side. A server never trusts what a
-            client says about itself: <code>SYS_IPC_SENDER</code> returns the user ID the
-            <em>kernel</em> recorded for the sender of a message, established only by a
-            successful login, and <code>fs_server</code> authorises every file operation against
-            that value rather than against anything in the request.
+            So a server never trusts what a client says about itself.
+            <code>SYS_IPC_SENDER</code> returns the user ID the <em>kernel</em> recorded for the
+            sender of a message, established only by a successful login and unforgeable by the
+            sender. <code>fs_server</code> authorises every file operation against that value
+            rather than against anything in the request — which is why the filesystem can enforce
+            rwx correctly while being an ordinary unprivileged program with no way to check
+            identity itself.
           </p>
         </div>
       </div>
@@ -1133,7 +1142,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               naming the sender, so answering a client you never heard from is impossible rather
               than merely refused.
             </p>
-            <span class="witness">smoke-captest — 16 checks</span>
+            <span class="witness">smoke-captest</span>
           </article>
           <article>
             <h3>Memory as an authority</h3>
@@ -1143,7 +1152,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               cannot create a kernel object at all, and the region it holds bounds the kernel
               memory it can consume.
             </p>
-            <span class="witness">smoke-captest — 22 checks</span>
+            <span class="witness">smoke-captest</span>
           </article>
           <article>
             <h3>Multiprocessing</h3>
@@ -1327,7 +1336,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <div>
 <pre class="code"><span class="c"># check the claims on this page</span>
 <span class="p">$</span> make smoke                 <span class="c"># boot to ring-3 login</span>
-<span class="p">$</span> make smoke-captest         <span class="c"># 88 capability checks</span>
+<span class="p">$</span> make smoke-captest         <span class="c"># 89 capability checks</span>
 <span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
 <span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
 <span class="p">$</span> make reproducible-build    <span class="c"># build twice, diff</span></pre>
@@ -1545,8 +1554,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <li>
             <h3><span class="id">C-6</span>The security tests do not gate merges</h3>
             <p>
-              Of roughly 30 CI jobs, 21 are required status checks — and the security-specific
-              ones are not among them. Capability conformance, kernel W^X, measured boot,
+              Of 62 CI jobs, <strong>21</strong> are required status checks — and the
+              security-specific ones are not among them. Capability conformance, kernel W^X,
+              measured boot,
               boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and stack-guard
               reseed can all fail while a pull request merges green. The required set is
               inverted: functional tests block merges, security tests do not.

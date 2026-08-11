@@ -300,6 +300,40 @@ SESSION_TEST: FAIL — timeout after 120s waiting for 'root@horus#'
 recent serial: "...apropos directory\r\n  ls  (1)  list directory entries\r\n ... rm          "
 ```
 
+**A new observation, 2026-08-11 (PR #127 CI, 1 hang in 45 — the documented rate).** The same
+signature, captured with one more line of context than before, and that line changes what it
+is:
+
+```
+[ok] whatis prints the one-line summary
+SESSION_TEST: FAIL — timeout after 120s waiting for 'mkdir'
+recent serial: "...root@horus# apropos directory\r\n\r\n  ls   (1)  list directory entries\r\n
+                  cd     init: shell exited, relaunching\r\n"
+```
+
+**The shell exited.** `init` noticed and relaunched it — that message is `init` doing its job,
+not a stall. So the wording above ("the shell never returns to its prompt") describes the
+symptom accurately but implies the wrong mechanism: this is a ring-3 process dying mid-write
+and being restarted, not a livelock or a lost wakeup. The harness then times out because the
+relaunched shell is not logged in, so nothing answers the next command.
+
+That is a **substantially more tractable** bug than a hang: a task that exits has a reason —
+a fault, an unhandled signal, an `exit()` path — and the kernel can be made to say which. It
+also explains why the truncation always lands mid-line: the writer stopped existing partway
+through a `write`.
+
+Not yet a diagnosis, and deliberately not written up as one: it is one capture, the exit
+reason was not recorded, and it does not obviously account for **signature B** (which never
+reaches a login prompt at all, so there is no shell to exit). **The next step on G-8 is to
+make `init` report *why* the shell exited** — status, and whether it faulted — rather than
+that it did. That is a small change to `init` and the wait path, and it converts this
+signature from a timeout into an error message.
+
+*Two earlier readings of stalled sessions were wrong in this same area* — a split prompt read
+as a hung kernel, and frozen audit counters read as a wedge (see `docs/ROADMAP.md` §1.1). Both
+were "the observer failed", and this one is "the observed process died". None of the three was
+the livelock the finding was originally filed as. Weight the livelock hypothesis accordingly.
+
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
 ```

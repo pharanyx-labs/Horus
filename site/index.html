@@ -523,6 +523,12 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: 0; }
 tbody tr:hover td, tbody tr:hover th { background: #fff; }
 .t-state { width: 1%; white-space: nowrap; }
 .t-note { font-family: var(--mono); font-size: 0.75rem; color: var(--slate); white-space: nowrap; }
+/* Give the slack to the column that actually needs to wrap. Doing this by
+   shrinking the other columns instead would squeeze the first column of the
+   measurements table, whose last column is long and set nowrap. */
+.table--status tbody th[scope="row"] { width: 100%; }
+.table--method tbody th[scope="row"] { width: 40%; }
+.table--method .t-note { white-space: normal; }
 .t-num  { font-family: var(--mono); font-size: 0.78rem; color: var(--ink); white-space: nowrap; }
 .t-num--was { color: var(--deny); }
 .t-num--now { color: var(--hold); }
@@ -1379,7 +1385,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </ul>
 
         <div class="tablewrap">
-          <table>
+          <table class="table--status">
             <caption>Subsystem status. The unabridged account is in LIMITATIONS.md and ROADMAP.md.</caption>
             <thead>
               <tr><th scope="col" class="t-state">State</th><th scope="col">Subsystem</th><th scope="col">Witness</th></tr>
@@ -1503,7 +1509,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <div class="tablewrap" style="margin-top:2rem">
-          <table>
+          <table class="table--method">
             <caption>Measured, not asserted — figures exactly as recorded in the repository.</caption>
             <thead>
               <tr><th scope="col">Change</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">How it was measured</th></tr>

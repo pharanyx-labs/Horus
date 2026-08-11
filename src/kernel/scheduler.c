@@ -4,6 +4,20 @@ tcb_t tasks[MAX_TASKS];
 int current_task = 0;
 int percpu_current_task[MAX_CPUS];
 
+/* The last ring-3 task each CPU ran, for flush-on-switch (0 = none yet).
+ *
+ * Deliberately OUTSIDE the SMP guard. Flush-on-switch is a side-channel
+ * mitigation on the task-switch path, not an SMP mechanism: a uniprocessor
+ * kernel switches between mutually distrusting ring-3 tasks on one logical CPU
+ * and needs the barrier just as much. set_current_task() reads this
+ * unconditionally, which is correct -- it was the DECLARATION that was guarded,
+ * so SMP=0 failed to compile.
+ *
+ * Note the shape of the wrong fix: guarding the *use* in set_current_task with
+ * `#ifdef SMP` would also build, and would silently switch the mitigation off on
+ * uniprocessor. The array is one int per CPU; there is nothing to save. */
+int percpu_last_user_task[MAX_CPUS];
+
 #ifdef SMP
 /* Per-CPU "parked in the idle loop" flag. Set only when a CPU is dropped back to
  * ap_idle_loop with no task to run (enter_cpu_idle); cleared the moment a real
@@ -13,8 +27,6 @@ int percpu_current_task[MAX_CPUS];
  * BSP's real ring-0 kernel work (e.g. the SMP self-test's result-spin loop, which
  * also runs with current-task 0 but must run to completion). */
 int percpu_idle[MAX_CPUS];
-/* The last ring-3 task each CPU ran, for flush-on-switch (0 = none yet). */
-int percpu_last_user_task[MAX_CPUS];
 
 /* ---- Declared impersonation: when percpu_current_task[] is deliberately lying --
  *

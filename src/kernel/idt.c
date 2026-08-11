@@ -350,7 +350,14 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                 print(" at rip="); print_hex64(frame->rip);
                 print(" rsp="); print_hex64(frame->rsp);
                 print("]\n");
-                task_teardown(killed);
+                /* That print() only reaches the klog once console_server owns the
+                 * console, so it is invisible to a serial capture of a live
+                 * session. The record below is what a supervisor can actually
+                 * read back (SYS_TASK_EXIT_INFO). */
+                struct task_exit_cause cause = {
+                    TASK_EXIT_FAULT, (uint32_t)vector, 0, frame->rip, 0
+                };
+                task_teardown(killed, &cause);
                 uint64_t rsp = task_exit_switch(killed);
                 if (rsp) return rsp;
                 /* Nothing else runnable: fall back to the kernel reaper/idle on
@@ -708,7 +715,13 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
      * Only a fault with no task to blame (cur == 0, the kernel's own context)
      * still halts — there is nothing to kill and continuing would be worse. */
     if (killed > 0) {
-        task_teardown(killed);
+        /* The banner above is printed only for a ring-0 / task-0 fault, so a
+         * ring-3 task killed here dies in total silence — the case that made
+         * G-8 signature A look like a hang. Record it. */
+        struct task_exit_cause cause = {
+            TASK_EXIT_PAGEFAULT, 14, (uint32_t)err, f64->rip, (uint64_t)fault_addr
+        };
+        task_teardown(killed, &cause);
         uint64_t rsp = task_exit_switch(killed);
         if (rsp) return rsp;
         f64->rip    = (uint64_t)resume_shell_after_fault;

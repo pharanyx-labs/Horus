@@ -1440,8 +1440,25 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
  * handler, mark it dead, and (SMP) release its running-CPU guard so no core will
  * reselect it. The caller (SYS_EXIT / SYS_KILL) is responsible for switching the
  * CPU away from the task if it happens to be the one currently running. */
-void task_teardown(int id) {
+void task_teardown(int id, const struct task_exit_cause *cause) {
     if (id <= 0 || id >= MAX_TASKS) return;
+
+    /* Record the cause BEFORE anything else can fail or switch away: this is the
+     * only account of why the task died, and the paths that reach here (a ring-3
+     * #PF among them) have nowhere else to report from — kernel print() stops
+     * reaching the wire once console_server owns the console. */
+    struct task_exit_info *rec = &tasks[id].exit_info;
+    rec->tid    = id;
+    rec->reason = cause ? (int32_t)cause->reason : TASK_EXIT_NONE;
+    rec->detail = cause ? cause->detail : 0;
+    rec->err    = cause ? cause->err    : 0;
+    rec->rip    = cause ? cause->rip    : 0;
+    rec->addr   = cause ? cause->addr   : 0;
+    /* Copy the name now: the slot is reusable the moment state hits 0, and the
+     * supervisor's whole question is *which* task this was. */
+    int n = 0;
+    for (; n < 31 && tasks[id].name[n]; n++) rec->name[n] = tasks[id].name[n];
+    rec->name[n] = 0;
 
     /* Drop any IRQ->notification routing this task registered, so a hardware IRQ
      * cannot keep notifying a dead task's slot. */
@@ -1466,6 +1483,12 @@ void task_teardown(int id) {
          * scheduler resumes it via the trap frame ipc_block_switch saved when it
          * blocked (it returns from SYS_WAIT with eax already 0). */
         if (tasks[w].state == TASK_BLOCKED_WAIT) {
+            /* Hand the cause to the supervisor along with the wake. The waiter
+             * resumes straight through iretq with no kernel code running on its
+             * behalf, so there is no later point at which it could be delivered
+             * — and by the time the waiter runs, this slot may already belong to
+             * its replacement. */
+            tasks[w].wait_exit_info = tasks[id].exit_info;
             tasks[w].state        = TASK_RUNNABLE;
             tasks[w].runnable_ctx = 1;
         }

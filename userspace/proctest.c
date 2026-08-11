@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "exit_reason.h"   /* format_exit_reason(): the exact renderer init prints with */
 #include "hello_image.h"   /* hello_image[]/hello_image_len: a real .bin for SYS_SPAWN_IMAGE */
 
 /*
@@ -24,6 +25,13 @@ static void report(const char *s) {
     sys_write(1, s, (unsigned)n);
 }
 
+/* Non-zero if `s` begins with `pfx`. */
+static int starts_with(const char *s, const char *pfx) {
+    int i = 0;
+    for (; pfx[i]; i++) if (s[i] != pfx[i]) return 0;
+    return 1;
+}
+
 static int name_eq(const char *a, const char *b) {
     int i = 0;
     for (; a[i] && b[i]; i++) if (a[i] != b[i]) return 0;
@@ -42,6 +50,15 @@ static int find_alive(const char *name) {
 
 /* Ring-3 spin (preemptible) so the timer can run/reap the children. */
 static void settle(void) { for (volatile int d = 0; d < 20000; d++) { } }
+
+/* Fetch the death record of the task we last waited on (finding G-8).
+ * Zeroes *ei first so a syscall that writes nothing cannot be mistaken for one
+ * that reported TASK_EXIT_NONE. Returns 0 on success. */
+static int exit_info(struct task_exit_info *ei) {
+    for (unsigned z = 0; z < sizeof(*ei); z++) ((char *)ei)[z] = 0;
+    ei->reason = -1;   /* poison: a no-op syscall leaves this, and -1 is no TASK_EXIT_* */
+    return sys_task_exit_info(ei);
+}
 
 /* Poll delay for a loop that is WAITING ON ANOTHER TASK.
  *
@@ -175,6 +192,18 @@ void _start(void) {
     if (sys_get_task_info(wc, &wi) == 0 && wi.state != 0) {
         report("PROC_SELFTEST: FAIL wait-early\n"); sys_exit();   /* woke while still alive */
     }
+    /* --- G-8: the wait must also say WHY the child died, and say it exactly.
+     * "hello" ends with sys_exit, so nothing but TASK_EXIT_NORMAL is a pass.
+     * Asserting the exact reason (not merely "some reason was reported") is what
+     * makes this falsify a kernel that hardcodes a constant or forgets to write
+     * the record at all — the same discipline the capability refusal tests use
+     * for exact errnos. The faulter case below asserts a DIFFERENT exact value,
+     * so a constant cannot satisfy both. --- */
+    struct task_exit_info wei;
+    if (exit_info(&wei) != 0) { report("PROC_SELFTEST: FAIL exitinfo-rc\n"); sys_exit(); }
+    if (wei.reason != TASK_EXIT_NORMAL) { report("PROC_SELFTEST: FAIL exitinfo-normal-reason\n"); sys_exit(); }
+    if (wei.tid != wc)                  { report("PROC_SELFTEST: FAIL exitinfo-normal-tid\n"); sys_exit(); }
+    if (!name_eq(wei.name, "hello"))    { report("PROC_SELFTEST: FAIL exitinfo-normal-name\n"); sys_exit(); }
     report("PROC_SELFTEST: wait OK\n");
 
     /* --- SYS_WAIT wakes on a FAULT death too: spawn "faulter" (takes an
@@ -190,6 +219,31 @@ void _start(void) {
     if (sys_get_task_info(fc, &fi) == 0 && fi.state != 0) {
         report("PROC_SELFTEST: FAIL fault-wait-early\n"); sys_exit();
     }
+    /* --- G-8: a fault death must be distinguishable from a clean one, and the
+     * trap must be reported exactly. faulter executes ud2, so this is #UD —
+     * vector 6 — and nothing else. A nonzero rip is required too: the whole
+     * value of the record over a bare "it died" is that it says WHERE, which is
+     * what turns a G-8 capture into a fix. --- */
+    struct task_exit_info fei;
+    if (exit_info(&fei) != 0)            { report("PROC_SELFTEST: FAIL fault-exitinfo-rc\n"); sys_exit(); }
+    if (fei.reason != TASK_EXIT_FAULT)   { report("PROC_SELFTEST: FAIL fault-exitinfo-reason\n"); sys_exit(); }
+    if (fei.detail != 6)                 { report("PROC_SELFTEST: FAIL fault-exitinfo-vector\n"); sys_exit(); }
+    if (fei.rip == 0)                    { report("PROC_SELFTEST: FAIL fault-exitinfo-rip\n"); sys_exit(); }
+    if (fei.tid != fc)                   { report("PROC_SELFTEST: FAIL fault-exitinfo-tid\n"); sys_exit(); }
+    if (!name_eq(fei.name, "faulter"))   { report("PROC_SELFTEST: FAIL fault-exitinfo-name\n"); sys_exit(); }
+    /* Render it with the SAME function init prints with, and assert the text.
+     * init's diagnostic would otherwise run for the first time during the very
+     * failure it exists to explain — and an observer first exercised in anger is
+     * how G-8 got misdiagnosed three times. A wrong reason, a truncated line or
+     * a missing rip fails here, on the bench, instead of in a soak capture. */
+    char why[192];
+    format_exit_reason(why, &fei);
+    if (!starts_with(why, "faulted, trap vector 6 at rip=0x")) {
+        report("PROC_SELFTEST: FAIL fault-exitinfo-format\n"); sys_exit();
+    }
+    report("PROC_SELFTEST: exit-reason renders: ");
+    report(why);
+    report("\n");
     report("PROC_SELFTEST: fault-wait OK\n");
 
     /* --- full argv: spawn "argtest" with a known argument vector and confirm it

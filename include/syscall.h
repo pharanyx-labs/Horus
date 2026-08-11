@@ -146,6 +146,7 @@ struct audit_event {
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
+#define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died. Self-scoped (no capability): waiting already entitled the caller to observe it. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -314,6 +315,46 @@ static inline int sys_open(const char* path) {
 
 static inline int sys_wait(int task_id) {
     return syscall(SYS_WAIT, (uint32_t)task_id, 0, 0);
+}
+
+/* ---- Why a task died (finding G-8) ----------------------------------------
+ *
+ * sys_wait() returns 0 for every death alike, so a supervisor could report only
+ * THAT its child ended, never why. A crashed shell and a hung one then look
+ * identical in a serial capture — which is how G-8 signature A was read as a
+ * livelock for two days when the shell was in fact being killed mid-write.
+ *
+ * The kernel cannot simply print the reason: once ring-3 console_server owns the
+ * console, kernel print() records to the klog and stops reaching the wire, and
+ * writing anyway is finding #126 (a second UART writer splits the prompt). So
+ * the cause is fetched in band and printed by the supervisor through
+ * console_server like any other output.
+ *
+ * Mirrors the TASK_EXIT_* constants and struct task_exit_info in
+ * src/include/kernel.h — keep the two in step. */
+#define TASK_EXIT_NONE      0   /* no death recorded (nothing waited on yet)      */
+#define TASK_EXIT_NORMAL    1   /* SYS_EXIT: the task ended itself                */
+#define TASK_EXIT_KILLED    2   /* SYS_KILL by another task; detail = killer tid  */
+#define TASK_EXIT_SIGNAL    3   /* uncaught signal, default action; detail = signum*/
+#define TASK_EXIT_FAULT     4   /* ring-3 trap, no handler; detail = trap vector  */
+#define TASK_EXIT_PAGEFAULT 5   /* #PF killed the task; detail = 14, addr = CR2   */
+
+struct task_exit_info {
+    int32_t  tid;       /* the task that died                            */
+    int32_t  reason;    /* TASK_EXIT_*                                   */
+    uint32_t detail;    /* vector / signum / killer tid, per reason      */
+    uint32_t err;       /* #PF error code; 0 otherwise                   */
+    uint64_t rip;       /* faulting RIP; 0 when not a fault              */
+    uint64_t addr;      /* faulting address (#PF only); 0 otherwise      */
+    char     name[32];  /* the dead task's name, captured before reuse   */
+};
+
+/* Fill *out with the death record of the last task this caller waited on.
+ * Returns 0, or a negative SYS_ERR_*. Before any wait has been satisfied,
+ * out->reason is TASK_EXIT_NONE rather than a stale answer. Valid until the
+ * caller's next completed sys_wait(), so it survives relaunching the child. */
+static inline int sys_task_exit_info(struct task_exit_info *out) {
+    return (int)syscall(SYS_TASK_EXIT_INFO, (uint64_t)(uintptr_t)out, 0, 0);
 }
 
 /* Terminate task `tid`. Authorised by holding a CAP_TCB capability to the target

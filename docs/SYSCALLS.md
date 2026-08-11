@@ -64,7 +64,7 @@ identifier depending on the call.
 | `SYS_ERR_NOENT` | No such object |
 | `SYS_ERR_FAULT` | A user pointer could not be resolved |
 | `SYS_ERR_NOSYS` | Unknown, reserved, or unimplemented |
-| `SYS_ERR_AGAIN` | Would block — retry (pipes, IPC) |
+| `SYS_ERR_AGAIN` | Would block — retry (pipes). The IPC calls use `IPC_AGAIN` (`-2`) instead; see [IPC](#ipc) |
 | `SYS_ERR_INTR` | Interrupted by a signal |
 | `SYS_ERR_IO` | Storage failure |
 | `SYS_ERR_PIPE` | No reader on the pipe |
@@ -216,7 +216,7 @@ simplification.
 | 25 | `SYS_NOTIFY` | `notif_slot`, `badge` | `CAP_NOTIFICATION` at `notif_slot`: WRITE |
 | 26 | `SYS_WAIT_NOTIFY` | `notif_slot` | `CAP_NOTIFICATION` at `notif_slot`: READ |
 | 73 | `SYS_IPC_SENDER` | `ep_slot`, `uint32_t *out_gid` | `CAP_ENDPOINT` at `ep_slot`: **READ** |
-| 75 | `SYS_IPC_REPLY_TO` | `req_slot`, `msg`, `len` | `CAP_ENDPOINT` at `req_slot`: **READ** |
+| 75 | `SYS_IPC_REPLY_TO` | `req_slot`, `msg`, `len` | `CAP_ENDPOINT` at `req_slot`: **READ**, *plus* the one-shot `CAP_REPLY` at `CAPSLOT_REPLY` (21), which it consumes |
 
 `SYS_IPC_REPLY_TO` requires **READ**, not WRITE: it writes directly into the recorded
 sender's blocked reply buffer, so only the task that legitimately *receives* requests on the
@@ -226,9 +226,21 @@ order to send — impersonate the server to another client.
 `SYS_IPC_CALL`'s second argument is vestigial and ignored; the reply always lands on the
 caller's own private reply endpoint. Pass 0.
 
-`SEND` and `RECV` are **non-blocking**: they return `-2` when the single-slot mailbox is full
-or empty, and the caller polls from ring 3 where timer preemption guarantees progress.
-Spinning in-kernel would not, since the kernel is not preemptible.
+`SEND` and `RECV` are **non-blocking**: they return `-2` when the endpoint's bounded FIFO is
+genuinely full (`SEND`, `count == EP_QUEUE_SLOTS`) or empty (`RECV`, `count == 0`), and the
+caller polls from ring 3 where timer preemption guarantees progress. Spinning in-kernel would
+not, since the kernel is not preemptible.
+
+**`-2` is the only retryable IPC code.** It is `IPC_AGAIN` in
+[`include/syscall.h`](../include/syscall.h), tested by `ipc_transient(rc)`, and it is a raw
+literal — *not* `SYS_ERR_AGAIN` (`-11`), which the IPC syscalls never return. Every other
+negative is **permanent**, `SYS_ERR_PERM` (`-1`) above all: it means "you hold no capability
+for this endpoint", which will be just as true on the millionth attempt as on the first. A
+`while (sys_ipc_call(...) < 0) spin_delay();` loop therefore retries an authorisation failure
+forever, which is a security bug and not merely a robustness one — fail-closed has to mean
+stop, loudly, at the point authority was refused, or the one event the capability system
+exists to make visible becomes indistinguishable from a hang. Retry on `ipc_transient()`
+only, and bound even that.
 
 `SYS_IPC_CALL` blocks. It deposits the message and records a *pending* block; the waiter is
 published only after the trap frame is saved, so a cross-CPU reply can never patch a stale
@@ -239,10 +251,15 @@ established only by a successful `SYS_AUTH` and recorded by the kernel when the 
 sent, *not* anything the client placed in the message. `fs_server` authorises every request
 against it.
 
-`SYS_IPC_REPLY_TO` routes the reply to the request's kernel-recorded sender rather than
-through a shared reply endpoint, which is what makes one server safe for concurrent clients.
-It may return `-2` under SMP if the sender has deposited its request but not yet published
-its block — the server retries.
+`SYS_IPC_REPLY_TO` routes the reply to the client named by the one-shot `CAP_REPLY` that
+`SYS_IPC_RECV` minted for the dequeued message — not through a shared reply endpoint, and no
+longer through the endpoint's mutable `last_sender`, which the next receive overwrites. The
+capability names one blocked caller, cannot be retargeted, and is consumed by the reply, so a
+server cannot reply twice to one request or reply to a client it never received from: both
+are unrepresentable rather than merely refused. That is what makes one server safe for
+concurrent clients. It may return `-2` under SMP if the sender has deposited its request but
+not yet published its block — the server retries, and the reply right is deliberately *not*
+consumed on that path.
 
 ## Pipes
 
@@ -375,5 +392,5 @@ compromise.
 5. Add a userspace wrapper in `include/syscall.h`.
 6. **Add a negative test to `userspace/captest.c`** proving the call is refused without its
    capability. This is not optional — see `CONTRIBUTING.md`. Assert the **exact** error code,
-   not merely a negative return: `sys_ipc_recv` returns `-2` for an empty mailbox, so a
+   not merely a negative return: `sys_ipc_recv` returns `-2` for an empty queue, so a
    `< 0` check cannot tell a refusal from an empty object and will pass on a broken kernel.

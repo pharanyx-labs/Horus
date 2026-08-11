@@ -22,9 +22,12 @@ measurements.
 > ring-3 task could intercept or forge messages to any userspace server — is **fixed as of
 > 2026-07-27** ([C-1]/[C-2] in [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md)).
 > Open findings are tracked in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and
-> [`docs/ROADMAP.md`](docs/ROADMAP.md); the notable remaining ones are ambient `uid == 0`
-> authority (**[I-1]**), fixed-size kernel object tables (**[I-7]**), an unflushed write-ahead
-> journal (**[I-10]**), and no independent review of security-critical changes (**[C-5]**).
+> [`docs/ROADMAP.md`](docs/ROADMAP.md). Ambient `uid == 0` authority (**[I-1]**) and
+> fixed-size kernel object tables (**[I-7]**) were both retired on 2026-07-27 — cspaces,
+> endpoints and notifications are now carved from untyped memory, though `tasks[]` has yet to
+> follow. The notable remaining findings are the unconditional `sti` in `spin_unlock` and its
+> global IRQ counter (**[C-3]**), an unflushed write-ahead journal (**[I-10]**), and no
+> independent review of security-critical changes (**[C-5]**).
 
 ---
 
@@ -82,11 +85,13 @@ The path from here is ordered by assurance rather than by demo value:
 
 1. ~~**Make the object model true.**~~ **Done (2026-07-27):** capabilities now mediate
    *which* object, not merely which kind — see **[C-1]**.
-2. **Retire ambient `uid == 0` authority** so the capability graph is a complete description
-   of who can do what (**[I-1]**).
-3. **Kernel objects from untyped memory.** Replace fixed `.bss` tables with a retyping
-   discipline, so the system is not capped at 64 tasks and kernel memory is accounted per
-   task.
+2. ~~**Retire ambient `uid == 0` authority**~~ **Done (2026-07-27):** each root-gated syscall
+   now demands a distinct capability, so the capability graph is a complete description of
+   who can do what — see **[I-1]**.
+3. ~~**Kernel objects from untyped memory.**~~ **Done (2026-07-27):** `CAP_UNTYPED` +
+   `SYS_RETYPE` replaced the fixed `.bss` tables for cspaces, endpoints and notifications, so
+   creating a kernel object is an exercise of authority the graph describes and kernel memory
+   is accounted per task — see **[I-7]**. `tasks[]` is the remaining table.
 4. **Real virtual-memory objects.** Frame capabilities, shared memory, `mmap`.
 5. **Userspace services on top:** a VFS with multiple filesystems, a network stack as a
    ring-3 server, a process and session model, dynamic linking.
@@ -104,10 +109,10 @@ per item.
 |---|---|
 | **Boot** | Multiboot2 via GRUB, higher-half 64-bit kernel at `KERNEL_VMA`, physical pool sized from the E820 map |
 | **Memory** | Per-task 4-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X, unmapped stack guard pages, 30-bit userspace ASLR |
-| **Capabilities** | 13 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop |
+| **Capabilities** | 16 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop |
 | **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
 | **SMP** | Default on; ACPI MADT enumeration, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
-| **IPC** | Capability-addressed synchronous send/recv/call/reply over single-slot endpoints, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
+| **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
 | **Filesystem** | `fs_server` in ring 3 over an AEAD-encrypted kernel object store; POSIX rwx against kernel-attested uid/gid; write-ahead journal and mount-time fsck; double-indirect large files |
 | **Console** | `console_server` in ring 3 owning the UART and VGA framebuffer; raw terminal mode (termios + winsize) |
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, hierarchical rollback MAC; key material never leaves the kernel |

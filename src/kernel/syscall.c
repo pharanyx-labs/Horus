@@ -333,7 +333,8 @@ static void h_exec(struct interrupt_frame64 *r) {
  * Capability (slot 3, READ) is enforced centrally by the dispatch table. */
 
 static void h_exit(struct interrupt_frame64 *r) {
-    task_teardown(get_current_task());
+    struct task_exit_cause cause = { TASK_EXIT_NORMAL, 0, 0, 0, 0 };
+    task_teardown(get_current_task(), &cause);
     r->rax = 0;
 }
 
@@ -373,7 +374,10 @@ static void h_kill(struct interrupt_frame64 *r) {
         r->rax = (uint32_t)SYS_ERR_PERM;
         return;
     }
-    task_teardown(target);
+    /* detail = who did it: a supervisor that sees "killed" needs the killer to
+     * tell a deliberate shutdown from a stray SYS_KILL. */
+    struct task_exit_cause cause = { TASK_EXIT_KILLED, (uint32_t)get_current_task(), 0, 0, 0 };
+    task_teardown(target, &cause);
     r->rax = 0;
 }
 
@@ -414,7 +418,8 @@ static void h_signal(struct interrupt_frame64 *r) {
     if (!task_kill_authorized(target))   { r->rax = (uint32_t)SYS_ERR_PERM;  return; }
 
     if (signum == SIG_KILL || tasks[target].sig_handler == 0) {
-        task_teardown(target);                 /* default action: terminate */
+        struct task_exit_cause cause = { TASK_EXIT_SIGNAL, signum, 0, 0, 0 };
+        task_teardown(target, &cause);         /* default action: terminate */
     } else {
         tasks[target].pending_sigs |= (1u << signum);   /* async: delivered on next resume */
         /* If it's parked in SYS_WAIT and this signal isn't masked, interrupt the
@@ -457,7 +462,15 @@ static void h_wait(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     int tid = r->rbx;
     if (tid < 0 || tid >= MAX_TASKS || tid == cur) { r->rax = (uint32_t)-1; return; }
-    if (tasks[tid].state == TASK_DEAD) { r->rax = 0; return; }  /* already gone: satisfied */
+    if (tasks[tid].state == TASK_DEAD) {
+        /* Already gone: satisfied without blocking — so task_teardown never got
+         * to hand us the cause. Take it from the corpse instead. Safe precisely
+         * because the slot still reads TASK_DEAD: a reused slot is not dead, so
+         * this can never report a live task's record. */
+        tasks[cur].wait_exit_info = tasks[tid].exit_info;
+        r->rax = 0;
+        return;
+    }
 
     /* Intent only — not wake-visible until ipc_publish_pending_block. */
     tasks[cur].blocked_on    = tid;
@@ -906,6 +919,23 @@ static void h_irq_policy_info(struct interrupt_frame64 *r) {
 }
 #endif
 
+/* SYS_TASK_EXIT_INFO (93): report why the last task this caller waited on died.
+ *
+ * Self-scoped: it returns the record task_teardown copied onto THIS task when
+ * its SYS_WAIT was satisfied, so it discloses nothing the caller did not already
+ * have the authority to observe by waiting. That is why it needs no capability
+ * of its own — there is no cross-task read here to gate. Asking before any wait
+ * has completed yields reason == TASK_EXIT_NONE rather than a stale answer. */
+static void h_task_exit_info(struct interrupt_frame64 *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (copy_to_user((void *)(addr_t)r->rbx, &tasks[cur].wait_exit_info,
+                     sizeof(struct task_exit_info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
+    }
+    r->rax = 0;
+}
+
 typedef struct {
     void   (*fn)(struct interrupt_frame64 *r);
     uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
@@ -913,7 +943,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 93
+#define SYSCALL_TABLE_SIZE 94
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1071,18 +1101,22 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     /* Roadmap 1.1 audit readout; absent (fails closed) in the ship kernel. */
     [SYS_IRQ_POLICY_INFO]         = { h_irq_policy_info, CAPSLOT_KERNEL_LOG, CAP_RIGHT_READ, CAP_KERNEL_LOG },
 #endif
+    /* Self-scoped (finding G-8): hands back the death record of the task THIS
+     * caller waited on, which waiting already entitled it to observe. No
+     * cross-task disclosure, so no capability to gate on. */
+    [SYS_TASK_EXIT_INFO]          = { h_task_exit_info,          SC_NONE, 0, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_UNTYPED_INFO is currently the highest syscall number. Adding a higher one
+ * SYS_TASK_EXIT_INFO is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_IRQ_POLICY_INFO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_TASK_EXIT_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -254,13 +254,41 @@ up. `IRQ_POLICY_QUIET=1` suppresses every timer-driven report and leaves the cou
 which is both the fix and the falsification: same instrumentation, no printing, and the
 session completes at the ship kernel's rate.
 
-**What step 3 still needs is a non-interleaving readout for session-scale totals.** Quiet mode
-counts correctly and says nothing; the boot-window gate prints at tick 40 and is fine because
-it never reaches a prompt. Neither gives an honest "across a session" figure, which is the
-number step 3 actually wants — it has to know which windows change once the system is doing
-real work, and the two IPC sites that dominate are precisely the ones that only appear under
-load. Reading the counters out through the single-writer console, or at guest exit, is the
-remaining piece.
+**Step 2b landed 2026-08-11: the readout is in band, and quiet is now the default.**
+`SYS_IRQ_POLICY_INFO` hands the counters to userspace on request; the shell's `irqpolicy`
+builtin prints them through `console_server` like any other program. The kernel is no longer a
+second writer at all, so there is nothing to interleave — and because the readout is on
+demand, it can be taken *after* a representative workload instead of at a fixed tick. That is
+what makes a total session-scale rather than boot-scale, which was the whole defect.
+
+`make measure-irq-policy` is the supported way to take it. Fourteen commands, every one a
+`console_server` round trip:
+
+```
+irq-policy: accidental_sti=1439 benign_sti=720 sites=7 @tick=693
+```
+
+| Site | Hits |
+|---|---|
+| `cap_install_object` | 685 |
+| `cap_consume_slot` | 684 |
+| `storage_decrypt_block` | 41 |
+| `cap_grant_into` | 12 |
+| `storage_encrypt_block` | 11 |
+| `create_task` | 4 |
+| `user_map_device_page` | 2 |
+
+**This is the table step 3 should be designed against**, and it says something the withdrawn
+one did not: the two IPC capability sites are **95% of all accidental `sti`s** and they scale
+with message traffic, while the other five are effectively fixed boot-time costs. Making the
+windows explicit is therefore mostly a question about *two* functions on the IPC path — which
+is the same path the startup handshake runs on, and so exactly where the July attempt broke.
+
+Gated like `SYS_DMESG` (`CAP_KERNEL_LOG`, READ) rather than on fresh authority, and absent
+from the dispatch table outside `IRQ_POLICY_AUDIT` builds, so the ship kernel answers
+`SYS_ERR_NOSYS`. `captest` 88 → 89, falsified in both directions: removing the capability gate
+fails `irq-policy-info-allowed-without-kernel-log-cap`, and a kernel/userspace flag mismatch
+fails `irq-policy-info-present-in-ship-kernel`.
 
 Required order:
 
@@ -273,10 +301,12 @@ Required order:
    is load-bearing. Falsified both ways: flipping an expectation fails with the mismatch, and
    deleting a milestone hook fails with `milestone-never-reached` rather than quietly passing
    on four checks instead of five.
-2b. **Re-establish step 1's instrument** (added 2026-08-10 after the correction above).
-   `IRQ_POLICY_AUDIT=1` must not hang the session it measures, and its numbers must carry the
-   tick they were sampled at. Until then step 1's totals are not usable evidence.
-3. Then land the per-CPU, IF-preserving lock.
+2b. ~~**Re-establish step 1's instrument.**~~ **Done 2026-08-11** — `SYS_IRQ_POLICY_INFO` plus
+   the shell's `irqpolicy` builtin read the counters in band; `IRQ_POLICY_QUIET` defaults on so
+   the kernel never writes at the UART behind `console_server`; every report carries `@tick=`;
+   `make measure-irq-policy` reproduces the session-scale figure above.
+3. Then land the per-CPU, IF-preserving lock. **Now unblocked** — the evidence to design
+   against exists and is reproducible.
 
 Own PR, with the startup handshake instrumented. Do not attempt step 3 alone.
 

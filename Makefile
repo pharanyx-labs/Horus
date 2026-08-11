@@ -573,8 +573,8 @@ endif
 # the ship kernel does not. IRQ_POLICY_REPORT_LATE=0 drops that report (keeping
 # the tick-40 one, which fires while the kernel still owns the console);
 # IRQ_POLICY_REPORT_EVERY=N adds a one-line total every N ticks. See TESTS.md.
-IRQ_POLICY_QUIET ?= 0
-ifneq ($(IRQ_POLICY_QUIET),0)
+IRQ_POLICY_QUIET ?= 1
+ifneq ($(IRQ_POLICY_QUIET),1)
 CFLAGS  += -DIRQ_POLICY_QUIET=$(IRQ_POLICY_QUIET)
 endif
 IRQ_POLICY_REPORT_LATE ?= 1
@@ -810,6 +810,14 @@ iso: kernel.elf
 # zone is not safe across an interrupt frame, and a ring-3 task takes interrupts.
 USERSPACE_CFLAGS = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
                    -mno-red-zone -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
+# IRQ_POLICY_AUDIT changes which syscalls EXIST, so userspace has to be told:
+# SYS_IRQ_POLICY_INFO answers SYS_ERR_PERM in an audit build and SYS_ERR_NOSYS in
+# a ship build, and captest asserts the exact code. Without this the kernel and
+# the test disagree about which kernel they are in — which is precisely how the
+# check first failed, and it failed loudly rather than passing on the wrong one.
+ifeq ($(IRQ_POLICY_AUDIT),1)
+USERSPACE_CFLAGS += -DIRQ_POLICY_AUDIT
+endif
 USERSPACE_CFLAGS_64 = $(USERSPACE_CFLAGS)
 # 32-bit, for the i386 ELF-loader self-test image ONLY (userspace/elftest.o ->
 # elftest.elf). Nothing shipped is 32-bit any more, but the loader still parses
@@ -1851,11 +1859,26 @@ smoke-console-smp-stress:
 # policy cannot arrive silently. The expectations are MEASURED (all zero today),
 # not designed -- see the note above irq_expect[] in scheduler.c. When step 3
 # lands the IF-preserving lock some will change, and the diff will have to say so.
-.PHONY: smoke-irq-policy
-smoke-irq-policy:
+# Roadmap 1.1 step 2b: the supported way to MEASURE the audit, as opposed to
+# smoke-irq-policy below, which GATES the boot window.
+#
+# Not a CI check -- it produces a number, and a number is not a pass/fail. It is
+# here so the measurement is reproducible and so nobody re-derives it by making
+# the kernel print at the UART again, which is what corrupted every earlier
+# figure (see the note above IRQ_POLICY_QUIET in scheduler.c). Quiet is the
+# default, so the kernel writes nothing and the counters come back in band.
+.PHONY: measure-irq-policy
+measure-irq-policy:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1
 	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 boot.iso
+	@python3 tools/irq_policy_measure.py boot.iso
+
+.PHONY: smoke-irq-policy
+smoke-irq-policy:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 IRQ_POLICY_QUIET=0
+	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 IRQ_POLICY_QUIET=0 boot.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IRQ_POLICY: PASS' FAIL_MARKER='IRQ_POLICY: FAIL' \
 		tools/smoke_test.sh boot.iso

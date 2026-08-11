@@ -563,8 +563,15 @@ void irq_policy_totals_uart(const char *when);   /* likewise -- one line, no tab
  *
  * So: quiet for anything that drives the shell, loud for the boot-window gate
  * (smoke-irq-policy exits on its marker at tick 40 and never reaches a prompt). */
+/* Default ON since roadmap 1.1 step 2b. The timer-driven reports were the only
+ * way to read these counters when they were written, so they were on by default
+ * and every session-scale measurement was taken through a corrupting instrument.
+ * SYS_IRQ_POLICY_INFO replaced them with an in-band readout, so the async path
+ * is now the exception: `make smoke-irq-policy` passes IRQ_POLICY_QUIET=0
+ * because it is a boot-window gate that exits on its marker at tick 40 and never
+ * reaches a prompt. Anything that drives a shell wants the default. */
 #ifndef IRQ_POLICY_QUIET
-#define IRQ_POLICY_QUIET 0
+#define IRQ_POLICY_QUIET 1
 #endif
 
 /* The `handshake-late` report at tick 200. 1 = as #124 shipped. This one lands
@@ -1818,6 +1825,10 @@ static volatile int      irq_outer_if = 1;   /* IF when the outermost lock was t
 volatile unsigned        irq_accidental_sti = 0;
 volatile unsigned        irq_benign_sti     = 0;
 #define IRQ_SITE_SLOTS 12
+/* The readout struct mirrors this width; drift would silently truncate the
+ * table the whole finding is stated over. */
+_Static_assert(IRQ_SITE_SLOTS == IRQ_POLICY_SITE_SLOTS,
+               "IRQ_SITE_SLOTS and IRQ_POLICY_SITE_SLOTS must agree");
 volatile uint64_t        irq_accidental_site[IRQ_SITE_SLOTS];
 volatile unsigned        irq_accidental_hits[IRQ_SITE_SLOTS];
 volatile unsigned        irq_site_count = 0;
@@ -1937,6 +1948,27 @@ void irq_milestone_report(void) {
 
 #ifdef IRQ_POLICY_AUDIT
 /* UART variant, safe to call from the timer ISR after console handover. */
+/* The in-band readout (roadmap 1.1 step 2b), behind SYS_IRQ_POLICY_INFO.
+ *
+ * Everything else in this file reports by writing at the UART from the timer,
+ * which is what broke the session it was measuring. This one just fills a struct
+ * and lets the caller decide when and how to print -- through console_server,
+ * the single writer, like any other program. That is the whole fix: the kernel
+ * stops being a second writer. */
+void irq_policy_snapshot(struct irq_policy_info *out) {
+    out->accidental = irq_accidental_sti;
+    out->benign     = irq_benign_sti;
+    out->ticks      = system_ticks;
+    unsigned n = irq_site_count;
+    if (n > IRQ_POLICY_SITE_SLOTS) n = IRQ_POLICY_SITE_SLOTS;
+    out->sites = n;
+    for (unsigned i = 0; i < IRQ_POLICY_SITE_SLOTS; i++) {
+        out->site[i].ra   = (i < n) ? irq_accidental_site[i] : 0;
+        out->site[i].hits = (i < n) ? irq_accidental_hits[i] : 0;
+        out->site[i]._pad = 0;
+    }
+}
+
 /* The one-line form: totals and the sample point, no per-site table. */
 void irq_policy_totals_uart(const char *when) {
     panic_str("\n[irq-policy] "); panic_str(when);

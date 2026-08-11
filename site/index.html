@@ -112,7 +112,12 @@ body {
   html { scroll-behavior: auto; }
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    /* Capping iterations matters as much as the duration: the terminal caret
+       is animation-iteration-count:infinite, and a near-zero duration left
+       running forever is a strobe rather than a stilled animation. */
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -149,6 +154,9 @@ a code { background: var(--wire-bg); color: var(--wire); }
 
 .masthead {
   position: sticky; top: 0; z-index: 20;
+  /* Opaque fallback first: a browser without color-mix drops that declaration,
+     and a transparent sticky bar would let the page scroll under the nav. */
+  background: var(--film);
   background: color-mix(in srgb, var(--film) 88%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--rule);

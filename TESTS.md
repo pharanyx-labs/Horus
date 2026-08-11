@@ -557,6 +557,51 @@ When step 3 lands the IF-preserving lock, some of these values will change. That
 intent: the diff will have to say which, rather than the startup handshake quietly acquiring or
 losing preemption windows the way it did on 2026-07-27.
 
+### `make measure-irq-policy` — the audit read out in band, not printed at the UART
+
+**Roadmap 1.1 step 2b.** Not a gate: it produces a number, and a number is not a pass/fail. It
+is a target so the measurement is *reproducible*, and so nobody re-derives it by making the
+kernel print at the UART again — which is what corrupted every earlier figure.
+
+`SYS_IRQ_POLICY_INFO` hands the counters to userspace on request and the shell's `irqpolicy`
+builtin prints them through `console_server`, so the kernel is never a second writer. Because
+the readout is on demand it can be taken **after** a workload rather than at a fixed tick,
+which is the difference between a session-scale total and a boot-scale one. Fourteen commands,
+each a `console_server` round trip:
+
+```
+irq-policy: accidental_sti=1439 benign_sti=720 sites=7 @tick=693
+```
+
+with `cap_install_object` (685) and `cap_consume_slot` (684) accounting for **95%** — both on
+the IPC path, both scaling with message traffic, while the other five sites are fixed
+boot-time costs.
+
+Gated like `SYS_DMESG` (`CAP_KERNEL_LOG`, READ), and absent from the dispatch table outside
+`IRQ_POLICY_AUDIT` builds so the ship kernel answers `SYS_ERR_NOSYS`. `captest` 88 → 89.
+**Falsified in both directions:**
+
+| Break | Check that fired |
+|---|---|
+| capability gate removed (`SC_NONE`) | `irq-policy-info-allowed-without-kernel-log-cap` |
+| kernel built with the audit, userspace without | `irq-policy-info-present-in-ship-kernel` |
+
+The second was not a contrived break — it is how the check first failed. Userspace is compiled
+with its own flags, so `#ifdef IRQ_POLICY_AUDIT` in `captest.c` was never true and the test
+disagreed with the kernel it was testing about which kernel it was in. It failed loudly rather
+than passing against the wrong expectation, which is the only reason it was noticed;
+`USERSPACE_CFLAGS` now propagates the flag. **A test asserting an exact errno catches this. A
+`< 0` assertion would have passed in both configurations** — the same lesson as the C-1 set.
+
+*One honest gap.* The tool also asserts prompt integrity — that the expected prompt appeared
+contiguously as many times as commands were sent — as a safety net against measuring a
+corrupted session. That guard's failure path works (it fired during development on an
+off-by-one), but **it has not been shown to fire on a genuine split prompt.** The corruption is
+not a general race: it is deterministic for a particular prompt timing, and this tool's prompts
+all land after the async reports finish at tick 201. `session_test.py` remains the instrument
+that detects a split reliably (8/8 and 10/10 against the loud build). The guard is a net, not
+evidence.
+
 ### Two diagnostics for a corrupted resume `%rsp`
 
 Every return from `interrupt_handler64` is a kernel `%rsp` that `isr_common_stub64` loads and

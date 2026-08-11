@@ -8,6 +8,72 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — the interrupt-policy audit is read out in band (roadmap 1.1 step 2b)
+
+The entry below removed the audit's ability to corrupt the session it measured, but
+left it unable to say anything once a shell was up: quiet mode counted correctly
+and printed nothing, and the boot-window gate printed at tick 40 and never reached
+a prompt. Neither produced the session-scale total roadmap 1.1 step 3 needs.
+
+**`SYS_IRQ_POLICY_INFO` (92)** returns the counters to userspace on request, and
+the shell's **`irqpolicy`** builtin prints them through `console_server` like any
+other program. The kernel is no longer a second writer at all, so there is nothing
+to interleave with — and because the readout is on demand it can be taken *after* a
+representative workload instead of at a fixed tick, which is the entire difference
+between a session-scale figure and a boot-scale one. `IRQ_POLICY_QUIET` now
+defaults **on**; `make smoke-irq-policy` passes `IRQ_POLICY_QUIET=0` because it is a
+boot-window gate that exits on its marker and never reaches a prompt.
+
+`make measure-irq-policy` is the supported way to take the measurement — fourteen
+commands, every one a `console_server` round trip:
+
+```
+irq-policy: accidental_sti=1439 benign_sti=720 sites=7 @tick=693
+```
+
+| Site | Hits |
+|---|---|
+| `cap_install_object` | 685 |
+| `cap_consume_slot` | 684 |
+| `storage_decrypt_block` | 41 |
+| `cap_grant_into` | 12 |
+| `storage_encrypt_block` | 11 |
+| `create_task` | 4 |
+| `user_map_device_page` | 2 |
+
+**This is the table step 3 should be designed against.** It says something the
+withdrawn one did not: the two IPC capability sites are **95%** of all accidental
+`sti`s and scale with message traffic, while the other five are fixed boot-time
+costs. Making the windows explicit is therefore mostly a question about *two*
+functions on the IPC path — the same path the startup handshake runs on, and so
+precisely where the reverted July attempt broke.
+
+Gated like `SYS_DMESG` (`CAP_KERNEL_LOG`, READ) rather than on fresh authority, and
+absent from the dispatch table outside `IRQ_POLICY_AUDIT` builds so the ship kernel
+answers `SYS_ERR_NOSYS`. Verified end to end in both directions: a standard user is
+refused at the shell, and root on a ship kernel gets `not an IRQ_POLICY_AUDIT build`.
+
+`captest` **88 → 89 checks**, falsified in both directions:
+
+| Break | Check that fired |
+|---|---|
+| capability gate removed (`SC_NONE`) | `irq-policy-info-allowed-without-kernel-log-cap` |
+| kernel built with the audit, userspace without | `irq-policy-info-present-in-ship-kernel` |
+
+The second was not contrived — it is how the check first failed. Userspace compiles
+with its own flags, so `#ifdef IRQ_POLICY_AUDIT` in `captest.c` was never true and
+the test disagreed with the kernel about which kernel it was in. It failed loudly
+instead of passing against the wrong expectation, which is the only reason it was
+caught; `USERSPACE_CFLAGS` now propagates the flag. An exact-errno assertion catches
+this and a `< 0` assertion would have passed in both configurations.
+
+The measurement tool also asserts prompt integrity as a net against measuring a
+corrupted session. **That guard has not been shown to fire on a genuine split** — the
+corruption is deterministic for a particular prompt timing rather than a general
+race, and this tool's prompts land after the async reports finish. `session_test.py`
+remains the instrument that detects a split reliably. Recorded rather than presented
+as falsified.
+
 ### Fixed — roadmap 1.1's own instrument was corrupting the session it measured, and its published numbers came from it
 
 `IRQ_POLICY_AUDIT=1` (roadmap 1.1 step 1) reported through `panic_str`, straight at the

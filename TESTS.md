@@ -379,6 +379,32 @@ prints with, so the diagnostic is not first executed during the failure it exist
 Session regression, adjacent-boot alternating: **0 failures / 8 boots** on this change and
 **0 / 8** on `main` at `a017e02`, same host, interleaved.
 
+**First soak on the instrumented build: the instrument did NOT fire. Read this before
+assuming signature A is solved.** PR #130's CI soak hung 1 in 45 — the documented rate — at
+run 10/45, 6 checks in, truncating mid-line during `man ls`:
+
+```
+SESSION_TEST: FAIL — timeout after 120s waiting for 'ls - list directory entries'
+recent serial: "...root@horus# man ls\r\n\r\nls(1)          "
+```
+
+**No `init: shell exited:` line anywhere**, and nothing further arrived in the whole 120 s
+window. That is *not* the #127 capture repeated: there, `init: shell exited, relaunching`
+appeared inline. Two readings remain open and this capture does not separate them:
+
+1. **Signature A has more than one mechanism** — this boot's shell did not exit, so the #127
+   capture was one member of a set, not the signature; or
+2. **the shell did exit and `init`'s report never got out** — in which case the *reporting
+   path* is what to investigate (init writes through `console_server`, so a console_server
+   that is itself stuck would swallow the line).
+
+Reading 2 is the one to rule out first, and it is the same lesson as every earlier G-8
+misreading: **check the observer before the observed.** An instrument that is silent proves
+nothing until it is known to be capable of speaking on that path — `proctest` proves the
+kernel-side record and the rendering, but nothing yet proves `init` can get a line out at the
+moment the shell dies under SMP. Do not quote the absence of the line as evidence the shell
+did not exit.
+
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
 ```

@@ -480,7 +480,8 @@ struct irq_policy_site_info {
 };
 
 struct irq_policy_info {
-    uint32_t accidental;
+    uint32_t accidental;   /* releases that ENABLED IF the caller had masked (legacy lock) */
+    uint32_t suppressed;   /* the same releases, SUPPRESSED by the IF-preserving lock */
     uint32_t benign;
     uint32_t sites;
     uint32_t ticks;

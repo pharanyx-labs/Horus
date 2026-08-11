@@ -892,30 +892,36 @@ reported loudly as a G-8 datapoint and does not gate. The stress harness also **
 failing serial log rather than only saving it to a file — a gating job failed 1-in-30 on CI
 with the one artifact needed to diagnose it sitting in a workspace that was then deleted.
 
-### `make smoke-irq-policy` — the boot interrupt policy, written down
+### `make smoke-irq-policy` — the interrupt policy, written down and gated
 
-**Roadmap 1.1 step 2.** The kernel's boot-time interrupt enablement is currently an *emergent*
+**Roadmap 1.1, steps 2 and 3.** Boot-time interrupt enablement used to be an *emergent*
 property of a locking defect rather than a stated design: `spin_unlock`'s unconditional `sti`
-turns interrupts on as a side effect of the first lock any syscall takes (**[C-3.1]**). This
-gate records IF at named boot milestones and asserts it.
+turned interrupts on as a side effect of the first lock any syscall took (**[C-3.1]**). Since
+2026-08-11 the policy is stated — [`ARCHITECTURE.md` §6](docs/ARCHITECTURE.md) — and this gate
+is what holds the code to it. It records IF at named milestones and asserts each one.
 
-| Milestone | IF |
-|---|---|
-| `post-idt` | 0 |
-| `post-paging` | 0 |
-| `post-protections` | 0 |
-| `kernel-ready` | 0 |
-| `first-syscall-entry` | 0 |
+| Milestone | IF | Why |
+|---|---|---|
+| `post-idt` | 0 | boot runs masked throughout |
+| `post-paging` | 0 | |
+| `post-protections` | 0 | |
+| `kernel-ready` | 0 | |
+| `first-syscall-entry` | 0 | `int 0x80` is an interrupt gate |
+| `outermost-lock-release` | **0**, or **1** under `IRQ_LEGACY_GLOBAL_LOCK=1` | a critical section RESTORES the caller's IF, never imposes one |
 
-**The expectations are measured, not designed.** They are what the kernel does today, written
-down so a change cannot arrive silently. Encoding a policy nobody has implemented would make
-the test fail on a correct kernel — the failure mode this document keeps warning about.
+The last row is the one that carries roadmap 1.1 step 3, and it is deliberately stated per
+build so the control arm is gated too rather than merely tolerated. It records IF immediately
+after the first outermost `spin_unlock` of the boot — the single observation that distinguishes
+the two locks, since at that point in boot the caller always had IF clear. An unconditional
+`sti` therefore cannot come back silently.
 
-All zero is the whole point: every syscall starts with interrupts masked (the `int 0x80` gate
-clears IF), so the first lock a handler releases turns them on for the rest of that syscall.
-That is why **[C-3.1]** is load-bearing, and it is measurable — `IRQ_POLICY_AUDIT=1` identifies
-the depth-zero releases that enable interrupts the caller had masked, over seven sites, all of
-them syscall-context lock users.
+The first five were **measured, then written down** — they are what the kernel already did, so
+the gate's job is to notice a change. Encoding a policy nobody has implemented would make the
+test fail on a correct kernel, the failure mode this document keeps warning about.
+
+All zero is the whole point: every syscall starts masked, so under the old lock the first lock
+a handler released turned interrupts on for the rest of that syscall. That is why **[C-3.1]**
+was load-bearing, and why it was measurable.
 
 > **The totals this section used to quote — "99 accidental against 67 benign across a
 > session" — were withdrawn on 2026-08-10.** The audit reports through `panic_str`, straight
@@ -958,9 +964,10 @@ The second matters more than the first. A milestone that silently stops firing w
 pass on four checks instead of five, and the gate would report success while measuring less
 than it claims — the same defect as a refusal test that never reaches its probe.
 
-When step 3 lands the IF-preserving lock, some of these values will change. That is the
-intent: the diff will have to say which, rather than the startup handshake quietly acquiring or
-losing preemption windows the way it did on 2026-07-27.
+Step 3 landed 2026-08-11 and added the sixth row. Falsified by crossing the two builds'
+expectations — building the per-CPU lock while expecting the legacy value gives
+`FAIL outermost-lock-release IF=0 expected 1`, so the milestone genuinely discriminates
+between the two locks rather than recording a constant.
 
 ### `make measure-irq-policy` — the audit read out in band, not printed at the UART
 
@@ -975,12 +982,34 @@ which is the difference between a session-scale total and a boot-scale one. Four
 each a `console_server` round trip:
 
 ```
-irq-policy: accidental_sti=1439 benign_sti=720 sites=7 @tick=693
+irq-policy: accidental_sti=1439 suppressed_sti=0 benign_sti=720 sites=7 @tick=693
 ```
 
 with `cap_install_object` (685) and `cap_consume_slot` (684) accounting for **95%** — both on
 the IPC path, both scaling with message traffic, while the other five sites are fixed
 boot-time costs.
+
+**The equivalence check (roadmap 1.1 step 3).** Both locks count the *same* predicate — an
+outermost release whose caller had IF clear. The legacy lock fires an `sti` for it and reports
+`accidental`; the per-CPU lock suppresses it and reports `suppressed`. Run the same workload
+against both builds:
+
+| Build | accidental | suppressed | benign | total releases |
+|---|---|---|---|---|
+| `IRQ_LEGACY_GLOBAL_LOCK=1` | 1439 | 0 | 720 | **2159** |
+| default | 0 | 2159 | 0 | **2159** |
+
+**Equal totals is the evidence, not the zero.** A `suppressed` count of 0 would be equally
+consistent with the fix working and with the instrument having been switched off; identical
+release populations show the same events are still being observed, with 1439 of them no longer
+enabling interrupts against the caller's intent.
+
+The `benign` column going to zero is not a discrepancy, it is a consequence worth reading: a
+release was only ever "benign" because an *earlier* accidental `sti` in the same syscall had
+already turned interrupts on. Remove the first and every caller is correctly observed to have
+had IF clear. The same effect saturates the per-site table (`sites=12`, the `IRQ_SITE_SLOTS`
+ceiling): the legacy lock hid every lock site after the first in each syscall, so seven sites
+were visible where there are at least twelve.
 
 Gated like `SYS_DMESG` (`CAP_KERNEL_LOG`, READ), and absent from the dispatch table outside
 `IRQ_POLICY_AUDIT` builds so the ship kernel answers `SYS_ERR_NOSYS`. `captest` 88 → 89.

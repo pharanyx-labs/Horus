@@ -341,6 +341,41 @@ holds no kernel spinlock (spinlocks mask interrupts) and its entire state is in 
 frame. A tick that lands in ring 0 just advances the clock. This keeps the kernel
 effectively non-preemptible and removes an entire class of reentrancy hazard.
 
+### Interrupt policy
+
+Stated, rather than emergent. Until roadmap 1.1 this section could not be written: interrupt
+enablement was a *consequence* of a locking defect (**[C-3.1]**), not of any rule. Every
+statement below is asserted by `make smoke-irq-policy`, which records `RFLAGS.IF` at each
+named point and fails on a mismatch.
+
+| Context | `IF` | Established by |
+|---|---|---|
+| Boot, `_start` → `kernel-ready` | **0** | the CPU enters long mode masked and nothing enables |
+| Ring 0: syscall or ISR body | **0** | `int 0x80` and every IDT gate are *interrupt* gates |
+| Ring 3 | **1** | `sched_prepare_user_context` builds the frame with `RFLAGS = 0x202` |
+| A parked CPU's idle loop | **1** | `enter_cpu_idle` builds its frame with `RFLAGS = 0x202` |
+| Inside a spinlock | **0** | `spin_lock` issues `cli` |
+| After the outermost `spin_unlock` | **the caller's own** | `spin_unlock` *restores*, never imposes |
+
+Two consequences are worth stating explicitly, because both have been got wrong here.
+
+**The kernel is not preemptible, and interrupts staying masked through a syscall is what
+makes that true rather than merely intended.** A syscall handler runs from entry to return
+with `IF = 0`. It was not always so: the old `spin_unlock` ended in an unconditional `sti`
+once its global nesting depth hit zero, so the first lock any syscall took and released turned
+interrupts on for the remainder. `preempt_on_tick`'s ring-0 guard exists because of that — it
+was widened from "CPU 0" to every CPU after a ring-0 tick mid-syscall abandoned a task and
+produced an intermittent SMP deadlock.
+
+**A critical section returns the interrupt state it was given.** `spin_lock` saves the
+caller's `IF` at the outermost acquire and `spin_unlock` restores exactly that; the nesting
+depth is per-CPU, so one CPU's release cannot unmask another's critical section
+(**[C-3]**). A window that genuinely *needs* interrupts on must therefore ask for them, and
+exactly one does: the TLB-shootdown wait (`smp_maybe_shootdown`) spins for acknowledgements
+that arrive as IPIs, so it enables interrupts deliberately, restores the previous state
+afterwards, and **panics if the caller holds a spinlock** — the precondition its comment had
+always stated but nothing had ever checked.
+
 Switching is a kernel-`%rsp` swap: save the outgoing frame pointer, install the incoming
 task's CR3 and TSS RSP0, and hand its saved frame to the ISR epilogue, which pops and
 `iretq`s into it.

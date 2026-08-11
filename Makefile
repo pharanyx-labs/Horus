@@ -1908,6 +1908,24 @@ smoke-recvblock:
 		FAIL_MARKER='RECVBLOCK_SELFTEST: FAIL' \
 		tools/smoke_test.sh boot.iso
 
+# The same gate under -smp 4. The interesting half of the blocking receive is a
+# CROSS-CPU wake: the sender completes the receive, so the reply right has to be
+# minted into a cspace that is not the current one, and the woken server can be
+# picked up by another CPU the instant its state flips. On one CPU that ordering
+# cannot be wrong in a way anything observes, which is exactly why the first
+# version of this feature passed every single-CPU gate and still hung under load.
+# This does not RELIABLY catch that race -- see TESTS.md for the loaded
+# reproduction that does -- but it is the cheap part, and it costs one boot.
+.PHONY: smoke-recvblock-smp
+smoke-recvblock-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1 boot.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='RECVBLOCK_SELFTEST: PASS' \
+		FAIL_MARKER='RECVBLOCK_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-sched-invariants
 smoke-sched-invariants:
 	@$(MAKE) --no-print-directory clean

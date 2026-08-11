@@ -385,6 +385,37 @@ does not block, a wake that mints no reply right, a *polling* server (which must
 one-syscall-per-message assertion, or the test could not tell the two apart), and a dropped
 READ requirement.
 
+**The first version of this shipped a lost wakeup, and every one of those gates passed on it.**
+Recorded because the reason they passed is structural, not careless.
+
+The mint was placed after `state = TASK_RUNNABLE` and after `ipc_unlock`, to keep `cap_lock`
+from nesting under the endpoint lock. But a task is schedulable the instant its state flips:
+another CPU takes it, it returns to ring 3, services the request and calls `SYS_IPC_REPLY_TO`
+before the mint lands. `cap_lookup` finds no `CAP_REPLY`, answers `SYS_ERR_PERM` — a
+*permanent* code — and the server correctly drops the reply, because the retry contract forbids
+looping on it. The client then waits forever.
+
+Every single-CPU gate is blind to it: with one CPU there is no second CPU to run the server
+inside the window. `smoke-recvblock`, `smoke-captest`, a 17-target sweep and 61 of 63 CI checks
+all passed. What found it was running the thing the change was meant to improve — a session —
+against a control, on a **loaded** host: 5 failures in ~15 boots against 0 for the control.
+The mechanism was then *witnessed* rather than inferred, by instrumenting `console_server`'s
+silent permanent-drop branch and reproducing with the marker present in 4 of 5 failing boots.
+
+The fix mints under `ipc_lock`, before the wake, and both completion paths now obey one rule
+without exception: **a receiver holds its reply right before it is schedulable.** `cap_lock`
+nesting inside the endpoint lock is a new order and is safe because it is the only one — no
+path takes an IPC lock while holding `cap_lock`. `TESTS.md` carries the reproduction recipe
+(four guest vCPUs squeezed onto one host core against three hogs), because an idle host will
+not show it. Interleaved under that recipe, 25 boots per arm: **8/25 failures pre-fix, 0/25
+after.** All four falsifications were re-run against the fixed code, since the mint moved.
+
+Two smaller defects came out of the same review: `SYS_IPC_RECV_BLOCK` could leak `IPC_AGAIN`
+from its inline path if a second receiver drained the queue between the empty test and
+`sys_ipc_recv` — a contract violation its own selftest asserts against, and one both servers
+would treat as fatal — and an abandoned wait could leave `ipc_recv_block` set, which would make
+`SYS_IPC_REPLY_TO` refuse every future reply to that task.
+
 **Still open, and now a different item:** priority inheritance. The kernel records that a task
 is waiting on an endpoint, which is the prerequisite, but nothing propagates priority along
 that edge — and there are no task priorities to propagate yet.

@@ -175,6 +175,10 @@ int ipc_publish_pending_block(int cur) {
         tasks[cur].pending_block = 0;
         tasks[cur].state        = TASK_RUNNABLE;
         tasks[cur].runnable_ctx = 1;
+        /* Withdraw the receive declaration too. A stale ipc_recv_block would make
+         * h_ipc_reply_to refuse every future reply to this task -- a permanent
+         * wedge from an abandoned wait. */
+        tasks[cur].ipc_recv_block = 0;
         return 0;
     }
 
@@ -188,6 +192,7 @@ int ipc_publish_pending_block(int cur) {
             tasks[cur].pending_block = 0;
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
+            tasks[cur].ipc_recv_block = 0;   /* see the !f case above */
             return 0;
         }
         ipc_lock();
@@ -210,18 +215,23 @@ int ipc_publish_pending_block(int cur) {
             }
             e->last_sender = sender;
             f->rax = (uint64_t)(uint32_t)len;
+            /* Mint BEFORE the task is marked runnable — the same rule the wake
+             * path in sys_ipc_send follows, and for the same reason (see the
+             * long note there; getting it wrong there was a measured hang).
+             *
+             * Strictly this path does not need it: `cur` is the task executing
+             * this very syscall, still claimed by this CPU, so nothing can
+             * observe the gap. It is done anyway so the rule holds without
+             * exception — "a receiver holds its reply right before it is
+             * schedulable". An invariant with one documented exception is one a
+             * later change quietly widens. */
+            if (recv_wait && sender > 0 && sender < MAX_TASKS)
+                cap_install_reply_for(cur, sender);
             tasks[cur].state        = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
             tasks[cur].blocked_on   = -1;
             tasks[cur].ipc_recv_block = 0;
             ipc_unlock();
-            /* Same authority as any other completed receive, and minted outside
-             * ipc_lock for the same lock-ordering reason as SYS_IPC_RECV. Note
-             * `cur` is the current task on this path, so this is the ordinary
-             * self-mint — cap_install_reply_for is used only to keep the two
-             * completion paths textually identical. */
-            if (recv_wait && sender > 0 && sender < MAX_TASKS)
-                cap_install_reply_for(cur, sender);
             return 0;   /* resume same task with the message in hand */
         }
         e->blocked_waiter       = cur;
@@ -258,6 +268,7 @@ int ipc_publish_pending_block(int cur) {
             tasks[cur].pending_block = 0;
             tasks[cur].state = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
+            tasks[cur].ipc_recv_block = 0;   /* see the !f case above */
             return 0;
         }
         ipc_lock();
@@ -397,30 +408,62 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
         if (!wf) { ipc_unlock(); return -1; }
         wf->rax = (uint64_t)(uint32_t)copy_len;
 
+        /* ---- Everything the woken server needs, BEFORE it can run ------------
+         *
+         * Completing a blocking RECEIVE, not a reply: the server must end up in
+         * exactly the state the polling SYS_IPC_RECV would have left it in, or
+         * the two receives differ in authority — the interesting half of roadmap
+         * 1.3. So the sender becomes the endpoint's attested identity, and the
+         * server gets the one-shot right to answer it.
+         *
+         * THE ORDER HERE IS LOAD-BEARING, and getting it wrong cost a measured
+         * regression. The first version minted the reply capability after
+         * `state = TASK_RUNNABLE` and after ipc_unlock(), to keep cap_lock out
+         * from under endpoint_lock. But a task is schedulable the instant its
+         * state flips: another CPU picks it up, it returns to ring 3, services
+         * the request and calls SYS_IPC_REPLY_TO — all before the mint lands.
+         * cap_lookup then finds no CAP_REPLY and answers SYS_ERR_PERM, which is
+         * a PERMANENT code, so the server correctly drops the reply (the IPC
+         * retry contract forbids looping on it) and the client waits forever.
+         *
+         * That is not theoretical: instrumenting console_server's permanent-drop
+         * path reproduced it in 4 of 5 failing boots under `-smp 4` with the host
+         * loaded, at ~33% of sessions against 0% for the control. It is invisible
+         * on one CPU, because there is no second CPU to run the server inside the
+         * window — which is exactly why it survived the first round of testing.
+         *
+         * So the mint happens under ipc_lock, before the wake. cap_lock nesting
+         * inside endpoint_lock is a NEW lock order, and it is safe because it is
+         * the only one: no path in the tree takes an IPC lock while holding
+         * cap_lock (capability.c and untyped.c never reference either). Keep it
+         * that way.
+         *
+         * SYS_IPC_RECV and the publish path still mint after their unlock, and
+         * that stays correct for a reason that does not apply here: there the
+         * receiver is the CURRENT task, still executing its own syscall and still
+         * claimed by this CPU, so no one can observe the gap. This mint targets
+         * another task. */
+        if (recv_wait) {
+            int sender_tid = get_current_task();
+            e->last_sender = sender_tid;
+            tasks[waiter].ipc_recv_block = 0;
+            if (!cap_install_reply_for(waiter, sender_tid)) {
+                /* Refuse rather than wake a server into a request it has no
+                 * right to answer — that is the failure this ordering exists to
+                 * prevent, and doing it deliberately would be no better. The
+                 * waiter stays blocked and is woken by the next send; the sender
+                 * gets an error it can report. Reachable only if the receiver is
+                 * at MAX_CAPS_PER_TASK. */
+                ipc_unlock();
+                return -1;
+            }
+        }
+
         e->blocked_waiter = -1;
         __asm__ volatile ("" ::: "memory");
         tasks[waiter].state        = TASK_RUNNABLE;
         tasks[waiter].runnable_ctx = 1;
         tasks[waiter].blocked_on   = -1;
-
-        /* Completing a blocking RECEIVE, not a reply: the woken server must end
-         * up in exactly the state the polling SYS_IPC_RECV would have left it in,
-         * or the two receives would differ in authority — the interesting half of
-         * roadmap 1.3. That means the sender becomes the endpoint's attested
-         * identity, and the server gets the one-shot right to answer it. */
-        if (recv_wait) {
-            int sender_tid = get_current_task();
-            e->last_sender = sender_tid;
-            tasks[waiter].ipc_recv_block = 0;
-            __asm__ volatile ("" ::: "memory");
-            ipc_unlock();
-            /* Outside ipc_lock: the mint takes cap_lock, and taking cap_lock
-             * under endpoint_lock would introduce a second ordering between two
-             * otherwise-unrelated locks — the same reason SYS_IPC_RECV mints
-             * after its unlock. */
-            cap_install_reply_for(waiter, sender_tid);
-            return 0;
-        }
         ipc_unlock();
         return 0;
     }
@@ -693,27 +736,44 @@ void h_ipc_recv_block(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)-1; return; }
 
-    ipc_lock();
-    if (!ep_empty(e)) {
-        /* Message already waiting: complete inline, exactly as SYS_IPC_RECV
-         * does. Nothing blocks, so this is the common case for a busy server and
-         * costs it no extra context switch. */
+    for (;;) {
+        ipc_lock();
+        if (!ep_empty(e)) {
+            /* Message already waiting: complete inline, exactly as SYS_IPC_RECV
+             * does. Nothing blocks, so this is the common case for a busy server
+             * and costs it no extra context switch.
+             *
+             * The retry is not decoration. sys_ipc_recv re-acquires ipc_lock, so
+             * a second receiver on this endpoint can drain the queue in between
+             * and leave it answering IPC_AGAIN -- which THIS syscall must never
+             * return. Its whole contract is that a negative result is permanent,
+             * and both ring-3 servers act on that by reporting and exiting, so
+             * leaking a -2 here would kill a server on a benign race rather than
+             * blocking it. Re-decide instead: either there is still a message, or
+             * the endpoint is empty again and blocking is the right answer.
+             * Each iteration means some other receiver got a message, so this
+             * makes progress for the system even when it retries. */
+            ipc_unlock();
+            int rc = sys_ipc_recv(ep, (void *)(addr_t)r->rcx, r->rdx);
+            if (rc == -2) continue;
+            r->rax = (uint32_t)rc;
+            return;
+        }
+
+        /* Empty: commit to blocking. Only intent is recorded here -- the task is
+         * not wake-visible until ipc_publish_pending_block runs with a saved
+         * frame. */
+        tasks[cur].ipc_reply_buf  = (uint64_t)r->rcx;
+        tasks[cur].ipc_recv_max   = (uint32_t)r->rdx;
+        tasks[cur].ipc_recv_block = 1;
+        tasks[cur].blocked_on     = (int)ep;
+        tasks[cur].pending_block  = TASK_BLOCKED_IPC;
         ipc_unlock();
-        r->rax = sys_ipc_recv(ep, (void *)(addr_t)r->rcx, r->rdx);
+
+        /* Overwritten by the waker patching saved_ksp->rax with the length. */
+        r->rax = 0;
         return;
     }
-
-    /* Empty: commit to blocking. Only intent is recorded here -- the task is not
-     * wake-visible until ipc_publish_pending_block runs with a saved frame. */
-    tasks[cur].ipc_reply_buf  = (uint64_t)r->rcx;
-    tasks[cur].ipc_recv_max   = (uint32_t)r->rdx;
-    tasks[cur].ipc_recv_block = 1;
-    tasks[cur].blocked_on     = (int)ep;
-    tasks[cur].pending_block  = TASK_BLOCKED_IPC;
-    ipc_unlock();
-
-    /* Overwritten by the waker patching saved_ksp->rax with the message length. */
-    r->rax = 0;
 }
 
 /* SYS_IPC_REPLY (24): rbx = cspace slot of a CAP_ENDPOINT with WRITE. */

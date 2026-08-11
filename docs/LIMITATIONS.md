@@ -176,6 +176,15 @@ boot 14.63 s. The gain is smaller with four cores because spare cores absorb the
 which is the expected shape if the cause is a runnable server competing for turns it cannot
 use.
 
+**A caution for anyone extending this path.** The interesting hazard is not the sleep, it is
+that a blocked receiver is completed by the *sender's* syscall — on the sender's CPU, with the
+sender's cspace current. The first version of this minted the receiver's one-shot reply right
+after marking it runnable, so under `-smp 4` the woken server could reply before it held the
+right, get `SYS_ERR_PERM`, and correctly drop the reply, hanging the client. It hung 8 of 25
+loaded sessions (0 of 25 after the fix) while passing every single-CPU gate. The rule now is
+**a receiver holds its reply right before it is schedulable**, and `TESTS.md` carries the
+loaded reproduction, since an idle host will not show it.
+
 **Still open.** Priority inheritance still cannot be expressed: the kernel now records that a
 task is waiting on an endpoint, which is the prerequisite, but nothing propagates priority
 along that edge — and there are no task priorities to propagate yet. `fs_server` also still

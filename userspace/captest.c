@@ -534,6 +534,28 @@ void _start(void) {
     check(sys_get_task_info(pid, (struct task_info *)0x1) != 0,
           "task-info-accepted-bad-pointer");
 
+    /* The roadmap 1.1 audit readout (SYS_IRQ_POLICY_INFO) must be unreachable
+     * from a task that was not given it — captest holds no CAP_KERNEL_LOG.
+     *
+     * Asserted as an EXACT code in each configuration rather than "< 0", which
+     * is the lesson the C-1 checks cost: a `< 0` assertion here would pass on a
+     * kernel that answered NOSYS when it should have answered PERM, and would
+     * therefore not notice the dispatch entry going missing from the audit build
+     * — the one thing that would silently disable the instrument.
+     *
+     * Ship builds: no dispatch entry at all, so the syscall does not exist. That
+     * is the security-relevant property, and it is the default configuration. */
+    {
+        struct irq_policy_info ipi;
+#ifdef IRQ_POLICY_AUDIT
+        check(sys_irq_policy_info(&ipi) == SYS_ERR_PERM,
+              "irq-policy-info-allowed-without-kernel-log-cap");
+#else
+        check(sys_irq_policy_info(&ipi) == SYS_ERR_NOSYS,
+              "irq-policy-info-present-in-ship-kernel");
+#endif
+    }
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

@@ -48,6 +48,13 @@ ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
 STEP_TIMEOUT = float(os.environ.get("SESSION_TIMEOUT", "45"))
 BOOT_TIMEOUT = float(os.environ.get("BOOT_TIMEOUT", "90"))
 SMP = os.environ.get("QEMU_SMP", "1")
+# Optional full-serial capture. Off by default (a session that passes normally
+# needs no transcript). Set to a path to write everything the guest said,
+# whether the run passes or fails -- which is what lets a RARE event be counted
+# rather than merely caught: init reports why the shell died in band (#130), so
+# a boot where the shell faulted and was relaunched is observable even though
+# the session went on to pass. Failure-only reporting hides exactly those.
+SERIAL_LOG = os.environ.get("SESSION_SERIAL_LOG", "")
 
 # Any of these on the wire means the kernel faulted — fail the run immediately.
 FAULT_RE = re.compile(r"PAGE FAULT|Exception! Vector|PANIC|Rejected by validator")
@@ -55,6 +62,16 @@ FAULT_RE = re.compile(r"PAGE FAULT|Exception! Vector|PANIC|Rejected by validator
 
 class SessionFail(Exception):
     pass
+
+
+def _dump_serial(buf):
+    if not SERIAL_LOG:
+        return
+    try:
+        with open(SERIAL_LOG, "w") as fh:
+            fh.write(buf)
+    except OSError:
+        pass    # a diagnostic must never be the reason a run fails
 
 
 class Serial:
@@ -128,7 +145,28 @@ class Serial:
                 return
             fault = FAULT_RE.search(self.buf, self.pos)
             if fault:
-                raise SessionFail(f"kernel fault on serial: {fault.group(0)!r}")
+                # Let the rest of the dump arrive before reporting. The marker
+                # is the FIRST thing the kernel prints; the faulting address,
+                # error code and register state follow it. Aborting on the
+                # marker alone truncates the report to the word "PAGE FAULT",
+                # which says a fault happened and nothing about which one --
+                # and these are rare enough that throwing the detail away costs
+                # a whole reproduction cycle. Bounded, and only on a path that
+                # is already failing.
+                for _ in range(6):
+                    if not self._pump(0.25):
+                        break
+                # Report the fault WITH its context, the way the timeout path
+                # below does. This used to raise on the matched word alone --
+                # "kernel fault on serial: 'PAGE FAULT'" -- which names the
+                # class of failure and discards the only part that identifies
+                # it: the faulting address, the register dump, and what the
+                # guest was doing. A rare fault then costs a whole reproduction
+                # cycle just to see what a captured boot already knew.
+                lo = max(fault.start() - 400, 0)
+                raise SessionFail(
+                    f"kernel fault on serial: {fault.group(0)!r}; "
+                    f"context: {self.buf[lo:fault.start() + 1200]!r}")
             if self.proc.poll() is not None and not self._pump(0):
                 raise SessionFail(f"QEMU exited while waiting for {needle!r}")
             if time.time() >= deadline:
@@ -389,6 +427,7 @@ def run():
 
     finally:
         transcript = s.buf
+        _dump_serial(transcript)    # pass or fail; see SESSION_SERIAL_LOG
         s.close()
 
     return transcript

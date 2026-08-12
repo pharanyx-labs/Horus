@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "console_proto.h"
 #include "exit_reason.h"   /* format_exit_reason(): shared with proctest, which asserts its text */
 
 /*
@@ -24,8 +25,62 @@
  * drives the delegated server end-to-end (see _start / `make smoke-init-fs`).
  */
 
+/* init holds a WRITE-only console client capability in this slot; it delegates a
+ * copy to the shell and to the fs self-test client. Declared up here because
+ * report() below needs it. Kept in sync with the definition further down. */
+#define INIT_CON_CLIENT_SLOT 14
+
+static struct con_request  init_con_rq;   /* static: keep these off init's stack */
+static struct con_response init_con_rp;
+
+/* Write through console_server, the single writer. Returns 0 on success, -1 to
+ * fall back to the kernel console. Bounded retries on the transient code only:
+ * looping on a permanent refusal is the G-8 wedge (see the IPC retry contract). */
+static int report_via_server(const char *s, unsigned len) {
+    unsigned off = 0;
+    while (off < len) {
+        unsigned n = len - off;
+        if (n > CON_IO_MAX) n = CON_IO_MAX;
+        init_con_rq.magic = CON_PROTO_MAGIC;
+        init_con_rq.op    = CON_OP_WRITE;
+        init_con_rq.len   = n;
+        for (unsigned i = 0; i < n; i++) init_con_rq.data[i] = (uint8_t)s[off + i];
+
+        int rc = -1;
+        for (int tries = 0; tries < 20000; tries++) {
+            rc = sys_ipc_call(INIT_CON_CLIENT_SLOT, 0,
+                              &init_con_rq, sizeof(init_con_rq), &init_con_rp);
+            if (rc >= 0) break;
+            if (!ipc_transient(rc)) return -1;   /* permanent: use the fallback */
+            sys_yield();
+        }
+        if (rc < 0 || init_con_rp.magic != CON_PROTO_MAGIC || init_con_rp.rc != (int)n)
+            return -1;
+        off += n;
+    }
+    return 0;
+}
+
+/* Report a line, by whichever path can actually reach the console.
+ *
+ * This used to be sys_write(1, ...) alone, which lands in the kernel's print().
+ * print() stops driving the hardware the moment console_server takes ownership
+ * (terminal.c: `drive_hw = (console_owner_task == 0)`), so every init message
+ * after the handover went to the klog and NOTHING reached the wire -- including
+ * report_shell_exit(), the entire point of #130. Measured: a heartbeat printed
+ * from init every ~second produced zero lines on serial after the handover, and
+ * the handover itself truncated a line mid-word ("init: st[console_server]
+ * ready"), which is two writers on one UART.
+ *
+ * So a shell that died was reported to a log nobody reads while the serial
+ * capture showed only a fresh banner -- indistinguishable from the shell having
+ * restarted for no reason, which is exactly the ambiguity G-8 has cost days to.
+ *
+ * The kernel path remains the fallback for before the handover and for a dead
+ * server (task teardown releases ownership, so the kernel path re-opens). */
 static void report(const char *s) {
     int n = 0; while (s[n]) n++;
+    if (sys_console_owned() && report_via_server(s, (unsigned)n) == 0) return;
     sys_write(1, s, (unsigned)n);
 }
 

@@ -795,6 +795,44 @@ all land after the async reports finish at tick 201. `session_test.py` remains t
 that detects a split reliably (8/8 and 10/10 against the loud build). The guard is a net, not
 evidence.
 
+### `init`'s exit report never reached the wire
+
+**The reason G-8 has been undiagnosable.** `init`'s `report()` was `sys_write(1, ...)`, which
+lands in the kernel's `print()`, and `print()` stops driving the hardware the moment
+`console_server` takes ownership (`terminal.c`: `drive_hw = (console_owner_task == 0)`). So
+every init message after the handover went to the klog and **nothing reached serial** —
+including `report_shell_exit()`, which is the entire point of #130. That PR's own comment says
+init prints "through console_server like any other program"; the code used the kernel path.
+
+The symptom, seen repeatedly before it was understood: a boot where the shell restarted showed
+**two startup banners and no exit report at all**. That looks identical to a shell restarting
+for no reason, which is exactly the ambiguity G-8 has cost days to.
+
+Measured with the *same* heartbeat probe on both builds, ownership confirmed as `owned=1`, the
+console routing as the only variable:
+
+| `init`'s `report()` | Heartbeats on serial after the handover |
+|---|---|
+| `sys_write` (before) | **0** |
+| via `console_server` (after) | **2** |
+
+The handover itself is visibly two writers on one UART — a line truncated mid-word,
+`init: st[console_server] ready`.
+
+**Three wrong turns getting here, all worth recording**, because each looked conclusive:
+
+1. Concluding init was muted from *absence* of init output in 100 captured boots — init simply
+   has nothing to say while blocked in `sys_wait`. Absence of evidence.
+2. "Disproving" that with a probe that printed fine — it fired *before* ownership was actually
+   registered. `[console_server] ready` is the server's own native write and does not mark the
+   handover.
+3. "Re-proving" it with a heartbeat that produced zero lines — the probe never ran, because
+   `settle()` is 40 000 iterations and calling it 1 500 times per beat is ~10 s under TCG.
+
+Only the fourth attempt — identical probe, identical ownership state, routing as the sole
+difference — measured anything. **A probe that produces no output has two explanations, and
+"the thing I am testing is broken" is the less likely one.**
+
 ### Two diagnostics for a corrupted resume `%rsp`
 
 Every return from `interrupt_handler64` is a kernel `%rsp` that `isr_common_stub64` loads and

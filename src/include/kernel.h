@@ -1344,6 +1344,18 @@ void sched_impersonate_exit(void);
  * derivation, kept as the bootstrap answer (an AP has no TSS until setup_ap_tss)
  * and as the independent oracle percpu_id_verify_self() falsifies against. */
 int  this_cpu(void);
+/* True when `rsp` lies in a kernel stack the dispatcher may legitimately resume
+ * on (the current task's, task 0's, or the AP idle pool). Used by the guard in
+ * interrupt_handler64 to attribute a bad switch instead of faulting in the ISR
+ * epilogue -- see the note there. */
+int  resume_rsp_plausible(uint64_t rsp);
+/* Reports a bad switch destination straight at the UART and halts. Must not use
+ * print(): that goes klog-only once console_server owns the console, which is
+ * precisely when this fires. */
+void resume_rsp_panic(uint64_t rsp, uint64_t frame);
+#ifdef SMP
+int  rsp_in_ap_idle_stacks(uint64_t rsp);
+#endif
 int  this_cpu_lapic(void);
 #ifdef SMP
 /* Run once per CPU, on that CPU, as its TSS is loaded: panics if the two

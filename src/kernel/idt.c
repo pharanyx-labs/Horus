@@ -432,6 +432,22 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         for (;;) __asm__ volatile ("cli; hlt");
     }
 
+    /* The floor above is necessary but not sufficient. A value that is
+     * higher-half but is not a live kernel stack passes it and still faults --
+     * inside the epilogue, at `pop %r15` immediately after `mov %rax,%rsp`,
+     * naming isr_common_stub64 and nothing else. That is not a hypothetical:
+     * it is the observed failure this check exists to attribute.
+     *
+     * Only a value that DIFFERS from the incoming frame is checked. When the
+     * dispatcher returns the frame it was given, nothing switched and the stack
+     * is by construction the one we are already executing on -- so validating it
+     * could only ever produce a false positive (early boot runs on the boot
+     * stack, a nested interrupt on whatever its outer context used, neither of
+     * which is a task or idle stack). Restricting the check to real switches is
+     * what makes it safe to run unconditionally on this path. */
+    if (rsp != (uint64_t)frame && !resume_rsp_plausible(rsp))
+        resume_rsp_panic(rsp, (uint64_t)frame);
+
     struct interrupt_frame64 *out = (struct interrupt_frame64 *)rsp;
     if (out && (out->cs & 3) != 0) fpu_restore(get_current_task());
     return rsp;

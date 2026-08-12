@@ -795,6 +795,50 @@ all land after the async reports finish at tick 201. `session_test.py` remains t
 that detects a split reliably (8/8 and 10/10 against the loud build). The guard is a net, not
 evidence.
 
+### A third: the resume `%rsp` must be a live kernel stack — and the guard must be able to speak
+
+The floor check above catches a returned `0`/`1`/`-1`. It does **not** catch a value that is
+higher-half but is not a live stack, and that is the case actually observed: a fault at
+`isr_common_stub64+34` — the `pop %r15` immediately after `mov %rax,%rsp` — having passed the
+floor.
+
+`interrupt_handler64` now additionally requires that a **changed** `%rsp` lie in a stack the
+dispatcher may legitimately resume on: the current task's, task 0's (idt.c's
+"nothing else runnable" fallback), or the AP idle pool (`enter_cpu_idle`). Three O(1) range
+checks, no loop over `tasks[]` — this is the interrupt-return path.
+
+**Only a changed value is checked**, and that is what makes it safe to run unconditionally.
+When the dispatcher hands back the frame it was given, nothing switched and the stack is by
+construction the one already executing; validating it could only ever produce a false positive
+(early boot runs on the boot stack, a nested interrupt on its outer context, neither of which
+is a task or idle stack). Every real switch path calls `set_current_task(next)` before
+returning that task's `saved_ksp`, so "the current task's stack" is the right question to ask.
+
+**The guard reports through `panic_str`, not `println`, and that is the part worth
+remembering.** `print()` stops driving the hardware the moment `console_server` takes ownership
+(`terminal.c`), so a guard that reports with `println` is **mute during a live session** —
+precisely when these faults happen. Measured while falsifying this: a marker printed from that
+path appears three times during early boot and never again, while the counter behind it keeps
+climbing. A diagnostic that is silent in the one situation it exists for is worse than none,
+because its silence reads as *did not fire*. The pre-existing floor guard still reports with
+`println` and has the same weakness; it is left alone here only to keep this change to one
+concern. Making this work required compiling the `panic_*` primitives unconditionally — they
+were `SCHED_INVARIANTS`/`HANG_WATCHDOG`/`IRQ_POLICY_AUDIT`-only, and a ship-kernel guard cannot
+report through debug-build-only helpers.
+
+Falsified by injecting `rsp = 0xFFFF800000001000` (higher-half, not a stack) on the first
+interrupt return *after* the console handover — the case the old guard could not report:
+
+```
+PANIC: dispatcher switched to a stack that is not a live kernel stack
+  rsp=0xffff800000001000  frame=0xffffffff8021af40
+  task=3 'console_server' state=1 runnable_ctx=1
+  kernel_stack_top=0xffffffff8021aff0 saved_ksp=0xffffffff8021af40
+```
+
+with **zero** bare `PAGE FAULT` in the same run — it fires before the stub can fault. Checked
+for false positives across the 22-target sweep.
+
 ### Two diagnostics for a corrupted resume `%rsp`
 
 Every return from `interrupt_handler64` is a kernel `%rsp` that `isr_common_stub64` loads and

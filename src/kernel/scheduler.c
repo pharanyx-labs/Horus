@@ -380,8 +380,15 @@ void create_user_task(int id, addr_t entry, addr_t stack_top) {
  * diagnose hangs, and one of the open ones (finding G-8 signature C) happens on
  * a UNIPROCESSOR boot, where every SMP diagnostic is inapplicable by
  * construction. */
-#if defined(SCHED_INVARIANTS) || defined(HANG_WATCHDOG) || defined(IRQ_POLICY_AUDIT)
 /* ---- Panic output, straight to the UART -----------------------------------
+ *
+ * UNCONDITIONAL, and that is a change: these used to be compiled only under
+ * SCHED_INVARIANTS / HANG_WATCHDOG / IRQ_POLICY_AUDIT. The resume-%rsp guard in
+ * interrupt_handler64 runs in the SHIP kernel and has to be able to speak, so
+ * the primitives it reports through cannot be debug-build-only. They are a few
+ * dozen bytes of .text on a path that ends in `cli; hlt`.
+ *
+ * ---- Panic output, straight to the UART -----------------------------------
  *
  * NOT print(). Once a ring-3 console server owns the console, kernel print() is
  * suppressed, and while it is coming up both writers touch COM1 concurrently
@@ -414,6 +421,13 @@ static void panic_begin(void) {
         for (;;) __asm__ volatile ("cli; hlt");   /* someone else is reporting */
 }
 static void panic_str(const char *s) { while (*s) panic_ch(*s++); }
+static void panic_hex64(uint64_t v) {
+    panic_ch('0'); panic_ch('x');
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        int n = (int)((v >> sh) & 0xF);
+        panic_ch((char)(n < 10 ? '0' + n : 'a' + n - 10));
+    }
+}
 static void panic_dec(int v) {
     char buf[12];
     int i = 0, neg = (v < 0);
@@ -423,7 +437,6 @@ static void panic_dec(int v) {
     if (neg) panic_ch('-');
     while (i) panic_ch(buf[--i]);
 }
-#endif
 
 #ifdef HANG_WATCHDOG
 /* ---- Hang watchdog: turn a silent stall into a state dump -------------------
@@ -1830,6 +1843,77 @@ void sched_impersonate_exit(void) {
 
 void scheduler_lock_acquire(void) { spin_lock(&scheduler_lock); }
 void scheduler_lock_release(void) { spin_unlock(&scheduler_lock); }
+
+/* ---- Is this a plausible kernel stack to resume on? -------------------------
+ *
+ * The dispatcher's return value is loaded straight into %rsp by
+ * isr_common_stub64, which then pops fifteen registers from it. #123 added a
+ * FLOOR check there (higher-half or bust), which catches a returned 0/1/-1. It
+ * does not catch a value that is higher-half but not a live stack -- and that is
+ * the case actually observed: a fault at isr_common_stub64+34, the first `pop`
+ * after `mov %rax,%rsp`, having passed the floor.
+ *
+ * Every stack switch in the tree ends with set_current_task(next) before it
+ * returns that task's saved_ksp (preempt_on_tick, ipc_block_switch,
+ * sched_yield_switch, task_exit_switch, exec_reenter_switch), and the one
+ * exception -- enter_cpu_idle -- parks on the AP idle pool and sets the current
+ * task to 0. So a legitimate switch destination is always one of three things,
+ * and each is an O(1) range check. No loop over tasks[]: this is the interrupt
+ * return path.
+ *
+ * tasks[0] is included because idt.c's "nothing else runnable" fallback resumes
+ * on it deliberately. The window is KERNEL_STACK_SIZE below the top rather than
+ * the exact (SIZE - 16) the allocator uses; a guard wants to be generous about
+ * what it accepts and precise about what it rejects. */
+static int rsp_in_stack(uint64_t rsp, addr_t top) {
+    if (!top) return 0;
+    return rsp <= (uint64_t)top && rsp >= (uint64_t)top - KERNEL_STACK_SIZE;
+}
+
+int resume_rsp_plausible(uint64_t rsp) {
+    int cur = get_current_task();
+    if (cur >= 0 && cur < MAX_TASKS && rsp_in_stack(rsp, tasks[cur].kernel_stack_top))
+        return 1;
+    if (rsp_in_stack(rsp, tasks[0].kernel_stack_top))
+        return 1;
+#ifdef SMP
+    if (rsp_in_ap_idle_stacks(rsp))
+        return 1;
+#endif
+    return 0;
+}
+
+/* Report a bad switch destination and halt. Lives here, not in idt.c, because
+ * the report MUST go straight at the UART.
+ *
+ * That is not a style preference. The pre-existing floor guard reports with
+ * println(), and print() stops driving the hardware the moment console_server
+ * takes ownership (terminal.c) -- so a guard that fires during a live session,
+ * which is exactly when these faults happen, writes to the klog and nothing
+ * reaches the wire. Measured while falsifying this: a marker printed from this
+ * path appears three times during early boot and never again, while the count
+ * behind it keeps climbing. A diagnostic that is silent in the one situation it
+ * exists for is worse than none, because its silence reads as "did not fire".
+ *
+ * panic_begin() gives the first CPU the UART and halts the rest, so two cores
+ * tripping on the same tick cannot interleave into an unreadable line. */
+void resume_rsp_panic(uint64_t rsp, uint64_t frame) {
+    panic_begin();
+    int cur = get_current_task();
+    panic_str("\nPANIC: dispatcher switched to a stack that is not a live kernel stack\n");
+    panic_str("  rsp=");              panic_hex64(rsp);
+    panic_str("  frame=");            panic_hex64(frame);
+    panic_str("\n  task=");           panic_dec(cur);
+    if (cur >= 0 && cur < MAX_TASKS) {
+        panic_str(" '");              panic_str(tasks[cur].name); panic_str("'");
+        panic_str(" state=");         panic_dec((int)tasks[cur].state);
+        panic_str(" runnable_ctx=");  panic_dec((int)tasks[cur].runnable_ctx);
+        panic_str("\n  kernel_stack_top="); panic_hex64((uint64_t)tasks[cur].kernel_stack_top);
+        panic_str(" saved_ksp=");     panic_hex64((uint64_t)tasks[cur].saved_ksp);
+    }
+    panic_str("\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
 
 
 static volatile int irq_lock_depth = 0;

@@ -174,6 +174,20 @@ uint8_t *ap_idle_stack_top(int cpu) {
     return &ap_idle_stacks[0][0] + (uintptr_t)(cpu + 1) * AP_IDLE_STACK_SIZE;
 }
 
+/* Is `rsp` inside the per-CPU idle-stack pool?
+ *
+ * enter_cpu_idle() parks a CPU on one of these and hands the frame back to the
+ * ISR epilogue, so an idle return is a legitimate stack switch that lands on
+ * none of the task stacks. The resume-%rsp guard (idt.c) needs to know that, or
+ * it would panic on every idle park. One range check over the whole array
+ * rather than per-CPU: the guard only asks "is this memory a kernel stack at
+ * all", and narrowing it to the calling CPU's own slot would reject nothing a
+ * bogus value could plausibly hit while adding a way to be wrong. */
+int rsp_in_ap_idle_stacks(uint64_t rsp) {
+    uintptr_t base = (uintptr_t)&ap_idle_stacks[0][0];
+    return rsp >= base && rsp <= base + sizeof(ap_idle_stacks);
+}
+
 /* 64-bit C entry for every AP, reached from the trampoline on the AP's private
  * idle stack.  Adopt the shared kernel GDT/IDT, install a per-CPU TSS (own RSP0
  * + IST fault stacks), enable the local APIC + its periodic timer, check in, and

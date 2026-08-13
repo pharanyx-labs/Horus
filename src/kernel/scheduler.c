@@ -380,8 +380,12 @@ void create_user_task(int id, addr_t entry, addr_t stack_top) {
  * diagnose hangs, and one of the open ones (finding G-8 signature C) happens on
  * a UNIPROCESSOR boot, where every SMP diagnostic is inapplicable by
  * construction. */
-#if defined(SCHED_INVARIANTS) || defined(HANG_WATCHDOG) || defined(IRQ_POLICY_AUDIT)
 /* ---- Panic output, straight to the UART -----------------------------------
+ *
+ * UNCONDITIONAL, and that is a change: these were compiled only under
+ * SCHED_INVARIANTS / HANG_WATCHDOG / IRQ_POLICY_AUDIT. A kernel-mode trap
+ * happens in the SHIP kernel and has to be able to speak, so the primitives it
+ * reports through cannot be debug-build-only. A few dozen bytes of .text.
  *
  * NOT print(). Once a ring-3 console server owns the console, kernel print() is
  * suppressed, and while it is coming up both writers touch COM1 concurrently
@@ -423,7 +427,98 @@ static void panic_dec(int v) {
     if (neg) panic_ch('-');
     while (i) panic_ch(buf[--i]);
 }
-#endif
+static void panic_hex64(uint64_t v) {
+    panic_ch('0'); panic_ch('x');
+    int sh = 60;
+    while (sh > 0 && ((v >> sh) & 0xF) == 0) sh -= 4;   /* no leading zeroes */
+    for (; sh >= 0; sh -= 4) {
+        int n = (int)((v >> sh) & 0xF);
+        panic_ch((char)(n < 10 ? '0' + n : 'a' + n - 10));
+    }
+}
+
+/* ---- Kernel-fault reporting, for the trap paths in idt.c -------------------
+ *
+ * A trap taken at CPL 0 is a KERNEL defect, and every report of one went
+ * through println(), which is klog-only once console_server owns the console.
+ * So the reports were inaudible during a live session -- which is exactly when
+ * these happen. G-8's supervisor fault tore down the ring-3 shell on every
+ * occurrence and the only thing that ever reached the wire was init noticing
+ * its child had gone; the address, the faulting rip and the error code, all of
+ * which the kernel had in hand and printed, went to a buffer nobody reads.
+ *
+ * This is a second writer to a UART a ring-3 server owns (finding #126).
+ * Deliberately, and only from these call sites: by the time one runs, the
+ * kernel has trapped in its own code, there is no owner left worth being
+ * polite to, and a report that loses a race with a shell prompt is not a
+ * report. The panic paths already took this exception. A SURVIVABLE kernel
+ * fault is not less worth hearing than a fatal one -- it is the one that hides.
+ *
+ * kfault_begin(0) is for a trap the kernel survives (it kills the current task
+ * and carries on): it must be sayable again, so the claim is released, and the
+ * wait for it is BOUNDED. panic_begin()'s permanent claim is right for a halt
+ * and wrong here -- a diagnostic that can wedge a CPU is a worse defect than
+ * the interleaved line it avoids. Past the budget we print anyway.
+ *
+ * kfault_begin(1) is for one it does not survive, and keeps the UART. */
+static volatile int kfault_claim = 0;
+void kfault_begin(int fatal) {
+    if (fatal) panic_begin();       /* first CPU here reports, the rest halt */
+    /* The fatal path takes the byte-stream claim too (and never releases it),
+     * so a survivable report on another CPU waits its bounded turn rather than
+     * interleaving into the last message the kernel will ever print. */
+    for (int i = 0; i < 1000000; i++) {
+        if (!__sync_lock_test_and_set(&kfault_claim, 1)) return;
+        __asm__ volatile ("pause");
+    }
+}
+void kfault_end(int fatal) {
+    if (fatal) for (;;) __asm__ volatile ("cli; hlt");
+    __sync_lock_release(&kfault_claim);
+}
+
+void kfault_str(const char *s) { panic_str(s); }
+void kfault_hex(uint64_t v)    { panic_hex64(v); }
+void kfault_dec(int v)         { panic_dec(v); }
+
+/* A task name, bounded. tasks[].name is a fixed array and a torn-down or
+ * never-started slot need not hold a terminator; a reporter must not be the
+ * thing that runs off the end of .bss. */
+void kfault_task(int t) {
+    kfault_dec(t);
+    if (t < 0 || t >= MAX_TASKS) return;
+    panic_str(" '");
+    for (unsigned i = 0; i < sizeof(tasks[t].name) && tasks[t].name[i]; i++)
+        panic_ch(tasks[t].name[i]);
+    panic_str("'");
+}
+
+/* #PF error bits, spelled out. "err=0x11" has cost this project a
+ * symbolisation cycle more than once: it is present + instruction fetch at
+ * CPL 0 -- the kernel executed a page marked NX -- which is an entirely
+ * different diagnosis from the absent-page read that "err=0x0" is. */
+void kfault_pf_err(uint64_t err) {
+    panic_str((err & 0x1)  ? "present"  : "not-present");
+    panic_str((err & 0x2)  ? ",write"   : ",read");
+    panic_str((err & 0x4)  ? ",user"    : ",supervisor");
+    if (err & 0x8)  panic_str(",reserved-bit");
+    if (err & 0x10) panic_str(",exec");
+}
+
+/* The register line. rip and cs say whose code trapped; rsp and rbp say which
+ * dereference did it. A supervisor fault on a small constant address is a
+ * near-null base plus a struct offset, and the base is in one of those two far
+ * more often than not -- printing them is what turns a capture into a site
+ * instead of another reproduce-and-symbolise cycle. */
+void kfault_frame(const struct interrupt_frame64 *f) {
+    if (!f) return;
+    panic_str("\n  rip="); panic_hex64(f->rip);
+    panic_str(" cs=");     panic_hex64(f->cs);
+    panic_str(" rflags="); panic_hex64(f->rflags);
+    panic_str("\n  rsp="); panic_hex64(f->rsp);
+    panic_str(" rbp=");    panic_hex64(f->rbp);
+    panic_str(" cpu=");    panic_dec(this_cpu());
+}
 
 #ifdef HANG_WATCHDOG
 /* ---- Hang watchdog: turn a silent stall into a state dump -------------------

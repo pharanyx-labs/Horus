@@ -1338,6 +1338,27 @@ void irq_policy_selftest(void);
 void sched_impersonate_enter(void);
 void sched_impersonate_exit(void);
 
+/* ---- Kernel-fault reporting (scheduler.c) ----------------------------------
+ *
+ * FOR THE CPL-0 TRAP PATHS IN idt.c ONLY. These write bytes to COM1 directly,
+ * bypassing console ownership, because print() is klog-only once console_server
+ * owns the console and a kernel fault that cannot be heard reads as a hang.
+ * Every other kernel message must still go through print()/the console server
+ * (finding #126) -- a second UART writer on a live session splits the shell
+ * prompt, and that has already cost this project a fictitious "hang".
+ *
+ * Bracket a report with kfault_begin(fatal)/kfault_end(fatal): fatal=0 takes a
+ * bounded claim and releases it (the kernel survives and must be able to report
+ * again), fatal=1 claims for good and kfault_end never returns. */
+void kfault_begin(int fatal);
+void kfault_end(int fatal);
+void kfault_str(const char *s);
+void kfault_hex(uint64_t v);
+void kfault_dec(int v);
+void kfault_task(int t);                 /* "N 'name'", name bounded */
+void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */
+void kfault_frame(const struct interrupt_frame64 *f);   /* rip/cs/rflags/rsp/rbp/cpu */
+
 /* Which CPU is executing this code. Derived from the TSS selector in TR (`str`)
  * rather than an uncached LAPIC MMIO read -- see the long note on this_cpu() in
  * scheduler.c for why, and why not %gs. this_cpu_lapic() is the original MMIO

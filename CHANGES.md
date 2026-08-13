@@ -8,6 +8,37 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Documentation — a second G-8 capture retires the shared-stack hypothesis and one bad search
+
+A dual-arm soak (150 boots per arm on one host) caught the fault again on `main` at `e9aebdd`,
+this time in a boot carrying **two** corrupted resume values on two CPUs: a `.text` return
+address consumed at the `iretq`, and **`4`** consumed at the stub's first `pop`. Both symbolise
+exactly against the binary that produced them.
+
+Three corrections to what was recorded on 2026-08-13 earlier in the day:
+
+**The two-CPUs-on-one-kernel-stack hypothesis is not supported.** The second event is the first
+`t > 0` capture, and there `task_running_cpu[4] == 0` and `percpu_current_task[0] == 4` — the
+claim invariant **holds** at fault time. One capture does not disprove it, but nothing observed
+now supports it, and a one-word value/pointer confusion needs no second CPU to explain.
+
+**"Find the write that puts a return address into `saved_ksp`" was the wrong search.** Two
+different garbage values in a single boot put the cause upstream of any one assignment. No
+`saved_ksp` write produces `4`.
+
+**The floor guard did not fire on `rsp = 4`.** That value is below its threshold and is named
+verbatim in its own comment, yet no `bogus resume rsp` line appears in the log. Until that is
+explained, the guard's behaviour is unverified — and every "the guard did not catch it"
+statement about this fault, including the one written earlier today, is an inference rather
+than an observation.
+
+The same run served as the control for **PR #135** (per-CPU IRQ lock, `[C-3]`/`[C-3.1]`):
+`main` 1/150 against #135 rebased **0/150**. Not a significant difference (Fisher p = 1.0) and
+no improvement is claimed — but it establishes the fault is `main`'s, not #135's, which is why
+#135 was no longer held for it and merged the same day.
+
+**[G-8] remains open.** No code changed here.
+
 ### Fixed — the SMP soak stops destroying the evidence it exists to collect (**[G-8]**)
 
 `smoke-session-smp-soak` reused a single `mktemp` log, overwrote it on every

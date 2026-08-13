@@ -1619,16 +1619,25 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-8</span>The SMP session soak is not clean, and the mechanism is not established</h3>
+            <h3><span class="id">G-8</span>The SMP session soak is not clean, and the origin of the fault is not established</h3>
             <p>
               <code>smoke-session-smp-soak</code> fails at roughly <strong>2–3% per boot</strong>
-              on current <code>main</code>. Distinct signatures have been captured, one of which
-              matches a previously fixed deadlock verbatim, so the open question is whether that
-              fix is incomplete or a second defect presents identically. The CI job is advisory
-              rather than gating — at that rate a required check reddens about a third of runs
-              and simply teaches everyone to press re-run, which is the reflex that hid the
-              earlier deadlock for months. That is a mitigation, not a fix. Signatures are
-              recorded; a mechanism is explicitly not claimed.
+              on current <code>main</code>. The <em>proximate</em> mechanism is established and
+              proved: the interrupt dispatcher returns a resume <code>%rsp</code> that is not a
+              kernel stack pointer, and the ISR epilogue consumes it — one capture faults at the
+              <code>iretq</code>, another at the first register pop. Two symbolised captures show
+              two <em>different</em> bad values, so it is not one mis-assignment, and the
+              <strong>origin</strong> of the value remains unknown. That is why the finding stays
+              open and the CI job stays advisory rather than gating: at that rate a required
+              check reddens about a third of runs and simply teaches everyone to press re-run,
+              which is the reflex that hid an earlier deadlock for months. That is a mitigation,
+              not a fix.
+            </p>
+            <p>
+              An earlier version of this section said a mechanism was <em>explicitly not
+              claimed</em>, and that two captured signatures included one matching a previously
+              fixed deadlock verbatim. Both readings have since been superseded by symbolised
+              evidence and are corrected here rather than quietly dropped.
             </p>
             <p>
               One correction worth stating publicly, because it is the kind this project exists

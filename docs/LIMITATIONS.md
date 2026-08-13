@@ -482,6 +482,35 @@ resume values on two CPUs: a `.text` return address, and **`4`**. Three conseque
   on the one value it was built for, it produced nothing. Until that is explained, treat the
   guard's behaviour as unverified.
 
+**Update — the guard was mute, and that is now fixed and gated (2026-08-13).** The last bullet
+is resolved: the guard's report was bracketed `kfault_begin(1)`, and `kfault_begin(1)` is
+`panic_begin()`, whose claim is **permanent** — a CPU that asks for it after another CPU's fatal
+exception halts *inside* `panic_begin` without emitting a byte. In the two-event capture above,
+the fatal `#GP` on cpu 3 printed first and kept the claim, so the guard **could not have been
+heard on that boot whether or not it fired**. #140 made this report reach the UART but left it
+behind a claim the failure itself takes away. The guard now reports under the bounded claim,
+releases it, and only then halts — halting is unchanged and is the fail-closed answer, since
+`iretq`-ing onto a rejected value is precisely what must not happen.
+
+Two things follow for this section:
+
+- **Withdraw every "the guard did not catch it" statement about that capture.** The absence of
+  the line was never evidence about the guard. `make smoke-resume-guard` /
+  `-preclaim` / `-legacy` / `-nofloor` now settle it in seconds instead of at ~1 boot in 150:
+  the guard fires, its line reaches the wire even from behind a permanent claim, and both the
+  pre-fix bracket and a guard-less build reproduce the silence on demand.
+- **A new narrowing, offered as an inference.** The guard-less arm shows that a resume `%rsp`
+  of `4` still present at `interrupt_handler64`'s `out->cs` read faults at **`0x94`** — G-8's
+  original datapoint, reproduced deliberately. The capture faulted at **`0x4`**, in the stub's
+  first `pop`, so on that boot the value was not `4` at the guard *or* at `out->cs`: it became
+  `4` in the epilogue window, after the guard and before the stub's `movq %rax,%rsp`. The
+  frame's stack canary passed, so this points at a **register** that did not survive rather than
+  a smeared stack. It rests on the guard/`out->cs` ordering in a rebuild of an `idt.c` unchanged
+  since the capture, not on a retained binary; `TESTS.md` records the check.
+
+**[G-8] stays open** — the origin of the bad value is still unknown and the job stays advisory.
+What is closed is the instrument.
+
 The same run was the control for **PR #135** (per-CPU IRQ lock): `main` 1/150, #135 rebased
 **0/150**. That is not a significant difference (Fisher p = 1.0) and no improvement is claimed —
 but it establishes that the fault is `main`'s, not #135's, which is why #135 was no longer held

@@ -1380,6 +1380,13 @@ void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */
 void kfault_frame(const struct interrupt_frame64 *f);   /* rip/cs/rflags/rsp/rbp/cpu */
 void kfault_claims(int task);            /* who else claims this task (SMP only) */
 
+#ifdef RESUME_RSP_INJECT_PRECLAIM
+/* Test-only: leave the UART in the state another CPU's FATAL exception leaves
+ * it -- panic claim taken, never released. `make smoke-resume-guard-preclaim`
+ * uses it to assert a survivable report still gets out from behind one. */
+void kfault_claim_permanently_for_test(void);
+#endif
+
 /* Which CPU is executing this code. Derived from the TSS selector in TR (`str`)
  * rather than an uncached LAPIC MMIO read -- see the long note on this_cpu() in
  * scheduler.c for why, and why not %gs. this_cpu_lapic() is the original MMIO

@@ -901,6 +901,37 @@ jobs:
       # rather than a re-run. Each boot is a few seconds.
       - name: Run SOAK_RUNS SMP sessions and report the hang rate (advisory; see G-8)
         run: make smoke-session-smp-soak SOAK_RUNS=45
+      # G-8 is rare, and until now every occurrence CI witnessed was destroyed by
+      # the harness: the soak kept one reused temp log and printed `tail -20`. On
+      # #142 that retained "PAGE FAULT at 0x525c71a094 err=" and discarded the
+      # error code, rip, rsp, rbp and the claim line -- the whole payload #140 was
+      # added to produce. The full serial of each failing boot is now kept, and
+      # uploaded here so a red advisory run yields EVIDENCE rather than a rate.
+      #
+      # `if: always()` rather than `if: failure()` deliberately: this job carries a
+      # job-level continue-on-error, and rather than reason about how that colours
+      # failure() for later steps, the upload just always runs. The soak removes
+      # the directory when every boot passed, so `if-no-files-found: ignore` makes
+      # a clean run a no-op. The condition that must never be wrong here is "an
+      # occurrence was captured and not uploaded".
+      - name: Upload the failing boots' serial logs (G-8 evidence)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: g8-soak-evidence
+          path: soak-evidence/
+          if-no-files-found: ignore
+          retention-days: 90
+      # Symbolising against a rebuilt tree has produced a wrong reading of this
+      # fault twice (TESTS.md). Ship the exact binary that produced the addresses.
+      - name: Upload the kernel.elf that produced those addresses
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: g8-soak-kernel-elf
+          path: kernel.elf
+          if-no-files-found: ignore
+          retention-days: 90
 
   smoke-fs:
     name: QEMU filesystem self-test (headless)

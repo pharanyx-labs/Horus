@@ -583,9 +583,9 @@ were done against rebuilt trees. The artifact was available from CI the whole ti
 #### The first capture taken with the report audible (2026-08-13)
 
 #140 made kernel fault reports reach the UART instead of the klog. Run against `ba84e90` at
-`-smp 4`, keeping **every** failing run's full serial log — `smoke-session-smp-soak` reuses one
-temp log, overwrites it per iteration, deletes it at the end and prints only `tail -20`, so it
-would have discarded this — the fault appeared **once in 150 boots**:
+`-smp 4`, keeping **every** failing run's full serial log — which `smoke-session-smp-soak` did
+not do at the time, so it was done by hand; the target has since been fixed to do it (below) —
+the fault appeared **once in 150 boots**:
 
 ```
 64-bit EXCEPTION vector=13 err=0x4388 task=0 ''
@@ -631,6 +631,42 @@ Three independent quantities now agree on the same resume value: the faulting in
 `rbp` read from `R+64`, and the `#GP` error code derived from `R+144`. Index `0x871` is far
 past any real GDT entry, which is why the `iretq` faulted rather than returning somewhere
 plausible and corrupting silently.
+
+##### The harness was destroying these captures, and no longer does
+
+This capture had to be taken by hand, because `smoke-session-smp-soak` reused one `mktemp`
+log, overwrote it every iteration, deleted it at the end, and printed `tail -20` of the
+failure. That is not a hypothetical loss. On PR #142 — a docs-only change — CI hit an
+occurrence at run 34/45 and retained exactly this:
+
+```
+PAGE FAULT at 0x525c71a094 err=
+```
+
+It stops mid-assignment. The error code, `rip`, `rsp`, `rbp` and the `claim:` line — the whole
+payload #140 was added to produce — were discarded by the harness that observed them. **Every
+G-8 occurrence CI has ever seen was thrown away this way**, including any `t > 0` capture,
+which is the one that would settle the hypothesis above.
+
+Two causes, both fixed:
+
+1. **`session_test.py` stopped draining too early.** On seeing a fault marker it waited for the
+   rest of the dump with `for _ in range(6): if not self._pump(0.25): break` — which gives up
+   at the *first* quarter-second with no bytes. A fault report is not a continuous stream: the
+   kernel formats each field, and under SMP may do so while another CPU is wedged, so a gap
+   mid-dump is ordinary. It now tolerates gaps and stops on sustained silence, bounded by
+   `FAULT_DRAIN_SECS`.
+2. **The soak kept no evidence.** `session_test.py` has always supported `SESSION_SERIAL_LOG`,
+   which writes the complete serial buffer; nothing set it. Each boot now writes one, passing
+   runs are deleted, failing and vacuous ones are kept with their stdout, and CI uploads the
+   directory — plus the exact `kernel.elf`, because symbolising against a rebuilt tree has
+   already produced a wrong reading of this fault twice.
+
+Verified in both directions rather than assumed. With `KFAULT_INJECT=1 KFAULT_INJECT_TICKS=40`
+firing a deliberate supervisor fault mid-session, the retained log contains the report whole —
+`PAGE FAULT` line, `vec`/`errc`, `rip`/`cs`/`rflags`, `rsp`/`rbp`/`cpu`, and `claim:` — where
+CI's #142 capture had one truncated line. And a clean soak removes the directory, so a passing
+run uploads nothing.
 
 ##### Why the floor guard did not catch it
 
@@ -1150,7 +1186,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-tcc` | TCC is provisioned into `/bin` and `tcc -v` runs. (Needs `SMOKE_TIMEOUT=320`.) |
 | `smoke-session` | A scripted session drives the real shell over serial and asserts on output. |
 | `smoke-session-smp` | The same under SMP. |
-| `smoke-session-smp-soak` | `SOAK_RUNS` consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. **Currently ADVISORY in CI, not gating — see finding G-8 below.** |
+| `smoke-session-smp-soak` | `SOAK_RUNS` consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. **Keeps evidence:** each failing or vacuous boot's **full serial log** is retained in `$(SOAK_EVIDENCE_DIR)` (default `soak-evidence/`) alongside its stdout, and CI uploads the directory plus the exact `kernel.elf` as artifacts; a clean run removes the directory. Until 2026-08-13 the target reused one temp log, overwrote it every iteration, deleted it at the end and printed `tail -20`, so it destroyed the diagnostic it existed to produce — see G-8 below. **Currently ADVISORY in CI, not gating — see finding G-8 below.** |
 
 ## Can the kernel be heard when it faults?
 

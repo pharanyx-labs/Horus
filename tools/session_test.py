@@ -59,6 +59,13 @@ SERIAL_LOG = os.environ.get("SESSION_SERIAL_LOG", "")
 # Any of these on the wire means the kernel faulted — fail the run immediately.
 FAULT_RE = re.compile(r"PAGE FAULT|Exception! Vector|PANIC|Rejected by validator")
 
+# How long to keep draining after a fault marker appears, and how many
+# consecutive idle 0.25 s polls count as "the dump has finished". The total is a
+# ceiling, not a cost: a healthy dump goes quiet and exits in about a second.
+# Only ever reached on a path that has already failed.
+FAULT_DRAIN_SECS = 5.0
+FAULT_DRAIN_QUIET = 4
+
 
 class SessionFail(Exception):
     pass
@@ -153,9 +160,30 @@ class Serial:
                 # and these are rare enough that throwing the detail away costs
                 # a whole reproduction cycle. Bounded, and only on a path that
                 # is already failing.
-                for _ in range(6):
-                    if not self._pump(0.25):
-                        break
+                # Wait for the dump to go QUIET, not merely to pause. The old
+                # loop was `for _ in range(6): if not self._pump(0.25): break`,
+                # which stops at the first quarter-second with no bytes -- and a
+                # fault report is not a continuous stream. The kernel formats
+                # each field, and under SMP it may be doing so while another CPU
+                # is wedged, so a gap mid-dump is ordinary. CI run 34/45 on #142
+                # ended its capture at
+                #
+                #     PAGE FAULT at 0x525c71a094 err=
+                #
+                # mid-assignment: the error code, rip, rsp, rbp and the claim
+                # line -- everything #140 added for exactly this -- were still in
+                # flight when the loop gave up. Tolerate gaps, stop on sustained
+                # silence, and bound the whole wait so a wedged guest cannot hang
+                # the run.
+                drain_deadline = time.time() + FAULT_DRAIN_SECS
+                quiet = 0
+                while time.time() < drain_deadline:
+                    if self._pump(0.25):
+                        quiet = 0
+                    else:
+                        quiet += 1
+                        if quiet >= FAULT_DRAIN_QUIET:
+                            break
                 # Report the fault WITH its context, the way the timeout path
                 # below does. This used to raise on the matched word alone --
                 # "kernel fault on serial: 'PAGE FAULT'" -- which names the

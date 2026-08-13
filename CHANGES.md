@@ -8,6 +8,54 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the SMP soak stops destroying the evidence it exists to collect (**[G-8]**)
+
+`smoke-session-smp-soak` reused a single `mktemp` log, overwrote it on every
+iteration, deleted it at the end, and printed `tail -20` of a failing run. G-8 is
+rare, so that discarded almost everything it caught. Not hypothetically: on PR #142
+— a docs-only change — CI hit an occurrence at run 34/45 and retained exactly
+
+```
+PAGE FAULT at 0x525c71a094 err=
+```
+
+stopping mid-assignment. The error code, `rip`, `rsp`, `rbp` and the `claim:` line —
+the entire payload the previous entry added — were thrown away by the harness that
+observed them. **Every G-8 occurrence CI has ever seen was lost this way**, including
+any `t > 0` capture, which is the one that would settle whether two CPUs are sharing
+a kernel stack.
+
+Two causes, both fixed:
+
+**`session_test.py` stopped draining too early.** On a fault marker it waited for the
+rest of the dump with `for _ in range(6): if not self._pump(0.25): break`, which gives
+up at the *first* quarter-second with no bytes. A fault report is not a continuous
+stream — the kernel formats each field, and under SMP may be doing so while another
+CPU is wedged, so a gap mid-dump is ordinary. It now tolerates gaps and stops on
+sustained silence, bounded by `FAULT_DRAIN_SECS` so a wedged guest cannot hang a run.
+
+**The soak kept nothing.** `session_test.py` has always supported
+`SESSION_SERIAL_LOG`, which writes the complete serial buffer; nothing ever set it.
+Each boot now writes one into `$(SOAK_EVIDENCE_DIR)` (default `soak-evidence/`,
+gitignored); passing runs are deleted, failing and vacuous ones are kept with their
+stdout beside them, and a clean run removes the directory. CI uploads it as an
+artifact — together with the exact `kernel.elf`, because symbolising against a
+rebuilt tree has already produced a wrong reading of this fault twice.
+
+Verified in both directions rather than assumed. With `KFAULT_INJECT=1
+KFAULT_INJECT_TICKS=40` firing a deliberate supervisor fault mid-session, the retained
+log holds the report whole — `PAGE FAULT` line, `vec`/`errc`, `rip`/`cs`/`rflags`,
+`rsp`/`rbp`/`cpu` and `claim:` — where #142's CI capture had one truncated line. A
+forced-failure arm (`SOAK_MIN_CHECKS=99`) retains full 80-line transcripts; a clean
+arm leaves no directory at all.
+
+This changes no kernel code and fixes no kernel defect. **[G-8] remains open** and the
+job remains advisory; what changes is that the next occurrence produces evidence
+instead of a rate.
+
+Tests: `smoke` · `smoke-session` · `smoke-session-smp` · `smoke-kfault` ·
+`smoke-kfault-legacy`, plus both soak arms above.
+
 ### Fixed — user copies refuse instead of truncating (roadmap 1.4, **[C-4]**)
 
 `copy_from_user`/`copy_to_user` clamped `n` to `USER_MEM_MAX_COPY` (64 KiB) and then

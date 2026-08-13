@@ -1806,32 +1806,53 @@ SOAK_RUNS ?= 15
 # Set below the current step count (~14 under SMP) so ordinary additions do not
 # trip it, but far enough above zero to catch a collapse.
 SOAK_MIN_CHECKS ?= 8
+# Where a failing run's evidence is kept. The soak used to reuse ONE mktemp log,
+# overwrite it every iteration, delete it at the end, and print `tail -20` of the
+# failure -- so the diagnostic was destroyed by the harness that observed it.
+# G-8 is rare enough that this cost real reproduction cycles: on #142, CI caught
+# an occurrence and retained "PAGE FAULT at 0x525c71a094 err=" and nothing else.
+# Each run now writes the FULL serial via SESSION_SERIAL_LOG (which session_test.py
+# has always supported and nothing set); passing runs are deleted, failing ones
+# are kept with their stdout beside them. CI uploads this directory.
+SOAK_EVIDENCE_DIR ?= soak-evidence
 .PHONY: smoke-session-smp-soak
 smoke-session-smp-soak:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory boot.iso
 	@echo "[soak] $(SOAK_RUNS) boots; any single hang fails the gate"
-	@fail=0; vacuous=0; log=$$(mktemp); \
+	@echo "[soak] evidence from failing runs is kept in $(SOAK_EVIDENCE_DIR)/"
+	@rm -rf $(SOAK_EVIDENCE_DIR); mkdir -p $(SOAK_EVIDENCE_DIR); \
+	fail=0; vacuous=0; log=$$(mktemp); \
 	for i in $$(seq 1 $(SOAK_RUNS)); do \
-	    rc=0; \
-	    QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py boot.iso >"$$log" 2>&1 || rc=$$?; \
+	    rc=0; n=$$(printf '%03d' $$i); \
+	    ser=$(SOAK_EVIDENCE_DIR)/run-$$n.serial.log; \
+	    QEMU_SMP=4 SESSION_TIMEOUT=120 SESSION_SERIAL_LOG="$$ser" \
+	        python3 tools/session_test.py boot.iso >"$$log" 2>&1 || rc=$$?; \
 	    checks=$$(grep -c '\[ok\]' "$$log" 2>/dev/null || echo 0); \
 	    if [ $$rc -eq 0 ] && grep -q 'SESSION_TEST: PASS' "$$log" && [ "$$checks" -ge $(SOAK_MIN_CHECKS) ]; then \
 	        echo "[soak] run $$i/$(SOAK_RUNS): pass ($$checks checks)"; \
-	    elif [ $$rc -eq 0 ] && grep -q 'SESSION_TEST: PASS' "$$log"; then \
-	        echo "[soak] run $$i/$(SOAK_RUNS): VACUOUS - exited 0 with only $$checks checks (expected >= $(SOAK_MIN_CHECKS))"; \
-	        tail -20 "$$log"; \
-	        vacuous=$$((vacuous+1)); \
+	        rm -f "$$ser"; \
 	    else \
-	        echo "[soak] run $$i/$(SOAK_RUNS): FAIL (exit $$rc, $$checks checks)"; \
-	        echo "----- failing run, last 20 lines -----"; tail -20 "$$log"; \
-	        echo "--------------------------------------"; \
-	        fail=$$((fail+1)); \
+	        cp "$$log" $(SOAK_EVIDENCE_DIR)/run-$$n.stdout.log; \
+	        if [ $$rc -eq 0 ] && grep -q 'SESSION_TEST: PASS' "$$log"; then \
+	            echo "[soak] run $$i/$(SOAK_RUNS): VACUOUS - exited 0 with only $$checks checks (expected >= $(SOAK_MIN_CHECKS))"; \
+	            vacuous=$$((vacuous+1)); \
+	        else \
+	            echo "[soak] run $$i/$(SOAK_RUNS): FAIL (exit $$rc, $$checks checks)"; \
+	            fail=$$((fail+1)); \
+	        fi; \
+	        echo "----- run $$n, last 20 lines (FULL serial: $$ser) -----"; tail -20 "$$log"; \
+	        grep -aiE 'EXCEPTION|PAGE FAULT|PANIC|claim:|rip=|rsp=' "$$ser" 2>/dev/null \
+	            | sed 's/^/  [fault] /' | head -20; \
+	        echo "------------------------------------------------------"; \
 	    fi; \
 	done; rm -f "$$log"; \
 	if [ $$fail -ne 0 ] || [ $$vacuous -ne 0 ]; then \
-	    echo "SESSION_SOAK: FAIL $$fail/$(SOAK_RUNS) hung, $$vacuous/$(SOAK_RUNS) vacuous"; exit 1; \
+	    echo "SESSION_SOAK: FAIL $$fail/$(SOAK_RUNS) hung, $$vacuous/$(SOAK_RUNS) vacuous"; \
+	    echo "SESSION_SOAK: evidence retained in $(SOAK_EVIDENCE_DIR)/ ($$(ls $(SOAK_EVIDENCE_DIR) | wc -l) files)"; \
+	    exit 1; \
 	fi; \
+	rmdir $(SOAK_EVIDENCE_DIR) 2>/dev/null || true; \
 	echo "SESSION_SOAK: PASS $(SOAK_RUNS)/$(SOAK_RUNS) boots completed the session (>= $(SOAK_MIN_CHECKS) checks each)"
 
 # Regression guard for the SMP console-output corruption: boot the SHIPPED kernel

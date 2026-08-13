@@ -425,10 +425,21 @@ consumed on reply (seL4's reply object). This makes reply forgery *structurally*
 rather than merely gated, removes the poll-on-contention busy-wait, and is the precondition
 for priority inheritance.
 
-### 1.4 ⬜ Fail-closed user copies — **[C-4]**
+### 1.4 ✅ Fail-closed user copies — **[C-4]**
 
-`copy_from_user`/`copy_to_user` currently clamp to `USER_MEM_MAX_COPY` and return success.
-Refuse instead; add an explicit partial-copy API if a caller genuinely needs one.
+*Landed 2026-08-13.* `copy_from_user`/`copy_to_user` clamped to `USER_MEM_MAX_COPY` and
+returned success; they now refuse. No explicit partial-copy API was needed: an audit of all
+~89 call sites found every one already bounded below the ceiling, by its own kernel staging
+buffer or by chunking to `USER_MEM_MAX_COPY` before the call, so the refusal is
+behaviour-preserving.
+
+The one caller that was not merely latent was `h_boot_module_read`, which has no staging
+buffer (it reads through `PHYS_KVA`) and returned the unclamped length — reporting bytes it had
+not written. It now short-reads honestly, which its ABI already promised.
+
+Note for anyone extending this: the refusal is **unreachable from ring 3**, because every
+syscall clamps to a small kernel buffer first. It is defence in depth against the next caller,
+not a hole that was open to userspace. See `docs/LIMITATIONS.md` §1.4.
 
 ### 1.5 ⬜ 64-bit-clean heap arithmetic — **[I-2]**
 

@@ -70,7 +70,7 @@ static void h_get_line(struct interrupt_frame64 *r) {
                             print("\b \b");
                         }
                         len = 0;
-                        while (cmd_history[history_pos][len] && len < max_len - 1) {
+                        while (len < max_len - 1 && cmd_history[history_pos][len]) {
                             line[len] = cmd_history[history_pos][len];
                             char echo[2] = {line[len], 0};
                             print(echo);
@@ -89,7 +89,7 @@ static void h_get_line(struct interrupt_frame64 *r) {
                         } else {
                             for (uint32_t i = 0; i < len; i++) print("\b \b");
                             len = 0;
-                            while (cmd_history[history_pos][len] && len < max_len - 1) {
+                            while (len < max_len - 1 && cmd_history[history_pos][len]) {
                                 line[len] = cmd_history[history_pos][len];
                                 char echo[2] = {line[len], 0};
                                 print(echo);

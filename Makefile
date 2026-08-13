@@ -618,6 +618,22 @@ IRQ_POLICY_REPORT_LATE ?= 1
 ifneq ($(IRQ_POLICY_REPORT_LATE),1)
 CFLAGS  += -DIRQ_POLICY_REPORT_LATE=$(IRQ_POLICY_REPORT_LATE)
 endif
+# IRQ_LEGACY_GLOBAL_LOCK=1 rebuilds the PRE-1.1 spinlock: one global nesting
+# depth shared by every CPU, incremented non-atomically, with an unconditional
+# `sti` on the outermost release. That is findings [C-3] and [C-3.1] exactly as
+# they stood, and it is the CONTROL ARM the IF-preserving per-CPU lock was
+# measured against -- the same role EP_QUEUE_SLOTS=1 plays for roadmap 1.3.
+#
+# Under IRQ_POLICY_AUDIT=1 the two builds count the SAME predicate (a release
+# whose caller had IF clear): the legacy build reports it as `accidental` and
+# fires the sti, the default build reports it as `suppressed` and does not. Equal
+# totals on one workload is the evidence that the fix removed those enablements
+# and nothing else. NEVER SHIP THIS.
+IRQ_LEGACY_GLOBAL_LOCK ?= 0
+ifeq ($(IRQ_LEGACY_GLOBAL_LOCK),1)
+CFLAGS  += -DIRQ_LEGACY_GLOBAL_LOCK
+endif
+
 IRQ_POLICY_REPORT_EVERY ?= 0
 ifneq ($(IRQ_POLICY_REPORT_EVERY),0)
 CFLAGS  += -DIRQ_POLICY_REPORT_EVERY=$(IRQ_POLICY_REPORT_EVERY)u

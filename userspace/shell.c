@@ -1898,7 +1898,15 @@ static void handle_command(char *cmd) {
             } else if (rc < 0) {
                 println("irqpolicy: read failed");
             } else {
+                /* Both counters, always. They count one predicate -- a release
+                 * whose caller had IF clear -- and which one is non-zero says
+                 * which lock this kernel was built with: `accidental` fired an
+                 * sti the caller never asked for (the legacy global lock),
+                 * `suppressed` did not (the per-CPU IF-preserving lock). Printing
+                 * only the live one would make the two builds' output look
+                 * incomparable when comparing them is the entire point. */
                 print("irq-policy: accidental_sti="); print_decimal(info.accidental);
+                print(" suppressed_sti=");            print_decimal(info.suppressed);
                 print(" benign_sti=");                print_decimal(info.benign);
                 print(" sites=");                     print_decimal(info.sites);
                 print(" @tick=");                     print_decimal(info.ticks);

@@ -121,30 +121,60 @@ authority.
 
 ## 2. Correctness limitations
 
-### 2.0 Spinlock interrupt state is global, and the bug is load-bearing — **[C-3]**, **[C-3.1]**
+### 2.0 ~~Spinlock interrupt state is global, and the bug is load-bearing~~ — **FIXED 2026-08-11** — **[C-3]**, **[C-3.1]**
 
-`irq_lock_depth` (`src/kernel/scheduler.c`) is a single **global** counter shared by every
-CPU, incremented and decremented non-atomically, and `spin_unlock` does an **unconditional**
-`sti` when it reaches zero.
+**What it was.** `irq_lock_depth` was a single **global** counter shared by every CPU,
+incremented and decremented non-atomically, and `spin_unlock` did an **unconditional** `sti`
+when it reached zero. Under SMP one CPU's release could re-enable interrupts while another
+still held a lock, and racing read-modify-writes lost counts outright. The unconditional `sti`
+separately re-enabled interrupts inside a caller's own `cli` region, including `user_copy`'s
+CR3 window, where a preemption leaves a stale CR3 to restore.
 
-Under SMP — the default build — one CPU's release can therefore re-enable interrupts while
-another still holds a lock, and racing read-modify-writes lose counts outright. The
-unconditional `sti` separately re-enables interrupts inside a caller's own `cli` region,
-including `user_copy`'s CR3 window, where a preemption leaves a stale CR3 to restore.
+Worse, it was **load-bearing**: because that `sti` fired for any lock taken while interrupts
+were masked — and `int 0x80` masks them on every syscall entry — interrupts came on earlier
+and more often than any stated policy asked for, and the startup handshake had come to depend
+on it. A correct per-CPU, IF-preserving lock written on 2026-07-27 passed every local gate and
+broke the ring-3 handshake in CI; it was reverted.
 
-**The complication.** Because that `sti` fires for *any* lock taken while interrupts were
-already masked, and boot and early init take many, interrupts are enabled far earlier and
-more often than any explicit policy asks for. The `init` → `fs_server` → `console_server` →
-shell startup handshake depends on the timer preemption that results.
+**What fixed it.** The depth and the saved `RFLAGS.IF` are now per-CPU, and the outermost
+release *restores the caller's own* `IF` instead of asserting one.
 
-A correct per-CPU, IF-preserving lock was written on 2026-07-27, passed every local gate, and
-**broke the ring-3 startup handshake in CI** (`smoke-modules` timed out waiting for
-provisioning; `smoke-coreutils-shell` failed with `ls: spawn fs_server first`). It was
-reverted. The kernel's boot-time interrupt enablement is thus an emergent property of a
-locking defect rather than a stated design — a latent hazard for the SMP work and for any
-future tickless or real-time scheduling.
+The July patch was not wrong — the tree was. Three subsystems were subsequently changed to
+route around **[C-3.1]**, above all `preempt_on_tick`'s ring-0 guard, widened from `cpu == 0`
+to every CPU precisely because a ring-0 tick could land mid-syscall. With that guard a ring-0
+tick is never a switch point, so the accidental `sti` no longer produces the preemption
+anything depended on.
 
-Fixing it requires making boot interrupt enablement explicit first. Roadmap item 1.1.
+Interrupt policy is now **stated** — see [`ARCHITECTURE.md` §6, "Interrupt policy"] — and
+gated: `smoke-irq-policy` records `IF` at six milestones, the sixth being `IF` immediately
+after the first outermost `spin_unlock`, which is the one observation separating the two locks.
+`IRQ_LEGACY_GLOBAL_LOCK=1` rebuilds the defect exactly, as the control arm.
+
+Measured on the same 14-command workload, the two builds count the same predicate (a release
+whose caller had `IF` clear): legacy **1439 accidental + 720 benign = 2159**; per-CPU
+**2159 suppressed + 0 benign = 2159**. Identical totals, 1439 unwanted enablements removed.
+Interleaved pinned session rates: `-smp 1` 0/20 both arms; `-smp 4` 3/40 legacy vs 1/40
+per-CPU — a difference well inside noise, and every failure in both arms was **G-8 signature
+A** (the ring-3 shell faults and `init` relaunches it), not an interrupt-policy fault.
+`smoke-console-smp-stress` and `smoke-sched-invariants-stress` both 30/30 on the new lock.
+
+**An open question, recorded rather than rounded off.** Those session rates are one harness.
+A separate boot-only harness — `-smp 4` squeezed onto a single host core against three CPU
+hogs, arms interleaved — found a kernel page fault in the interrupt-return path at **3 boots
+in 125 on the per-CPU arm, against 0/125 legacy and 0/105 on `main`**. p ≈ 0.045: marginal,
+and not conclusive at that sample size. It is recorded here because the correct bar for a
+fault on that path is *shown not to be mine*, not *not yet shown to be mine*, and because the
+alternative reading — that the new lock changes when interrupts are masked and therefore
+merely **exposes** a latent teardown-vs-selection race — puts the fix somewhere else entirely.
+The capture is a corrupted trap frame being `iretq`'d (`err=0x11`, `rip` and `rsp` 0x80 apart
+in the same kernel stack: the kernel executing from a stack), not a wild pointer, so a range
+check on the resume `%rsp` cannot catch it and did not when it was armed for exactly this.
+
+**Still open, and now visible.** The three workarounds written for C-3.1 are still in place and
+were not removed here — `preempt_on_tick`'s ring-0 guard, `untyped.c`'s IF-transparent critical
+section, and the deferred lock arming past boot. They are no longer load-bearing for interrupt
+policy, but each was justified by this defect, and each now deserves its own re-examination
+rather than a bulk revert on the strength of one green run.
 
 ### 2.1 64-bit arithmetic is truncated in the heap syscalls — **[I-2]**
 

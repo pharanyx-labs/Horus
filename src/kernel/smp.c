@@ -523,6 +523,36 @@ void smp_maybe_shootdown(uint64_t vaddr) {
      * spin to the backstop. */
     int present = smp_cpus_online + smp_siblings_parked;
     if (present > 1) {
+        /* ---- The one window that must run with interrupts ON (roadmap 1.1) ---
+         *
+         * Both spins below wait on OTHER CPUs, and those CPUs may simultaneously
+         * be waiting on this one: the receiver side of this protocol is an IPI
+         * (vector 0xFB), so a CPU spinning here with IF clear cannot flush and
+         * acknowledge, and two initiators wedge each other until the backstop
+         * expires. The requirement has always been in the comment above. What it
+         * has never had is a source: it was satisfied by accident, because
+         * spin_unlock's unconditional `sti` had already enabled interrupts for
+         * whatever syscall got here (finding [C-3.1]).
+         *
+         * With the IF-preserving lock that accident is gone, so the window says
+         * what it needs and takes it deliberately -- which is what roadmap 1.1
+         * step 1 asks for: find the windows relying on the accidental `sti` and
+         * issue it on purpose. IF is restored afterwards rather than left set,
+         * because this must not become a second source of ambient enablement.
+         *
+         * Holding a spinlock across this is the hazard the enable trades against
+         * -- an IRQ handler that took the same lock would deadlock -- and the
+         * protocol note above already forbids it. Now it is CHECKED. A caller
+         * that gets this wrong gets a named panic here rather than an
+         * intermittent lockup somewhere else. */
+        if (irq_locks_held_here() != 0) {
+            println("PANIC: tlb shootdown with a spinlock held");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+        uint64_t fl;
+        __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+        __asm__ volatile ("sti" ::: "memory");       /* deliberate; see above */
+
         while (__sync_lock_test_and_set(&shootdown_lock, 1))
             __asm__ volatile ("pause");              /* IF stays set: still service IPIs */
         smp_shootdown_pending = present - 1;
@@ -531,6 +561,8 @@ void smp_maybe_shootdown(uint64_t vaddr) {
         for (int i = 0; i < 100000000 && smp_shootdown_pending > 0; i++)
             __asm__ volatile ("pause");
         __sync_lock_release(&shootdown_lock);
+
+        if (!(fl & 0x200)) __asm__ volatile ("cli" ::: "memory");   /* restore */
     }
 #endif
 }

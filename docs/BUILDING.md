@@ -116,6 +116,19 @@ invoke these directly — the `make smoke-*` targets build and run them for you.
 `TSD_SELFTEST`, `E820_SELFTEST`, `SMP_SELFTEST`, `FLUSH_SELFTEST`, `CAPTEST_SELFTEST`,
 `PERM_SELFTEST`, and others.
 
+### Defect-reproducing builds (control arms)
+
+A handful of flags exist to rebuild a defect on purpose, so that the gate for its fix has a
+failing arm. A gate that has only ever been run against the fixed kernel is not evidence.
+
+| Flag | Reproduces | Gate |
+|---|---|---|
+| `KFAULT_INJECT` | Takes a deliberate supervisor page fault (a read of `0x94`, G-8's address) on a timer tick **after** `console_server` owns the console. `KFAULT_INJECT_TICKS` (default 400) sets how long after. | `make smoke-kfault` |
+| `KFAULT_LEGACY_PRINTLN` | Reports a CPL-0 page fault through `println()` as the kernel used to — i.e. into the klog, where nothing on the wire can hear it. | `make smoke-kfault-legacy`, which requires the report to be **absent** |
+| `EP_QUEUE_SLOTS=1` | A single-slot endpoint queue, for the roadmap 1.3 blocking-receive gates. | `make smoke-recvblock` |
+
+None of these is a shipping configuration.
+
 ---
 
 ## Testing

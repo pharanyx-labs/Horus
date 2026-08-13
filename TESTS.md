@@ -976,6 +976,33 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-session-smp` | The same under SMP. |
 | `smoke-session-smp-soak` | `SOAK_RUNS` consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. **Currently ADVISORY in CI, not gating — see finding G-8 below.** |
 
+## Can the kernel be heard when it faults?
+
+| Target | Proves |
+|---|---|
+| `smoke-kfault` | A page fault taken at **CPL 0** is reported on the **serial line**, after the console handover. `KFAULT_INJECT=1` makes the kernel fault on purpose — a read of `0x94`, G-8's exact address — on a timer tick once `console_server` owns the console, and the harness requires the report to appear *after* the login prompt. |
+| `smoke-kfault-legacy` | The same injection with reporting restored to `println()` (`KFAULT_LEGACY_PRINTLN=1`): the report must **not** reach serial. The control arm. |
+
+This pair is the inverse of every other target here: it wants a kernel fault and fails if the
+kernel takes one quietly.
+
+**Why it exists.** `print()` stops driving the hardware the moment `console_server` owns the
+console (`terminal.c`), so a report emitted that way during a live session lands in the klog
+and nothing reaches the wire. All three CPL-0 reports were emitted that way — the `#PF`
+banner, the fatal-exception dump, and #123's bogus-resume-`rsp` guard — and a live session is
+the only state in which any of them has ever been observed. G-8's supervisor fault tore down
+the ring-3 shell on every occurrence while the kernel computed the address, the error code and
+the faulting `rip`, printed them, and threw them away.
+
+**Why the control arm is the point.** `smoke-kfault` passing tells you a report arrived. Only
+`smoke-kfault-legacy` — same kernel, same injection, same tick, reporting through `println()`,
+and **nothing on the wire** — tells you the gate is measuring the routing rather than the
+existence of the fault. Compare the falsification discipline in the C-1 and 1.3 sections: a
+test that cannot fail on the bug it targets is not evidence.
+
+The ordering assertion is deliberate. "The report appeared" is satisfied by early-boot output,
+when `print()` still drives the UART; "the report appeared **after** the login prompt" is not.
+
 ## Build integrity
 
 | Target | Proves |

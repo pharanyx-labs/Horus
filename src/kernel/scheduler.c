@@ -477,6 +477,18 @@ void kfault_end(int fatal) {
     __sync_lock_release(&kfault_claim);
 }
 
+#ifdef RESUME_RSP_INJECT_PRECLAIM
+/* Test-only. Reproduces the state a fatal exception on ANOTHER CPU leaves the
+ * reporting facility in: panic_claimed taken and never released. Every later
+ * report bracketed with fatal=1 then halts its CPU without emitting a byte,
+ * which is precisely how the resume-%rsp floor guard came to be inaudible on
+ * exactly the boots it existed to explain. Taking the claim here without the
+ * halt lets one boot assert the fix. */
+void kfault_claim_permanently_for_test(void) {
+    __sync_lock_test_and_set(&panic_claimed, 1);
+}
+#endif
+
 void kfault_str(const char *s) { panic_str(s); }
 void kfault_hex(uint64_t v)    { panic_hex64(v); }
 void kfault_dec(int v)         { panic_dec(v); }

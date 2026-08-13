@@ -206,6 +206,50 @@ static void kfault_inject_tick(void) {
 }
 #endif
 
+#ifdef RESUME_RSP_INJECT
+/* Test-only. Forces the dispatcher's resume %rsp to a bogus value ONCE, after
+ * the console handover, so the floor guard in interrupt_handler64 can be gated
+ * in seconds instead of waited on at G-8's ~1-in-150.
+ *
+ * The value is 4 for the same reason kfault_inject_tick() uses 0x94: it is the
+ * literal value the 2026-08-13 capture recorded (cpu 0, resume %rsp = 4), so a
+ * passing gate and a real occurrence produce the same line.
+ *
+ * The injection is deliberately placed on the RETURN of the dispatcher rather
+ * than inside a switch path. This gate's question is "is the guard audible when
+ * it fires", not "which path produces the bad value" -- the latter is still open
+ * (G-8) and is not something a test-only hook is entitled to assume.
+ *
+ * RESUME_RSP_INJECT_PRECLAIM=1 takes the permanent panic claim first, which is
+ * the state another CPU's fatal exception leaves behind. That is the arm that
+ * witnesses the defect this file fixes: before it, the guard's report was
+ * bracketed with fatal=1 and lost the claim silently, so nothing reached the
+ * wire at all.
+ *
+ * Absent from every shipping configuration; set by `make smoke-resume-guard*`
+ * and nothing else. */
+static uint64_t resume_rsp_inject(uint64_t rsp)
+{
+    /* volatile, and not a literal `return 4`: with a constant the compiler folds
+     * `4 < 0xFFFF800000000000` at compile time and jumps straight into the
+     * guard's report, so the arm would prove the REPORT works while never
+     * executing the cmp/jae a real occurrence goes through. An opaque value
+     * makes the gate exercise the same two instructions. */
+    static volatile uint64_t bogus = 4;
+    static volatile int fired = 0;
+    static unsigned owned_ticks = 0;
+
+    if (fired) return rsp;
+    if (!console_hw_owned()) return rsp;
+    if (++owned_ticks < (unsigned)RESUME_RSP_INJECT_TICKS) return rsp;
+    if (__sync_lock_test_and_set(&fired, 1)) return rsp;
+#ifdef RESUME_RSP_INJECT_PRECLAIM
+    kfault_claim_permanently_for_test();
+#endif
+    return bogus;
+}
+#endif
+
 static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
@@ -437,6 +481,9 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
     if (from_user) fpu_save(get_current_task());
 
     uint64_t rsp = interrupt_handler64_inner(frame);
+#ifdef RESUME_RSP_INJECT
+    rsp = resume_rsp_inject(rsp);
+#endif
 
     /* Every return from the dispatcher is a kernel %rsp that isr_common_stub64
      * loads and immediately pops 15 registers from. A bogus value does not fail at
@@ -445,16 +492,45 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * produced it. (Or earlier still, on the out->cs read just below -- rsp==4
      * faults at 0x94, which is exactly what a reproduce-and-symbolise cycle spent
      * an hour chasing.) Kernel stacks are higher-half, so anything below that is a
-     * returned 0/1/-1 or a wild value, never a frame. */
+     * returned 0/1/-1 or a wild value, never a frame.
+     *
+     * RESUME_GUARD_DISABLE compiles the guard out. Test-only, and the control arm
+     * for `make smoke-resume-guard`: with the same injected bogus value and no
+     * guard, the kernel reproduces the silence on demand. See TESTS.md. */
+#ifndef RESUME_GUARD_DISABLE
     if (rsp < 0xFFFF800000000000ULL) {
         /* Was println() -- and this guard exists precisely to catch a fault
          * that has only ever been observed during a live session, when
          * println() reaches nothing but the klog. A guard whose report is
          * inaudible where it fires cannot be distinguished from one that never
          * fired, which is how "the floor guard did not catch it" became a
-         * hypothesis rather than an observation. */
+         * hypothesis rather than an observation.
+         *
+         * That was still true after the move to kfault: this report was bracketed
+         * kfault_begin(1)/kfault_end(1), and begin(1) is panic_begin(), whose claim
+         * is PERMANENT and whose losers halt WITHOUT PRINTING. So a CPU that had
+         * already died fatally -- for the same underlying reason, a bogus resume
+         * value one microsecond earlier -- left this guard mute on every other CPU
+         * for the rest of the boot. The 2026-08-13 two-event capture is exactly that
+         * shape: cpu 3 took a fatal #GP and halted holding the claim, and the only
+         * report that got out afterwards (cpu 0's #PF) was the one bracketed with
+         * fatal=0. A guard silenced by the failure it is watching for is not an
+         * instrument.
+         *
+         * So: report under the BOUNDED claim -- which is what makes it audible
+         * behind another CPU's permanent one -- release it, and only then halt.
+         * Halting is unchanged behaviour (kfault_end(1) already did it, and it is
+         * fail-closed: iretq onto a value we have just rejected is the one thing
+         * that must not happen). What changes is that the line gets out first. */
         int cur = get_current_task();
+#ifdef RESUME_GUARD_LEGACY_FATAL
+        /* Test-only: the pre-fix bracket, kept buildable so the claim above is a
+         * measurement and not a story. `make smoke-resume-guard-legacy` builds it
+         * with the preclaim arm and requires the report NOT to be heard. */
         kfault_begin(1);
+#else
+        kfault_begin(0);
+#endif
         kfault_str("\nPANIC: dispatcher returned a bogus resume rsp=");
         kfault_hex(rsp);
         kfault_str(" task=");          kfault_task(cur);
@@ -463,9 +539,19 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
             kfault_str(" pending_block="); kfault_dec((int)tasks[cur].pending_block);
         }
         kfault_str("\n  trapped from:"); kfault_frame(frame);
-        kfault_str("\n");
-        kfault_end(1);
+        kfault_claims(cur);
+        kfault_str("\nKERNEL FATAL RESUME RSP - halting\n");
+#ifdef RESUME_GUARD_LEGACY_FATAL
+        kfault_end(1);                  /* never returns */
+#else
+        kfault_end(0);
+#endif
+        /* Fail closed, and never fall through to the out->cs read below: at
+         * rsp==4 that read faults at 0x94 all by itself, which is how this
+         * defect spent a cycle being mistaken for a near-null dereference. */
+        for (;;) __asm__ volatile ("cli; hlt");
     }
+#endif
 
     struct interrupt_frame64 *out = (struct interrupt_frame64 *)rsp;
     if (out && (out->cs & 3) != 0) fpu_restore(get_current_task());

@@ -823,6 +823,35 @@ jobs:
       - name: Restore println() reporting and require the report to be INAUDIBLE
         run: make smoke-kfault-legacy SMOKE_TIMEOUT=180
 
+  smoke-resume-guard:
+    name: The resume-%rsp floor guard fires and is heard (and both control arms are not)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Return a bogus resume rsp on purpose and require the guard's PANIC line on serial
+        run: make smoke-resume-guard SMOKE_TIMEOUT=180
+      # The state another CPU's FATAL exception leaves behind. This is the arm
+      # that would have caught G-8's mute guard: before the fix, the report was
+      # bracketed fatal=1, lost the permanent claim, and halted without printing.
+      - name: Hold the permanent panic claim first and require the report ANYWAY
+        run: make smoke-resume-guard-preclaim SMOKE_TIMEOUT=180
+      # Both control arms, in the same job. Without them a green run above is
+      # consistent with the gate measuring the existence of the injection rather
+      # than whether the guard reported it.
+      - name: Restore the pre-fix fatal bracket and require the report to be INAUDIBLE
+        run: make smoke-resume-guard-legacy SMOKE_TIMEOUT=180
+      - name: Compile the guard out and require the report to be INAUDIBLE
+        run: make smoke-resume-guard-nofloor SMOKE_TIMEOUT=180
+
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)
     runs-on: ubuntu-latest

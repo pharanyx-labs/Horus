@@ -799,6 +799,101 @@ value it names is either misplaced or mute, so every "the guard did not catch it
 about this fault — including the one in the previous section — is an inference, not an
 observation, until this is settled.**
 
+##### Settled (2026-08-13): the guard was mute, and #140 did not cover it
+
+The question above is answered, in both directions, by a gate rather than by another 150-boot
+wait. **The report was being lost, and the loss was structural.**
+
+`kfault_begin(1)` is `panic_begin()`, whose claim is **permanent** — the first CPU to report a
+fatal fault takes it and never releases it, and every later CPU that asks for it halts
+**inside `panic_begin`, without emitting a byte**. That is correct for its original purpose
+(two cores tripping on the same tick used to interleave into `"PANICPANIC: : …"`). It is wrong
+for this guard, which was bracketed `kfault_begin(1)`/`kfault_end(1)`.
+
+The capture above is exactly that shape. **cpu 3 took a fatal `#GP` and halted holding the
+claim, and its `KERNEL FATAL EXCEPTION - halting` line printed first.** The only report that got
+out afterwards — cpu 0's `PAGE FAULT at 0x4` — is the one bracketed `kfault_begin(0)`, whose
+wait is bounded and which prints anyway past the budget. So on that boot the guard could not
+have been heard *whether or not it fired*, and #140's audibility fix genuinely did not reach
+this call site: it moved the guard off `println()` and onto the UART, but left it behind a claim
+the failure itself takes away.
+
+**So the absence of the line was never evidence about the guard.** Every "the guard did not
+catch it" statement about fault B is withdrawn.
+
+The fix is one line of intent: report under the **bounded** claim, release it, *then* halt.
+Halting is unchanged behaviour — `kfault_end(1)` already did it, and it is the fail-closed
+answer, since `iretq`-ing onto a value just rejected is the one thing that must not happen.
+What changes is that the line gets out first.
+
+##### The two-arm gate, so this is never inferred again
+
+`make smoke-resume-guard*` forces the dispatcher to return a bogus resume `%rsp` of **4** —
+G-8's own recorded value, for the same reason `smoke-kfault` injects at `0x94` — once, after the
+console handover, and asserts what reaches the wire. Four arms, run in seconds instead of at
+~1 boot in 150:
+
+| Target | Build | Required |
+|---|---|---|
+| `smoke-resume-guard` | injection only | PANIC line **after** the login prompt |
+| `smoke-resume-guard-preclaim` | + permanent panic claim already held | PANIC line still appears |
+| `smoke-resume-guard-legacy` | + claim held, **pre-fix `fatal=1` bracket** | PANIC line **absent** |
+| `smoke-resume-guard-nofloor` | + guard compiled out | PANIC line **absent** |
+
+The third row is the one that matters: it reproduces the defect on demand, so the second row is
+a measurement rather than a story about one capture. Built with the old bracket, the injected
+boot goes **completely silent at the login prompt** — no report, no secondary fault, nothing —
+which is a signature worth recognising elsewhere in this file.
+
+Two details that were nearly got wrong, recorded because both would have made the gate lie:
+
+- The injected value is read through a `volatile`, not returned as a literal `4`. With a
+  constant, GCC folds `4 < 0xFFFF800000000000` at compile time and jumps straight into the
+  report — the arm would prove the *reporting* works while never executing the `cmp`/`jae` a
+  real occurrence goes through. Verified in the disassembly, not assumed.
+- The gate reuses `tools/kfault_test.sh` (via `REPORT_RE`) rather than copying it. It asks the
+  same question — "is this report audible *after* the console handover" — of a different
+  reporter, and that ordering requirement is the whole test.
+
+##### What the control arm then showed about the capture — a new narrowing
+
+`smoke-resume-guard-nofloor` runs the same injected `rsp = 4` with the guard removed, and it
+does **not** reproduce fault B. It faults at **`0x94`**:
+
+```
+PAGE FAULT at 0x94 err=0x0(not-present,read,supervisor) task=3 'console_server'
+  rip=0xffffffff80106250 cs=0x8 rflags=0x10002
+  rsp=0xffffffff8021bee0 rbp=0x4 cpu=0
+```
+
+That is `interrupt_handler64`'s own `out->cs` read, exactly as the guard's comment predicted —
+and it is G-8's original `addr=0x94` datapoint, reproduced deliberately for the first time. But
+**the capture faulted at `0x4`, in the stub's first `pop`** — meaning the value got past
+`out->cs` too. `src/kernel/idt.c` and `lowlevel64.S` are byte-identical between `e9aebdd` (the
+capture's commit) and current `main`, and in `main`'s build the guard dominates `out->cs`.
+
+Both orderings of the two events give the same conclusion, so it does not depend on which CPU
+faulted first: if the guard had fired it would either have printed (claim free) or halted this
+CPU inside `panic_begin` (claim taken) — and a halted CPU cannot go on to fault in the stub. So:
+
+> **On that boot the resume value was not `4` when `interrupt_handler64` tested it, and was not
+> `4` when it read `out->cs`. It became `4` in the epilogue window — after the guard, before the
+> stub's `movq %rax,%rsp`.**
+
+In that window the value lives in `%rbp` (callee-saved, moved to `%rax` *before* the `pop %rbp`),
+and the frame's stack-protector canary **passed** — execution reached the stub, so
+`__stack_chk_fail` was not taken. That points at a **register** that did not survive, not a
+smeared stack, and it retires "find the write that stores a bad value into `saved_ksp`" a second
+time.
+
+Stated as an inference with its check named, per this file's standing rule: it rests on the
+guard/`out->cs` ordering in a rebuild of an unchanged `idt.c`, not on the pinned binary, which
+was not retained for this capture. The next occurrence settles it — and now that the guard is
+audible, the next occurrence will say so itself.
+
+**G-8 remains open.** What is closed is the instrument: the guard is now known to fire, and
+known to be heard when it does.
+
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
 ```
@@ -1318,6 +1413,10 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 |---|---|
 | `smoke-kfault` | A page fault taken at **CPL 0** is reported on the **serial line**, after the console handover. `KFAULT_INJECT=1` makes the kernel fault on purpose — a read of `0x94`, G-8's exact address — on a timer tick once `console_server` owns the console, and the harness requires the report to appear *after* the login prompt. |
 | `smoke-kfault-legacy` | The same injection with reporting restored to `println()` (`KFAULT_LEGACY_PRINTLN=1`): the report must **not** reach serial. The control arm. |
+| `smoke-resume-guard` | `idt.c`'s resume-`%rsp` floor guard fires and is **heard**. `RESUME_RSP_INJECT=1` forces the dispatcher to return a bogus resume `%rsp` of `4` — G-8's own recorded value — once, after the console handover; the `PANIC: dispatcher returned a bogus resume rsp=0x4` line must appear after the login prompt. Replaces a ~1-in-150 wait with a gate. |
+| `smoke-resume-guard-preclaim` | The same, with the **permanent panic claim already held** — the state another CPU's fatal exception leaves behind. The report must still get out. This is the arm that witnesses the fix. |
+| `smoke-resume-guard-legacy` | Control arm for the fix: same injection and claim, with the guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket restored (`RESUME_GUARD_LEGACY_FATAL=1`). The report must **not** reach serial — the boot goes silent at the login prompt, which is the defect on demand. |
+| `smoke-resume-guard-nofloor` | Control arm for the guard: same injection, guard compiled out (`RESUME_GUARD_DISABLE=1`). The PANIC line must **not** appear; the kernel instead faults at `0x94` on `out->cs`, which is G-8's original datapoint reproduced deliberately. |
 
 This pair is the inverse of every other target here: it wants a kernel fault and fails if the
 kernel takes one quietly.

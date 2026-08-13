@@ -8,6 +8,56 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the resume-`%rsp` floor guard was mute on exactly the boots it existed to explain (**[G-8]**)
+
+`interrupt_handler64`'s guard against a bogus resume `%rsp` (#123) reported inside
+`kfault_begin(1)`/`kfault_end(1)`. `kfault_begin(1)` is `panic_begin()`, whose claim
+is **permanent**: the first CPU to report a fatal fault takes it and never releases
+it, and every later CPU that asks for it halts *inside* `panic_begin` **without
+emitting a byte**. So once any CPU had died fatally — for the same underlying reason,
+a bogus resume value a moment earlier — the guard was silent for the rest of the boot.
+
+That is not hypothetical. In the 2026-08-13 two-event capture, cpu 3's fatal `#GP`
+printed first and kept the claim; the only report that got out afterwards was cpu 0's
+`#PF`, which uses the **bounded** bracket. The guard could not have been heard on that
+boot whether or not it fired. #140 moved this report off `println()` and onto the UART
+but left it behind a claim the failure itself takes away.
+
+The guard now reports under the bounded claim, releases it, and only then halts.
+Halting is unchanged behaviour (`kfault_end(1)` already did it) and is the fail-closed
+answer: `iretq`-ing onto a value just rejected is the one thing that must not happen.
+As a side effect the dead fall-through into the `out->cs` read is gone — that read is
+what turns `rsp == 4` into a fault at `0x94`, and it cost a symbolisation cycle once.
+
+**Every "the floor guard did not catch it" statement about G-8 is withdrawn.** The
+absence of the line was never evidence about the guard. `TESTS.md` and
+`docs/LIMITATIONS.md` §5.2c are corrected rather than quietly amended.
+
+### Added — `make smoke-resume-guard{,-preclaim,-legacy,-nofloor}`, a four-arm gate for that guard
+
+The natural event is ~1 boot in 150, so the gate does not wait for it.
+`RESUME_RSP_INJECT=1` forces the dispatcher to return a bogus resume `%rsp` of `4` —
+G-8's own recorded value, for the same reason `smoke-kfault` injects at `0x94` — once,
+after the console handover, and the harness requires the `PANIC:` line after the login
+prompt. `-preclaim` takes the permanent panic claim first, reproducing another CPU's
+fatal exception. `-legacy` restores the pre-fix bracket and requires **silence**;
+`-nofloor` compiles the guard out and requires silence. The two control arms are what
+make the first two a measurement rather than an assertion.
+
+The injected value is read through a `volatile`: as a literal, GCC folds the comparison
+at compile time and the arm would prove the reporting works while never executing the
+`cmp`/`jae` a real occurrence goes through. The gate reuses `tools/kfault_test.sh` via
+a `REPORT_RE` override rather than copying it — it asks the same question of a
+different reporter, and the after-the-handover ordering is the whole test.
+
+**G-8 remains open** and the soak job stays advisory; the origin of the bad value is
+still unknown. What is closed is the instrument. One new narrowing came out of the
+control arm and is recorded in `TESTS.md` as an inference with its check named: an
+`rsp` of `4` reaching `out->cs` faults at `0x94`, but the capture faulted at `0x4` in
+the stub, so on that boot the value became `4` *after* the guard — in the epilogue
+window, with the frame's stack canary intact, which points at a register rather than a
+smeared stack.
+
 ### Fixed — 64-bit-clean heap arithmetic, and a heap can now be paged above 4 GiB (**[I-2]**, roadmap 1.5)
 
 `SYS_SBRK`/`SYS_BRK` computed the new break in 32 bits while `heap_start`,

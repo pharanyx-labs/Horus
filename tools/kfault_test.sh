@@ -22,6 +22,13 @@
 #                         prompt. 0: it must NOT appear -- the control arm, for
 #                         a KFAULT_LEGACY_PRINTLN=1 build, which reproduces the
 #                         defect and must therefore fail to be heard.
+#        REPORT_RE        which report to look for (default: the injected #PF).
+#                         `make smoke-resume-guard*` overrides it to assert the
+#                         resume-%rsp floor guard's PANIC line instead: the same
+#                         question -- "is this report audible after the console
+#                         handover" -- asked of a different reporter, so it is
+#                         this harness rather than a second copy of it.
+#        REPORT_LABEL     what to call it in the verdict (default "CPL-0 fault")
 #        QEMU_SMP         passed through to -smp (default 1)
 #        KFAULT_LOG       keep the serial log at this path
 #
@@ -35,7 +42,8 @@ LOGIN_MARKER="horus login"
 # The stable part of the report: address and decoded error code. Deliberately
 # not the task name or rip -- which task a tick lands in varies, and rip moves
 # with every build. What must never vary is that the kernel said WHAT happened.
-REPORT_RE='PAGE FAULT at 0x94 err=0x0\(not-present,read,supervisor\)'
+REPORT_RE="${REPORT_RE:-PAGE FAULT at 0x94 err=0x0\\(not-present,read,supervisor\\)}"
+REPORT_LABEL="${REPORT_LABEL:-CPL-0 fault}"
 
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     echo "KFAULT SKIP: qemu-system-x86_64 not found" >&2
@@ -102,26 +110,27 @@ echo "------------------- serial log -------------------"
 cat "$LOG" 2>/dev/null || true
 echo ""
 echo "--------------------------------------------------"
-echo "login prompt at line $login_at; report after it: $found"
+echo "login prompt at line $login_at; looking for: $REPORT_RE"
+echo "report after the prompt: $found"
 
 if [ "$EXPECT_REPORT" = "1" ]; then
     if [ "$found" = "1" ]; then
-        echo "KFAULT PASS: the kernel's CPL-0 fault report reached serial AFTER the"
+        echo "KFAULT PASS: the kernel's $REPORT_LABEL report reached serial AFTER the"
         echo "             console handover -- audible where it matters"
         exit 0
     fi
-    echo "KFAULT FAIL: the kernel faulted in its own code and said nothing on the"
-    echo "             wire. That is the defect this gate exists for."
+    echo "KFAULT FAIL: the kernel hit the injected $REPORT_LABEL and said nothing on"
+    echo "             the wire. That is the defect this gate exists for."
     exit 1
 else
     if [ "$found" = "1" ]; then
-        echo "KFAULT FAIL: the control arm was heard. Either KFAULT_LEGACY_PRINTLN"
-        echo "             did not take effect, or print() is no longer suppressed"
-        echo "             for the console owner -- in both cases this gate is"
+        echo "KFAULT FAIL: the control arm was heard. Either the build flag that is"
+        echo "             supposed to reproduce the defect did not take effect, or"
+        echo "             the reporting path changed -- in both cases this gate is"
         echo "             measuring something other than what it claims."
         exit 1
     fi
-    echo "KFAULT PASS (control): the legacy println() report never reached serial,"
+    echo "KFAULT PASS (control): the $REPORT_LABEL report never reached serial,"
     echo "             which is the defect, reproduced on demand"
     exit 0
 fi

@@ -493,6 +493,90 @@ kernel-side record and the rendering, but nothing yet proves `init` can get a li
 moment the shell dies under SMP. Do not quote the absence of the line as evidence the shell
 did not exit.
 
+#### The one datapoint G-8 has, and why its `rip` must be withdrawn
+
+After #138 made `init`'s report reach the wire, CI's soak produced the first — and so far
+only — recorded cause:
+
+```
+init: shell exited: faulted on memory access at addr=0x94 rip=0xffffffff80105f0f err=0x0
+```
+
+`addr=0x94` was read as a near-null dereference at a struct offset, and the `rip` was read as
+the `out->cs` load in `interrupt_handler64` (`testb $0x3,0x90(%rbp)` with `out` ≈ 4). **That
+reading does not survive checking.**
+
+It was checked the only way that means anything: by fetching **CI's own `kernel.elf`
+artifact** from the run that produced the line, rather than symbolising against a local
+rebuild. (The builds are reproducible and the soak job uses the default configuration, so the
+uploaded artifact is the soak's kernel.) In that binary:
+
+```
+ffffffff80105ef1:  cmp    %rbp,%rax          ; #123's floor guard
+ffffffff80105ef4:  jae    ...                ;   -> panic if rsp is not higher-half
+ffffffff80105ef6:  testb  $0x3,0x90(%rbp)    ; out->cs
+ffffffff80105f03:  mov    0x28(%rsp),%rax    ; stack-protector epilogue
+ffffffff80105f08:  sub    0xa41d9(%rip),%rax
+ffffffff80105f0f:  0f 85 47 05 00 00   jne   ; <-- the reported rip
+```
+
+Three things follow, and they matter more than the lead they retire:
+
+1. **`0x80105f0f` is `jne rel32`.** It has no memory operand, so it cannot raise a `#PF` on a
+   data address at all, let alone `CR2 = 0x94`. The reported `rip` and the reported `addr`
+   cannot both describe one event.
+2. **The floor guard dominates the `out->cs` read** — `cmp`/`jae` sit immediately above it,
+   on `%rbp`, in a register. So "`out` is near-null there" was never available as a mechanism
+   while that guard is compiled in, whatever the `rip` had said.
+3. **That `rip` is exactly where an interrupt would land.** An interrupt pushes the address of
+   the *next* instruction, and `ISR_NOERRCODE64` pushes `err_code = 0` — matching `err=0x0`.
+   The frame the fault handler read looks like an **IRQ frame**, not a `#PF` frame.
+
+So the live question is no longer "what dereferences `0x94`" but **"why was `#PF` handling
+running against a frame that is not the fault's frame?"** — a `CR2` genuinely from one event
+and an `int_no`/`rip`/`err_code` from another. That is a considerably better lead, and it is
+also a warning: the exit record is assembled from `CR2` (a register) and `f64->rip` (memory),
+and nothing checks that they agree.
+
+The report now prints the frame's own `vec` and `errc` beside the handler's `CR2`, so the next
+occurrence answers that question in the capture instead of a year later. A healthy fault reads
+`vec=14 errc=0x0` next to `PAGE FAULT at ...`; the injected one in `make smoke-kfault` shows
+exactly that, which is what makes a disagreement legible when it appears.
+
+#### One hypothesis that covers both open kernel-fault signatures
+
+**Two CPUs executing on one kernel stack.**
+
+- A `#PF` handler reading a frame whose `rip` and `err_code` belong to a *different* trap —
+  the datapoint above — is what a concurrent push by another CPU into the same frame region
+  looks like.
+- A trap frame that `iretq`s into a kernel stack address (`err=0x11`, `rip` and `rsp` 0x80
+  apart in the same region) — the fault holding roadmap 1.1 in PR #135 — is the same
+  corruption once it reaches the `rip` slot.
+
+Neither needs a second mechanism, and both are SMP-only, which fits: #135's boot-only harness
+saw 0/20 at `-smp 1` on both lock arms and only ever saw the fault at `-smp 4`.
+
+The invariant at stake is the one in `scheduler.c`: `task_running_cpu[t] == c` ⟺
+`percpu_current_task[c] == t`. A fault is exactly the moment to ask whether it still holds, so
+the fault report now dumps it:
+
+```
+claim: task 3 running_cpu=0  percpu_current=[3,0,0,0]  imp=[0,0,0,0]
+```
+
+That runs **only from a fault report**, which is deliberate. The previous attempt to attribute
+this fault (PR #137) checked the resume `%rsp` on *every interrupt return* and raised the
+failure rate it was meant to explain — 4/30 shell restarts against 0/30 for `main`. A
+diagnostic that runs only after the failure cannot perturb the thing it measures. This is a
+hypothesis with a test attached, not a diagnosis; the next capture either shows a violated
+claim or rules the hypothesis out.
+
+**The general lesson, for the third time in this file: symbolise against the binary that
+produced the address.** #138's comment read the same `rip` as landing mid-instruction and
+inferred a return address; this reading found it a clean boundary and inferred a load. Both
+were done against rebuilt trees. The artifact was available from CI the whole time.
+
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
 ```
@@ -975,6 +1059,33 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-session` | A scripted session drives the real shell over serial and asserts on output. |
 | `smoke-session-smp` | The same under SMP. |
 | `smoke-session-smp-soak` | `SOAK_RUNS` consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. **Currently ADVISORY in CI, not gating — see finding G-8 below.** |
+
+## Can the kernel be heard when it faults?
+
+| Target | Proves |
+|---|---|
+| `smoke-kfault` | A page fault taken at **CPL 0** is reported on the **serial line**, after the console handover. `KFAULT_INJECT=1` makes the kernel fault on purpose — a read of `0x94`, G-8's exact address — on a timer tick once `console_server` owns the console, and the harness requires the report to appear *after* the login prompt. |
+| `smoke-kfault-legacy` | The same injection with reporting restored to `println()` (`KFAULT_LEGACY_PRINTLN=1`): the report must **not** reach serial. The control arm. |
+
+This pair is the inverse of every other target here: it wants a kernel fault and fails if the
+kernel takes one quietly.
+
+**Why it exists.** `print()` stops driving the hardware the moment `console_server` owns the
+console (`terminal.c`), so a report emitted that way during a live session lands in the klog
+and nothing reaches the wire. All three CPL-0 reports were emitted that way — the `#PF`
+banner, the fatal-exception dump, and #123's bogus-resume-`rsp` guard — and a live session is
+the only state in which any of them has ever been observed. G-8's supervisor fault tore down
+the ring-3 shell on every occurrence while the kernel computed the address, the error code and
+the faulting `rip`, printed them, and threw them away.
+
+**Why the control arm is the point.** `smoke-kfault` passing tells you a report arrived. Only
+`smoke-kfault-legacy` — same kernel, same injection, same tick, reporting through `println()`,
+and **nothing on the wire** — tells you the gate is measuring the routing rather than the
+existence of the fault. Compare the falsification discipline in the C-1 and 1.3 sections: a
+test that cannot fail on the bug it targets is not evidence.
+
+The ordering assertion is deliberate. "The report appeared" is satisfied by early-boot output,
+when `print()` still drives the UART; "the report appeared **after** the login prompt" is not.
 
 ## Build integrity
 

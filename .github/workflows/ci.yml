@@ -801,6 +801,28 @@ jobs:
       - name: Boot CONSOLE_ISOLATION_TEST kernel and assert a deliberate fault in the ring-3 console_server is contained (the kernel stays alive)
         run: make smoke-console-isolation
 
+  smoke-kfault:
+    name: A CPL-0 fault is heard on serial (and the control arm is not)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Fault in the kernel on purpose after the console handover and require the report on serial
+        run: make smoke-kfault SMOKE_TIMEOUT=180
+      # The control arm, in the same job: without it, a green smoke-kfault is
+      # consistent with the gate measuring the existence of the fault rather
+      # than where the report went.
+      - name: Restore println() reporting and require the report to be INAUDIBLE
+        run: make smoke-kfault-legacy SMOKE_TIMEOUT=180
+
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)
     runs-on: ubuntu-latest

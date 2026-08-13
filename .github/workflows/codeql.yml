@@ -4,7 +4,8 @@ name: CodeQL
 # the July 2026 audit (finding P3: no code scanning). Advisory by design — it
 # surfaces findings for review but is NOT one of the merge hard-gates (those stay
 # rust / kernel / smoke / reproducible in ci.yml). Scans the C kernel with the
-# security-and-quality query suite; the Rust security core is already covered by
+# security-extended query suite (see the note on `queries:` below for why not
+# security-and-quality); the Rust security core is already covered by
 # `cargo test` + `clippy -D warnings` and the fuzz/Kani jobs.
 
 on:
@@ -51,7 +52,32 @@ jobs:
         uses: github/codeql-action/init@d1ba80a13dd99fba24a470575428917156a28b43  # v4.37.5
         with:
           languages: ${{ matrix.language }}
-          queries: security-and-quality
+          # security-extended, NOT security-and-quality.
+          #
+          # The quality half of that suite produced 61 of 73 open alerts, and 42
+          # of those were one thing repeated: cpp/function-in-block, on a block of
+          # `extern void isrN(void);` declarations inside idt_init64(). Style
+          # observations, none of them a defect.
+          #
+          # That is not a neutral cost. A panel of 73 alerts headed by a red
+          # "critical" -- which on inspection is a guarded strcpy in a build-time
+          # host tool -- teaches a reader to scroll past the panel. This project
+          # has already written down what that reflex costs: the smoke-console-smp
+          # deadlock survived months of CI because a red check trained everyone to
+          # press re-run (docs/LIMITATIONS.md 5.2c, on why the soak job is
+          # advisory). A quiet instrument that is read beats a loud one that is not.
+          #
+          # security-extended keeps every security query, including the two rules
+          # that found something real here (cpp/offset-use-before-range-check,
+          # fixed separately) and drops the style suite.
+          #
+          # What this deliberately gives up: cpp/inconsistent-null-check, which is
+          # quality-only. It flagged storage.c:1879/1886 -- accurately, as an
+          # inconsistency, though not as a bug: storage_get_mounted_fs() returns
+          # &g_mounted_fs and cannot be NULL, so the 7 call sites that test !mfs
+          # are the anomaly, not the 2 that do not. Worth knowing that this
+          # narrowing is what stops that class being reported.
+          queries: security-extended
 
       # Manual build: the kernel is freestanding with a custom Makefile, so
       # CodeQL's autobuilder is not appropriate. `make` links the Rust staticlib

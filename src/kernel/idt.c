@@ -406,6 +406,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
             kfault_str(" err=");  kfault_hex(frame->err_code);
             kfault_str(" task="); kfault_task(get_current_task());
             kfault_frame(frame);
+            kfault_claims(get_current_task());
             kfault_str("\nKERNEL FATAL EXCEPTION - halting\n");
             kfault_end(1);
         }
@@ -750,6 +751,7 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
         kfault_str("(");                kfault_pf_err(err);
         kfault_str(") task=");          kfault_task(killed);
         kfault_frame(f64);
+        kfault_claims(killed);
         kfault_str(allowed ? "\nApproved by validator but unmappable - killing task "
                            : "\nRejected by validator - killing task ");
         kfault_dec(killed);

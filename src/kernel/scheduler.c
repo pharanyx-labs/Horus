@@ -510,6 +510,40 @@ void kfault_pf_err(uint64_t err) {
  * near-null base plus a struct offset, and the base is in one of those two far
  * more often than not -- printing them is what turns a capture into a site
  * instead of another reproduce-and-symbolise cycle. */
+/* Who else thinks they are running this task, and what each CPU thinks it is
+ * running. Printed only from a fault report, so it costs nothing on any healthy
+ * path -- and it is the one observation that separates the leading hypothesis
+ * from its alternatives.
+ *
+ * That hypothesis: two CPUs executing on ONE kernel stack. It accounts for both
+ * open kernel-fault signatures at once. A #PF handler reading a frame whose rip
+ * and err_code belong to a different trap (G-8's single datapoint) is what a
+ * concurrent push by another CPU into the same frame looks like; and a trap
+ * frame that iretq's into a kernel stack address (the fault holding roadmap
+ * 1.1) is what one looks like once the corruption reaches the rip slot. The
+ * invariant is task_running_cpu[t] == c <=> percpu_current_task[c] == t, and a
+ * fault is exactly the moment to ask whether it still holds. */
+void kfault_claims(int task) {
+#ifdef SMP
+    panic_str("\n  claim: task ");     panic_dec(task);
+    panic_str(" running_cpu=");        panic_dec((task >= 0 && task < MAX_TASKS)
+                                                 ? task_running_cpu[task] : -1);
+    panic_str("  percpu_current=[");
+    for (int c = 0; c < MAX_CPUS; c++) {
+        if (c) panic_ch(',');
+        panic_dec(percpu_current_task[c]);
+    }
+    panic_str("]  imp=[");
+    for (int c = 0; c < MAX_CPUS; c++) {
+        if (c) panic_ch(',');
+        panic_dec(percpu_impersonating[c]);
+    }
+    panic_str("]");
+#else
+    (void)task;
+#endif
+}
+
 void kfault_frame(const struct interrupt_frame64 *f) {
     if (!f) return;
     /* The frame's OWN account of what trapped, printed next to the values the

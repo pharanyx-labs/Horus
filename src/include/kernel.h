@@ -1358,6 +1358,7 @@ void kfault_dec(int v);
 void kfault_task(int t);                 /* "N 'name'", name bounded */
 void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */
 void kfault_frame(const struct interrupt_frame64 *f);   /* rip/cs/rflags/rsp/rbp/cpu */
+void kfault_claims(int task);            /* who else claims this task (SMP only) */
 
 /* Which CPU is executing this code. Derived from the TSS selector in TR (`str`)
  * rather than an uncached LAPIC MMIO read -- see the long note on this_cpu() in

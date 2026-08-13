@@ -1634,24 +1634,22 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               not a fix.
             </p>
             <p>
-              An earlier version of this section said a mechanism was <em>explicitly not
-              claimed</em>, and that two captured signatures included one matching a previously
-              fixed deadlock verbatim. Both readings have since been superseded by symbolised
-              evidence and are corrected here rather than quietly dropped.
+              Two corrections, kept visible because they are the kind this project exists to
+              make. The first: an earlier version of this section said a mechanism was
+              <em>explicitly not claimed</em>, and that one captured signature matched a
+              previously fixed deadlock verbatim — symbolised evidence has since superseded both
+              of those readings.
             </p>
             <p>
-              One correction worth stating publicly, because it is the kind this project exists
-              to make. In the captured faults the interrupt dispatcher returns a resume
-              <code>%rsp</code> that is not a kernel stack pointer, and the kernel has carried a
-              guard against exactly that value since #123 — but the guard <em>was reporting into
-              a claim that a fatal fault on another CPU takes and never releases</em>, so on the
-              boots it was built to explain it produced nothing at all. Its silence had been read
-              as evidence. It was not evidence — a diagnostic that cannot speak where it fires is
-              indistinguishable from one that never fired. The guard now reports under a bounded
-              claim, and four <code>make smoke-resume-guard*</code> arms gate it in seconds
-              rather than waiting on a 1-in-150 event: two require the report, and two reproduce
-              the silence on demand. The finding itself stays open; what is closed is the
-              instrument.
+              The second is sharper. The kernel has carried a guard against exactly that bad
+              resume value since #123 — but the guard <em>was reporting into a claim that a fatal
+              fault on another CPU takes and never releases</em>, so on the boots it was built to
+              explain it produced nothing at all. Its silence had been read as evidence. It was
+              not evidence: a diagnostic that cannot speak where it fires is indistinguishable
+              from one that never fired. The guard now reports under a bounded claim, and four
+              <code>make smoke-resume-guard*</code> arms gate it in seconds rather than waiting
+              on a 1-in-150 event — two require the report, and two reproduce the silence on
+              demand. The finding itself stays open; what is closed is the instrument.
             </p>
           </li>
           <li>

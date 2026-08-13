@@ -493,6 +493,61 @@ kernel-side record and the rendering, but nothing yet proves `init` can get a li
 moment the shell dies under SMP. Do not quote the absence of the line as evidence the shell
 did not exit.
 
+#### The one datapoint G-8 has, and why its `rip` must be withdrawn
+
+After #138 made `init`'s report reach the wire, CI's soak produced the first — and so far
+only — recorded cause:
+
+```
+init: shell exited: faulted on memory access at addr=0x94 rip=0xffffffff80105f0f err=0x0
+```
+
+`addr=0x94` was read as a near-null dereference at a struct offset, and the `rip` was read as
+the `out->cs` load in `interrupt_handler64` (`testb $0x3,0x90(%rbp)` with `out` ≈ 4). **That
+reading does not survive checking.**
+
+It was checked the only way that means anything: by fetching **CI's own `kernel.elf`
+artifact** from the run that produced the line, rather than symbolising against a local
+rebuild. (The builds are reproducible and the soak job uses the default configuration, so the
+uploaded artifact is the soak's kernel.) In that binary:
+
+```
+ffffffff80105ef1:  cmp    %rbp,%rax          ; #123's floor guard
+ffffffff80105ef4:  jae    ...                ;   -> panic if rsp is not higher-half
+ffffffff80105ef6:  testb  $0x3,0x90(%rbp)    ; out->cs
+ffffffff80105f03:  mov    0x28(%rsp),%rax    ; stack-protector epilogue
+ffffffff80105f08:  sub    0xa41d9(%rip),%rax
+ffffffff80105f0f:  0f 85 47 05 00 00   jne   ; <-- the reported rip
+```
+
+Three things follow, and they matter more than the lead they retire:
+
+1. **`0x80105f0f` is `jne rel32`.** It has no memory operand, so it cannot raise a `#PF` on a
+   data address at all, let alone `CR2 = 0x94`. The reported `rip` and the reported `addr`
+   cannot both describe one event.
+2. **The floor guard dominates the `out->cs` read** — `cmp`/`jae` sit immediately above it,
+   on `%rbp`, in a register. So "`out` is near-null there" was never available as a mechanism
+   while that guard is compiled in, whatever the `rip` had said.
+3. **That `rip` is exactly where an interrupt would land.** An interrupt pushes the address of
+   the *next* instruction, and `ISR_NOERRCODE64` pushes `err_code = 0` — matching `err=0x0`.
+   The frame the fault handler read looks like an **IRQ frame**, not a `#PF` frame.
+
+So the live question is no longer "what dereferences `0x94`" but **"why was `#PF` handling
+running against a frame that is not the fault's frame?"** — a `CR2` genuinely from one event
+and an `int_no`/`rip`/`err_code` from another. That is a considerably better lead, and it is
+also a warning: the exit record is assembled from `CR2` (a register) and `f64->rip` (memory),
+and nothing checks that they agree.
+
+The report now prints the frame's own `vec` and `errc` beside the handler's `CR2`, so the next
+occurrence answers that question in the capture instead of a year later. A healthy fault reads
+`vec=14 errc=0x0` next to `PAGE FAULT at ...`; the injected one in `make smoke-kfault` shows
+exactly that, which is what makes a disagreement legible when it appears.
+
+**The general lesson, for the third time in this file: symbolise against the binary that
+produced the address.** #138's comment read the same `rip` as landing mid-instruction and
+inferred a return address; this reading found it a clean boundary and inferred a load. Both
+were done against rebuilt trees. The artifact was available from CI the whole time.
+
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
 ```

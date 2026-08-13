@@ -512,6 +512,16 @@ void kfault_pf_err(uint64_t err) {
  * instead of another reproduce-and-symbolise cycle. */
 void kfault_frame(const struct interrupt_frame64 *f) {
     if (!f) return;
+    /* The frame's OWN account of what trapped, printed next to the values the
+     * handler derived. They should agree; the one recorded G-8 datapoint says
+     * they need not. Its rip symbolises -- in the CI binary that produced it --
+     * to a `jne`, an instruction with no memory operand, which cannot raise a
+     * #PF on a data address; and an IRQ frame carries err_code=0, exactly what
+     * that report showed. So `vec` and `errc` here are the question "is this
+     * frame even the frame of the fault being reported?", asked at the moment
+     * it can still be answered. */
+    panic_str("\n  vec=");  panic_dec((int)f->int_no);
+    panic_str(" errc=");    panic_hex64(f->err_code);
     panic_str("\n  rip="); panic_hex64(f->rip);
     panic_str(" cs=");     panic_hex64(f->cs);
     panic_str(" rflags="); panic_hex64(f->rflags);

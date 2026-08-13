@@ -8,6 +8,48 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — 64-bit-clean heap arithmetic, and a heap can now be paged above 4 GiB (**[I-2]**, roadmap 1.5)
+
+`SYS_SBRK`/`SYS_BRK` computed the new break in 32 bits while `heap_start`,
+`heap_current` and `heap_end` are all `uint64_t` in the TCB. Seven narrowing points
+between them; the sharpest were the three that truncated a value *after* it had
+been range-checked at full width, so the check passed on the real address and the
+break was then stored wrapped. Both handlers are now `uint64_t` end to end with the
+overflow test before the range test, and `sbrk` still shrinks correctly (negation
+via `-(x+1)+1`, so `INT64_MIN` has no undefined step).
+
+**The finding was scoped too narrowly, and the missing part was not latent.** The
+same truncation appeared a third time in the **pager**:
+`handle_demand_page_fault`'s region gate cast the heap bounds to `uint32_t` when
+calling `rust_validate_page_fault`, which declares them `u64`. For a heap above
+4 GiB the effect was not a wrong break value but **no demand paging at all** — the
+gate compared a 64-bit fault address against a truncated window, decided it was out
+of region, and refused to map a page the task was entitled to. A heap outside the
+premapped low window could never be paged, and it failed **silently**, because a
+ring-3 fault prints nothing.
+
+The tell was that two call sites of one validator disagreed: `page_fault_handler`
+passed the same values untruncated and admitted the fault, then the pager rejected
+it. So `[I-2]` was in part a functional ceiling on the address space rather than
+arithmetic hygiene — which matters for roadmap 2.1, whose point is placing regions
+freely.
+
+**This one has a real witness**, unlike **[C-4]**. `make smoke-heap64` builds
+`USER_HEAP_HIGH_BASE=1` (every heap at 8 GiB — above 2^32, below
+`USER_IMAGE_ASLR_BASE`, inside PML4[0] so no new top-level paging is needed) and
+runs `captest`, which calls `sbrk`/`brk` and then writes to the page it is given.
+Built without the fix, the same target reports `CAPTEST: FAIL (sbrk-grow-failed)`.
+Both arms were run by hand before the target was written.
+
+Worth recording for anyone extending this: the reason the pager bug went unnoticed
+is that the *image* already lives at 16 GiB and works — but it is **premapped** by
+`create_user_pagedir`, so it never exercises the demand path at that address. A
+premapped high region is not evidence that demand paging works there.
+
+Tests: `smoke` · `smoke-captest` · `smoke-heap64` · `smoke-cow` · `smoke-nzcow` ·
+`smoke-wx` · `smoke-aspace` · `smoke-newlib` · `smoke-elf` · `smoke-session` ·
+`smoke-fs` — **11/11**.
+
 ### Documentation — a second G-8 capture retires the shared-stack hypothesis and one bad search
 
 A dual-arm soak (150 boots per arm on one host) caught the fault again on `main` at `e9aebdd`,

@@ -1164,10 +1164,21 @@ int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
      * arbitrary address with a fresh page. */
     int tid_g = get_current_task();
     if (tid_g <= 0 || tid_g >= MAX_TASKS ||
+        /* The heap bounds are passed FULL WIDTH. They used to be cast to
+         * uint32_t here while `rust_validate_page_fault` declares them u64
+         * (finding [I-2], roadmap 1.5) -- so for a heap above 4 GiB the gate
+         * compared a 64-bit fault address against a truncated window, found it
+         * outside, and refused to map a page the task was entitled to.
+         *
+         * The tell was that the two gates disagreed: page_fault_handler calls
+         * the same validator with the same values UNTRUNCATED and admitted the
+         * fault, and then this one rejected it. A heap outside the premapped low
+         * window could therefore never be demand-paged at all -- silently, since
+         * a ring-3 fault prints nothing. */
         !rust_validate_page_fault(fault_addr, err_code,
                                   tasks[tid_g].image_base, tasks[tid_g].image_end,
-                                  (uint32_t)tasks[tid_g].heap_start,
-                                  (uint32_t)tasks[tid_g].heap_end)) {
+                                  tasks[tid_g].heap_start,
+                                  tasks[tid_g].heap_end)) {
         spin_unlock(&page_lock);
         return -1;
     }

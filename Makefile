@@ -468,6 +468,18 @@ CFLAGS  += -DKFAULT_INJECT -DKFAULT_INJECT_TICKS=$(KFAULT_INJECT_TICKS)
 ASFLAGS += -DKFAULT_INJECT
 endif
 
+# USER_HEAP_HIGH_BASE=1 places every user heap at 8 GiB instead of 16 MiB, which
+# is what makes finding [I-2] REACHABLE rather than latent: the heap syscalls
+# computed the new break in 32 bits, so a base above 2^32 wrapped. Used by
+# `make smoke-heap64` in both directions -- with the roadmap 1.5 fix the session
+# must run normally; built from a tree without it, sbrk fails for every request
+# and userspace cannot allocate at all. See src/include/kernel.h.
+USER_HEAP_HIGH_BASE ?= 0
+ifeq ($(USER_HEAP_HIGH_BASE),1)
+CFLAGS += -DUSER_HEAP_HIGH_BASE
+endif
+
+
 # KFAULT_LEGACY_PRINTLN=1 restores the pre-fix reporting of a CPL-0 page fault
 # (println(), i.e. klog-only once console_server owns the console). The CONTROL
 # ARM for the gate above: with it, the report must NOT appear on serial. Without
@@ -1964,6 +1976,24 @@ smoke-irq-policy:
 # ring-3 console_server owns the console -- the state in which print() reaches
 # only the klog -- and tools/kfault_test.sh requires the report to appear on
 # serial AFTER the login prompt.
+.PHONY: smoke-heap64
+# Roadmap 1.5 / finding [I-2]: the heap syscalls and the pager's region gate must
+# be 64-bit clean. Latent on the default base -- every heap sits under 100 MiB --
+# so this builds with USER_HEAP_HIGH_BASE=1, which puts the heap at 8 GiB and
+# makes the truncation REACHABLE. captest exercises sbrk/brk directly and then
+# writes to the page it was given, so it covers both the arithmetic and the
+# demand-paging path.
+#
+# The control arm is the point, and it is available on demand: build this target
+# from a tree without the 1.5 fix and captest reports CAPTEST: FAIL
+# (sbrk-grow-failed) rather than passing quietly. See TESTS.md.
+smoke-heap64:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USER_HEAP_HIGH_BASE=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USER_HEAP_HIGH_BASE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
+		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-kfault
 smoke-kfault:
 	@$(MAKE) --no-print-directory clean

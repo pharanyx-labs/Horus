@@ -468,6 +468,38 @@ CFLAGS  += -DKFAULT_INJECT -DKFAULT_INJECT_TICKS=$(KFAULT_INJECT_TICKS)
 ASFLAGS += -DKFAULT_INJECT
 endif
 
+# RESUME_RSP_INJECT=1 forces interrupt_handler64's resume %rsp to a bogus 4 once,
+# after the console handover -- the literal value G-8's 2026-08-13 capture
+# recorded. It exists so the floor guard in idt.c can be GATED rather than waited
+# on: the natural event is ~1 boot in 150, and "no PANIC line appeared" is worth
+# nothing until the guard is known to be able to speak on that path.
+#
+# Three arms, all test-only, all set by `make smoke-resume-guard*`:
+#   RESUME_RSP_INJECT=1                  the guard must be heard
+#   RESUME_RSP_INJECT_PRECLAIM=1         ... even behind another CPU's fatal claim
+#   RESUME_GUARD_DISABLE=1               guard compiled out: the silence, on demand
+RESUME_RSP_INJECT ?= 0
+RESUME_RSP_INJECT_TICKS ?= 400
+RESUME_RSP_INJECT_PRECLAIM ?= 0
+RESUME_GUARD_DISABLE ?= 0
+ifeq ($(RESUME_RSP_INJECT),1)
+CFLAGS += -DRESUME_RSP_INJECT -DRESUME_RSP_INJECT_TICKS=$(RESUME_RSP_INJECT_TICKS)
+endif
+ifeq ($(RESUME_RSP_INJECT_PRECLAIM),1)
+CFLAGS += -DRESUME_RSP_INJECT_PRECLAIM
+endif
+ifeq ($(RESUME_GUARD_DISABLE),1)
+CFLAGS += -DRESUME_GUARD_DISABLE
+endif
+# RESUME_GUARD_LEGACY_FATAL=1 restores the guard's pre-fix kfault_begin(1) /
+# kfault_end(1) bracket, whose claim is permanent and whose losers halt without
+# printing. The control arm for the fix itself: built with PRECLAIM it must be
+# INAUDIBLE, which is the defect reproduced on demand.
+RESUME_GUARD_LEGACY_FATAL ?= 0
+ifeq ($(RESUME_GUARD_LEGACY_FATAL),1)
+CFLAGS += -DRESUME_GUARD_LEGACY_FATAL
+endif
+
 # USER_HEAP_HIGH_BASE=1 places every user heap at 8 GiB instead of 16 MiB, which
 # is what makes finding [I-2] REACHABLE rather than latent: the heap syscalls
 # computed the new break in 32 bits, so a base above 2^32 wrapped. Used by
@@ -2010,6 +2042,69 @@ smoke-kfault-legacy:
 	@$(MAKE) --no-print-directory KFAULT_INJECT=1 KFAULT_LEGACY_PRINTLN=1
 	@$(MAKE) --no-print-directory KFAULT_INJECT=1 KFAULT_LEGACY_PRINTLN=1 boot.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 tools/kfault_test.sh boot.iso
+
+# Does the resume-%rsp floor guard in idt.c actually fire, and can it be heard?
+#
+# Until this existed, every "the guard did not catch it" statement about G-8 was
+# an inference from an absent line, and an absent line proves nothing about an
+# instrument never shown to be capable of speaking. The natural event is ~1 boot
+# in 150, so this does not wait for it: RESUME_RSP_INJECT forces the dispatcher
+# to return a bogus resume %rsp of 4 -- G-8's own recorded value -- once, after
+# the console handover, and the guard's PANIC line must reach serial after the
+# login prompt.
+#
+# Three arms, because one of them alone would not be evidence. See TESTS.md.
+RESUME_GUARD_RE = PANIC: dispatcher returned a bogus resume rsp=0x4
+
+.PHONY: smoke-resume-guard
+smoke-resume-guard:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
+		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
+		tools/kfault_test.sh boot.iso
+
+# The arm that witnesses the fix. Same injection, but the permanent panic claim
+# is taken first -- the state another CPU's FATAL exception leaves behind, and
+# the exact state of the 2026-08-13 capture, where cpu 3 halted holding it. The
+# guard used to report under kfault_begin(1), which loses that claim and halts
+# WITHOUT PRINTING; build this target with that bracket restored and it fails.
+.PHONY: smoke-resume-guard-preclaim
+smoke-resume-guard-preclaim:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
+		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
+		tools/kfault_test.sh boot.iso
+
+# Control arm for the FIX. Same injection, same preclaim, but the guard's pre-fix
+# kfault_begin(1)/kfault_end(1) bracket restored: the permanent claim is already
+# held, so this CPU halts without emitting a byte and the report must NOT appear.
+# That is the defect, on demand -- and it is what makes smoke-resume-guard-preclaim
+# a measurement rather than a story about one capture.
+.PHONY: smoke-resume-guard-legacy
+smoke-resume-guard-legacy:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1 \
+		RESUME_GUARD_LEGACY_FATAL=1
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1 \
+		RESUME_GUARD_LEGACY_FATAL=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
+		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
+		tools/kfault_test.sh boot.iso
+
+# Control arm for the GUARD: same injected value, guard compiled out. The PANIC
+# line must NOT appear -- this is G-8's silence, reproduced on demand.
+.PHONY: smoke-resume-guard-nofloor
+smoke-resume-guard-nofloor:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_GUARD_DISABLE=1
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_GUARD_DISABLE=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
+		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
+		tools/kfault_test.sh boot.iso
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.

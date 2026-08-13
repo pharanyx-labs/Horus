@@ -43,7 +43,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Check the allocation. fsize is already bounded to 8 MiB above, so this is
+     * unlikely rather than impossible -- and an unlikely NULL handed to fread()
+     * is still a null dereference inside libc, which reports as a crash of the
+     * BUILD rather than as "mkheadered could not allocate". A build tool that
+     * fails should say why: it is the same fail-closed rule the kernel holds
+     * itself to, and it costs three lines. */
     uint8_t *data = malloc(fsize);
+    if (!data) {
+        fprintf(stderr, "out of memory allocating %ld bytes\n", fsize);
+        fclose(fin);
+        return 1;
+    }
     if (fread(data, 1, fsize, fin) != (size_t)fsize) {
         perror("read");
         free(data);

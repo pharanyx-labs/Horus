@@ -639,7 +639,7 @@ static inline int sys_spawn(void) {
  * Returns the new task pid on success, negative on error. */
 static inline int sys_spawn_named(const char *name) {
     uint32_t len = 0;
-    while (name[len] && len < 31) len++;
+    while (len < 31 && name[len]) len++;
     return (int)syscall(SYS_SPAWN, (uint64_t)(uintptr_t)name, len, 0);
 }
 
@@ -648,7 +648,7 @@ static inline int sys_spawn_named(const char *name) {
  * work); today it carries e.g. a task id for a supervisor/waiter child. */
 static inline int sys_spawn_named_arg(const char *name, uint32_t arg) {
     uint32_t len = 0;
-    while (name[len] && len < 31) len++;
+    while (len < 31 && name[len]) len++;
     return (int)syscall(SYS_SPAWN, (uint64_t)(uintptr_t)name, len, arg);
 }
 
@@ -663,7 +663,7 @@ static inline uint32_t sys_spawn_arg(void) {
  * Returns the child's task id, or negative on error. */
 static inline int sys_spawn_named_argv(const char *name, int argc, char *const argv[]) {
     uint32_t len = 0;
-    while (name[len] && len < 31) len++;
+    while (len < 31 && name[len]) len++;
     return (int)syscall6(SYS_SPAWN, (uint64_t)(uintptr_t)name, len, 0,
                          (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }
@@ -684,7 +684,7 @@ static inline int sys_get_argv(char ***out_argv) {
  * unknown name), in which case the caller's image is left intact. */
 static inline int sys_exec_named(const char *name) {
     uint32_t len = 0;
-    while (name[len] && len < 31) len++;
+    while (len < 31 && name[len]) len++;
     return (int)syscall(SYS_EXEC_NAMED, (uint64_t)(uintptr_t)name, len, 0);
 }
 
@@ -694,7 +694,7 @@ static inline int sys_exec_named(const char *name) {
  * caller's image is intact. */
 static inline int sys_exec_named_argv(const char *name, int argc, char *const argv[]) {
     uint32_t len = 0;
-    while (name[len] && len < 31) len++;
+    while (len < 31 && name[len]) len++;
     return (int)syscall6(SYS_EXEC_NAMED, (uint64_t)(uintptr_t)name, len, 0,
                          (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
 }

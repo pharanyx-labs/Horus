@@ -1581,7 +1581,7 @@ static void handle_command(char *cmd) {
                 if (i % cols == 0) print("  ");
                 char cell[FS_NAME_MAX + 2];
                 int l = 0;
-                while (ent[i].name[l] && l < FS_NAME_MAX) { cell[l] = ent[i].name[l]; l++; }
+                while (l < FS_NAME_MAX && ent[i].name[l]) { cell[l] = ent[i].name[l]; l++; }
                 if (ent[i].type == FS_TYPE_DIR) cell[l++] = '/';
                 else if (ent[i].stat_ok && (ent[i].mode & 0111u)) cell[l++] = '*';
                 cell[l] = '\0';

@@ -526,10 +526,23 @@ Note for anyone extending this: the refusal is **unreachable from ring 3**, beca
 syscall clamps to a small kernel buffer first. It is defence in depth against the next caller,
 not a hole that was open to userspace. See `docs/LIMITATIONS.md` §1.4.
 
-### 1.5 ⬜ 64-bit-clean heap arithmetic — **[I-2]**
+### 1.5 ✅ 64-bit-clean heap arithmetic — **[I-2]**
 
-`SYS_SBRK`/`SYS_BRK` must be `uint64_t` end-to-end with an explicit overflow check before the
-range test. Latent today; sharp the moment the user address space widens past 4 GiB.
+*Landed 2026-08-13.* `SYS_SBRK`/`SYS_BRK` are `uint64_t` end-to-end, with the overflow check
+before the range test as specified (and a correct signed-negative `sbrk` shrink, via
+`-(x+1)+1` so `INT64_MIN` has no undefined step).
+
+**The item was scoped too narrowly.** A third truncation lived in the *pager*, not the
+syscalls: `handle_demand_page_fault`'s region gate cast the heap bounds to `uint32_t` when
+calling `rust_validate_page_fault`, which takes `u64`. That one was not latent — it meant a
+heap outside the premapped low window could not be demand-paged **at all**, and failed
+silently, because a ring-3 fault prints nothing. So this item was partly a *functional ceiling
+on the address space*, not only arithmetic hygiene — which matters for 2.1 (VM objects), whose
+whole point is placing regions freely.
+
+Witnessed by `make smoke-heap64` (`USER_HEAP_HIGH_BASE=1`, heap at 8 GiB, `captest`
+exercising `sbrk`/`brk` and writing to the page). The control arm is real: without the fix the
+same target reports `CAPTEST: FAIL`.
 
 ### 1.55 ⬜ Make the write-ahead journal actually durable — **[I-10]**, **[I-11]**
 

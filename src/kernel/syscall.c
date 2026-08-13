@@ -170,11 +170,33 @@ static void h_sysinfo(struct interrupt_frame64 *r) {
  * USER_HEAP_MAX_SIZE; the demand pager allocates physical pages lazily. */
 static void h_sbrk(struct interrupt_frame64 *r) {
     int tid = get_current_task();
-    int32_t increment = (int32_t)r->rbx;
+    /* 64-bit end to end (finding [I-2], roadmap 1.5). Every value here --
+     * heap_start, heap_current, heap_end -- is uint64_t in the TCB; this handler
+     * used to narrow the arithmetic to 32 bits in five places, so a break above
+     * 4 GiB was computed, range-checked, and then stored truncated. The range
+     * check ran on the truncated value, which is what made it a correctness bug
+     * rather than a mere clamp: the check could PASS on a wrapped address.
+     * Latent only while every heap sits below 4 GiB; USER_HEAP_HIGH_BASE=1
+     * rebuilds the reachable case as a control arm. */
+    int64_t increment = (int64_t)r->rbx;
     if (increment == 0) { r->rax = tasks[tid].heap_current; return; }
 
-    uint32_t new_current = tasks[tid].heap_current + (uint32_t)increment;
+    uint64_t cur         = tasks[tid].heap_current;
     uint64_t heap_max    = tasks[tid].heap_start + USER_HEAP_MAX_SIZE;
+
+    /* Overflow BEFORE the range test, per roadmap 1.5 -- a wrapped sum that lands
+     * back inside [heap_start, heap_max] would otherwise be accepted as valid. */
+    uint64_t new_current;
+    if (increment > 0) {
+        if ((uint64_t)increment > UINT64_MAX - cur) { r->rax = (uint64_t)-1; return; }
+        new_current = cur + (uint64_t)increment;
+    } else {
+        /* Negate via -(x+1)+1 so INT64_MIN has no undefined step. sbrk must still
+         * shrink, so this is a real path, not a guard. */
+        uint64_t dec = (uint64_t)(-(increment + 1)) + 1u;
+        if (dec > cur) { r->rax = (uint64_t)-1; return; }
+        new_current = cur - dec;
+    }
 
     /* There used to be a clamp here against kernel_lowmem_critical_floor(): the
      * kernel was linked low, so a heap growing up the low window could shadow
@@ -193,11 +215,12 @@ static void h_sbrk(struct interrupt_frame64 *r) {
     }
     /* Extend the authorised ceiling on demand; physical pages arrive lazily. */
     if (new_current > tasks[tid].heap_end) {
-        uint32_t new_end = (new_current + 0xFFFU) & ~0xFFFU;
-        if (new_end > heap_max) new_end = heap_max;
+        uint64_t new_end = (new_current + 0xFFFULL) & ~0xFFFULL;
+        if (new_end < new_current) new_end = heap_max;   /* page-align wrapped */
+        if (new_end > heap_max)    new_end = heap_max;
         tasks[tid].heap_end = new_end;
     }
-    uint32_t old = tasks[tid].heap_current;
+    uint64_t old = tasks[tid].heap_current;
     tasks[tid].heap_current = new_current;
     r->rax = old;
 }
@@ -219,7 +242,12 @@ static void h_brk(struct interrupt_frame64 *r) {
         r->rax = tasks[tid].heap_current;   /* failure: return unchanged break */
         return;
     }
-    uint32_t aligned = (addr + 0xFFFU) & ~0xFFFU;
+    /* 64-bit, like h_sbrk ([I-2]). This one was the sharper of the two: `addr` is
+     * validated against heap_start/heap_max as a full 64-bit value just above,
+     * and was then truncated on the way into storage -- so the check passed on
+     * the real address while the break was set from a wrapped one. */
+    uint64_t aligned = (addr + 0xFFFULL) & ~0xFFFULL;
+    if (aligned < addr)     aligned = heap_max;   /* page-align wrapped */
     if (aligned > heap_max) aligned = heap_max;
     tasks[tid].heap_current = aligned;
     tasks[tid].heap_end     = aligned;

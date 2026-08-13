@@ -176,11 +176,38 @@ section, and the deferred lock arming past boot. They are no longer load-bearing
 policy, but each was justified by this defect, and each now deserves its own re-examination
 rather than a bulk revert on the strength of one green run.
 
-### 2.1 64-bit arithmetic is truncated in the heap syscalls — **[I-2]**
+### 2.1 ~~64-bit arithmetic is truncated in the heap syscalls~~ — **FIXED 2026-08-13** — **[I-2]**
 
-`SYS_SBRK` and `SYS_BRK` compute the new break in `uint32_t` while `heap_start` and
-`heap_max` are 64-bit. Correct only while every heap lives below 4 GiB. Widening the user
-address space — a roadmap goal — will make the bounds check pass on a truncated value.
+`SYS_SBRK` and `SYS_BRK` computed the new break in `uint32_t` while `heap_start` and
+`heap_max` are 64-bit. Correct only while every heap lived below 4 GiB. Both are now 64-bit
+end to end, with the overflow check before the range test (roadmap 1.5).
+
+**The finding was wider than this section described, and the extra part was not latent.** The
+same truncation appeared a third time, in the *pager* rather than the syscalls —
+`handle_demand_page_fault`'s region gate cast the task's heap bounds to `uint32_t` when calling
+`rust_validate_page_fault`, which declares them `u64`:
+
+```c
+!rust_validate_page_fault(fault_addr, err_code, image_base, image_end,
+                          (uint32_t)tasks[tid_g].heap_start,   /* truncated */
+                          (uint32_t)tasks[tid_g].heap_end)
+```
+
+So for a heap above 4 GiB the effect was not a wrong break value but **no demand paging at
+all**: the gate compared a 64-bit fault address against a truncated window, found it outside,
+and refused to map a page the task was entitled to. A heap outside the premapped low window
+could never be paged. **Silently** — a ring-3 fault prints nothing (`idt.c` says so in its own
+comment), so the system simply wedged.
+
+The tell was that the two gates disagreed: `page_fault_handler` passes the same values to the
+same validator *untruncated* and admitted the fault, and then the pager rejected it. One
+validator, two call sites, one of them narrowing.
+
+Witnessed, in both directions, by `make smoke-heap64`: `USER_HEAP_HIGH_BASE=1` places every
+heap at 8 GiB, which makes the truncation reachable, and `captest` exercises `sbrk`/`brk` and
+then writes to the page it was given. Built without the fix the same target reports
+`CAPTEST: FAIL (sbrk-grow-failed)`. That control arm is why this one is not filed as
+"latent, believed fixed" the way **[C-4]** had to be.
 
 ### 2.2 ~~Endpoints are single-slot mailboxes~~ — **QUEUED + REPLY-CAP 2026-08-10** — **[I-5]**
 

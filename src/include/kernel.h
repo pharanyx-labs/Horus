@@ -237,7 +237,22 @@ extern uint8_t stack_top[];
 #define USER_IMAGE_MAX_PAGES     4096
 #define KERNEL_STACK_SIZE 32768
 #define MAX_USERS               32
-#define USER_HEAP_BASE              0x0000000001000000ULL
+/* USER_HEAP_HIGH_BASE=1 moves every heap above the 4 GiB line, which is what
+ * makes finding [I-2] reachable instead of latent (roadmap 1.5). 8 GiB is chosen
+ * deliberately: above 2^32, and below USER_IMAGE_ASLR_BASE (16 GiB) so it cannot
+ * collide with the image window. It stays inside PML4[0], so no new top-level
+ * paging work is needed -- the demand-fault walker allocates the PDPT, PD and PT
+ * below it, exactly as it already does for the image at 16 GiB.
+ *
+ * Before the 1.5 fix this build cannot allocate at all: sbrk computed the new
+ * break in 32 bits, so `heap_current + n` wrapped to a small value, failed the
+ * `new_current < heap_start` test, and returned -1 for every request. That total
+ * failure is the control arm -- see `make smoke-heap64`. */
+#ifdef USER_HEAP_HIGH_BASE
+#define USER_HEAP_BASE              0x0000000200000000ULL   /* 8 GiB */
+#else
+#define USER_HEAP_BASE              0x0000000001000000ULL   /* 16 MiB */
+#endif
 #define USER_MEM_MAX_COPY           (64*1024)
 #define ASLR_HIGH_STACK_BASE        0x00007ff000000000ULL
 #define USER_HIGH_STACK_WINDOW      (16*1024*1024ULL)

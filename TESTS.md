@@ -364,7 +364,9 @@ explicit "do not do this" comments at the sites that invited them.
 
 ### Open finding G-8: the SMP session soak is not clean, and nobody knows why yet
 
-**Status: open, mechanism not established. The CI job is advisory, not gating.**
+**Status: open. The CI job is advisory, not gating.** As of 2026-08-13 the *proximate*
+mechanism is established and proved — a corrupted resume `%rsp` reaching `iretq`, see the
+capture below — but the **origin of that value is not**, so the finding stays open.
 
 `smoke-session-smp-soak` fails at roughly **2–3% per boot** on current `main`:
 
@@ -375,6 +377,7 @@ explicit "do not do this" comments at the sites that invited them.
 | CI runner, PR #117 rebased, run 39/45 | **1 hang in 45** | **B** — 0 checks, stalled at **boot** |
 | CI runner, `smoke-fs-persist` (2026-07-31) | intermittent | **C** — **uniprocessor**, stalled after fs provisioning |
 | CI runner, `smoke-fs-conc` (2026-08-09) | intermittent | **C** — identical |
+| `ba84e90` local, `-smp 4`, logs preserved (2026-08-13) | **1 fail in 150** | **A** — 6 checks, stalled mid-`man`; `#GP` at `iretq`. First fully symbolised capture |
 
 **Three distinct signatures have been observed, and they are not the same failure.**
 Signature C is not even an SMP problem — those boots report `smp: uniprocessor, 1 CPU`.
@@ -576,6 +579,95 @@ claim or rules the hypothesis out.
 produced the address.** #138's comment read the same `rip` as landing mid-instruction and
 inferred a return address; this reading found it a clean boundary and inferred a load. Both
 were done against rebuilt trees. The artifact was available from CI the whole time.
+
+#### The first capture taken with the report audible (2026-08-13)
+
+#140 made kernel fault reports reach the UART instead of the klog. Run against `ba84e90` at
+`-smp 4`, keeping **every** failing run's full serial log — `smoke-session-smp-soak` reuses one
+temp log, overwrites it per iteration, deletes it at the end and prints only `tail -20`, so it
+would have discarded this — the fault appeared **once in 150 boots**:
+
+```
+64-bit EXCEPTION vector=13 err=0x4388 task=0 ''
+  vec=13 errc=0x4388
+  rip=0xffffffff8011cc03 cs=0x8 rflags=0x10086
+  rsp=0xffffffff8010e8e2 rbp=0xcbe8c35c415d5bc9 cpu=0
+  claim: task 0 running_cpu=-1  percpu_current=[0,0,0,3]  imp=[0,0,0,0]
+```
+
+Symbolised against the binary that produced it (sha256 pinned before the run; no rebuild
+between capture and analysis): **`rip` is exactly the `iretq` in `isr_common_stub64`** — not
+near it, the instruction itself.
+
+##### The resume `%rsp`, recovered and then proved
+
+`kfault_frame` prints `f->rsp`, the RSP the CPU pushed at the fault. Between loading the
+resume value and the `iretq` the stub does 15 `pop`s and `add $0x10`, so the value
+`interrupt_handler64` actually returned was `0xffffffff8010e8e2 - 136 = 0xffffffff8010e85a`.
+That address is not garbage:
+
+```
+ffffffff8010e857:  call   *%r12                  <-- the syscall dispatch call
+ffffffff8010e85a:  call   get_current_task       <-- ITS RETURN ADDRESS
+```
+
+**The resume `%rsp` was the return address pushed by `call *%r12` in `syscall_handler`.**
+
+That is a reconstruction, so it was checked rather than believed. If it holds, the stub's
+eighth pop (`pop %rbp`) drew from `resume_rsp + 64`. The bytes at that address in the pinned
+binary are `c9 5b 5d 41 5c c3 e8 cb` — little-endian **`0xcbe8c35c415d5bc9`**, which is
+*exactly* the `rbp` in the report. A 64-bit match is not coincidence: the reconstruction
+predicts an observed register and gets it right, so the GPRs demonstrably were loaded from
+`syscall_handler`'s own instruction stream.
+
+**The error code confirms it a third time, from an independent observable.** After the pops
+and `add $0x10`, `iretq` reads its frame from `R+136`, so `CS` comes from `R+144`. The bytes
+there are `…4389`. A `#GP` selector error code carries the index in bits 15:3 with the
+EXT/IDT/TI flags below, so selector `0x4389` — index `0x871`, RPL 1 — encodes as
+`0x871 << 3 = 0x4388`: **exactly the reported error code**, with the RPL bits dropped precisely
+as the encoding specifies.
+
+Three independent quantities now agree on the same resume value: the faulting instruction,
+`rbp` read from `R+64`, and the `#GP` error code derived from `R+144`. Index `0x871` is far
+past any real GDT entry, which is why the `iretq` faulted rather than returning somewhere
+plausible and corrupting silently.
+
+##### Why the floor guard did not catch it
+
+`idt.c` has had a guard for exactly this since #123:
+
+```c
+if (rsp < 0xFFFF800000000000ULL) { /* PANIC: dispatcher returned a bogus resume rsp */ }
+```
+
+`0xffffffff8010e85a` **is** higher-half, so it passes and reaches the `iretq` unchallenged. The
+guard tests *"is it higher-half"* where the property it needs is *"is it inside a live kernel
+stack"* — necessary, not sufficient. A `.text` pointer satisfies the first and fails the second.
+
+##### What this changes, and what it does not
+
+It reframes the hypothesis above rather than confirming it. This is **not** a smear of
+corrupted memory: one specific *value* — a return address — arrived where a stack *pointer*
+belongs. A one-word value/pointer confusion does not require two CPUs writing one stack, so
+`-smp 4`-only is no longer evidence for that mechanism specifically.
+
+And the claim dump **did not discriminate here**. `scheduler.c` scopes the invariant to
+`t > 0`; this capture is `task 0`, the idle/reaper sentinel — which `percpu_current=[0,0,0,3]`
+confirms, three CPUs "on" it at once — so `running_cpu=-1` is outside the invariant's scope,
+not a breach of it. Worth recording as a property of the instrument: **the claim line answers
+the question only for `t > 0` faults**, and this one was not. A `t > 0` capture is still needed
+to decide the two-CPU hypothesis either way.
+
+One number to quote carefully: **1 in 150 is not a rate.** §5.2c documents ~2–3%; under a true
+2.5% rate, seeing ≤1 event in 150 boots has probability ~11%, so this is the low end of the
+documented range and not evidence of a change. Cite it as "1/150 observed". #126 is the
+standing reminder of what a number stated past its evidence costs.
+
+Next: `tasks[t].saved_ksp` is only ever assigned `frame_rsp` (`scheduler.c`), and callers pass
+`(uint64_t)frame` — a stack address. Find the write that puts a return-address *value* there.
+The fault landed mid-`man`-render with a `PAGE FAULT at 0x3` immediately after, so the
+shell-fault teardown path is live in the same window, and `tasks[0].kernel_stack_top` is what
+the `#PF` handler resumes on when it kills a task and finds no successor.
 
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 

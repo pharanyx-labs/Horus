@@ -1619,29 +1619,30 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-8</span>The SMP session soak is not clean, and the origin of the fault is not established</h3>
+            <h3><span class="id">G-8</span>The SMP session soak is not clean, and the mechanism is not established</h3>
             <p>
               <code>smoke-session-smp-soak</code> fails at roughly <strong>2–3% per boot</strong>
-              on current <code>main</code>. The <em>proximate</em> mechanism is now established
-              and proved: the interrupt dispatcher returns a resume <code>%rsp</code> that is not
-              a kernel stack pointer, and the ISR epilogue consumes it. Two symbolised captures
-              show two different bad values, so it is not one mis-assignment — and the
-              <strong>origin</strong> of the value is still unknown, which is why the finding
-              stays open and the CI job stays advisory rather than gating. At that rate a
-              required check reddens about a third of runs and simply teaches everyone to press
-              re-run, which is the reflex that hid an earlier deadlock for months. That is a
-              mitigation, not a fix.
+              on current <code>main</code>. Distinct signatures have been captured, one of which
+              matches a previously fixed deadlock verbatim, so the open question is whether that
+              fix is incomplete or a second defect presents identically. The CI job is advisory
+              rather than gating — at that rate a required check reddens about a third of runs
+              and simply teaches everyone to press re-run, which is the reflex that hid the
+              earlier deadlock for months. That is a mitigation, not a fix. Signatures are
+              recorded; a mechanism is explicitly not claimed.
             </p>
             <p>
               One correction worth stating publicly, because it is the kind this project exists
-              to make: the kernel's guard against exactly this bad value <em>was reporting into a
-              claim that a fatal fault on another CPU takes and never releases</em>, so on the
+              to make. In the captured faults the interrupt dispatcher returns a resume
+              <code>%rsp</code> that is not a kernel stack pointer, and the kernel has carried a
+              guard against exactly that value since #123 — but the guard <em>was reporting into
+              a claim that a fatal fault on another CPU takes and never releases</em>, so on the
               boots it was built to explain it produced nothing at all. Its silence had been read
-              as evidence. It was not evidence — and a diagnostic that cannot speak where it
-              fires is indistinguishable from one that never fired. The guard now reports under a
-              bounded claim, and four <code>make smoke-resume-guard*</code> arms gate it in
-              seconds rather than waiting on a 1-in-150 event: two require the report, and two
-              reproduce the silence on demand.
+              as evidence. It was not evidence — a diagnostic that cannot speak where it fires is
+              indistinguishable from one that never fired. The guard now reports under a bounded
+              claim, and four <code>make smoke-resume-guard*</code> arms gate it in seconds
+              rather than waiting on a 1-in-150 event: two require the report, and two reproduce
+              the silence on demand. The finding itself stays open; what is closed is the
+              instrument.
             </p>
           </li>
           <li>

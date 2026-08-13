@@ -778,7 +778,12 @@ struct irq_policy_site_info {
 };
 
 struct irq_policy_info {
-    uint32_t accidental;         /* depth-0 releases that enabled IF the caller had masked */
+    uint32_t accidental;         /* depth-0 releases that ENABLED IF the caller had masked
+                                  * (legacy lock only; 0 with the per-CPU lock) */
+    uint32_t suppressed;         /* the same releases, SUPPRESSED by the per-CPU IF-preserving
+                                  * lock (0 in a legacy build). accidental + suppressed is the
+                                  * same population either way -- that is what makes the two
+                                  * builds comparable on one workload (roadmap 1.1 step 3) */
     uint32_t benign;             /* ... that restored IF=1 to a caller who already had it */
     uint32_t sites;              /* distinct accidental sites recorded (<= IRQ_POLICY_SITE_SLOTS) */
     uint32_t ticks;              /* system_ticks at the moment of the snapshot */
@@ -1366,6 +1371,10 @@ void kfault_claims(int task);            /* who else claims this task (SMP only)
  * derivation, kept as the bootstrap answer (an AP has no TSS until setup_ap_tss)
  * and as the independent oracle percpu_id_verify_self() falsifies against. */
 int  this_cpu(void);
+/* Nested spinlocks held by THIS CPU right now. Lets a window that must run with
+ * interrupts enabled check the one precondition that makes enabling them safe
+ * (roadmap 1.1); see smp_maybe_shootdown. */
+int  irq_locks_held_here(void);
 int  this_cpu_lapic(void);
 #ifdef SMP
 /* Run once per CPU, on that CPU, as its TSS is loaded: panics if the two

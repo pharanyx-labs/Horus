@@ -142,7 +142,7 @@ an authority escalation rather than a crash.
 
 ## Track 1 — Correctness and performance foundations
 
-### 1.1 ⬜ Make boot-time interrupt enablement explicit, *then* fix the spinlock — **[C-3]**, **[C-3.1]**
+### 1.1 ✅ Make boot-time interrupt enablement explicit, *then* fix the spinlock — **[C-3]**, **[C-3.1]** — *landed 2026-08-11*
 
 The IRQ nesting depth is a single global shared across CPUs, with non-atomic increments and
 an unconditional `sti` on release. Under SMP one CPU's release can re-enable interrupts while
@@ -290,10 +290,95 @@ from the dispatch table outside `IRQ_POLICY_AUDIT` builds, so the ship kernel an
 fails `irq-policy-info-allowed-without-kernel-log-cap`, and a kernel/userspace flag mismatch
 fails `irq-policy-info-present-in-ship-kernel`.
 
-Required order:
+### Delivered 2026-08-11 — steps 1 and 3, together
 
-1. Make boot-time interrupt enablement explicit — find every window relying on the accidental
-   `sti`, issue or defer `sti` deliberately, and write the policy down.
+**The policy is written down** in [`ARCHITECTURE.md` §6, "Interrupt policy"](ARCHITECTURE.md),
+as a table of contexts and their `IF`, every row of which `make smoke-irq-policy` asserts. The
+short version: ring 0 runs masked and is not preemptible; ring 3 and a parked CPU's idle loop
+run with `IF=1`, each set explicitly in the trap frame that enters them; and **a critical
+section returns the interrupt state it was given** rather than asserting one.
+
+**One window genuinely needs interrupts on, and now asks.** The TLB-shootdown wait
+(`smp_maybe_shootdown`) spins for acknowledgements that arrive as IPIs, so a CPU waiting there
+with `IF=0` cannot ack another initiator and the two wedge until the backstop expires. Its
+comment has always said "MUST be called with interrupts enabled"; nothing provided that except
+the accidental `sti`. It now enables interrupts deliberately, restores the previous state
+afterwards, and **panics if the caller holds a spinlock** — the other half of its stated
+precondition, which had never been checked.
+
+**Step 3: the lock.** `spin_lock`/`spin_unlock` keep a per-CPU nesting depth and a per-CPU
+saved `RFLAGS.IF`; the outermost release restores the caller's own `IF`. That closes **[C-3]**
+(a global non-atomic depth, so one CPU's release could unmask another's critical section) and
+**[C-3.1]** (the unconditional `sti`) in one change. `IRQ_LEGACY_GLOBAL_LOCK=1` rebuilds the
+old lock exactly, which is how this was measured rather than asserted — the role
+`EP_QUEUE_SLOTS=1` plays for 1.3.
+
+**Why it works now when the July attempt did not.** The 2026-07-27 patch was not wrong; the
+tree was. The accidental `sti` was load-bearing because a ring-0 tick could switch a CPU away
+mid-syscall, and three subsystems were subsequently changed to route around **[C-3.1]** —
+above all `preempt_on_tick`'s ring-0 guard, widened from `cpu == 0` to every CPU precisely
+because of it (the comment there names C-3.1). With that guard, a ring-0 tick is never a
+switch point, so the `sti` no longer produces the preemption anything depended on. This change
+is safe *because* those workarounds exist. It is also what makes them re-examinable, since
+interrupt policy is now stated instead of emergent.
+
+**The equivalence measurement.** Both builds count the same predicate — an outermost release
+whose caller had `IF` clear. The legacy build fires an `sti` for it (`accidental`); the new one
+suppresses it (`suppressed`). Same `make measure-irq-policy` workload, 14 commands:
+
+| Build | accidental | suppressed | benign | total releases |
+|---|---|---|---|---|
+| `IRQ_LEGACY_GLOBAL_LOCK=1` | **1439** | 0 | 720 | **2159** |
+| default (per-CPU) | **0** | **2159** | 0 | **2159** |
+
+The totals are identical, which is the point: the same population of releases, with the 1439
+unwanted enablements removed and nothing else changed. The 720 previously "benign" releases
+were benign only *because an earlier accidental `sti` had already turned interrupts on* — once
+that stops, every caller is correctly observed to have had `IF=0`. (The per-site table
+saturates at `IRQ_SITE_SLOTS` in the new build for the same reason: the legacy lock hid every
+lock site after the first in each syscall, so seven sites were visible where there are at
+least twelve.)
+
+**Rates, interleaved and pinned** (`tools/session_test.py`, adjacent alternating boots, host
+CPUs 0,1):
+
+| Harness | legacy lock | per-CPU lock |
+|---|---|---|
+| `session_test`, `-smp 1`, 20 boots/arm | 0/20 | 0/20 |
+| `session_test`, `-smp 4`, 40 boots/arm | 3/40 | 1/40 |
+| `modules_session`, 6 boots/arm | 0/6 | 0/6 |
+| `coreutils_session`, 8 boots/arm | 0/8 | 0/8 |
+
+`modules_session` and `coreutils_session` are the two harnesses the July attempt actually
+failed (`smoke-modules` timed out waiting for provisioning; `smoke-coreutils-shell` failed with
+`ls: spawn fs_server first`). Neither reproduces on either arm now.
+
+**The `-smp 4` difference is not a claim of improvement** — 3/40 against 1/40 is well inside
+noise at this sample size, and it is not what the change is for. Every failure in both arms was
+inspected and every one is **G-8 signature A**: the ring-3 shell faults and `init` relaunches
+it, which the exit-reason work (#130) now prints in band — `init: shell exited: faulted on
+memory access at addr=0x1065e4f33b2 rip=0x1065e4f33b2 err=0x14`. `rip == addr` with `err=0x14`
+is a ring-3 instruction fetch from an unmapped page: a userspace defect, unrelated to interrupt
+policy, and present at the same rate on both sides. The claim supported here is the negative
+one: **the per-CPU lock does not raise the failure rate**, on a sample sized to see a ~5% rate,
+and it does not cost wall clock (`-smp 1` means 14.44 s vs 14.47 s).
+
+The two SMP gates that the accidental `sti` used to break, both 30 pinned boots on the new
+lock: `smoke-console-smp-stress` **30/30**, `smoke-sched-invariants-stress` **30/30**.
+
+**The gate.** `smoke-irq-policy` gains a sixth milestone, `outermost-lock-release`, recording
+`IF` immediately after the first outermost `spin_unlock` of the boot — the one observation that
+separates the two locks. Expected 0 by default and 1 under `IRQ_LEGACY_GLOBAL_LOCK=1`, so both
+arms are gated rather than one merely tolerated, and an unconditional `sti` cannot come back
+silently. Falsified by crossing the expectations: `IRQ_POLICY: FAIL outermost-lock-release
+IF=0 expected 1`.
+
+---
+
+Original plan, retained for the record:
+
+1. ~~Make boot-time interrupt enablement explicit — find every window relying on the accidental
+   `sti`, issue or defer `sti` deliberately, and write the policy down.~~ **Done 2026-08-11.**
 2. ~~Add a self-test asserting `IF` state at the boot milestones so the dependency cannot
    silently return.~~ **Done 2026-08-10** — `make smoke-irq-policy`, gated in CI. Records IF
    at `post-idt`, `post-paging`, `post-protections`, `kernel-ready` and
@@ -305,10 +390,10 @@ Required order:
    the shell's `irqpolicy` builtin read the counters in band; `IRQ_POLICY_QUIET` defaults on so
    the kernel never writes at the UART behind `console_server`; every report carries `@tick=`;
    `make measure-irq-policy` reproduces the session-scale figure above.
-3. Then land the per-CPU, IF-preserving lock. **Now unblocked** — the evidence to design
-   against exists and is reproducible.
-
-Own PR, with the startup handshake instrumented. Do not attempt step 3 alone.
+3. ~~Then land the per-CPU, IF-preserving lock.~~ **Done 2026-08-11**, in the same PR as
+   step 1 — the instruction not to attempt step 3 alone was followed: the policy step 1 writes
+   down is exactly what step 3's diff has to state, and landing a policy document the code
+   contradicted would have been worse than either.
 
 ### 1.2 ◧ `%gs`-based per-CPU data — **[I-6]** performance goal met by other means
 
@@ -661,7 +746,7 @@ about as far as it goes without one.
 IPC is capability-addressed, ambient root authority is retired, and creating a kernel object
 is an exercise of authority the capability graph describes.
 
-Track 1.1 is the next blocking item, and 0.3 raised its priority with evidence rather than
+Track 1.1 *was* the next blocking item, and 0.3 raised its priority with evidence rather than
 argument. Moving cspaces onto untyped memory made `create_task` take a spinlock for the first
 time, and `task_teardown` likewise — both on paths that keep interrupts masked deliberately.
 `spin_unlock`'s unconditional `sti` (**[C-3.1]**) turned that into `smoke-console-smp`
@@ -724,4 +809,7 @@ rate, since one green boot is not evidence about a scheduling change.
    the one that is wrong.** Falsify the checker against the code *and* the code against the
    checker. This one blocked 1.1 for a fortnight over an invariant that was never violated.
 
-**1.1 is unblocked.**
+**1.1 is done** (2026-08-11). See §1.1 for the measurement and for why the July attempt failed
+where this one did not: the accidental `sti` stopped being load-bearing when
+`preempt_on_tick`'s ring-0 guard was widened to every CPU, which was itself a workaround for
+the defect now fixed.

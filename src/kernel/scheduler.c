@@ -1971,7 +1971,12 @@ void scheduler_lock_acquire(void) { spin_lock(&scheduler_lock); }
 void scheduler_lock_release(void) { spin_unlock(&scheduler_lock); }
 
 
+
+#ifdef IRQ_LEGACY_GLOBAL_LOCK
+/* The defect itself: one nesting depth for the whole machine, non-atomic
+ * (**[C-3]**). Only the legacy control-arm build still has it. */
 static volatile int irq_lock_depth = 0;
+#endif
 
 #ifdef IRQ_POLICY_AUDIT
 /* ---- Measuring the accidental `sti` (roadmap 1.1 step 1) -------------------
@@ -1995,8 +2000,16 @@ static volatile int irq_lock_depth = 0;
  * identically to the ship kernel. NB irq_lock_depth is a non-atomic global (that
  * is part of the defect), so under SMP these counts are indicative, not exact --
  * which is itself worth knowing before anyone quotes them as a spec. */
+#ifdef IRQ_LEGACY_GLOBAL_LOCK
 static volatile int      irq_outer_if = 1;   /* IF when the outermost lock was taken */
+#endif
+/* Releases where the caller's own IF was CLEAR. The legacy lock turns each of
+ * these into an `sti` the caller never asked for (accidental); the per-CPU lock
+ * suppresses each one (suppressed). Same predicate, same workload, so the two
+ * counts are directly comparable across the two builds -- which is exactly the
+ * evidence that the fix removes those enablements and only those. */
 volatile unsigned        irq_accidental_sti = 0;
+volatile unsigned        irq_suppressed_sti = 0;
 volatile unsigned        irq_benign_sti     = 0;
 #define IRQ_SITE_SLOTS 12
 /* The readout struct mirrors this width; drift would silently truncate the
@@ -2062,12 +2075,26 @@ void irq_milestone(const char *name) {
  * When step 3 lands the IF-preserving lock, some of these will change. That is
  * the point: the diff will have to state which, rather than the handshake quietly
  * acquiring or losing preemption windows the way it did on 2026-07-27. */
+/* The one expectation that DIFFERS between the two locks, and the reason this
+ * gate is worth having at all. A critical section must hand back the interrupt
+ * state it was given; the legacy lock asserts IF=1 instead. Stated per build so
+ * the control arm is also gated rather than merely tolerated. */
+#ifdef IRQ_LEGACY_GLOBAL_LOCK
+#define IRQ_EXPECT_RELEASE_IF 1
+#else
+#define IRQ_EXPECT_RELEASE_IF 0
+#endif
+
 static const struct { const char *name; int expect; } irq_expect[] = {
-    { "post-idt",            0 },
-    { "post-paging",         0 },
-    { "post-protections",    0 },
-    { "kernel-ready",        0 },
-    { "first-syscall-entry", 0 },
+    { "post-idt",              0 },
+    { "post-paging",           0 },
+    { "post-protections",      0 },
+    { "kernel-ready",          0 },
+    { "first-syscall-entry",   0 },
+    /* Roadmap 1.1 step 3: interrupts are RESTORED by a lock release, never
+     * imposed. This is the assertion that the accidental `sti` (**[C-3.1]**) is
+     * gone and cannot silently return. */
+    { "outermost-lock-release", IRQ_EXPECT_RELEASE_IF },
 };
 #define IRQ_EXPECT_N ((int)(sizeof(irq_expect)/sizeof(irq_expect[0])))
 
@@ -2131,6 +2158,7 @@ void irq_milestone_report(void) {
  * stops being a second writer. */
 void irq_policy_snapshot(struct irq_policy_info *out) {
     out->accidental = irq_accidental_sti;
+    out->suppressed = irq_suppressed_sti;
     out->benign     = irq_benign_sti;
     out->ticks      = system_ticks;
     unsigned n = irq_site_count;
@@ -2186,6 +2214,103 @@ void irq_policy_report(const char *when) {
 }
 #endif
 
+#ifndef IRQ_LEGACY_GLOBAL_LOCK
+/* ---- The IF-preserving, per-CPU lock (roadmap 1.1 step 3, [C-3]/[C-3.1]) ----
+ *
+ * Two defects, one fix.
+ *
+ * The nesting depth was a SINGLE GLOBAL shared by every CPU, incremented and
+ * decremented non-atomically (**[C-3]**). Under SMP one CPU's release could
+ * drive the count to zero while another still held a lock, so that other CPU's
+ * critical section ran with interrupts on.
+ *
+ * And the release ended in an UNCONDITIONAL `sti` once the count reached zero
+ * (**[C-3.1]**), so a critical section IMPOSED IF=1 on a caller that had
+ * deliberately masked interrupts. Because `int 0x80` clears IF on entry, every
+ * syscall starts masked, and the first lock it took and released turned
+ * interrupts on for the remainder — which is how boot-time interrupt
+ * enablement came to be a consequence of a locking bug rather than a policy.
+ *
+ * Both go away together: make the state per-CPU, and RESTORE the caller's own
+ * RFLAGS.IF instead of asserting one. The outermost acquire records what the
+ * caller had; the outermost release puts exactly that back.
+ *
+ * Reading this_cpu() here is cheap and safe. It is an `str` plus arithmetic
+ * (see the long note on this_cpu() above), not an MMIO read, and a CPU cannot
+ * change identity underneath either half: the acquire reads it after `cli`, the
+ * release reads it while the section still holds IF=0, and ring 0 is not
+ * preemptible (preempt_on_tick's ring-0 guard). A CPU therefore executes the
+ * whole acquire..release on itself.
+ *
+ * WHY THIS DID NOT WORK IN JULY, AND WHAT CHANGED. The equivalent patch was
+ * written on 2026-07-27, passed every local gate, and broke the ring-3 startup
+ * handshake in CI. It was reverted, and the roadmap recorded the reason: the
+ * accidental `sti` was load-bearing, because the handshake depended on the
+ * preemption it produced. Three subsystems were then changed to route around
+ * C-3.1 rather than fix it — most importantly preempt_on_tick's ring-0 guard,
+ * which was widened from `cpu == 0` to every CPU precisely because a syscall
+ * could be interrupted mid-flight (see the long note there, which names C-3.1
+ * explicitly). With that guard in place a ring-0 tick is never a switch point,
+ * so the `sti` no longer creates the preemption anything depended on. This
+ * change is safe *because* those workarounds exist; it is also what lets them
+ * be reasoned about again, since interrupt policy is now stated rather than
+ * emergent. It was re-measured rather than re-argued — see docs/ROADMAP.md. */
+static volatile int irq_depth_pc[MAX_CPUS];
+static volatile int irq_saved_if_pc[MAX_CPUS];
+
+void spin_lock(spinlock_t *lock) {
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    __asm__ volatile ("cli" ::: "memory");
+    int c = this_cpu();
+    if (c < 0 || c >= MAX_CPUS) c = 0;
+    if (irq_depth_pc[c]++ == 0)
+        irq_saved_if_pc[c] = (fl & 0x200ULL) ? 1 : 0;
+    while (__sync_lock_test_and_set(&lock->locked, 1)) {
+        while (lock->locked) { __asm__ volatile ("pause" ::: "memory"); }
+    }
+}
+
+void spin_unlock(spinlock_t *lock) {
+    int c = this_cpu();
+    if (c < 0 || c >= MAX_CPUS) c = 0;
+    __sync_lock_release(&lock->locked);
+    if (irq_depth_pc[c] > 0 && --irq_depth_pc[c] == 0) {
+#ifdef IRQ_POLICY_AUDIT
+        /* Count the SAME predicate the legacy lock counts, so the two builds are
+         * directly comparable on one workload: was IF clear when the outermost
+         * lock was taken? Under the legacy lock those releases fire an `sti` the
+         * caller never asked for and are counted as `accidental`. Here they are
+         * SUPPRESSED, and counted as such.
+         *
+         * That correspondence is the measurement this change is justified by:
+         * same workload, legacy accidental == per-CPU suppressed means the fix
+         * removes exactly those enablements and nothing else. A `suppressed`
+         * count of 0 would mean the instrument, not the defect, had gone away. */
+        if (!irq_saved_if_pc[c]) {
+            irq_suppressed_sti++;
+            irq_record_site((uint64_t)(uintptr_t)__builtin_return_address(0));
+        } else {
+            irq_benign_sti++;
+        }
+#endif
+        /* Restore, never impose. This is the whole change. */
+        if (irq_saved_if_pc[c]) __asm__ volatile ("sti" ::: "memory");
+#ifdef IRQ_POLICY_AUDIT
+        /* Records IF as it stands after the FIRST outermost release of the boot,
+         * which is the single observation that distinguishes the two locks: the
+         * legacy one has just asserted IF=1 regardless, this one has restored
+         * whatever the caller had (0, at that point in boot). Gated by
+         * irq_policy_selftest, so an unconditional `sti` cannot come back
+         * silently. */
+        irq_milestone("outermost-lock-release");
+#endif
+    }
+}
+#else /* IRQ_LEGACY_GLOBAL_LOCK: the pre-1.1 lock, kept buildable as the control
+       * arm. Rebuilding the defect exactly is how the fix was MEASURED rather
+       * than asserted, the same role EP_QUEUE_SLOTS=1 plays for roadmap 1.3.
+       * Never ship this. */
 void spin_lock(spinlock_t *lock) {
 #ifdef IRQ_POLICY_AUDIT
     uint64_t fl;
@@ -2216,6 +2341,30 @@ void spin_unlock(spinlock_t *lock) {
         }
 #endif
         __asm__ volatile ("sti" ::: "memory");
+#ifdef IRQ_POLICY_AUDIT
+        irq_milestone("outermost-lock-release");   /* see the per-CPU branch */
+#endif
     }
 }
+#endif /* IRQ_LEGACY_GLOBAL_LOCK */
+
+/* How many nested spinlocks THIS CPU currently holds (roadmap 1.1 step 1).
+ *
+ * The point of stating interrupt policy is that a window which must run with
+ * interrupts ENABLED can now say so and check it, instead of inheriting IF=1 as
+ * a side effect of whatever lock the caller happened to release. The one such
+ * window in the tree is the TLB-shootdown wait (smp_maybe_shootdown), whose
+ * comment has always required interrupts on; this is what lets it enforce that
+ * rather than document it. Enabling interrupts while holding a lock is the
+ * hazard the requirement trades against, so the count has to be askable. */
+int irq_locks_held_here(void) {
+#ifdef IRQ_LEGACY_GLOBAL_LOCK
+    return irq_lock_depth;
+#else
+    int c = this_cpu();
+    if (c < 0 || c >= MAX_CPUS) c = 0;
+    return irq_depth_pc[c];
+#endif
+}
+
 

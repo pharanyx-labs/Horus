@@ -392,6 +392,24 @@ The scheduler claim-invariant checker holds 30/30, but that does **not** exclude
 claim: 30 boots witness a 2% event less than half the time. Re-running it at
 `STRESS_RUNS=150` is the cheapest discriminator and is the next step.
 
+**Update 2026-08-13 — the proximate mechanism is now established.** A 150-boot soak at
+`-smp 4` on `ba84e90`, the first run taken after #140 made kernel fault reports audible during
+a live session, caught it once. The fault is a `#GP` **at the `iretq`** in
+`isr_common_stub64`: `interrupt_handler64` returned a resume `%rsp` pointing into `.text`, the
+stub's 15 `pop`s then loaded registers from instruction bytes, and `iretq` took `CS` from
+those bytes. This is proved rather than inferred — the reported `rbp` is bit-for-bit the code
+bytes at `resume_rsp + 64`. `TESTS.md` has the disassembly and the arithmetic.
+
+Two consequences for this section. `#123`'s floor guard does **not** cover it: the bad value is
+higher-half, so `rsp < 0xFFFF800000000000` passes it. And the *origin* of the value is still
+unknown, so **[G-8]** stays open and the job stays advisory. The capture also did not
+discriminate on the shared-stack hypothesis — it landed on task 0, which the claim invariant
+explicitly excludes (`t > 0`).
+
+One number to keep honest: that run was **1 failure in 150**, which is *not* a measured
+improvement on the 2–3% above. Under a true 2.5% rate, ≤1 event in 150 boots has probability
+~11%.
+
 **Until it is diagnosed, the CI job is advisory rather than gating**, because at that rate a
 required check goes red on about a third of runs and simply teaches everyone to press re-run —
 the reflex that let the `smoke-console-smp` deadlock survive months of CI. That is a

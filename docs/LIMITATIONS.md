@@ -158,6 +158,18 @@ per-CPU — a difference well inside noise, and every failure in both arms was *
 A** (the ring-3 shell faults and `init` relaunches it), not an interrupt-policy fault.
 `smoke-console-smp-stress` and `smoke-sched-invariants-stress` both 30/30 on the new lock.
 
+**An open question, recorded rather than rounded off.** Those session rates are one harness.
+A separate boot-only harness — `-smp 4` squeezed onto a single host core against three CPU
+hogs, arms interleaved — found a kernel page fault in the interrupt-return path at **3 boots
+in 125 on the per-CPU arm, against 0/125 legacy and 0/105 on `main`**. p ≈ 0.045: marginal,
+and not conclusive at that sample size. It is recorded here because the correct bar for a
+fault on that path is *shown not to be mine*, not *not yet shown to be mine*, and because the
+alternative reading — that the new lock changes when interrupts are masked and therefore
+merely **exposes** a latent teardown-vs-selection race — puts the fix somewhere else entirely.
+The capture is a corrupted trap frame being `iretq`'d (`err=0x11`, `rip` and `rsp` 0x80 apart
+in the same kernel stack: the kernel executing from a stack), not a wild pointer, so a range
+check on the resume `%rsp` cannot catch it and did not when it was armed for exactly this.
+
 **Still open, and now visible.** The three workarounds written for C-3.1 are still in place and
 were not removed here — `preempt_on_tick`'s ring-0 guard, `untyped.c`'s IF-transparent critical
 section, and the deferred lock arming past boot. They are no longer load-bearing for interrupt

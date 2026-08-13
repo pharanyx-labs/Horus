@@ -106,6 +106,17 @@ the affected objects.
 CI builds `SMP=1`, `SMP=0` (via the default job), `DEBUG_SHELL=1`, and `MINIMAL_SECURE=1`, so
 all four keep compiling.
 
+### Interrupt-policy flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `IRQ_LEGACY_GLOBAL_LOCK` | off | Rebuilds the **pre-1.1 spinlock**: one global nesting depth shared by every CPU, incremented non-atomically, with an unconditional `sti` on the outermost release — findings **[C-3]** and **[C-3.1]** exactly as they stood. This is the **control arm** the IF-preserving per-CPU lock is measured against. Under `IRQ_POLICY_AUDIT=1` both builds count the same predicate (a release whose caller had `IF` clear); the legacy build reports it as `accidental` and fires the `sti`, the default reports it as `suppressed` and does not. Equal totals is the evidence. **Never ship this.** |
+| `IRQ_POLICY_AUDIT` | off | Counts and attributes those releases, and adds the `smoke-irq-policy` milestones. |
+| `IRQ_POLICY_QUIET` | `1` | Keeps the audit's counting off the console. `0` reports each milestone as it passes — a figure quoted without its tick is not a measurement, so the report carries one. |
+
+A flag that rebuilds a defect is not a curiosity: without one, a gate has only ever been run
+against the fixed kernel, and "it passes" says nothing about what it can detect.
+
 ### Self-test builds
 
 Each security self-test is a separate kernel configuration whose test-only code is **absent**

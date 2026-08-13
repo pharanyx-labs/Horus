@@ -907,6 +907,10 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 | `smoke-recvblock` | A ring-3 server waiting with `SYS_IPC_RECV_BLOCK` makes **exactly one receive syscall per message** while the client dawdles before each send — the witness that it slept rather than polled — and the wake leaves it holding the one-shot reply right. Roadmap 1.3. |
 | `smoke-recvblock-smp` | The same, under `-smp 4`, so the CROSS-CPU wake path runs at all. It does not reliably catch the ordering race that path is prone to — see "The lost wakeup none of those gates caught" — but it is one boot. |
 
+Both run in CI as of this change. They are **not** required status checks — like every other
+gate added after the ruleset was written, they land in the advisory set (finding **[C-6]**),
+so a red `smoke-recvblock` does not block a merge. Read it anyway.
+
 ## ELF loading
 
 | Target | Proves |

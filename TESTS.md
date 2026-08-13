@@ -365,8 +365,11 @@ explicit "do not do this" comments at the sites that invited them.
 ### Open finding G-8: the SMP session soak is not clean, and nobody knows why yet
 
 **Status: open. The CI job is advisory, not gating.** As of 2026-08-13 the *proximate*
-mechanism is established and proved — a corrupted resume `%rsp` reaching `iretq`, see the
-capture below — but the **origin of that value is not**, so the finding stays open.
+mechanism is established and proved — the dispatcher returns a value that is not a kernel stack
+pointer, and the ISR epilogue consumes it — but the **origin of that value is not**, so the
+finding stays open. Two captures show two different bad values (a `.text` return address, and
+`4`), so it is not one mis-assignment. The shared-stack hypothesis below is **not** supported by
+either capture: at the one `t > 0` fault caught, the scheduler claim invariant held.
 
 `smoke-session-smp-soak` fails at roughly **2–3% per boot** on current `main`:
 
@@ -378,6 +381,8 @@ capture below — but the **origin of that value is not**, so the finding stays 
 | CI runner, `smoke-fs-persist` (2026-07-31) | intermittent | **C** — **uniprocessor**, stalled after fs provisioning |
 | CI runner, `smoke-fs-conc` (2026-08-09) | intermittent | **C** — identical |
 | `ba84e90` local, `-smp 4`, logs preserved (2026-08-13) | **1 fail in 150** | **A** — 6 checks, stalled mid-`man`; `#GP` at `iretq`. First fully symbolised capture |
+| `e9aebdd` local, `-smp 4` (2026-08-13) | **1 fail in 150** | **A** — two events in one boot: `#GP` at `iretq` (cpu 3, resume = a `.text` address) **and** `#PF` at the first `pop` (cpu 0, resume = `4`). First `t > 0` claim capture — invariant **held** |
+| PR #135 rebased onto `e9aebdd`, `-smp 4` (2026-08-13) | **0 fail in 150** | — (control arm: the fault is `main`'s, not #135's) |
 
 **Three distinct signatures have been observed, and they are not the same failure.**
 Signature C is not even an SMP problem — those boots report `smp: uniprocessor, 1 CPU`.
@@ -554,11 +559,16 @@ exactly that, which is what makes a disagreement legible when it appears.
   the datapoint above — is what a concurrent push by another CPU into the same frame region
   looks like.
 - A trap frame that `iretq`s into a kernel stack address (`err=0x11`, `rip` and `rsp` 0x80
-  apart in the same region) — the fault holding roadmap 1.1 in PR #135 — is the same
-  corruption once it reaches the `rip` slot.
+  apart in the same region) — the fault then believed to be holding roadmap 1.1 in PR #135 — is
+  the same corruption once it reaches the `rip` slot.
 
 Neither needs a second mechanism, and both are SMP-only, which fits: #135's boot-only harness
 saw 0/20 at `-smp 1` on both lock arms and only ever saw the fault at `-smp 4`.
+
+> **Superseded on 2026-08-13 — read this section as the record of a hypothesis, not a
+> conclusion.** Two later captures below show the invariant *holding* at a `t > 0` fault, and a
+> resume value of `4` that needs no second CPU to explain. The attribution to PR #135 was also
+> wrong: the fault reproduces on `main` without it, and #135 has since merged.
 
 The invariant at stake is the one in `scheduler.c`: `task_running_cpu[t] == c` ⟺
 `percpu_current_task[c] == t`. A fault is exactly the moment to ask whether it still holds, so
@@ -704,6 +714,90 @@ Next: `tasks[t].saved_ksp` is only ever assigned `frame_rsp` (`scheduler.c`), an
 The fault landed mid-`man`-render with a `PAGE FAULT at 0x3` immediately after, so the
 shell-fault teardown path is live in the same window, and `tasks[0].kernel_stack_top` is what
 the `#PF` handler resumes on when it kills a task and finds no successor.
+
+*(The section below supersedes that last paragraph: a second capture shows a resume value of
+`4`, which no `saved_ksp` write produces, so the search it proposes is the wrong one.)*
+
+#### A second capture — the hypothesis fails its first real test (2026-08-13)
+
+Run to answer a different question — whether the fault recorded above as *"holding roadmap 1.1
+in PR #135"* belonged to that branch or to `main` — as two 150-boot arms on one host, both
+carrying the evidence capture described below:
+
+| Arm | Result |
+|---|---|
+| `main` at `e9aebdd` | **1 fail / 150** |
+| PR #135 rebased onto it | **0 fail / 150** |
+
+**1 against 0 at N=150 is not a difference** (Fisher p = 1.0), and no improvement is claimed for
+the per-CPU lock. The load-bearing result is the other one: the fault **reproduces on `main`
+with #135 absent**, twice across two independent builds — 2 in 300 boots — with byte-identical
+signatures. The attribution above was therefore wrong in one respect, corrected here rather than
+quietly: this is `main`'s defect, not #135's, and it was never a reason to hold that PR. #135
+merged on 2026-08-13.
+
+##### Two corrupted resume values, two CPUs, one boot
+
+```
+64-bit EXCEPTION vector=13 err=0x4388 task=0 ''
+  rip=0xffffffff8011c883 cs=0x8 rflags=0x10286
+  rsp=0xffffffff8010e722 rbp=0xcbe8c35c415d5bc9 cpu=3
+  claim: task 0 running_cpu=-1  percpu_current=[4,0,0,0]  imp=[0,0,0,0]
+KERNEL FATAL EXCEPTION - halting
+
+PAGE FAULT at 0x4 err=0x0(not-present,read,supervisor) task=4 'shell'
+  rip=0xffffffff8011c868 cs=0x8 rflags=0x10286
+  rsp=0x4 rbp=0x1ab3344b84c cpu=0
+  claim: task 4 running_cpu=0  percpu_current=[4,0,3,0]  imp=[0,0,0,0]
+```
+
+Symbolised against the binary that produced it — `isr_common_stub64 = 0xffffffff8011c846`:
+
+| Offset | Instruction | Matches |
+|---|---|---|
+| `+0x22` | `pop %r15`, the first pop after `mov %rax,%rsp` | fault **B**'s `rip` exactly |
+| `+0x3d` | `iretq` | fault **A**'s `rip` exactly |
+
+Fault A's resume value backs out to `0xffffffff8010e722 - 136 = 0xffffffff8010e69a`, the return
+address of `call *%r12` in this build's `syscall_handler` — reproducing the previous capture **in
+a different binary**, with `rbp` and the `#GP` error code byte-identical because the code bytes
+at the same relative offsets are the same.
+
+##### The hypothesis fails its first real test
+
+Fault B is the **`t > 0`** capture the previous section said was needed. For task 4,
+`task_running_cpu[4] == 0` and `percpu_current_task[0] == 4`: **the invariant holds.** That is
+the discriminating observation, and it does not show two CPUs executing on one kernel stack.
+
+One capture is not proof of absence. But the hypothesis now has no observation supporting it,
+and the reasoning that made it attractive is separately weakened below.
+
+##### Two different bad values, which changes the shape of the search
+
+Fault A's resume `%rsp` was a `.text` address; fault B's was **`4`**. Two different garbage
+values, two CPUs, one boot. So this is not one mis-assignment writing a return address into one
+field — whatever produces it sits upstream of any single write site, and "find the line that
+stores the wrong value into `saved_ksp`" is the wrong search. No `saved_ksp` write produces `4`.
+
+It also removes the SMP-specific reasoning behind the shared-stack hypothesis: a one-word
+value/pointer confusion does not need two CPUs, and `4` is not a stack address under any
+interleaving.
+
+##### The floor guard did not fire, and it should have
+
+`rsp = 4` is unambiguously below `0xFFFF800000000000`, so `idt.c`'s guard — added in #123 for
+exactly this — should have reported `PANIC: dispatcher returned a bogus resume rsp=`. **There is
+no such line anywhere in the captured log.** The guard's own comment names this very value:
+
+> *(Or earlier still, on the `out->cs` read just below — `rsp==4` faults at `0x94`, which is
+> exactly what a reproduce-and-symbolise cycle spent an hour chasing.)*
+
+Either the guard is not running on this path, or its report is being lost — and after #140 the
+second should no longer be possible. This is now a sharper question than the `saved_ksp` search,
+and it carries a warning about everything written above it: **a guard that does not fire on the
+value it names is either misplaced or mute, so every "the guard did not catch it" statement
+about this fault — including the one in the previous section — is an inference, not an
+observation, until this is settled.**
 
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 

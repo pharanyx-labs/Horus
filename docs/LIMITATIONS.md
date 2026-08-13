@@ -440,6 +440,26 @@ One number to keep honest: that run was **1 failure in 150**, which is *not* a m
 improvement on the 2–3% above. Under a true 2.5% rate, ≤1 event in 150 boots has probability
 ~11%.
 
+**Update — a second capture, and two corrections (2026-08-13).** A dual-arm run (150 boots each
+on one host) caught the fault again on `main` at `e9aebdd`, in a boot carrying **two** corrupted
+resume values on two CPUs: a `.text` return address, and **`4`**. Three consequences:
+
+- **The shared-stack hypothesis is not supported.** The second event is the first `t > 0`
+  capture, and there `task_running_cpu[4] == 0` and `percpu_current_task[0] == 4` — the claim
+  invariant **holds**. It is not disproved by one capture, but nothing observed supports it.
+- **It is not one bad write.** Two different garbage values in one boot puts the cause upstream
+  of any single assignment; no `saved_ksp` write produces `4`.
+- **The floor guard did not fire for `rsp = 4`,** which is below its threshold and named in its
+  own comment. So the statement above that the guard "does not cover it" is true for the
+  higher-half value but must not be read as *the guard works and this slipped past its design* —
+  on the one value it was built for, it produced nothing. Until that is explained, treat the
+  guard's behaviour as unverified.
+
+The same run was the control for **PR #135** (per-CPU IRQ lock): `main` 1/150, #135 rebased
+**0/150**. That is not a significant difference (Fisher p = 1.0) and no improvement is claimed —
+but it establishes that the fault is `main`'s, not #135's, which is why #135 was no longer held
+for it and merged the same day.
+
 **Until it is diagnosed, the CI job is advisory rather than gating**, because at that rate a
 required check goes red on about a third of runs and simply teaches everyone to press re-run —
 the reflex that let the `smoke-console-smp` deadlock survive months of CI. That is a

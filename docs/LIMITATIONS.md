@@ -81,12 +81,32 @@ authority.
 but `info.eip` is returned verbatim, defeating userspace ASLR for any task a privileged
 caller can observe.
 
-### 1.4 User copies truncate silently — **[I-4] / [C-4]**
+### 1.4 ~~User copies truncate silently~~ — **FIXED 2026-08-13** — **[C-4]**
 
-`copy_from_user` and `copy_to_user` clamp `n` to `USER_MEM_MAX_COPY` and return success. A
-caller requesting more gets a partial copy it believes succeeded, leaving stale kernel-stack
-bytes in the tail of the destination. No current caller is known to be exploitable, but this
-is a latent kernel-memory disclosure that will bite the first time a larger struct is added.
+`copy_from_user` and `copy_to_user` clamped `n` to `USER_MEM_MAX_COPY` and returned success. A
+caller requesting more got a partial copy it believed succeeded, leaving stale kernel-stack
+bytes in the tail of the destination. No current caller was known to be exploitable, but this
+was a latent kernel-memory disclosure that would bite the first time a larger struct was added.
+
+Both helpers now **refuse** a request above the ceiling (`paging.c:1441-1462`). The ceiling was
+never the defect — reporting a short copy as a complete one was.
+
+Auditing all ~89 call sites found none that can reach it: each either bounds `n` by the kernel
+scratch buffer it stages through (`h_write` 255, `h_dmesg` 1024, `pipe_read`/`pipe_write`
+`PIPE_IO_CHUNK`, the block syscalls `BLOCK_SIZE`, the rest a `sizeof`), or chunks explicitly to
+`USER_MEM_MAX_COPY` first (`arm_image_from_user`, `try_elf_load`, `load_staged_image_into`). So
+refusing is behaviour-preserving, which an 11-target sweep confirms.
+
+One handler *was* live rather than latent: `h_boot_module_read` copies straight out of the
+`PHYS_KVA` window with no kernel staging buffer, and returned the **unclamped** `len` — so a
+request above 64 KiB reported bytes it had not written. It now clamps to the ceiling itself and
+returns the count it actually copied: a short read, which is what its ABI already promises and
+what `fs_server`'s provisioning loop already handles by advancing on the returned value.
+
+*Caveat on the witness.* Because every syscall clamps to its own buffer before calling the
+helpers, the refusal itself is **not reachable from ring 3** — there is no userspace test that
+can trigger it, and this section should not imply otherwise. The reachable behaviour, and the
+one worth a falsification test, is the boot-module short read.
 
 ### 1.5 Broad revocation can be forced by an unprivileged task — **[I-3]**
 

@@ -1438,15 +1438,33 @@ static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int n
     return rc;
 }
 
+/* Both helpers REFUSE a request above USER_MEM_MAX_COPY rather than clamping it
+ * (finding [C-4], roadmap 1.4). They used to silently shorten n and then return
+ * 0 -- success -- so a caller that believed it had moved n bytes was left with
+ * whatever the destination held beyond the clamp: on a copy_to_user, stale
+ * kernel-stack bytes in the tail of a user buffer, disclosed as if they were
+ * data. A short copy reported as a complete one is the whole defect; the ceiling
+ * itself is fine.
+ *
+ * Refusing is safe for every caller in the tree because none of them can reach
+ * it: each either bounds n by the kernel scratch buffer it is staging through
+ * (h_write 255, h_dmesg 1024, pipe_read/write PIPE_IO_CHUNK, the block syscalls
+ * BLOCK_SIZE, the rest sizeof of a struct), or chunks explicitly to
+ * USER_MEM_MAX_COPY first (arm_image_from_user, try_elf_load,
+ * load_staged_image_into). The one handler whose length is not bounded by a
+ * kernel buffer -- h_boot_module_read, which copies straight out of PHYS_KVA --
+ * has only ever been called by fs_server's BLK-sized provisioning loop. That is
+ * exactly the "latent until someone passes a bigger struct" shape LIMITATIONS.md
+ * §1.4 predicted, so it fails closed here before someone does. */
 int copy_from_user(void *dst, const void *src, size_t n) {
     if (n == 0) return 0;
-    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
+    if (n > USER_MEM_MAX_COPY) return -1;
     return user_copy((uint64_t)(uintptr_t)src, (uint8_t *)dst, n, 0, 0);
 }
 
 int copy_to_user(void *dst, const void *src, size_t n) {
     if (n == 0) return 0;
-    if (n > USER_MEM_MAX_COPY) n = USER_MEM_MAX_COPY;
+    if (n > USER_MEM_MAX_COPY) return -1;
     return user_copy((uint64_t)(uintptr_t)dst, (uint8_t *)(void *)src, n, 1, 1);
 }
 

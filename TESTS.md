@@ -543,6 +543,35 @@ occurrence answers that question in the capture instead of a year later. A healt
 `vec=14 errc=0x0` next to `PAGE FAULT at ...`; the injected one in `make smoke-kfault` shows
 exactly that, which is what makes a disagreement legible when it appears.
 
+#### One hypothesis that covers both open kernel-fault signatures
+
+**Two CPUs executing on one kernel stack.**
+
+- A `#PF` handler reading a frame whose `rip` and `err_code` belong to a *different* trap —
+  the datapoint above — is what a concurrent push by another CPU into the same frame region
+  looks like.
+- A trap frame that `iretq`s into a kernel stack address (`err=0x11`, `rip` and `rsp` 0x80
+  apart in the same region) — the fault holding roadmap 1.1 in PR #135 — is the same
+  corruption once it reaches the `rip` slot.
+
+Neither needs a second mechanism, and both are SMP-only, which fits: #135's boot-only harness
+saw 0/20 at `-smp 1` on both lock arms and only ever saw the fault at `-smp 4`.
+
+The invariant at stake is the one in `scheduler.c`: `task_running_cpu[t] == c` ⟺
+`percpu_current_task[c] == t`. A fault is exactly the moment to ask whether it still holds, so
+the fault report now dumps it:
+
+```
+claim: task 3 running_cpu=0  percpu_current=[3,0,0,0]  imp=[0,0,0,0]
+```
+
+That runs **only from a fault report**, which is deliberate. The previous attempt to attribute
+this fault (PR #137) checked the resume `%rsp` on *every interrupt return* and raised the
+failure rate it was meant to explain — 4/30 shell restarts against 0/30 for `main`. A
+diagnostic that runs only after the failure cannot perturb the thing it measures. This is a
+hypothesis with a test attached, not a diagnosis; the next capture either shows a violated
+claim or rules the hypothesis out.
+
 **The general lesson, for the third time in this file: symbolise against the binary that
 produced the address.** #138's comment read the same `rip` as landing mid-instruction and
 inferred a return address; this reading found it a clean boundary and inferred a load. Both

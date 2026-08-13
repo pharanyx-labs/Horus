@@ -827,7 +827,17 @@ static void h_boot_module_info(struct interrupt_frame64 *r) {
  * into a user buffer. The payload lives in physical RAM outside the kernel image
  * (where GRUB dropped it), reached through the PHYS_KVA window. Same gate as
  * SYS_BOOT_MODULE_INFO. offset/len are bounded to the module extent, so a crafted
- * request cannot read past it. */
+ * request cannot read past it.
+ *
+ * This is the only handler whose length is not already bounded by a kernel
+ * staging buffer -- it copies straight out of the PHYS_KVA window -- so it is the
+ * one place a caller could ask for more than copy_to_user will move in a single
+ * call. It therefore clamps to USER_MEM_MAX_COPY itself and returns the count it
+ * actually copied: a SHORT READ, which is what the ABI already promises ("bytes
+ * copied from a boot module's payload") and what fs_server's provisioning loop
+ * already handles by advancing on the returned value. Before [C-4] was fixed the
+ * clamp lived inside copy_to_user and this returned the UNCLAMPED len, so a
+ * request above 64 KiB reported bytes it had not written. */
 static void h_boot_module_read(struct interrupt_frame64 *r) {
     uint32_t index  = (uint32_t)r->rbx;
     uint32_t offset = (uint32_t)r->rcx;
@@ -845,6 +855,7 @@ static void h_boot_module_read(struct interrupt_frame64 *r) {
     if (offset >= size) { r->rax = 0; return; }          /* at/after end: 0 bytes */
     uint32_t avail = size - offset;
     if (len > avail) len = avail;
+    if (len > USER_MEM_MAX_COPY) len = USER_MEM_MAX_COPY;   /* short read, honestly reported */
     if (len == 0) { r->rax = 0; return; }
 
     const void *src = PHYS_KVA(m->start + offset);

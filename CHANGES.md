@@ -8,6 +8,41 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — user copies refuse instead of truncating (roadmap 1.4, **[C-4]**)
+
+`copy_from_user`/`copy_to_user` clamped `n` to `USER_MEM_MAX_COPY` (64 KiB) and then
+returned 0 — success. A caller that believed it had moved `n` bytes was left with
+whatever the destination already held past the clamp: on a copy out, stale
+kernel-stack bytes in the tail of a user buffer, handed over as if they were data.
+Both helpers now refuse the request. The ceiling was never the defect; reporting a
+short copy as a complete one was.
+
+Auditing all ~89 call sites found that none can reach the refusal: each either bounds
+`n` by the kernel scratch buffer it stages through (`h_write` 255, `h_dmesg` 1024,
+`pipe_read`/`pipe_write` `PIPE_IO_CHUNK`, the block syscalls `BLOCK_SIZE`, the rest a
+`sizeof`), or chunks explicitly to `USER_MEM_MAX_COPY` before calling
+(`arm_image_from_user`, `try_elf_load`, `load_staged_image_into`). The change is
+therefore behaviour-preserving, which is what the sweep below measures.
+
+**`h_boot_module_read` was the exception, and was live rather than latent.** It has no
+staging buffer — it copies straight out of the `PHYS_KVA` window — and returned the
+*unclamped* `len`, so a request above 64 KiB reported bytes it had never written. It
+now clamps to the ceiling itself and returns the count actually copied: a short read,
+which is what its ABI already promises ("bytes copied from a boot module's payload")
+and what `fs_server`'s provisioning loop already handles by advancing on the return
+value. In-tree it has only ever been called in `BLK`-sized chunks, which is why this
+stayed latent in practice.
+
+Worth stating plainly, because it bounds the claim: with every syscall clamping to its
+own buffer first, the refusal is **not reachable from ring 3**. This closes a latent
+kernel-memory disclosure against the next caller added, not one that was open to
+userspace. A falsification test for the reachable half — the boot-module short read —
+still needs writing, and needs a caller holding `CAP_BOOT_MODULE`.
+
+Tests: `smoke` · `smoke-captest` · `smoke-wx` · `smoke-cow` · `smoke-nzcow` ·
+`smoke-aspace` · `smoke-fs` · `smoke-fs-large` · `smoke-modules` ·
+`smoke-modules-tamper` · `smoke-session` — **11/11**.
+
 ### Added — the interrupt-policy audit is read out in band (roadmap 1.1 step 2b)
 
 The entry below removed the audit's ability to corrupt the session it measured, but

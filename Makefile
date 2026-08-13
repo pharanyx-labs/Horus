@@ -455,6 +455,30 @@ ASFLAGS += -DRECVBLOCK_SELFTEST
 RECVBLOCK_SELFTEST_DEP = userspace/recvblocksrv.bin userspace/recvblockcli.bin
 endif
 
+# KFAULT_INJECT=1 makes the kernel take a deliberate supervisor page fault on a
+# timer tick once a ring-3 console_server owns the console -- G-8's exact
+# signature (a read of 0x94), in the exact state where the kernel's fault report
+# used to be inaudible. KFAULT_INJECT_TICKS is how many owned ticks to wait, and
+# needs to be past the login prompt so the report is provably AFTER the console
+# handover. Test-only; `make smoke-kfault` sets it and nothing else does.
+KFAULT_INJECT ?= 0
+KFAULT_INJECT_TICKS ?= 400
+ifeq ($(KFAULT_INJECT),1)
+CFLAGS  += -DKFAULT_INJECT -DKFAULT_INJECT_TICKS=$(KFAULT_INJECT_TICKS)
+ASFLAGS += -DKFAULT_INJECT
+endif
+
+# KFAULT_LEGACY_PRINTLN=1 restores the pre-fix reporting of a CPL-0 page fault
+# (println(), i.e. klog-only once console_server owns the console). The CONTROL
+# ARM for the gate above: with it, the report must NOT appear on serial. Without
+# a build that reproduces the defect, "the report is audible" is a claim rather
+# than a measurement. Never a shipping config.
+KFAULT_LEGACY_PRINTLN ?= 0
+ifeq ($(KFAULT_LEGACY_PRINTLN),1)
+CFLAGS  += -DKFAULT_LEGACY_PRINTLN
+ASFLAGS += -DKFAULT_LEGACY_PRINTLN
+endif
+
 # COW_SELFTEST=1 embeds cowtest and, at boot, reads two fresh heap pages (each
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
@@ -1895,6 +1919,30 @@ smoke-irq-policy:
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IRQ_POLICY: PASS' FAIL_MARKER='IRQ_POLICY: FAIL' \
 		tools/smoke_test.sh boot.iso
+
+# Can the kernel be heard when it faults in its own code?
+#
+# The inverse of every other smoke target: it wants a kernel fault, and fails if
+# the kernel takes one quietly. KFAULT_INJECT makes it fault on purpose once a
+# ring-3 console_server owns the console -- the state in which print() reaches
+# only the klog -- and tools/kfault_test.sh requires the report to appear on
+# serial AFTER the login prompt.
+.PHONY: smoke-kfault
+smoke-kfault:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KFAULT_INJECT=1
+	@$(MAKE) --no-print-directory KFAULT_INJECT=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 tools/kfault_test.sh boot.iso
+
+# The control arm. Same injection, reporting restored to println(): the report
+# must NOT reach serial. A gate whose failing arm has never been built is not
+# evidence that the passing arm measures anything.
+.PHONY: smoke-kfault-legacy
+smoke-kfault-legacy:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KFAULT_INJECT=1 KFAULT_LEGACY_PRINTLN=1
+	@$(MAKE) --no-print-directory KFAULT_INJECT=1 KFAULT_LEGACY_PRINTLN=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 tools/kfault_test.sh boot.iso
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.

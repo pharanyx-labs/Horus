@@ -185,6 +185,27 @@ int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
     return 1;
 }
 
+#ifdef KFAULT_INJECT
+/* Test-only. Reproduces G-8's signature on purpose: a supervisor read of a low
+ * address, taken on a timer tick AFTER a ring-3 console_server owns the
+ * console. That last condition is the whole point -- it is the only state in
+ * which the kernel's fault report used to be inaudible, and therefore the only
+ * state in which "the report reached the wire" is a claim worth gating.
+ *
+ * 0x94 is not arbitrary: it is the exact address G-8 faults on, so a passing
+ * gate and a real occurrence produce the same line.
+ *
+ * Absent from every shipping configuration; KFAULT_INJECT is set by
+ * `make smoke-kfault` and nothing else. */
+static void kfault_inject_tick(void) {
+    static unsigned owned_ticks = 0;
+    if (!console_hw_owned()) return;
+    if (++owned_ticks != (unsigned)KFAULT_INJECT_TICKS) return;
+    volatile uint64_t *p = (volatile uint64_t *)0x94UL;
+    (void)*p;
+}
+#endif
+
 static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
@@ -207,6 +228,9 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * on: the current frame (no switch) or the next task's saved frame. */
         outb(0x20, 0x20);
         timer_handler();
+#ifdef KFAULT_INJECT
+        kfault_inject_tick();
+#endif
         /* Wake a registered driver (e.g. the console server's serial re-poll)
          * before the scheduler decides who runs next, so a newly-runnable waiter
          * is eligible on this same tick. */
@@ -371,17 +395,20 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
             /* else: signal delivered -> fall through to `return frame`, and the
              * ISR epilogue iretq's into the handler at ring 3. */
         } else {
-            println("64-bit EXCEPTION vector=");
-            print_hex64(vector);
-            println(" err=");
-            print_hex64(frame->err_code);
-            println(" RIP=");
-            print_hex64(frame->rip);
-            println(" CS=");
-            print_hex64(frame->cs);
-            println("");
-            println("KERNEL FATAL EXCEPTION - halting");
-            for (;;) { asm volatile("cli; hlt"); }
+            /* A trap below vector 32 taken at CPL 0 (or with no task to blame):
+             * #GP, #UD, #DF and friends in the kernel's own code. This halts,
+             * so if the report goes to the klog the machine simply stops with
+             * nothing on the wire -- a fatal kernel bug and a hang are then
+             * indistinguishable to every harness in the tree. Straight at the
+             * UART. */
+            kfault_begin(1);
+            kfault_str("\n64-bit EXCEPTION vector="); kfault_dec((int)vector);
+            kfault_str(" err=");  kfault_hex(frame->err_code);
+            kfault_str(" task="); kfault_task(get_current_task());
+            kfault_frame(frame);
+            kfault_claims(get_current_task());
+            kfault_str("\nKERNEL FATAL EXCEPTION - halting\n");
+            kfault_end(1);
         }
     } else {
         if (vector >= 40) outb(0xA0, 0x20);
@@ -420,16 +447,24 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * an hour chasing.) Kernel stacks are higher-half, so anything below that is a
      * returned 0/1/-1 or a wild value, never a frame. */
     if (rsp < 0xFFFF800000000000ULL) {
-        println("PANIC: dispatcher returned a bogus resume rsp=");
-        print_hex(rsp);
-        println(" task=");
-        print_hex((uint64_t)get_current_task());
-        println(" state=");
-        print_hex((uint64_t)tasks[get_current_task()].state);
-        println(" pending_block=");
-        print_hex((uint64_t)tasks[get_current_task()].pending_block);
-        println("");
-        for (;;) __asm__ volatile ("cli; hlt");
+        /* Was println() -- and this guard exists precisely to catch a fault
+         * that has only ever been observed during a live session, when
+         * println() reaches nothing but the klog. A guard whose report is
+         * inaudible where it fires cannot be distinguished from one that never
+         * fired, which is how "the floor guard did not catch it" became a
+         * hypothesis rather than an observation. */
+        int cur = get_current_task();
+        kfault_begin(1);
+        kfault_str("\nPANIC: dispatcher returned a bogus resume rsp=");
+        kfault_hex(rsp);
+        kfault_str(" task=");          kfault_task(cur);
+        if (cur >= 0 && cur < MAX_TASKS) {
+            kfault_str(" state=");         kfault_dec((int)tasks[cur].state);
+            kfault_str(" pending_block="); kfault_dec((int)tasks[cur].pending_block);
+        }
+        kfault_str("\n  trapped from:"); kfault_frame(frame);
+        kfault_str("\n");
+        kfault_end(1);
     }
 
     struct interrupt_frame64 *out = (struct interrupt_frame64 *)rsp;
@@ -677,16 +712,19 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
 
     int killed = get_current_task();
     if (killed == 0 || (f64->cs & 3) == 0) {
+#ifdef KFAULT_LEGACY_PRINTLN
+        /* The CONTROL ARM: the report as it was, through println(). Kept
+         * buildable so the claim "the report is audible during a live session"
+         * can be falsified in-tree rather than asserted -- `make
+         * smoke-kfault-legacy` boots this arm and requires the report to be
+         * ABSENT from the wire. Same role EP_QUEUE_SLOTS=1 plays for roadmap
+         * 1.3 and IRQ_LEGACY_GLOBAL_LOCK for 1.1. Never a shipping config. */
         println("PAGE FAULT at ");
         print_hex(fault_addr);
         println(" err=");
         print_hex(err);
         println(" task=");
         print_hex(killed);
-        /* The faulting instruction. Without it a ring-0 #PF says only THAT the
-         * kernel dereferenced something bad, never WHERE -- and the where is the
-         * whole diagnosis. Symbolise with:
-         *     nm -n kernel.elf | awk -v a=<rip> '...'   (or addr2line -e kernel.elf) */
         println(" rip=");
         print_hex(f64->rip);
         println(" rsp=");
@@ -695,6 +733,32 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
                         : "Rejected by validator - killing task ");
         print_hex(killed);
         println("");
+#else
+        /* A #PF at CPL 0 is a KERNEL defect -- the kernel dereferenced
+         * something bad -- even when a ring-3 task is current and gets killed
+         * for it below. Report it straight at the UART, not through println():
+         * print() is klog-only once console_server owns the console, so this
+         * banner was silent during every live session, which is the only time
+         * G-8's supervisor fault has ever been seen. The whole diagnosis was
+         * being computed and thrown away.
+         *
+         * kfault_frame() adds rip, cs, rflags, rsp, rbp and the CPU. Symbolise
+         * rip against THE SAME kernel.elf that produced it:
+         *     nm -n kernel.elf | awk -v a=<rip> '...'   (or addr2line -e kernel.elf) */
+        kfault_begin(killed == 0);        /* no task to blame -> we are halting */
+        kfault_str("\nPAGE FAULT at "); kfault_hex(fault_addr);
+        kfault_str(" err=");            kfault_hex(err);
+        kfault_str("(");                kfault_pf_err(err);
+        kfault_str(") task=");          kfault_task(killed);
+        kfault_frame(f64);
+        kfault_claims(killed);
+        kfault_str(allowed ? "\nApproved by validator but unmappable - killing task "
+                           : "\nRejected by validator - killing task ");
+        kfault_dec(killed);
+        kfault_str("\n");
+        if (killed == 0) kfault_end(1);   /* nothing to kill: halts, never returns */
+        kfault_end(0);
+#endif
     }
 
     /* Kill the task, never the machine.

@@ -1228,8 +1228,16 @@ jobs:
           retry curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz
           echo "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea  trivy.tar.gz" | sha256sum --check
           tar -xzf trivy.tar.gz trivy && sudo mv trivy /usr/local/bin/ && rm trivy.tar.gz
-          # gitleaks pinned
-          retry go install github.com/gitleaks/gitleaks@v8.21.0
+          # gitleaks pinned. The module path is github.com/zricethezav/gitleaks/v8
+          # -- NOT github.com/gitleaks/gitleaks, which is the repo path. `go install`
+          # on the latter fails with "go.mod has post-v8 module path", and it had
+          # done so on every run: the line ended in `|| true`, inside a job where
+          # every step was continue-on-error, so the pinned install never once
+          # succeeded and nothing said so. `make security` then fell back to its own
+          # curl|tar of a DIFFERENT version (8.30.1) with no checksum -- the exact
+          # pattern the trivy install above exists to avoid. Caught by the presence
+          # check below on its first run.
+          retry go install github.com/zricethezav/gitleaks/v8@v8.21.0
           # Rust bare-metal target for cargo-audit and Makefile
           retry rustup target add x86_64-unknown-none
           retry cargo install cargo-audit

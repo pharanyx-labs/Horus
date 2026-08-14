@@ -1238,6 +1238,11 @@ jobs:
           # pattern the trivy install above exists to avoid. Caught by the presence
           # check below on its first run.
           retry go install github.com/zricethezav/gitleaks/v8@v8.21.0
+          # ...and put it somewhere PATH actually looks. `go install` writes to
+          # $(go env GOPATH)/bin, which is NOT on PATH on GitHub runners, so even
+          # a successful install left `command -v gitleaks` failing -- the second
+          # layer of the same silent failure, hidden by the same `|| true`.
+          sudo install -m 0755 "$(go env GOPATH)/bin/gitleaks" /usr/local/bin/gitleaks
           # Rust bare-metal target for cargo-audit and Makefile
           retry rustup target add x86_64-unknown-none
           retry cargo install cargo-audit

@@ -161,6 +161,33 @@ jobs:
       - name: Boot multi-core and assert every AP IST fault stack sits above an unmapped guard
         run: make smoke-wx-smp
 
+  # Roadmap 1.5 / finding [I-2]: the heap syscalls and the pager's region gate are
+  # 64-bit clean. This target has existed, with a verified control arm, since the
+  # fix landed (#145) -- and it has never run in CI, so the gate for a merged fix
+  # was documented in TESTS.md and ROADMAP 1.5 while gating nothing. A witness
+  # that is never executed is the same defect class as a witness that cannot be
+  # heard; see G-8's floor guard.
+  #
+  # USER_HEAP_HIGH_BASE=1 places every heap at 8 GiB, which is what makes the
+  # truncation REACHABLE rather than latent -- on the default base every heap sits
+  # under 100 MiB and the 32-bit arithmetic never wraps.
+  smoke-heap64:
+    name: QEMU 64-bit heap self-test (heap above 4 GiB is reachable and pageable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Place every heap at 8 GiB and assert sbrk/brk and demand paging still work
+        run: make smoke-heap64
+
   smoke-captest:
     name: QEMU capability/syscall conformance self-test (refusals)
     runs-on: ubuntu-latest

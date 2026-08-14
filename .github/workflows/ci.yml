@@ -1209,32 +1209,92 @@ jobs:
         with:
           fetch-depth: 0   # needed for gitleaks full history scan
 
+      # Network installs are retried rather than tolerated. Every step in this
+      # job used to be continue-on-error, so a failed install meant the scanners
+      # were simply absent and the job went green having run nothing. Retrying
+      # absorbs the transient failures that motivated the blanket tolerance --
+      # the apt step in this repo's CI has flaked twice in one day -- so the
+      # verification below can insist on the tools being present without the
+      # gate becoming a coin flip.
       - name: Install security tools + Rust target (pinned where practical)
-        continue-on-error: true
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cppcheck flawfinder
-          pipx install semgrep || pip install semgrep
+          set -euo pipefail
+          retry() { for i in 1 2 3; do "$@" && return 0; echo "attempt $i failed: $*"; sleep 5; done; return 1; }
+          retry sudo apt-get update
+          retry sudo apt-get install -y cppcheck flawfinder
+          retry sh -c 'pipx install semgrep || pip install semgrep'
           # Trivy — pinned release + checksum verification (avoids curl|sh)
           TRIVY_VERSION=0.72.0
-          curl -sfL https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -o trivy.tar.gz
+          retry curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz
           echo "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea  trivy.tar.gz" | sha256sum --check
           tar -xzf trivy.tar.gz trivy && sudo mv trivy /usr/local/bin/ && rm trivy.tar.gz
           # gitleaks pinned
-          go install github.com/gitleaks/gitleaks@v8.21.0 || true
+          retry go install github.com/gitleaks/gitleaks@v8.21.0
           # Rust bare-metal target for cargo-audit and Makefile
-          rustup target add x86_64-unknown-none
-          cargo install cargo-audit || true
+          retry rustup target add x86_64-unknown-none
+          retry cargo install cargo-audit
 
-      - name: Run security checks (advisory)
+      # The VACUOUS guard, and the point of this job's existence as a REQUIRED
+      # check. smoke-session-smp-soak already established the pattern: "a run
+      # that exits 0 having proven nothing is reported VACUOUS and fails, so the
+      # gate cannot go green on a test that stopped testing."
+      #
+      # This job was the same defect one level up. It is a required status check
+      # in the ruleset, yet every step carried continue-on-error, so it could not
+      # go red for any reason whatsoever -- including the scanners not being
+      # installed at all. A required check that structurally cannot fail is worse
+      # than no check: it reads as coverage while providing none.
+      - name: Assert the scanners actually exist (else this job proves nothing)
+        run: |
+          set -uo pipefail
+          missing=0
+          for t in semgrep trivy gitleaks cppcheck flawfinder; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "present: $t"
+            else
+              echo "::error::$t is not installed -- this job would scan nothing and report success"
+              missing=1
+            fi
+          done
+          if ! cargo audit --version >/dev/null 2>&1; then
+            echo "::error::cargo-audit is not installed -- Rust advisories would not be checked"
+            missing=1
+          fi
+          exit $missing
+
+      # FINDINGS stay advisory, deliberately, and this is the one continue-on-error
+      # that remains. It is not tolerance for flake -- it is that `make security`
+      # cannot currently gate on content:
+      #
+      #   semgrep      CAN fail (--error) but runs --config=auto, whose rules are
+      #                fetched from a registry and change with no commit here, and
+      #                which scans workflow files and host tooling for CI hygiene
+      #                (mutable action tags, curl|sh) rather than kernel defects
+      #   trivy        exits 0 on findings (no --exit-code)
+      #   gitleaks     `|| true`
+      #   cppcheck     `| head -80 || true` -- the pipe discards the status anyway
+      #   flawfinder   `| head -60 || true` -- likewise
+      #   cargo-audit  `|| echo ...`
+      #
+      # So five of six scanners swallow their result inside the Makefile, and the
+      # sixth is the least reproducible. Gating on findings today would redden the
+      # pipeline on upstream rule drift while adding no real coverage -- the exact
+      # press-re-run reflex that let the smoke-console-smp deadlock survive months
+      # of CI (docs/LIMITATIONS.md 5.2c). Pinning the rulesets is what unlocks
+      # gating on content; until then this job gates on the scan having HAPPENED.
+      - name: Run security checks (findings advisory -- see note above)
         continue-on-error: true
         run: make security
 
+      # The SBOM is a deliverable, not an observation: if it cannot be produced
+      # the artifact below is empty and [I-9]'s provenance story is worse than it
+      # looks. Allowed to fail the job.
       - name: Generate SBOM (CycloneDX via Trivy)
-        continue-on-error: true
         run: |
+          set -euo pipefail
           trivy fs --format cyclonedx --output sbom.cyclonedx.json \
             --scanners vuln,secret,misconfig .
+          test -s sbom.cyclonedx.json
           echo "SBOM generated: sbom.cyclonedx.json"
 
       - name: Upload SBOM artifact
@@ -1242,7 +1302,7 @@ jobs:
         with:
           name: horus-sbom-cyclonedx
           path: sbom.cyclonedx.json
-          if-no-files-found: warn
+          if-no-files-found: error
 
   # Advisory job: coverage-guided fuzzing of the pointer/scalar FFI predicates in
   # the Rust security core (rust/fuzz). Non-gating by design — it hunts panics/UB

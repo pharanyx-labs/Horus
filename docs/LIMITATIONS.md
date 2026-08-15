@@ -522,18 +522,32 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Security tests are not merge-gating — **[C-6]**
 
-`.github/workflows/ci.yml` defines **64** jobs. Ruleset `19007209` requires **21** of them —
-and the security-specific ones are not among them: capability conformance, kernel W^X, measured
-boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch, and stack-guard reseed
-can all fail while a PR merges green. The required set is inverted: functional tests block
-merges, security tests do not.
+`.github/workflows/ci.yml` defines **64** jobs. Ruleset `19007209` requires **22** of them, and
+until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
+kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
+stack-guard reseed could all fail while a PR merged green. The required set was inverted —
+functional tests blocked merges, security tests did not.
 
-**The gap is widening, not closing.** When this finding was filed there were roughly 30 jobs
-and 21 required. There are now 64 and still 21, because every gate added after the ruleset was
-written lands in the advisory set by default and nothing forces the question. The most
-consequential single omission is `smoke-captest`: `SECURITY.md` names it as the witness for
-nine of its security properties, and it cannot block a merge — so the exact defect class
-**[C-1]** was would merge green today.
+**One of them is now fixed, and it is the one that mattered most.** `smoke-captest` is a
+required check as of 2026-08-15. `SECURITY.md` names it as the witness for **eight** of its
+S-numbered properties — S1, S5, S6, S7, S13, S13a, S13b and S18 — so until that change the
+suite establishing most of the security argument could not block a merge, and the exact defect
+class **[C-1]** was would have merged green. That is no longer true.
+
+(An earlier revision of this section, and the audit that prompted it, both said *nine*. Counted
+off the witness column: eight. Recorded because "re-derive every number you cite" is a rule this
+document is subject to, not merely one it states.)
+
+**The rest of the gap is still open, and still widening.** When this finding was filed there
+were roughly 30 jobs and 21 required. There are now 64 and 22, because every gate added after
+the ruleset was written lands in the advisory set by default and nothing forces the question.
+`smoke-wx`, `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`,
+`smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`,
+`smoke-newlib-tamper` and CodeQL are all still advisory. Promoting one check does not fix the
+mechanism that produced the omission: the required list is maintained by hand, in a place
+(the ruleset) that no commit touches, so it silently falls behind the workflow file on every
+addition. Generating it from `ci.yml`, and failing CI when a job appears in neither the
+required set nor an explicit reasoned advisory list, is what would actually close this.
 
 Two counts moved in the right direction since. `strict_required_status_checks_policy` is now
 **true**, so a stale-base merge is no longer permitted. And the `security` job is a required

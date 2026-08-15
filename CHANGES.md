@@ -8,6 +8,33 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — the capability conformance suite can now block a merge (**[C-6]**, partial)
+
+`smoke-captest` is a required status check as of 2026-08-15. Ruleset `19007209` now requires
+**22** of `ci.yml`'s **64** jobs; until this change not one of the 22 was a security gate.
+
+That mattered more than the count suggests. `SECURITY.md` names `smoke-captest` as the witness
+for eight of its S-numbered properties — S1, S5, S6, S7, S13, S13a, S13b and S18 — so the suite
+establishing most of the security argument could fail while a pull request merged green. It is
+the same shape as **[C-1]** itself: a control that reads as coverage and provides none.
+
+**This does not close [C-6], and the remaining half is the more interesting one.** Every other
+security gate is still advisory — `smoke-wx`, `smoke-cpu`, `smoke-modules-tamper`,
+`smoke-tpm*`, `smoke-flush`, `smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`,
+`smoke-percpu`, `smoke-resume-guard`, `smoke-newlib-tamper`, CodeQL. Promoting them one at a
+time would not fix the mechanism: the required list is maintained by hand in a ruleset that no
+commit touches, so a job added to `ci.yml` lands in the advisory set by default and nothing
+asks whether it should have. That is how the ratio drifted from 21-of-30 to 21-of-64 without a
+decision ever being taken. Roadmap 4.2 now specifies generating the list from `ci.yml` and
+failing CI on any job that is in neither it nor an explicit, reasoned advisory list.
+
+Also corrected: this repository has been citing **nine** S-properties for `smoke-captest`, in
+`LIMITATIONS.md` and in the audit that prompted the change. Counted off the witness column in
+`SECURITY.md`, it is **eight**. Every document that quotes a required-check count now also says
+to read the live number from `gh api repos/pharanyx-labs/Horus/rulesets/19007209` rather than
+trust the prose, because a hand-maintained number in a document about a hand-maintained list is
+the drift this project keeps rediscovering.
+
 ### Fixed — the last ambient `uid == 0` gate, nineteen days after [I-1] was declared closed (**[H-1]**)
 
 `current_user_is_admin()` (`src/kernel/kusers.c`) ended `return tasks[get_current_task()].uid

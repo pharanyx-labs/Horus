@@ -1485,7 +1485,7 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 
 ## CI
 
-`.github/workflows/ci.yml` runs roughly 30 jobs on every push and pull request;
+`.github/workflows/ci.yml` defines **64** jobs, run on every push and pull request;
 `codeql.yml` adds C/C++ static analysis (advisory, plus a weekly schedule).
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
@@ -1493,16 +1493,31 @@ least-privilege. There are no self-hosted runners.
 
 ### A known weakness in the gate
 
-Of those jobs, **21 are required status checks** — but the security-specific ones are not
-among them. `smoke-captest`, `smoke-wx`, `smoke-cpu`, `smoke-tpm*`, `smoke-modules-tamper`,
-`smoke-flush`, and `smoke-stackguard` can all fail while a pull request merges green.
+Of those 64 jobs, **22 are required status checks** — read the current set from
+`gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this file, which is the kind of
+hand-maintained number this document exists to distrust.
 
-The required set is inverted: functional tests block merges, security tests do not. This is
-finding **[C-6]** and roadmap item 4.2. Until it is fixed, **run the security targets locally
-before opening a PR** — CI will not stop you.
+`smoke-captest` joined that set on 2026-08-15. It is the named witness for eight of the
+S-numbered properties in `SECURITY.md`, and until then it could not block a merge — a change
+that broke the capability refusal suite went green, which is precisely how **[C-1]** survived
+every automated gate in the first place.
 
-Additionally, `strict_required_status_checks_policy` is false, so a PR can merge having passed
-CI against a stale base.
+The rest of the security suite is still advisory: `smoke-wx`, `smoke-cpu`, `smoke-tpm*`,
+`smoke-modules-tamper`, `smoke-flush`, `smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`,
+`smoke-percpu`, `smoke-resume-guard`, `smoke-newlib-tamper` and CodeQL can all fail while a
+pull request merges green. So the standing advice is unchanged: **run the security targets
+locally before opening a PR** — CI will not stop you.
+
+This is finding **[C-6]** and roadmap item 4.2, and promoting one job does not close it. The
+mechanism is the problem: the required list lives in the ruleset, which no commit touches, so
+every job added to `ci.yml` lands in the advisory set by default and nothing asks whether it
+should have. When this finding was filed there were ~30 jobs and 21 required; there are now 64
+and 22. Generating the required list from `ci.yml` — and failing CI when a job is in neither
+that list nor an explicit, reasoned advisory list — is the fix.
+
+`strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
+passed CI against a stale base. (This document previously said it was false; that was correct
+when written and is not any more.)
 
 ---
 

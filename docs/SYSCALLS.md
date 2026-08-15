@@ -307,9 +307,17 @@ Pipes *are* properly capability-addressed: the slot argument is a cspace slot re
 | 30 | `SYS_AUTH` | `user`, `pass` | none (self-authorising) |
 | 31 | `SYS_SUDO` | `pass` | re-authentication in handler |
 | 32 | `SYS_GET_PASS` | `buf` | none |
-| 33 | `SYS_USERADD` | `user`, `pass` | admin |
-| 34 | `SYS_USERDEL` | `user` | admin |
-| 35 | `SYS_PASSWD` | `user`, `pass` | admin, or self |
+| 33 | `SYS_USERADD` | `user`, `pass` | `CAP_USER` at `CAPSLOT_USER` |
+| 34 | `SYS_USERDEL` | `user` | `CAP_USER` at `CAPSLOT_USER` |
+| 35 | `SYS_PASSWD` | `user`, `pass` | `CAP_USER`, or the target is the caller's own uid |
+
+These three are `SC_NONE` in the dispatch table, so `current_user_is_admin()` in
+`src/kernel/kusers.c` *is* the gate. Until 2026-08-15 it accepted `uid == 0` as an
+alternative to holding the capability — the last surviving ambient gate from **[I-1]**, which
+roadmap 0.2's sweep of `syscall.c` never reached (finding **[H-1]**). "Admin" here now means
+possession of `CAP_USER`, and nothing else; a task at uid 0 with an empty cspace is refused.
+Witnessed by `make smoke-captest` (which runs as uid 0 and holds no `CAP_USER`) and by
+`make smoke-session`, which asserts both directions through the real ring-3 shell.
 
 Passwords are Argon2-hashed. Failed authentication is rate-limited per task
 (`auth_fail_count`, `auth_lockout_until`).

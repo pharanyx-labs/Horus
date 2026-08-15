@@ -1191,16 +1191,21 @@ jobs:
           fi
           echo "kernel.elf is byte-for-byte reproducible across clean builds"
 
-  # Advisory job: surfaces SAST/secret/dependency findings and an SBOM for
-  # review, but does NOT gate merges. `make security` is advisory by design
-  # (four of its six scanners already swallow failures), and it scans the
-  # workflow files and host tooling with rulesets (incl. semgrep --config=auto)
-  # whose findings — e.g. mutable action tags, curl|sh installs — are CI
-  # hygiene rather than kernel defects, and whose registry-fetched rules can
-  # change with no code change. The hard gates are the other four jobs (rust,
-  # kernel, smoke, reproducible). Steps use continue-on-error so a finding or a
-  # flaky tool download reports without reddening the pipeline, and the SBOM
-  # step still runs.
+  # This job IS a required status check in the ruleset. What is advisory is its
+  # FINDINGS, not the job: `make security` is advisory by design (four of its six
+  # scanners already swallow failures), and it scans the workflow files and host
+  # tooling with rulesets (incl. semgrep --config=auto) whose findings — e.g.
+  # mutable action tags, curl|sh installs — are CI hygiene rather than kernel
+  # defects, and whose registry-fetched rules can change with no code change. So
+  # exactly one step carries continue-on-error (the scan itself), and the step
+  # before it asserts every scanner is actually installed and fails if one is not.
+  #
+  # This comment used to read "Advisory job ... does NOT gate merges. The hard
+  # gates are the other four jobs (rust, kernel, smoke, reproducible)", which was
+  # simply false and contradicted the note 50 lines below in this same job. It is
+  # recorded rather than silently deleted because the false comment is what made
+  # the pre-#154 state — a required check on which every step swallowed failure —
+  # look deliberate.
   security:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest

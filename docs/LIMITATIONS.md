@@ -6,8 +6,11 @@ draws an incorrect conclusion about its readiness. This document is deliberately
 **Where this document and the code disagree, the code is the source of truth — please open
 an issue.**
 
-Findings referenced as **[C-n]** / **[I-n]** are from
-[`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
+Findings referenced as **[C-n]** / **[I-n]** / **[M-n]** are from
+[`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md). **[G-n]** are the known architectural gaps in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §14. **[H-n]** are from the independent external audit of
+2026-08-15, which supersedes the 2026-07-27 status for several findings; that document is not
+in the tree, so the findings it raised are recorded here and in `CHANGES.md`.
 
 ---
 
@@ -56,13 +59,56 @@ rather than lying to it.
 Fixing this is the top roadmap item. Until it lands, **treat Horus as offering no isolation
 between mutually distrusting ring-3 programs.**
 
-### 1.2 ~~Root is an ambient authority parallel to capabilities~~ — **FIXED 2026-07-27** — **[I-1]**
+### 1.2 ~~Root is an ambient authority parallel to capabilities~~ — **FIXED 2026-07-27, completed 2026-08-15** — **[I-1]**, **[H-1]**
 
 **Resolved.** Every `tasks[current].uid != 0` gate is gone, replaced by a held capability:
 `CAP_KERNEL_LOG` for `SYS_DMESG`, `CAP_BOOT_MODULE` for the boot-module surface, and
 `CAP_ENCRYPTED_STORAGE` (enforced **by type**) for the object-store API. `SYS_GET_TASK_INFO`
 no longer promotes uid 0. **The capability graph is now a complete description of kernel
 authority** — the precondition for any confinement or MAC story later.
+
+**One gate outlived the fix by nineteen days, and this section asserted otherwise the whole
+time (**[H-1]**, fixed 2026-08-15).** Roadmap 0.2 swept `syscall.c` and `syscall_fs.c` for
+`uid != 0` gates. It did not reach `src/kernel/kusers.c`, where `current_user_is_admin()`
+ended `return tasks[get_current_task()].uid == 0;` — and since `SYS_USERADD`, `SYS_USERDEL`
+and `SYS_PASSWD` are `SC_NONE` in the dispatch table, that function *was* the gate. A ring-3
+task at uid 0 holding **no capability at all** could create an account with any uid/gid it
+chose and reset any other user's password. Because uid is the identity `fs_server` authorises
+every file operation against, authority over the account table is authority over the
+filesystem's entire subject namespace.
+
+**It was load-bearing, and the gate is what proved it.** The intended reading was that nothing
+legitimate depended on the fallback, because `CAP_USER` would already have reached the shell.
+It had not: `launch_shell` (`userspace/init.c`) delegated console, storage, the console client
+endpoint, `CAP_KERNEL_LOG` and `CAP_AUDIT`, and **not** `CAP_USER`. So the shell's `useradd`
+had been working on the ambient gate alone, and deleting it turned `smoke-session` red at
+`[ok] useradd allowed for root`. That is the finding's own proof: an authority nothing held a
+capability for was being exercised daily.
+
+The fix is therefore two-sided, and copies the split `CAP_KERNEL_LOG` already uses. `init`
+delegates `CAP_USER` to the shell, and the **shell** refuses `useradd`/`userdel` to a non-root
+session itself. The kernel asks whether the task holds the authority; the session manager asks
+whether this user may exercise it. Granting without the second half would hand account creation
+to every logged-in user — strictly weaker than the `uid == 0` gate being removed, which is the
+exact mistake `smoke-session` caught the first time round. `passwd` needs neither: the shell
+always targets the caller's own uid, and `do_passwd` permits that without admin.
+
+*Two notes on the process, both worth more than the defect.*
+
+First, `captest` could not have caught this. Its checks probe refusals for capabilities it does
+not hold, and there was no `useradd` probe at all — the suite tested the properties that had
+been enumerated, and this one had not been. Four refusals now cover it. (A hypothesis worth
+recording as **withdrawn**: that captest had been silently holding `CAP_USER` via
+`do_spawn_inner`'s propagation. It does not, and the refusals pass identically with and without
+the slot explicitly cleared. The propagation reads `cap_lookup(6, …)` *after*
+`load_staged_image_into` has made the child current, so it inspects the child's own empty
+cspace and never fires — `kspawn.c:188-197`. Dead, and dead in the fail-closed direction;
+"fixing" it would silently widen authority to every spawned child and must not be done as a
+tidy-up.)
+
+Second, this section, `SECURITY.md` S18 and `ARCHITECTURE.md` §G-2 all recorded the finding as
+closed for nineteen days while it was open — the exact failure mode §3 of `CLAUDE.md` now gates
+against.
 
 Two things fell out of the fix. The gates were additionally *type-confused* — the dispatch
 table passed a type constant in the rights field with `ctype = SC_ANYTYPE`, so they never
@@ -116,6 +162,36 @@ which means a task that deliberately constructs a derivation subtree larger than
 can force the fallback and destroy an unrelated task's independent capability to the same
 object. Fails safe (no descendant survives) but is a denial-of-service on another task's
 authority.
+
+### 1.6 Three syscalls are still ungated by any capability — **[H-2]**
+
+**[I-1]** and **[H-1]** removed authority derived from *identity*. They did not remove
+authority derived from *nothing*, and README and the website have both stated the stronger
+claim. The complete residual list, so that nobody has to take the absolute phrasing on trust:
+
+| Path | Gate | Assessment |
+|---|---|---|
+| `SYS_WRITE` fd 1 | none (`syscall.c:257-274`) | Log forgery and eviction — **[H-2]**, below |
+| `SYS_READ` fd 0 / `SYS_GET_LINE` | none, but both refuse once `console_hw_owned()` | Correctly mitigated; the guard is present and deliberate |
+| `SYS_SYSINFO` | none | A version string. Acceptable, and marked ambient in `SYSCALLS.md` |
+
+**[H-2]** is the one with teeth, and it is an asymmetry rather than an oversight in isolation:
+the *read* side of the kernel log was converted to require `CAP_KERNEL_LOG` under **[I-1]**
+(`SYS_DMESG`), and the write side was never considered. `h_write` clamps to 255 bytes and calls
+`print()`, which appends to `klog` unconditionally — `terminal.c`'s `klog_append` runs before
+the `drive_hw` test, so the append survives the handoff to `console_server`. `klog_buf` is
+16 KiB. Any unprivileged ring-3 task can therefore forge lines that appear in `dmesg`
+indistinguishable from kernel diagnostics, and can flood 16 KiB to evict genuine ones — an
+anti-forensics primitive against the log a maintainer reads after an incident.
+
+**What it does not reach**, and this is the part of the design that is right: the
+tamper-evident audit chain in `src/kernel/kaudit.c` is a separate buffer under a ratcheted,
+erased-after-use MAC key (property S19). Forging or evicting `klog` does not touch it.
+
+Unfixed. The cheap remediation is to tag `klog` entries with their originating task and
+rate-limit ring-3 appends, so forged lines are attributable and eviction is bounded; the
+thorough one is a write-side capability. Either needs a `captest` check that a ring-3 write
+cannot evict a marker line already in `klog`, falsified against the current behaviour.
 
 ---
 
@@ -307,10 +383,26 @@ verified only in the configuration where it is guaranteed by something other tha
 under test. Treat filesystem crash-atomicity as **demonstrated under emulation, unproven on
 hardware**.
 
-### 2.3 No kernel object lifecycle
+### 2.3 Kernel object lifecycle covers retyped objects only
 
-Endpoints and notifications are never reference-counted or destroyed. Nothing ties a kernel
-object's existence to a capability holding it alive, and there is no way to release one.
+*Restated 2026-08-15. This section previously read "Endpoints and notifications are never
+reference-counted or destroyed", which stopped being true when **[I-7]** landed and was never
+revised.*
+
+A **retyped** endpoint or notification — one carved from untyped memory, at an index at or
+above `DYN_EP_BASE` / `DYN_NOTIF_BASE` — is destroyed when no capability names it any more.
+That is computed by mark-and-sweep over the capability graph (`src/kernel/untyped.c:306-400`)
+rather than by reference counting, on the reasoning that reachability derived from the same
+graph the security argument is stated over cannot disagree with it. The sweep's imprecision is
+deliberately biased toward leaking: a capability whose lineage generation was bumped still
+marks its object, because the opposite bias — treating a slot as empty while a holder can
+still resolve it — is a use-after-free reachable from ring 3.
+
+What has no lifecycle is the **static shim** below those bases: the well-known service
+endpoints and the per-task reply endpoints are named by the boot protocol rather than by any
+single capability, so nothing can decide they are dead. They are immortal by construction and
+will stop being so as they migrate to retyped objects. Destruction also does not return the
+bytes — the arena is a monotonic bump allocator, so only the *name* is reclaimed.
 
 ### 2.4 Copy-on-write is implemented but narrow
 
@@ -328,18 +420,36 @@ capabilities described in the roadmap.
 |---|---|---|
 | Tasks | 64 | `MAX_TASKS` |
 | Capabilities per task | 128 in use, 256 slots | `MAX_CAPS_PER_TASK`, `CNODE_SIZE` |
-| Endpoints | 64 | `MAX_ENDPOINTS` |
-| Notifications | 64 | `MAX_NOTIFICATIONS` |
+| CPUs | 4 | `MAX_CPUS` |
+| Static endpoints (well-known + per-task reply) | 128 | `MAX_ENDPOINTS` |
+| Retyped endpoint descriptors | 256 | `MAX_DYN_ENDPOINTS`, indices from `DYN_EP_BASE` |
+| Static notifications | 64 | `MAX_NOTIFICATIONS` |
+| Retyped notification descriptors | 256 | `MAX_DYN_NOTIFICATIONS`, indices from `DYN_NOTIF_BASE` |
+| Untyped arena | 4 MiB | `UNTYPED_ARENA_BYTES` |
 | IPC message | 256 bytes | `IPC_MSG_MAX` |
 | Boot modules | 48 | `MAX_BOOT_MODULES` |
 | Volume | 16 MiB | `BLOCKS_PER_DISK` |
 | Staged program image | 8 MiB | `LOADER_STAGING_BYTES` |
 
-These are `.bss` arrays, not dynamically allocated objects. `cspace_pool[64][256]` alone is
-~1.5 MiB of `.bss` against a hard 16 MiB linker ceiling. There is no retyping discipline and
-no per-task kernel-memory accounting, so kernel memory exhaustion is not attributable or
-preventable. **An OS cannot have a compile-time limit of 64 tasks** — this is the main
-structural obstacle to Horus becoming general-purpose.
+*This table said "Endpoints 64 / Notifications 64 … These are `.bss` arrays, not dynamically
+allocated objects. There is no retyping discipline and no per-task kernel-memory accounting"
+until 2026-08-15. Both halves had been false since **[I-7]** landed on 2026-07-27, in the same
+document whose §1.2 records the fix.*
+
+There **is** a retyping discipline. `CAP_UNTYPED` + `SYS_RETYPE` carve cspaces, endpoints and
+notifications out of a 4 MiB arena (`src/kernel/untyped.c`), so creating a kernel object is an
+exercise of authority the capability graph describes and the memory is attributable to the task
+that holds the untyped capability. The static tables survive as a **shim** below `DYN_EP_BASE`
+/ `DYN_NOTIF_BASE` for the well-known service objects and the per-task reply endpoints, which
+the boot protocol names positionally; `endpoint_by_index()` is the single resolver and nothing
+indexes `endpoints[]` directly any more. The dynamic ceilings above bound only the descriptor
+arrays, not the objects.
+
+What remains genuinely fixed-size is `tasks[]` — a TCB is reachable from the scheduler's hot
+path and from every trap frame, so migrating it is its own change, and reclaiming a dead task's
+cspace additionally needs `cap_lookup`'s NULL-cspace → root-cnode fallback removed first.
+**An OS cannot have a compile-time limit of 64 tasks** — that is the remaining structural
+obstacle to Horus becoming general-purpose, and it is the last piece of **[I-7]**.
 
 ### 3.2 ~~`this_cpu()` reads LAPIC MMIO on every call~~ — **[I-6]**, fixed
 
@@ -354,12 +464,15 @@ TSS is loaded and panics on disagreement; `make smoke-percpu` asserts that check
 online CPU (and requires ≥2 cores, since on one CPU the mapping is right by accident).
 
 **What remains.** This took the MMIO read off the syscall path, which is what made **[I-6]**
-a performance/DoS finding. It did *not* introduce the `%gs`-based per-CPU block itself, so
-roadmap 1.2's other half — per-CPU IRQ-nesting state for **[C-3]**'s per-CPU lock — still
-needs somewhere to live. See the note on `this_cpu()` in `src/kernel/scheduler.c` for why
-`%gs` was not the right first step: the ring-3 return paths load a user selector into `%gs`,
-which zeroes the GS base, so a per-CPU base only survives with `swapgs` in every ISR entry
-and exit.
+a performance/DoS finding. It did *not* introduce the `%gs`-based per-CPU block itself. That
+was roadmap 1.2's other half, and **[C-3]** no longer waits on it: the per-CPU lock landed on
+2026-08-11 holding its state in `MAX_CPUS`-indexed arrays (`irq_depth_pc[]`,
+`irq_saved_if_pc[]`, `src/kernel/scheduler.c`), which `this_cpu()` indexes for the cost of a
+`str` plus arithmetic. A real `%gs` block is still wanted for a current-TCB pointer and to stop
+paying `MAX_CPUS` of cache line per datum, but nothing is blocked on it. See the note on
+`this_cpu()` in `src/kernel/scheduler.c` for why `%gs` was not the right first step: the ring-3
+return paths load a user selector into `%gs`, which zeroes the GS base, so a per-CPU base only
+survives with `swapgs` in every ISR entry and exit.
 
 ### 3.3 SMP scheduling is naive
 
@@ -409,14 +522,26 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Security tests are not merge-gating — **[C-6]**
 
-Of ~30 CI jobs, 21 are required status checks — but the security-specific ones are not among
-them: capability conformance, kernel W^X, measured boot, boot-module tamper rejection,
-SMEP/SMAP presence, flush-on-switch, and stack-guard reseed can all fail while a PR merges
-green. The required set is inverted: functional tests block merges, security tests do not.
+`.github/workflows/ci.yml` defines **64** jobs. Ruleset `19007209` requires **21** of them —
+and the security-specific ones are not among them: capability conformance, kernel W^X, measured
+boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch, and stack-guard reseed
+can all fail while a PR merges green. The required set is inverted: functional tests block
+merges, security tests do not.
 
-Additionally, `strict_required_status_checks_policy` is false (stale-base merges are
-permitted), and every SAST tool in the security job runs under `continue-on-error`, so
-Semgrep, Trivy, gitleaks, and cargo-audit findings are advisory only.
+**The gap is widening, not closing.** When this finding was filed there were roughly 30 jobs
+and 21 required. There are now 64 and still 21, because every gate added after the ruleset was
+written lands in the advisory set by default and nothing forces the question. The most
+consequential single omission is `smoke-captest`: `SECURITY.md` names it as the witness for
+nine of its security properties, and it cannot block a merge — so the exact defect class
+**[C-1]** was would merge green today.
+
+Two counts moved in the right direction since. `strict_required_status_checks_policy` is now
+**true**, so a stale-base merge is no longer permitted. And the `security` job is a required
+check whose scanner-presence step no longer carries `continue-on-error` (#154), so the job goes
+red if the scanners are absent — a job that structurally could not fail now can. The scanners'
+**findings** remain advisory, deliberately: five of the six swallow their exit status inside
+`make security`, and the sixth (`semgrep --config=auto`) fetches rules from a registry that
+changes with no commit here. Gating on content is what pinning those rulesets would unlock.
 
 ### 5.2b One required check is nondeterministic by construction — **[I-11]**
 
@@ -557,9 +682,11 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports 243 tracked files with no build
-artefacts or vendored binaries. A working checkout accumulates ~70 MB of untracked build
-output, which is correctly `.gitignore`d.)*
+*(Repository hygiene itself is fine: `git ls-files` reports **254** tracked files with no build
+artefacts or vendored binaries — no `kernel.elf`, no `boot.iso`, no object files. A working
+checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
+sentence said 243 until 2026-08-15; it is a checkable number offered as evidence, so it is
+re-derived rather than carried forward.)*
 
 ---
 
@@ -572,7 +699,7 @@ Against "a complete, self-hosting operating system":
 | Boot and low-level x86-64 | 85% |
 | Memory management | 70% |
 | Capability model — *design* | 80% |
-| Capability model — *enforcement* | **45%** (IPC namespace unmediated) |
+| Capability model — *enforcement* | **70%** (IPC namespace mediated and identity retired; three ambient console/version paths remain, §1.6) |
 | Scheduling | 55% |
 | SMP | 45% |
 | IPC | 40% |
@@ -587,5 +714,11 @@ Against "a complete, self-hosting operating system":
 **Overall: an early but unusually well-instrumented research kernel.** The infrastructure
 around it — reproducible builds, measured boot, adversarial CI, formal proofs — is
 substantially more mature than the kernel it verifies. Closing **[C-1]** and moving to
-untyped-memory object allocation are the two changes that would most raise the honest
-numbers above.
+untyped-memory object allocation were the two changes that most raised the honest numbers
+above; both landed on 2026-07-27. The two that would raise them next are migrating `tasks[]`
+off `.bss` (**[I-7]**'s remainder) and getting a second pair of eyes on the capability paths
+(**[C-5]**), which is not a technical change at all and is the dominant residual risk.
+
+*The enforcement row read "**45%** (IPC namespace unmediated)" until 2026-08-15 — a
+parenthetical naming the defect §1.1 of this same document records as fixed. It was never
+revised.*

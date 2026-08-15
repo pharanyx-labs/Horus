@@ -8,6 +8,46 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the last ambient `uid == 0` gate, nineteen days after [I-1] was declared closed (**[H-1]**)
+
+`current_user_is_admin()` (`src/kernel/kusers.c`) ended `return tasks[get_current_task()].uid
+== 0;`. Roadmap 0.2 retired the ambient uid gates in `syscall.c` and `syscall_fs.c` and never
+reached `kusers.c` — and because `SYS_USERADD`, `SYS_USERDEL` and `SYS_PASSWD` are `SC_NONE`
+in the dispatch table, that function *was* their gate. A ring-3 task at uid 0 holding no
+capability could create an account with an arbitrary uid/gid and reset any other user's
+password; since uid is the identity `fs_server` authorises file access against, that is
+authority over the whole subject namespace. `SECURITY.md` S18, `LIMITATIONS.md` §1.2 and
+`ARCHITECTURE.md` §G-2 all recorded the finding as closed throughout.
+
+Administrative authority is now possession of `CAP_USER` and nothing else.
+
+**The fallback was load-bearing, which was not the expectation.** `launch_shell`
+(`userspace/init.c`) delegated console, storage, the console client endpoint, `CAP_KERNEL_LOG`
+and `CAP_AUDIT` — but never `CAP_USER`. The shell's `useradd` had therefore been running on
+the ambient gate alone, and deleting it turned `smoke-session` red at
+`[ok] useradd allowed for root`. So `init` now delegates `CAP_USER` to the shell and the shell
+refuses `useradd`/`userdel` to a non-root session itself: the kernel asks whether the task
+holds the authority, the session manager asks whether this user may exercise it. That is the
+same split `CAP_KERNEL_LOG` uses, and for the same reason — the shell is one long-lived task
+serving successive logins, so its capability cannot express "only while root is logged in".
+`passwd` needs neither half: the shell always targets the caller's own uid.
+
+**Witnesses.** `make smoke-captest`, **96 → 100 checks**: four new refusals (`useradd`,
+`userdel`, `passwd` of another user, cross-task `get_task_info`) asserted as exactly
+`SYS_ERR_PERM`, run as uid 0. `make smoke-session` asserts both directions through the real
+ring-3 shell — root may add a user, a standard user gets
+`useradd: permission denied (root only)`.
+
+**Falsified.** With the fallback reintroduced and nothing else changed, `make smoke-captest`
+reports `CAPTEST: FAIL useradd-allowed-by-uid0-without-CAP_USER`.
+
+**Withdrawn, recorded so it is not re-derived.** A first draft assumed `captest` had been
+holding `CAP_USER` via `do_spawn_inner`'s propagation and added a harness step to clear slot 6.
+It had not; the step was removed. The propagation calls `cap_lookup(6, …)` *after*
+`load_staged_image_into` has made the child the current task, so it reads the child's own empty
+cspace and never fires (`kspawn.c:188-197`). It is dead, and dead in the fail-closed direction
+— repairing it would silently widen authority to every spawned child, so it is not a tidy-up.
+
 ### Fixed — the resume-`%rsp` floor guard was mute on exactly the boots it existed to explain (**[G-8]**)
 
 `interrupt_handler64`'s guard against a bogus resume `%rsp` (#123) reported inside

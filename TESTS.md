@@ -46,7 +46,7 @@ emulation is slow, and CI runners are slower; a timeout is usually not a real fa
 
 | Target | Proves |
 |---|---|
-| `smoke-captest` | **96 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), four cover the one-shot reply capability and five the blocking receive (roadmap 1.3) — see below. The central conformance suite. |
+| `smoke-captest` | **100 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), ten cover "identity is not authority" (findings I-1 and H-1, run as uid 0), four cover the one-shot reply capability and five the blocking receive (roadmap 1.3) — see below. The central conformance suite. |
 | `cargo test` (`rust/src/capability.rs`) | Mint masks rights and cannot widen them; transfer shares lineage; system-wide revoke reaches another task's cspace; an unrelated capability survives; primordial roots cannot be revoked; the generation counter skips the pristine sentinel on wrap; serial allocation never yields 0 or a reserved value. |
 | Kani proofs | Revocation nulls **exactly** the target's derivation subtree — no descendant survives, no non-descendant is touched. |
 
@@ -67,6 +67,42 @@ The fix was therefore verified by falsification: reintroduce the pre-fix handler
 suite fails (`CAPTEST: FAIL ipc-recv-on-unheld-slot-allowed`), restore it, confirm 41/41.
 **A test that cannot fail on the bug it targets is not evidence** — the same defect class as
 **[I-11]** in `smoke-fs-wal`.
+
+**The "identity is not authority" checks (section 4b, findings [I-1] and [H-1]).** Ten checks,
+run deliberately as **uid 0**, assert that the most privileged identity in the system buys
+nothing without the capability: `dmesg` without `CAP_KERNEL_LOG`, boot-module info/read
+without `CAP_BOOT_MODULE`, `fs_stat`/`inode_alloc` without `CAP_ENCRYPTED_STORAGE`,
+`useradd`/`userdel`/`passwd`-of-another-user without `CAP_USER`, and cross-task
+`get_task_info` without `CAP_USER` or `CAP_AUDIT`.
+
+The last four are new on 2026-08-15 (**[H-1]**). There was previously no `useradd` probe at
+all: the suite covered the properties that had been enumerated when **[I-1]** was closed, and
+the user database was not among them, so the ambient gate in `kusers.c` survived a suite whose
+whole purpose was to prove it gone. One of the four — cross-task `get_task_info` — is not new
+so much as *resurrected*: it sat in section 1 behind `if (sys_getuid() != 0)`, and captest runs
+as uid 0, so it had never executed on any boot. Dead code that read as coverage.
+
+**Falsification.** With the `uid == 0` fallback reintroduced into `current_user_is_admin()`
+(`kusers.c`) and nothing else changed, `make smoke-captest` reports
+`CAPTEST: FAIL useradd-allowed-by-uid0-without-CAP_USER`. Restored: `CAPTEST: PASS 100
+checks`. Measured on the same tree, the count went **96 → 100**.
+
+**The second witness is `smoke-session`, and it is the stronger one.** `smoke-captest` proves
+a task without `CAP_USER` is refused; it cannot prove the ambient gate was doing real work.
+`smoke-session` does: with the fallback deleted and no other change, the session test went red
+at `[ok] useradd allowed for root`, because `launch_shell` had never delegated `CAP_USER` and
+the shell's `useradd` had been running on the ambient gate alone. `init` now delegates it and
+the shell enforces the per-user half, so the session asserts both directions — root may add a
+user, a standard user is refused with `useradd: permission denied (root only)`. That expected
+string is deliberately more specific than the old `useradd failed`, which would also match an
+*authorised* useradd that failed on its arguments.
+
+*A hypothesis recorded and withdrawn.* The first draft of this change assumed captest had been
+silently holding `CAP_USER` through `do_spawn_inner`'s propagation, and added a step to the
+harness to clear slot 6. It had not, and the step was removed: the refusals pass identically
+with and without it, because the propagation calls `cap_lookup(6, …)` after
+`load_staged_image_into` has made the child current, so it reads the child's own empty cspace
+and never fires (`kspawn.c:188-197`).
 
 **The I-7 untyped-memory checks.** Twenty-two checks cover `CAP_UNTYPED` and `SYS_RETYPE`,
 and unlike the C-1 set they deliberately run in **both directions**. `captest` is endowed with
@@ -1443,7 +1479,7 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 | Target | Proves |
 |---|---|
 | `reproducible-build` | `kernel.elf` is byte-for-byte identical across two clean builds. **A required CI check.** |
-| `security` | Semgrep, Trivy, gitleaks, cppcheck, flawfinder, cargo-audit, plus a CycloneDX SBOM. Currently **advisory** (`continue-on-error`). |
+| `security` | Semgrep, Trivy, gitleaks, cppcheck, flawfinder, cargo-audit, plus a CycloneDX SBOM. **A required status check.** Its *findings* stay advisory (one deliberate `continue-on-error`), but since #154 the job asserts each scanner is actually installed and fails if one is missing — it had previously been a required check on which every step carried `continue-on-error`, so it could not go red for any reason, including scanning nothing at all. |
 
 ---
 

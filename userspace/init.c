@@ -202,10 +202,26 @@ static int launch_shell(void) {
     /* `ps` reads other tasks' info, which now requires a real capability rather
      * than uid 0 (finding I-1). CAP_AUDIT is the read-only introspection right. */
     if (sys_cap_grant(sh, CAPSLOT_AUDIT, CAPSLOT_AUDIT) != 0) return -6;
+    /* `useradd` / `userdel`. Until 2026-08-15 these worked because
+     * current_user_is_admin() in the kernel accepted uid 0 as an alternative to
+     * holding CAP_USER — the last ambient gate from finding I-1, missed because
+     * roadmap 0.2's sweep covered syscall.c and syscall_fs.c but not kusers.c
+     * (finding H-1). With that fallback gone the shell needs the real capability,
+     * so init delegates it here, exactly as it does the kernel log above.
+     *
+     * The shell holds this for the life of the boot, across every login, so the
+     * kernel's possession check cannot by itself express "only while root is at
+     * the terminal". That half is enforced in the shell (see the useradd/userdel
+     * handlers), which is the same split CAP_KERNEL_LOG uses: the KERNEL asks
+     * whether the task holds the authority, the SESSION MANAGER asks whether this
+     * user may exercise it. Granting without that check would be a privilege
+     * WIDENING versus the uid==0 gate being removed, which is precisely the
+     * mistake smoke-session caught when CAP_KERNEL_LOG was delegated. */
+    if (sys_cap_grant(sh, CAP_SLOT_USER, CAPSLOT_USER) != 0) return -7;
     /* The shell's console capability is granted above; resuming only now is what
      * guarantees it can never start writing before it holds one. That race is
      * what made the shell come up silent under SMP and time out CI. */
-    if (sys_task_resume(sh) != 0) return -7;
+    if (sys_task_resume(sh) != 0) return -8;
     return sh;
 }
 

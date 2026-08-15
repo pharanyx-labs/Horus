@@ -56,8 +56,17 @@ static void check(int ok, const char *what) {
 
 /* ---- capability slot map (see create_task in src/kernel/scheduler.c) ----
  * A freshly spawned task holds: 0 = CAP_TCB (itself), 3 = CAP_FRAME,
- * 4 and 5 = CAP_ENDPOINT. Slot 7 (CAP_BLOCK_DEV) and slot 6 (CAP_USER admin)
- * are NOT granted by default, which is what makes them useful negative probes.
+ * 4 and 5 = CAP_ENDPOINT. Slot 7 (CAP_BLOCK_DEV) is never granted, which is what
+ * makes it a useful negative probe.
+ *
+ * Slot 6 (CAP_USER admin) is likewise never granted here, which is what makes
+ * the section-4b admin probes meaningful. Worth stating WHY, because it is not
+ * for the reason it looks like: do_spawn_inner does contain code to propagate
+ * CAP_USER from a spawner that holds it, but it calls cap_lookup(6, ...) after
+ * load_staged_image_into has already made the CHILD the current task, so the
+ * lookup reads the child's freshly-zeroed cspace and never fires (kspawn.c:188).
+ * Verified rather than assumed: the 4b refusals pass identically whether or not
+ * the harness clears the slot.
  */
 #define SLOT_TCB_SELF   0
 #define SLOT_FRAME      3    /* CAP_FRAME — a live cap, but NOT an endpoint */
@@ -93,12 +102,10 @@ void _start(void) {
     check(sys_get_task_info(pid, &ti) == 0, "task-info-self");
     check(ti.id == (uint32_t)pid, "task-info-id-mismatch");
 
-    /* Reading another task's info is admin-gated; task 0 is the kernel's own.
-     * Without CAP_USER this must be refused rather than answered. */
-    if (sys_getuid() != 0) {
-        struct task_info other;
-        check(sys_get_task_info(0, &other) != 0, "task-info-other-allowed-without-admin");
-    }
+    /* (Reading another task's info is admin-gated. That check used to live here
+     * behind `if (sys_getuid() != 0)` — which never fires, because this harness
+     * runs captest as uid 0. It is now unconditional, in section 4b, where the
+     * rest of the "identity is not authority" probes are.) */
 
     sys_yield();                   /* must return; a task may always yield */
     checks++;
@@ -247,6 +254,39 @@ void _start(void) {
           "fs-stat-allowed-without-CAP_ENCRYPTED_STORAGE");
     check(sys_fs_inode_alloc(1) == SYS_ERR_PERM,
           "inode-alloc-allowed-without-CAP_ENCRYPTED_STORAGE");
+
+    /* The user database (audit finding H-1). SYS_USERADD / SYS_USERDEL /
+     * SYS_PASSWD are SC_NONE in the dispatch table, so their only gate is
+     * current_user_is_admin() in kusers.c — which, until this change, ended
+     * `return tasks[cur].uid == 0`. Roadmap 0.2 swept syscall.c and syscall_fs.c
+     * for ambient uid gates and never reached kusers.c, so this one survived
+     * while S18, LIMITATIONS 1.2 and ARCHITECTURE G-2 all recorded it as gone.
+     *
+     * These three are the reason section 4b exists at all: a uid-0 task holding
+     * no capability could mint an account with any uid/gid it liked, and uid is
+     * precisely the identity fs_server authorises file access against.
+     *
+     * do_useradd/userdel/passwd return -1 for "not admin" and -2..-5 for their
+     * own domain errors, and SYS_ERR_PERM is -1 — so == SYS_ERR_PERM separates
+     * refusal from "admitted, then failed on the arguments", which is the
+     * distinction the first draft of the C-1 suite got wrong. */
+    check(sys_useradd(4242, 4242, "audit") == SYS_ERR_PERM,
+          "useradd-allowed-by-uid0-without-CAP_USER");
+    check(sys_userdel(0) == SYS_ERR_PERM,
+          "userdel-allowed-by-uid0-without-CAP_USER");
+    /* A DIFFERENT uid than our own: do_passwd deliberately lets any task change
+     * its OWN password without admin, so passwd(self) is not a probe of this
+     * gate. uid 1 is the shipped non-root account. */
+    check(sys_passwd(1, "not-the-real-password") == SYS_ERR_PERM,
+          "passwd-of-another-user-allowed-by-uid0-without-CAP_USER");
+
+    /* Cross-task introspection, which is CAP_USER/CAP_AUDIT-gated. This check
+     * used to sit in section 1 behind `if (sys_getuid() != 0)` — and captest runs
+     * as uid 0, so it had never once executed. It was dead code that read as
+     * coverage. Unconditional here, where it belongs. */
+    struct task_info other;
+    check(sys_get_task_info(0, &other) != 0,
+          "task-info-other-allowed-without-CAP_USER-or-CAP_AUDIT");
 
     /* ---- 5. signals: own-task operations ----------------------------- */
 

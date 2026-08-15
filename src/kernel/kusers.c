@@ -275,11 +275,34 @@ void users_init(void) {
 }
 
 
+/* Administrative authority over the user database: possession of CAP_USER, and
+ * nothing else.
+ *
+ * This used to end `return tasks[get_current_task()].uid == 0;`. That fallback
+ * was the last surviving piece of finding I-1 — ambient uid-0 authority running
+ * parallel to the capability graph — and it outlived the fix because roadmap 0.2
+ * swept `syscall.c` and `syscall_fs.c` for `uid != 0` gates and never reached
+ * kusers.c. SECURITY.md S18, LIMITATIONS 1.2 and ARCHITECTURE G-2 all claimed it
+ * was gone; SYS_USERADD / SYS_USERDEL / SYS_PASSWD are SC_NONE in the dispatch
+ * table, so this function WAS the gate, and a ring-3 task at uid 0 holding no
+ * capability at all could create accounts with an arbitrary uid/gid and reset
+ * any other user's password. Since uid is the identity fs_server authorises
+ * every file operation against (SYS_IPC_SENDER), authority over the account
+ * table is authority over the filesystem's whole subject namespace.
+ *
+ * Nothing legitimate depended on it. CAP_USER is minted once in the primordial
+ * root cnode (capability.c), delegated to `init` (kshell.c), propagated to a
+ * child by do_spawn_inner only when the SPAWNER already holds it, and granted to
+ * the elevated task h_sudo creates. So the shell, its children, and sudo all
+ * still pass; what stops passing is a task that was never given the authority
+ * and was relying on its uid to supply it.
+ *
+ * The slot-6 convention is itself unlovely — authority ought not depend on WHERE
+ * a capability sits — but that is a separate change (audit H-6) and widening it
+ * here would mean touching every CAPSLOT_* consumer at once. */
 static int current_user_is_admin(void) {
-
-    struct capability *c = cap_lookup(6, CAP_RIGHT_ALL);
-    if (c && c->type == CAP_USER) return 1;
-    return tasks[get_current_task()].uid == 0;
+    struct capability *c = cap_lookup(CAPSLOT_USER, CAP_RIGHT_ALL);
+    return (c && c->type == CAP_USER) ? 1 : 0;
 }
 
 int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial_password) {

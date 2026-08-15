@@ -29,12 +29,18 @@ measurements.
 > ring-3 task could intercept or forge messages to any userspace server — is **fixed as of
 > 2026-07-27** ([C-1]/[C-2] in [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md)).
 > Open findings are tracked in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and
-> [`docs/ROADMAP.md`](docs/ROADMAP.md). Ambient `uid == 0` authority (**[I-1]**) and
-> fixed-size kernel object tables (**[I-7]**) were both retired on 2026-07-27 — cspaces,
-> endpoints and notifications are now carved from untyped memory, though `tasks[]` has yet to
-> follow. The notable remaining findings are the unconditional `sti` in `spin_unlock` and its
-> global IRQ counter (**[C-3]**), an unflushed write-ahead journal (**[I-10]**), and no
-> independent review of security-critical changes (**[C-5]**).
+> [`docs/ROADMAP.md`](docs/ROADMAP.md). Fixed-size kernel object tables (**[I-7]**) were
+> retired on 2026-07-27 — cspaces, endpoints and notifications are now carved from untyped
+> memory, though `tasks[]` has yet to follow. Ambient `uid == 0` authority (**[I-1]**) was
+> retired the same day *except* for the user database, which this banner and three other
+> documents wrongly reported as closed for nineteen days; that last gate went on 2026-08-15
+> (**[H-1]**). The global IRQ nesting counter and `spin_unlock`'s unconditional `sti`
+> (**[C-3]**, **[C-3.1]**) were fixed on 2026-08-11 — the lock is per-CPU and restores the
+> caller's own `RFLAGS.IF`, with `IRQ_LEGACY_GLOBAL_LOCK=1` retained as the control arm.
+> The notable remaining findings are an unflushed write-ahead journal (**[I-10]**), a
+> revocation closure an unprivileged task can force to over-approximate (**[I-3]**), an SMP
+> fault whose origin is not established (**[G-8]**), the security tests not gating merges
+> (**[C-6]**), and no independent review of security-critical changes (**[C-5]**).
 
 ---
 
@@ -65,9 +71,14 @@ asks that *nothing* hold authority it was not explicitly given.
 Three principles drive every design decision.
 
 **Least privilege by construction.** Authority is a capability: an unforgeable token naming
-one object and one set of rights. There is no `root` bit that opens every door and no
-ambient "the caller is trusted" path. A task can only do what it holds a capability for, and
-can only delegate a *subset* of what it holds.
+one object and one set of rights. There is no `root` bit that opens every door, and since
+**[H-1]** landed no kernel path grants authority for *who the caller claims to be*. A task
+can only do what it holds a capability for, and can only delegate a *subset* of what it
+holds. Three console-adjacent syscalls are still ungated by any capability — `SYS_WRITE`
+fd 1, `SYS_READ` fd 0 and `SYS_SYSINFO`; they are enumerated in
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and marked *ambient* at each entry in
+[`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated absolutely and enforced
+partially is worse than no claim.
 
 **Fail closed.** Every syscall passes through a dispatch table with a declared capability
 requirement. An unknown, reserved, or unimplemented syscall number does not fall through to
@@ -77,8 +88,8 @@ a syscall number without adding its table entry.
 **Verify, don't assert.** Claims are backed by artifacts. The build is verified reproducible
 by building twice and diffing. Boot-module integrity is tested by *corrupting a module* and
 asserting rejection. Measured boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. Thirty-plus QEMU integration self-tests run in
-CI.
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 64 jobs, most of
+them QEMU integration self-tests — though only 21 of the 64 gate a merge (**[C-6]**).
 
 ---
 
@@ -119,7 +130,7 @@ per item.
 | **Capabilities** | 16 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop |
 | **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
 | **SMP** | Default on; ACPI MADT enumeration, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
-| **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
+| **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, a blocking receive that sleeps on an empty queue, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
 | **Filesystem** | `fs_server` in ring 3 over an AEAD-encrypted kernel object store; POSIX rwx against kernel-attested uid/gid; write-ahead journal and mount-time fsck; double-indirect large files |
 | **Console** | `console_server` in ring 3 owning the UART and VGA framebuffer; raw terminal mode (termios + winsize) |
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, hierarchical rollback MAC; key material never leaves the kernel |
@@ -221,12 +232,23 @@ Other useful targets:
 
 ```bash
 make smoke              # headless boot; asserts the ring-3 shell banner appears
-make test               # the full local self-test sweep
+make test               # cargo test, then a clean rebuild — see the caveat below
 make SMP=0              # build without SMP
 make DEBUG_SHELL=1      # build with the in-kernel debug shell
-make reproducible-build # build twice and diff kernel.elf
+make reproducible-build # one SOURCE_DATE_EPOCH build; records .build.sha
 make run-tpm            # boot under an emulated TPM (requires swtpm)
 ```
+
+One of those is weaker than its name suggests, and it is better to say so here than to let
+someone rely on it. `make reproducible-build` builds **once** and records `sha256sum` in
+`.build.sha` — the double-build-and-diff that actually establishes the property lives only in
+the `reproducible` CI job, which is a required check. Locally, run it twice and compare
+`.build.sha`.
+
+`make test` is the Rust unit tests plus a clean rebuild; it does **not** boot QEMU, so it is
+not the full self-test sweep — use the `smoke-*` targets for that. Until 2026-08-15 it ended in
+`|| true` and could not fail at all, which meant a developer following this README got a green
+result from a suite that had entirely failed.
 
 Complete build documentation, including every configuration flag, in
 [`docs/BUILDING.md`](docs/BUILDING.md).
@@ -246,7 +268,7 @@ userspace/         init, fs_server, console_server, shell, self-test programs
 userspace/ports/   ported third-party programs (coreutils, tcc)
 newlib/            vendored libc
 tools/             build helpers, QEMU session drivers, manifest generation
-tests/             host-side tests
+tests/             host-side scratch code; built by no target and run by no workflow
 docs/              architecture, syscalls, roadmap, limitations, audits
 site/              the project website published to GitHub Pages
 ```
@@ -259,9 +281,10 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — 30+ targets that boot a purpose-built kernel
-   configuration and assert a marker on the serial console. These cover W^X, capability
-   refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot, and more.
+2. **QEMU integration self-tests** — the bulk of CI's 64 jobs; each boots a purpose-built
+   kernel configuration and asserts a marker on the serial console. These cover W^X,
+   capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
+   untyped retyping, blocking receive, and more.
 3. **Scripted sessions** — Python drivers that type into the real ring-3 shell over serial
    and assert on the output.
 

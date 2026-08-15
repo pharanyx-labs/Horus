@@ -451,22 +451,30 @@ panics with the offending task, CPU and observer.
   same-core co-residency, the strongest available mitigation against cross-thread
   microarchitectural attacks without hardware support.
 
-**Locking.** `spin_lock` masks interrupts and takes a test-and-set lock.
+**Locking.** `spin_lock` masks interrupts and takes a test-and-set lock. Its nesting depth and
+the caller's saved `RFLAGS.IF` are **per-CPU**, and the outermost `spin_unlock` restores that
+saved value rather than asserting one — see §6, "Interrupt policy", which is the authoritative
+statement.
 
-> **Known defect — [C-3] / [C-3.1], open.** The interrupt nesting depth is a single **global**
-> counter shared by all CPUs (with non-atomic increments), and `spin_unlock` does an
-> **unconditional** `sti` when it reaches zero. Two consequences:
+> **Resolved — [C-3] / [C-3.1], fixed 2026-08-11.** *This callout said "Known defect … open"
+> for four days after the fix landed, while §6 of this same document described the corrected
+> behaviour. It is left here, rewritten, because the shape of the defect explains three
+> subsystems that still route around it.*
 >
-> - Under SMP, one CPU's release can re-enable interrupts while another still holds a lock.
-> - Any lock taken in a context where `IF` was already clear *enables interrupts as a side
->   effect* — including inside `user_copy`'s hand-rolled `cli`/CR3 window.
+> The nesting depth used to be a single **global** counter shared by all CPUs with non-atomic
+> increments, and `spin_unlock` did an **unconditional** `sti` when it reached zero. Under SMP
+> one CPU's release could unmask another's critical section; and any lock taken where `IF` was
+> already clear enabled interrupts as a side effect — including inside `user_copy`'s
+> hand-rolled `cli`/CR3 window.
 >
-> The second behaviour is **load-bearing**: boot and early init take many locks with
-> interrupts masked, so the timer preemption that the `init` → `fs_server` → `console_server`
-> → shell startup handshake depends on is produced by this defect rather than by explicit
-> policy. Correcting the lock in isolation stalls that handshake — verified in CI. The
-> kernel's boot-time interrupt enablement must be made explicit first. See
-> [`ROADMAP.md`](ROADMAP.md) item 1.1.
+> The second behaviour was **load-bearing**, which is why the obvious fix failed once. A
+> correct per-CPU lock written on 2026-07-27 passed every local gate and stalled the `init` →
+> `fs_server` → `console_server` → shell handshake in CI, and was reverted; the handshake
+> depended on preemption the defect produced. What made the second attempt safe was
+> `preempt_on_tick`'s ring-0 guard, widened from "CPU 0" to every CPU in the interim, so a
+> ring-0 tick is no longer a switch point and the `sti` creates nothing anything depends on.
+> `IRQ_LEGACY_GLOBAL_LOCK=1` rebuilds the defect exactly and `make smoke-irq-policy` gates the
+> policy at five named boot milestones. See [`ROADMAP.md`](ROADMAP.md) item 1.1.
 
 Code that runs inside an interrupt gate (where `IF` is already clear by hardware) uses raw
 test-and-set helpers instead — `sched_raw_lock`, `ipc_lock` — which must not touch `IF` at
@@ -495,6 +503,14 @@ asserted (roadmap 1.3, finding **[I-5]**).
   ring 3, where timer preemption guarantees progress. Spinning in-kernel would not, because
   the kernel is not preemptible. With a queue, concurrent clients enqueue instead of
   colliding, so the retry path is reached only under real back-pressure.
+- **`SYS_IPC_RECV_BLOCK`** is the same receive under the same capability gate, but **sleeps**
+  on an empty queue instead of returning `-2`. It never returns `IPC_AGAIN`, so a negative
+  return is permanent and a server that loops on it is wedging rather than applying
+  back-pressure. Its subtlety is authority, not sleep: the receive is completed by the
+  *sender's* syscall running in the sender's cspace, so `cap_install_reply_for` mints the
+  one-shot `CAP_REPLY` into the **receiver's** cspace, under `ipc_lock` and before the wake —
+  a receiver holds its reply right before it is schedulable. The first version minted after the
+  wake and lost the race on 8 of 25 loaded SMP boots while every single-CPU gate passed.
 - **`SYS_IPC_CALL`** is the blocking send-then-await-reply. It deposits the message and
   records a *pending* block; the actual publish happens later.
 - **`SYS_IPC_REPLY_TO`** delivers a reply directly into the recorded sender's blocked reply
@@ -735,6 +751,13 @@ task that needs it. `SYS_GET_TASK_INFO`'s root promotion is gone with them: cros
 introspection now needs a `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7), and `info.eip` is
 zeroed for any task but the caller (finding **[I-4]**).
 
+*Closed properly only on 2026-08-15* (finding **[H-1]**). Roadmap 0.2's sweep covered
+`syscall.c` and `syscall_fs.c` and missed `kusers.c`, whose `current_user_is_admin()` kept a
+`uid == 0` fallback — the sole gate on `SYS_USERADD` / `SYS_USERDEL` / `SYS_PASSWD`, which are
+`SC_NONE` in the dispatch table. This paragraph claimed "*Closed*" for nineteen days while it
+was not. Administrative authority over the user database is now possession of `CAP_USER` and
+nothing else. See `LIMITATIONS.md` §1.2 for why the conformance suite could not have caught it.
+
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
 carved from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an
@@ -743,13 +766,22 @@ reachable from the scheduler's hot path and from every trap frame, so migrating 
 change — and reclaiming a dead task's cspace, which needs `cap_lookup`'s NULL-cspace →
 root-cnode fallback removed first.
 
-**G-4 — Endpoints are single-slot with no queue.** *Largely closed* (roadmap 1.3, finding
-**[I-5]**). Endpoints are now bounded FIFOs of `EP_QUEUE_SLOTS` (§8), so concurrent senders
-enqueue instead of colliding, and the one-shot `CAP_REPLY` landed with them — reply forgery is
+**G-4 — Endpoints are single-slot with no queue.** *Closed 2026-08-11* (roadmap 1.3, finding
+**[I-5]**). Endpoints are bounded FIFOs of `EP_QUEUE_SLOTS` (§8), so concurrent senders enqueue
+instead of colliding, and the one-shot `CAP_REPLY` landed with them — reply forgery is
 structurally impossible rather than right-gated. The shared global reply endpoint that used to
-compound this is also gone; every task has a private one. **What remains is a blocking
-receive:** an empty queue still returns `-2` and the server polls, so a server with no work
-spins instead of sleeping and priority inheritance is still inexpressible.
+compound this is also gone; every task has a private one.
+
+*This paragraph continued "**What remains is a blocking receive:** an empty queue still returns
+`-2` and the server polls" for four days after that stopped being true.* `SYS_IPC_RECV_BLOCK`
+(syscall 94, `syscall.c:1032`) sleeps on an empty queue, and both ring-3 servers use it —
+`console_server.c:229` unconditionally, `fs_server.c:644` once the volume is provisioned, since
+before that it must keep polling the root inode for a login to unlock it. Session time on one
+core fell 15.18 s → 6.25 s with non-overlapping ranges. `smoke-recvblock` and
+`smoke-recvblock-smp` gate it, and `EP_QUEUE_SLOTS=1` rebuilds the single-slot endpoint as the
+control arm. What is still inexpressible is **priority inheritance**, which needs priorities the
+scheduler stores but does not use (§7), and IPC **timeouts**, which need the clock roadmap 2.2
+adds — a blocked task blocks until woken or killed.
 
 **G-5 — No kernel object lifecycle.** *Closed for retyped objects* (roadmap 0.3). A retyped
 endpoint or notification is destroyed when no capability names it any more, computed by
@@ -763,9 +795,10 @@ the TSS selector in `TR` rather than reading the LAPIC, verified per-core agains
 bringup (`percpu_id_verify_self`, `make smoke-percpu`). `%gs`-based per-CPU data was *not*
 adopted — the ring-3 return paths load `0x33` into `%gs`, which zeroes the GS base in long
 mode, so doing it properly needs a CS-conditional `swapgs` on every ISR entry and exit plus
-the NMI/IST re-entrancy hazard. What is still wanted is a per-CPU *block* to hold the
-IRQ-nesting state **[C-3]**'s per-CPU lock needs, justified by roadmap 1.1 rather than by
-syscall cost.
+the NMI/IST re-entrancy hazard. **[C-3]** did not wait for it: the per-CPU lock landed on
+2026-08-11 with its nesting depth and saved `RFLAGS.IF` in `MAX_CPUS`-indexed arrays that
+`this_cpu()` indexes directly (§6). A per-CPU *block* is still wanted — for a current-TCB
+pointer, and to stop paying a `MAX_CPUS`-wide array per datum — but nothing is blocked on it.
 
 **G-7 — a blocked task can be left holding a scheduler claim.** *Closed 2026-08-09 — the
 checker was wrong, not the scheduler.* The `SCHED_INVARIANTS=1` reports were not `init`

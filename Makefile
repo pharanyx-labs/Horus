@@ -2169,8 +2169,20 @@ smoke-sched-invariants-stress:
 		FAIL_MARKER='PANIC:' STRESS_GATE=marker tools/stress_boot.sh boot.iso
 
 .PHONY: test
+# The local sweep: the Rust unit tests, then a clean full build.
+#
+# The `cargo test` line used to end in `|| true`, so every one of the Rust unit
+# tests -- including the capability-algebra tests that are the named witness for
+# SECURITY.md S2..S5 -- could fail while `make test` exited 0. CI was never
+# affected (the `rust` job runs cargo test directly and is a required check), so
+# the only thing it misled was a developer running the command the README tells
+# them to run. That is the same defect #154 removed from the `security` CI job:
+# a gate that structurally cannot fail reads as coverage while providing none.
+#
+# This is deliberately NOT the full self-test sweep -- it does not boot QEMU. Run
+# the `smoke-*` targets for that; `make smoke` is the shortest useful one.
 test:
-	@cargo test --manifest-path rust/Cargo.toml --release || true
+	cargo test --manifest-path rust/Cargo.toml --release
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory all
 

@@ -958,7 +958,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>85 syscall numbers</strong>. The dispatch table is sized to
+            The ABI defines <strong>86 syscall numbers</strong>. The dispatch table is sized to
             the highest of them plus one, and a default build installs <strong>75
             handlers</strong> — the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
@@ -1353,7 +1353,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <div>
 <pre class="code"><span class="c"># check the claims on this page</span>
 <span class="p">$</span> make smoke                 <span class="c"># boot to ring-3 login</span>
-<span class="p">$</span> make smoke-captest         <span class="c"># 89 capability checks</span>
+<span class="p">$</span> make smoke-captest         <span class="c"># 100 capability checks</span>
 <span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
 <span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
 <span class="p">$</span> make reproducible-build    <span class="c"># build twice, diff</span></pre>
@@ -1571,37 +1571,33 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <li>
             <h3><span class="id">C-6</span>The security tests do not gate merges</h3>
             <p>
-              Of 62 CI jobs, <strong>21</strong> are required status checks — and the
-              security-specific ones are not among them. Capability conformance, kernel W^X,
-              measured boot,
-              boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and stack-guard
-              reseed can all fail while a pull request merges green. The required set is
-              inverted: functional tests block merges, security tests do not.
+              Of 64 CI jobs, <strong>21</strong> are required status checks — and
+              <strong>not one of them is a security gate</strong>. Capability conformance
+              (<code>smoke-captest</code>, the named witness for nine of the properties on this
+              page), kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
+              flush-on-switch and stack-guard reseed can all fail while a pull request merges
+              green. The required set is inverted: functional tests block merges, security tests
+              do not.
+            </p>
+            <p>
+              It is also widening rather than closing. Every gate added since the ruleset was
+              written lands in the advisory set by default, so the ratio has fallen from 21 of
+              about 30 jobs when this was first recorded to 21 of 64 now. Two further checks were
+              deliberately downgraded for nondeterminism — <code>smoke-fs-wal</code> and
+              <code>smoke-session-smp-soak</code> — each for a defensible reason, but the
+              aggregate is a merge gate drifting away from the properties it is supposed to
+              protect.
             </p>
           </li>
           <li>
-            <h3><span class="id">C-3</span>The spinlock's interrupt state is global, and the bug is load-bearing</h3>
+            <h3><span class="id">I-3</span>An unprivileged task can force a broad revocation</h3>
             <p>
-              Interrupt nesting depth is a single global counter shared by every CPU, and
-              <code>spin_unlock</code> issues an unconditional <code>sti</code>. Because that
-              fires for any lock taken while interrupts were already masked, the ring-3 startup
-              handshake depends on preemption that is a consequence of the defect rather than of
-              any stated policy. A correct per-CPU lock was written, passed every local gate,
-              broke the handshake in CI, and was reverted.
-            </p>
-            <p>
-              Two of the three steps toward fixing it are done: an audit mode that identifies the
-              releases enabling interrupts the caller had masked — <strong>seven sites, every one
-              a syscall-context lock user</strong> — and <code>smoke-irq-policy</code>, which
-              records interrupt state at five named boot milestones and gates on it. The lock
-              itself has not landed.
-            </p>
-            <p>
-              The audit's published totals were withdrawn and are being re-derived. The counts
-              are cumulative and depend on how long the sample ran, and the figures previously
-              quoted turned out to be the frozen counters of a boot that had already stalled —
-              the instrument perturbs the session it measures. The seven sites reproduce; the
-              totals did not survive re-measurement.
+              The descendant-closure worklist in <code>revoke_subtree</code> is bounded at 256
+              entries. On overflow the sweep over-approximates safely by nulling every capability
+              sharing the root object — so a task that deliberately builds a derivation subtree
+              larger than 256 members can force the fallback and destroy an unrelated task's
+              independent capability to the same object. It fails safe, in that no descendant
+              survives, but it is a denial of service against another task's authority.
             </p>
           </li>
           <li>
@@ -1653,12 +1649,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">1.3</span>IPC receive still polls</h3>
+            <h3><span class="id">1.3</span>Priority inheritance is inexpressible</h3>
             <p>
-              Endpoints are bounded FIFO queues and reply capabilities are one-shot, but
-              <code>SYS_IPC_RECV</code> returns "would block" on an empty queue rather than
-              sleeping. A server with no work spins instead of blocking, and priority inheritance
-              remains inexpressible. That is the last remaining piece of roadmap 1.3.
+              Endpoints are bounded FIFO queues, reply capabilities are one-shot, and
+              <code>SYS_IPC_RECV_BLOCK</code> sleeps on an empty queue — a server with no work is
+              off the run queue rather than spinning. What is still missing is priority
+              inheritance: the kernel records that a task is waiting on an endpoint, which is the
+              prerequisite, but nothing propagates priority along that edge, and there are no task
+              priorities to propagate yet.
             </p>
           </li>
           <li>

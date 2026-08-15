@@ -1965,6 +1965,18 @@ static void handle_command(char *cmd) {
             }
         }
     } else if (strncmp(cmd, "useradd ", 8) == 0) {
+        /* ROOT ONLY, and for the same reason `dmesg` above is: two independent
+         * gates answering two different questions. The KERNEL asks "does this
+         * task hold CAP_USER?" — since finding H-1 that is the only thing
+         * current_user_is_admin() accepts, the ambient uid==0 fallback having
+         * been removed. The SHELL asks "is the user at this terminal allowed to
+         * use it?", which the kernel cannot answer: CAP_USER is per-TASK and the
+         * shell is one long-lived task serving successive logins, so without this
+         * check delegating it would hand account creation to every standard user
+         * — strictly weaker than the uid==0 gate it replaced. */
+        if (sys_getuid() != 0) {
+            println("useradd: permission denied (root only)");
+        } else {
         const char *p = cmd + 8;
         uint32_t newuid = 0;
         char newname[32];
@@ -1978,13 +1990,19 @@ static void handle_command(char *cmd) {
         int r = sys_useradd(newuid, 100, newname);
         if (r == 0) println("user added");
         else println("useradd failed");
+        }
     } else if (strncmp(cmd, "userdel ", 8) == 0) {
+        /* ROOT ONLY — see the note on useradd above. */
+        if (sys_getuid() != 0) {
+            println("userdel: permission denied (root only)");
+        } else {
         const char *p = cmd + 8;
         uint32_t deluid = 0;
         while (*p == ' ') p++;
         while (*p >= '0' && *p <= '9') { deluid = deluid*10 + (*p-'0'); p++; }
         int r = sys_userdel(deluid);
         println(r == 0 ? "user deleted" : "userdel failed");
+        }
     } else if (strcmp(cmd, "passwd") == 0 || strncmp(cmd, "passwd ", 7) == 0) {
         println("New password: ");
         char newp[32];

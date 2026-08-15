@@ -395,14 +395,29 @@ def run():
         # --- 6. the same admin op is DENIED for a standard user ----------
         #        The point of the whole session: authority derives from the
         #        login identity the kernel attests, never from the request.
-        s.send("useradd 1235 eve"); s.expect("useradd failed", STEP_TIMEOUT)
+        #
+        #        The expected string changed on 2026-08-15 (finding H-1). It used
+        #        to be the shell's generic "useradd failed", which is what you get
+        #        when the SYSCALL refuses — and the syscall refused because
+        #        current_user_is_admin() fell back to `uid == 0`, i.e. this check
+        #        was passing on the strength of the ambient gate the capability
+        #        model exists to eliminate. Now the shell holds a real CAP_USER
+        #        delegated by init and enforces the per-user half itself, so the
+        #        refusal is specific and names its reason. Asserting the specific
+        #        string is deliberately STRICTER: "useradd failed" would also
+        #        match a useradd that was authorised and then failed on its
+        #        arguments, which is the same "a negative result is not a refusal"
+        #        confusion that made the first draft of the C-1 suite worthless.
+        s.send("useradd 1235 eve")
+        s.expect("useradd: permission denied (root only)", STEP_TIMEOUT)
         step("useradd denied for standard user (least privilege enforced)")
 
         # --- 6b. userdel is an admin op too: the same identity gate must cover
         #         it, not just useradd. A standard user deleting an account (here
         #         alice, uid 1234, added by root earlier) would be a trivial
         #         escalation/denial-of-service, so it must be refused.
-        s.send("userdel 1234"); s.expect("userdel failed", STEP_TIMEOUT)
+        s.send("userdel 1234")
+        s.expect("userdel: permission denied (root only)", STEP_TIMEOUT)
         step("userdel denied for standard user")
 
         # --- 6c. cross-user filesystem access: the fs_server is the reference

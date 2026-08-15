@@ -134,11 +134,17 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 
 | Flag | Reproduces | Gate |
 |---|---|---|
+| `IRQ_LEGACY_GLOBAL_LOCK=1` | The pre-1.1 spinlock: one global nesting depth shared by every CPU, incremented non-atomically, with an unconditional `sti` on the outermost release — findings **[C-3]** and **[C-3.1]** exactly as they stood. Detailed in the interrupt-policy table above. | `make smoke-irq-policy` (`Makefile:665-678`) |
+| `USER_HEAP_HIGH_BASE=1` | Places every user heap at **8 GiB** instead of 16 MiB — above the 4 GiB line — so the 32-bit truncation in the heap syscalls and the pager's region gate (**[I-2]**) is *reachable* rather than latent. Built from a tree without the fix, the gate reports `CAPTEST: FAIL (sbrk-grow-failed)`. | `make smoke-heap64` |
+| `EP_QUEUE_SLOTS=1` | A single-slot endpoint queue, pre-**[I-5]**, for the roadmap 1.3 queue and blocking-receive gates. | `make smoke-recvblock` |
 | `KFAULT_INJECT` | Takes a deliberate supervisor page fault (a read of `0x94`, G-8's address) on a timer tick **after** `console_server` owns the console. `KFAULT_INJECT_TICKS` (default 400) sets how long after. | `make smoke-kfault` |
 | `KFAULT_LEGACY_PRINTLN` | Reports a CPL-0 page fault through `println()` as the kernel used to — i.e. into the klog, where nothing on the wire can hear it. | `make smoke-kfault-legacy`, which requires the report to be **absent** |
-| `EP_QUEUE_SLOTS=1` | A single-slot endpoint queue, for the roadmap 1.3 blocking-receive gates. | `make smoke-recvblock` |
+| `RESUME_GUARD_LEGACY_FATAL=1` | Restores the resume-`%rsp` floor guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket, so the report is swallowed by a permanent panic claim another CPU already holds. The report must **not** reach serial. | `make smoke-resume-guard-legacy` |
+| `RESUME_GUARD_DISABLE=1` | Compiles the floor guard out entirely; the kernel instead faults at `0x94` on `out->cs`, which is **[G-8]**'s original datapoint reproduced deliberately. | `make smoke-resume-guard-nofloor` |
 
-None of these is a shipping configuration.
+None of these is a shipping configuration. `IRQ_LEGACY_GLOBAL_LOCK` also appears in the
+interrupt-policy table above, and until 2026-08-15 that was the only place it was documented;
+`USER_HEAP_HIGH_BASE` was not documented anywhere.
 
 ---
 
@@ -146,7 +152,7 @@ None of these is a shipping configuration.
 
 ```bash
 make smoke      # headless boot; asserts the ring-3 shell banner and login prompt
-make test       # the full local sweep
+make test       # Rust unit tests, then a clean rebuild (does NOT boot QEMU)
 ```
 
 Individual self-tests are `make smoke-<name>`. A few of the important ones:

@@ -1571,22 +1571,22 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <li>
             <h3><span class="id">C-6</span>The security tests do not gate merges</h3>
             <p>
-              Of 64 CI jobs, <strong>21</strong> are required status checks — and
-              <strong>not one of them is a security gate</strong>. Capability conformance
-              (<code>smoke-captest</code>, the named witness for nine of the properties on this
-              page), kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
-              flush-on-switch and stack-guard reseed can all fail while a pull request merges
-              green. The required set is inverted: functional tests block merges, security tests
-              do not.
+              Of 64 CI jobs, <strong>22</strong> are required status checks. Until 2026-08-15
+              <strong>not one of them was a security gate</strong> — including
+              <code>smoke-captest</code>, the capability conformance suite that is the named
+              witness for eight of the security properties on this page. It is required now, so
+              a change that breaks the capability refusals can no longer merge green. That is
+              exactly how the 2026-07 critical finding survived every automated gate.
             </p>
             <p>
-              It is also widening rather than closing. Every gate added since the ruleset was
-              written lands in the advisory set by default, so the ratio has fallen from 21 of
-              about 30 jobs when this was first recorded to 21 of 64 now. Two further checks were
-              deliberately downgraded for nondeterminism — <code>smoke-fs-wal</code> and
-              <code>smoke-session-smp-soak</code> — each for a defensible reason, but the
-              aggregate is a merge gate drifting away from the properties it is supposed to
-              protect.
+              The rest of the suite is still advisory: kernel W^X, measured boot, boot-module
+              tamper rejection, SMEP/SMAP presence, flush-on-switch and stack-guard reseed can
+              all fail while a pull request merges. And promoting one job does not fix the
+              mechanism that produced the omission — the required list is maintained by hand in
+              a branch ruleset that no commit touches, so every job added to the workflow lands
+              in the advisory set by default and nothing asks whether it should have. When this
+              was first recorded there were about 30 jobs and 21 required; there are now 64 and
+              22. Generating the required list from the workflow file is what would close it.
             </p>
           </li>
           <li>

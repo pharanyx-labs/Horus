@@ -683,8 +683,20 @@ Ordered as in the audit's §7.5.
   are uncovered).
   *If a second reviewer is genuinely unavailable, say so in `SECURITY.md` and scope the
   assurance claim accordingly — that is already done, and it is a mitigation, not a fix.*
-- **4.2 ⬜ Gate the security tests — [C-6].** Promote every `smoke-*` security self-test and
-  CodeQL to required status checks; set `strict_required_status_checks_policy: true`.
+- **4.2 🚧 Gate the security tests — [C-6].** `strict_required_status_checks_policy` is now
+  **true**, and `smoke-captest` — the witness for eight of `SECURITY.md`'s S-numbered
+  properties, and the single most consequential omission — became a required check on
+  2026-08-15. The required set is 22 of 64 jobs. Still to promote: `smoke-wx` / `-wx-smp`,
+  `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`, `smoke-stackguard`,
+  `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`,
+  `smoke-newlib-tamper`, CodeQL.
+  *Promoting jobs one at a time is not the fix.* The required list lives in the ruleset, which
+  no commit touches, so every job added to `ci.yml` lands in the advisory set by default and
+  nothing asks whether it should have — which is why the ratio drifted from 21-of-30 to
+  21-of-64 without a decision ever being taken. Generate the required list from `ci.yml` and
+  fail CI when a job appears in neither it nor an explicit, reasoned advisory list. Two jobs
+  belong on that advisory list today with their reasons already written down:
+  `smoke-fs-wal` (**[I-11]**) and `smoke-session-smp-soak` (**[G-8]**), both nondeterministic.
 - **4.3 ⬜ Hard-fail `gitleaks` and `cargo-audit`** (keep Semgrep/Trivy advisory until their
   false-positive rate on a freestanding kernel is characterised).
 

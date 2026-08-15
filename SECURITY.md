@@ -208,9 +208,10 @@ The engineering environment is part of the trusted base. Current state:
 
 **In place:** signed commits enforced by ruleset; protected `main` with no bypass actors;
 linear history required; force-push and deletion blocked; all third-party GitHub Actions
-pinned to full commit SHAs; least-privilege `GITHUB_TOKEN` scopes per workflow; 21 required
-status checks with `strict_required_status_checks_policy: true`, so a stale-base merge is no
-longer permitted; reproducible-build verification; CodeQL, Semgrep, Trivy, gitleaks,
+pinned to full commit SHAs; least-privilege `GITHUB_TOKEN` scopes per workflow; 22 required
+status checks — including, since 2026-08-15, the capability conformance suite that witnesses
+most of the table above — with `strict_required_status_checks_policy: true`, so a stale-base
+merge is no longer permitted; reproducible-build verification; CodeQL, Semgrep, Trivy, gitleaks,
 cargo-audit; CycloneDX SBOM per run; Dependabot on Actions and Cargo; secret scanning with
 push protection; cargo-fuzz on the FFI boundary; Kani proofs on capability revocation.
 
@@ -221,14 +222,15 @@ push protection; cargo-fuzz on the FFI boundary; Kani proofs on capability revoc
   structural limitation, and it is stated here rather than glossed over: **the assurance
   Horus can currently claim is "thoroughly automatically verified", not "independently
   reviewed".** Finding **[C-5]**.
-- Security-specific CI jobs (capability conformance, kernel W^X, measured boot, module
-  tamper rejection, SMEP/SMAP) are **not** merge-gating. Finding **[C-6]**. `ci.yml` defines
-  **64** jobs and the ruleset requires **21** of them; `smoke-captest` — the named witness for
-  nine of the properties in the table above — is not among the 21, so a change that breaks the
-  capability refusal suite merges green. The only security-specific context in the required
-  set is `security` (scanner presence + SBOM), and its *findings* remain advisory. The gap is
-  widening rather than closing: every gate added since the ruleset was written lands in the
-  advisory set by default.
+- Most security-specific CI jobs (kernel W^X, measured boot, module tamper rejection,
+  SMEP/SMAP, flush-on-switch, stack-guard reseed, CodeQL) are **not** merge-gating. Finding
+  **[C-6]**. `ci.yml` defines **64** jobs and the ruleset requires **22** of them. The one that
+  most needed promoting has been: `smoke-captest`, the named witness for S1, S5, S6, S7, S13,
+  S13a, S13b and S18, became a required check on 2026-08-15 — until then a change that broke
+  the capability refusal suite merged green. The rest are still advisory, and the mechanism
+  that produced the omission is untouched: the required list is maintained by hand in the
+  ruleset, which no commit touches, so it falls behind `ci.yml` on every addition. Read the
+  count from `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
 - No build provenance attestation or signed release artifacts. Finding **[I-9]**.
 
 If you are evaluating Horus, weigh those gaps against the claims in the table above.

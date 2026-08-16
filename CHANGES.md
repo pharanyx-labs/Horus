@@ -8,6 +8,45 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — revoking a large subtree no longer destroys a peer's capability (**[I-3]**, roadmap 1.6)
+
+`revoke_subtree` accumulated the revoked-serial closure in a fixed 256-entry array. A subtree
+larger than that set `overflow`, and the null pass then also nulled **every capability sharing
+the root `object`**. That was safe in the direction that matters — mint, transfer and grant all
+preserve `object`, so the object set is a superset of the descendant set and no descendant
+could survive — but it was reachable from ring 3. An unprivileged task could derive more than
+256 capabilities, revoke the root, and make the kernel destroy an *unrelated* task's
+independent capability naming the same object: a denial of service against a peer, and an
+over-broad revocation the capability graph does not describe.
+
+The closure now marks in place and iterates to a fixpoint, so it is **exact at any subtree
+size**. The mark lives in the capability's own `typ` field in two states — `CAP_MARK_NEW` (in
+the subtree, children not yet expanded) and `CAP_MARK_DONE` (expanded) — while `serial` and
+`badge` are left intact so the derivation tree stays readable mid-sweep. No side array and no
+allocation, which is the point: the old bound existed precisely because a `no_std` kernel has
+nowhere to grow one. Each capability is marked at most once and promoted at most once, so the
+loop terminates without a depth bound or a cycle check, at a cost proportional to the subtree
+the revoker actually derived rather than to the whole system.
+
+Revoke-*by-object* (`root_serial == 0`) still sweeps by object. That is not a fallback: with no
+lineage seed it is the only complete answer, and it is exact for a shared-object lineage.
+
+Two regression tests witness it — one for breadth (a subtree past the old bound, three levels
+deep), one for depth (a 300-link chain across two cspaces) — and both assert that an
+independent peer sharing the same object *survives*. Both are falsified by
+`--features=revoke_legacy_bounded`, which compiles the old bounded closure back in:
+
+```
+test test_revoke_large_subtree_is_exact_and_spares_independent_peers ... FAILED
+  assertion `left == right` failed: an independent same-object cap must survive
+test test_revoke_deep_chain_is_fully_closed ... FAILED
+  assertion `left == right` failed: the unrelated chain's root must survive
+```
+
+The `rust` CI job runs that control arm and fails if the tests pass against it, so the
+falsification is executed on every push rather than trusted from this entry. `smoke-captest`
+still reports 100 checks.
+
 ### Changed — which CI jobs gate a merge is now a checked-in decision (**[C-6]**, roadmap 4.2)
 
 The required-status-check list lived only in branch ruleset `19007209`, which no commit

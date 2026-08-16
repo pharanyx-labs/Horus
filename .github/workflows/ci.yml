@@ -50,6 +50,35 @@ jobs:
         run: cargo test --manifest-path rust/Cargo.toml --release
       - name: Clippy — all targets, deny every warning
         run: cargo clippy --manifest-path rust/Cargo.toml --release --all-targets -- -D warnings
+      # [I-3] falsification, run rather than trusted from a commit message. The
+      # control arm restores the bounded revocation closure and its object-wide
+      # overflow fallback, so the two subtree-exactness tests MUST fail. Inverted
+      # with `!`: this step succeeds only when they do. A green run here would
+      # mean the regression tests no longer detect the defect they exist for.
+      - name: Falsify the [I-3] closure against the legacy bounded control arm
+        run: |
+          # Redirect rather than pipe. `if cargo test ... | tee log; then` tests the
+          # PIPELINE's status, which is tee's and therefore always 0, so the
+          # "control arm unexpectedly passed" branch fired on every run -- an
+          # unchecked exit status inside the step that exists to check one. Actions
+          # runs `bash -e` without pipefail, so the pipe silently swallowed it.
+          status=0
+          cargo test --manifest-path rust/Cargo.toml --release \
+            --features=revoke_legacy_bounded > /tmp/legacy.log 2>&1 || status=$?
+          cat /tmp/legacy.log
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the [I-3] regression tests PASSED against the defective closure -- they no longer witness the finding"
+            exit 1
+          fi
+          grep -q 'test_revoke_large_subtree_is_exact_and_spares_independent_peers \.\.\. FAILED' /tmp/legacy.log
+          grep -q 'test_revoke_deep_chain_is_fully_closed \.\.\. FAILED' /tmp/legacy.log
+          echo "control arm reproduces [I-3]: both exactness tests fail, as required"
+      # The control arm must also stay clippy-clean, or it rots into something
+      # nobody can build and the falsification quietly stops being runnable.
+      - name: Clippy the control arm
+        run: |
+          cargo clippy --manifest-path rust/Cargo.toml --release --all-targets \
+            --features=revoke_legacy_bounded -- -D warnings
 
   kernel:
     name: Build kernel.elf + bootable ISO (x86_64)

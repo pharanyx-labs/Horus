@@ -48,8 +48,12 @@ Tick what you actually ran, and paste the relevant output if a test is central t
 - [ ] Subsystem self-tests, list which: <!-- smoke-wx / smoke-smp / smoke-fs / smoke-cow / smoke-tpm / ... -->
 - [ ] New or updated tests added for the logic this PR changes
 
-> **Note.** The security-specific `smoke-*` jobs are **not** merge-gating in CI (finding
-> **[C-6]**, roadmap 4.2). Run them locally — CI will not stop you.
+> **Note.** `smoke-captest` is merge-gating as of 2026-08-15 and *will* stop you. Every other
+> security-specific `smoke-*` job is still advisory — `smoke-wx`, `smoke-cpu`,
+> `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`, `smoke-stackguard`, `smoke-heap64`,
+> `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`, `smoke-newlib-tamper` and CodeQL
+> can all fail while this PR merges green (finding **[C-6]**, roadmap 4.2). Run those locally;
+> CI will not stop you.
 
 ---
 

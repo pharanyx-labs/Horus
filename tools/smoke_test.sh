@@ -35,14 +35,16 @@
 #                        build has no trace backend — never silently skipped.)
 #        SMOKE_TRACE_FILE   (optional: where to write the trace; default a temp
 #                        file discarded on exit)
-#        WAIT_FOR_EXIT  (optional: if "1", success requires QEMU to EXIT of its
-#                        own accord after REQUIRE_MARKER appears, rather than
-#                        being killed the instant the marker is seen. Finding
-#                        [I-11]: killing QEMU on a serial string races the
-#                        guest's own shutdown, so a genuine regression and a
-#                        harness race produced identical output. A guest that
-#                        exits via isa-debug-exit also lets QEMU flush its
-#                        backing file, which a SIGKILL does not.)
+#        WAIT_FOR_EXIT  (optional: if "1", the run ends by asking QEMU to quit
+#                        over QMP once REQUIRE_MARKER appears, then WAITING for
+#                        the process to exit — instead of shooting it the instant
+#                        the marker is seen. Finding [I-11]: a signal on a string
+#                        match makes "the guest finished" indistinguishable from
+#                        "the harness was too quick", so a real regression and a
+#                        race produced identical output. A QMP quit shuts the
+#                        block backends down cleanly and exits 0, and a guest
+#                        that then fails to leave becomes a timeout rather than a
+#                        pass. Requires python3; fails closed without it.)
 #
 set -u
 
@@ -70,6 +72,7 @@ fi
 LOG="$(mktemp)"
 QEMU_PID=""
 TRACE_FILE=""   # declared before the EXIT trap so cleanup() is safe under set -u
+QMP_SOCK=""
 cleanup() {
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
     [ -n "$QEMU_PID" ] && wait "$QEMU_PID" 2>/dev/null
@@ -77,6 +80,7 @@ cleanup() {
     # Only remove a trace file we created ourselves; when the caller named one
     # via SMOKE_TRACE_FILE it belongs to them and is usually the whole point.
     [ -n "$TRACE_FILE" ] && [ -z "${SMOKE_TRACE_FILE:-}" ] && rm -f "$TRACE_FILE"
+    [ -n "$QMP_SOCK" ] && rm -f "$QMP_SOCK"
     return 0
 }
 trap cleanup EXIT
@@ -145,6 +149,23 @@ if [ -n "${SMOKE_TRACE:-}" ]; then
     TRACE_ARG="$TRACE_ARG -trace file=$TRACE_FILE"
 fi
 
+# WAIT_FOR_EXIT needs a monitor to ask QEMU to leave through. Fail closed if the
+# interpreter is missing: a run that silently fell back to signalling would be
+# the [I-11] defect again, wearing the fix's name.
+QMP_ARG=""
+if [ "$WAIT_FOR_EXIT" = "1" ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "SMOKE FAIL: WAIT_FOR_EXIT=1 needs python3 for the QMP quit" >&2
+        exit 1
+    fi
+    if [ ! -x tools/qmp_quit.py ]; then
+        echo "SMOKE FAIL: WAIT_FOR_EXIT=1 needs tools/qmp_quit.py to be executable" >&2
+        exit 1
+    fi
+    QMP_SOCK="$(mktemp -u)"
+    QMP_ARG="-qmp unix:${QMP_SOCK},server=on,wait=off"
+fi
+
 # SMP_CPUS=<n> boots the guest with n logical CPUs (for the SMP self-test).
 # QEMU_SMP=<spec> overrides the whole -smp argument (e.g. a topology like
 # "4,cores=2,threads=2" for the SMT sibling-parking test).
@@ -160,7 +181,7 @@ qemu-system-x86_64 \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -net none \
-    $DRIVE_ARG $SMP_ARG $TRACE_ARG \
+    $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 
@@ -185,6 +206,7 @@ qemu_alive() {
 }
 
 status="timeout"
+quit_sent=0
 deadline=$(( SECONDS + TIMEOUT ))
 while [ "$SECONDS" -lt "$deadline" ]; do
     if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then status="fault"; break; fi
@@ -192,13 +214,26 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     # MARKER_ONLY: the required marker alone is success (no shell banner).
     if [ "$MARKER_ONLY" = "1" ] && [ -n "$REQUIRE_MARKER" ]; then
         if grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then
-            # WAIT_FOR_EXIT ([I-11]): the marker means the guest reached the
-            # point of interest, NOT that it has finished writing. Killing QEMU
-            # here races the guest's own shutdown and, on a writeback-cached
-            # image, discards whatever QEMU had not yet flushed. Keep waiting
-            # for the process to exit on its own (isa-debug-exit), so a hang
-            # after the marker is reported as a timeout instead of passing.
+            # WAIT_FOR_EXIT ([I-11]). The marker says the guest reached the
+            # point of interest; it does not say the run is over. Ask QEMU to
+            # quit over QMP — once — and then WAIT for the process to go away,
+            # so the end of the run is a process exit rather than a signal we
+            # chose to send at a moment of our own picking. A guest that then
+            # fails to leave is reported as a timeout instead of passing.
+            #
+            # Sending quit on the marker is safe by construction, not by luck:
+            # the [I-10] barriers mean the journal write this test cares about
+            # is on stable media BEFORE the marker is printed, and a QMP quit
+            # closes QEMU's block backends cleanly rather than being shot while
+            # holding them.
             if [ "$WAIT_FOR_EXIT" = "1" ]; then
+                if [ "$quit_sent" != "1" ]; then
+                    if tools/qmp_quit.py "$QMP_SOCK" 10; then
+                        quit_sent=1
+                    else
+                        status="qmp_failed"; break
+                    fi
+                fi
                 if ! qemu_alive; then status="ok"; break; fi
             else
                 status="ok"; break
@@ -211,7 +246,16 @@ while [ "$SECONDS" -lt "$deadline" ]; do
             status="ok"; break
         fi
     fi
-    if ! qemu_alive; then status="exited"; break; fi
+    if ! qemu_alive; then
+        # An exit we ASKED for is the successful end of a WAIT_FOR_EXIT run, not
+        # a triple fault. quit_sent is only ever set after the required marker
+        # appeared, so reaching here with it set means the guest got where it was
+        # going and then left when told to. Without this distinction QEMU dying
+        # between the inner and outer liveness checks — a window of microseconds,
+        # hit reliably in practice — reported a clean shutdown as a crash.
+        if [ "$quit_sent" = "1" ]; then status="ok"; else status="exited"; fi
+        break
+    fi
     sleep 0.5
 done
 
@@ -251,6 +295,10 @@ case "$status" in
         exit 0
         ;;
     marker_fail) echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER' on serial"; exit 1 ;;
+    qmp_failed)
+        echo "SMOKE FAIL: could not ask QEMU to quit over QMP after the marker"
+        echo "  (WAIT_FOR_EXIT=1; the run cannot be ended deterministically -- see [I-11])"
+        exit 1 ;;
     fault)   echo "SMOKE FAIL: kernel fault/panic on serial"; exit 1 ;;
     exited)  echo "SMOKE FAIL: QEMU exited before the banner (triple fault?)"; exit 1 ;;
     timeout)

@@ -39,8 +39,8 @@ change has ever been reviewed by a second person (**[C-5]**). Every security-spe
 is classified as merge-gating as of 2026-08-16, taking the ruleset from 22 required contexts
 toward 67. But CI cannot verify that the ruleset matches the checked-in classification, and the
 reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. Open
-findings — an SMP fault whose origin is not yet known (**[G-8]**), the remaining `tasks[]` table
-(**[I-7]**), and a nondeterministic WAL harness (**[I-11]**) — are in
+findings — an SMP fault whose origin is not yet known (**[G-8]**) and the remaining `tasks[]`
+table (**[I-7]**) — are in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
 Two closed on 2026-08-16. The write-ahead journal's missing `FLUSH CACHE` (**[I-10]**) — so

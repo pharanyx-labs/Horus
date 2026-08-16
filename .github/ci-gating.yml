@@ -68,6 +68,7 @@ required:
   - smoke-fs-large
   - smoke-fs-perms
   - smoke-fs-persist
+  - smoke-fs-wal
   - smoke-fs-wal-flush
   - smoke-fs-wal-order
   - smoke-heap64
@@ -109,18 +110,6 @@ required:
 
 # Exempt, each with the reason it cannot or should not gate a merge.
 advisory:
-  smoke-fs-wal: >-
-    [I-11] Nondeterministic by construction. The harness kills QEMU the instant
-    a marker appears on serial, then reboots on the same image; the marker
-    proves the guest reached that point, not that its journal writes completed,
-    so on a loaded runner boot 2 can fail against an unmodified kernel. It was a
-    required check until 2026-08-16 and is DEMOTED here deliberately: a flaky
-    gate that blocks merges spuriously teaches the maintainer to re-run red
-    checks, which costs more than the coverage it buys. The durability property
-    it used to be credited with is now witnessed by smoke-fs-wal-flush and
-    smoke-fs-wal-order, both deterministic and both required. Promote it back
-    when [I-11] is fixed.
-
   smoke-session-smp-soak: >-
     [G-8] Fails at roughly 2-3% per boot on current main, and measurably so: 1
     run in 18 sampled on 2026-08-16. The proximate mechanism is established (the

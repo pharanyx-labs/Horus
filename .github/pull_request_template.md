@@ -54,8 +54,8 @@ Tick what you actually ran, and paste the relevant output if a test is central t
 > `gh api repos/pharanyx-labs/Horus/rulesets/19007209` — the ruleset is reconciled by hand and
 > lags by one merge whenever a gate is added.
 >
-> Exactly four jobs are exempt, each with its reason in `.github/ci-gating.yml`: `smoke-fs-wal`
-> (**[I-11]**), `smoke-session-smp-soak` (**[G-8]**), `fuzz` and `kani`. If you add a CI job,
+> Exactly three jobs are exempt, each with its reason in `.github/ci-gating.yml`:
+> `smoke-session-smp-soak` (**[G-8]**), `fuzz` and `kani`. If you add a CI job,
 > the `ci-gating` check fails until you classify it there — that is deliberate.
 
 ---

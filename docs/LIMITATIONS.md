@@ -587,9 +587,10 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **67 required contexts and 4 reasoned exemptions** — `smoke-fs-wal`
-([I-11]), `smoke-session-smp-soak` ([G-8]), `fuzz` (a 30-second time-boxed search is evidence
-of effort, not absence) and `kani` (manual-only, so it has no conclusion to gate on). The
+That intended set is **68 required contexts and 3 reasoned exemptions** —
+`smoke-session-smp-soak` ([G-8]), `fuzz` (a 30-second time-boxed search is evidence of effort,
+not absence) and `kani` (manual-only, so it has no conclusion to gate on). `smoke-fs-wal` was a
+fourth until [I-11] was fixed on 2026-08-16 and it was promoted back. The
 promotion list is justified by measurement rather than optimism: across 18 CI runs sampled on
 2026-08-16, 64 of 66 jobs had **zero** failures over 1152 job-executions, and the only two that
 failed are both on the exemption list or were deliberate.
@@ -622,37 +623,50 @@ red if the scanners are absent — a job that structurally could not fail now ca
 `make security`, and the sixth (`semgrep --config=auto`) fetches rules from a registry that
 changes with no commit here. Gating on content is what pinning those rulesets would unlock.
 
-### 5.2b One required check is nondeterministic by construction — **[I-11]**
+### 5.2b ~~One required check is nondeterministic by construction~~ — **FIXED 2026-08-16** — **[I-11]**
 
-`smoke-fs-wal` (a *gating* context) kills QEMU the instant a marker appears on the serial
-console, then reboots on the same disk image. The marker proves the guest reached that point,
-not that its journal writes completed — the serial and IDE paths are independent, and
-`cache=writethrough` only makes *completed* writes durable. On a loaded runner the
-interleaving shifts and boot 2 fails with `WAL_CRASHTEST: FAIL read` against an unmodified
-kernel.
+**Was:** `smoke-fs-wal` killed QEMU the instant a marker appeared on the serial console, then
+rebooted on the same disk image. The marker proved the guest *reached* that point, not that
+its journal writes had completed, so on a loaded runner boot 2 failed with
+`WAL_CRASHTEST: FAIL read` against an unmodified kernel. The worse consequence was not the
+spurious failure but that **a real WAL regression was indistinguishable from the race** — both
+produced the same output.
 
-The worse consequence is not the spurious failure but that **a real WAL regression is
-indistinguishable from the race** — both produce the same output. A test that cannot tell
-"the code is broken" from "the harness was too quick" is not evidence for the property it
-claims to establish.
+**The finding had two halves, and the [I-10] work closed one of them without saying so.** The
+physical race is gone: barrier B is a real `FLUSH CACHE` and it runs *before*
+`WAL_CRASHTEST: crashed-after-commit` is printed (`src/kernel/storage.c`), so by the time the
+marker reaches the console the journal write the test cares about is already on stable media.
+That could not have been said when this was filed, because the barrier did not exist.
 
-**Still open after the 2026-08-16 [I-10] work, and the prescribed fix is now known not to
-work.** Roadmap 1.55 specified having boot 1 end itself via `isa-debug-exit` so the harness
-could wait on a process exit instead of a serial string. Measured against QEMU 10.0.11: a
-byte write to the debug-exit port at `0x604` does **not** terminate the process, with or
-without `-no-shutdown`; and the `lidt 0x0; int $0x0` triple-fault fallback that
-`src/kernel/kshell.c:99` pairs with it faults while *reading* the descriptor at address 0, so
-the kernel's own handler catches it and prints a `PAGE FAULT` that the harness correctly
-treats as a failure. Both were tried and reverted; the comment at the crash hook in
-`src/kernel/storage.c` records this so the next attempt does not repeat it. A mechanism that
-actually works — QMP `quit` over a monitor socket — is the obvious next candidate.
+**What remained was the diagnostic half**, and that is what the fix addresses. Boot 1 now ends
+by asking QEMU to leave over its QMP monitor (`tools/qmp_quit.py`) and *waiting for the process
+to exit*, rather than by signalling on a string match. The end of a run is a process exit; a
+guest that reaches the marker and then fails to leave is a timeout, not a pass.
 
-Two pieces of the fix did land. `tools/smoke_test.sh` gained a `WAIT_FOR_EXIT` mode, ready
-for a guest that can exit; and `qemu_alive()` replaced a bare `kill -0`, which could never
-observe an exit at all — QEMU is an unreaped background child, so between its exit and the
-harness's `wait` it is a **zombie whose PID still answers `kill -0`**. The `SMOKE FAIL: QEMU
-exited before the banner (triple fault?)` branch was therefore unreachable, and every such
-case was reported as a plain timeout instead.
+Roadmap 1.55 had prescribed `isa-debug-exit` for this. It does not work, and the measurements
+are kept so nobody repeats them: on QEMU 10.0.11 a byte write to port `0x604` does **not**
+terminate the process, with or without `-no-shutdown`, and the `lidt 0x0; int $0x0`
+triple-fault fallback that `src/kernel/kshell.c:99` pairs with it faults while *reading* the
+descriptor at address 0, so the kernel's own handler catches it and prints a `PAGE FAULT` the
+harness correctly fails on. QMP `quit` shuts the block backends down cleanly and exits 0.
+
+The harness fails **closed** rather than reverting to signalling: without `python3`, without an
+executable `tools/qmp_quit.py`, or when the quit cannot be delivered, the run fails. A silent
+fallback would be this finding again, wearing the fix's name.
+
+Also fixed here: an exit the harness *asked for* was being reported as
+`SMOKE FAIL: QEMU exited before the banner (triple fault?)`, because QEMU could die between the
+inner and outer liveness checks — a window of microseconds, hit reliably in practice.
+
+Witness: `make smoke-fs-wal`. **20/20 two-boot runs passed** on 2026-08-16 (`tools/`-driven
+soak, one fresh 32768-block image per run). Falsified four ways — see `TESTS.md`; the decisive
+one is that a serial log containing `WAL_CRASHTEST: crashed-after-commit` now **fails** when the
+quit cannot be delivered, where the old harness scored that identical log a pass.
+
+*Note on what the rate does and does not show.* 20/20 is the post-fix rate on this machine. The
+pre-fix flakiness was load-dependent and did not reproduce here, so this is not a before/after
+comparison — the substantive argument is structural (the marker alone can no longer pass, and
+barrier B orders the write before the marker), and the rate is corroboration, not proof.
 
 ### 5.2c The SMP session soak is not clean, and the cause is unknown — **[G-8]**
 

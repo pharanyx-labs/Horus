@@ -245,6 +245,18 @@ CFLAGS  += -DWAL_CRASHTEST
 ASFLAGS += -DWAL_CRASHTEST
 endif
 
+# WAL_NO_FLUSH=1 is the CONTROL ARM for [I-10]: it compiles every journal
+# durability barrier out, restoring the pre-2026-08-16 kernel in which the ATA
+# driver had no FLUSH CACHE opcode and the write-ahead log's ordering held only
+# because the emulator persisted every write on its own. The gates that witness
+# the fix (smoke-fs-wal-flush, smoke-fs-wal-order) must FAIL against this build;
+# see docs/BUILDING.md "Defect-reproducing builds". Never ship it.
+WAL_NO_FLUSH ?= 0
+ifeq ($(WAL_NO_FLUSH),1)
+CFLAGS  += -DWAL_NO_FLUSH
+ASFLAGS += -DWAL_NO_FLUSH
+endif
+
 # BIGFILE_SELFTEST=1 builds the in-kernel large-file / double-indirect test: it
 # writes blocks across the direct, single-indirect and double-indirect mapping
 # regions of one inode and reads them back. Pure kernel (no userspace bins);
@@ -1463,6 +1475,101 @@ smoke-fs-wal:
 		REQUIRE_MARKER='WAL_CRASHTEST: PASS' FAIL_MARKER='WAL_CRASHTEST: FAIL' \
 		tools/smoke_test.sh boot.iso
 	@echo "[wal] PASS — committed transaction replayed after a crash"
+
+# smoke-fs-wal-flush — the [I-10] durability gate.
+#
+# smoke-fs-wal above proves the REDO LOGIC is correct. It cannot say anything
+# about DURABILITY, because it runs under cache=writethrough where QEMU commits
+# every guest write to the host image on its own. Switching it to cache=writeback
+# would not help either: guest writes then land in the host PAGE CACHE, which
+# outlives the QEMU process, so killing QEMU still loses nothing and a kernel
+# with no FLUSH CACHE at all passes identically. There is no cache mode in which
+# "did the guest flush?" changes the outcome of a two-boot test.
+#
+# So invert the observation: make the flush FAIL and watch the kernel react.
+# blkdebug returns EIO for every flush_to_disk; a kernel with the barriers issues
+# the command, sees the error, and refuses the transaction out loud. The
+# WAL_NO_FLUSH=1 control arm issues no command, so no error is ever raised and
+# the message never appears — which is what makes this falsifiable rather than
+# decorative. Run `make smoke-fs-wal-flush-control` to see it fail on demand.
+.PHONY: smoke-fs-wal-flush
+smoke-fs-wal-flush:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@dd if=/dev/zero of=wal-flush.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@echo "[wal-flush] every FLUSH CACHE fails with EIO; the journal must refuse to commit"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush.img \
+		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf \
+		REQUIRE_MARKER='WAL: FLUSH FAILED before commit header' \
+		FAIL_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		tools/smoke_test.sh boot.iso
+	@echo "[wal-flush] PASS — the commit record is flushed, and the flush's result is checked"
+
+# The control arm for the gate above: the same run against a kernel built with
+# the barriers compiled out. The refusal marker MUST NOT appear. If this target
+# passes, smoke-fs-wal-flush is not testing what it claims to.
+.PHONY: smoke-fs-wal-flush-control
+smoke-fs-wal-flush-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1
+	@$(MAKE) --no-print-directory boot.iso
+	@dd if=/dev/zero of=wal-flush-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@echo "[wal-flush-control] barriers compiled out: the refusal must NOT appear"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush-control.img \
+		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		ABSENT_MARKER='WAL: FLUSH FAILED' \
+		tools/smoke_test.sh boot.iso
+	@echo "[wal-flush-control] PASS — the defect reproduces: no flush is issued, nothing objects"
+
+# smoke-fs-wal-order — the [I-10] ORDERING gate.
+#
+# smoke-fs-wal-flush proves a flush is issued and its result checked. It cannot
+# prove the flush is in the right place, and place is the whole property: a
+# barrier after the commit header instead of before it passes error injection
+# identically while losing the write-ahead rule outright. This traces the IDE
+# command register and asserts the commit sequence ends
+#   0x30 (data) -> 0xe7 (barrier A) -> 0x30 (header) -> 0xe7 (barrier B).
+# tools/smoke_test.sh fails closed if this QEMU has no trace backend, so the
+# assertion can never pass by observing nothing.
+.PHONY: smoke-fs-wal-order
+smoke-fs-wal-order:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
+	@$(MAKE) --no-print-directory boot.iso
+	@dd if=/dev/zero of=wal-order.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@rm -f wal-order.trace
+	@echo "[wal-order] tracing IDE commands through one journal commit"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-order.img \
+		SMOKE_TRACE=ide_ioport_write SMOKE_TRACE_FILE=wal-order.trace \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		FAIL_MARKER='WAL_CRASHTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@tools/check_wal_order.sh wal-order.trace
+	@echo "[wal-order] PASS — the barriers bracket the commit record in the right order"
+
+# Control arm for the ordering gate: barriers compiled out, so no 0xe7 is ever
+# issued and check_wal_order.sh must FAIL. Inverted with `!` so the target
+# succeeds only when the checker rejects the defective build.
+.PHONY: smoke-fs-wal-order-control
+smoke-fs-wal-order-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1
+	@$(MAKE) --no-print-directory boot.iso
+	@dd if=/dev/zero of=wal-order-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@rm -f wal-order-control.trace
+	@echo "[wal-order-control] barriers compiled out: the ordering check must REJECT this"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-order-control.img \
+		SMOKE_TRACE=ide_ioport_write SMOKE_TRACE_FILE=wal-order-control.trace \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		tools/smoke_test.sh boot.iso
+	@if tools/check_wal_order.sh wal-order-control.trace; then \
+		echo "[wal-order-control] FAIL — the checker accepted a kernel with no barriers"; \
+		exit 1; \
+	else \
+		echo "[wal-order-control] PASS — the defect reproduces and the checker rejects it"; \
+	fi
 
 # CONC_SELFTEST drives several concurrent clients through the fs_server and waits
 # for all of them, so it runs longer than the single-client smoke tests the 40s

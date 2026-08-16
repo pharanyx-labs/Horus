@@ -1074,6 +1074,54 @@ jobs:
       - name: Crash after commit on boot 1 and assert the write-ahead journal replays it on boot 2
         run: make smoke-fs-wal
 
+  smoke-fs-wal-flush:
+    name: QEMU journal durability gate (a failed FLUSH CACHE aborts the commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # blkdebug fails every flush_to_disk; a kernel with the [I-10] barriers must
+      # issue FLUSH CACHE, see the error and refuse to commit. Under any ordinary
+      # cache mode the emulator persists writes on its own, so this is the only
+      # configuration in which the command's presence is observable at all.
+      - name: Fail every FLUSH CACHE and assert the journal refuses to commit
+        run: make smoke-fs-wal-flush
+      # The falsification, run in CI rather than trusted from a commit message:
+      # with the barriers compiled out the refusal must NOT appear.
+      - name: Falsify it against WAL_NO_FLUSH=1
+        run: make smoke-fs-wal-flush-control
+
+  smoke-fs-wal-order:
+    name: QEMU journal write-ahead ordering (barriers bracket the commit record)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Presence is not enough: a barrier placed after the commit header would
+      # satisfy error injection identically while losing the write-ahead rule.
+      # smoke_test.sh fails closed if this QEMU has no trace backend, so the
+      # assertion cannot pass by observing nothing.
+      - name: Trace IDE commands and assert 0x30 -> 0xe7 -> 0x30 -> 0xe7
+        run: make smoke-fs-wal-order
+      - name: Falsify it against WAL_NO_FLUSH=1
+        run: make smoke-fs-wal-order-control
+
   smoke-fs-large:
     name: QEMU large-file (double-indirect) self-test (headless)
     runs-on: ubuntu-latest

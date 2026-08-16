@@ -366,22 +366,39 @@ staged design means the next primitive added here has to reason about the same t
 proper reply capability consumed on reply (roadmap 1.3) would retire the class rather than
 patch instances of it.
 
-### 2.25 The write-ahead journal is not durable on real hardware — **[I-10]**
+### 2.25 ~~The write-ahead journal is not durable on real hardware~~ — **FIXED 2026-08-16** — **[I-10]**
 
-`src/kernel/ata.c` issues exactly three ATA commands: `READ SECTORS` (0x20), `WRITE SECTORS`
-(0x30), and `IDENTIFY` (0xEC). There is **no `FLUSH CACHE` (0xE7)** anywhere in the kernel.
+**Was:** `src/kernel/ata.c` issued exactly three ATA commands — `READ SECTORS` (0x20),
+`WRITE SECTORS` (0x30), `IDENTIFY` (0xEC) — with **no `FLUSH CACHE` (0xE7)** anywhere in the
+kernel. `WRITE SECTORS` completes once the data reaches the drive's volatile write cache,
+which is enabled by default on essentially every ATA/SATA device, so a power failure between
+the journal's commit record and the platter lost the record and left recovery in the state
+the WAL exists to prevent.
 
-`WRITE SECTORS` completes once the data reaches the drive's volatile write cache, which is
-enabled by default on essentially every ATA/SATA device. Without a flush after the journal's
-commit record, a power failure between commit and platter-write loses the record, and
-recovery lands in the state the WAL exists to prevent — the transaction neither applied nor
-journalled.
+**Now:** the driver implements `FLUSH CACHE`, and `journal_commit()` places three barriers,
+not the two the roadmap originally specified:
 
-**This is invisible to the test suite.** `smoke-fs-wal` runs QEMU with `cache=writethrough`,
-so the emulator supplies the durability the kernel omits. The "crash-atomic" claim is
-verified only in the configuration where it is guaranteed by something other than the code
-under test. Treat filesystem crash-atomicity as **demonstrated under emulation, unproven on
-hardware**.
+| Barrier | Position | What it prevents |
+|---|---|---|
+| **A** | after the journal data, **before** the commit header | The write-ahead rule itself. Without it the header can land first and recovery redoes a valid, correctly-HMAC'd transaction from data sectors that never reached the medium. |
+| **B** | after the commit header, before applying home | A crash mid-apply with no durable record to replay. |
+| **C** | after applying home, before clearing the header | Retiring the only copy that could replay the update. |
+
+`journal_recover()` carries the same barrier before it clears a replayed header. A failed
+barrier is not advisory: A and B abort the transaction with home untouched; C deliberately
+leaves the header in place so the next mount replays it, and returns success because the
+transaction genuinely is committed.
+
+**Why the obvious test would not have worked.** Switching `smoke-fs-wal` to `cache=writeback`
+— the original plan — does **not** distinguish a flushing kernel from a non-flushing one:
+guest writes land in the host *page cache*, which outlives the QEMU process, so killing QEMU
+loses nothing either way. There is no QEMU cache mode in which a two-boot test's outcome
+depends on whether the guest flushed. The gates instead make the flush **fail**
+(`blkdebug`, `inject-error` on `flush_to_disk`) and assert the kernel's reaction, and trace
+the IDE command register to assert the barriers sit in the right *place*. See `TESTS.md`.
+
+Witnesses: `make smoke-fs-wal-flush` (issued and checked) and `make smoke-fs-wal-order`
+(ordering). Both falsified against `WAL_NO_FLUSH=1`.
 
 ### 2.3 Kernel object lifecycle covers retyped objects only
 
@@ -522,7 +539,7 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 All but one of the security tests are not merge-gating — **[C-6]**
 
-`.github/workflows/ci.yml` defines **64** jobs. Ruleset `19007209` requires **22** of them, and
+`.github/workflows/ci.yml` defines **66** jobs. Ruleset `19007209` requires **22** of them, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
 stack-guard reseed could all fail while a PR merged green. The required set was inverted —
@@ -539,7 +556,7 @@ off the witness column: eight. Recorded because "re-derive every number you cite
 document is subject to, not merely one it states.)
 
 **The rest of the gap is still open, and still widening.** When this finding was filed there
-were roughly 30 jobs and 21 required. There are now 64 and 22, because every gate added after
+were roughly 30 jobs and 21 required. There are now 66 and 22, because every gate added after
 the ruleset was written lands in the advisory set by default and nothing forces the question.
 `smoke-wx`, `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`,
 `smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`,
@@ -570,6 +587,24 @@ The worse consequence is not the spurious failure but that **a real WAL regressi
 indistinguishable from the race** — both produce the same output. A test that cannot tell
 "the code is broken" from "the harness was too quick" is not evidence for the property it
 claims to establish.
+
+**Still open after the 2026-08-16 [I-10] work, and the prescribed fix is now known not to
+work.** Roadmap 1.55 specified having boot 1 end itself via `isa-debug-exit` so the harness
+could wait on a process exit instead of a serial string. Measured against QEMU 10.0.11: a
+byte write to the debug-exit port at `0x604` does **not** terminate the process, with or
+without `-no-shutdown`; and the `lidt 0x0; int $0x0` triple-fault fallback that
+`src/kernel/kshell.c:99` pairs with it faults while *reading* the descriptor at address 0, so
+the kernel's own handler catches it and prints a `PAGE FAULT` that the harness correctly
+treats as a failure. Both were tried and reverted; the comment at the crash hook in
+`src/kernel/storage.c` records this so the next attempt does not repeat it. A mechanism that
+actually works — QMP `quit` over a monitor socket — is the obvious next candidate.
+
+Two pieces of the fix did land. `tools/smoke_test.sh` gained a `WAIT_FOR_EXIT` mode, ready
+for a guest that can exit; and `qemu_alive()` replaced a bare `kill -0`, which could never
+observe an exit at all — QEMU is an unreaped background child, so between its exit and the
+harness's `wait` it is a **zombie whose PID still answers `kill -0`**. The `SMOKE FAIL: QEMU
+exited before the banner (triple fault?)` branch was therefore unreachable, and every such
+case was reported as a plain timeout instead.
 
 ### 5.2c The SMP session soak is not clean, and the cause is unknown — **[G-8]**
 

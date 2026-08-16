@@ -8,6 +8,28 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — four documents still said no security test gates a merge (**[C-6]**)
+
+The commit that promoted `smoke-captest` updated six files and missed four more, so the tree
+spent a day asserting both halves of a contradiction. `README.md` still gave the ratio as
+**21** of 64 — a number that was simply wrong, not merely stale — and its assurance banner,
+`SECURITY.md`'s research-grade banner, and `docs/LIMITATIONS.md` §5.2's heading all still said
+the security tests do not gate merges, without qualification.
+
+The one that could have caused harm is `.github/pull_request_template.md`. It told the author
+of every pull request that the security `smoke-*` jobs are **not** merge-gating and that CI
+will not stop them — advice that is now false for `smoke-captest` and, read as reassurance,
+invites treating a red capability-conformance run as noise. It now names `smoke-captest` as
+gating and lists the eleven jobs plus CodeQL that genuinely are still advisory, so the note
+says which is which instead of asserting one blanket answer.
+
+This is **[C-6]**'s own mechanism turned on the documentation: a fact maintained by hand in
+nine places drifts in whichever ones a commit forgets to open. The count in `README.md` now
+carries the same "read it from `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from
+this sentence" pointer the other documents were given. No status marker changed and **[C-6]**
+stays open — the required set is still 22 of 64, verified live, with `smoke-captest` the only
+security gate among them.
+
 ### Changed — the capability conformance suite can now block a merge (**[C-6]**, partial)
 
 `smoke-captest` is a required status check as of 2026-08-15. Ruleset `19007209` now requires

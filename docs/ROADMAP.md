@@ -580,11 +580,28 @@ candidate is QMP `quit` over a monitor socket. What did land: a `WAIT_FOR_EXIT` 
 `kill -0` that could never observe an exit — an unreaped QEMU is a zombie whose PID still
 answers `kill -0`, so the harness's "QEMU exited" branch was unreachable.
 
-### 1.6 ⬜ Unbounded revocation closure — **[I-3]**
+### 1.6 ✅ Unbounded revocation closure — **[I-3]** — *landed 2026-08-16*
 
 Replace the fixed 256-entry worklist with an iterate-to-fixpoint or mark-and-sweep closure,
 removing the object-wide overflow fallback and with it the denial-of-service on a peer's
 independent capability.
+
+**Delivered** as mark-and-sweep in place. The mark lives in the capability's own `typ` field in
+two states — `CAP_MARK_NEW` (in the subtree, children not yet expanded) and `CAP_MARK_DONE`
+(expanded) — with `serial` and `badge` left intact so the derivation tree stays readable
+mid-sweep. That needs no side array and no allocation, which is the point: the old 256 bound
+existed precisely because a `no_std` kernel has nowhere to grow one.
+
+Each capability is marked at most once and promoted `NEW -> DONE` at most once, so the fixpoint
+loop terminates without a depth bound or a cycle check, and costs O(subtree x slots) —
+proportional to what the revoker actually derived, not to the whole system.
+
+The object sweep survives only on the revoke-by-object path (`root_serial == 0`), where there
+is no lineage seed and it is the exact answer rather than a fallback.
+
+Two regression tests witness it and both are falsified by `--features=revoke_legacy_bounded`,
+which compiles the old bounded closure back in. The `rust` CI job runs that control arm and
+fails if the tests pass against it — a falsification that is executed, not asserted.
 
 ---
 

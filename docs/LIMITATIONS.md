@@ -154,14 +154,31 @@ helpers, the refusal itself is **not reachable from ring 3** — there is no use
 can trigger it, and this section should not imply otherwise. The reachable behaviour, and the
 one worth a falsification test, is the boot-module short read.
 
-### 1.5 Broad revocation can be forced by an unprivileged task — **[I-3]**
+### 1.5 ~~Broad revocation can be forced by an unprivileged task~~ — **FIXED 2026-08-16** — **[I-3]**
 
-The descendant-closure worklist in `revoke_subtree` is bounded at 256 entries. On overflow
-the sweep safely over-approximates by nulling every capability sharing the root `object` —
-which means a task that deliberately constructs a derivation subtree larger than 256 members
-can force the fallback and destroy an unrelated task's independent capability to the same
-object. Fails safe (no descendant survives) but is a denial-of-service on another task's
-authority.
+**Was:** the descendant-closure worklist in `revoke_subtree` was bounded at 256 entries, and on
+overflow the sweep over-approximated by nulling every capability sharing the root `object`. It
+failed safe in the direction that matters — no descendant ever survived — but a task could
+deliberately build a derivation subtree larger than 256 members, force the fallback, and
+destroy an *unrelated* task's independent capability to the same object. A denial of service
+against a peer, and an over-broad revocation the capability graph does not describe.
+
+**Now:** the closure marks in place and iterates to a fixpoint, so it is exact at any subtree
+size and the object-wide fallback is gone from the seeded path. The mark lives in the
+capability's own `typ` field in two states (`CAP_MARK_NEW`, children not yet expanded;
+`CAP_MARK_DONE`, expanded) while `serial` and `badge` stay readable, so no side array and no
+allocation are needed — which is what forced the old bound in a `no_std` kernel with nowhere to
+grow one. Each capability is marked at most once and promoted at most once, so the loop
+terminates without a depth bound or a cycle check, at a cost proportional to the subtree the
+revoker actually derived rather than to the whole system.
+
+Revoke-*by-object* (`root_serial == 0`) still sweeps by object. That is not a fallback: with no
+lineage seed it is the only complete answer, and it is exact for a shared-object lineage.
+
+Witnesses: `test_revoke_large_subtree_is_exact_and_spares_independent_peers` (breadth, 3 levels
+deep, past the old bound) and `test_revoke_deep_chain_is_fully_closed` (a 300-link chain). Both
+falsified against `--features=revoke_legacy_bounded`, which restores the bounded closure; CI
+runs that control arm and fails if the tests pass against it.
 
 ### 1.6 Three syscalls are still ungated by any capability — **[H-2]**
 

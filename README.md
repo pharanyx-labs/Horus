@@ -39,8 +39,10 @@ measurements.
 > caller's own `RFLAGS.IF`, with `IRQ_LEGACY_GLOBAL_LOCK=1` retained as the control arm.
 > The write-ahead journal was unflushed on real hardware until 2026-08-16, when the ATA
 > driver gained `FLUSH CACHE` and the journal gained three ordering barriers (**[I-10]**).
-> The notable remaining findings are a
-> revocation closure an unprivileged task can force to over-approximate (**[I-3]**), an SMP
+> The revocation closure an unprivileged task could force to over-approximate was made exact
+> the same day (**[I-3]**).
+>
+> The notable remaining findings are an SMP
 > fault whose origin is not established (**[G-8]**), a CI gating list that no automated check
 > can verify against the live ruleset (**[C-6]** — every security test does now block a merge,
 > as of 2026-08-16), and no independent review of security-critical changes (**[C-5]**).

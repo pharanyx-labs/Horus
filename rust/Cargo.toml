@@ -18,6 +18,18 @@ doctest = false
 # the two do not collide. Off for the kernel build and the gating `rust` job.
 fuzzing = []
 
+# CONTROL ARM for [I-3] (roadmap 1.6). Restores the pre-2026-08-16 revocation
+# closure: a fixed 256-entry worklist of revoked serials, falling back to nulling
+# every capability that merely shares the root object when a subtree overflows it.
+# That fallback is reachable from ring 3 and destroys unrelated peers' authority.
+#
+#     cargo test --manifest-path rust/Cargo.toml --release \
+#         --features revoke_legacy_bounded
+#
+# The [I-3] regression tests MUST FAIL under it. Never enable it for a kernel
+# build; the Makefile does not pass it and nothing but the falsification does.
+revoke_legacy_bounded = []
+
 [lints.rust]
 # `#[cfg(kani)]` gates the formal-verification harnesses in capability.rs. Kani
 # sets this cfg; every other build (kernel, cargo test, clippy -D warnings) does

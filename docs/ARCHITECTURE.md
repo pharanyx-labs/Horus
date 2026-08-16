@@ -258,11 +258,21 @@ therefore both *complete* and *least-privilege-correct*.
 
 Kani proofs in the Rust crate verify the subtree property.
 
-**Fail-safe overflow.** The descendant worklist is bounded at 256 entries. On overflow the
-sweep falls back to nulling every capability sharing the root's `object` — a *superset* of
-the descendant set, since mint/grant/transfer all preserve `object`. A descendant can never
-survive; the fallback can only over-approximate. See `docs/LIMITATIONS.md` for the
-denial-of-service consequence of that over-approximation.
+**Exact at any subtree size.** The closure marks in place and iterates to a fixpoint. The mark
+lives in the capability's own `typ` field in two states — `CAP_MARK_NEW` (in the subtree,
+children not yet expanded) and `CAP_MARK_DONE` (expanded) — while `serial` and `badge` stay
+readable, so no side array and no allocation are needed. Each capability is marked at most once
+and promoted at most once, which is what makes the loop terminate without a depth bound or a
+cycle check.
+
+Until 2026-08-16 the worklist was bounded at 256 entries, and on overflow the sweep nulled
+every capability sharing the root's `object` — a superset of the descendant set, since
+mint/grant/transfer all preserve `object`, so no descendant ever survived. But ring 3 could
+force it by deriving past the bound, destroying an unrelated peer's capability to the same
+object (**[I-3]**, roadmap 1.6).
+
+Revoke-*by-object* still sweeps by object, and there it is exact rather than a fallback: that
+path has no lineage seed by definition.
 
 ### The generation backstop
 

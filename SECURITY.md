@@ -38,12 +38,16 @@ Horus remains **research-grade**. It has not been independently audited, no secu
 change has ever been reviewed by a second person (**[C-5]**). Every security-specific CI job
 is classified as merge-gating as of 2026-08-16, taking the ruleset from 22 required contexts
 toward 67. But CI cannot verify that the ruleset matches the checked-in classification, and the
-reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. Open findings — an unbounded revocation closure
-(**[I-3]**), an SMP fault whose origin is not yet known (**[G-8]**), the remaining `tasks[]`
-table (**[I-7]**), and a nondeterministic WAL harness (**[I-11]**) — are in
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). The write-ahead journal's missing `FLUSH CACHE`
-(**[I-10]**) was fixed on 2026-08-16; filesystem crash-atomicity no longer depends on the
-emulator supplying durability the kernel never asked for.
+reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. Open
+findings — an SMP fault whose origin is not yet known (**[G-8]**), the remaining `tasks[]` table
+(**[I-7]**), and a nondeterministic WAL harness (**[I-11]**) — are in
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+
+Two closed on 2026-08-16. The write-ahead journal's missing `FLUSH CACHE` (**[I-10]**) — so
+filesystem crash-atomicity no longer depends on the emulator supplying durability the kernel
+never asked for. And the bounded revocation closure (**[I-3]**), whose object-wide overflow
+fallback let an unprivileged task force the kernel to destroy an unrelated peer's capability;
+the closure is now exact at any subtree size.
 
 Ambient `uid == 0` authority (**[I-1]**) was retired in stages: the syscall and object-store
 gates on 2026-07-27, and the last one — the user database, which roadmap 0.2's sweep of

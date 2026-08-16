@@ -1610,17 +1610,6 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">I-3</span>An unprivileged task can force a broad revocation</h3>
-            <p>
-              The descendant-closure worklist in <code>revoke_subtree</code> is bounded at 256
-              entries. On overflow the sweep over-approximates safely by nulling every capability
-              sharing the root object — so a task that deliberately builds a derivation subtree
-              larger than 256 members can force the fallback and destroy an unrelated task's
-              independent capability to the same object. It fails safe, in that no descendant
-              survives, but it is a denial of service against another task's authority.
-            </p>
-          </li>
-          <li>
             <h3><span class="id">I-11</span>The journal recovery test is nondeterministic by construction</h3>
             <p>
               <code>smoke-fs-wal</code> kills QEMU the instant a marker appears on the serial
@@ -1709,9 +1698,11 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               User copies clamp and return success rather than refusing (C-4). The heap syscalls
               do 32-bit arithmetic on 64-bit bounds — latent until the user address space widens
-              past 4 GiB (I-2). The revocation worklist is bounded at 256 entries and
-              over-approximates on overflow, which an unprivileged task can force as a
-              denial-of-service against a peer's independent capability to the same object (I-3).
+              past 4 GiB (I-2). The revocation closure was bounded at 256 entries and
+              over-approximated on overflow, which an unprivileged task could force as a
+              denial-of-service against a peer's independent capability to the same object — it
+              marks in place and iterates to a fixpoint since 2026-08-16, so it is exact at any
+              subtree size (I-3).
               There are no tagged releases, no signed artifacts and no SLSA provenance, so a third
               party cannot verify that a <code>boot.iso</code> came from this repository's CI
               (I-9). Formal verification is narrow: Kani covers revocation, and the TLA+

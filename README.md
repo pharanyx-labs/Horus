@@ -41,9 +41,9 @@ measurements.
 > driver gained `FLUSH CACHE` and the journal gained three ordering barriers (**[I-10]**).
 > The notable remaining findings are a
 > revocation closure an unprivileged task can force to over-approximate (**[I-3]**), an SMP
-> fault whose origin is not established (**[G-8]**), all but one of the security tests still
-> not gating merges (**[C-6]** — `smoke-captest` was promoted on 2026-08-15), and no
-> independent review of security-critical changes (**[C-5]**).
+> fault whose origin is not established (**[G-8]**), a CI gating list that no automated check
+> can verify against the live ruleset (**[C-6]** — every security test does now block a merge,
+> as of 2026-08-16), and no independent review of security-critical changes (**[C-5]**).
 
 ---
 
@@ -91,10 +91,14 @@ a syscall number without adding its table entry.
 **Verify, don't assert.** Claims are backed by artifacts. The build is verified reproducible
 by building twice and diffing. Boot-module integrity is tested by *corrupting a module* and
 asserting rejection. Measured boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 66 jobs, most of
-them QEMU integration self-tests — though only 22 of the 66 gate a merge, and `smoke-captest`
-is the only security gate among them (**[C-6]**). Read the live count from
-`gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 67 jobs, most of
+them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
+`.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
+gating, or exempted with a written reason (**[C-6]**). The intended set is 67 contexts,
+including every security test; the ruleset is reconciled to it by hand and lags whenever a
+gate is added. Read the live count from
+`gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
+reconciled by hand, so only the API knows.
 
 ---
 

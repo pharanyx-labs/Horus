@@ -21,6 +21,28 @@
 #                        and the shell banner is NOT required — for self-tests
 #                        that intentionally never boot the shell, e.g. the
 #                        preemption test whose tasks run forever)
+#        ABSENT_MARKER  (optional: a string that must NOT appear anywhere in the
+#                        log. Checked at the end, on the full log, so it is a
+#                        real assertion of absence rather than a race with
+#                        whatever happened to have been printed by then.)
+#        SMOKE_DISK_CACHE   (optional: QEMU cache mode for SMOKE_DISK; default
+#                        writethrough — see the DRIVE_ARG comment)
+#        SMOKE_DISK_BLKDEBUG (optional: path to a blkdebug config, layered over
+#                        SMOKE_DISK. Used to inject FLUSH CACHE failures so the
+#                        journal's durability barriers can be witnessed.)
+#        SMOKE_TRACE    (optional: comma-separated QEMU trace events to enable.
+#                        Written to SMOKE_TRACE_FILE. Fails closed if the QEMU
+#                        build has no trace backend — never silently skipped.)
+#        SMOKE_TRACE_FILE   (optional: where to write the trace; default a temp
+#                        file discarded on exit)
+#        WAIT_FOR_EXIT  (optional: if "1", success requires QEMU to EXIT of its
+#                        own accord after REQUIRE_MARKER appears, rather than
+#                        being killed the instant the marker is seen. Finding
+#                        [I-11]: killing QEMU on a serial string races the
+#                        guest's own shutdown, so a genuine regression and a
+#                        harness race produced identical output. A guest that
+#                        exits via isa-debug-exit also lets QEMU flush its
+#                        backing file, which a SIGKILL does not.)
 #
 set -u
 
@@ -29,6 +51,8 @@ TIMEOUT="${SMOKE_TIMEOUT:-40}"
 REQUIRE_MARKER="${REQUIRE_MARKER:-}"
 FAIL_MARKER="${FAIL_MARKER:-}"
 MARKER_ONLY="${MARKER_ONLY:-}"
+ABSENT_MARKER="${ABSENT_MARKER:-}"
+WAIT_FOR_EXIT="${WAIT_FOR_EXIT:-}"
 
 PASS_MARKER="Horus Secure Microkernel"   # printed by userspace/shell.c _start()
 LOGIN_MARKER="horus login"               # reached the login prompt (do_login)
@@ -45,10 +69,15 @@ fi
 
 LOG="$(mktemp)"
 QEMU_PID=""
+TRACE_FILE=""   # declared before the EXIT trap so cleanup() is safe under set -u
 cleanup() {
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
     [ -n "$QEMU_PID" ] && wait "$QEMU_PID" 2>/dev/null
     rm -f "$LOG"
+    # Only remove a trace file we created ourselves; when the caller named one
+    # via SMOKE_TRACE_FILE it belongs to them and is usually the whole point.
+    [ -n "$TRACE_FILE" ] && [ -z "${SMOKE_TRACE_FILE:-}" ] && rm -f "$TRACE_FILE"
+    return 0
 }
 trap cleanup EXIT
 
@@ -60,11 +89,60 @@ trap cleanup EXIT
 # IDE drive so a STORAGE_ATA=1 kernel has a real block device to format/mount.
 DRIVE_ARG=""
 if [ -n "${SMOKE_DISK:-}" ]; then
-    # cache=writethrough: every guest write is committed to the host image file
-    # immediately, so a two-boot persistence test (QEMU killed after a marker,
-    # then re-launched on the same image) never loses the first boot's writes to
-    # a writeback cache.
-    DRIVE_ARG="-drive file=$SMOKE_DISK,format=raw,if=ide,index=0,cache=writethrough"
+    # cache=writethrough (the default here): every guest write is committed to the
+    # host image file immediately, so a two-boot persistence test (QEMU killed
+    # after a marker, then re-launched on the same image) never loses the first
+    # boot's writes to a writeback cache.
+    #
+    # Note what that means for anything testing DURABILITY: under writethrough
+    # the emulator persists every write whether or not the guest ever issues
+    # FLUSH CACHE, so a kernel with no flush at all passes identically to one
+    # that flushes correctly. That is why the [I-10] gates do not simply switch
+    # this to writeback — writeback would not distinguish them either, since
+    # guest writes land in the HOST page cache and survive QEMU being killed.
+    # They use SMOKE_DISK_BLKDEBUG to fail the flush instead, which is the one
+    # configuration where issuing the command and checking its result are both
+    # observable. See TESTS.md.
+    #
+    # Those gates DO pass SMOKE_DISK_CACHE=writeback, for a different reason than
+    # durability: under writethrough QEMU may satisfy each write with a write plus
+    # a flush, so an error injected on flush_to_disk fails ordinary writes as well
+    # and the volume never even formats. Writeback keeps a write a write, leaving
+    # the guest's explicit FLUSH CACHE as the only flush_to_disk event.
+    CACHE_MODE="${SMOKE_DISK_CACHE:-writethrough}"
+    if [ -n "${SMOKE_DISK_BLKDEBUG:-}" ]; then
+        if [ ! -f "$SMOKE_DISK_BLKDEBUG" ]; then
+            echo "SMOKE FAIL: SMOKE_DISK_BLKDEBUG '$SMOKE_DISK_BLKDEBUG' not found" >&2
+            exit 1
+        fi
+        DRIVE_ARG="-drive file=blkdebug:$SMOKE_DISK_BLKDEBUG:$SMOKE_DISK,format=raw,if=ide,index=0,cache=$CACHE_MODE"
+    else
+        DRIVE_ARG="-drive file=$SMOKE_DISK,format=raw,if=ide,index=0,cache=$CACHE_MODE"
+    fi
+fi
+
+# Optional QEMU tracing. Fails closed when the QEMU build has no trace backend:
+# a trace-based assertion that silently observes nothing would pass vacuously,
+# which is the exact defect class ([I-11]) these gates exist to retire.
+TRACE_ARG=""
+TRACE_FILE=""
+if [ -n "${SMOKE_TRACE:-}" ]; then
+    if ! qemu-system-x86_64 -trace help 2>/dev/null | grep -q .; then
+        echo "SMOKE FAIL: SMOKE_TRACE requested but this QEMU has no trace backend" >&2
+        exit 1
+    fi
+    for ev in $(echo "$SMOKE_TRACE" | tr ',' ' '); do
+        if ! qemu-system-x86_64 -trace help 2>/dev/null | grep -qx "$ev"; then
+            echo "SMOKE FAIL: SMOKE_TRACE event '$ev' unknown to this QEMU build" >&2
+            exit 1
+        fi
+    done
+    TRACE_FILE="${SMOKE_TRACE_FILE:-$(mktemp)}"
+    # One -trace enable= per event; QEMU takes a pattern per option, not a list.
+    for ev in $(echo "$SMOKE_TRACE" | tr ',' ' '); do
+        TRACE_ARG="$TRACE_ARG -trace enable=$ev"
+    done
+    TRACE_ARG="$TRACE_ARG -trace file=$TRACE_FILE"
 fi
 
 # SMP_CPUS=<n> boots the guest with n logical CPUs (for the SMP self-test).
@@ -82,9 +160,29 @@ qemu-system-x86_64 \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -net none \
-    $DRIVE_ARG $SMP_ARG \
+    $DRIVE_ARG $SMP_ARG $TRACE_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
+
+# Is QEMU still actually running?
+#
+# `kill -0` alone is NOT enough. QEMU is a background child of this script and is
+# not reaped until the `wait` in cleanup(), so between its exit() and that wait
+# it lingers as a ZOMBIE — and a zombie's PID still exists, so `kill -0` keeps
+# reporting success indefinitely. WAIT_FOR_EXIT built on `kill -0` therefore hung
+# until the timeout on a guest that had already exited cleanly, reporting a
+# healthy two-boot run as a failure. Check the process state and treat Z as dead.
+qemu_alive() {
+    [ -n "$QEMU_PID" ] || return 1
+    kill -0 "$QEMU_PID" 2>/dev/null || return 1
+    if [ -r "/proc/$QEMU_PID/stat" ]; then
+        # Field 3 of /proc/PID/stat is the state character. comm (field 2) can
+        # contain spaces and parentheses, so anchor the parse after the final ')'.
+        st=$(sed 's/.*) //' "/proc/$QEMU_PID/stat" 2>/dev/null | cut -d' ' -f1)
+        [ "$st" != "Z" ] || return 1
+    fi
+    return 0
+}
 
 status="timeout"
 deadline=$(( SECONDS + TIMEOUT ))
@@ -93,7 +191,19 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then status="marker_fail"; break; fi
     # MARKER_ONLY: the required marker alone is success (no shell banner).
     if [ "$MARKER_ONLY" = "1" ] && [ -n "$REQUIRE_MARKER" ]; then
-        if grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then status="ok"; break; fi
+        if grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then
+            # WAIT_FOR_EXIT ([I-11]): the marker means the guest reached the
+            # point of interest, NOT that it has finished writing. Killing QEMU
+            # here races the guest's own shutdown and, on a writeback-cached
+            # image, discards whatever QEMU had not yet flushed. Keep waiting
+            # for the process to exit on its own (isa-debug-exit), so a hang
+            # after the marker is reported as a timeout instead of passing.
+            if [ "$WAIT_FOR_EXIT" = "1" ]; then
+                if ! qemu_alive; then status="ok"; break; fi
+            else
+                status="ok"; break
+            fi
+        fi
     # Otherwise the banner is the primary success signal; if an extra marker is
     # required, wait until both have appeared.
     elif grep -q "$PASS_MARKER" "$LOG" 2>/dev/null; then
@@ -101,7 +211,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
             status="ok"; break
         fi
     fi
-    if ! kill -0 "$QEMU_PID" 2>/dev/null; then status="exited"; break; fi
+    if ! qemu_alive; then status="exited"; break; fi
     sleep 0.5
 done
 
@@ -119,6 +229,12 @@ case "$status" in
         fi
         if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG"; then
             echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER'"
+            exit 1
+        fi
+        # Absence is asserted here, over the COMPLETE log, rather than in the
+        # poll loop where it would only ever mean "has not appeared yet".
+        if [ -n "$ABSENT_MARKER" ] && grep -qF "$ABSENT_MARKER" "$LOG"; then
+            echo "SMOKE FAIL: forbidden marker '$ABSENT_MARKER' appeared on serial"
             exit 1
         fi
         if [ "$MARKER_ONLY" = "1" ]; then

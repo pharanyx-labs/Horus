@@ -1396,27 +1396,62 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-init-fs` | `init` provisions the filesystem at boot. |
 | `smoke-fs-perms` | POSIX rwx is enforced against the **kernel-attested** uid/gid, not a client-supplied one. |
 | `smoke-fs-persist` | Data survives a reboot (two-boot test). |
-| `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). **Known flaky and known weak — see below.** |
+| `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). Proves the **redo logic**; says nothing about durability, which is what the two gates below are for. **Still nondeterministic — [I-11], see below.** |
+| `smoke-fs-wal-flush` | Every `FLUSH CACHE` fails with `EIO` (`blkdebug`), and the journal must **refuse to commit** and say so. Proves the barrier is both *issued* and *checked*. Falsified by `WAL_NO_FLUSH=1`: `make smoke-fs-wal-flush-control`. |
+| `smoke-fs-wal-order` | An IDE command-register trace must end `0x30 → 0xe7 → 0x30 → 0xe7` — data write, barrier A, commit header, barrier B. Proves the barriers are in the right *place*, not merely present. Falsified by `WAL_NO_FLUSH=1`: `make smoke-fs-wal-order-control`. |
 | `smoke-fs-conc` | Multiple clients are served concurrently without cross-talk, via `SYS_IPC_REPLY_TO`. Uses `CONC_TIMEOUT` (default 120s), not the 40s default: it waits on several clients, and on a loaded host it exceeded the shorter budget and failed as a *timeout* — never reaching a verdict, which reads red without being evidence of a defect. A real `CONC_SELFTEST: FAIL` still fails immediately. |
 | `smoke-fs-large` | Double-indirect blocks address large files. |
 
-> **`smoke-fs-wal` — two known defects (findings [I-10], [I-11]).**
+> **`smoke-fs-wal` — one defect fixed ([I-10]), one still open ([I-11]).**
 >
-> **It is nondeterministic.** The harness kills QEMU the moment boot 1's marker appears on
-> serial, then reboots on the same image. The marker proves the guest *reached* that point,
-> not that its journal writes completed — serial and IDE are independent paths, and
-> `cache=writethrough` only makes *completed* writes durable. On a loaded runner boot 2 fails
-> with `WAL_CRASHTEST: FAIL read` against an unmodified kernel. It is a **required** status
-> check, so it blocks merges spuriously.
+> **[I-10] is fixed as of 2026-08-16, but not by the method originally planned.** The obvious
+> fix — re-run the two-boot test under `cache=writeback` — does **not work**, and the reason
+> generalises to any test of this shape. Under `writeback` QEMU writes guest blocks into the
+> *host page cache* with `write()`; killing the QEMU process does not lose them, because the
+> host kernel still holds the pages and any later read of the image sees them. Only a host
+> power failure would lose them. So a kernel that never issues `FLUSH CACHE` and one that
+> flushes correctly produce **identical** results, and switching the cache mode would have
+> built a second vacuous gate beside the one it was meant to repair.
 >
-> **It cannot detect the bug it exists to catch.** The kernel issues no ATA `FLUSH CACHE`
-> (0xE7) — ever. On real hardware the commit record can sit in the drive's volatile cache and
-> be lost to a power failure. `cache=writethrough` hides this completely: the emulator
-> supplies the durability the kernel omits. The test therefore verifies crash-atomicity in
-> the one configuration where it is guaranteed by something other than the code under test.
+> There is no QEMU cache mode in which a two-boot outcome depends on whether the guest
+> flushed. The property has to be observed some other way, so the two gates above do:
 >
-> A green `smoke-fs-wal` is not evidence of crash-atomicity on hardware. Fixing it needs a
-> `cache=writeback` variant *and* a real flush in the driver.
+> - **`smoke-fs-wal-flush`** inverts the question. `blkdebug` returns `EIO` for every
+>   `flush_to_disk`, so the *presence* of the command becomes visible through the kernel's
+>   reaction to its failure. A kernel with barriers prints
+>   `WAL: FLUSH FAILED before commit header - transaction aborted` and commits nothing.
+>   It runs under **`cache=writeback`, and must**: under `writethrough` QEMU may satisfy each
+>   guest write with a write *plus a flush*, so the injected error fails ordinary writes too —
+>   the volume never formats, `storage_unlock` fails, and the gate times out having tested
+>   nothing. That is not hypothetical; it is how this target failed in CI on its first run
+>   (`WAL_CRASHTEST: FAIL unlock`) while passing against a local QEMU 10.0.11 that satisfies
+>   writethrough with `O_DSYNC` and emits no per-write flush. Writeback keeps a write a write,
+>   leaving the guest's own `FLUSH CACHE` as the only `flush_to_disk` event.
+> - **`smoke-fs-wal-order`** traces the IDE command register and asserts the tail of the
+>   commit sequence is `0x30 0xe7 0x30 0xe7`. Presence is not enough: a barrier placed *after*
+>   the commit header would satisfy error injection identically while losing the write-ahead
+>   rule outright. `tools/smoke_test.sh` fails closed when the QEMU build has no trace
+>   backend, so this can never pass by observing nothing.
+>
+> **Falsification (2026-08-16).** Against `WAL_NO_FLUSH=1`, which compiles the barriers out
+> and restores the pre-fix kernel:
+>
+> | Control arm | Result | Marker |
+> |---|---|---|
+> | `make smoke-fs-wal-flush-control` | commits happily; no flush is ever issued so `blkdebug` never fires | `WAL: FLUSH FAILED` **absent**; `WAL_CRASHTEST: crashed-after-commit` present |
+> | `make smoke-fs-wal-order-control` | checker rejects | `WAL_ORDER: FAIL no FLUSH CACHE (0xe7) was ever issued` |
+>
+> Deterministic, not a rate: the barriers are either compiled in or they are not.
+>
+> **[I-11] is still open and `smoke-fs-wal` is still nondeterministic.** The harness kills
+> QEMU the moment boot 1's marker appears, then reboots on the same image; the marker proves
+> the guest *reached* that point, not that its journal writes completed. The prescribed fix —
+> boot 1 ending itself via `isa-debug-exit` — was tried and reverted: on QEMU 10.0.11 the port
+> write at `0x604` does not terminate the process (measured with and without `-no-shutdown`),
+> and the `lidt 0x0; int $0x0` fallback faults reading its own descriptor and is caught by the
+> kernel's page-fault handler, which the harness correctly reads as a failure. QMP `quit` over
+> a monitor socket is the next candidate. `WAIT_FOR_EXIT=1` exists in the harness and is
+> correct; it is simply unused until a guest can exit.
 
 ## Device delegation and the console
 
@@ -1485,7 +1520,7 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 
 ## CI
 
-`.github/workflows/ci.yml` defines **64** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **66** jobs, run on every push and pull request;
 `codeql.yml` adds C/C++ static analysis (advisory, plus a weekly schedule).
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
@@ -1493,7 +1528,7 @@ least-privilege. There are no self-hosted runners.
 
 ### A known weakness in the gate
 
-Of those 64 jobs, **22 are required status checks** — read the current set from
+Of those 66 jobs, **22 are required status checks** — read the current set from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this file, which is the kind of
 hand-maintained number this document exists to distrust.
 
@@ -1511,7 +1546,7 @@ locally before opening a PR** — CI will not stop you.
 This is finding **[C-6]** and roadmap item 4.2, and promoting one job does not close it. The
 mechanism is the problem: the required list lives in the ruleset, which no commit touches, so
 every job added to `ci.yml` lands in the advisory set by default and nothing asks whether it
-should have. When this finding was filed there were ~30 jobs and 21 required; there are now 64
+should have. When this finding was filed there were ~30 jobs and 21 required; there are now 66
 and 22. Generating the required list from `ci.yml` — and failing CI when a job is in neither
 that list nor an explicit, reasoned advisory list — is the fix.
 

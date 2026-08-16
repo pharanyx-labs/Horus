@@ -13,6 +13,10 @@
 
 #define ATA_CMD_READ   0x20
 #define ATA_CMD_WRITE  0x30
+#define ATA_CMD_FLUSH  0xE7   /* FLUSH CACHE (LBA28). LBA48 uses 0xEA; this driver
+                               * is LBA28 throughout — see the 0xE0 | lba>>24 drive
+                               * select in ata_read_sector — so 0xE7 is the correct
+                               * opcode and 0xEA would be rejected as unsupported. */
 
 static inline uint16_t inw(uint16_t port) {
     uint16_t val;
@@ -47,6 +51,74 @@ static void ata_wait_busy(void) {
 
 static void ata_400ns_delay(void) {
     for (int i = 0; i < 4; i++) inb(ATA_CTRL);
+}
+
+/* FLUSH CACHE is the one command whose completion time is not bounded by a
+ * sector transfer: ATA-8 permits up to 30 seconds, because the drive may be
+ * writing out its entire volatile cache. ata_wait_busy()'s 2e6-iteration cap is
+ * sized for a PIO sector (microseconds) and would time out mid-flush, and a
+ * timed-out flush that the caller reads as success is precisely the silent
+ * durability hole this exists to close. So the flush path gets its own, much
+ * larger bound.
+ *
+ * It stays bounded rather than infinite for the same reason ata_wait_busy() is:
+ * a floating bus reads 0xFF, which has BSY set forever, and the shipped kernel
+ * probes for a disk on every boot. An unbounded wait here would turn "no disk"
+ * into "hang at mount". On timeout we report failure and the journal fails
+ * closed, which is the safe direction — a spurious "flush failed" costs a
+ * refused transaction, a spurious "flush succeeded" costs the guarantee.
+ *
+ * Sizing: a port read of 0x1F7 costs on the order of a microsecond on real
+ * hardware, so ata_wait_busy()'s 2e6 is roughly a 2-second budget — right for a
+ * PIO sector, wrong for a flush. 30e6 puts this at roughly the 30 seconds ATA-8
+ * allows, and no higher: the cap is a backstop against a wedged bus, and making
+ * it arbitrarily large just converts a clean failure into a boot that looks
+ * hung. Under TCG each iteration is cheaper, so the wall-clock ceiling in CI is
+ * well under that. In practice QEMU and real drives clear BSY long before. */
+static int ata_wait_busy_flush(void) {
+    for (uint32_t i = 0; i < 30000000u; i++) {
+        if (!(inb(ATA_STATUS) & 0x80)) return 0;
+    }
+    return -1;
+}
+
+/* Issue FLUSH CACHE and wait for the drive to report the cache is on stable
+ * media. Returns 0 only when the drive completed the flush without error;
+ * -1 on ERR/DF, on timeout, or on an absent/floating bus.
+ *
+ * Callers MUST treat -1 as "this data is not durable" and fail the enclosing
+ * transaction. Without this command every WRITE the driver issues may sit in the
+ * drive's volatile write cache indefinitely: on real hardware a power failure
+ * then loses the journal commit record, and the crash-atomicity property the
+ * filesystem advertises does not hold. It went unnoticed for as long as it did
+ * because QEMU with cache=writethrough persists every write on its own, so the
+ * emulator supplied a guarantee the kernel never asked for. */
+int ata_flush(void) {
+    spin_lock(&ata_lock);
+
+    if (ata_wait_busy_flush() != 0) { spin_unlock(&ata_lock); return -1; }
+    ata_400ns_delay();
+
+    outb(ATA_DRIVE, 0xE0);          /* primary master, LBA mode */
+    ata_400ns_delay();
+    outb(ATA_COMMAND, ATA_CMD_FLUSH);
+
+    /* A device that does not implement FLUSH CACHE leaves status 0 here; treat
+     * that as a failure rather than as a vacuous success. */
+    uint8_t status = inb(ATA_STATUS);
+    if (status == 0 || status == 0xFF) { spin_unlock(&ata_lock); return -1; }
+
+    if (ata_wait_busy_flush() != 0) { spin_unlock(&ata_lock); return -1; }
+    ata_400ns_delay();
+
+    status = inb(ATA_STATUS);
+    if (status & 0x21) {            /* ERR (bit 0) or DF/device fault (bit 5) */
+        spin_unlock(&ata_lock);
+        return -1;
+    }
+
+    spin_unlock(&ata_lock);
+    return 0;
 }
 
 static int ata_read_sector(uint32_t lba, uint8_t *buf) {

@@ -37,7 +37,9 @@ measurements.
 > (**[H-1]**). The global IRQ nesting counter and `spin_unlock`'s unconditional `sti`
 > (**[C-3]**, **[C-3.1]**) were fixed on 2026-08-11 — the lock is per-CPU and restores the
 > caller's own `RFLAGS.IF`, with `IRQ_LEGACY_GLOBAL_LOCK=1` retained as the control arm.
-> The notable remaining findings are an unflushed write-ahead journal (**[I-10]**), a
+> The write-ahead journal was unflushed on real hardware until 2026-08-16, when the ATA
+> driver gained `FLUSH CACHE` and the journal gained three ordering barriers (**[I-10]**).
+> The notable remaining findings are a
 > revocation closure an unprivileged task can force to over-approximate (**[I-3]**), an SMP
 > fault whose origin is not established (**[G-8]**), all but one of the security tests still
 > not gating merges (**[C-6]** — `smoke-captest` was promoted on 2026-08-15), and no
@@ -89,8 +91,8 @@ a syscall number without adding its table entry.
 **Verify, don't assert.** Claims are backed by artifacts. The build is verified reproducible
 by building twice and diffing. Boot-module integrity is tested by *corrupting a module* and
 asserting rejection. Measured boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 64 jobs, most of
-them QEMU integration self-tests — though only 22 of the 64 gate a merge, and `smoke-captest`
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 66 jobs, most of
+them QEMU integration self-tests — though only 22 of the 66 gate a merge, and `smoke-captest`
 is the only security gate among them (**[C-6]**). Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
 
@@ -284,7 +286,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 64 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 66 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

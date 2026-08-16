@@ -646,6 +646,15 @@ Features: POSIX rwx, a write-ahead journal with mount-time fsck for crash atomic
 double-indirect blocks for large files, and concurrent multi-client service via
 `SYS_IPC_REPLY_TO`.
 
+The journal's crash atomicity is an ordering property over what is on *stable media*, not
+over the order writes were issued, so `journal_commit()` places three `FLUSH CACHE` barriers:
+after the staged data and **before** the commit record (the write-ahead rule — without it
+recovery can redo a validly-committed transaction from data sectors that never landed), after
+the commit record, and after the home apply. `journal_recover()` carries the same barrier
+before clearing a replayed header. Until 2026-08-16 there were none, and the ATA driver had no
+`FLUSH CACHE` opcode at all (**[I-10]**), so the guarantee held only under an emulator that
+persisted every write regardless.
+
 ### `console_server`
 
 Owns the serial UART and the VGA framebuffer in ring 3. It receives `CAP_IO_DEVICE` from

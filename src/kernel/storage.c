@@ -89,11 +89,24 @@ static int vdisk_write(struct block_device *bd, uint64_t block, const void *buf)
     return 0;
 }
 
+/* The RAM vdisk has no volatile layer between vdisk_write and "the medium" —
+ * the medium IS the RAM it just wrote to. So this genuinely succeeds rather than
+ * being a stub. It is spelled out explicitly instead of left NULL because
+ * raw_block_flush() fails closed on a NULL flush, and "this backend has nothing
+ * to flush" and "this backend forgot to implement durability" must not look the
+ * same to the journal. Note the vdisk is ephemeral by construction: it does not
+ * survive a reboot at all, so there is no crash-atomicity claim to weaken. */
+static int vdisk_flush(struct block_device *bd) {
+    (void)bd;
+    return 0;
+}
+
 static struct block_device g_vdisk_bd = {
     .name = "vdisk0",
     .total_blocks = BLOCKS_PER_DISK,
     .read_block = vdisk_read,
     .write_block = vdisk_write,
+    .flush = vdisk_flush,
     .private = &g_vdisk,
 };
 
@@ -312,6 +325,22 @@ static int raw_block_write(uint64_t block, const void *buf) {
     return current_bd->write_block(current_bd, block, buf);
 }
 
+/* Barrier: return 0 only when every preceding raw_block_write is on stable
+ * media. Fails closed on a backend that supplies no flush op — see the comment
+ * on block_device.flush. WAL_NO_FLUSH=1 is the control arm for [I-10]: it
+ * compiles the barrier out and restores the pre-fix behaviour, in which the
+ * journal's ordering constraints are enforced only by whatever the emulator
+ * happens to do. It exists so the durability gates can be falsified on demand
+ * and must never be set for a shipped build. */
+static int raw_block_flush(void) {
+#ifdef WAL_NO_FLUSH
+    return 0;
+#else
+    if (!current_bd || !current_bd->flush) return -1;
+    return current_bd->flush(current_bd);
+#endif
+}
+
 /* ---- Write-ahead redo log (journal) --------------------------------------- *
  * A multi-block filesystem update (allocate a data block -> update the bitmap ->
  * link it in the inode -> write the per-block crypto metadata + its superblock
@@ -325,13 +354,43 @@ static int raw_block_write(uint64_t block, const void *buf) {
  * instead of writing home, and do_block_read returns staged content
  * (read-your-writes). journal_commit() then:
  *   1. writes the staged blocks into the journal data region;
+ *      -- BARRIER A --
  *   2. writes the journal header — targets + a keyed HMAC over the payload — in
  *      one atomic sector: this is the commit point;
+ *      -- BARRIER B --
  *   3. applies the staged writes to their home locations;
+ *      -- BARRIER C --
  *   4. clears the header.
  * A crash before step 2 leaves home untouched (old state); after step 2, mount
  * replays the committed transaction (idempotent redo) to complete it — so the
  * filesystem is always either fully before or fully after the operation.
+ *
+ * Durability ([I-10]). The numbered steps are ordering constraints on what is on
+ * STABLE MEDIA, not merely on the order the driver issued writes. A drive with a
+ * volatile write cache may complete WRITEs in any order and lose all of them on
+ * power failure, so each barrier is a real FLUSH CACHE and each one is load-
+ * bearing in a different way:
+ *
+ *   A  is the write-ahead rule itself. Without it the header can reach the
+ *      platter while the data sectors it commits are still in cache; recovery
+ *      then finds a valid, correctly-HMAC'd transaction and redoes it from
+ *      journal data that was never written — blind-writing stale content over
+ *      good home blocks. This is the barrier that turns "the journal is
+ *      write-ahead" from a claim into a fact, and it is the one an earlier
+ *      revision of docs/ROADMAP.md 1.55 did not ask for.
+ *   B  makes the commit point real. Until the header is durable there is nothing
+ *      to replay, so applying home first risks a crash leaving home torn with no
+ *      record that would repair it.
+ *   C  protects the retire. Clearing the header while the home writes are still
+ *      in cache discards the only copy that could replay them — a lost update
+ *      that recovery cannot even detect.
+ *
+ * Barrier failure is NOT advisory. A and B failing abort the transaction with
+ * home untouched. C failing leaves the header in place deliberately, so the next
+ * mount replays it; see the comment at that call site for why that still returns
+ * success. Until 2026-08-16 there were no barriers at all and the ATA driver had
+ * no FLUSH CACHE opcode, so the guarantee held only under an emulator that
+ * persisted every write on its own.
  *
  * Security: the header carries an HMAC keyed by journal_mac_key (derived from
  * disk_key), so an attacker with raw disk access cannot forge a committed
@@ -430,6 +489,16 @@ static int journal_commit(void) {
     for (uint32_t i = 0; i < count; i++)
         if (raw_block_write(jstart + 1 + i, g_txn.data[i]) != 0) { journal_abort(); return -1; }
 
+    /* BARRIER A — the write-ahead rule. The staged data must be on stable media
+     * before the header that commits it, or recovery redoes a valid transaction
+     * from journal blocks that never landed. Home is untouched at this point, so
+     * aborting here is free and leaves the volume in its pre-transaction state. */
+    if (raw_block_flush() != 0) {
+        println("WAL: FLUSH FAILED before commit header - transaction aborted");
+        journal_abort();
+        return -1;
+    }
+
     /* 2. Commit header (one atomic sector). */
     struct journal_header hdr;
     my_memset(&hdr, 0, sizeof(hdr));
@@ -446,11 +515,48 @@ static int journal_commit(void) {
     my_memcpy(hbuf, &hdr, sizeof(hdr));
     if (raw_block_write(jstart, hbuf) != 0) { journal_abort(); return -1; }
 
+    /* BARRIER B — make the commit point real before touching home. A crash after
+     * this returns is recoverable by redo; a crash while home is being written
+     * with the header still only in cache is not. Aborting here still leaves
+     * home untouched: the header may or may not survive, but recovery either
+     * finds nothing (old state) or replays the full transaction (new state), and
+     * both are consistent. */
+    if (raw_block_flush() != 0) {
+        println("WAL: FLUSH FAILED at commit point - transaction aborted");
+        journal_abort();
+        return -1;
+    }
+
 #ifdef WAL_CRASHTEST
     if (g_wal_crash_armed) {
-        /* Commit header is now durable; the home apply below has NOT run. Announce
-         * and halt — the two-boot test kills QEMU here and reboots to recover. */
+        /* Commit header is now durable — barrier B above returned success — and
+         * the home apply below has NOT run. That is precisely the state a power
+         * failure between steps 2 and 3 leaves, so boot 2 exercises redo.
+         *
+         * Exit QEMU rather than spinning in hlt ([I-11]). The two-boot test used
+         * to leave the guest halted forever and have the harness SIGKILL it on
+         * seeing this line, which meant a genuine WAL regression and a harness
+         * race that killed QEMU a moment too early produced byte-identical
+         * output — a gate that could not distinguish the defect it existed to
+         * catch from its own flakiness. Exiting through isa-debug-exit makes
+         * "boot 1 finished" a process exit status the harness can wait on, and
+         * lets QEMU close its backing file rather than being shot holding it.
+         *
+         * The hlt loop stays as a fallback for a QEMU invoked without the
+         * isa-debug-exit device, where the port write is simply ignored. */
         println("WAL_CRASHTEST: crashed-after-commit");
+        /* Halt, rather than exiting QEMU. Roadmap 1.55 proposed having boot 1
+         * end itself through isa-debug-exit so the harness could wait on a
+         * process exit instead of a serial string ([I-11]). That does not work
+         * here and the finding stays open: on QEMU 10.0.11 a byte write to the
+         * isa-debug-exit port at 0x604 does not terminate the process, with or
+         * without -no-shutdown (measured both ways against this build), and the
+         * `lidt 0x0; int $0x0` triple-fault fallback that kshell.c:99 pairs with
+         * it faults while READING the descriptor at address 0, so the kernel's
+         * own page-fault handler catches it and prints a PAGE FAULT the harness
+         * correctly treats as a failure. Any future attempt needs a mechanism
+         * that works — QMP `quit` over a monitor socket is the obvious one —
+         * rather than this port write, which has never terminated anything. */
         for (;;) __asm__ volatile ("hlt");
     }
 #endif
@@ -459,9 +565,33 @@ static int journal_commit(void) {
     for (uint32_t i = 0; i < count; i++)
         raw_block_write(g_txn.target[i], g_txn.data[i]);
 
+    /* BARRIER C — home must be durable before the header that would replay it is
+     * retired. If this fails we deliberately SKIP step 4 and leave the committed
+     * header on disk: the next mount will find it, verify the HMAC and redo the
+     * transaction, which is exactly the repair the situation calls for.
+     *
+     * This returns SUCCESS, and the asymmetry with A and B is deliberate. The
+     * transaction IS committed — its header is durable and its effect will be
+     * applied — so reporting failure to the caller would be a lie in the more
+     * dangerous direction: userspace would be told the write did not happen and
+     * would see it happen anyway after the next mount. The only thing that went
+     * wrong is that the retire could not be confirmed, and the journal is
+     * idempotent precisely so that an un-retired transaction is harmless. */
+    if (raw_block_flush() != 0) {
+        println("WAL: FLUSH FAILED after home apply - header left for replay");
+        g_journal_seq++;
+        g_txn.active = 0; g_txn.n = 0;
+        return 0;
+    }
+
     /* 4. Clear the header so recovery finds nothing to replay. */
     my_memset(hbuf, 0, BLOCK_SIZE);
     raw_block_write(jstart, hbuf);
+
+    /* No barrier after step 4. If the cleared header is lost, the next mount
+     * replays an already-applied transaction — idempotent redo over identical
+     * content, which is a no-op. This is the one ordering edge that costs
+     * nothing to get wrong, so it does not buy a flush. */
 
     g_journal_seq++;
     g_txn.active = 0; g_txn.n = 0;
@@ -593,6 +723,17 @@ static void journal_recover(struct mounted_fs *mfs)
         raw_block_write(hdr.target[i], jdata[i]);
     if (hdr.seq >= g_journal_seq) g_journal_seq = hdr.seq + 1;
 
+    /* Same constraint as BARRIER C in journal_commit: the redo must be on stable
+     * media before the header authorising it is cleared. Recovery is where this
+     * matters most — a crash during recovery that lost both the redo and the
+     * header would leave the volume torn with nothing left to repair it, and the
+     * next mount would see a clean journal over inconsistent home blocks. On
+     * failure, leave the header alone so the next mount tries again. */
+    if (raw_block_flush() != 0) {
+        println("WAL: FLUSH FAILED after redo - header left for the next mount");
+        return;
+    }
+
 discard:
     my_memset(hbuf, 0, BLOCK_SIZE);
     raw_block_write(jstart, hbuf);   /* clear the header either way */
@@ -656,11 +797,16 @@ static int atadisk_write(struct block_device *bd, uint64_t block, const void *bu
     (void)bd;
     return ata_write((uint32_t)block, buf, 1);
 }
+static int atadisk_flush(struct block_device *bd) {
+    (void)bd;
+    return ata_flush();
+}
 static struct block_device g_ata_bd = {
     .name = "ata0",
     .total_blocks = BLOCKS_PER_DISK,
     .read_block = atadisk_read,
     .write_block = atadisk_write,
+    .flush = atadisk_flush,
     .private = 0,
 };
 

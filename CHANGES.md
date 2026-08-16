@@ -8,6 +8,71 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the write-ahead journal is durable on real hardware (**[I-10]**, roadmap 1.55)
+
+`src/kernel/ata.c` issued three commands — `READ SECTORS`, `WRITE SECTORS`, `IDENTIFY` — and
+no `FLUSH CACHE` (0xE7). `WRITE SECTORS` completes once the data reaches the drive's volatile
+write cache, so on real hardware a power failure could lose the journal's commit record and
+leave recovery in exactly the state the WAL exists to prevent.
+
+The driver implements the command, with its own BSY budget: ATA-8 permits a flush to take up
+to 30 seconds, and the sector path's ~2-second cap would have timed out mid-flush — a
+timed-out flush read as success is the same silent hole in a new place. `journal_commit()`
+now places **three** barriers, where roadmap 1.55 specified two:
+
+| Barrier | Position | Prevents |
+|---|---|---|
+| **A** | after the journal data, *before* the commit header | Recovery redoing a valid, correctly-HMAC'd transaction from data sectors that never reached the medium. This is the write-ahead rule itself, and it is the one the roadmap did not ask for. |
+| **B** | after the commit header, before applying home | A crash mid-apply with no durable record to replay. |
+| **C** | after applying home, before clearing the header | Retiring the only copy that could replay the update. |
+
+`journal_recover()` carries the same barrier before clearing a replayed header. Failure is not
+advisory: A and B abort with home untouched; C leaves the header in place for the next mount
+and returns *success*, because the transaction genuinely is committed and reporting failure
+would be a lie in the more dangerous direction — userspace would be told the write did not
+happen and would see it happen anyway.
+
+**The test specified for this would not have worked, which is the more useful finding.** The
+plan was a `cache=writeback` variant of `smoke-fs-wal`. Under writeback QEMU writes guest
+blocks into the *host page cache*; killing QEMU does not lose them, because the host kernel
+still holds the pages. A kernel that never flushes and one that flushes correctly produce
+identical results, and there is no QEMU cache mode where a two-boot outcome depends on whether
+the guest flushed. Switching the cache mode would have built a second vacuous gate beside the
+one it was meant to repair.
+
+Two gates that do work, both falsified against the new `WAL_NO_FLUSH=1` control arm:
+
+- **`smoke-fs-wal-flush`** — `blkdebug` returns `EIO` for every `flush_to_disk`, making the
+  command's presence observable through the kernel's reaction to its failure. Fixed kernel:
+  `WAL: FLUSH FAILED before commit header - transaction aborted`, nothing committed. Control
+  arm: no flush issued, `blkdebug` never fires, the refusal is **absent** and the transaction
+  commits.
+- **`smoke-fs-wal-order`** — traces the IDE command register and asserts the commit tail is
+  `0x30 0xe7 0x30 0xe7`. Presence alone is insufficient: a barrier placed *after* the commit
+  header would satisfy error injection identically while losing the write-ahead rule. Control
+  arm: `WAL_ORDER: FAIL no FLUSH CACHE (0xe7) was ever issued`.
+
+Deterministic, not a rate — the barriers are either compiled in or they are not. Both control
+arms run in CI rather than being trusted from this entry.
+
+### Changed — a harness liveness check that could never observe an exit
+
+`tools/smoke_test.sh` tested whether QEMU was still running with a bare `kill -0`. QEMU is an
+unreaped background child, so between its exit and the harness's `wait` it is a **zombie whose
+PID still answers `kill -0`** — meaning the `SMOKE FAIL: QEMU exited before the banner (triple
+fault?)` branch was unreachable, and every such case was reported as a plain timeout instead.
+`qemu_alive()` now also checks the process state. Found while implementing `WAIT_FOR_EXIT`,
+which hung against a guest that had already exited cleanly.
+
+**[I-11] is not fixed, and its prescribed remedy is now known not to work.** Roadmap 1.55
+called for boot 1 to end itself via `isa-debug-exit`. Measured against QEMU 10.0.11: the port
+write at `0x604` does not terminate the process, with or without `-no-shutdown`; and the
+`lidt 0x0; int $0x0` triple-fault fallback that `src/kernel/kshell.c:99` pairs with it faults
+while *reading* the descriptor at address 0, so the kernel's own handler catches it and prints
+a `PAGE FAULT` the harness correctly fails on. Both were tried and reverted, and the comment
+at the crash hook records it so the next attempt starts from this rather than repeating it.
+QMP `quit` over a monitor socket is the obvious next candidate.
+
 ### Fixed — four documents still said no security test gates a merge (**[C-6]**)
 
 The commit that promoted `smoke-captest` updated six files and missed four more, so the tree

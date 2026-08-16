@@ -1492,6 +1492,19 @@ smoke-fs-wal:
 # WAL_NO_FLUSH=1 control arm issues no command, so no error is ever raised and
 # the message never appears — which is what makes this falsifiable rather than
 # decorative. Run `make smoke-fs-wal-flush-control` to see it fail on demand.
+#
+# SMOKE_DISK_CACHE=writeback is REQUIRED here and is not a preference. Under
+# cache=writethrough QEMU implements each guest write as a write followed by a
+# flush, so an error injected on flush_to_disk fails ORDINARY WRITES too: the
+# volume cannot be formatted, storage_unlock fails, and the guest never reaches a
+# journal commit at all. The gate then times out having tested nothing.
+#
+# That is not hypothetical — it is how this target failed in CI on its first run
+# (PR #158, `WAL_CRASHTEST: FAIL unlock`) while passing locally, because QEMU
+# 10.0.11 satisfies writethrough with O_DSYNC and emits no flush_to_disk per
+# write, whereas the runner's older QEMU emits one. Under writeback a write is
+# just a write, so the only flush_to_disk events are the guest's own FLUSH CACHE
+# commands — exactly, and only, what this gate is trying to observe.
 .PHONY: smoke-fs-wal-flush
 smoke-fs-wal-flush:
 	@$(MAKE) --no-print-directory clean
@@ -1500,7 +1513,7 @@ smoke-fs-wal-flush:
 	@dd if=/dev/zero of=wal-flush.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush] every FLUSH CACHE fails with EIO; the journal must refuse to commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush.img \
-		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf \
+		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
 		REQUIRE_MARKER='WAL: FLUSH FAILED before commit header' \
 		FAIL_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		tools/smoke_test.sh boot.iso
@@ -1517,7 +1530,7 @@ smoke-fs-wal-flush-control:
 	@dd if=/dev/zero of=wal-flush-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush-control] barriers compiled out: the refusal must NOT appear"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush-control.img \
-		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf \
+		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		ABSENT_MARKER='WAL: FLUSH FAILED' \
 		tools/smoke_test.sh boot.iso

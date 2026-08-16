@@ -1420,6 +1420,13 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 >   `flush_to_disk`, so the *presence* of the command becomes visible through the kernel's
 >   reaction to its failure. A kernel with barriers prints
 >   `WAL: FLUSH FAILED before commit header - transaction aborted` and commits nothing.
+>   It runs under **`cache=writeback`, and must**: under `writethrough` QEMU may satisfy each
+>   guest write with a write *plus a flush*, so the injected error fails ordinary writes too —
+>   the volume never formats, `storage_unlock` fails, and the gate times out having tested
+>   nothing. That is not hypothetical; it is how this target failed in CI on its first run
+>   (`WAL_CRASHTEST: FAIL unlock`) while passing against a local QEMU 10.0.11 that satisfies
+>   writethrough with `O_DSYNC` and emits no per-write flush. Writeback keeps a write a write,
+>   leaving the guest's own `FLUSH CACHE` as the only `flush_to_disk` event.
 > - **`smoke-fs-wal-order`** traces the IDE command register and asserts the tail of the
 >   commit sequence is `0x30 0xe7 0x30 0xe7`. Presence is not enough: a barrier placed *after*
 >   the commit header would satisfy error injection identically while losing the write-ahead

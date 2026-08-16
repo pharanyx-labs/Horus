@@ -103,6 +103,12 @@ if [ -n "${SMOKE_DISK:-}" ]; then
     # They use SMOKE_DISK_BLKDEBUG to fail the flush instead, which is the one
     # configuration where issuing the command and checking its result are both
     # observable. See TESTS.md.
+    #
+    # Those gates DO pass SMOKE_DISK_CACHE=writeback, for a different reason than
+    # durability: under writethrough QEMU may satisfy each write with a write plus
+    # a flush, so an error injected on flush_to_disk fails ordinary writes as well
+    # and the volume never even formats. Writeback keeps a write a write, leaving
+    # the guest's explicit FLUSH CACHE as the only flush_to_disk event.
     CACHE_MODE="${SMOKE_DISK_CACHE:-writethrough}"
     if [ -n "${SMOKE_DISK_BLKDEBUG:-}" ]; then
         if [ ! -f "$SMOKE_DISK_BLKDEBUG" ]; then

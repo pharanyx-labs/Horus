@@ -377,23 +377,59 @@ unsafe fn nullify(c: &mut Capability) {
     c.generation = 0;
 }
 
-/// Bounded worklist size for a single revocation's descendant closure. A
-/// derivation subtree with more than this many members would need hundreds of
-/// derived copies of one lineage and does not occur in practice; if it ever
-/// happened, `revoke_subtree` falls back to a safe object-match superset rather
-/// than truncating the closure (which would leave a descendant live).
-const MAX_REVOKE_LINEAGE: usize = 256;
+/// Transient `typ` sentinels used only inside `revoke_subtree`, between its mark
+/// and sweep phases, to record subtree membership without a side array — see the
+/// documentation there for why the mark lives in `typ` and why that is safe.
+///
+/// These must never collide with a real capability type. They sit at the top of
+/// the `u32` range and the assertion below pins that: types are assigned upward
+/// from `CAP_NULL == 0` and there are a few dozen of them, so a collision would
+/// require the type space to grow by four billion.
+const CAP_MARK_NEW: u32 = 0xFFFF_FFFF;
+const CAP_MARK_DONE: u32 = 0xFFFF_FFFE;
+const _: () = {
+    assert!(CAP_MARK_NEW != CAP_NULL);
+    assert!(CAP_MARK_DONE != CAP_NULL);
+    assert!(CAP_MARK_NEW != CAP_MARK_DONE);
+};
 
+/// Mark every not-yet-marked capability whose `badge` names `parent_serial` — the
+/// direct children of one node of the derivation tree — as `CAP_MARK_NEW`.
+///
+/// Capabilities with `badge == 0` have no parent and are skipped, as are ones
+/// already carrying either sentinel, so a capability is marked at most once. That
+/// is what bounds the caller's fixpoint loop.
+///
+/// # Safety
+/// As `revoke_subtree`: `spaces` must be null or point to `space_count` valid
+/// `CSpaceDesc`s whose `caps`/`size` describe live arrays. Called under `cap_lock`.
 #[inline]
-fn set_contains(set: &[u32], v: u32) -> bool {
-    let mut i = 0;
-    while i < set.len() {
-        if set[i] == v {
-            return true;
-        }
-        i += 1;
+// Unused when the [I-3] control arm is compiled in, which selects the legacy
+// bounded closure instead. Not dead code in any shipping configuration.
+#[cfg_attr(feature = "revoke_legacy_bounded", allow(dead_code))]
+unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_serial: u32) {
+    if parent_serial == 0 {
+        return;
     }
-    false
+    for s in 0..space_count {
+        let d = &*spaces.add(s as usize);
+        if d.caps.is_null() {
+            continue;
+        }
+        let limit = if d.size > CNODE_SIZE { CNODE_SIZE } else { d.size };
+        for i in 0..limit {
+            let c = &mut *d.caps.add(i as usize);
+            if c.typ == CAP_NULL || c.typ == CAP_MARK_NEW || c.typ == CAP_MARK_DONE {
+                continue;
+            }
+            if c.serial == 0 || c.badge == 0 {
+                continue;
+            }
+            if c.badge == parent_serial {
+                c.typ = CAP_MARK_NEW;
+            }
+        }
+    }
 }
 
 /// Revoke the derivation *subtree* rooted at `root_serial` across every cspace in
@@ -413,23 +449,166 @@ fn set_contains(set: &[u32], v: u32) -> bool {
 /// serial is still passed here as the closure seed, and any un-nulled cap holding
 /// `root_serial` (e.g. the revoke-by-values path) is nulled by the sweep below.
 ///
-/// Descendants are found with a bounded worklist of revoked serials
-/// (`MAX_REVOKE_LINEAGE`). If a subtree overflows the worklist, `overflow` is set
-/// and the null pass ALSO nulls every cap sharing `root_object`. Because
-/// mint/transfer/grant all preserve `object`, that object set is a *superset* of
-/// the descendant set, so the fallback can only over-approximate — a descendant
-/// can never survive. Revocation is therefore complete (fail-safe) in every case,
-/// and exact in every realistic one.
+/// Descendants are found by marking IN PLACE and iterating to a fixpoint, so the
+/// closure is exact at any subtree size and no capability outside the subtree is
+/// ever touched (finding **[I-3]**, roadmap 1.6).
+///
+/// Until 2026-08-16 the closure accumulated revoked serials in a fixed
+/// `MAX_REVOKE_LINEAGE`-entry array, and a subtree larger than that set
+/// `overflow`, whereupon the null pass ALSO nulled every capability sharing
+/// `root_object`. That fallback was safe in the "no descendant survives"
+/// direction — mint/transfer/grant preserve `object`, so the object set is a
+/// superset of the descendant set — but it is reachable from ring 3: deriving
+/// more than `MAX_REVOKE_LINEAGE` capabilities and then revoking the root made
+/// the kernel destroy every *unrelated peer's* capability naming the same object.
+/// An unprivileged task could therefore revoke authority it had never been
+/// delegated, which is a denial of service against a peer and, worse, an
+/// over-broad revocation the capability graph does not describe.
+///
+/// The replacement needs no side array and no allocation, which matters in a
+/// `no_std` kernel where the previous bound existed precisely because there is
+/// nowhere to grow one. The mark lives in the capability's own `typ` field, in
+/// two states, while `serial` and `badge` are left intact so the derivation tree
+/// is still readable mid-sweep:
+///
+///   `CAP_MARK_NEW`  — in the subtree; its children have not been expanded yet.
+///   `CAP_MARK_DONE` — in the subtree; its children have been expanded.
+///
+/// Each capability is marked at most once and moves `NEW -> DONE` exactly once,
+/// so the loop performs at most one expansion per capability and terminates
+/// without needing a depth bound or a cycle check. Cost is O(subtree × slots) —
+/// proportional to what the revoker actually derived, rather than to the whole
+/// system, and revocation is not a hot path.
+///
+/// The `typ` sentinels are only ever observed between the mark and sweep phases
+/// below, both of which run under `cap_lock` with no early return between them.
+/// Should that ever cease to hold, a capability left carrying a sentinel is not
+/// a valid type and fails every type check — the fail-closed direction.
 ///
 /// # Safety
 /// `spaces` must be null or point to `space_count` valid `CSpaceDesc`s whose
 /// `caps`/`size` describe live arrays. Called under `cap_lock`.
+#[cfg(not(feature = "revoke_legacy_bounded"))]
 unsafe fn revoke_subtree(
     spaces: *const CSpaceDesc,
     space_count: u32,
     root_serial: u32,
     root_object: u64,
 ) {
+    if spaces.is_null() {
+        return;
+    }
+
+    // Revoke-by-object has no lineage seed by definition, so the object sweep is
+    // not a fallback there — it is the only complete answer, and it is exact for
+    // a shared-object lineage. This is the one path that still nulls by object.
+    let by_object = root_serial == 0;
+
+    if !by_object {
+        // Seed: mark the root's direct children. The root capability itself is
+        // handled by the sweep below via `serial == root_serial`, so it is not
+        // marked here and cannot be mistaken for its own child.
+        mark_children_of(spaces, space_count, root_serial);
+
+        // Expand to a fixpoint. Each pass promotes every NEW mark to DONE and
+        // marks that capability's children NEW; a mark created late in a pass is
+        // picked up by the next one. Terminates because a capability is marked at
+        // most once and promoted at most once.
+        loop {
+            let mut progress = false;
+            for s in 0..space_count {
+                let d = &*spaces.add(s as usize);
+                if d.caps.is_null() {
+                    continue;
+                }
+                let limit = if d.size > CNODE_SIZE { CNODE_SIZE } else { d.size };
+                for i in 0..limit {
+                    let c = &mut *d.caps.add(i as usize);
+                    if c.typ != CAP_MARK_NEW {
+                        continue;
+                    }
+                    c.typ = CAP_MARK_DONE;
+                    let serial = c.serial;
+                    if serial != 0 {
+                        mark_children_of(spaces, space_count, serial);
+                    }
+                    progress = true;
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+    }
+
+    // Sweep. Null every marked capability (the exact descendant set), the root's
+    // own serial, and — only on the by-object path — every cap sharing the root
+    // object.
+    for s in 0..space_count {
+        let d = &*spaces.add(s as usize);
+        if d.caps.is_null() {
+            continue;
+        }
+        let limit = if d.size > CNODE_SIZE { CNODE_SIZE } else { d.size };
+        for i in 0..limit {
+            let c = &mut *d.caps.add(i as usize);
+            if c.typ == CAP_NULL {
+                continue;
+            }
+            let marked = c.typ == CAP_MARK_NEW || c.typ == CAP_MARK_DONE;
+            let hit = marked
+                || (root_serial != 0 && c.serial == root_serial)
+                || (by_object && root_object != 0 && c.object == root_object);
+            if hit {
+                // Bump this capability's serial generation BEFORE nulling it
+                // (nullify clears the serial). This is the active backstop
+                // (finding 3.3): a detached snapshot/copy carrying this serial
+                // now fails `lineage_check`, independently of the structural
+                // null below. Exactly this subtree's serials are bumped, so a
+                // sibling/ancestor/independent peer (a different serial) is
+                // untouched (audit A1).
+                let _ = bump_lineage(c.serial);
+                nullify(c);
+                if !d.caps_in_use.is_null() && *d.caps_in_use > 0 {
+                    *d.caps_in_use -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// CONTROL ARM for **[I-3]** — the pre-2026-08-16 revocation closure, restored
+/// verbatim behind `--features revoke_legacy_bounded` so the defect stays
+/// reproducible on demand and the regression tests above have a failing arm.
+///
+/// Descendants accumulate in a fixed `MAX_REVOKE_LINEAGE` array. A subtree larger
+/// than that sets `overflow`, and the null pass then also nulls every capability
+/// sharing `root_object`. That is safe in the "no descendant survives" direction
+/// but destroys unrelated peers' capabilities, and ring 3 can force it by
+/// deriving more than 256 capabilities before revoking the root.
+///
+/// # Safety
+/// As the non-legacy `revoke_subtree`.
+#[cfg(feature = "revoke_legacy_bounded")]
+unsafe fn revoke_subtree(
+    spaces: *const CSpaceDesc,
+    space_count: u32,
+    root_serial: u32,
+    root_object: u64,
+) {
+    const MAX_REVOKE_LINEAGE: usize = 256;
+
+    fn set_contains(set: &[u32], v: u32) -> bool {
+        let mut i = 0;
+        while i < set.len() {
+            if set[i] == v {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
     if spaces.is_null() {
         return;
     }
@@ -440,8 +619,6 @@ unsafe fn revoke_subtree(
     if root_serial != 0 {
         revoked[0] = root_serial;
         n = 1;
-        // Grow the revoked-serial set one BFS layer per pass until it is closed
-        // under "is a child (badge) of an already-revoked serial".
         loop {
             let mut added = false;
             for s in 0..space_count {
@@ -473,13 +650,9 @@ unsafe fn revoke_subtree(
             }
         }
     } else {
-        // No serial seed (revoke-by-object): fall back to the object sweep, which
-        // is complete for a shared-object lineage.
         overflow = true;
     }
 
-    // Null every cap in the revoked set (the root's descendants), plus — only on
-    // overflow / no-seed — every cap sharing the root object (a safe superset).
     for s in 0..space_count {
         let d = &*spaces.add(s as usize);
         if d.caps.is_null() {
@@ -494,13 +667,6 @@ unsafe fn revoke_subtree(
             let hit = set_contains(&revoked[..n], c.serial)
                 || (overflow && root_object != 0 && c.object == root_object);
             if hit {
-                // Bump this capability's serial generation BEFORE nulling it
-                // (nullify clears the serial). This is the active backstop
-                // (finding 3.3): a detached snapshot/copy carrying this serial
-                // now fails `lineage_check`, independently of the structural
-                // null below. Exactly this subtree's serials are bumped, so a
-                // sibling/ancestor/independent peer (a different serial) is
-                // untouched (audit A1).
                 let _ = bump_lineage(c.serial);
                 nullify(c);
                 if !d.caps_in_use.is_null() && *d.caps_in_use > 0 {
@@ -1357,38 +1523,68 @@ mod tests {
         }
     }
 
-    /// The safe overflow fallback: if a derivation subtree is larger than the
-    /// bounded worklist (`MAX_REVOKE_LINEAGE`), revocation falls back to nulling
-    /// every cap sharing the root object — a complete superset of the descendant
-    /// set — so no descendant can ever survive. Over-approximation, never under.
+    /// **[I-3]** regression, roadmap 1.6. A large derivation subtree must be
+    /// revoked EXACTLY, and an unrelated peer's capability that merely shares the
+    /// same object must survive it.
+    ///
+    /// This is the test that used to assert the opposite. The closure kept revoked
+    /// serials in a fixed 256-entry array, and a subtree larger than that nulled
+    /// every capability sharing the root object instead. That never left a
+    /// descendant alive, so it was safe in the direction that matters — but it was
+    /// reachable from ring 3, and it destroyed authority belonging to tasks that
+    /// had no relationship to the revoker beyond naming the same object.
+    ///
+    /// The subtree here is deliberately built past the old 256 bound and is also
+    /// three levels deep, so a closure that stopped at direct children, or at a
+    /// fixed number of them, fails.
     #[test]
-    fn test_revoke_overflow_falls_back_to_complete_object_sweep() {
+    fn test_revoke_large_subtree_is_exact_and_spares_independent_peers() {
         let _lin = LineageTestGuard::new();
         const ROOT_SERIAL: u32 = 0x8000_0001;
         const OBJ: u64 = 0xF000;
-        // Two full 256-slot cspaces of same-object children of the root (~510
-        // descendants) — comfortably past MAX_REVOKE_LINEAGE (256), forcing the
-        // overflow path.
+
         let mut a = [cap(0, 0, 0, 0, 0, 0); 256];
         let mut b = [cap(0, 0, 0, 0, 0, 0); 256];
-        // Root in a[0]; the caller (*_global) nulls it before the sweep, and its
+
+        // Root in a[0]; the *_global caller nulls it before the sweep and its
         // serial remains the closure seed.
         a[0] = cap(4, 0x3f, OBJ, 0, ROOT_SERIAL, 0);
+
         let mut serial = 0x9000_0000u32;
-        let mut placed = 0usize;
-        for c in a.iter_mut().skip(1) {
+        let mut descendants = 0usize;
+
+        // Level 1: fill the rest of cspace A with direct children of the root.
+        let mut level1 = [0u32; 255];
+        for (k, c) in a.iter_mut().skip(1).enumerate() {
             serial += 1;
             *c = cap(4, 0x3f, OBJ, ROOT_SERIAL, serial, 0);
-            placed += 1;
+            level1[k] = serial;
+            descendants += 1;
         }
-        for c in b.iter_mut() {
+
+        // Levels 2 and 3 in cspace B: grandchildren of the root, then one
+        // great-grandchild, so depth is exercised as well as breadth. Two slots
+        // at the end of B are reserved for the peers that must survive.
+        let mut deepest = 0u32;
+        for (k, c) in b.iter_mut().enumerate().take(256 - 2) {
             serial += 1;
-            *c = cap(4, 0x3f, OBJ, ROOT_SERIAL, serial, 0);
-            placed += 1;
+            let parent = if k == 0 { level1[0] } else { deepest };
+            *c = cap(4, 0x3f, OBJ, parent, serial, 0);
+            deepest = serial;
+            descendants += 1;
         }
-        assert!(placed > MAX_REVOKE_LINEAGE, "test must exceed the worklist to hit overflow");
-        let mut ciu_a = 0u32;
-        let mut ciu_b = 0u32;
+        assert!(descendants > 256,
+            "the subtree must exceed the old 256-entry worklist to be a regression test");
+
+        // The two capabilities that must SURVIVE: same object, no lineage to the
+        // root. b[254] is a completely independent root; b[255] is derived from
+        // it. Under the old overflow fallback both were destroyed.
+        const PEER_SERIAL: u32 = 0x7000_0001;
+        b[254] = cap(3, 0x1, OBJ, 0, PEER_SERIAL, 0);
+        b[255] = cap(3, 0x1, OBJ, PEER_SERIAL, 0x7000_0002, 0);
+
+        let mut ciu_a = 256u32;
+        let mut ciu_b = 256u32;
         unsafe {
             let descs = [
                 CSpaceDesc { caps: a.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_a) },
@@ -1397,10 +1593,86 @@ mod tests {
             assert!(rust_cap_revoke_global(
                 a.as_mut_ptr(), 256, 0, addr_of_mut!(ciu_a),
                 descs.as_ptr(), 2, core::ptr::null_mut()));
-            for c in a.iter().chain(b.iter()) {
-                assert_eq!(c.typ, CAP_NULL,
-                    "overflow fallback must revoke every same-object descendant");
+
+            // Every descendant, at every depth, is gone.
+            for (i, c) in a.iter().enumerate() {
+                assert_eq!(c.typ, CAP_NULL, "a[{i}] is in the subtree and must be revoked");
             }
+            for (i, c) in b.iter().enumerate().take(256 - 2) {
+                assert_eq!(c.typ, CAP_NULL, "b[{i}] is in the subtree and must be revoked");
+            }
+
+            // No sentinel may survive the sweep: a capability left carrying one
+            // would not be a valid type, and finding one here means the mark and
+            // sweep phases have gone out of step.
+            for c in a.iter().chain(b.iter()) {
+                assert_ne!(c.typ, CAP_MARK_NEW, "a mark sentinel escaped the sweep");
+                assert_ne!(c.typ, CAP_MARK_DONE, "a mark sentinel escaped the sweep");
+            }
+
+            // The independent peers are untouched — the whole point of [I-3].
+            assert_eq!(b[254].typ, 3, "an independent same-object cap must survive");
+            assert_eq!(b[254].serial, PEER_SERIAL, "and keep its identity");
+            assert_eq!(b[255].typ, 3, "so must a cap derived from it");
+            assert!(!rust_cap_lookup(b.as_mut_ptr(), 256, 254, 0x1).is_null(),
+                "the independent peer stays usable after the revoke");
+            assert!(!rust_cap_lookup(b.as_mut_ptr(), 256, 255, 0x1).is_null(),
+                "and so does its child");
+        }
+    }
+
+    /// The closure must be exact at depth, not merely at breadth: a chain of
+    /// derivations longer than any fixed worklist is still fully revoked, and a
+    /// sibling chain hanging off an unrelated root is not.
+    #[test]
+    fn test_revoke_deep_chain_is_fully_closed() {
+        let _lin = LineageTestGuard::new();
+        const ROOT_SERIAL: u32 = 0x8100_0001;
+        const OBJ: u64 = 0xE000;
+
+        let mut a = [cap(0, 0, 0, 0, 0, 0); 256];
+        a[0] = cap(4, 0x3f, OBJ, 0, ROOT_SERIAL, 0);
+
+        // A single 300-link chain spread across two cspaces, so the closure has
+        // to iterate far past the old bound one level at a time.
+        let mut b = [cap(0, 0, 0, 0, 0, 0); 256];
+        let mut serial = 0xA000_0000u32;
+        let mut parent = ROOT_SERIAL;
+        for c in a.iter_mut().skip(1) {
+            serial += 1;
+            *c = cap(4, 0x3f, OBJ, parent, serial, 0);
+            parent = serial;
+        }
+        for c in b.iter_mut().take(45) {
+            serial += 1;
+            *c = cap(4, 0x3f, OBJ, parent, serial, 0);
+            parent = serial;
+        }
+
+        // An unrelated chain sharing the object; none of it may be revoked.
+        const OTHER: u32 = 0x7100_0001;
+        b[100] = cap(3, 0x1, OBJ, 0, OTHER, 0);
+        b[101] = cap(3, 0x1, OBJ, OTHER, 0x7100_0002, 0);
+
+        let mut ciu_a = 256u32;
+        let mut ciu_b = 47u32;
+        unsafe {
+            let descs = [
+                CSpaceDesc { caps: a.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_b) },
+            ];
+            assert!(rust_cap_revoke_global(
+                a.as_mut_ptr(), 256, 0, addr_of_mut!(ciu_a),
+                descs.as_ptr(), 2, core::ptr::null_mut()));
+
+            for (i, c) in a.iter().enumerate() {
+                assert_eq!(c.typ, CAP_NULL, "a[{i}] is link {i} of the chain");
+            }
+            for (i, c) in b.iter().enumerate().take(45) {
+                assert_eq!(c.typ, CAP_NULL, "b[{i}] is deep in the chain and must be revoked");
+            }
+            assert_eq!(b[100].typ, 3, "the unrelated chain's root must survive");
+            assert_eq!(b[101].typ, 3, "and its child");
         }
     }
 

@@ -48,12 +48,15 @@ Tick what you actually ran, and paste the relevant output if a test is central t
 - [ ] Subsystem self-tests, list which: <!-- smoke-wx / smoke-smp / smoke-fs / smoke-cow / smoke-tpm / ... -->
 - [ ] New or updated tests added for the logic this PR changes
 
-> **Note.** `smoke-captest` is merge-gating as of 2026-08-15 and *will* stop you. Every other
-> security-specific `smoke-*` job is still advisory — `smoke-wx`, `smoke-cpu`,
-> `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`, `smoke-stackguard`, `smoke-heap64`,
-> `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`, `smoke-newlib-tamper` and CodeQL
-> can all fail while this PR merges green (finding **[C-6]**, roadmap 4.2). Run those locally;
-> CI will not stop you.
+> **Note.** As of 2026-08-16 the security suite **is** merge-gating: every `smoke-*` security
+> job and CodeQL are classified as required in `.github/ci-gating.yml`. CI *will* stop you, so
+> running these locally saves a round trip rather than covering a gap. Read the live count from
+> `gh api repos/pharanyx-labs/Horus/rulesets/19007209` — the ruleset is reconciled by hand and
+> lags by one merge whenever a gate is added.
+>
+> Exactly four jobs are exempt, each with its reason in `.github/ci-gating.yml`: `smoke-fs-wal`
+> (**[I-11]**), `smoke-session-smp-soak` (**[G-8]**), `fuzz` and `kani`. If you add a CI job,
+> the `ci-gating` check fails until you classify it there — that is deliberate.
 
 ---
 

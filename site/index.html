@@ -1569,24 +1569,44 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">C-6</span>All but one of the security tests do not gate merges</h3>
+            <h3><span class="id">C-6</span>Which tests gate a merge is reconciled by hand</h3>
             <p>
-              Of 64 CI jobs, <strong>22</strong> are required status checks. Until 2026-08-15
-              <strong>not one of them was a security gate</strong> — including
-              <code>smoke-captest</code>, the capability conformance suite that is the named
-              witness for eight of the security properties on this page. It is required now, so
-              a change that breaks the capability refusals can no longer merge green. That is
-              exactly how the 2026-07 critical finding survived every automated gate.
+              Until 2026-08-15, <strong>not one of the 22 required status checks was a security
+              gate</strong> — including <code>smoke-captest</code>, the capability conformance
+              suite that is the named witness for eight of the security properties on this page.
+              That is exactly how the 2026-07 critical finding survived every automated gate.
+              Promoting it helped; it did not fix the mechanism that produced the omission.
             </p>
             <p>
-              The rest of the suite is still advisory: kernel W^X, measured boot, boot-module
-              tamper rejection, SMEP/SMAP presence, flush-on-switch and stack-guard reseed can
-              all fail while a pull request merges. And promoting one job does not fix the
-              mechanism that produced the omission — the required list is maintained by hand in
-              a branch ruleset that no commit touches, so every job added to the workflow lands
-              in the advisory set by default and nothing asks whether it should have. When this
-              was first recorded there were about 30 jobs and 21 required; there are now 66 and
-              22. Generating the required list from the workflow file is what would close it.
+              The required list lived only in a branch ruleset that no commit touches, so every
+              job added to the workflow landed in the advisory set <em>by default</em> and
+              nothing asked whether it should have. It cost a security gate twice — once for
+              <code>smoke-captest</code>, and again on 2026-08-16 when the two journal
+              durability gates landed advisory in the very commit that fixed the defect they
+              witness.
+            </p>
+            <p>
+              Since 2026-08-16 the decision is checked in. Every job in both workflows must be
+              listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
+              the build if any is in neither — there is no default, because defaulting was the
+              defect. It caught an unclassified static-analysis job on its first run. The
+              intended set is 67 gating and 4 exempted, and the promotions are backed by
+              measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
+              failures in 1152 job-executions.
+            </p>
+            <p>
+              The ruleset was synced toward that set on 2026-08-16, from <strong>22 required
+              checks</strong>, so every security test named above blocks a merge. The first
+              attempt required three checks the main branch could not yet produce, which blocks
+              every pull request on a check that never reports — promotion has to lag the job
+              landing by one merge, and a tool now enforces that.
+            </p>
+            <p>
+              <strong>It is still not closed.</strong> Reading a ruleset needs permissions the
+              workflow token cannot be granted, so CI proves the classification is complete but
+              not that the ruleset matches it. The two could diverge again through a change made
+              in the web UI, and nothing in CI would notice — verifying it remains a command
+              someone has to remember to run.
             </p>
           </li>
           <li>

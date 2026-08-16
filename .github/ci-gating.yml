@@ -1,0 +1,145 @@
+# Which CI jobs gate a merge, which do not, and why.
+#
+# EVERY job in ci.yml must appear in exactly one of the two lists below.
+# `tools/check_ci_gating.py` fails the build if any job is in neither, or in
+# both, so adding a job to ci.yml forces the gating question at review time
+# instead of silently answering it. There is no default: an exemption is a
+# decision, and it gets written down.
+#
+# This inverts the maintenance burden that produced finding [C-6]. The live
+# required list lives in branch ruleset 19007209, which no commit touches, so
+# every job added to ci.yml landed in the advisory set BY DEFAULT and nothing
+# asked whether it should have. That is how the ratio drifted from 21-of-30 to
+# 22-of-66 without a decision ever being taken — twice costing a security gate:
+# `smoke-captest`, the named witness for eight of SECURITY.md's S-properties,
+# sat advisory until 2026-08-15, and the two [I-10] durability gates landed
+# advisory on 2026-08-16 in the very commit that fixed the defect they witness.
+#
+# An entry naming a job that no longer exists is also an error, so this file
+# cannot rot into a list of things that are not there.
+#
+# After changing this file, sync the ruleset — CI cannot do it, because reading
+# a ruleset needs Administration permissions the workflow GITHUB_TOKEN does not
+# have and cannot be granted:
+#
+#     tools/check_ci_gating.py --sync-ruleset       # write it
+#     tools/check_ci_gating.py --check-ruleset      # verify it took
+#
+# NEVER REQUIRE A CONTEXT THE BASE BRANCH CANNOT PRODUCE. A required context whose
+# job does not exist on `main` never reports, so every pull request is blocked on
+# it indefinitely — and it presents as an ordinary red check rather than as a
+# misconfiguration. Promotion therefore LAGS the job landing by one merge: add the
+# job here in the PR that introduces it, and re-run --sync-ruleset only after that
+# PR has merged. Syncing from a feature branch froze the repository on 2026-08-16;
+# `tools/prune_unsatisfiable_checks.py` recovers from that and encodes the rule.
+#
+# So the checked-in classification is the decision record, CI enforces that it
+# is COMPLETE, and reconciling the ruleset to it stays a visible manual step.
+
+# Merge-gating. Any of these can block a pull request.
+required:
+  # codeql.yml. The static-analysis gate; roadmap 4.2 named it as still to
+  # promote, and this mechanism caught it sitting unclassified on first run.
+  - analyze
+
+  # ci.yml
+  - altconfigs
+  - ci-gating
+  - kernel
+  - reproducible
+  - rust
+  - security
+  - smoke
+  - smoke-aslr
+  - smoke-aspace
+  - smoke-captest
+  - smoke-console
+  - smoke-console-isolation
+  - smoke-console-smp
+  - smoke-coreutils-shell
+  - smoke-cow
+  - smoke-cpu
+  - smoke-e820
+  - smoke-elf
+  - smoke-elf64
+  - smoke-flush
+  - smoke-fs
+  - smoke-fs-conc
+  - smoke-fs-large
+  - smoke-fs-perms
+  - smoke-fs-persist
+  - smoke-fs-wal-flush
+  - smoke-fs-wal-order
+  - smoke-heap64
+  - smoke-init-fs
+  - smoke-ioport
+  - smoke-irq
+  - smoke-irq-policy
+  - smoke-kfault
+  - smoke-mapphys
+  - smoke-modules
+  - smoke-modules-tamper
+  - smoke-newlib
+  - smoke-newlib-tamper
+  - smoke-notify
+  - smoke-nzcow
+  - smoke-percpu
+  - smoke-pipe
+  - smoke-preempt
+  - smoke-proc
+  - smoke-recvblock
+  - smoke-recvblock-smp
+  - smoke-resume-guard
+  - smoke-sched-invariants
+  - smoke-session
+  - smoke-session-smp
+  - smoke-signal
+  - smoke-smp
+  - smoke-smt
+  - smoke-stackguard
+  - smoke-tcc
+  - smoke-term
+  - smoke-tpm
+  - smoke-tpm-seal
+  - smoke-tpm-seal-roundtrip
+  - smoke-tpm-tamper
+  - smoke-tsd
+  - smoke-wx
+  - smoke-wx-smp
+
+# Exempt, each with the reason it cannot or should not gate a merge.
+advisory:
+  smoke-fs-wal: >-
+    [I-11] Nondeterministic by construction. The harness kills QEMU the instant
+    a marker appears on serial, then reboots on the same image; the marker
+    proves the guest reached that point, not that its journal writes completed,
+    so on a loaded runner boot 2 can fail against an unmodified kernel. It was a
+    required check until 2026-08-16 and is DEMOTED here deliberately: a flaky
+    gate that blocks merges spuriously teaches the maintainer to re-run red
+    checks, which costs more than the coverage it buys. The durability property
+    it used to be credited with is now witnessed by smoke-fs-wal-flush and
+    smoke-fs-wal-order, both deterministic and both required. Promote it back
+    when [I-11] is fixed.
+
+  smoke-session-smp-soak: >-
+    [G-8] Fails at roughly 2-3% per boot on current main, and measurably so: 1
+    run in 18 sampled on 2026-08-16. The proximate mechanism is established (the
+    interrupt dispatcher returns a resume %rsp that is not a kernel stack
+    pointer) but its origin is not, so this is not a flaky test — it is a real
+    defect the job is correctly reporting. It stays advisory because a
+    known-open finding should not block unrelated work, and it keeps its
+    evidence (full serial logs uploaded as artifacts) so each failure is
+    diagnostic rather than merely red.
+
+  fuzz: >-
+    Advisory by design. cargo-fuzz runs each target for a fixed 30-second
+    budget, so a green result means "no crash found in 30 seconds", not "no
+    crash exists". Time-boxed search is evidence of effort, not of absence, and
+    gating on it would convert a scheduling hiccup into a merge block while
+    adding no assurance. A crash it does find is a finding to triage, not a
+    check to re-run.
+
+  kani: >-
+    Manual-only and skipped on ordinary runs (see its `if:` guard), so it has no
+    conclusion to gate on. The proofs it runs are real assurance but too slow
+    for every push; they are exercised deliberately rather than continuously.

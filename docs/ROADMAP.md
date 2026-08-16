@@ -701,17 +701,44 @@ Ordered as in the audit's §7.5.
 - **4.2 🚧 Gate the security tests — [C-6].** `strict_required_status_checks_policy` is now
   **true**, and `smoke-captest` — the witness for eight of `SECURITY.md`'s S-numbered
   properties, and the single most consequential omission — became a required check on
-  2026-08-15. The required set is 22 of 66 jobs. Still to promote: `smoke-wx` / `-wx-smp`,
-  `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`, `smoke-stackguard`,
-  `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`,
-  `smoke-newlib-tamper`, CodeQL.
+  2026-08-15, when the required set was 22 of 66 jobs and it was the only security gate among
+  them. `smoke-wx` / `-wx-smp`, `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`,
+  `smoke-flush`, `smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`,
+  `smoke-resume-guard`, `smoke-newlib-tamper` and CodeQL are all promoted in the classification
+  below, and become gating the moment the ruleset is synced to it.
   *Promoting jobs one at a time is not the fix.* The required list lives in the ruleset, which
   no commit touches, so every job added to `ci.yml` lands in the advisory set by default and
   nothing asks whether it should have — which is why the ratio drifted from 21-of-30 to
-  21-of-64 without a decision ever being taken. Generate the required list from `ci.yml` and
-  fail CI when a job appears in neither it nor an explicit, reasoned advisory list. Two jobs
-  belong on that advisory list today with their reasons already written down:
-  `smoke-fs-wal` (**[I-11]**) and `smoke-session-smp-soak` (**[G-8]**), both nondeterministic.
+  21-of-64 without a decision ever being taken.
+
+  **The mechanism was closed on 2026-08-16.** `.github/ci-gating.yml` is a checked-in decision
+  record: every job in `ci.yml` and `codeql.yml` must be listed under `required:` or under
+  `advisory:` with a written reason, and the `ci-gating` job fails the build when any job is in
+  neither, in both, or names a job that no longer exists. No default — defaulting is the
+  defect. It caught CodeQL unclassified on its first run, which is the same omission class the
+  finding describes.
+
+  The intended set is **67 required, 4 exempted** (`smoke-fs-wal` — **[I-11]**;
+  `smoke-session-smp-soak` — **[G-8]**; `fuzz` — a 30-second time-boxed search is evidence of
+  effort, not of absence; `kani` — manual-only, no conclusion to gate on). The promotions are
+  backed by measurement: across 18 CI runs sampled on 2026-08-16, 64 of 66 jobs had zero
+  failures in 1152 job-executions. `smoke-fs-wal` is *demoted* — a flaky required check trains
+  the maintainer to re-run red, and its durability claim is now carried by the deterministic
+  `smoke-fs-wal-flush` / `smoke-fs-wal-order`.
+
+  **Synced 2026-08-16**, 22 required contexts toward 67, strict policy true, no bypass actors.
+  The first attempt was run from a feature branch and so required three contexts `main` could
+  not produce — the `ci-gating` job and the two [I-10] gates — which blocks every PR on a check
+  that never reports. `tools/prune_unsatisfiable_checks.py` dropped them (67 → 64) and encodes
+  the rule: **never require a context the base branch cannot produce.** Promotion lags the job
+  landing by one merge; re-run `--sync-ruleset` after each such PR.
+
+  **What keeps 4.2 open is verification, not promotion.** Reading a ruleset needs
+  Administration permissions the workflow token does not have, so CI proves the classification
+  is complete but not that the ruleset matches it; the two could diverge again via the GitHub
+  UI and nothing in CI would notice. `--check-ruleset` is the check and must be run
+  deliberately. Closing this fully needs a CI token with the scope to read the ruleset — or an
+  explicit decision to accept the manual reconciliation as residual risk, recorded here.
 - **4.3 ⬜ Hard-fail `gitleaks` and `cargo-audit`** (keep Semgrep/Trivy advisory until their
   false-positive rate on a freestanding kernel is characterised).
 

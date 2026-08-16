@@ -1520,15 +1520,16 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 
 ## CI
 
-`.github/workflows/ci.yml` defines **66** jobs, run on every push and pull request;
-`codeql.yml` adds C/C++ static analysis (advisory, plus a weekly schedule).
+`.github/workflows/ci.yml` defines **67** jobs, run on every push and pull request;
+`codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule). Both are covered
+by the gating classification below.
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
 
 ### A known weakness in the gate
 
-Of those 66 jobs, **22 are required status checks** — read the current set from
+Of those, **22 were required status checks** before 2026-08-16 — read the current set from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this file, which is the kind of
 hand-maintained number this document exists to distrust.
 
@@ -1537,18 +1538,61 @@ S-numbered properties in `SECURITY.md`, and until then it could not block a merg
 that broke the capability refusal suite went green, which is precisely how **[C-1]** survived
 every automated gate in the first place.
 
-The rest of the security suite is still advisory: `smoke-wx`, `smoke-cpu`, `smoke-tpm*`,
-`smoke-modules-tamper`, `smoke-flush`, `smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`,
-`smoke-percpu`, `smoke-resume-guard`, `smoke-newlib-tamper` and CodeQL can all fail while a
-pull request merges green. So the standing advice is unchanged: **run the security targets
-locally before opening a PR** — CI will not stop you.
+This is finding **[C-6]** and roadmap item 4.2, and promoting one job never closed it. The
+mechanism was the problem: the required list lived only in the ruleset, which no commit
+touches, so every job added to `ci.yml` landed in the advisory set **by default** and nothing
+asked whether it should have. When this finding was filed there were ~30 jobs and 21 required;
+immediately before 2026-08-16 there were 66 and 22.
 
-This is finding **[C-6]** and roadmap item 4.2, and promoting one job does not close it. The
-mechanism is the problem: the required list lives in the ruleset, which no commit touches, so
-every job added to `ci.yml` lands in the advisory set by default and nothing asks whether it
-should have. When this finding was filed there were ~30 jobs and 21 required; there are now 66
-and 22. Generating the required list from `ci.yml` — and failing CI when a job is in neither
-that list nor an explicit, reasoned advisory list — is the fix.
+### The classification is now checked in
+
+`.github/ci-gating.yml` lists every job in `ci.yml` and `codeql.yml` under either `required:`
+or `advisory:` **with a written reason**. The `ci-gating` job (and `make check-gating`) fails
+the build when a job is in neither, in both, or names a job that no longer exists. There is no
+default — defaulting is the defect. Run it before opening a PR; it is pure text analysis, no
+build and no QEMU.
+
+Falsified on 2026-08-16, three ways, each confirmed to exit non-zero against the passing
+baseline:
+
+| Reintroduced defect | Result |
+|---|---|
+| A new job added to `ci.yml`, classified nowhere | `job 'smoke-brand-new-gate' is in neither list` |
+| An advisory entry naming a job that no longer exists | `advisory job 'smoke-deleted-long-ago' is not defined in any workflow` |
+| An advisory entry with a placeholder reason (`slow`) | `advisory job 'smoke-tcc' has no substantive reason (got 4 chars…)` |
+
+It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
+the same omission class the finding describes.
+
+The intended set is **67 required contexts and 4 reasoned exemptions** — `smoke-fs-wal`
+(**[I-11]**), `smoke-session-smp-soak` (**[G-8]**), `fuzz` (a fixed 30-second search is
+evidence of effort, not of absence) and `kani` (manual-only, so there is no conclusion to gate
+on). The promotions are backed by measurement, not optimism: across 18 CI runs sampled on
+2026-08-16, **64 of 66 jobs had zero failures over 1152 job-executions**; the only two that
+ever failed are `security` (2/18, both deliberate, during #154) and `smoke-session-smp-soak`
+(1/18, consistent with [G-8]'s documented 2–3% per boot).
+
+`smoke-fs-wal` is deliberately **demoted** from required. A flaky gate that blocks merges
+spuriously teaches the maintainer to re-run red checks, which costs more than the coverage it
+buys, and the durability property it used to be credited with is now witnessed by the
+deterministic `smoke-fs-wal-flush` and `smoke-fs-wal-order`.
+
+### What this does *not* do
+
+**CI cannot verify the ruleset.** The ruleset was synced on 2026-08-16 —
+`tools/check_ci_gating.py --sync-ruleset` took it from 22 required contexts toward 67,
+preserving `strict_required_status_checks_policy` and bypass actors, and re-read it to confirm.
+Run from a feature branch, it also required three contexts `main` could not yet produce, which
+blocks every PR on a check that never reports; `tools/prune_unsatisfiable_checks.py` dropped
+them (67 → 64) and encodes the rule that promotion must **lag** the job landing by one merge. So every
+security target now blocks a merge, and the old advice to run them locally *because CI will not
+stop you* no longer applies.
+
+But reading a ruleset needs Administration permissions the workflow `GITHUB_TOKEN` does not
+have and cannot be granted, so the `ci-gating` job proves the classification is **complete**,
+not that the ruleset **matches** it. A change made in the GitHub UI could reopen the gap and
+nothing in CI would notice. `--check-ruleset` is the check; it has to be run deliberately, and
+it is the reason **[C-6]** stays open.
 
 `strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
 passed CI against a stale base. (This document previously said it was false; that was correct

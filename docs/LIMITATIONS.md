@@ -520,7 +520,7 @@ tests the property the author had in mind rather than the property the documenta
 The assurance Horus can honestly claim today is *"thoroughly automatically verified"*, not
 *"independently reviewed"*.
 
-### 5.2 Security tests are not merge-gating — **[C-6]**
+### 5.2 All but one of the security tests are not merge-gating — **[C-6]**
 
 `.github/workflows/ci.yml` defines **64** jobs. Ruleset `19007209` requires **22** of them, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,

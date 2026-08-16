@@ -35,8 +35,9 @@ audited by a third party, and has known unfixed security defects.
 > detects the bug.
 
 Horus remains **research-grade**. It has not been independently audited, no security-critical
-change has ever been reviewed by a second person (**[C-5]**), and the security-specific CI
-jobs are not merge-gating (**[C-6]**). Open findings — an unflushed write-ahead journal
+change has ever been reviewed by a second person (**[C-5]**), and every security-specific CI
+job except `smoke-captest` is still not merge-gating (**[C-6]**; `smoke-captest` was promoted
+on 2026-08-15 and is the only one). Open findings — an unflushed write-ahead journal
 (**[I-10]**), an unbounded revocation closure (**[I-3]**), an SMP fault whose origin is not
 yet known (**[G-8]**), and the remaining `tasks[]` table (**[I-7]**) — are in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).

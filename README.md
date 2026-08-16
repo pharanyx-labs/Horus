@@ -39,8 +39,9 @@ measurements.
 > caller's own `RFLAGS.IF`, with `IRQ_LEGACY_GLOBAL_LOCK=1` retained as the control arm.
 > The notable remaining findings are an unflushed write-ahead journal (**[I-10]**), a
 > revocation closure an unprivileged task can force to over-approximate (**[I-3]**), an SMP
-> fault whose origin is not established (**[G-8]**), the security tests not gating merges
-> (**[C-6]**), and no independent review of security-critical changes (**[C-5]**).
+> fault whose origin is not established (**[G-8]**), all but one of the security tests still
+> not gating merges (**[C-6]** — `smoke-captest` was promoted on 2026-08-15), and no
+> independent review of security-critical changes (**[C-5]**).
 
 ---
 
@@ -89,7 +90,9 @@ a syscall number without adding its table entry.
 by building twice and diffing. Boot-module integrity is tested by *corrupting a module* and
 asserting rejection. Measured boot is tested by tampering and asserting the PCRs diverge.
 Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 64 jobs, most of
-them QEMU integration self-tests — though only 21 of the 64 gate a merge (**[C-6]**).
+them QEMU integration self-tests — though only 22 of the 64 gate a merge, and `smoke-captest`
+is the only security gate among them (**[C-6]**). Read the live count from
+`gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
 
 ---
 

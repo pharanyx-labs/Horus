@@ -544,26 +544,41 @@ Witnessed by `make smoke-heap64` (`USER_HEAP_HIGH_BASE=1`, heap at 8 GiB, `capte
 exercising `sbrk`/`brk` and writing to the page). The control arm is real: without the fix the
 same target reports `CAPTEST: FAIL`.
 
-### 1.55 ⬜ Make the write-ahead journal actually durable — **[I-10]**, **[I-11]**
+### 1.55 🚧 Make the write-ahead journal actually durable — **[I-10]** ✅, **[I-11]** ⬜
 
-The kernel issues no ATA `FLUSH CACHE` (0xE7) — the driver's entire command set is
-`READ(0x20)`, `WRITE(0x30)`, `IDENTIFY(0xEC)`. On real hardware the journal's commit record
-can sit in the drive's volatile write cache and be lost to a power failure, so the
-crash-atomicity guarantee does not hold outside emulation.
+**[I-10] landed 2026-08-16.** The driver now implements `FLUSH CACHE` (0xE7) with its own
+BSY budget (~30 s, per ATA-8; the sector path's 2 s cap would time out mid-flush), and
+`journal_commit()` places barriers at three points, not the two this item originally
+specified:
 
-It has gone unnoticed because `smoke-fs-wal` runs QEMU with `cache=writethrough`, where the
-emulator provides the durability the kernel omits — the test verifies the property in the one
-configuration where the code under test cannot fail it.
+1. after the journal data, **before** the commit header — the write-ahead rule itself. This
+   is the one the original text omitted, and it is the most important: without it the header
+   can reach the medium first and recovery redoes a valid, correctly-HMAC'd transaction from
+   data sectors that were never written.
+2. after the commit header, before applying home.
+3. after applying home, before clearing the header.
 
-Two halves, both needed:
+`journal_recover()` carries the same barrier before clearing a replayed header. Barrier
+failure is not advisory: 1 and 2 abort with home untouched, 3 leaves the header for the next
+mount to replay.
 
-1. Issue `FLUSH CACHE` after the commit record and after the checkpoint that retires it,
-   polling BSY (a real drive can take seconds).
-2. Add a `cache=writeback` variant of the test, so the guarantee is exercised where the
-   emulator is not silently supplying it. Fix the harness race at the same time (**[I-11]**):
-   have boot 1 halt itself via `isa-debug-exit` once the write is genuinely durable, and have
-   the harness wait for QEMU to *exit* rather than killing it on a serial string — currently
-   a genuine WAL regression and a harness race produce identical output.
+**The originally specified test would not have worked, and the reason is worth recording.** A
+`cache=writeback` variant does **not** distinguish a flushing kernel from a non-flushing one:
+guest writes land in the host *page cache*, which outlives the QEMU process, so killing QEMU
+loses nothing either way. No QEMU cache mode makes a two-boot outcome depend on whether the
+guest flushed. What works is inverting the observation — `blkdebug` fails every
+`flush_to_disk` and the gate asserts the kernel refuses the transaction (`smoke-fs-wal-flush`),
+plus an IDE command-register trace asserting the barriers bracket the commit record in the
+right order (`smoke-fs-wal-order`). Both are falsified by the `WAL_NO_FLUSH=1` control arm.
+
+**[I-11] remains open, and its prescribed fix is now known not to work.** Having boot 1 end
+itself via `isa-debug-exit` was tried and reverted: on QEMU 10.0.11 the port write at `0x604`
+does not terminate the process (with or without `-no-shutdown`), and the `lidt 0x0` triple-
+fault fallback faults reading its own descriptor and is caught by the kernel's handler. Next
+candidate is QMP `quit` over a monitor socket. What did land: a `WAIT_FOR_EXIT` mode in
+`tools/smoke_test.sh` ready for a guest that can exit, and `qemu_alive()`, which fixes a bare
+`kill -0` that could never observe an exit — an unreaped QEMU is a zombie whose PID still
+answers `kill -0`, so the harness's "QEMU exited" branch was unreachable.
 
 ### 1.6 ⬜ Unbounded revocation closure — **[I-3]**
 
@@ -686,7 +701,7 @@ Ordered as in the audit's §7.5.
 - **4.2 🚧 Gate the security tests — [C-6].** `strict_required_status_checks_policy` is now
   **true**, and `smoke-captest` — the witness for eight of `SECURITY.md`'s S-numbered
   properties, and the single most consequential omission — became a required check on
-  2026-08-15. The required set is 22 of 64 jobs. Still to promote: `smoke-wx` / `-wx-smp`,
+  2026-08-15. The required set is 22 of 66 jobs. Still to promote: `smoke-wx` / `-wx-smp`,
   `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`, `smoke-stackguard`,
   `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`,
   `smoke-newlib-tamper`, CodeQL.

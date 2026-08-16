@@ -37,10 +37,12 @@ audited by a third party, and has known unfixed security defects.
 Horus remains **research-grade**. It has not been independently audited, no security-critical
 change has ever been reviewed by a second person (**[C-5]**), and every security-specific CI
 job except `smoke-captest` is still not merge-gating (**[C-6]**; `smoke-captest` was promoted
-on 2026-08-15 and is the only one). Open findings — an unflushed write-ahead journal
-(**[I-10]**), an unbounded revocation closure (**[I-3]**), an SMP fault whose origin is not
-yet known (**[G-8]**), and the remaining `tasks[]` table (**[I-7]**) — are in
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+on 2026-08-15 and is the only one). Open findings — an unbounded revocation closure
+(**[I-3]**), an SMP fault whose origin is not yet known (**[G-8]**), the remaining `tasks[]`
+table (**[I-7]**), and a nondeterministic WAL harness (**[I-11]**) — are in
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). The write-ahead journal's missing `FLUSH CACHE`
+(**[I-10]**) was fixed on 2026-08-16; filesystem crash-atomicity no longer depends on the
+emulator supplying durability the kernel never asked for.
 
 Ambient `uid == 0` authority (**[I-1]**) was retired in stages: the syscall and object-store
 gates on 2026-07-27, and the last one — the user database, which roadmap 0.2's sweep of
@@ -225,7 +227,7 @@ push protection; cargo-fuzz on the FFI boundary; Kani proofs on capability revoc
   reviewed".** Finding **[C-5]**.
 - Most security-specific CI jobs (kernel W^X, measured boot, module tamper rejection,
   SMEP/SMAP, flush-on-switch, stack-guard reseed, CodeQL) are **not** merge-gating. Finding
-  **[C-6]**. `ci.yml` defines **64** jobs and the ruleset requires **22** of them. The one that
+  **[C-6]**. `ci.yml` defines **66** jobs and the ruleset requires **22** of them. The one that
   most needed promoting has been: `smoke-captest`, the named witness for S1, S5, S6, S7, S13,
   S13a, S13b and S18, became a required check on 2026-08-15 — until then a change that broke
   the capability refusal suite merged green. The rest are still advisory, and the mechanism

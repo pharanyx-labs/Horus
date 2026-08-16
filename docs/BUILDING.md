@@ -141,10 +141,17 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 | `KFAULT_LEGACY_PRINTLN` | Reports a CPL-0 page fault through `println()` as the kernel used to — i.e. into the klog, where nothing on the wire can hear it. | `make smoke-kfault-legacy`, which requires the report to be **absent** |
 | `RESUME_GUARD_LEGACY_FATAL=1` | Restores the resume-`%rsp` floor guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket, so the report is swallowed by a permanent panic claim another CPU already holds. The report must **not** reach serial. | `make smoke-resume-guard-legacy` |
 | `RESUME_GUARD_DISABLE=1` | Compiles the floor guard out entirely; the kernel instead faults at `0x94` on `out->cs`, which is **[G-8]**'s original datapoint reproduced deliberately. | `make smoke-resume-guard-nofloor` |
+| `WAL_NO_FLUSH=1` | Compiles out every write-ahead-journal durability barrier, restoring the pre-2026-08-16 kernel in which the ATA driver had no `FLUSH CACHE` opcode and the journal's ordering held only because the emulator persisted each write anyway (**[I-10]**). | `make smoke-fs-wal-flush-control` (the refusal must be **absent**) and `make smoke-fs-wal-order-control` (the ordering check must **reject**) |
 
 None of these is a shipping configuration. `IRQ_LEGACY_GLOBAL_LOCK` also appears in the
 interrupt-policy table above, and until 2026-08-15 that was the only place it was documented;
-`USER_HEAP_HIGH_BASE` was not documented anywhere.
+`USER_HEAP_HIGH_BASE` was not documented anywhere. This table is the complete list — if you
+add a control arm, it belongs here in the same commit, because a control arm nobody can find
+is one nobody will re-run.
+
+Note that `WAL_NO_FLUSH=1` is unusual among these in being **deterministic**: the barriers are
+either compiled in or they are not, so its gates do not need a rate quoted over N boots the
+way a concurrency control arm does.
 
 ---
 

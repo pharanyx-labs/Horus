@@ -1220,6 +1220,12 @@ typedef struct block_device {
     uint64_t total_blocks;
     int (*read_block)(struct block_device *bd, uint64_t block, void *buf);
     int (*write_block)(struct block_device *bd, uint64_t block, const void *buf);
+    /* Force every write already accepted by write_block onto stable media.
+     * Returns 0 only if that succeeded. Every backend must supply this — a NULL
+     * flush is treated as a failure by raw_block_flush(), not as a no-op, so a
+     * new block device cannot silently inherit "durability not implemented"
+     * while the journal keeps advertising crash atomicity. */
+    int (*flush)(struct block_device *bd);
     void *private;
 } block_device_t;
 
@@ -1556,6 +1562,7 @@ void ramfs_init(void);
 int ata_init(void);   /* probe primary master; 1 = ATA disk present, 0 = absent */
 int  ata_read(uint32_t lba, void *buf, uint32_t sectors);
 int  ata_write(uint32_t lba, const void *buf, uint32_t sectors);
+int  ata_flush(void);  /* FLUSH CACHE; 0 = on stable media, -1 = NOT durable */
 void scheduler_init(void);
 void smp_bringup(void);
 void aslr_init_seed(void);

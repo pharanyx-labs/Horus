@@ -1396,13 +1396,13 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-init-fs` | `init` provisions the filesystem at boot. |
 | `smoke-fs-perms` | POSIX rwx is enforced against the **kernel-attested** uid/gid, not a client-supplied one. |
 | `smoke-fs-persist` | Data survives a reboot (two-boot test). |
-| `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). Proves the **redo logic**; says nothing about durability, which is what the two gates below are for. **Still nondeterministic — [I-11], see below.** |
+| `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). Proves the **redo logic**; says nothing about durability, which is what the two gates below are for. Boot 1 ends via a QMP quit and a confirmed process exit, not a signal (**[I-11]**, fixed 2026-08-16 — see below). |
 | `smoke-fs-wal-flush` | Every `FLUSH CACHE` fails with `EIO` (`blkdebug`), and the journal must **refuse to commit** and say so. Proves the barrier is both *issued* and *checked*. Falsified by `WAL_NO_FLUSH=1`: `make smoke-fs-wal-flush-control`. |
 | `smoke-fs-wal-order` | An IDE command-register trace must end `0x30 → 0xe7 → 0x30 → 0xe7` — data write, barrier A, commit header, barrier B. Proves the barriers are in the right *place*, not merely present. Falsified by `WAL_NO_FLUSH=1`: `make smoke-fs-wal-order-control`. |
 | `smoke-fs-conc` | Multiple clients are served concurrently without cross-talk, via `SYS_IPC_REPLY_TO`. Uses `CONC_TIMEOUT` (default 120s), not the 40s default: it waits on several clients, and on a loaded host it exceeded the shorter budget and failed as a *timeout* — never reaching a verdict, which reads red without being evidence of a defect. A real `CONC_SELFTEST: FAIL` still fails immediately. |
 | `smoke-fs-large` | Double-indirect blocks address large files. |
 
-> **`smoke-fs-wal` — one defect fixed ([I-10]), one still open ([I-11]).**
+> **`smoke-fs-wal` — both defects fixed on 2026-08-16 ([I-10] durability, [I-11] harness).**
 >
 > **[I-10] is fixed as of 2026-08-16, but not by the method originally planned.** The obvious
 > fix — re-run the two-boot test under `cache=writeback` — does **not work**, and the reason
@@ -1443,15 +1443,40 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 >
 > Deterministic, not a rate: the barriers are either compiled in or they are not.
 >
-> **[I-11] is still open and `smoke-fs-wal` is still nondeterministic.** The harness kills
-> QEMU the moment boot 1's marker appears, then reboots on the same image; the marker proves
-> the guest *reached* that point, not that its journal writes completed. The prescribed fix —
-> boot 1 ending itself via `isa-debug-exit` — was tried and reverted: on QEMU 10.0.11 the port
-> write at `0x604` does not terminate the process (measured with and without `-no-shutdown`),
-> and the `lidt 0x0; int $0x0` fallback faults reading its own descriptor and is caught by the
-> kernel's page-fault handler, which the harness correctly reads as a failure. QMP `quit` over
-> a monitor socket is the next candidate. `WAIT_FOR_EXIT=1` exists in the harness and is
-> correct; it is simply unused until a guest can exit.
+> **[I-11] is fixed as of 2026-08-16, and half of it was already gone.** Barrier B is a real
+> `FLUSH CACHE` that runs *before* `WAL_CRASHTEST: crashed-after-commit` is printed, so the
+> journal write is on stable media by the time the harness sees the marker — the physical race
+> the finding describes was closed by the [I-10] work without anyone saying so.
+>
+> The diagnostic half is what this fixes. Boot 1 now ends by asking QEMU to quit over its QMP
+> monitor (`tools/qmp_quit.py`, driven by `WAIT_FOR_EXIT=1`) and **waiting for the process to
+> exit**. The end of a run is a process exit, not a signal sent at a moment of the harness's
+> choosing, so a guest that reaches the marker and then fails to leave is a timeout rather than
+> a pass. `isa-debug-exit`, which roadmap 1.55 prescribed, does not terminate QEMU 10.0.11 —
+> measured, reverted, and recorded at the crash hook.
+>
+> **Falsification (2026-08-16), four ways**, each confirmed to exit non-zero:
+>
+> | Reintroduced defect | Result |
+> |---|---|
+> | `qmp_quit.py` stubbed to refuse | **`crashed-after-commit` on serial, run still FAILS** — the old harness scored that identical log a pass |
+> | `python3` absent (minimal `PATH`) | `SMOKE FAIL: WAIT_FOR_EXIT=1 needs python3 for the QMP quit` |
+> | `qmp_quit.py` not executable | `SMOKE FAIL: … needs tools/qmp_quit.py to be executable` |
+> | unreachable QMP socket | `qmp_quit` exits 1; run reports `could not ask QEMU to quit over QMP` |
+>
+> The first is the one that matters: the marker alone is no longer sufficient to pass.
+>
+> **Rate: 20/20 two-boot runs passed**, one fresh 32768-block image per run. Read that as
+> corroboration, not proof — the pre-fix flakiness was load-dependent and did not reproduce on
+> this machine, so it is not a before/after comparison. The substantive argument is structural.
+>
+> *Two harness bugs found while doing this, both worth knowing.* An exit the harness **asked
+> for** was reported as `QEMU exited before the banner (triple fault?)`, because QEMU could die
+> between the inner and outer liveness checks. And an early soak reported 0/20 because the
+> images were created 4096 blocks against a `BLOCKS_PER_DISK` of 32768 — the volume could not
+> lay out and boot 2 failed `WAL_CRASHTEST: FAIL read`, which is *exactly* the signature of the
+> defect being measured. A soak that measures its own harness measures nothing; derive the
+> image size from `kernel.h` the way the Makefile does.
 
 ## Device delegation and the console
 
@@ -1564,10 +1589,10 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **67 required contexts and 4 reasoned exemptions** — `smoke-fs-wal`
-(**[I-11]**), `smoke-session-smp-soak` (**[G-8]**), `fuzz` (a fixed 30-second search is
-evidence of effort, not of absence) and `kani` (manual-only, so there is no conclusion to gate
-on). The promotions are backed by measurement, not optimism: across 18 CI runs sampled on
+The intended set is **68 required contexts and 3 reasoned exemptions** —
+`smoke-session-smp-soak` (**[G-8]**), `fuzz` (a fixed 30-second search is evidence of effort,
+not of absence) and `kani` (manual-only, so there is no conclusion to gate on). `smoke-fs-wal`
+was a fourth until **[I-11]** was fixed and it was promoted back to gating. The promotions are backed by measurement, not optimism: across 18 CI runs sampled on
 2026-08-16, **64 of 66 jobs had zero failures over 1152 job-executions**; the only two that
 ever failed are `security` (2/18, both deliberate, during #154) and `smoke-session-smp-soak`
 (1/18, consistent with [G-8]'s documented 2–3% per boot).

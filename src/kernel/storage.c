@@ -529,34 +529,29 @@ static int journal_commit(void) {
 
 #ifdef WAL_CRASHTEST
     if (g_wal_crash_armed) {
-        /* Commit header is now durable — barrier B above returned success — and
-         * the home apply below has NOT run. That is precisely the state a power
-         * failure between steps 2 and 3 leaves, so boot 2 exercises redo.
+        /* Commit header is now durable — barrier B above returned success —
+         * and the home apply below has NOT run. That is precisely the state a
+         * power failure between steps 2 and 3 leaves, so boot 2 exercises redo.
          *
-         * Exit QEMU rather than spinning in hlt ([I-11]). The two-boot test used
-         * to leave the guest halted forever and have the harness SIGKILL it on
-         * seeing this line, which meant a genuine WAL regression and a harness
-         * race that killed QEMU a moment too early produced byte-identical
-         * output — a gate that could not distinguish the defect it existed to
-         * catch from its own flakiness. Exiting through isa-debug-exit makes
-         * "boot 1 finished" a process exit status the harness can wait on, and
-         * lets QEMU close its backing file rather than being shot holding it.
+         * Ordering matters here and is the reason the harness can be
+         * deterministic ([I-11]). Barrier B is a real FLUSH CACHE and it runs
+         * BEFORE this line is printed, so when the marker reaches the serial
+         * console the journal write the two-boot test cares about is already on
+         * stable media. The harness may therefore end the run the moment it sees
+         * the marker without racing anything — it asks QEMU to quit over QMP and
+         * waits for the process to exit, rather than signalling it.
          *
-         * The hlt loop stays as a fallback for a QEMU invoked without the
-         * isa-debug-exit device, where the port write is simply ignored. */
+         * Halting here, rather than trying to end QEMU from inside the guest, is
+         * also deliberate. Roadmap 1.55 proposed `isa-debug-exit`; it does not
+         * work. On QEMU 10.0.11 a byte write to port 0x604 does not terminate
+         * the process, with or without -no-shutdown (measured both ways), and
+         * the `lidt 0x0; int $0x0` triple-fault fallback that kshell.c:99 pairs
+         * with it faults while READING the descriptor at address 0, so the
+         * kernel's own page-fault handler catches it and prints a PAGE FAULT the
+         * harness correctly treats as a failure. Both were tried and reverted.
+         * Ending the guest is the harness's job (tools/qmp_quit.py); the guest's
+         * job is to stop writing and say so, which is exactly what this does. */
         println("WAL_CRASHTEST: crashed-after-commit");
-        /* Halt, rather than exiting QEMU. Roadmap 1.55 proposed having boot 1
-         * end itself through isa-debug-exit so the harness could wait on a
-         * process exit instead of a serial string ([I-11]). That does not work
-         * here and the finding stays open: on QEMU 10.0.11 a byte write to the
-         * isa-debug-exit port at 0x604 does not terminate the process, with or
-         * without -no-shutdown (measured both ways against this build), and the
-         * `lidt 0x0; int $0x0` triple-fault fallback that kshell.c:99 pairs with
-         * it faults while READING the descriptor at address 0, so the kernel's
-         * own page-fault handler catches it and prints a PAGE FAULT the harness
-         * correctly treats as a failure. Any future attempt needs a mechanism
-         * that works — QMP `quit` over a monitor socket is the obvious one —
-         * rather than this port write, which has never terminated anything. */
         for (;;) __asm__ volatile ("hlt");
     }
 #endif

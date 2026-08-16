@@ -544,7 +544,7 @@ Witnessed by `make smoke-heap64` (`USER_HEAP_HIGH_BASE=1`, heap at 8 GiB, `capte
 exercising `sbrk`/`brk` and writing to the page). The control arm is real: without the fix the
 same target reports `CAPTEST: FAIL`.
 
-### 1.55 🚧 Make the write-ahead journal actually durable — **[I-10]** ✅, **[I-11]** ⬜
+### 1.55 ✅ Make the write-ahead journal actually durable — **[I-10]**, **[I-11]** — *landed 2026-08-16*
 
 **[I-10] landed 2026-08-16.** The driver now implements `FLUSH CACHE` (0xE7) with its own
 BSY budget (~30 s, per ATA-8; the sector path's 2 s cap would time out mid-flush), and
@@ -571,14 +571,32 @@ guest flushed. What works is inverting the observation — `blkdebug` fails ever
 plus an IDE command-register trace asserting the barriers bracket the commit record in the
 right order (`smoke-fs-wal-order`). Both are falsified by the `WAL_NO_FLUSH=1` control arm.
 
-**[I-11] remains open, and its prescribed fix is now known not to work.** Having boot 1 end
-itself via `isa-debug-exit` was tried and reverted: on QEMU 10.0.11 the port write at `0x604`
-does not terminate the process (with or without `-no-shutdown`), and the `lidt 0x0` triple-
-fault fallback faults reading its own descriptor and is caught by the kernel's handler. Next
-candidate is QMP `quit` over a monitor socket. What did land: a `WAIT_FOR_EXIT` mode in
-`tools/smoke_test.sh` ready for a guest that can exit, and `qemu_alive()`, which fixes a bare
-`kill -0` that could never observe an exit — an unreaped QEMU is a zombie whose PID still
-answers `kill -0`, so the harness's "QEMU exited" branch was unreachable.
+**[I-11] closed the same day, but not by the mechanism this item specified.** `isa-debug-exit`
+does not work: on QEMU 10.0.11 the port write at `0x604` does not terminate the process (with
+or without `-no-shutdown`), and the `lidt 0x0; int $0x0` triple-fault fallback faults while
+*reading* its own descriptor at address 0 and is caught by the kernel's page-fault handler.
+Both were tried and reverted, and the measurements are kept at the crash hook.
+
+QMP does work. Boot 1 now ends by asking QEMU to quit over its monitor socket
+(`tools/qmp_quit.py`) and **waiting for the process to exit**, so the end of a run is a process
+exit rather than a signal sent on a string match; a guest that reaches the marker and then
+fails to leave is a timeout, not a pass. The harness fails **closed** — no `python3`, no
+executable helper, or an undeliverable quit each fail the run rather than reverting to
+signalling, because a silent fallback would be this finding wearing the fix's name.
+
+Half of the finding had already been closed by [I-10] without anyone noticing: barrier B runs
+*before* the crash marker is printed, so the journal write is on stable media by the time the
+harness sees it. The physical race was already gone; what remained was that the harness could
+not distinguish "the guest finished" from "we were too quick".
+
+Also fixed here: `qemu_alive()` replaced a bare `kill -0` that could never observe an exit (an
+unreaped QEMU is a zombie whose PID still answers it), and an exit the harness had *asked for*
+was being misreported as a triple fault.
+
+`smoke-fs-wal` is promoted back to a required check — [I-11] was the entire reason for its
+exemption, and a stale exemption reason is the drift **[C-6]**'s mechanism exists to prevent.
+20/20 two-boot runs passed locally; if CI shows residual flakiness, demote it again *with the
+evidence*, not silently.
 
 ### 1.6 ✅ Unbounded revocation closure — **[I-3]** — *landed 2026-08-16*
 
@@ -735,9 +753,10 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **67 required, 4 exempted** (`smoke-fs-wal` — **[I-11]**;
-  `smoke-session-smp-soak` — **[G-8]**; `fuzz` — a 30-second time-boxed search is evidence of
-  effort, not of absence; `kani` — manual-only, no conclusion to gate on). The promotions are
+  The intended set is **68 required, 3 exempted** (`smoke-session-smp-soak` — **[G-8]**;
+  `fuzz` — a 30-second time-boxed search is evidence of effort, not of absence; `kani` —
+  manual-only, no conclusion to gate on). `smoke-fs-wal` was a fourth until **[I-11]** was
+  fixed on 2026-08-16 and it was promoted back. The promotions are
   backed by measurement: across 18 CI runs sampled on 2026-08-16, 64 of 66 jobs had zero
   failures in 1152 job-executions. `smoke-fs-wal` is *demoted* — a flaky required check trains
   the maintainer to re-run red, and its durability claim is now carried by the deterministic

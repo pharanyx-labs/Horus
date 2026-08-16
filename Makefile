@@ -1468,6 +1468,7 @@ smoke-fs-wal:
 	@dd if=/dev/zero of=wal.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal] boot 1/2 — commit a write, then crash before applying it"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
+		WAIT_FOR_EXIT=1 \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' FAIL_MARKER='WAL_CRASHTEST: FAIL' \
 		tools/smoke_test.sh boot.iso
 	@echo "[wal] boot 2/2 — recover the committed transaction, verify the data"

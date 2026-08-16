@@ -8,6 +8,50 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the journal recovery test ends on a process exit, not a signal (**[I-11]**, roadmap 1.55)
+
+`smoke-fs-wal` ended boot 1 by killing QEMU the instant `WAL_CRASHTEST: crashed-after-commit`
+appeared on serial. That made "the guest finished" a string match rather than a process exit,
+so a genuine WAL regression and a harness that shot QEMU a moment early produced byte-identical
+output — a required check that could not distinguish the defect it existed to catch from its
+own flakiness.
+
+**Half the finding was already closed and nobody had noticed.** Barrier B is a real
+`FLUSH CACHE` and it runs *before* the marker is printed, so since the [I-10] work landed the
+journal write has been on stable media by the time the harness sees the marker. The physical
+race described in the finding was gone; what remained was the diagnostic ambiguity.
+
+Boot 1 now ends by asking QEMU to quit over its QMP monitor (`tools/qmp_quit.py`, driven by
+`WAIT_FOR_EXIT=1`) and **waiting for the process to exit**. A guest that reaches the marker and
+then fails to leave is a timeout, not a pass. The harness fails **closed**: no `python3`, a
+non-executable helper, or an undeliverable quit each fail the run rather than reverting to
+signalling — a silent fallback would be this finding wearing the fix's name.
+
+Roadmap 1.55 had prescribed `isa-debug-exit`. It does not work, and the measurements are kept
+at the crash hook so nobody repeats them: on QEMU 10.0.11 a byte write to port `0x604` does not
+terminate the process, with or without `-no-shutdown`, and the `lidt 0x0; int $0x0` fallback
+faults while *reading* its own descriptor at address 0 and is caught by the kernel's page-fault
+handler. QMP `quit` closes the block backends cleanly and exits 0.
+
+**Falsified four ways**, each confirmed to exit non-zero. The decisive one: with `qmp_quit.py`
+stubbed to refuse, a serial log containing `WAL_CRASHTEST: crashed-after-commit` **fails** —
+the old harness scored that identical log a pass. The others cover a missing `python3`, a
+non-executable helper, and an unreachable socket.
+
+**Rate: 20/20 two-boot runs passed**, one fresh 32768-block image each. That is corroboration,
+not proof: the pre-fix flakiness was load-dependent and did not reproduce locally, so it is not
+a before/after comparison. The substantive argument is structural.
+
+Two harness bugs fell out. An exit the harness had *asked for* was reported as
+`QEMU exited before the banner (triple fault?)`, because QEMU could die between the inner and
+outer liveness checks. And a contradiction left in `src/kernel/storage.c` by an earlier revert —
+one comment claiming the guest exits via `isa-debug-exit`, the next explaining that it halts
+because that does not work — is reconciled.
+
+`smoke-fs-wal` is **promoted back to a required check**; [I-11] was the entire reason for its
+exemption, and a stale exemption reason is precisely the drift **[C-6]**'s mechanism exists to
+prevent. The intended required set goes 67 → 68, exemptions 4 → 3.
+
 ### Fixed — revoking a large subtree no longer destroys a peer's capability (**[I-3]**, roadmap 1.6)
 
 `revoke_subtree` accumulated the revoked-serial closure in a fixed 256-entry array. A subtree
@@ -62,7 +106,7 @@ fails the build when a job is in neither, in both, or names a job that no longer
 is deliberately no default, because defaulting is the defect. It caught the CodeQL `analyze`
 job unclassified on its first run.
 
-The intended set is **67 required contexts and 4 exemptions**: `smoke-fs-wal` (**[I-11]**),
+The intended set at the time was **67 required contexts and 4 exemptions**: `smoke-fs-wal` (**[I-11]**),
 `smoke-session-smp-soak` (**[G-8]**), `fuzz` (a fixed 30-second search is evidence of effort,
 not of absence) and `kani` (manual-only, so it has no conclusion to gate on). Everything
 roadmap 4.2 listed as "still to promote" — `smoke-wx`/`-wx-smp`, `smoke-cpu`,
@@ -153,7 +197,8 @@ fault?)` branch was unreachable, and every such case was reported as a plain tim
 `qemu_alive()` now also checks the process state. Found while implementing `WAIT_FOR_EXIT`,
 which hung against a guest that had already exited cleanly.
 
-**[I-11] is not fixed, and its prescribed remedy is now known not to work.** Roadmap 1.55
+**[I-11] was not fixed here** (it was, later the same day — see the entry above), **and its
+prescribed remedy is now known not to work.** Roadmap 1.55
 called for boot 1 to end itself via `isa-debug-exit`. Measured against QEMU 10.0.11: the port
 write at `0x604` does not terminate the process, with or without `-no-shutdown`; and the
 `lidt 0x0; int $0x0` triple-fault fallback that `src/kernel/kshell.c:99` pairs with it faults

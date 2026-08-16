@@ -1590,7 +1590,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 67 gating and 4 exempted, and the promotions are backed by
+              intended set is 68 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -1607,36 +1607,6 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               not that the ruleset matches it. The two could diverge again through a change made
               in the web UI, and nothing in CI would notice — verifying it remains a command
               someone has to remember to run.
-            </p>
-          </li>
-          <li>
-            <h3><span class="id">I-11</span>The journal recovery test is nondeterministic by construction</h3>
-            <p>
-              <code>smoke-fs-wal</code> kills QEMU the instant a marker appears on the serial
-              console, then reboots on the same disk image. The marker proves the guest
-              <em>reached</em> that point, not that its journal writes completed, so on a loaded
-              runner boot 2 can fail against an unmodified kernel. The worse consequence is not
-              the spurious failure but that <strong>a real regression and the race produce the
-              same output</strong>.
-            </p>
-            <p>
-              The prescribed fix — having boot 1 end itself through
-              <code>isa-debug-exit</code> so the harness could wait on a process exit — was
-              tried on 2026-08-16 and <strong>does not work</strong>: on QEMU 10.0.11 the port
-              write does not terminate the process, and the triple-fault fallback faults while
-              reading its own descriptor and is caught by the kernel's page-fault handler. A
-              monitor-socket <code>quit</code> is the next candidate. Two pieces did land — a
-              wait-for-exit mode ready for a guest that can exit, and a fix to a liveness check
-              that could never observe an exit at all, because an unreaped QEMU is a zombie
-              whose PID still answers <code>kill -0</code>.
-            </p>
-            <p>
-              The durability defect filed alongside it (<span class="id">I-10</span> — the
-              kernel issued no <code>FLUSH CACHE</code>, so a commit record could sit in a
-              drive's volatile cache and be lost to a power failure) <strong>was fixed on
-              2026-08-16</strong>. The driver implements the command and the journal places
-              three barriers, the first of them before the commit record, which is the
-              write-ahead rule itself.
             </p>
           </li>
           <li>

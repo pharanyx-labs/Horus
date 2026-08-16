@@ -537,9 +537,10 @@ tests the property the author had in mind rather than the property the documenta
 The assurance Horus can honestly claim today is *"thoroughly automatically verified"*, not
 *"independently reviewed"*.
 
-### 5.2 All but one of the security tests are not merge-gating — **[C-6]**
+### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **66** jobs. Ruleset `19007209` requires **22** of them, and
+`.github/workflows/ci.yml` defines **67** jobs and `codeql.yml` one more. Ruleset `19007209`
+required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
 stack-guard reseed could all fail while a PR merged green. The required set was inverted —
@@ -555,16 +556,46 @@ class **[C-1]** was would have merged green. That is no longer true.
 off the witness column: eight. Recorded because "re-derive every number you cite" is a rule this
 document is subject to, not merely one it states.)
 
-**The rest of the gap is still open, and still widening.** When this finding was filed there
-were roughly 30 jobs and 21 required. There are now 66 and 22, because every gate added after
-the ruleset was written lands in the advisory set by default and nothing forces the question.
-`smoke-wx`, `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`,
-`smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`,
-`smoke-newlib-tamper` and CodeQL are all still advisory. Promoting one check does not fix the
-mechanism that produced the omission: the required list is maintained by hand, in a place
-(the ruleset) that no commit touches, so it silently falls behind the workflow file on every
-addition. Generating it from `ci.yml`, and failing CI when a job appears in neither the
-required set nor an explicit reasoned advisory list, is what would actually close this.
+**The mechanism behind it was closed on 2026-08-16; the gap itself narrows in two steps, and
+only the first has landed.** When this finding was filed there were roughly 30 jobs and 21
+required. There were 66 and 22 immediately before this change, because every gate added after
+the ruleset was written landed in the advisory set *by default* and nothing forced the
+question — twice at the cost of a security gate, `smoke-captest` until 2026-08-15 and the two
+[I-10] durability gates on 2026-08-16, the latter advisory in the very commit that fixed the
+defect they witness.
+
+`.github/ci-gating.yml` is now the checked-in decision record: every job in `ci.yml` and
+`codeql.yml` must appear under `required:` or under `advisory:` **with a written reason**, and
+the `ci-gating` job fails the build if any job is in neither, in both, or names a job that no
+longer exists. There is deliberately no default, because defaulting is the defect. It caught
+CodeQL sitting unclassified on its first run.
+
+That intended set is **67 required contexts and 4 reasoned exemptions** — `smoke-fs-wal`
+([I-11]), `smoke-session-smp-soak` ([G-8]), `fuzz` (a 30-second time-boxed search is evidence
+of effort, not absence) and `kani` (manual-only, so it has no conclusion to gate on). The
+promotion list is justified by measurement rather than optimism: across 18 CI runs sampled on
+2026-08-16, 64 of 66 jobs had **zero** failures over 1152 job-executions, and the only two that
+failed are both on the exemption list or were deliberate.
+
+**The ruleset was synced toward that set on 2026-08-16**, from 22 required contexts, with
+`strict_required_status_checks_policy` true and no bypass actors. **Syncing it is a separate, manual, lagging step — and getting that wrong froze the
+repository.** The first `--sync-ruleset` was run from a feature branch, so it wrote the
+*intended* list, including three contexts `main` could not yet produce: the `ci-gating` job
+itself and the two [I-10] journal gates. A required context no workflow on the base branch
+produces **never reports**, so every pull request was blocked on it indefinitely — and it looks
+like an ordinary red check, not a misconfiguration. `tools/prune_unsatisfiable_checks.py`
+dropped the three (67 → 64) and now encodes the rule: **never require a context the base branch
+cannot produce.** Promotion must lag the job landing by one merge, never lead it. Every security gate the
+finding named — kernel W^X, SMEP/SMAP, measured boot, boot-module and newlib tamper rejection,
+flush-on-switch, stack-guard reseed, the 64-bit heap, interrupt policy, per-CPU identity, the
+resume-`%rsp` guard, CodeQL, and the two journal durability gates — now blocks a merge.
+
+**What keeps this finding open is that CI cannot verify it stays that way.** Reading a ruleset
+needs Administration permissions the workflow `GITHUB_TOKEN` does not have and cannot be
+granted, so the `ci-gating` job proves the classification is *complete* but not that the
+ruleset *matches* it. The two could diverge again through a change made in the GitHub UI, and
+nothing in CI would notice. `tools/check_ci_gating.py --check-ruleset` is the check and it has
+to be run deliberately. Read the count from the API, never from this paragraph.
 
 Two counts moved in the right direction since. `strict_required_status_checks_policy` is now
 **true**, so a stale-base merge is no longer permitted. And the `security` job is a required

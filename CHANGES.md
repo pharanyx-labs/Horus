@@ -8,6 +8,56 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — which CI jobs gate a merge is now a checked-in decision (**[C-6]**, roadmap 4.2)
+
+The required-status-check list lived only in branch ruleset `19007209`, which no commit
+touches. So every job added to `ci.yml` landed in the advisory set **by default**, and nothing
+asked whether it should have — which is how the ratio drifted from 21-of-30 to 22-of-66 without
+a decision ever being taken, twice at the cost of a security gate: `smoke-captest` sat advisory
+until 2026-08-15, and the two [I-10] durability gates landed advisory on 2026-08-16, in the
+very commit that fixed the defect they witness.
+
+`.github/ci-gating.yml` now lists every job in `ci.yml` and `codeql.yml` under `required:` or
+under `advisory:` **with a written reason**. The `ci-gating` job — and `make check-gating` —
+fails the build when a job is in neither, in both, or names a job that no longer exists. There
+is deliberately no default, because defaulting is the defect. It caught the CodeQL `analyze`
+job unclassified on its first run.
+
+The intended set is **67 required contexts and 4 exemptions**: `smoke-fs-wal` (**[I-11]**),
+`smoke-session-smp-soak` (**[G-8]**), `fuzz` (a fixed 30-second search is evidence of effort,
+not of absence) and `kani` (manual-only, so it has no conclusion to gate on). Everything
+roadmap 4.2 listed as "still to promote" — `smoke-wx`/`-wx-smp`, `smoke-cpu`,
+`smoke-modules-tamper`, `smoke-tpm*`, `smoke-flush`, `smoke-stackguard`, `smoke-heap64`,
+`smoke-irq-policy`, `smoke-percpu`, `smoke-resume-guard`, `smoke-newlib-tamper`, CodeQL — is
+promoted, along with the two new journal gates.
+
+**The promotions are measured, not assumed.** Across 18 CI runs sampled on 2026-08-16, 64 of
+66 jobs had zero failures over 1152 job-executions; the only two that failed were `security`
+(2/18, both deliberate, during #154) and `smoke-session-smp-soak` (1/18, consistent with
+[G-8]'s documented 2–3% per boot). `smoke-fs-wal` is *demoted* from required: a flaky gate that
+blocks merges spuriously teaches the maintainer to re-run red checks, and the durability claim
+it used to carry now belongs to the deterministic `smoke-fs-wal-flush` / `smoke-fs-wal-order`.
+
+**The ruleset was synced on 2026-08-16**: `tools/check_ci_gating.py --sync-ruleset` took it
+from **22 required contexts toward 67**, preserving `strict_required_status_checks_policy` and
+the (empty) bypass-actor list, and re-read the ruleset to confirm the write took. Run from a
+feature branch, it also required three contexts `main` could not yet produce — the `ci-gating`
+job and the two [I-10] gates — and a required context the base branch cannot produce never
+reports, so every PR was blocked on it. `tools/prune_unsatisfiable_checks.py` dropped those
+three (67 → 64) and now encodes the rule: **never require a context the base branch cannot
+produce**; promotion lags the job landing by one merge. `smoke-fs-wal`
+was the single demotion. Every security gate the finding named now blocks a merge.
+
+**This narrows [C-6] rather than closing it.** Reading a ruleset needs Administration
+permissions the workflow `GITHUB_TOKEN` does not have and cannot be granted, so CI enforces
+that the classification is *complete* but cannot enforce that the ruleset *matches* it — the
+two could diverge again through a change made in the web UI and nothing in CI would notice.
+`--check-ruleset` is the check, and it has to be run deliberately.
+
+Falsified three ways, each confirmed to exit non-zero against a passing baseline: a new job
+classified nowhere; an advisory entry naming a job that no longer exists; an advisory entry
+whose reason is a placeholder. Recorded in `TESTS.md`.
+
 ### Fixed — the write-ahead journal is durable on real hardware (**[I-10]**, roadmap 1.55)
 
 `src/kernel/ata.c` issued three commands — `READ SECTORS`, `WRITE SECTORS`, `IDENTIFY` — and

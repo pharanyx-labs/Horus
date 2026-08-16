@@ -22,6 +22,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ci-gating:
+    name: Every CI job is classified as gating or exempted (with a reason)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install PyYAML
+        run: pip install --disable-pip-version-check pyyaml
+      # Finding [C-6]: the live required list lives in a branch ruleset no commit
+      # touches, so a job added here landed advisory BY DEFAULT and nothing asked
+      # whether it should have. This fails the build when ci.yml and
+      # .github/ci-gating.yml disagree, which forces that question at review time.
+      # It cannot check the ruleset itself -- reading one needs Administration
+      # permissions the GITHUB_TOKEN does not have -- so it enforces that the
+      # checked-in decision record is COMPLETE, and syncing stays a manual step.
+      - name: Check CI gating classification
+        run: tools/check_ci_gating.py
+
   rust:
     name: Rust unit tests + clippy (deny-warnings gate)
     runs-on: ubuntu-latest

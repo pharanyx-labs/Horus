@@ -1505,6 +1505,14 @@ smoke-fs-wal:
 # write, whereas the runner's older QEMU emits one. Under writeback a write is
 # just a write, so the only flush_to_disk events are the guest's own FLUSH CACHE
 # commands — exactly, and only, what this gate is trying to observe.
+
+# Assert every ci.yml job is classified as merge-gating or exempted with a
+# reason ([C-6]). Pure text analysis -- no build, no QEMU -- so it costs nothing
+# to run before opening a PR, which is when the answer still matters.
+.PHONY: check-gating
+check-gating:
+	@tools/check_ci_gating.py
+
 .PHONY: smoke-fs-wal-flush
 smoke-fs-wal-flush:
 	@$(MAKE) --no-print-directory clean

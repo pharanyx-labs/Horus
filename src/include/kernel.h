@@ -1509,6 +1509,24 @@ int ipc_publish_pending_block(int cur);
 void ipc_unpublish_block(int cur);
 void sched_enable_preemption(void);
 
+/* ---- Leaving a kernel stack (scheduler.c, finding G-8) ---------------------
+ *
+ * A switch path hands the outgoing task to another CPU, but the CPU making the
+ * switch is still executing ISR C frames on that task's kernel stack until
+ * isr_common_stub64 reaches `movq %rax,%rsp`. So the hand-over is completed
+ * there, not in the switch path: the stub calls sched_release_deferred() on the
+ * first instruction at which this CPU is provably reading a different stack.
+ *
+ * g_kstack_inflight has bit t set for the duration of that window on task t's
+ * stack. interrupt_handler64 tests it on entry: a CPU arriving in an ISR for a
+ * task another CPU has not finished leaving means two CPUs on one kernel stack,
+ * which is memory corruption in progress and halts. One load and a bit test on
+ * the common path; MAX_TASKS is 64, so one word covers every task exactly.
+ * sched_kstack_holder() names the other CPU and is for the report only. */
+extern volatile uint64_t g_kstack_inflight;
+void sched_release_deferred(void);
+int  sched_kstack_holder(int t);
+
 /* Signal delivery (idt.c): on a ring-3 fault, redirect the trap frame into the
  * task's registered handler instead of killing it. Returns 1 if a signal was
  * delivered (caller returns into the handler), 0 to fall through to the kill

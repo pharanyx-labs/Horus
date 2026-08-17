@@ -925,6 +925,38 @@ jobs:
       - name: Compile the guard out and require the report to be INAUDIBLE
         run: make smoke-resume-guard-nofloor SMOKE_TIMEOUT=180
 
+  smoke-kstack-race:
+    name: A task's kernel stack is executed by at most one CPU (S20; and the control arm proves it)
+    runs-on: ubuntu-latest
+    # Two clean builds and two widened sessions. The widening slows every task
+    # switch on purpose, so the fixed arm runs a full ~5-minute session here and
+    # longer on a runner; the control arm halts as soon as it reproduces and is
+    # quick. Budgeted well above measured so a slow runner is not a red gate --
+    # a required check that reddens for timing teaches the re-run reflex.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The window between handing a task to another CPU and leaving that task's
+      # kernel stack -- finding G-8. Widened with a spin so the race is entered on
+      # essentially every switch instead of at ~2-3% per boot, which is what made
+      # this cost two 150-boot arms to observe once.
+      - name: Widen the window and require the session to complete anyway
+        run: make smoke-kstack-race
+      # The load-bearing arm. Without it, the step above is consistent with
+      # "a kernel with a spin in it still boots". With it, the SAME widened window
+      # is fatal at the pre-fix release site and harmless at the shipped one.
+      - name: Restore the pre-fix release site and require the race to REPRODUCE
+        run: make smoke-kstack-race-control
+
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)
     runs-on: ubuntu-latest
@@ -960,30 +992,29 @@ jobs:
         run: make smoke-session-smp
 
   smoke-session-smp-soak:
-    name: SMP session soak (N consecutive boots; ADVISORY -- open finding G-8)
+    name: SMP session soak (N consecutive boots; GATING since [G-8] closed)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # ADVISORY, NOT GATING -- see finding G-8 in TESTS.md.
+    # GATING as of 2026-08-17, restored in the commit that closed finding G-8 --
+    # which is what TESTS.md, this file and the Makefile have each required since
+    # 2026-08-09: "restore it to gating in the same commit that resolves G-8,
+    # either way -- and quote a rate, not a green run."
     #
-    # The soak reports a reproducible intermittent failure that is still live on
-    # main: measured 2026-08-09 on e8cc850, 1 in 45 boots pinned to two host cores,
-    # and 1 in 15 on a runner. A run dies as a 120s timeout waiting for the shell
-    # prompt, with the previous command's output truncated mid-line.
+    # The rate. G-8 was a task published as claimable while the CPU that gave it up
+    # was still executing ISR C frames on its kernel stack; another CPU took it,
+    # resumed it to ring 3, and its next trap rewrote those frames. Paired,
+    # adjacent-boot alternating, 1600 boots at -smp 4: the pre-fix release site
+    # (KSTACK_RELEASE_EARLY=1) failed 31/800, the shipped deferred release 0/800.
+    # Fisher exact two-sided p = 6.9e-10. See TESTS.md.
     #
-    # WHAT IT IS HAS NOT BEEN ESTABLISHED, and the two candidates want opposite
-    # fixes. It is either a genuine kernel wedge, or the apropos step exceeding its
-    # 120s budget on a starved host -- the same step, and the same shape, as the
-    # slowness that already forced that budget from 60s to 120s (see the note on
-    # smoke-session-smp in the Makefile). A rate is not a mechanism.
+    # This job is now an ordinary regression gate: it no longer carries a known-open
+    # finding, so a red run means something changed. It stays a soak rather than a
+    # single boot because the defect class it covers is probabilistic, and one green
+    # boot is not evidence about a 2-3% event -- that is how the lost-reply race
+    # survived every green smoke job.
     #
-    # Gating on it meanwhile would be the worst of both: at ~3% per boot, SOAK_RUNS
-    # goes red often enough to train everyone to hit re-run, which is exactly how
-    # smoke-console-smp's deadlock survived months of CI (TESTS.md). A gate nobody
-    # believes is worse than an advisory job somebody reads.
-    #
-    # Restore it to gating in the same commit that resolves G-8, either way -- and
-    # quote a rate, not a green run.
-    continue-on-error: true
+    # NOT continue-on-error. Never re-run it: the re-run reflex is exactly how
+    # smoke-console-smp's deadlock survived months of CI. A red soak is a finding.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1001,7 +1032,7 @@ jobs:
       # ~37% of the time, so an advisory job at 15 would mostly report nothing at
       # all. 45 boots reach ~75%, and the job is advisory, so a red one costs a read
       # rather than a re-run. Each boot is a few seconds.
-      - name: Run SOAK_RUNS SMP sessions and report the hang rate (advisory; see G-8)
+      - name: Run SOAK_RUNS SMP sessions; any single hang fails the gate
         run: make smoke-session-smp-soak SOAK_RUNS=45
       # G-8 is rare, and until now every occurrence CI witnessed was destroyed by
       # the harness: the soak kept one reused temp log and printed `tail -20`. On
@@ -1010,17 +1041,17 @@ jobs:
       # added to produce. The full serial of each failing boot is now kept, and
       # uploaded here so a red advisory run yields EVIDENCE rather than a rate.
       #
-      # `if: always()` rather than `if: failure()` deliberately: this job carries a
-      # job-level continue-on-error, and rather than reason about how that colours
-      # failure() for later steps, the upload just always runs. The soak removes
-      # the directory when every boot passed, so `if-no-files-found: ignore` makes
-      # a clean run a no-op. The condition that must never be wrong here is "an
-      # occurrence was captured and not uploaded".
-      - name: Upload the failing boots' serial logs (G-8 evidence)
+      # `if: always()` rather than `if: failure()` deliberately. The condition that
+      # must never be wrong here is "an occurrence was captured and not uploaded",
+      # and always() cannot get that wrong for any reason -- a failing earlier step,
+      # a cancellation, a future edit to this job's conditions. The soak removes the
+      # directory when every boot passed, so `if-no-files-found: ignore` makes a
+      # clean run a no-op.
+      - name: Upload the failing boots' serial logs (evidence, not a rate)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: g8-soak-evidence
+          name: smp-soak-evidence
           path: soak-evidence/
           if-no-files-found: ignore
           retention-days: 90
@@ -1030,7 +1061,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: g8-soak-kernel-elf
+          name: smp-soak-kernel-elf
           path: kernel.elf
           if-no-files-found: ignore
           retention-days: 90

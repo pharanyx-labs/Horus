@@ -398,14 +398,192 @@ harness from **24/24 to 13/20**, because a stale claim marks a task whose kernel
 abandoned, and freeing it resumes that task from a stale frame. Both are now recorded as
 explicit "do not do this" comments at the sites that invited them.
 
-### Open finding G-8: the SMP session soak is not clean, and nobody knows why yet
+### Finding G-8: two CPUs on one kernel stack — CLOSED 2026-08-17
 
-**Status: open. The CI job is advisory, not gating.** As of 2026-08-13 the *proximate*
-mechanism is established and proved — the dispatcher returns a value that is not a kernel stack
-pointer, and the ISR epilogue consumes it — but the **origin of that value is not**, so the
-finding stays open. Two captures show two different bad values (a `.text` return address, and
-`4`), so it is not one mis-assignment. The shared-stack hypothesis below is **not** supported by
-either capture: at the one `t > 0` fault caught, the scheduler claim invariant held.
+**Status: closed. `smoke-session-smp-soak` is restored to gating.** Read this subsection for
+the answer; everything below it from *"`smoke-session-smp-soak` fails at roughly 2–3%"* onward
+is the record of how it was read wrongly for eight days, kept deliberately.
+
+#### The origin of the bad value
+
+**A switch path handed the outgoing task to another CPU before this CPU had left that task's
+kernel stack.**
+
+Every switch path in `scheduler.c` — `preempt_on_tick`, `ipc_block_switch`,
+`sched_yield_switch` — is called from `interrupt_handler64`, which is executing on the outgoing
+task's kernel stack: the C frames sit immediately below the trap frame the CPU pushed on entry.
+Releasing `task_running_cpu[cur]` and dropping the scheduler lock *there* published the task as
+claimable while this CPU still had to run, in this order:
+
+```
+preempt_on_tick+0x1ce:  movl $0x0, scheduler_lock      <-- released here
+                        pop %rbx / %rbp / %r12 / %r13 / %r14 / %r15   } from cur's stack
+                        ret                                           } return addr on cur's stack
+interrupt_handler64+0x123:  cmp/jae                    <-- #123's floor guard
+                        testb $0x3,0x90(%rbp)          <-- out->cs
+                        call fpu_restore
+                        mov 0x28(%rsp),%rax            <-- stack-protector canary, from cur's stack
+                        pop %rbx / %rbp / %r12 / %r13  } from cur's stack
+                        ret                            } return addr on cur's stack
+isr_common_stub64+0x1f: movq %rax,%rsp                 <-- FIRST instruction off cur's stack
+```
+
+A CPU that claimed the task inside that window resumed it to ring 3 from its saved frame, and
+its very next trap re-entered the ISR **on the same stack, at the same depth, running the same
+functions** — so it rewrote exactly the words this CPU had not finished reading.
+
+**The exactness of the overlap is why this was invisible for eight days.** Two CPUs running the
+same code path at the same depth put the *same* return addresses and the *same* stack canary
+back at their own slots. So every frame validates, `__stack_chk_fail` is not taken, and both
+`ret`s go where they should. Only the data differs — and the first datum out is the resume
+`%rsp` on its way to `movq %rax,%rsp`. That is G-8's entire recorded signature: a plausible
+word from the wrong context (a `.text` return address in one capture, `4` in another), a canary
+that passed, and a claim invariant that read consistent.
+
+#### The claim invariant was never evidence against the shared-stack hypothesis
+
+This file said on 2026-08-13 that the hypothesis "now has no observation supporting it",
+because the one `t > 0` capture showed `task_running_cpu[4] == 0` and
+`percpu_current_task[0] == 4`. **That is withdrawn.** A deliberately reproduced collision
+prints:
+
+```
+PANIC: two CPUs on one kernel stack task=4 'shell' entering-cpu=3 unwinding-cpu=0
+  vec=14 errc=0x0
+  rip=0xffffffff8010a7db cs=0x8 rflags=0x10086
+  claim: task 4 running_cpu=3  percpu_current=[0,0,0,4]  imp=[0,0,0,0]
+```
+
+The invariant **holds** while two CPUs are on one kernel stack — and it holds because it is
+true. The task really is running on exactly one CPU. The other one is merely still leaving.
+`task_running_cpu[t] == c ⟺ percpu_current_task[c] == t` says nothing about a CPU that has
+stopped running a task but has not stopped *reading its stack*, and no amount of that
+instrument would ever have said anything about it.
+
+That is the fourth time on this finding that a diagnostic's silence or agreement was read as
+evidence, and it is the same lesson each time: **an instrument answers the question it was
+built for, and the cost of forgetting that is measured in days.**
+
+#### The fix: the claim ends where the stack does
+
+`isr_common_stub64` calls `sched_release_deferred()` immediately after `movq %rax,%rsp` — the
+first instruction at which this CPU is provably reading a different stack — and that is where
+the hand-over completes. Interrupts are off (every gate is an interrupt gate) so it cannot
+re-enter, and its frame lands in the same unused region of the *incoming* task's stack the
+ISR's own C frames occupied on entry. The hold is a few tens of instructions; a CPU that wanted
+the task takes it on the next tick.
+
+#### The property is now checked, not asserted (SECURITY.md S20)
+
+`g_kstack_inflight` carries bit *t* while some CPU is inside that window on task *t*'s stack,
+and `interrupt_handler64` tests it on entry. A CPU arriving in an ISR for a task another CPU
+has not finished leaving is two CPUs on one kernel stack, and the kernel says so and halts
+rather than corrupting itself quietly. One load and a bit test on the common path; `MAX_TASKS`
+is 64, so a single word covers every task exactly.
+
+The detector reports **once per boot**. Both parties to a collision see it and would print the
+same task and the same pair of CPUs, and the first control run garbled them into
+`task= entering-cpu=3-2145272000`. That is deduplication, and it is deliberately *not* the
+muteness #143 fixed: there the claim was taken by an unrelated fatal fault on another CPU and
+the event went entirely unreported, whereas here it is taken by this same detector reporting
+this same collision, under the bounded bracket that always emits. A second, *different*
+reporter (a concurrent `#PF`) can still interleave with it — that is the standing trade-off of
+the bounded claim and is why the marker is emitted as one `kfault_str`.
+
+#### Falsified, both arms, in seconds instead of at 1 boot in 150
+
+`KSTACK_RACE_WIDEN=1` stretches the window with a spin so it is entered on essentially every
+switch. It is set in **both** arms, which is the whole point — the same widened window must be
+harmless with the fix and fatal without it:
+
+| Target | Build | Required |
+|---|---|---|
+| `smoke-kstack-race` | widened window, deferred release | session completes, marker **absent** |
+| `smoke-kstack-race-control` | widened window, `KSTACK_RELEASE_EARLY=1` | marker **present**, and the session must **not** report PASS |
+
+The control arm is the load-bearing one: without it, the first arm is consistent with "a kernel
+with a spin in it still boots".
+
+Three details recorded because each would have made the gate lie:
+
+- **The obvious widener does not work, and only measurement said so.** Spinning after *every*
+  switch is self-defeating: the CPU that must take the released task reaches the same spin on
+  its own switch, so it is always a full spin behind — its own delay prevents the collision it
+  exists to cause. Measured, per-boot reproduction of the pre-fix arm:
+
+  | Widening | Reproduced |
+  |---|---|
+  | every switch, every CPU | **2 / 7** |
+  | one switch in eight, every CPU | **0 / 3** |
+  | every switch, `KSTACK_RACE_WIDEN_CPUMASK=0x5` (cpu 0 and 2 linger; cpu 1 and 3 take) | **12 / 12** |
+
+  A control arm that reproduces two times in seven is not a control arm, it is a coin — and a
+  red gate that goes green on a re-run is the exact habit this file blames for
+  `smoke-console-smp` surviving months of CI. The split also runs about twice as fast, which is
+  a side effect and not the reason.
+- **The spin count is the value that was measured**, `KSTACK_RACE_WIDEN_SPINS ?= 200000`. A
+  first draft left a round `2000000` as the Makefile default while every hand-run had used
+  `200000`; the gate then ran the widened session ten times slower and *timed out* rather than
+  concluding. Verified in the exact form it runs, after being caught not doing so.
+- **The control arm asserts two things, not one.** The marker must appear AND the session must
+  not report PASS. A build that reproduced the race and still reported success would mean the
+  harness had stopped reading the wire, which is the failure mode `SOAK_MIN_CHECKS` exists for
+  one level up.
+
+#### The rate: paired, adjacent-boot alternating, 1600 boots at `-smp 4`
+
+Both ISOs built from the committed tree, sha256 pinned, alternating on one host so the arms see
+the same load. Nothing was rebuilt during the run, and the kernel binaries were checked
+byte-identical to a fresh build of the tree afterwards.
+
+| Arm | Failures | Rate |
+|---|---|---|
+| `KSTACK_RELEASE_EARLY=1` (the pre-fix release site) | **31 / 800** | 3.9% |
+| shipped (deferred release) | **0 / 800** | 0% (95% upper bound, rule of three: 0.38%) |
+
+Fisher exact, two-sided: **p = 6.9 × 10⁻¹⁰**.
+
+The 3.9% decomposes exactly onto what this file already documented:
+
+| What the failing boot showed | Count |
+|---|---|
+| caught at the collision by the new detector | 13 |
+| stalled with no marker (signatures A / B) | 9 |
+| supervisor `PAGE FAULT` | 6 |
+| `PANIC: dispatcher returned a bogus resume rsp=` (#123's floor guard) | 3 |
+
+The last three rows are **18 / 800 = 2.25%** — boots that ran on past the collision into a
+downstream failure, which is G-8's documented **2–3% per boot**, reproduced. So the pre-fix arm
+is not a worse kernel than `main`; it is `main`'s defect with an instrument attached that names
+it before it does damage.
+
+**An earlier 1600-boot run of the same design corroborates it**, at 44/800 against 0/800
+(p = 6.2 × 10⁻¹⁴). Its binaries predated the detector's report deduplication, so it is quoted
+as a second run rather than merged into the first — but note what did *not* move between them:
+the downstream-failure subset was **18/800 = 2.25% in both**, to the boot. The total differs
+(44 against 31) because the detector's hit rate depends on how loaded the host is, and the
+first run shared the machine with a stray QEMU. That is the expected direction: contention is
+what opens the window, and it is why this finding was first seen on a CI runner and pinned
+cores rather than on an idle workstation.
+
+#### One thing this does not close
+
+The `#PF`/exit fallback in `idt.c` resumes a CPU with `frame->rsp = tasks[0].kernel_stack_top`
+when nothing else is runnable, and every CPU that takes that fallback lands on that one stack.
+That is a second instance of the same family, and the detector does **not** cover it: it is
+keyed on task ids and excludes task 0, which is legitimately "current" on several CPUs at once
+as the idle sentinel. One pre-fix soak capture is suggestive — all four CPUs idle on task 0,
+reporting `PANIC: dispatcher returned a bogus resume rsp=0xfee000b0`, which is the LAPIC EOI
+register address and therefore a word out of another CPU's `lapic_eoi` frame — but suggestive
+is not a witness. **No fix is claimed for it**, and it is written down rather than patched on
+the strength of one reading, which is the discipline the rest of this section exists to teach.
+
+---
+
+#### The record: how this was read, before it was understood
+
+Everything below this line is the contemporaneous record. It is kept because the wrong readings
+are the useful part.
 
 `smoke-session-smp-soak` fails at roughly **2–3% per boot** on current `main`:
 
@@ -930,6 +1108,12 @@ audible, the next occurrence will say so itself.
 **G-8 remains open.** What is closed is the instrument: the guard is now known to fire, and
 known to be heard when it does.
 
+*(Written 2026-08-13. It stayed open for four more days; the window this section identifies
+correctly — after the guard, before `movq %rax,%rsp` — is the one closed on 2026-08-17. The
+"register that did not survive" reading was the wrong half: a callee-saved register restored
+from a stack slot a second CPU had rewritten is both a register and a stack. See the top of
+this finding.)*
+
 **Signature B** — nothing runs at all. Boot never reaches the login prompt:
 
 ```
@@ -1044,13 +1228,18 @@ roadmap item for a fortnight. The first draft of *this* finding then guessed "sl
 from a single capture, and the very next capture falsified it. Three guesses, three wrong.
 Hence: signatures recorded, mechanism explicitly not claimed.
 
-**Why advisory rather than gating.** At ~3% per boot, `SOAK_RUNS=15` reddens roughly a third
+**Why it was advisory rather than gating** (2026-08-09 to 2026-08-17). At ~3% per boot, `SOAK_RUNS=15` reddens roughly a third
 of all CI runs. A required check in that state teaches everyone to hit re-run, which is
 precisely the reflex that let the console-smp deadlock survive months of CI. A gate nobody
 believes is worse than an advisory job somebody reads. `SOAK_RUNS` is raised to 45 in CI so
 the advisory job actually witnesses the thing it is reporting (~75% of runs, against ~37% at
 15). **Restore it to gating in the same commit that resolves G-8 — either way — and quote a
 rate, not a green run.**
+
+*Done 2026-08-17.* The job gates again, and the rate is at the top of this finding: 31/800 on
+the pre-fix release site against 0/800 on the shipped one, paired and alternating, Fisher
+p = 6.9 × 10⁻¹⁰. It was advisory for eight days and it was reporting a real defect throughout —
+which is the case for reading a red advisory job rather than deleting it.
 
 **Capturing the failing run is what made this legible.** The soak used to send every run to
 `/dev/null` and trust the exit status. It now keeps the failing run's output — and the first
@@ -1501,7 +1690,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-tcc` | TCC is provisioned into `/bin` and `tcc -v` runs. (Needs `SMOKE_TIMEOUT=320`.) |
 | `smoke-session` | A scripted session drives the real shell over serial and asserts on output. |
 | `smoke-session-smp` | The same under SMP. |
-| `smoke-session-smp-soak` | `SOAK_RUNS` consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. **Keeps evidence:** each failing or vacuous boot's **full serial log** is retained in `$(SOAK_EVIDENCE_DIR)` (default `soak-evidence/`) alongside its stdout, and CI uploads the directory plus the exact `kernel.elf` as artifacts; a clean run removes the directory. Until 2026-08-13 the target reused one temp log, overwrote it every iteration, deleted it at the end and printed `tail -20`, so it destroyed the diagnostic it existed to produce — see G-8 below. **Currently ADVISORY in CI, not gating — see finding G-8 below.** |
+| `smoke-session-smp-soak` | `SOAK_RUNS` consecutive SMP sessions, **all** of which must complete. Gates the IPC lost-reply race (see CHANGES.md), which hung ~1 boot in 5 — a rate a single-boot test passes four times out of five, which is how it went unnoticed. One hang fails; there is no retry. Falsified at 2/10 hangs against the pre-fix kernel. Each run must also emit `SESSION_TEST: PASS` **and** clear `SOAK_MIN_CHECKS` (default 8) `[ok]` steps — a run that exits 0 having proven nothing is reported `VACUOUS` and fails, so the gate cannot go green on a test that stopped testing. **Keeps evidence:** each failing or vacuous boot's **full serial log** is retained in `$(SOAK_EVIDENCE_DIR)` (default `soak-evidence/`) alongside its stdout, and CI uploads the directory plus the exact `kernel.elf` as artifacts; a clean run removes the directory. Until 2026-08-13 the target reused one temp log, overwrote it every iteration, deleted it at the end and printed `tail -20`, so it destroyed the diagnostic it existed to produce — see G-8 below. **GATING again as of 2026-08-17**, restored in the commit that closed **[G-8]**; it was advisory from 2026-08-09 while that finding was open, and it was correctly reporting a real defect the whole time. |
 
 ## Can the kernel be heard when it faults?
 
@@ -1513,6 +1702,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-resume-guard-preclaim` | The same, with the **permanent panic claim already held** — the state another CPU's fatal exception leaves behind. The report must still get out. This is the arm that witnesses the fix. |
 | `smoke-resume-guard-legacy` | Control arm for the fix: same injection and claim, with the guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket restored (`RESUME_GUARD_LEGACY_FATAL=1`). The report must **not** reach serial — the boot goes silent at the login prompt, which is the defect on demand. |
 | `smoke-resume-guard-nofloor` | Control arm for the guard: same injection, guard compiled out (`RESUME_GUARD_DISABLE=1`). The PANIC line must **not** appear; the kernel instead faults at `0x94` on `out->cs`, which is G-8's original datapoint reproduced deliberately. |
+| `smoke-kstack-race` | **S20** — a task's kernel stack is executed by at most one CPU at a time. `KSTACK_RACE_WIDEN=1` stretches the window between handing a task to another CPU and the ISR epilogue leaving that task's stack, so it is entered on essentially every switch instead of at **[G-8]**'s 2–3% per boot. With the deferred release the claim is held across the window, so nothing can take the stack: the session must complete and `PANIC: two CPUs on one kernel stack` must be **absent**. |
+| `smoke-kstack-race-control` | Control arm, and the load-bearing one. Same widened window, `KSTACK_RELEASE_EARLY=1` restoring the pre-fix release site. The marker must be **present** *and* the session must not report PASS — a build that reproduced the race and still reported success would mean the harness had stopped reading the wire. Without this arm, `smoke-kstack-race` proves only that a kernel with a spin in it still boots. |
 
 This pair is the inverse of every other target here: it wants a kernel fault and fails if the
 kernel takes one quietly.
@@ -1589,13 +1780,16 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **68 required contexts and 3 reasoned exemptions** —
-`smoke-session-smp-soak` (**[G-8]**), `fuzz` (a fixed 30-second search is evidence of effort,
-not of absence) and `kani` (manual-only, so there is no conclusion to gate on). `smoke-fs-wal`
-was a fourth until **[I-11]** was fixed and it was promoted back to gating. The promotions are backed by measurement, not optimism: across 18 CI runs sampled on
-2026-08-16, **64 of 66 jobs had zero failures over 1152 job-executions**; the only two that
-ever failed are `security` (2/18, both deliberate, during #154) and `smoke-session-smp-soak`
-(1/18, consistent with [G-8]'s documented 2–3% per boot).
+The intended set is **70 required contexts and 2 reasoned exemptions** — `fuzz` (a fixed
+30-second search is evidence of effort, not of absence) and `kani` (manual-only, so there is no
+conclusion to gate on). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
+promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]** was closed on
+2026-08-17, and it was promoted in the same commit. Both remaining exemptions are properties of
+the test itself rather than standing exemptions for an open defect. The promotions are backed
+by measurement, not optimism: across 18 CI runs sampled on 2026-08-16, **64 of 66 jobs had zero
+failures over 1152 job-executions**; the only two that ever failed are `security` (2/18, both
+deliberate, during #154) and `smoke-session-smp-soak` (1/18, which was [G-8] at its documented
+2–3% per boot — the defect that job was correctly reporting).
 
 `smoke-fs-wal` is deliberately **demoted** from required. A flaky gate that blocks merges
 spuriously teaches the maintainer to re-run red checks, which costs more than the coverage it

@@ -77,6 +77,7 @@ required:
   - smoke-irq
   - smoke-irq-policy
   - smoke-kfault
+  - smoke-kstack-race
   - smoke-mapphys
   - smoke-modules
   - smoke-modules-tamper
@@ -94,6 +95,7 @@ required:
   - smoke-sched-invariants
   - smoke-session
   - smoke-session-smp
+  - smoke-session-smp-soak
   - smoke-signal
   - smoke-smp
   - smoke-smt
@@ -110,16 +112,6 @@ required:
 
 # Exempt, each with the reason it cannot or should not gate a merge.
 advisory:
-  smoke-session-smp-soak: >-
-    [G-8] Fails at roughly 2-3% per boot on current main, and measurably so: 1
-    run in 18 sampled on 2026-08-16. The proximate mechanism is established (the
-    interrupt dispatcher returns a resume %rsp that is not a kernel stack
-    pointer) but its origin is not, so this is not a flaky test — it is a real
-    defect the job is correctly reporting. It stays advisory because a
-    known-open finding should not block unrelated work, and it keeps its
-    evidence (full serial logs uploaded as artifacts) so each failure is
-    diagnostic rather than merely red.
-
   fuzz: >-
     Advisory by design. cargo-fuzz runs each target for a fixed 30-second
     budget, so a green result means "no crash found in 30 seconds", not "no

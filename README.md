@@ -42,8 +42,11 @@ measurements.
 > The revocation closure an unprivileged task could force to over-approximate was made exact
 > the same day (**[I-3]**).
 >
-> The notable remaining findings are an SMP
-> fault whose origin is not established (**[G-8]**), a CI gating list that no automated check
+> The SMP fault whose origin had resisted diagnosis for eight days (**[G-8]**) was closed on
+> 2026-08-17: a switch path handed a task to another CPU while the CPU making the switch was
+> still executing on that task's kernel stack. Measured over 1600 alternating boots, the
+> pre-fix release site fails 31/800 and the shipped one 0/800.
+> The notable remaining findings are a CI gating list that no automated check
 > can verify against the live ruleset (**[C-6]** — every security test does now block a merge,
 > as of 2026-08-16), and no independent review of security-critical changes (**[C-5]**).
 

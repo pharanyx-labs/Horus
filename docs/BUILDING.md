@@ -143,6 +143,8 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 | `RESUME_GUARD_DISABLE=1` | Compiles the floor guard out entirely; the kernel instead faults at `0x94` on `out->cs`, which is **[G-8]**'s original datapoint reproduced deliberately. | `make smoke-resume-guard-nofloor` |
 | `--features=revoke_legacy_bounded` (cargo) | Restores the pre-2026-08-16 revocation closure: a fixed 256-entry worklist of revoked serials, falling back to nulling every capability that merely shares the root object when a subtree overflows it (**[I-3]**). Reachable from ring 3, and it destroys unrelated peers' authority. | `cargo test --manifest-path rust/Cargo.toml --release --features=revoke_legacy_bounded` — the two subtree-exactness tests must **fail**. The `rust` CI job runs exactly this and fails if they pass. |
 | `WAL_NO_FLUSH=1` | Compiles out every write-ahead-journal durability barrier, restoring the pre-2026-08-16 kernel in which the ATA driver had no `FLUSH CACHE` opcode and the journal's ordering held only because the emulator persisted each write anyway (**[I-10]**). | `make smoke-fs-wal-flush-control` (the refusal must be **absent**) and `make smoke-fs-wal-order-control` (the ordering check must **reject**) |
+| `KSTACK_RELEASE_EARLY=1` | Restores the pre-2026-08-17 release site: a switch path publishes the outgoing task as claimable while the CPU making the switch still has ~30 instructions of ISR epilogue to run **on that task's kernel stack** (**[G-8]**). Another CPU takes it, resumes it to ring 3, and its next trap rewrites the frames the first CPU has not finished reading. | `make smoke-kstack-race-control`, which requires `PANIC: two CPUs on one kernel stack` to be **present** |
+| `KSTACK_RACE_WIDEN=1` | Not a defect — a *window widener*, and the only entry here that is set in **both** arms. Spins after the hand-over and before the ISR epilogue leaves the stack, so the **[G-8]** window is entered on essentially every switch instead of at its natural 2–3% per boot. `KSTACK_RACE_WIDEN_SPINS` (default `200000`) is the spin count, and is the value that was measured rather than a round number: a draft default of ten times that made the widened session time out instead of concluding. `KSTACK_RACE_WIDEN_CPUMASK` (default `0x5`) picks which CPUs linger — spinning on *every* CPU is self-defeating, because the CPU that must take the released task is then a full spin behind, and it reproduced only 2 boots in 7 against 12 in 12 for the split. | `make smoke-kstack-race` (with the fix: session completes, marker **absent**) and `make smoke-kstack-race-control` (without it: marker **present**) |
 
 None of these is a shipping configuration. `IRQ_LEGACY_GLOBAL_LOCK` also appears in the
 interrupt-policy table above, and until 2026-08-15 that was the only place it was documented;
@@ -153,6 +155,13 @@ is one nobody will re-run.
 Note that `WAL_NO_FLUSH=1` is unusual among these in being **deterministic**: the barriers are
 either compiled in or they are not, so its gates do not need a rate quoted over N boots the
 way a concurrency control arm does.
+
+`KSTACK_RACE_WIDEN=1` is the other unusual one, and in the opposite direction. Every other flag
+here rebuilds a defect; this one rebuilds a *window*, and it is deliberately applied to the
+fixed kernel as well as the broken one. That is what makes the pair a measurement: the same
+widened window must be harmless with the fix and fatal without it. Applied to one arm only it
+would prove nothing — which is the mistake `TESTS.md` records this project making twice on
+**[G-8]** before it was diagnosed.
 
 ---
 

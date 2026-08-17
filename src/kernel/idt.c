@@ -477,6 +477,75 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
  * (it is built -mno-sse), so there is nothing to save and nothing to restore. */
 uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
 {
+#ifdef SMP
+    /* ---- Two CPUs on one kernel stack (finding G-8) -------------------------
+     *
+     * We are executing on the current task's kernel stack: the CPU pushed this
+     * trap frame at the top of it, and every C frame below is ours. If another CPU
+     * is *also* still on that stack -- because it switched away from this task and
+     * has not yet reached isr_common_stub64's `movq %rax,%rsp` -- then the frames
+     * are about to be written by two cores at once, at the same depth, running the
+     * same functions. Nothing downstream can detect that: the return addresses and
+     * the stack canary land back at their own slots with their own values, so the
+     * frames validate and the `ret`s go where they should. Only the data is wrong,
+     * and the first datum that leaves is the resume %rsp on its way to the ISR
+     * epilogue -- which is G-8's entire observed signature.
+     *
+     * So it is caught here, at the collision, rather than three functions later at
+     * an `iretq` with a selector index of 0x871. Fail closed: this is memory
+     * corruption in progress across a privilege boundary, and there is no state to
+     * repair -- the other CPU's live frames cannot be un-shared.
+     *
+     * Cost on the common path is one load and a bit test. The holder scan runs
+     * only once the bit for THIS task is already set, and requiring a holder that
+     * is not this CPU is what makes the report mean "two CPUs" rather than "a bit
+     * was set": a stale bit belonging to this CPU is not a collision with anyone.
+     *
+     * Reported under the BOUNDED claim for the reason the floor guard below is --
+     * the failure this watches for is exactly the kind that leaves another CPU
+     * halted holding the permanent one, and a guard silenced by the failure it is
+     * watching for is not an instrument. */
+    uint64_t inflight = g_kstack_inflight;
+    if (inflight) {
+        int t = get_current_task();
+        if (t > 0 && t < MAX_TASKS && ((inflight >> t) & 1ULL)) {
+            int me = this_cpu();
+            int holder = sched_kstack_holder(t);
+            if (holder >= 0 && holder != me) {
+                /* Both parties to a collision see it, and both would report the
+                 * same task and the same pair of CPUs, so the second report only
+                 * garbles the first: the bounded claim prints past its budget by
+                 * design, and two concurrent reporters interleave byte-by-byte
+                 * into "task= entering-cpu=3-2145272000". Observed, not feared --
+                 * it is what the first run of smoke-kstack-race-control produced.
+                 *
+                 * This is deduplication, not the muteness #143 fixed, and the
+                 * difference is worth stating because the code shape is identical.
+                 * There, the guard's report was lost to a claim taken by an
+                 * UNRELATED fatal fault on another CPU, so the event went entirely
+                 * unreported. Here the claim is taken by this same detector,
+                 * reporting this same collision, under the bounded bracket that
+                 * always emits -- so the event is guaranteed to reach the wire
+                 * exactly once. The loser has nothing to add and halting it is
+                 * fail-closed anyway: it is the other half of a shared stack. */
+                static volatile int kstack_reported = 0;
+                if (__sync_lock_test_and_set(&kstack_reported, 1))
+                    for (;;) __asm__ volatile ("cli; hlt");
+                kfault_begin(0);
+                kfault_str("\nPANIC: two CPUs on one kernel stack task=");
+                kfault_task(t);
+                kfault_str(" entering-cpu=");   kfault_dec(me);
+                kfault_str(" unwinding-cpu=");  kfault_dec(holder);
+                kfault_str("\n  trapped from:"); kfault_frame(frame);
+                kfault_claims(t);
+                kfault_str("\nKERNEL FATAL SHARED KERNEL STACK - halting\n");
+                kfault_end(0);
+                for (;;) __asm__ volatile ("cli; hlt");
+            }
+        }
+    }
+#endif
+
     int from_user = (frame->cs & 3) != 0;
     if (from_user) fpu_save(get_current_task());
 

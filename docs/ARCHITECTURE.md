@@ -875,3 +875,31 @@ stale, and the auditor was reading an undeclared impersonation as a leak.
 (`percpu_real_task[]`) and the audit is stated over that, with the bracket depth itself
 checked. 20 pinned boots before: 10 failures; 30 after: 0. See `TESTS.md`,
 `make smoke-sched-invariants`.
+
+**G-8 — a task's kernel stack could be executed by two CPUs.** *Closed 2026-08-17*, in two
+parts. The claim now ends later than the switch does (§7 above, and the long note at
+`percpu_deferred_release[]` in `scheduler.c`), and a dying task's CPU parks on its own ring-0
+stack rather than on a shared one. `make smoke-kstack-race`, `smoke-kstack-park` and their
+control arms.
+
+**G-9 — claims leak and kernel stacks collide on the spawn/reap path under SMP.** *Open,
+narrowed 2026-08-17.* It was a cluster rather than one defect. The component that is closed was
+architectural in the same way G-10 is: `g_exec_reenter_task`, the hand-off telling
+`interrupt_handler64` to re-enter a task through the context `SYS_EXEC_NAMED` had just built for
+it, was **one global consumed on the exit of every syscall on every CPU**, so an exec armed on
+one core could be taken by another — which then resumed that task's fresh trap frame while the
+core that ran the exec was still on it. The storage is per-CPU now, with a standing assertion in
+`exec_reenter_switch`; falsified with `EXEC_REENTER_GLOBAL=1` at 0 thefts in 30 boots against 5
+in 20. Two residues remain and are not the exec race: a claim leaked in the boot/spawn phase, and
+a CPL-0 write-fault at `lapic_eoi`. See `LIMITATIONS.md` §5.2d.
+
+**G-10 — the spawn/exec path is process-wide singleton state.** *Open, found 2026-08-17.* One
+ELF staging buffer (`loader_staging`), one staged argv (`g_args_*`), one `g_spawn_stdio_spec`,
+one `g_spawn_caller` — and no lock in `loader.c`, none around `do_spawn`. This is a design-level
+gap rather than a bug to patch in place: the path was written for a kernel that spawned from one
+core, and every one of those singletons is a place where two cores now meet. The correctness
+consequence is a CR3 becoming reachable before `create_user_pagedir` has populated its kernel
+half; the authority consequence is that `g_spawn_caller` is read long after it is written, so a
+child's stdio can be wired from **the wrong parent's cspace** — capability inheritance from a
+task that never spawned it. The likely fix is serialising the spawn/exec critical section, which
+is its own change with its own witness. See `LIMITATIONS.md` §5.2e.

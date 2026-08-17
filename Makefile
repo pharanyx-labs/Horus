@@ -544,6 +544,18 @@ KSTACK_RACE_WIDEN_CPUMASK ?= 0x5
 ifeq ($(KSTACK_RELEASE_EARLY),1)
 CFLAGS += -DKSTACK_RELEASE_EARLY
 endif
+# EXEC_REENTER_GLOBAL=1 restores the pre-2026-08-17 exec hand-off: ONE shared
+# `int` naming the task whose exec re-entry is pending, consumed on the exit of
+# every syscall on every CPU with no test that the exec belonged to that CPU.
+# That is finding [G-9]: an exec armed on one core is taken by another, which
+# claims the exec'ing task, installs its CR3 and resumes its freshly fabricated
+# trap frame while the core that ran the exec is still on that same frame.
+# Per-CPU storage is the fix; this flag is the defect on demand, and is what
+# `make smoke-exec-reenter-control` builds.
+EXEC_REENTER_GLOBAL ?= 0
+ifeq ($(EXEC_REENTER_GLOBAL),1)
+CFLAGS += -DEXEC_REENTER_GLOBAL
+endif
 # KSTACK0_SHARED_PARK=1 restores the pre-2026-08-17 park target: all three
 # fault/exit fallbacks in idt.c resume the CPU on tasks[0].kernel_stack_top, ONE
 # stack shared by every CPU that takes the path. Two CPUs parked there both run
@@ -2518,6 +2530,76 @@ smoke-kstack-park-control:
 	fi; \
 	rm -f "$$log"; \
 	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must"
+
+# ---- [G-9], exec hand-off component: the re-entry belongs to the CPU that armed it
+#
+# g_exec_reenter_task was ONE global consumed on the exit of every syscall on
+# every CPU, so an exec armed on one core was taken by another -- which claimed
+# the exec'ing task, installed its CR3 and resumed the trap frame the exec tail
+# had just built, while the core that ran the exec was still on that same frame.
+#
+# BOTH ARMS ARE MARKER ASSERTIONS, NOT EXIT STATUSES, and deliberately so: the
+# PROC_SELFTEST workload at -smp 4 still fails ~27% of boots on [G-10], which has
+# nothing to do with this property. Gating on "did the boot finish" would make
+# this pair a [G-10] detector. Gating on the marker asks only the question these
+# arms exist to ask.
+#
+# The control arm needs MANY boots because the theft is a race: measured 5 hits
+# in 20 boots (25%/boot), against 0 in 30 for the fix. One boot would report a
+# false green three times in four.
+EXEC_REENTER_RUNS ?= 20
+EXEC_REENTER_TIMEOUT ?= 180
+EXEC_REENTER_RE = exec re-entry taken by the wrong cpu
+
+.PHONY: smoke-exec-reenter
+smoke-exec-reenter:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc is captured and deliberately NOT the assertion: [G-10] still stalls"; \
+	: "~27% of these boots, and gating on completion would make this pair a"; \
+	: "G-10 detector rather than a witness for this property. rc=$$rc"; \
+	hits=$$(grep -ca '$(EXEC_REENTER_RE)' "$$log"); \
+	if [ "$$hits" -ne 0 ]; then \
+	    echo "EXEC REENTER: FAIL - the exec hand-off was taken by the wrong CPU ($$hits/$(EXEC_REENTER_RUNS) boots)"; \
+	    grep -a -A 1 '$(EXEC_REENTER_RE)' "$$log" | head -6 | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	rm -f "$$log"; \
+	echo "EXEC REENTER: PASS - no CPU took another CPU's exec re-entry in $(EXEC_REENTER_RUNS) boots at -smp 4"
+
+.PHONY: smoke-exec-reenter-control
+smoke-exec-reenter-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc captured, not asserted on -- this arm halts a CPU on purpose. rc=$$rc"; \
+	hits=$$(grep -ca '$(EXEC_REENTER_RE)' "$$log"); \
+	if [ "$$hits" -eq 0 ]; then \
+	    echo "EXEC REENTER CONTROL: FAIL - the shared hand-off did NOT reproduce in $(EXEC_REENTER_RUNS) boots."; \
+	    echo "  This arm carries reachability for the pair: if the theft stops happening with"; \
+	    echo "  the global restored, then smoke-exec-reenter's green says nothing either."; \
+	    echo "  Expected ~25%/boot (measured 5 in 20 on 2026-08-17)."; \
+	    rm -f "$$log"; exit 1; \
+	fi; \
+	grep -a '$(EXEC_REENTER_RE)' "$$log" | head -2 | sed 's/^/  /'; \
+	rm -f "$$log"; \
+	echo "EXEC REENTER CONTROL: PASS - the shared hand-off is taken by the wrong CPU ($$hits/$(EXEC_REENTER_RUNS) boots), as it must be"
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.

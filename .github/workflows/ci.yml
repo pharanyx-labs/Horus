@@ -957,6 +957,36 @@ jobs:
       - name: Restore the pre-fix release site and require the race to REPRODUCE
         run: make smoke-kstack-race-control
 
+  smoke-exec-reenter:
+    name: An exec re-entry is consumed by the CPU that armed it (G-9 exec component; and the control arm proves it)
+    runs-on: ubuntu-latest
+    # Two clean builds and 2 x EXEC_REENTER_RUNS boots. Passing boots exit on
+    # their marker in ~25s; the control arm halts as soon as it reproduces. The
+    # cost driver is [G-10], which stalls ~27% of boots to the 180s budget, so
+    # this is sized well above measured rather than tightly.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # g_exec_reenter_task was ONE global consumed on the exit of every syscall
+      # on every CPU. An exec armed on one core was taken by another, which
+      # claimed the exec'ing task and resumed the frame the exec tail had just
+      # built -- while the core that ran the exec was still on it. Finding G-9.
+      - name: Require no CPU to take another CPU's exec re-entry
+        run: make smoke-exec-reenter
+      # The load-bearing arm. Without it, the step above is consistent with
+      # "the workload did not happen to exec concurrently on this runner".
+      - name: Restore the shared hand-off and require the theft to REPRODUCE
+        run: make smoke-exec-reenter-control
+
   smoke-kstack-park:
     name: A dying task's CPU parks on its own kernel stack (S20 park path; ADVISORY -- open finding G-9)
     runs-on: ubuntu-latest

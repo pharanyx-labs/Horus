@@ -399,10 +399,13 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * fresh ring-3 context for it at the top of its kernel stack — which is
          * the SAME memory as this trap `frame`. Resume that context via the
          * saved-frame path (installs the new CR3 + kernel stack). */
-        if (g_exec_reenter_task > 0) {
-            int t = g_exec_reenter_task;
-            g_exec_reenter_task = -1;
-            return exec_reenter_switch(t);
+        /* Per-CPU: this only ever returns an exec armed by THIS core. As a shared
+         * global it returned whichever exec happened to be pending anywhere, and
+         * the wrong core would then resume another core's task on that core's
+         * live trap frame -- finding [G-9]. See the note in kspawn.c. */
+        {
+            int t = exec_reenter_take();
+            if (t > 0) return exec_reenter_switch(t);
         }
         /* SYS_YIELD: voluntary full-context switch (same path as preemption). */
         if (g_want_yield == ipc_caller) {

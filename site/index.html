@@ -1523,6 +1523,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><th scope="row">Scheduler claim auditor (impersonation declared)</th><td class="t-num t-num--was">10 failures / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned to two host cores</td></tr>
               <tr><th scope="row">Permanent IPC refusal retried forever</th><td class="t-num t-num--was">3 and 5 hangs / 30</td><td class="t-num t-num--now">0 / 40</td><td class="t-note">starved single-core boots</td></tr>
               <tr><th scope="row">Two CPUs on one kernel stack (<strong>G-8</strong>)</th><td class="t-num t-num--was">31 failures / 800</td><td class="t-num t-num--now">0 / 800</td><td class="t-note">adjacent-boot alternating, <code>-smp 4</code> · Fisher p = 6.9 × 10⁻¹⁰</td></tr>
+              <tr><th scope="row">Exec re-entry taken by the wrong CPU (<strong>G-9</strong>, exec component)</th><td class="t-num t-num--was">5 thefts / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · Fisher p ≈ 0.008 · the finding stays open</td></tr>
               <tr><th scope="row">Endpoint queue depth 1 → 4, four concurrent clients</th><td class="t-num t-num--was">7042 ms mean</td><td class="t-num t-num--now">5162 ms mean</td><td class="t-note">12 boots each · <code>EP_QUEUE_SLOTS=1</code> rebuilds the old design</td></tr>
             </tbody>
           </table>
@@ -1676,6 +1677,71 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               slot's first page so the stack top does not move and the boot trampoline needs no
               change. The guard check was confirmed by switching the arming off and watching the
               self-test fail.
+            </p>
+          </li>
+          <li>
+            <h3><span class="id">G-9</span>An exec re-entry taken by the wrong CPU — one component closed, the finding open</h3>
+            <p>
+              <strong>Open, narrowed 2026-08-17.</strong> Closing G-8 stopped a defect that
+              killed every boot of a task-killing workload, and what it uncovered underneath was
+              a second one that had been hidden behind it: at four CPUs, that workload violated
+              the scheduler's claim invariant on roughly 40% of boots. It had never been run at
+              more than one CPU before, so nothing had ever asked.
+            </p>
+            <p>
+              The cause of one component was a single shared variable. When a task replaces its
+              own image, the kernel hands the interrupt path a note saying "re-enter this task
+              through the fresh context just built for it". That note was <em>one global</em>,
+              and it was read on the way out of <em>every system call on every CPU</em>, with
+              nothing checking that the exec belonged to the CPU reading it. A core that had
+              nothing to do with the exec would take the note, claim that task, install its
+              address space and resume the trap frame the exec had just fabricated — while the
+              core that actually ran the exec was still executing on that very frame. One race,
+              and it accounts for all three recorded symptoms: a leaked claim, a task running
+              with no claim, and two CPUs on one kernel stack.
+            </p>
+            <p>
+              The storage is per-CPU now, so the sharing is removed rather than guarded, and a
+              one-comparison assertion keeps it that way. Restoring the shared variable on demand
+              reproduces the theft in <strong>5 boots of 20</strong>; the fix shows
+              <strong>0 in 30</strong>.
+            </p>
+            <p>
+              <strong>This is a narrowing, not a close, and the difference is the point.</strong>
+              The workload still fails about a quarter of the time — a claim leaked before any
+              exec runs, and a supervisor write-fault in the interrupt path — so the finding stays
+              open and the gate whose red flag started all this stays advisory rather than being
+              promoted back on a partial fix. Three earlier explanations for this defect were
+              published-in-progress and were all wrong; each looked right when read and was killed
+              by an instrument. One measurement of the fix even came back clean, because the
+              diagnostic scaffolding still in the build had perturbed the timing enough to hide
+              the remainder. The arm you measure has to be the arm you ship.
+            </p>
+          </li>
+          <li>
+            <h3><span class="id">G-10</span>The spawn path was written for one core</h3>
+            <p>
+              <strong>Open, found 2026-08-17</strong> while narrowing the finding above.
+              Everything spawning or exec'ing a program needs while it is in flight — the buffer
+              the executable is staged in, the argument vector, the standard-I/O wiring, the
+              identity of the spawning task — is a single process-wide variable, and nothing
+              serialises two CPUs through any of it. The exec note above was one instance of that
+              pattern; the rest are untouched.
+            </p>
+            <p>
+              The correctness consequence is visible already: an address space can become
+              reachable before its kernel half has been built, which is what a supervisor
+              write-fault in the interrupt-acknowledge path looks like. The consequence that
+              matters more is about authority — the spawning task's identity is written at the
+              start of a spawn and read much later, so a child's standard I/O can be wired from
+              <em>the wrong parent's</em> capability space. That is authority inherited from a
+              task that never spawned it, which is precisely what this kernel exists to make
+              impossible.
+            </p>
+            <p>
+              It is filed with a mechanism and no witness. There is no control arm for it yet, so
+              it is published as a lead rather than a diagnosis — and the fix, serialising the
+              spawn path, is a design change that owes its own evidence.
             </p>
           </li>
           <li>

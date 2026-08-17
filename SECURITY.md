@@ -37,14 +37,18 @@ audited by a third party, and has known unfixed security defects.
 Horus remains **research-grade**. It has not been independently audited, no security-critical
 change has ever been reviewed by a second person (**[C-5]**). Every security-specific CI job
 is classified as merge-gating as of 2026-08-16, taking the ruleset from 22 required contexts
-toward 67, and to **71** with the three gates [G-8] added on 2026-08-17. A scheduled
+toward 67, then to 71 with the three gates [G-8] added on 2026-08-17, then to 70 when
+`smoke-kstack-park` was demoted to advisory that day for [G-9], and back to **71** with
+`smoke-exec-reenter`, the gate for [G-9]'s exec component. A scheduled
 `ruleset-audit` job now verifies the live ruleset against that classification daily, as a
 GitHub App with `Administration: read` — the permission a workflow token cannot be granted —
 but it is inert until that App is created, and the
 reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. The
-remaining open findings — the `tasks[]` table (**[I-7]**) and a scheduler claim that leaks on the
-spawn/reap path under SMP (**[G-9]**) — are in
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+remaining open findings — the `tasks[]` table (**[I-7]**), claims that leak and kernel stacks
+that collide on the spawn/reap path under SMP (**[G-9]**, narrowed 2026-08-17: its exec hand-off
+component is fixed and falsified, the rest is open), and the spawn/exec path's unserialised
+process-wide state (**[G-10]**, which can wire a child's stdio from the wrong parent's cspace) —
+are in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
 **[G-8]** closed on 2026-08-17 in two parts, and it is the reason **S20** is in the table below. A switch
 path published the outgoing task as claimable while the CPU making the switch was still

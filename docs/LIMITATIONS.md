@@ -828,9 +828,13 @@ guard. With the canary passing, that was read as "a register that did not surviv
 was identified correctly and is the one closed above; the register reading was the wrong half,
 because a callee-saved register restored from a slot a second CPU rewrote is both.
 
-### 5.2d A scheduler claim leaks on the spawn/reap path under SMP — **[G-9]**
+### 5.2d Claims leak and kernel stacks collide on the spawn/reap path under SMP — **[G-9]**
 
-**Open, found 2026-08-17, and pre-existing.** Running `PROC_SELFTEST` at `-smp 4` violates the
+**Open, found 2026-08-17, pre-existing, and narrowed the same day** — one component fixed and
+falsified, the rest still open; see the sub-section below. The original report follows as
+written, because the leads it got wrong are part of the record.
+
+Running `PROC_SELFTEST` at `-smp 4` violates the
 claim invariant on roughly **40% of boots**. Nothing had ever run that workload at more than one
 CPU: `smoke-proc` boots it uniprocessor, where it is clean.
 
@@ -870,14 +874,102 @@ i.e. a return through a corrupted pointer), 5 stalled with no marker, and 3 trip
 
 **Consequence for CI.** `smoke-kstack-park` is **advisory**, not gating: the S20 park property
 it checks is sound and its control arm still reproduces the park defect on demand, but requiring
-a workload that reddens ~40% of the time for an unrelated defect teaches the re-run reflex.
-Promote it in the same commit that closes **[G-9]**, and quote a rate.
+a workload that reddens for an unrelated defect teaches the re-run reflex. It **stays advisory**
+after the 2026-08-17 narrowing below — the workload still fails ~27% of boots, for a reason that
+is still not what the gate tests. Promote it in the same commit that closes the rest of
+**[G-9]**, and quote a rate.
 
-**What is not yet known** is which path leaks. The signature is stable — always task 3, always
-a CPU that has gone idle (`running 0`) while still holding the claim — and `sched_enter_user()`
-is worth looking at first, since it has its own inline `iretq` epilogue and so bypasses
-`isr_common_stub64` and the release the stub performs. That is a lead, not a diagnosis, and this
-file's own history is the argument for labelling it as one.
+#### Narrowed 2026-08-17: one component found, fixed, and falsified — the rest still open
+
+**[G-9] as filed was a cluster, not one defect.** One component is now closed; the remainder is
+not, and the finding stays **OPEN**.
+
+The `sched_enter_user()` lead recorded above was **wrong**, and is retained rather than deleted
+because the reason it was wrong is reusable: it does bypass `isr_common_stub64`, but every one
+of its callers is a boot-time path on the BSP where no deferred release is ever pending, so it
+cannot leak. Two further hypotheses died the same way — the unguarded "defensive claim" in
+`preempt_on_tick`, and `create_task()` inheriting a stale claim through slot reuse. Both are
+real shapes; neither is what fires. Probes beat reading, three times over.
+
+**The component that was found.** `g_exec_reenter_task` was a single global naming the task
+whose exec re-entry was pending, and `idt.c` consumed it on the exit of **every syscall on every
+CPU** with no test that the exec belonged to the CPU reading it. An exec armed on one core was
+routinely taken by another, which then claimed the exec'ing task, installed its CR3 and resumed
+the trap frame the exec tail had just fabricated — while the core that actually ran the exec was
+still executing on that same frame, at the top of that task's kernel stack.
+
+That one race produces all three signatures recorded above: the leaked claim (the thief abandons
+what it was running without releasing it, because `exec_reenter_switch` is written for the case
+where the incoming task *is* the outgoing one and so has no release at all), the opposite
+direction, and two CPUs on one kernel stack. It was caught in the act by a probe:
+
+```
+CLAIMORPHAN: cpu 0 entering task 1 at exec_reenter_switch while still claiming live task 3
+  percpu_current=3  deferred=-1  state=1
+```
+
+`percpu_current=3` while entering task 1 — a CPU consuming an exec re-entry for a task it was
+not running, which violates that function's own contract.
+
+**The fix** is per-CPU storage plus accessors (`exec_reenter_arm` / `exec_reenter_take`,
+`kspawn.c`): the sharing is removed rather than guarded. A one-comparison assertion in
+`exec_reenter_switch` (`SCHED_INVARIANTS` builds) is the standing witness that it stays removed.
+
+**Falsification**, `EXEC_REENTER_GLOBAL=1` restoring the shared slot, 30 and 20 pinned boots at
+`-smp 4`:
+
+| Arm | Boots | Pass | exec-steal | stale claim | CPL-0 fault | stall |
+|---|---|---|---|---|---|---|
+| fixed | 30 | 22 | **0** | 2 | 6 | 0 |
+| `EXEC_REENTER_GLOBAL=1` | 20 | 10 | **5** | 0 | 4 | 1 |
+
+0/30 against 5/20 is Fisher p ≈ 0.008. The workload's overall failure rate falls from ~45–50%
+to ~27%.
+
+**What is still open.** Two residues, and neither is the exec race:
+
+- a stale claim that appears in the **boot/spawn phase, before any exec runs** (2 in 30, e.g.
+  `task 1 claimed by cpu 3 but that cpu was running 0`, immediately after `PROC_SELFTEST: begin`);
+- a CPL-0 fault at **~20% of boots** (6 in 30), `vec=14 errc=0x2` — a supervisor *write* to a
+  non-present page — resolving to `lapic_eoi` and `interrupt_handler64`. A CPU taking an
+  interrupt on a CR3 that does not map the LAPIC is an address space that became reachable
+  before its kernel half was built, which points at **[G-10]** below rather than at the
+  scheduler.
+
+An earlier measurement of this fix reported 0 claim panics in 20 boots. It was taken with
+diagnostic scaffolding that scanned every task slot on every ISR exit, and the perturbation hid
+both residues; the table above is the unscaffolded run and is the one to trust. Recorded because
+"the instrument changed the result" is the failure mode this section keeps rediscovering.
+
+### 5.2e The spawn/exec path is process-wide singleton state, unserialised — **[G-10]**
+
+**Open, found 2026-08-17.** Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight lives in
+file-scope singletons, and nothing serialises two CPUs through them:
+
+| State | Where |
+|---|---|
+| `loader_staging` — the one ELF staging buffer | `kernel.h:99` |
+| `g_args_argc`, `g_args_total`, `g_args_strbuf`, `g_args_len` — staged argv | `kspawn.c:9-12` |
+| `g_spawn_stdio_spec`, `g_spawn_caller` | `kspawn.c:21-22` |
+
+There is no lock in `loader.c` and none around `do_spawn`. `g_exec_reenter_task` (§5.2d) was one
+instance of this pattern and is now per-CPU; the rest are not.
+
+Two consequences, of different severities:
+
+- **Correctness.** Concurrent spawns interleave through one staging buffer, and a CR3 can become
+  reachable before `create_user_pagedir` has populated its kernel half — which is exactly what
+  a supervisor write-fault in `lapic_eoi` looks like, and is the ~20% residue in §5.2d.
+- **Authority.** `g_spawn_caller` is written at `do_spawn` entry and read much later by
+  `wire_child_stdio`, so a child can have its stdio wired from **the wrong parent's cspace** —
+  capability inheritance from a task that never spawned it. That is an authority question, not
+  merely a correctness one, and it is why this is filed rather than left as a TODO.
+
+**Not yet reproduced in isolation.** The evidence is the fault signature above plus the code
+being plainly unserialised; there is no control arm for it yet, so it is a lead with a
+mechanism, not a diagnosis. The fix is almost certainly serialisation of the spawn/exec critical
+section rather than making each singleton per-CPU, but that is a design change and belongs in
+its own commit with its own witness.
 
 ### 5.3 No release provenance — **[I-9]**
 

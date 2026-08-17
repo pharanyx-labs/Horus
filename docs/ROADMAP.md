@@ -636,6 +636,37 @@ Two regression tests witness it and both are falsified by `--features=revoke_leg
 which compiles the old bounded closure back in. The `rust` CI job runs that control arm and
 fails if the tests pass against it — a falsification that is executed, not asserted.
 
+### 1.7 🚧 Serialise the spawn/exec path — **[G-10]**, and the rest of **[G-9]**
+
+Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight is a process-wide singleton — the one
+ELF staging buffer `loader_staging`, the staged argv `g_args_*`, `g_spawn_stdio_spec` and
+`g_spawn_caller` — with no lock in `loader.c` and none around `do_spawn`. The path was written
+for a kernel that spawned from one core.
+
+**Partially delivered 2026-08-17.** One of those singletons, the exec re-entry hand-off, was
+being consumed on the exit of every syscall on *every* CPU with no ownership test, so an exec
+armed on one core was taken by another — which resumed that task's freshly built trap frame
+while the core that ran the exec was still on it. It is per-CPU now, with a standing assertion
+and a control arm (`EXEC_REENTER_GLOBAL=1`): **0 thefts in 30 boots against 5 in 20**, gated by
+`smoke-exec-reenter`. That took the `PROC_SELFTEST` workload at `-smp 4` from ~45–50% failing to
+~27%.
+
+**What remains** is the rest of the pattern, and it is why this is 🚧 rather than ✅:
+
+- a CR3 can become reachable before `create_user_pagedir` has populated its kernel half —
+  6 boots in 30 take a CPL-0 `vec=14 errc=0x2` at `lapic_eoi` / `interrupt_handler64`;
+- a claim still leaks in the boot/spawn phase before any exec runs, 2 in 30;
+- **the authority half:** `g_spawn_caller` is written at `do_spawn` entry and read much later by
+  `wire_child_stdio`, so a child's stdio can be wired from the wrong parent's cspace. That is
+  capability inheritance from a task that never spawned it, and it is the reason this sits in
+  Track 1 rather than being filed as tidying.
+
+Making each singleton per-CPU is not obviously the right answer here as it was for the exec
+hand-off — a staging buffer per CPU is a real memory cost, and the argv/stdio state is logically
+per-*spawn* rather than per-CPU. A lock around the spawn/exec critical section is the likelier
+shape. Either way it needs its own control arm; `smoke-kstack-park` stays advisory until it
+lands, because its workload still reddens ~27% of the time for this.
+
 ---
 
 ## Track 2 — Toward a complete OS *(Track 0 complete)*
@@ -779,14 +810,20 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **70 required, 4 exempted** — `fuzz` (a 30-second time-boxed search is
+  The intended set is **71 required, 4 exempted** — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
   (its workload trips **[G-9]**, found 2026-08-17). `smoke-fs-wal` was an
   exemption until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
   `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted with
-  it. **No exemption now stands for an open defect** — all three are properties of the test
-  itself. The promotions are
+  it. **Three of the four are properties of the test itself; `smoke-kstack-park` is the one
+  exemption that stands for an open defect**, and it stays until [G-9] is closed rather than
+  merely narrowed — its workload still fails ~27% of boots after the exec component was fixed
+  on 2026-08-17. (An earlier revision of this paragraph claimed no exemption stood for an open
+  defect while listing `smoke-kstack-park` in the same sentence; the count and the claim had
+  drifted apart, which is the failure this section is supposed to catch.) The count rose to 71
+  on 2026-08-17 with `smoke-exec-reenter`, the gate for that fix and its control arm. The
+  promotions are
   backed by measurement: across 18 CI runs sampled on 2026-08-16, 64 of 66 jobs had zero
   failures in 1152 job-executions. `smoke-fs-wal` is *demoted* — a flaky required check trains
   the maintainer to re-run red, and its durability claim is now carried by the deterministic

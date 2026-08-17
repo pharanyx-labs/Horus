@@ -250,6 +250,54 @@ static uint64_t resume_rsp_inject(uint64_t rsp)
 }
 #endif
 
+/* The ring-0 stack this CPU parks on when the task it was running dies and
+ * task_exit_switch() finds nothing else runnable. Reached from three places (the
+ * SYS_EXIT path, the ring-3 trap kill, and the page-fault kill), all of which
+ * resume at resume_shell_after_fault() -> kernel_idle().
+ *
+ * All three used tasks[0].kernel_stack_top, which is ONE stack. Two CPUs that
+ * take the path both park on it, both run `sti; hlt` there, and both push a trap
+ * frame at the same address on the next tick -- two CPUs executing ring-0 code on
+ * one kernel stack, which is S20, and which the g_kstack_inflight mask cannot
+ * see because it is keyed on task ids and task 0 is legitimately the current task
+ * on several CPUs at once.
+ *
+ * sched_note_park() records the choice and fails closed if another CPU is
+ * already parked on the same stack, so the property is checked and not merely
+ * intended. */
+static uint64_t kernel_park_rsp(void)
+{
+#if defined(SMP) && !defined(KSTACK0_SHARED_PARK)
+    /* Per-CPU, which is the fix. ap_park_stack_top() is the same stack
+     * enter_cpu_idle() already parks this CPU on, so the fault path joins the
+     * kernel's one park mechanism instead of keeping a worse second one. */
+    extern uint64_t ap_park_stack_top(int cpu);
+    uint64_t rsp = ap_park_stack_top(this_cpu());
+#else
+    /* KSTACK0_SHARED_PARK=1 restores the shared park -- the defect, on demand --
+     * and is what `make smoke-kstack-park-control` builds. Also the uniprocessor
+     * path, where there is no second CPU to share with and task 0's stack is the
+     * right (and guarded) answer. */
+    uint64_t rsp = tasks[0].kernel_stack_top;
+#endif
+#ifdef KSTACK0_PARK_TRACE
+    /* Test-only: how often is this path reached at all, and by which CPU? The
+     * answer decides whether the shared park is a live hazard or a latent one,
+     * and it is not something to assume in either direction. Absent from every
+     * shipping configuration. */
+    kfault_begin(0);
+    kfault_str("\nPARKTRACE cpu="); kfault_dec(this_cpu());
+    kfault_str(" rsp=");             kfault_hex(rsp);
+    kfault_str(" task=");            kfault_task(get_current_task());
+    kfault_str("\n");
+    kfault_end(0);
+#endif
+#ifdef SMP
+    sched_note_park(rsp);
+#endif
+    return rsp;
+}
+
 static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
@@ -381,7 +429,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                 frame->rip    = (uint64_t)resume_shell_after_fault;
                 frame->cs     = 0x08;
                 frame->rflags = 0x202;
-                frame->rsp    = tasks[0].kernel_stack_top;
+                frame->rsp    = kernel_park_rsp();
                 frame->ss     = 0x10;
                 return (uint64_t)frame;
             }
@@ -428,12 +476,12 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                 task_teardown(killed, &cause);
                 uint64_t rsp = task_exit_switch(killed);
                 if (rsp) return rsp;
-                /* Nothing else runnable: fall back to the kernel reaper/idle on
-                 * task 0's stack. */
+                /* Nothing else runnable: park this CPU in the kernel reaper/idle
+                 * loop. See kernel_park_rsp() for why the stack is per-CPU. */
                 frame->rip    = (uint64_t)resume_shell_after_fault;
                 frame->cs     = 0x08;
                 frame->rflags = 0x202;
-                frame->rsp    = tasks[0].kernel_stack_top;
+                frame->rsp    = kernel_park_rsp();
                 frame->ss     = 0x10;
             }
             /* else: signal delivered -> fall through to `return frame`, and the
@@ -934,7 +982,7 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
         f64->rip    = (uint64_t)resume_shell_after_fault;
         f64->cs     = 0x08;
         f64->rflags = 0x202;
-        f64->rsp    = tasks[0].kernel_stack_top;
+        f64->rsp    = kernel_park_rsp();
         f64->ss     = 0x10;
         return 0;
     }

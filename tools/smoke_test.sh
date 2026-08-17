@@ -69,14 +69,22 @@ if [ ! -f "$ISO" ]; then
     exit 1
 fi
 
-LOG="$(mktemp)"
+# SMOKE_LOG lets a caller keep the serial capture instead of discarding it, the
+# same way SMOKE_TRACE_FILE already does for the blkdebug trace. `make
+# smoke-kstack-park` needs it: its assertion is partly about what must NOT appear
+# on the wire, and partly about what must (that the path under test was entered
+# at all), and neither can be checked from an exit status.
+LOG="${SMOKE_LOG:-$(mktemp)}"
 QEMU_PID=""
 TRACE_FILE=""   # declared before the EXIT trap so cleanup() is safe under set -u
 QMP_SOCK=""
 cleanup() {
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
     [ -n "$QEMU_PID" ] && wait "$QEMU_PID" 2>/dev/null
-    rm -f "$LOG"
+    # Keep a caller-supplied log: SMOKE_LOG means the caller intends to read it
+    # AFTER this script exits, which is the whole reason the override exists.
+    # Only the mktemp we created ourselves is ours to delete.
+    [ -n "${SMOKE_LOG:-}" ] || rm -f "$LOG"
     # Only remove a trace file we created ourselves; when the caller named one
     # via SMOKE_TRACE_FILE it belongs to them and is usually the whole point.
     [ -n "$TRACE_FILE" ] && [ -z "${SMOKE_TRACE_FILE:-}" ] && rm -f "$TRACE_FILE"

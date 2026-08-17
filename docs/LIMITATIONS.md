@@ -587,7 +587,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **70 required contexts and 2 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **71 required contexts and 2 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence) and `kani` (manual-only, so it has no
 conclusion to gate on). `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
 was promoted back, and `smoke-session-smp-soak` a fourth until [G-8] was closed on 2026-08-17
@@ -729,16 +729,37 @@ total, an identical **18/800** downstream subset.
 every switch, and is set in **both** arms, so the same widened window must be harmless with
 the fix and fatal without it.
 
-**What is not closed.** The `#PF`/exit fallback in `idt.c` resumes a CPU with
-`frame->rsp = tasks[0].kernel_stack_top` when nothing else is runnable, and every CPU taking
-that fallback lands on that one stack — a second instance of the same family. The detector is
-keyed on task ids and excludes task 0, which is legitimately "current" on several CPUs at once
-as the idle sentinel, so it does not cover this. One soak capture is suggestive rather than
-decisive: a pre-fix boot with all four CPUs idle on task 0 produced
-`PANIC: dispatcher returned a bogus resume rsp=0xfee000b0` — the LAPIC EOI register address,
-i.e. a word from another CPU's `lapic_eoi` frame. **No witness exists, so no fix is claimed**,
-and it is recorded here rather than patched on the strength of one reading. The history below
-is the standing reminder of what that costs.
+**The second path, closed the same day.** The `#PF`/exit fallbacks in `idt.c` resumed a CPU
+with `frame->rsp = tasks[0].kernel_stack_top` when nothing else was runnable, and every CPU
+taking one landed on that one stack. This was recorded here as an unwitnessed lead — one soak
+capture, all four CPUs idle on task 0, `PANIC: dispatcher returned a bogus resume rsp=0xfee000b0`,
+the LAPIC EOI register address and therefore a word out of another CPU's `lapic_eoi` frame. It
+has a witness now.
+
+*Why it read as latent.* On a healthy session the path is **never entered** — 0 parks in 3
+boots, measured with `KSTACK0_PARK_TRACE=1`. Tasks do not die, and when one does something else
+is usually runnable. On a workload that kills tasks on purpose (`PROC_SELFTEST`, `-smp 4`) it is
+entered **5–8 times per boot**, every park on the same `rsp`, and two CPUs were parked on that
+one stack **2–3 times per boot, 3 boots of 3**. That is the difference between "unreachable" and
+"unexercised", and only choosing the right workload distinguished them.
+
+*The fix.* Each CPU parks on its own ring-0 stack — the one `enter_cpu_idle()` already uses — so
+the fault path joins the kernel's single park mechanism instead of keeping a worse second one.
+`sched_note_park()` records the choice and halts if two CPUs ever pick the same stack, so the
+property is checked rather than intended. `make smoke-kstack-park` and its control arm gate it,
+both asserting the same deterministic property: whether any one park stack was used by more than
+one CPU.
+
+*And it exposed a second gap.* The per-CPU idle stacks had **no guard page**, so `SECURITY.md`
+S9 ("an unmapped guard page below every kernel stack") was false — independently of this
+finding, since `enter_cpu_idle()` has always parked CPUs there. The guard is now the first page
+of each slot, which leaves the stack *top* where `ap_trampoline.S` computes it and so needs no
+change to the trampoline or its duplicated stride constant. `smoke-wx` / `smoke-wx-smp`
+enumerate the family; falsified by disabling the arming, which reports
+`WX_SELFTEST: FAIL armed 0 AP idle-stack guards, expected 4`.
+
+The history below is the standing reminder of what a lead recorded rather than acted on costs —
+in this case one day, and only because the next session went looking for it.
 
 ---
 

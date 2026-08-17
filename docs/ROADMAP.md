@@ -757,7 +757,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **70 required, 2 exempted** (`fuzz` — a 30-second time-boxed search is
+  The intended set is **71 required, 2 exempted** (`fuzz` — a 30-second time-boxed search is
   evidence of effort, not of absence; `kani` — manual-only, no conclusion to gate on).
   `smoke-fs-wal` was a third until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
   `smoke-session-smp-soak` a fourth until **[G-8]** was closed on 2026-08-17 and it was

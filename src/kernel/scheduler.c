@@ -1080,6 +1080,60 @@ static void kstack_race_widen(int cpu)
 #define KSTACK_WIDEN(cpu) ((void)0)
 #endif
 
+/* ---- Where a CPU parks when the last task it was running dies ------------
+ *
+ * The fault/exit fallbacks in idt.c resume a CPU at resume_shell_after_fault()
+ * when task_exit_switch() finds nothing else runnable. All three chose
+ * tasks[0].kernel_stack_top for that, which is ONE stack shared by every CPU
+ * that takes the path -- so two CPUs parking there are two CPUs executing ring-0
+ * code, and taking timer ticks, on the same stack at the same addresses. That is
+ * S20 again, in the one place the g_kstack_inflight bitmask cannot see it: that
+ * detector is keyed on task ids and skips task 0, which is legitimately the
+ * current task on several CPUs at once as the idle sentinel.
+ *
+ * This is the exact check instead. It is on the parking path only -- a cold path
+ * reached when a task dies with nothing to run -- so it costs the hot path
+ * nothing, and it names both CPUs and the stack rather than leaving a corrupted
+ * resume %rsp to be symbolised later. */
+static volatile uint64_t percpu_park_rsp[MAX_CPUS];
+
+/* Clear this CPU's parked-stack record; it is taking a real task. Called from
+ * set_current_task() for a non-idle task. */
+static void sched_park_clear(int cpu)
+{
+    if (cpu >= 0 && cpu < MAX_CPUS) percpu_park_rsp[cpu] = 0;
+}
+
+/* Record that this CPU is about to park at ring 0 on `rsp`, and fail closed if
+ * another CPU is already parked on the same stack. */
+void sched_note_park(uint64_t rsp)
+{
+    int cpu = this_cpu();
+    if (cpu < 0 || cpu >= MAX_CPUS || !rsp) return;
+
+    for (int c = 0; c < MAX_CPUS; c++) {
+        if (c == cpu) continue;
+        if (percpu_park_rsp[c] != rsp) continue;
+
+        /* Two CPUs about to idle on one kernel stack. Neither has corrupted
+         * anything yet -- both are heading for `sti; hlt` -- but the first timer
+         * tick on each pushes a trap frame at the same address, and from there it
+         * is the same failure as G-8 with none of its rarity. Report under the
+         * BOUNDED claim (see the note at kfault_begin) and halt. */
+        kfault_begin(0);
+        kfault_str("\nPANIC: two CPUs parking on one kernel stack rsp=");
+        kfault_hex(rsp);
+        kfault_str(" this-cpu=");    kfault_dec(cpu);
+        kfault_str(" already-cpu="); kfault_dec(c);
+        kfault_str(" task=");        kfault_task(get_current_task());
+        kfault_claims(get_current_task());
+        kfault_str("\nKERNEL FATAL SHARED PARK STACK - halting\n");
+        kfault_end(0);
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    percpu_park_rsp[cpu] = rsp;
+}
+
 /* Which CPU is still unwinding off task `t`, or -1. Failure path only. */
 int sched_kstack_holder(int t)
 {
@@ -2147,6 +2201,15 @@ void set_current_task(int v) {
         percpu_last_user_task[c] = v;
         cpu_flush_microarch_state();
     }
+
+    /* Taking a real task means this CPU is no longer parked in the ring-0 idle
+     * loop, so its parked-stack record stops being true. Leaving it set would
+     * make the next CPU to park there report a collision that had already ended
+     * -- the same stale-bit mistake sched_release_deferred() avoids by clearing
+     * before it releases. */
+#ifdef SMP
+    if (v > 0) sched_park_clear(c);
+#endif
 
     percpu_current_task[c] = v;
 #ifdef SMP

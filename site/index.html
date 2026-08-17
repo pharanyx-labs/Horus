@@ -1611,7 +1611,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-8</span>Two CPUs on one kernel stack — closed, with one path of the same family still open</h3>
+            <h3><span class="id">G-8</span>Two CPUs on one kernel stack — closed, both paths</h3>
             <p>
               <strong>Closed 2026-08-17.</strong> For eight days the SMP session soak failed at
               roughly <strong>2–3% per boot</strong> and the origin resisted several
@@ -1651,14 +1651,24 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               soak job gates a merge again.
             </p>
             <p>
-              <strong>What is not closed.</strong> When a task dies and nothing else is runnable,
-              the fault path resumes that CPU on <em>task 0's</em> kernel stack — and every CPU
-              taking that path lands on the same one. That is a second instance of the same
-              family, and the new detector does not cover it, because it is keyed on task ids and
-              task 0 is legitimately "current" on several CPUs at once. One pre-fix capture is
-              suggestive rather than decisive. <strong>No fix is claimed for it</strong>: it is
-              written down and left open rather than patched on the strength of one reading,
-              which is the discipline the rest of this finding exists to teach.
+              <strong>The second path, closed the same day.</strong> When a task died and nothing
+              else was runnable, the fault path resumed that CPU on <em>task 0's</em> kernel stack
+              — and every CPU taking that path landed on the same one. This was first written up
+              here as a lead with no witness. It has one now, and the interesting part is how it
+              was nearly missed: on a healthy session the path is <strong>never entered</strong>,
+              0 parks in 3 boots, which reads as "unreachable". On a workload that kills tasks on
+              purpose it is entered 5–8 times per boot, and two CPUs were parked on that one stack
+              2–3 times per boot. A path a test never enters is not a path that cannot be entered.
+              Each CPU now parks on its own stack.
+            </p>
+            <p>
+              Closing it turned up something else. The per-CPU idle stacks the kernel parks on had
+              <strong>no guard page</strong> — so the claim that every kernel stack sits above an
+              unmapped guard was false, and had been false independently of this finding, because
+              the scheduler has always parked idle CPUs there. They are guarded now, using each
+              slot's first page so the stack top does not move and the boot trampoline needs no
+              change. The guard check was confirmed by switching the arming off and watching the
+              self-test fail.
             </p>
           </li>
           <li>

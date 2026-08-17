@@ -957,6 +957,34 @@ jobs:
       - name: Restore the pre-fix release site and require the race to REPRODUCE
         run: make smoke-kstack-race-control
 
+  smoke-kstack-park:
+    name: A dying task's CPU parks on its own kernel stack (S20 park path; control arm proves it)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The three fault/exit fallbacks in idt.c used to park every CPU on
+      # tasks[0].kernel_stack_top -- one stack. The workload is the process
+      # self-test at -smp 4 because it kills tasks on purpose: a HEALTHY session
+      # never enters the path at all (0 parks in 3 boots), so gating on the
+      # session would have been a green check over a code path nobody ran.
+      - name: Kill tasks on four CPUs and require every park to be on its own stack
+        run: make smoke-kstack-park
+      # Without this arm the step above is consistent with "the park path is
+      # unreachable", which is exactly what it looked like before the workload
+      # was chosen to kill tasks.
+      - name: Restore the shared park and require it to REPRODUCE
+        run: make smoke-kstack-park-control
+
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)
     runs-on: ubuntu-latest

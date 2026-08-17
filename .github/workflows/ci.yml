@@ -924,6 +924,13 @@ jobs:
         run: make smoke-resume-guard-legacy SMOKE_TIMEOUT=180
       - name: Compile the guard out and require the report to be INAUDIBLE
         run: make smoke-resume-guard-nofloor SMOKE_TIMEOUT=180
+      # The guard's OTHER half. Everything above injects 4, which is below the
+      # floor; -7 is 0xFFFFFFFFFFFFFFF9 and sits ABOVE it, so a floor-only test
+      # missed the whole negative class. A real boot produced exactly -7.
+      - name: Return a NEGATIVE bogus resume rsp and require the guard's PANIC line
+        run: make smoke-resume-guard-negative SMOKE_TIMEOUT=180
+      - name: Restore the floor-only predicate and require the report to be INAUDIBLE
+        run: make smoke-resume-guard-negative-control SMOKE_TIMEOUT=180
 
   smoke-kstack-race:
     name: A task's kernel stack is executed by at most one CPU (S20; and the control arm proves it)

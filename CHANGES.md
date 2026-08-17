@@ -8,6 +8,41 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the resume-`%rsp` guard was a floor with no ceiling
+
+`interrupt_handler64` rejects a bogus kernel `%rsp` before the ISR epilogue loads it, and the
+test was `if (rsp < 0xFFFF800000000000ULL)`. That catches a returned `0`, `1` or `4` and misses
+every small **negative** value, because `-7` is `0xFFFFFFFFFFFFFFF9` and sits *above* the floor.
+The comment above it said it was there to catch "a returned 0/1/-1"; it tested for two of those
+three.
+
+Not hypothetical: a `PROC_SELFTEST` boot at `-smp 4` returned `-7` as the resume `%rsp`, passed
+the guard, and faulted at `rsp - 8` inside the epilogue's first push — producing exactly the
+banner-naming-the-stub-and-nothing-else that this guard exists to prevent.
+
+The bound now comes from the **linker** rather than a constant. Every 64-bit kernel stack is a
+`.bss` array — `per_task_kstacks[]`, `ap_idle_stacks[]`, and `stack_top` / the IST stacks /
+`early_handler_stack_top` — so a legal resume value lies in `[__bss_start, __bss_end)` and
+nothing else does. A stack that moves still satisfies it; one allocated somewhere new fails
+loudly rather than silently widening the guard.
+
+Witnessed by `smoke-resume-guard-negative` (inject `-7`, the report must appear) against
+`smoke-resume-guard-negative-control` (`RESUME_GUARD_FLOOR_ONLY=1`, the report must be absent),
+both added to the existing `smoke-resume-guard` CI job so the required-context count is
+unchanged at 72. `RESUME_RSP_INJECT_VALUE` makes the injected value selectable, since `4` only
+ever exercised one half of the guard.
+
+**This is a detector, not a cure.** It does not change the ~7% of `PROC_SELFTEST` boots that
+still fail — what produces `-7` is still unknown, and remains the open part of **[G-9]**. What
+changes is that those boots now name the value, the task and the CPU instead of faulting
+obscurely.
+
+The first version of the pair was wrong in an instructive way: both new arms reused the
+`rsp=0x4` regex, so the positive arm failed against a guard that was in fact working, and the
+**control arm passed vacuously** — a pattern that can never match is trivially absent. Caught
+because the positive arm failed; a control-only change would have shipped green and proved
+nothing. Recorded in `TESTS.md`.
+
 ### Fixed — a slot's page tables were recycled while another CPU was still on them (**[G-10]**)
 
 `create_user_pagedir()` reclaims the previous occupant of a task slot before rebuilding it, and

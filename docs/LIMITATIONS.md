@@ -960,13 +960,27 @@ PAGE FAULT at 0xfffffffffffffff1 err=0x2(not-present,write,supervisor) task=1 'a
 `rsp` is `-7` and the fault is at `rsp - 8`: a push onto a garbage stack pointer, i.e. the ISR
 epilogue loaded `-7` as the kernel `%rsp` to resume on.
 
-**And the floor guard that exists to catch exactly this did not fire, because it has no
-ceiling.** `interrupt_handler64` rejects a resume value with
-`if (rsp < 0xFFFF800000000000ULL)` — which catches a returned `0`, `1` or `4`, and lets every
-small *negative* value through, since `-7` is `0xFFFFFFFFFFFFFFF9` and sits above the floor. A
-guard written against "a returned 0/1/-1" tests for two of those three. That is a separate,
-cheap hardening with an injection harness already in the tree (`RESUME_RSP_INJECT`,
-`make smoke-resume-guard`), and it is the next thing to do here.
+**The floor guard that exists to catch exactly this did not fire, because it had no ceiling —
+fixed 2026-08-18.** `interrupt_handler64` rejected a resume value with
+`if (rsp < 0xFFFF800000000000ULL)`: a floor and nothing else, so it caught a returned `0`, `1`
+or `4` and let every small *negative* value through, `-7` being `0xFFFFFFFFFFFFFFF9` and above
+the floor. A guard whose own comment said it was there to catch "a returned 0/1/-1" tested for
+two of those three.
+
+It is now bounded at both ends, and bounded from the **linker** rather than a constant: every
+64-bit kernel stack is a `.bss` array — `per_task_kstacks[]` (paging.c), `ap_idle_stacks[]`
+(smp.c), and `stack_top` / the IST stacks / `early_handler_stack_top` (multiboot.S) — so a legal
+resume value lies in `[__bss_start, __bss_end)` and nothing else does. A stack that moves still
+satisfies it; one allocated somewhere new fails loudly instead of silently widening the guard.
+
+Witnessed by `make smoke-resume-guard-negative` (inject `-7`, the report must appear) against
+`make smoke-resume-guard-negative-control` (`RESUME_GUARD_FLOOR_ONLY=1` restores the floor-only
+test, the report must be **absent**).
+
+**This does not fix the ~7%.** The guard is a detector: closing its blind spot converts an
+obscure fault inside the ISR epilogue — a banner naming the stub and nothing about where the
+value came from — into a line that names the value, the task and the CPU. What produces `-7` is
+still unknown, and that is what remains of **[G-9]**.
 
 An earlier measurement of this fix reported 0 claim panics in 20 boots. It was taken with
 diagnostic scaffolding that scanned every task slot on every ISR exit, and the perturbation hid

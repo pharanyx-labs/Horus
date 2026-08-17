@@ -494,8 +494,21 @@ RESUME_RSP_INJECT ?= 0
 RESUME_RSP_INJECT_TICKS ?= 400
 RESUME_RSP_INJECT_PRECLAIM ?= 0
 RESUME_GUARD_DISABLE ?= 0
+# Which bogus value to inject. 4 is the 2026-08-13 capture and exercises the
+# guard's FLOOR; -7 is the 2026-08-17 capture and exercises the CEILING added
+# after a real boot showed -7 sailing over a floor-only test (0xFFFFFFFFFFFFFFF9
+# is above 0xFFFF800000000000). Both halves of the guard need an arm.
+RESUME_RSP_INJECT_VALUE ?= 4
+# RESUME_GUARD_FLOOR_ONLY=1 restores the pre-2026-08-18 floor-only predicate --
+# the blind spot on demand. `make smoke-resume-guard-negative-control` builds it
+# and requires the report to be ABSENT, the same shape as KFAULT_LEGACY_PRINTLN.
+RESUME_GUARD_FLOOR_ONLY ?= 0
+ifeq ($(RESUME_GUARD_FLOOR_ONLY),1)
+CFLAGS += -DRESUME_GUARD_FLOOR_ONLY
+endif
 ifeq ($(RESUME_RSP_INJECT),1)
-CFLAGS += -DRESUME_RSP_INJECT -DRESUME_RSP_INJECT_TICKS=$(RESUME_RSP_INJECT_TICKS)
+CFLAGS += -DRESUME_RSP_INJECT -DRESUME_RSP_INJECT_TICKS=$(RESUME_RSP_INJECT_TICKS) \
+          -DRESUME_RSP_INJECT_VALUE='$(RESUME_RSP_INJECT_VALUE)'
 endif
 ifeq ($(RESUME_RSP_INJECT_PRECLAIM),1)
 CFLAGS += -DRESUME_RSP_INJECT_PRECLAIM
@@ -2278,6 +2291,13 @@ smoke-kfault-legacy:
 #
 # Three arms, because one of them alone would not be evidence. See TESTS.md.
 RESUME_GUARD_RE = PANIC: dispatcher returned a bogus resume rsp=0x4
+# The negative arms match the VALUE they inject, not just the banner. Reusing
+# RESUME_GUARD_RE (which ends in `0x4`) made both of them meaningless: the
+# EXPECT_REPORT=1 arm failed against a guard that was in fact reporting
+# correctly, and -- worse -- the EXPECT_REPORT=0 control PASSED because a regex
+# that can never match is trivially absent. A control arm that cannot fail is
+# not a control arm.
+RESUME_GUARD_NEG_RE = PANIC: dispatcher returned a bogus resume rsp=0xfffffffffffffff9
 
 .PHONY: smoke-resume-guard
 smoke-resume-guard:
@@ -2286,6 +2306,36 @@ smoke-resume-guard:
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 boot.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
+		tools/kfault_test.sh boot.iso
+
+# The negative half of the guard. A floor with no ceiling catches a returned 0,
+# 1 or 4 and misses every small NEGATIVE value: -7 is 0xFFFFFFFFFFFFFFF9, which
+# is ABOVE 0xFFFF800000000000. That is not hypothetical -- a PROC_SELFTEST boot
+# at -smp 4 on 2026-08-17 put -7 into the resume %rsp, passed the old guard, and
+# faulted at rsp-8 inside the epilogue's first push with a banner naming the stub
+# and nothing about where the value came from.
+.PHONY: smoke-resume-guard-negative
+smoke-resume-guard-negative:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
+		REPORT_RE='$(RESUME_GUARD_NEG_RE)' REPORT_LABEL='bogus negative resume rsp' \
+		tools/kfault_test.sh boot.iso
+
+# The control arm, and the one that makes the pair a measurement. Same -7, but
+# with the floor-only predicate restored: the guard must NOT be heard. Without
+# it, smoke-resume-guard-negative is consistent with "the guard was already
+# catching this", which is exactly what everyone believed until a boot proved
+# otherwise. Requires the report to be ABSENT -- same shape as
+# smoke-kfault-legacy.
+.PHONY: smoke-resume-guard-negative-control
+smoke-resume-guard-negative-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 RESUME_GUARD_FLOOR_ONLY=1
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 RESUME_GUARD_FLOOR_ONLY=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
+		REPORT_RE='$(RESUME_GUARD_NEG_RE)' REPORT_LABEL='bogus negative resume rsp' \
 		tools/kfault_test.sh boot.iso
 
 # The arm that witnesses the fix. Same injection, but the permanent panic claim

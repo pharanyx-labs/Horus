@@ -34,7 +34,16 @@ except ImportError:
 # exactly the omission the mechanism exists to prevent. pages.yml is excluded
 # deliberately -- it publishes the site on merge to main and does not run on
 # pull requests, so it has no status to gate one with.
-WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml"]
+#
+# ruleset-audit.yml is ALSO schedule-only and so, by the pages.yml reasoning
+# alone, would be excluded too. It is included anyway, for a reason pages.yml
+# does not have: it is the job that verifies this file against the live ruleset,
+# and listing it here means deleting it cannot be quiet. An entry naming a job
+# that no longer exists is an error, so removing the audit trips `ci-gating` on
+# the next push. A security control that can be dropped without anything
+# noticing is the shape of [C-6] itself.
+WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml",
+             ".github/workflows/ruleset-audit.yml"]
 CI_YML = ".github/workflows/ci.yml"
 GATING_YML = ".github/ci-gating.yml"
 RULESET = "repos/pharanyx-labs/Horus/rulesets/19007209"

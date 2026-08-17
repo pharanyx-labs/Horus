@@ -556,7 +556,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **67** jobs and `codeql.yml` one more. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **69** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **71** across the three, producing **74** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -587,9 +588,9 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **71 required contexts and 2 reasoned exemptions** — `fuzz` (a 30-second
-time-boxed search is evidence of effort, not absence) and `kani` (manual-only, so it has no
-conclusion to gate on). `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
+That intended set is **71 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
+conclusion to gate on) and `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
 was promoted back, and `smoke-session-smp-soak` a fourth until [G-8] was closed on 2026-08-17
 and it was promoted with it — the last exemption in this repo that stood for an open defect
 rather than for a property of the test itself. The
@@ -610,12 +611,27 @@ finding named — kernel W^X, SMEP/SMAP, measured boot, boot-module and newlib t
 flush-on-switch, stack-guard reseed, the 64-bit heap, interrupt policy, per-CPU identity, the
 resume-`%rsp` guard, CodeQL, and the two journal durability gates — now blocks a merge.
 
-**What keeps this finding open is that CI cannot verify it stays that way.** Reading a ruleset
-needs Administration permissions the workflow `GITHUB_TOKEN` does not have and cannot be
-granted, so the `ci-gating` job proves the classification is *complete* but not that the
-ruleset *matches* it. The two could diverge again through a change made in the GitHub UI, and
-nothing in CI would notice. `tools/check_ci_gating.py --check-ruleset` is the check and it has
-to be run deliberately. Read the count from the API, never from this paragraph.
+**What kept this finding open was that CI could not verify it stays that way**, and the
+mechanism for that landed on 2026-08-17. Reading a ruleset needs the `Administration`
+permission, which is not among the scopes a workflow `GITHUB_TOKEN` can be granted at all, so
+the `ci-gating` job proves the classification is *complete* but not that the ruleset *matches*
+it — the two could diverge through a change in the GitHub UI with nothing in CI noticing.
+`.github/workflows/ruleset-audit.yml` now runs `--check-ruleset` daily as a **GitHub App scoped
+to this repository with `Administration: read` and nothing else**: the token is minted per run,
+expires within the hour, and cannot modify the ruleset it reads.
+
+That is a trade and it is written into the workflow header rather than left implicit — a
+credential able to read repository administration now sits in Actions secrets, in order to
+detect drift that requires administration access to cause. It is read-only, single-repository,
+and revocable by uninstalling the App; the alternative was a check nobody runs, which is what
+left the required set at 22 of 66 with no security gate among them.
+
+**The finding stays open until the App is created and its two secrets exist.** The job fails
+loudly on every scheduled run until then, deliberately: an audit that skips when unconfigured
+is a check that cannot fail, and this repository has been bitten by that twice already
+(`make test`'s `|| true`, and the scanner-presence step before #154). Until it is configured,
+`tools/check_ci_gating.py --check-ruleset` is the check and has to be run deliberately. Read
+the count from the API, never from this paragraph.
 
 Two counts moved in the right direction since. `strict_required_status_checks_policy` is now
 **true**, so a stale-base merge is no longer permitted. And the `security` job is a required

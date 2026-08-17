@@ -121,6 +121,15 @@ advisory:
     adding no assurance. A crash it does find is a finding to triage, not a
     check to re-run.
 
+  ruleset-audit: >-
+    Schedule-only (daily cron plus workflow_dispatch), so it never runs on a
+    pull request and has no conclusion to gate one with. It is listed here
+    rather than excluded from the checker so that deleting it trips ci-gating:
+    it is the job that verifies this file against the live ruleset, which is
+    the last open half of [C-6], and a control that can be removed silently is
+    the defect that finding describes. It fails loudly if its GitHub App
+    credential is unconfigured rather than skipping.
+
   kani: >-
     Manual-only and skipped on ordinary runs (see its `if:` guard), so it has no
     conclusion to gate on. The proofs it runs are real assurance but too slow

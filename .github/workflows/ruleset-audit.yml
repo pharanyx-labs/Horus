@@ -1,0 +1,114 @@
+# Does the live branch ruleset still match the checked-in classification?
+#
+# This is the last open half of finding [C-6]. `.github/ci-gating.yml` is the
+# decision record and the `ci-gating` job in ci.yml proves it is COMPLETE -- every
+# job classified, no defaults. What that job cannot prove is that the ruleset
+# actually REQUIRES what the record says, because reading a ruleset needs the
+# `Administration` permission, and `Administration` is not one of the scopes the
+# workflow `GITHUB_TOKEN` can be granted at all (the `permissions:` key has no
+# such entry). So the two could diverge through a single change in the web UI and
+# nothing in CI would notice.
+#
+# This job closes that by authenticating as a GitHub App instead, with exactly one
+# permission: Administration (read). Not a classic PAT and not a fine-grained PAT:
+# an App token is minted per run and expires in an hour, the permission set is
+# declared on the App rather than carried by a long-lived string in a secret, and
+# it can be revoked by uninstalling the App. `contents: read` is all the workflow
+# token itself needs, to check out the tree.
+#
+# ---- WHAT THIS COSTS, STATED PLAINLY ----------------------------------------
+#
+# It puts a credential that can read repository administration into Actions
+# secrets, in order to detect drift that requires administration access to cause.
+# That is a real trade and it was taken deliberately: the App is scoped to this one
+# repository, read-only, and cannot change the ruleset it inspects, so the worst a
+# leak yields is disclosure of a branch-protection configuration that is already
+# described in a checked-in file. The alternative -- a check nobody runs -- is what
+# left the required set at 22 of 66 with zero security gates among them.
+#
+# ---- SETUP (one-off, and this job FAILS LOUDLY until it is done) -------------
+#
+#   1. Create a GitHub App owned by pharanyx-labs.
+#        Repository permissions: Administration = Read-only. Nothing else.
+#        No account permissions, no webhook, no events.
+#   2. Install it on pharanyx-labs/Horus only.
+#   3. Repository secrets:
+#        RULESET_AUDIT_APP_ID           the App's numeric ID
+#        RULESET_AUDIT_PRIVATE_KEY      the App's generated .pem, whole file
+#
+# Until those exist the job fails on every scheduled run. That is deliberate and
+# it is the point: a ruleset audit that skips when unconfigured is a check that
+# cannot fail, which is the defect class this repository has been bitten by twice
+# (`make test`'s `|| true`, and the scanner-presence step before #154). A red
+# scheduled job is visible; a green vacuous one is not.
+name: Ruleset audit
+
+on:
+  schedule:
+    # 07:20 UTC daily. Off the hour deliberately -- scheduled workflows queue
+    # heavily on the hour and GitHub drops runs it cannot start.
+    - cron: '20 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ruleset-audit:
+    name: The live ruleset still matches the checked-in classification ([C-6])
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # Fail before minting anything, with a message that says what to do, rather
+      # than letting the token step fail with an opaque auth error.
+      - name: Require the audit credential to be configured
+        env:
+          APP_ID: ${{ secrets.RULESET_AUDIT_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.RULESET_AUDIT_PRIVATE_KEY }}
+        run: |
+          missing=""
+          [ -n "$APP_ID" ]      || missing="$missing RULESET_AUDIT_APP_ID"
+          [ -n "$PRIVATE_KEY" ] || missing="$missing RULESET_AUDIT_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Ruleset audit is not configured. Missing secret(s):$missing"
+            echo "This job is failing on purpose. It verifies that the live branch"
+            echo "ruleset still requires what .github/ci-gating.yml says it should --"
+            echo "the half of finding [C-6] that CI could not check. Skipping when"
+            echo "unconfigured would make it a check that cannot fail."
+            echo "Setup instructions are in the header of this workflow file."
+            exit 1
+          fi
+
+      - name: "Mint a short-lived App token (Administration: read, this repo only)"
+        id: apptoken
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ secrets.RULESET_AUDIT_APP_ID }}
+          private-key: ${{ secrets.RULESET_AUDIT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Horus
+
+      - name: Install PyYAML
+        run: pip install --disable-pip-version-check pyyaml
+
+      # The same tool the maintainer runs by hand, in the same form. Not a
+      # reimplementation: a second copy of this comparison would be one more thing
+      # that can drift from the classification it is meant to police.
+      - name: Compare the live ruleset against .github/ci-gating.yml
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
+        run: tools/check_ci_gating.py --check-ruleset
+
+      # A drifted ruleset is not a transient failure and must not read like one.
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::error::The live ruleset no longer matches .github/ci-gating.yml."
+          echo "Either a required context was removed/renamed in the GitHub UI, or a"
+          echo "job was added and the ruleset was never synced. Reconcile with:"
+          echo "    python3 tools/check_ci_gating.py --check-ruleset   # see the diff"
+          echo "    python3 tools/check_ci_gating.py --sync-ruleset    # write it"
+          echo "Sync only from main: a required context main cannot produce never"
+          echo "reports and freezes every pull request."

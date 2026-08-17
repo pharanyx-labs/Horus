@@ -46,9 +46,10 @@ measurements.
 > 2026-08-17: a switch path handed a task to another CPU while the CPU making the switch was
 > still executing on that task's kernel stack. Measured over 1600 alternating boots, the
 > pre-fix release site fails 31/800 and the shipped one 0/800.
-> The notable remaining findings are a CI gating list that no automated check
-> can verify against the live ruleset (**[C-6]** — every security test does now block a merge,
-> as of 2026-08-16), and no independent review of security-critical changes (**[C-5]**).
+> The notable remaining findings are the CI gating list (**[C-6]** — every security test does
+> now block a merge, and a scheduled job re-checks the live ruleset against the checked-in
+> classification, but it is inert until its read-only GitHub App is created), and no independent
+> review of security-critical changes (**[C-5]**).
 
 ---
 
@@ -96,10 +97,10 @@ a syscall number without adding its table entry.
 **Verify, don't assert.** Claims are backed by artifacts. The build is verified reproducible
 by building twice and diffing. Boot-module integrity is tested by *corrupting a module* and
 asserting rejection. Measured boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 67 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 69 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 67 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 71 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is

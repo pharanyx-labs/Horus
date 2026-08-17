@@ -37,8 +37,10 @@ audited by a third party, and has known unfixed security defects.
 Horus remains **research-grade**. It has not been independently audited, no security-critical
 change has ever been reviewed by a second person (**[C-5]**). Every security-specific CI job
 is classified as merge-gating as of 2026-08-16, taking the ruleset from 22 required contexts
-toward 67, and to **71** with the three gates [G-8] added on 2026-08-17. But CI cannot verify
-that the ruleset matches the checked-in classification, and the
+toward 67, and to **71** with the three gates [G-8] added on 2026-08-17. A scheduled
+`ruleset-audit` job now verifies the live ruleset against that classification daily, as a
+GitHub App with `Administration: read` — the permission a workflow token cannot be granted —
+but it is inert until that App is created, and the
 reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. The
 one remaining open finding — the `tasks[]` table (**[I-7]**) — is in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
@@ -249,16 +251,28 @@ push protection; cargo-fuzz on the FFI boundary; Kani proofs on capability revoc
   structural limitation, and it is stated here rather than glossed over: **the assurance
   Horus can currently claim is "thoroughly automatically verified", not "independently
   reviewed".** Finding **[C-5]**.
-- Most security-specific CI jobs (kernel W^X, measured boot, module tamper rejection,
-  SMEP/SMAP, flush-on-switch, stack-guard reseed, CodeQL) are **not** merge-gating. Finding
-  **[C-6]**. `ci.yml` defines **67** jobs and `codeql.yml` one more; the ruleset required **22** of them
-  before 2026-08-16, and `.github/ci-gating.yml` now records the intended set. The one that
-  most needed promoting has been: `smoke-captest`, the named witness for S1, S5, S6, S7, S13,
-  S13a, S13b and S18, became a required check on 2026-08-15 — until then a change that broke
-  the capability refusal suite merged green. The rest are still advisory, and the mechanism
-  that produced the omission is untouched: the required list is maintained by hand in the
-  ruleset, which no commit touches, so it falls behind `ci.yml` on every addition. Read the
-  count from `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
+- **Which CI jobs gate a merge cannot be verified by CI itself.** Finding **[C-6]**, and what
+  remains of it is narrow. *This bullet said "most security-specific CI jobs are **not**
+  merge-gating … the rest are still advisory, and the mechanism that produced the omission is
+  untouched" for a day after all three of those clauses stopped being true. Corrected
+  2026-08-17.*
+
+  Every security gate now blocks a merge — kernel W^X, measured boot, module and newlib tamper
+  rejection, SMEP/SMAP, flush-on-switch, stack-guard reseed, the 64-bit heap, interrupt policy,
+  per-CPU identity, the resume-`%rsp` guard, both S20 kernel-stack gates, the SMP soak and
+  CodeQL. `.github/ci-gating.yml` is the checked-in decision record and the `ci-gating` job
+  fails the build if any job is unclassified, double-classified, or names a job that no longer
+  exists; there is no default, because defaulting is what produced the finding. The ruleset
+  required **22** contexts before 2026-08-16.
+
+  **What keeps it open:** reading a ruleset needs the `Administration` permission, which is not
+  among the scopes a workflow `GITHUB_TOKEN` can be granted, so `ci-gating` proves the
+  classification is *complete* and not that the ruleset *matches* it. A scheduled
+  `ruleset-audit` job closes that by authenticating as a GitHub App with `Administration: read`
+  scoped to this repository — but it is **inert until that App is created**, and it fails loudly
+  every day until then rather than skipping. Syncing the ruleset also remains a manual step that
+  must lag a job landing by one merge. Read the count from
+  `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
 - No build provenance attestation or signed release artifacts. Finding **[I-9]**.
 
 If you are evaluating Horus, weigh those gaps against the claims in the table above.

@@ -490,6 +490,18 @@ duration of that window on task *t*'s stack, and `interrupt_handler64` tests it 
 one load and a bit test, `MAX_TASKS` being 64 so one word covers every task. Two CPUs on one
 kernel stack halts the machine with both CPU ids and the task named. That is `SECURITY.md`
 **S20**, gated by `make smoke-kstack-race` and its control arm.
+
+**S20 has a second path, and the bitmask cannot see it.** When a task dies and nothing else is
+runnable, the CPU parks in the ring-0 idle loop. All three fallbacks in `idt.c` used to park it
+on `tasks[0].kernel_stack_top` — one stack for every CPU that took the path. `g_kstack_inflight`
+is keyed on task ids and skips task 0, which is legitimately the current task on several CPUs
+at once as the idle sentinel, so the mask is blind there by construction. Each CPU now parks on
+its own ring-0 stack, the one `enter_cpu_idle()` already uses, and `sched_note_park()` halts if
+two ever pick the same one. Gated by `make smoke-kstack-park` and its control arm.
+
+Those per-CPU idle stacks are also, since 2026-08-17, **guarded**: the guard is the first page
+of each slot, which leaves the stack top where `ap_trampoline.S` computes it. They had none
+before, which made S9 false for every CPU in the idle loop.
 - TLB shootdown is an acknowledged IPI.
 - **SMT siblings are parked in software** — a disable-SMT-in-software measure that closes
   same-core co-residency, the strongest available mitigation against cross-thread

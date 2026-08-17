@@ -1527,6 +1527,14 @@ extern volatile uint64_t g_kstack_inflight;
 void sched_release_deferred(void);
 int  sched_kstack_holder(int t);
 
+/* Record that this CPU is about to park at ring 0 on `rsp` (the fault/exit
+ * fallbacks in idt.c, which resume at resume_shell_after_fault when nothing else
+ * is runnable). Fails closed if another CPU is already parked on the same stack:
+ * that is two CPUs taking interrupts on one kernel stack, i.e. S20 in the one
+ * place g_kstack_inflight cannot see it, because that mask is keyed on task ids
+ * and task 0 is legitimately current on several CPUs at once. */
+void sched_note_park(uint64_t rsp);
+
 /* Signal delivery (idt.c): on a ring-3 fault, redirect the trap frame into the
  * task's registered handler instead of killing it. Returns 1 if a signal was
  * delivered (caller returns into the handler), 0 to fall through to the kill

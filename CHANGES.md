@@ -8,6 +8,76 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — a dying task's CPU parked on a kernel stack every other CPU also parked on (**[G-8]**, second path)
+
+**[G-8]**'s remaining path, recorded the same day as an unwitnessed lead and closed with one.
+
+When a task died and `task_exit_switch()` found nothing else runnable, all three fallbacks in
+`idt.c` resumed the CPU at `resume_shell_after_fault()` with
+`frame->rsp = tasks[0].kernel_stack_top` — **one stack, shared by every CPU that took the
+path**. Two CPUs parked there both run `sti; hlt` on it and both push a trap frame at the same
+address on the next tick, which is S20 in the one place `g_kstack_inflight` cannot see it: that
+mask is keyed on task ids and skips task 0, legitimately the current task on several CPUs at
+once as the idle sentinel.
+
+**The measurement that mattered was choosing the right workload.** With `KSTACK0_PARK_TRACE=1`:
+
+| Workload, `-smp 4` | Parks per boot | Two CPUs on one park stack |
+|---|---|---|
+| healthy scripted session | **0** (3 boots) | — |
+| `PROC_SELFTEST`, which kills tasks on purpose | **5–8** | **2–3 per boot, 3 boots of 3** |
+
+Three healthy sessions say the path is never entered, and that reading would have retired the
+lead. A path a test never enters is not a path that cannot be entered.
+
+```
+PANIC: two CPUs parking on one kernel stack rsp=0xffffffff80202ff0 this-cpu=1 already-cpu=2 task=1 'exectest'
+```
+
+That also explains the capture this finding could not account for: `task=0`,
+`percpu_current=[0,0,0,0]`, `PANIC: dispatcher returned a bogus resume rsp=0xfee000b0`. The
+LAPIC EOI register address is a word out of the other CPU's `lapic_eoi` frame on the shared
+stack.
+
+**The fix.** Each CPU parks on its own ring-0 stack — the one `enter_cpu_idle()` already uses —
+so the fault path joins the kernel's single park mechanism instead of keeping a worse second
+one. `sched_note_park()` records the choice and halts if two CPUs ever pick the same stack.
+
+**Falsified, both arms, 3 of 3**, and both gate on the same deterministic property — whether any
+one park stack was used by more than one CPU:
+
+| Target | Build | Required |
+|---|---|---|
+| `smoke-kstack-park` | `PROC_SELFTEST=1`, `-smp 4` | ≥2 CPUs parked, none sharing a stack, detector silent |
+| `smoke-kstack-park-control` | + `KSTACK0_SHARED_PARK=1` | at least one park stack used by more than one CPU |
+
+Two corrections the gates needed, both found by running them rather than by reading them. The
+control arm first gated on the collision **PANIC**, which requires two CPUs parked at the *same
+instant* — a property of the schedule, not of the code — and reproduced 2 boots in 3. And the
+fixed arm asserts that at least two CPUs actually parked, because without it "no park stack was
+shared" is vacuously true on a kernel that never parks, which is precisely what a healthy
+session produces. A third: the fixed arm failed 3/3 on the default 40 s budget the `-smp 4`
+self-test cannot meet — a timeout, not a fault.
+
+### Fixed — the per-CPU idle stacks had no guard page, so S9 was overclaimed
+
+Found while fixing the above, and true independently of it: `enter_cpu_idle()` has always parked
+CPUs on `ap_idle_stacks[]`, and those had **no guard page**. `SECURITY.md` S9 — "an unmapped
+guard page below every kernel stack" — was therefore false for every CPU sitting in the ring-0
+idle loop, whose neighbour is another CPU's idle stack.
+
+The guard is the **first page of each slot**, not a page prepended to it. Both `ap_idle_stack_top()`
+and `ap_trampoline.S` compute the stack *top* as `base + (cpu+1) * AP_IDLE_STACK_SIZE`, so
+putting the guard inside the slot leaves the top where it was and needs no change to the
+trampoline or to its duplicated `AP_IDLE_STACK_SIZE` — a constant that exists in assembly
+precisely because it cannot include the header. The usable stack goes from 16 KiB to 12 KiB.
+
+`smoke-wx` and `smoke-wx-smp` enumerate the new family beside the per-task, fixed and AP IST
+guards. Falsified by disabling the arming: `WX_SELFTEST: FAIL armed 0 AP idle-stack guards,
+expected 4`, exit 2.
+
+Invariant preserved: **S9** and **S20**.
+
 ### Fixed — a task was handed to another CPU before this one had left its kernel stack (**[G-8]**)
 
 **G-8 is diagnosed and closed.** The origin of the bogus resume `%rsp` is a window between

@@ -42,7 +42,8 @@ toward 67, and to **71** with the three gates [G-8] added on 2026-08-17. A sched
 GitHub App with `Administration: read` — the permission a workflow token cannot be granted —
 but it is inert until that App is created, and the
 reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. The
-one remaining open finding — the `tasks[]` table (**[I-7]**) — is in
+remaining open findings — the `tasks[]` table (**[I-7]**) and a scheduler claim that leaks on the
+spawn/reap path under SMP (**[G-9]**) — are in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
 **[G-8]** closed on 2026-08-17 in two parts, and it is the reason **S20** is in the table below. A switch

@@ -557,7 +557,20 @@ CFLAGS += -DKSTACK0_SHARED_PARK
 endif
 # KSTACK0_PARK_TRACE=1 prints a line every time a CPU parks in the ring-0
 # idle/reaper loop after the last runnable task died. Test-only, and the way the
-# reachability of that path was measured rather than assumed.
+# reachability of that path was measured rather than assumed (0 parks per healthy
+# session; 5-8 per boot on a task-killing workload).
+#
+# NEVER BUILD THIS INTO A GATE THAT MATCHES AN EXACT STRING ON SERIAL. It emits
+# through kfault_*, which writes bytes straight to COM1 and bypasses console
+# ownership -- correct for a panic, and a SECOND CONCURRENT WRITER during a live
+# session (finding #126's hazard). It corrupts whatever ring-3 is printing:
+#
+#   PARKTRACE cpu=3 rsp=0xffffffff806ff0PROC_SELFTEST: PASS exit+kill+spawn
+#
+# `smoke-kstack-park` did build it and failed 10 boots in 25 on main because of it,
+# with gate failure and a corrupted marker correlating 10 for 10. Only
+# `smoke-kstack-park-control` may use it, because its assertion is the trace itself
+# rather than a marker the trace can break.
 KSTACK0_PARK_TRACE ?= 0
 ifeq ($(KSTACK0_PARK_TRACE),1)
 CFLAGS += -DKSTACK0_PARK_TRACE
@@ -2413,11 +2426,36 @@ KSTACK_PARK_TIMEOUT ?= 180
 # two CPUs happen to be parked simultaneously is a property of the schedule, and
 # only the first is what this gate is about. The PANIC is still required to be
 # absent on the fixed arm, where it is a free corroboration.
+# ---- WHY THIS ARM DOES *NOT* BUILD KSTACK0_PARK_TRACE ------------------------
+#
+# It did, and it made this gate fail 10 boots in 25 on main. PARKTRACE emits through
+# kfault_*, which writes bytes STRAIGHT TO COM1, bypassing console ownership --
+# correct for a panic, where "there is no owner left worth being polite to", and
+# wrong here. The park path fires 5-8 times a boot from interrupt context while
+# proctest writes its markers from ring 3 via sys_write: two writers, one UART,
+# nothing serialising them. A trace landing inside the 24 bytes of
+# `PROC_SELFTEST: suspend OK` corrupts it, the exact-string match never matches,
+# and the run times out:
+#
+#   PARKTRACE cpu=3 rsp=0xffffffff806ff0PROC_SELFTEST: PASS exit+kill+spawn
+#
+# Measured over 25 boots of one pinned ISO: 10 failures, and in ALL TEN the marker
+# was corrupted while all 15 passes had it intact -- gate failure <=> corrupted
+# marker, 10 for 10, so this is the mechanism and not a correlation. It went in on
+# six green samples; at a 40% failure rate the chance of that is ~5%, which is what
+# sampling six times instead of measuring buys you. This file's own rule --
+# "a single green run says nothing" -- applied to the gate rather than the kernel.
+#
+# So reachability moves to the control arm, which is where it belongs and where
+# smoke-resume-guard already puts it. That arm requires a park stack shared between
+# CPUs, which cannot happen unless the path is entered on two CPUs -- so if the
+# workload ever stops killing tasks, the PAIR still fails. This arm then needs no
+# kernel output at all, and with no second writer on the UART it is deterministic.
 .PHONY: smoke-kstack-park
 smoke-kstack-park:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
 	@log=$$(mktemp); rc=0; \
 	SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
 	    REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
@@ -2426,32 +2464,29 @@ smoke-kstack-park:
 	    echo "KSTACK PARK: FAIL - the task-killing self-test did not complete (exit $$rc)"; \
 	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
-	cpus=$$(grep -ha PARKTRACE "$$log" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
-	if [ "$$cpus" -lt 2 ]; then \
-	    echo "KSTACK PARK: FAIL - only $$cpus CPU(s) ever parked; this gate proves nothing"; \
-	    echo "  'no park stack was shared' is vacuously true when one CPU parks."; \
-	    rm -f "$$log"; exit 1; \
-	fi; \
-	dup=$$(grep -ha PARKTRACE "$$log" \
-	       | sed -n 's/.*cpu=\([0-9]*\) rsp=\([^ ]*\).*/\2 \1/p' \
-	       | sort -u | awk '{c[$$1]++} END {for (r in c) if (c[r] > 1) print r}'); \
-	if [ -n "$$dup" ]; then \
-	    echo "KSTACK PARK: FAIL - a park stack was used by more than one CPU: $$dup"; \
-	    grep -ha PARKTRACE "$$log" | sed 's/^/  /' | head -20; rm -f "$$log"; exit 1; \
-	fi; \
 	if grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
-	    echo "KSTACK PARK: FAIL - the collision detector fired"; \
+	    echo "KSTACK PARK: FAIL - two CPUs parked on one kernel stack"; \
 	    grep -a -A 4 '$(KSTACK_PARK_RE)' "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
 	rm -f "$$log"; \
-	echo "KSTACK PARK: PASS - $$cpus CPUs parked, each on its own stack, detector silent"
+	echo "KSTACK PARK: PASS - task-killing workload completed on 4 CPUs, no shared park stack"
 
 # The defect, on demand: the same task-killing workload with the shared park
 # restored. At least one park stack must come back used by more than one CPU.
-# Without this arm the target above is consistent with "the park path is
-# unreachable" -- which is what it looks like on a HEALTHY session, where the
-# measured park count is 0 in 3 boots. The workload is chosen to kill tasks for
-# exactly that reason.
+#
+# This arm carries BOTH halves of the argument, which is why the arm above needs no
+# kernel output. A park stack shared between two CPUs cannot occur unless the park
+# path is entered on two CPUs, so requiring it proves reachability as well as the
+# defect -- and if the workload ever stops killing tasks, this arm goes red and the
+# pair fails. Without it, `smoke-kstack-park` is consistent with "the path is
+# unreachable", which is exactly what it looks like on a HEALTHY session: 0 parks in
+# 3 boots.
+#
+# This is the one arm that MAY build KSTACK0_PARK_TRACE, because its assertion is
+# the trace and not a marker. The trace writes directly to COM1 and will corrupt
+# proctest's output (see the note on the arm above) -- here that is harmless, and
+# the smoke harness's exit status is deliberately not the assertion for the same
+# reason.
 .PHONY: smoke-kstack-park-control
 smoke-kstack-park-control:
 	@$(MAKE) --no-print-directory clean
@@ -2470,9 +2505,11 @@ smoke-kstack-park-control:
 	       | sort -u | awk '{c[$$1]++} END {for (r in c) if (c[r] > 1) print r}'); \
 	if [ -z "$$dup" ]; then \
 	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce."; \
-	    echo "  This arm is what makes smoke-kstack-park a measurement. If it stops"; \
-	    echo "  reproducing, the workload has stopped killing tasks on more than one"; \
-	    echo "  CPU. CPUs seen parking: $$cpus."; \
+	    echo "  This arm carries reachability for BOTH park arms: a stack shared by two"; \
+	    echo "  CPUs cannot happen unless the path is entered on two CPUs. If this stops"; \
+	    echo "  reproducing, the workload has stopped killing tasks on more than one CPU"; \
+	    echo "  and smoke-kstack-park is no longer proving anything either."; \
+	    echo "  CPUs seen parking: $$cpus."; \
 	    grep -ha PARKTRACE "$$log" | sed 's/^/  /' | head -20; rm -f "$$log"; exit 1; \
 	fi; \
 	echo "  park stack $$dup used by more than one CPU"; \

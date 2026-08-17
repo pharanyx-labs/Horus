@@ -779,9 +779,10 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **71 required, 3 exempted** — `fuzz` (a 30-second time-boxed search is
-  evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on) and
-  `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
+  The intended set is **70 required, 4 exempted** — `fuzz` (a 30-second time-boxed search is
+  evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
+  `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
+  (its workload trips **[G-9]**, found 2026-08-17). `smoke-fs-wal` was an
   exemption until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
   `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted with
   it. **No exemption now stands for an open defect** — all three are properties of the test

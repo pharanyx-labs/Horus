@@ -398,6 +398,69 @@ harness from **24/24 to 13/20**, because a stale claim marks a task whose kernel
 abandoned, and freeing it resumes that task from a stale frame. Both are now recorded as
 explicit "do not do this" comments at the sites that invited them.
 
+### Open finding G-9: a scheduler claim leaks on the spawn/reap path under SMP
+
+**Found 2026-08-17 by `smoke-kstack-park`, and pre-existing.** `PROC_SELFTEST` at `-smp 4`
+violates the claim invariant on ~40% of boots. Nothing had run that workload at more than one
+CPU before: `smoke-proc` boots it uniprocessor, where it is clean 20/20.
+
+```
+PANIC: stale scheduler claim at preempt_on_tick: task 3 claimed by cpu 2
+       but that cpu was running 0 (persisted across two audits; observed by cpu 1)
+```
+
+Always task 3 — the driver that spawns and reaps — and always a CPU that has gone idle while
+still holding the claim. "Persisted across two audits" is the two-strike guard, so it is a leak
+and not a mid-flight snapshot.
+
+| Configuration | Boots | Failed | Stale claim reported |
+|---|---|---|---|
+| `-smp 1` | 20 | **0** | 0 |
+| `-smp 4` | 20 | 9 | 8 |
+| `-smp 4`, `KSTACK_RELEASE_EARLY=1` (pre-#162 release timing) | 20 | 10 | 9 |
+
+**The third row is the load-bearing one:** 10/20 against 9/20 is no difference (Fisher p ≈ 1.0),
+so this is not [G-8]'s deferred release misfiring. The leak predates both G-8 fixes. What they
+changed is that it is now *visible* — before them this workload failed **20/20** on the shared
+park, and a defect that kills every boot hides every other defect behind it.
+
+**Both directions of the invariant break, and the second one does damage.** A boot showed
+`claim: task 1 running_cpu=-1  percpu_current=[0,0,1,0]` — a task running with no claim, which
+makes it selectable by a second CPU. The consequence was observed, not inferred: two CPUs on one
+kernel stack, caught by the stack canary in `h_write`.
+
+**How it was found is the useful part.** Without `SCHED_INVARIANTS` the failures present as a
+mix — over 25 boots: 10 pass, 7 supervisor `#PF` (instruction fetch at `rip=0x2/0x12/0x82`, a
+return through a corrupted pointer), 5 stalls with no marker, 3 canary trips. Three shapes, one
+cause, and no way to tell from any single one. Two wrong diagnoses were published before the
+right instrument was used:
+
+1. **"The park trace corrupts the marker."** `KSTACK0_PARK_TRACE` does write straight to COM1
+   and does interleave with ring-3 output — that is real, and is why the trace is now barred from
+   any gate matching an exact string. But it was **not the cause**: with the trace removed the
+   failure rate was 10/25, identical to 10/25 with it. The statistic first offered as proof —
+   "gate failure and corrupted marker correlate 10 for 10" — was a *tautology*, since the gate's
+   assertion **is** that marker. It could not distinguish any hypothesis from any other.
+2. **"The 4 KiB I took off the idle stack."** Enlarging it to `PAGE_SIZE + KERNEL_STACK_SIZE`
+   gave 12 passes in 25 against 12 KiB's 10 in 25, with canary trips going **up**, 3 → 5. The
+   enlargement was kept because the park path having the room it had before the move is right on
+   its own merits, but it fixed nothing here.
+
+What actually resolved it was making `__stack_chk_fail` say where it fired. It had printed
+`PANIC: stack smashing detected` and nothing else — no function, no CPU, no task — and through
+`print()`, which is klog-only once a ring-3 console server owns the console, so a smash during a
+live session emitted **nothing on the wire at all**. That is #140's defect, still sitting in the
+canary handler because nobody had looked. It now reports `__builtin_return_address(0)` — which
+*is* the faulting function, since the canary is checked in that function's epilogue — plus the
+CPU, the task and the claim dump. The first run with it said `h_write`, `task=1`, every time,
+which is what turned the search from the write path to the scheduler.
+
+**Next step:** find which path leaves a CPU idle holding a claim. `sched_enter_user()` is worth
+looking at first — it has its own inline `iretq` epilogue and so bypasses `isr_common_stub64`,
+and with it `sched_release_deferred()`. Offered as a lead with its check named, not a diagnosis.
+
+---
+
 ### Finding G-8: two CPUs on one kernel stack — CLOSED 2026-08-17
 
 **Status: closed. `smoke-session-smp-soak` is restored to gating.** Read this subsection for
@@ -1753,7 +1816,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-resume-guard-legacy` | Control arm for the fix: same injection and claim, with the guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket restored (`RESUME_GUARD_LEGACY_FATAL=1`). The report must **not** reach serial — the boot goes silent at the login prompt, which is the defect on demand. |
 | `smoke-resume-guard-nofloor` | Control arm for the guard: same injection, guard compiled out (`RESUME_GUARD_DISABLE=1`). The PANIC line must **not** appear; the kernel instead faults at `0x94` on `out->cs`, which is G-8's original datapoint reproduced deliberately. |
 | `smoke-kstack-race` | **S20** — a task's kernel stack is executed by at most one CPU at a time. `KSTACK_RACE_WIDEN=1` stretches the window between handing a task to another CPU and the ISR epilogue leaving that task's stack, so it is entered on essentially every switch instead of at **[G-8]**'s 2–3% per boot. With the deferred release the claim is held across the window, so nothing can take the stack: the session must complete and `PANIC: two CPUs on one kernel stack` must be **absent**. |
-| `smoke-kstack-park` | **S20**, park path — a CPU whose last runnable task dies parks on its **own** ring-0 stack. Boots the task-killing `PROC_SELFTEST` at `-smp 4` (a healthy session never enters the path: 0 parks in 3 boots) and asserts four things, because three of them pass vacuously alone: the self-test completes, at least two CPUs actually parked, no park stack was used by more than one CPU, and `sched_note_park()`'s report is absent. |
+| `smoke-kstack-park` | **ADVISORY, not gating — see finding G-9 below.** **S20**, park path — a CPU whose last runnable task dies parks on its **own** ring-0 stack. Boots the task-killing `PROC_SELFTEST` at `-smp 4` (a healthy session never enters the path: 0 parks in 3 boots) and asserts four things, because three of them pass vacuously alone: the self-test completes, at least two CPUs actually parked, no park stack was used by more than one CPU, and `sched_note_park()`'s report is absent. |
 | `smoke-kstack-park-control` | Control arm. Same workload with `KSTACK0_SHARED_PARK=1` restoring `tasks[0].kernel_stack_top` as the shared park target; at least one park stack must come back used by more than one CPU. Gates on the trace rather than on the collision PANIC deliberately — the PANIC needs two CPUs parked at the same instant, which reproduced only 2 boots in 3. |
 | `smoke-kstack-race-control` | Control arm, and the load-bearing one. Same widened window, `KSTACK_RELEASE_EARLY=1` restoring the pre-fix release site. The marker must be **present** *and* the session must not report PASS — a build that reproduced the race and still reported success would mean the harness had stopped reading the wire. Without this arm, `smoke-kstack-race` proves only that a kernel with a spin in it still boots. |
 
@@ -1834,9 +1897,10 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **71 required contexts and 3 reasoned exemptions** — `fuzz` (a fixed
+The intended set is **70 required contexts and 4 reasoned exemptions** — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
-conclusion to gate on) and `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
+conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
+`smoke-kstack-park` (its workload trips **[G-9]**). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
 promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]** was closed on
 2026-08-17, and it was promoted in the same commit. Both remaining exemptions are properties of
 the test itself rather than standing exemptions for an open defect. The promotions are backed

@@ -8,6 +8,87 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Found — a scheduler claim leaks on the spawn/reap path under SMP (**[G-9]**, pre-existing)
+
+`smoke-kstack-park` turned `main` red. The gate's property is sound and the kernel fix it guards
+is sound; what it exposed is a **different, pre-existing defect** that nothing had ever
+exercised. `PROC_SELFTEST` at `-smp 4` violates the claim invariant on ~40% of boots, and
+`smoke-proc` has only ever booted that workload uniprocessor, where it is clean 20/20.
+
+```
+PANIC: stale scheduler claim at preempt_on_tick: task 3 claimed by cpu 2
+       but that cpu was running 0 (persisted across two audits; observed by cpu 1)
+```
+
+| Configuration | Boots | Failed | Stale claim |
+|---|---|---|---|
+| `-smp 1` | 20 | **0** | 0 |
+| `-smp 4` | 20 | 9 | 8 |
+| `-smp 4`, `KSTACK_RELEASE_EARLY=1` (pre-#162 timing) | 20 | 10 | 9 |
+
+The third row is why this is not the **[G-8]** fixes misfiring: 10/20 against 9/20 is no
+difference (Fisher p ≈ 1.0). The leak predates them. What they changed is that it is *visible* —
+before them the same workload failed **20/20** on the shared park, and a defect that kills every
+boot hides every other defect behind it. Both directions of the invariant break; the second
+(`task 1 running_cpu=-1` while a CPU runs it) was observed doing damage, as two CPUs on one
+kernel stack caught by the canary in `h_write`.
+
+`smoke-kstack-park` is **demoted to advisory** with a written reason naming [G-9] — the same
+treatment `smoke-session-smp-soak` had while G-8 was open, and for the same reason: a required
+check that reddens for a defect it does not test teaches the re-run reflex. Required contexts
+71 → 70. Promote it in the same commit that closes [G-9], and quote a rate.
+
+### Fixed — `__stack_chk_fail` said neither where it fired nor, in a live session, anything at all
+
+It printed `PANIC: stack smashing detected; halting` — no function, no CPU, no task — and
+through `print()`, which only appends to the klog once a ring-3 console server owns the console.
+**So a stack smash during a live session emitted nothing on the wire.** That is the defect #140
+fixed for the trap reports and #143 for the resume guard, still sitting in the canary handler
+because nobody had looked; the only reason it was legible on 2026-08-17 is that `PROC_SELFTEST`
+never starts `console_server`.
+
+It now reports `__builtin_return_address(0)` — which *is* the faulting function, since the canary
+is checked in that function's epilogue — plus the CPU, the task and the claim dump, through
+`kfault_*` under the bounded claim. The first run with it printed `h_write`, `task=1`, every
+time, which is what turned the search from the write path to the scheduler. Two wrong diagnoses
+had been published before it existed; see `TESTS.md` on G-9 for both, kept.
+
+### Changed — the per-CPU idle stacks get a full `KERNEL_STACK_SIZE`, and the constant is pinned
+
+Placing the guard page inside a 16 KiB slot left 12 KiB usable while the **[G-8]** park fix
+simultaneously routed a new path onto it. The slot is now `PAGE_SIZE + KERNEL_STACK_SIZE`, so a
+parked CPU has exactly the room it had on task 0's stack before the move.
+
+*This was not the fix for the canary trips it was reached for* — 32 KiB gave 12 passes in 25
+against 12 KiB's 10, with trips going up, 3 → 5. It is kept because the park path having the
+space it previously had is right on its own merits, and because reaching for it turned up a
+real trap: `AP_IDLE_STACK_SIZE` is duplicated in `src/boot/ap_trampoline.S`, which cannot include
+the header, and **nothing pinned the two**. Diverge them and every AP silently gets a stack
+overlapping its neighbour's, at bringup, before anything can report. Now `_Static_assert`ed in
+the same shape as the `MAX_CPUS` assert beside it, and falsified: diverging the constants fails
+the build with `AP_IDLE_STACK_SIZE changed: update the literal in src/boot/ap_trampoline.S`.
+
+### Changed — `KSTACK0_PARK_TRACE` is barred from any gate that matches a string on serial
+
+It emits through `kfault_*`, which writes bytes straight to COM1 and bypasses console ownership.
+That is correct for a panic and wrong during a live session, where it is a second concurrent
+writer (finding #126's hazard) and corrupts whatever ring-3 is printing:
+
+```
+PARKTRACE cpu=3 rsp=0xffffffff806ff0PROC_SELFTEST: PASS exit+kill+spawn
+```
+
+`smoke-kstack-park` built it and its fixed arm now does not. Only the control arm may, because
+its assertion is the trace itself rather than a marker the trace can break — which also moves
+reachability to the control arm, where `smoke-resume-guard` already puts it.
+
+**This was first published as the cause of the red CI, and it was not.** With the trace removed
+the failure rate was 10/25, identical to 10/25 with it. The statistic offered as proof —
+"gate failure and corrupted marker correlate 10 for 10" — was a tautology: the gate's assertion
+*is* that marker, so every failure lacks it by construction, and the number could not
+distinguish one hypothesis from another. Recorded because inventing a confident-sounding
+correlation is a worse habit than having no number at all.
+
 ### Changed — the ruleset audit's log now says what it compared (**[C-6]**)
 
 `--check-ruleset` printed the classification summary and nothing about the ruleset, so a green

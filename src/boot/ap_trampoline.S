@@ -46,7 +46,11 @@
 #define AP_STACK_BASE_CELL 0x8FD8
 #define AP_CR3_CELL        0x8FE0
 #define AP_ENTRY_CELL      0x8FE8
-#define AP_IDLE_STACK_SIZE 0x4000
+/* MUST equal AP_IDLE_STACK_SIZE in src/kernel/smp.c, which is
+ * PAGE_SIZE + KERNEL_STACK_SIZE = 0x1000 + 0x8000. A _Static_assert there pins
+ * this literal; if it fires, change this line. Each slot is [guard page][stack]
+ * and the stack top is base + (apic_id + 1) * this value. */
+#define AP_IDLE_STACK_SIZE 0x9000
 #define LAPIC_BASE         0xFEE00000
 #define LAPIC_ID_REG       0x20
 #define COM1               0x3F8

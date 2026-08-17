@@ -366,9 +366,43 @@ uintptr_t __stack_chk_guard = STACK_GUARD_COMPILE_DEFAULT;
 /* GCC's callback when a canary check fails. By definition the calling frame's
  * return address is already corrupt, so returning is not an option. Fail closed
  * the same way entropy_init does — and "PANIC" is in the smoke harness's
- * FAULT_RE, so a smash anywhere turns CI red rather than scrolling past. */
+ * FAULT_RE, so a smash anywhere turns CI red rather than scrolling past.
+ *
+ * ---- IT USED TO SAY ONLY "stack smashing detected" ---------------------------
+ *
+ * No site, no task, no CPU. On 2026-08-17 a real smash appeared at a 40% rate on
+ * a task-killing SMP workload and that line was the entire evidence: it could not
+ * distinguish which function's canary died, which is the one fact needed to act on
+ * it. Two things are fixed here.
+ *
+ * FIRST, it names the caller. The canary is checked in the epilogue of the
+ * function that owns the frame, so this function's own return address IS the
+ * faulting function -- available for free via __builtin_return_address, and worth
+ * more than every other field combined because it symbolises directly.
+ *
+ * SECOND, it reports through kfault_* rather than print(). print() only appends to
+ * the klog once a ring-3 console server owns the console, so a smash during a live
+ * session emitted NOTHING on the wire -- the same defect #140 fixed for the trap
+ * reports and #143 for the resume guard, still present here because nobody had
+ * looked. The reason it was legible at all on 2026-08-17 is that the PROC_SELFTEST
+ * workload never starts console_server. On a session boot this was silent.
+ *
+ * Bounded claim, not the permanent one: a smash is fatal for THIS CPU, and another
+ * CPU dying first must not be able to take the claim and mute this. That is
+ * exactly the [G-8] lesson. */
 void __attribute__((noreturn)) __stack_chk_fail(void) {
-    print("PANIC: stack smashing detected; halting\n");
+    kfault_begin(0);
+    kfault_str("\nPANIC: stack smashing detected in function at ");
+    kfault_hex((uint64_t)(uintptr_t)__builtin_return_address(0));
+    kfault_str(" cpu=");  kfault_dec(this_cpu());
+    kfault_str(" task="); kfault_task(get_current_task());
+    /* The scheduler claim state, for the same reason the trap reports carry it:
+     * a clobbered frame on a task's kernel stack is the [G-8] family's signature,
+     * and the first question is whether a second CPU is on that task. Printing it
+     * here costs nothing -- this path already halts. */
+    kfault_claims(get_current_task());
+    kfault_str("\nKERNEL FATAL STACK SMASH - halting\n");
+    kfault_end(0);
     for (;;) __asm__ volatile ("cli; hlt");
 }
 

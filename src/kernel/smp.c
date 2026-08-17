@@ -64,7 +64,22 @@ volatile int smp_active = 0;
 #define AP_STACK_BASE_CELL   0x8FD8UL
 #define AP_CR3_CELL          0x8FE0UL
 #define AP_ENTRY_CELL        0x8FE8UL
-#define AP_IDLE_STACK_SIZE   0x4000UL
+/* Per-CPU ring-0 idle/park slot: one guard page plus KERNEL_STACK_SIZE of usable
+ * stack, so the space a parked CPU gets is exactly what it got on task 0's stack
+ * before the [G-8] park fix moved it here.
+ *
+ * It was 0x4000 (16 KiB, no guard). Placing the guard inside the slot on
+ * 2026-08-17 left 12 KiB usable and produced `PANIC: stack smashing detected` at a
+ * 40% rate on a task-killing SMP workload; measured, the same build with the guard
+ * unarmed (16 KiB usable) produced zero smashes in 20 boots. Taking 4 KiB from a
+ * stack while simultaneously routing a new path onto it was the mistake, and the
+ * honest correction is to stop economising: the park path had KERNEL_STACK_SIZE
+ * before, so it has KERNEL_STACK_SIZE now.
+ *
+ * DUPLICATED IN src/boot/ap_trampoline.S, which computes each AP's initial stack
+ * top as base + (apic_id + 1) * AP_IDLE_STACK_SIZE and cannot include this header.
+ * The _Static_assert below pins the two; if it fires, update the assembly. */
+#define AP_IDLE_STACK_SIZE   (0x1000UL + KERNEL_STACK_SIZE)
 
 static inline void lapic_write(uint32_t reg, uint32_t val) {
     volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
@@ -101,11 +116,10 @@ static void smp_busy_delay(int iters) {
  * An AP whose id has no slot parks in the trampoline rather than running off
  * the end of this array. */
 /* Per-CPU ring-0 idle stacks. Slot `c` is [guard page][stack], and the trampoline
- * and ap_idle_stack_top() both compute the TOP as base + (c+1)*AP_IDLE_STACK_SIZE
- * -- which is why the guard lives in the slot's FIRST page rather than being
- * prepended to it. The top does not move, so ap_trampoline.S needs no change and
- * its duplicated AP_IDLE_STACK_SIZE stays correct; what changes is that the
- * bottom 4 KiB of each slot is unmapped and the usable stack is 12 KiB.
+ * and ap_idle_stack_top() both compute the TOP as base + (c+1)*AP_IDLE_STACK_SIZE,
+ * so the guard lives in the slot's FIRST page rather than being prepended to it --
+ * the arithmetic on both sides stays a single stride from the array base. Usable
+ * stack is KERNEL_STACK_SIZE; the guard is the 4 KiB below it.
  *
  * These stacks had NO guard until 2026-08-17, which made SECURITY.md's S9 ("an
  * unmapped guard page below every kernel stack") false: every CPU parked here by
@@ -148,6 +162,14 @@ uint64_t ap_idle_guard_vaddr(int i) { return (uint64_t)(uintptr_t)ap_idle_guard(
  * this fires, update AP_MAX_CPUS in src/boot/ap_trampoline.S to match. */
 _Static_assert(MAX_CPUS == 4,
                "MAX_CPUS changed: update AP_MAX_CPUS in src/boot/ap_trampoline.S to match");
+/* The trampoline strides the idle-stack array by this value in assembly, where it
+ * is a literal. Nothing detected a mismatch before: the size was duplicated with
+ * no assertion at all, so changing it on one side alone would hand every AP a
+ * stack overlapping its neighbour's -- silently, and at bringup, before anything
+ * can report. Pinned now, in the same shape as the MAX_CPUS assert above. */
+_Static_assert(AP_IDLE_STACK_SIZE == 0x9000UL,
+               "AP_IDLE_STACK_SIZE changed: update the literal in "
+               "src/boot/ap_trampoline.S to match");
 
 extern uint8_t ap_trampoline_start[], ap_trampoline_end[];
 extern void ap_load_kernel_segments(void);   /* lowlevel64.S */

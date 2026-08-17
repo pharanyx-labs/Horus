@@ -958,9 +958,24 @@ jobs:
         run: make smoke-kstack-race-control
 
   smoke-kstack-park:
-    name: A dying task's CPU parks on its own kernel stack (S20 park path; control arm proves it)
+    name: A dying task's CPU parks on its own kernel stack (S20 park path; ADVISORY -- open finding G-9)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # ADVISORY, NOT GATING -- see finding G-9 in TESTS.md.
+    #
+    # The property it checks is real and the control arm reproduces the defect on
+    # demand. What is not sound is the WORKLOAD: PROC_SELFTEST at -smp 4 trips a
+    # pre-existing scheduler claim leak on ~40% of boots (9/20 at -smp 4 against
+    # 0/20 at -smp 1; 8/20 report "stale scheduler claim at preempt_on_tick" under
+    # SCHED_INVARIANTS; the pre-#162 release timing gives 10/20, so it is not
+    # caused by the G-8 fixes). This gate was the first thing ever to run that
+    # workload at -smp 4, which is why the leak surfaced here.
+    #
+    # A required check that reddens for a defect it does not test teaches the
+    # re-run reflex, which is the habit this repo blames for smoke-console-smp
+    # surviving months of CI. Promote it in the same commit that closes G-9, and
+    # quote a rate.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU

@@ -49,7 +49,9 @@ measurements.
 > The notable remaining findings are the CI gating list (**[C-6]** — every security test does
 > now block a merge, and a scheduled job re-checks the live ruleset against the checked-in
 > classification, but it is inert until its read-only GitHub App is created), and no independent
-> review of security-critical changes (**[C-5]**).
+> review of security-critical changes (**[C-5]**), and a scheduler claim that leaks on the
+> spawn/reap path under SMP (**[G-9]**, found 2026-08-17 — pre-existing, and uncovered by the
+> [G-8] fixes that stopped masking it).
 
 ---
 

@@ -588,9 +588,11 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **71 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **70 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
-conclusion to gate on) and `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
+conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
+`smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands
+for an open defect rather than a property of the test). `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
 was promoted back, and `smoke-session-smp-soak` a fourth until [G-8] was closed on 2026-08-17
 and it was promoted with it — the last exemption in this repo that stood for an open defect
 rather than for a property of the test itself. The
@@ -825,6 +827,57 @@ the capture faulted at `0x4` in the stub's first `pop` — so the value became `
 guard. With the canary passing, that was read as "a register that did not survive". The window
 was identified correctly and is the one closed above; the register reading was the wrong half,
 because a callee-saved register restored from a slot a second CPU rewrote is both.
+
+### 5.2d A scheduler claim leaks on the spawn/reap path under SMP — **[G-9]**
+
+**Open, found 2026-08-17, and pre-existing.** Running `PROC_SELFTEST` at `-smp 4` violates the
+claim invariant on roughly **40% of boots**. Nothing had ever run that workload at more than one
+CPU: `smoke-proc` boots it uniprocessor, where it is clean.
+
+Under `SCHED_INVARIANTS=1` the checker names it, always on the same task — task 3, the
+self-test driver that spawns and reaps children:
+
+```
+PANIC: stale scheduler claim at preempt_on_tick: task 3 claimed by cpu 2
+       but that cpu was running 0 (persisted across two audits; observed by cpu 1)
+```
+
+*"Persisted across two audits"* is the two-strike checker's own guard against crying wolf on a
+mid-flight update, so this is a genuine leak rather than a transient.
+
+**Both directions of the invariant break.** As well as the leaked claim above, a boot showed
+`claim: task 1 running_cpu=-1  percpu_current=[0,0,1,0]` — a task **running with no claim**,
+which `ARCHITECTURE.md` §7 names as the dangerous direction because an unclaimed running task
+is selectable by a second CPU. The observed consequence is exactly that: two CPUs on one kernel
+stack, reported by the stack canary in `h_write`
+(`stack smashing detected in function at 0xffffffff8010ebbc`, always `task=1`).
+
+| Configuration | Boots | Failed | Stale-claim reported |
+|---|---|---|---|
+| `-smp 1` | 20 | **0** | 0 |
+| `-smp 4` | 20 | 9 | 8 |
+| `-smp 4`, pre-#162 release timing (`KSTACK_RELEASE_EARLY=1`) | 20 | 10 | 9 |
+
+**The third row is why this is not [G-8]'s fix misfiring.** Restoring the pre-#162 release
+timing gives 10/20 against the shipped 9/20 — Fisher p ≈ 1.0, no difference. The leak predates
+both G-8 fixes; what those fixes did was stop masking it. Before them the same workload failed
+**20/20** on the shared park, and you cannot see a second defect while the first kills every
+boot.
+
+Without `SCHED_INVARIANTS` the failures present as a mix, which is why the checker was needed:
+over 25 boots, 10 passed, 7 took a supervisor `#PF` (instruction fetch at `rip=0x2/0x12/0x82`,
+i.e. a return through a corrupted pointer), 5 stalled with no marker, and 3 tripped the canary.
+
+**Consequence for CI.** `smoke-kstack-park` is **advisory**, not gating: the S20 park property
+it checks is sound and its control arm still reproduces the park defect on demand, but requiring
+a workload that reddens ~40% of the time for an unrelated defect teaches the re-run reflex.
+Promote it in the same commit that closes **[G-9]**, and quote a rate.
+
+**What is not yet known** is which path leaks. The signature is stable — always task 3, always
+a CPU that has gone idle (`running 0`) while still holding the claim — and `sched_enter_user()`
+is worth looking at first, since it has its own inline `iretq` epilogue and so bypasses
+`isr_common_stub64` and the release the stub performs. That is a lead, not a diagnosis, and this
+file's own history is the argument for labelling it as one.
 
 ### 5.3 No release provenance — **[I-9]**
 

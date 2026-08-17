@@ -1603,11 +1603,18 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               landing by one merge, and a tool now enforces that.
             </p>
             <p>
-              <strong>It is still not closed.</strong> Reading a ruleset needs permissions the
-              workflow token cannot be granted, so CI proves the classification is complete but
-              not that the ruleset matches it. The two could diverge again through a change made
-              in the web UI, and nothing in CI would notice — verifying it remains a command
-              someone has to remember to run.
+              <strong>It is not closed yet, but the last gap now has a mechanism.</strong>
+              Reading a ruleset needs the <code>Administration</code> permission, which is not
+              among the scopes a workflow token can be granted at all — so CI proved the
+              classification was complete, never that the ruleset matched it, and the two could
+              diverge through a single change in the web UI with nothing noticing. A scheduled
+              job now re-checks that daily, authenticating as a GitHub App scoped to this one
+              repository with read-only administration access, minted per run. The trade is
+              written down rather than glossed: a credential that can read repository
+              administration now sits in CI secrets, to detect drift that requires
+              administration access to cause. The finding stays open until that App is created —
+              and the job fails loudly every day until it is, because an audit that quietly
+              skips when unconfigured is a check that cannot fail.
             </p>
           </li>
           <li>

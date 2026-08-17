@@ -18,9 +18,15 @@ Findings referenced as **[C-n]** / **[I-n]** / **[F-n]** are from
 | | |
 |---|---|
 | ✅ | Done and tested in CI |
+| ◧ | Partly done — the item's own goal is met, but a **named** remainder keeps its finding open |
 | 🚧 | In progress |
 | ⬜ | Not started |
-| 🔒 | Blocked on an earlier item |
+| 🔒 | Blocked on an earlier item (none currently) |
+
+`◧` was in use on 1.2 before it was in this table, which is the kind of drift this document is
+supposed to catch rather than commit. It earns its place: `✅` next to a finding that
+`SECURITY.md` still lists as open is precisely the cross-file contradiction the finding-ID rule
+exists to prevent.
 
 ---
 
@@ -89,7 +95,12 @@ promotion in `SYS_GET_TASK_INFO` and zero `info.eip` for other tasks (**[I-4]**)
 **Security impact.** Makes the capability graph a *complete* description of authority, which
 is the precondition for any confinement, sandboxing, or MAC story.
 
-### 0.3 ✅ Kernel objects from untyped memory (`CAP_UNTYPED`) — **[I-7]** — *landed 2026-07-27*
+### 0.3 ◧ Kernel objects from untyped memory (`CAP_UNTYPED`) — **[I-7]** — *landed 2026-07-27*
+
+> **Marked `◧`, not `✅`, as of 2026-08-17.** The item's goal landed in full and is gated. But
+> `SECURITY.md` lists **[I-7]** as an open finding and `LIMITATIONS.md` §3.1 documents the
+> remainder, so a `✅` here made one finding carry two statuses in two files. The remainder is
+> named in "Not migrated" below and is revisited by 2.3.
 
 **Problem.** `tasks[64]`, `endpoints[64]`, `notifications[64]`, `cspace_pool[64][256]` are
 `.bss` arrays under a hard 16 MiB linker ceiling. No retyping discipline, no per-task
@@ -732,11 +743,21 @@ Ordered as in the audit's §7.5.
 
 - **4.1 ⬜ Require reviewer approval — [C-5].** `required_approving_review_count: 1`,
   `require_code_owner_review: true`, `dismiss_stale_reviews_on_push: true`,
-  `require_last_push_approval: true`, `required_review_thread_resolution: true`. Repair the
-  stale `CODEOWNERS` paths (seven files listed do not exist; the files containing **[C-1]**
-  are uncovered).
-  *If a second reviewer is genuinely unavailable, say so in `SECURITY.md` and scope the
-  assurance claim accordingly — that is already done, and it is a mitigation, not a fix.*
+  `require_last_push_approval: true`, `required_review_thread_resolution: true`.
+
+  *This item previously also asked to "repair the stale `CODEOWNERS` paths (seven files listed
+  do not exist; the files containing **[C-1]** are uncovered)". That was **already done** by
+  4.7 on 2026-07-27 and this line had gone on asking for it since — the roadmap contradicting
+  itself two tracks apart. Re-derived 2026-08-17: **0 of 57 patterns** name a path that does
+  not exist, and both files carrying the **[C-1]** logic, `src/kernel/syscall_ipc.c` and
+  `src/kernel/capability.c`, are covered.*
+
+  **So the only thing left on [C-5] is a second person**, and no configuration change
+  substitutes for one. Turning these settings on with a single maintainer either blocks every
+  merge or is worked around with a bypass actor — which would undo 4.2's "no bypass actors" to
+  buy an approval nobody independent gave. `SECURITY.md` scopes the claim to *"thoroughly
+  automatically verified"* rather than *"independently reviewed"*; that is a mitigation and is
+  labelled as one.
 - **4.2 🚧 Gate the security tests — [C-6].** `strict_required_status_checks_policy` is now
   **true**, and `smoke-captest` — the witness for eight of `SECURITY.md`'s S-numbered
   properties, and the single most consequential omission — became a required check on
@@ -744,7 +765,8 @@ Ordered as in the audit's §7.5.
   them. `smoke-wx` / `-wx-smp`, `smoke-cpu`, `smoke-modules-tamper`, `smoke-tpm*`,
   `smoke-flush`, `smoke-stackguard`, `smoke-heap64`, `smoke-irq-policy`, `smoke-percpu`,
   `smoke-resume-guard`, `smoke-newlib-tamper` and CodeQL are all promoted in the classification
-  below, and become gating the moment the ruleset is synced to it.
+  below, and **are gating** — the ruleset was synced to it on 2026-08-16 and again on
+  2026-08-17.
   *Promoting jobs one at a time is not the fix.* The required list lives in the ruleset, which
   no commit touches, so every job added to `ci.yml` lands in the advisory set by default and
   nothing asks whether it should have — which is why the ratio drifted from 21-of-30 to
@@ -757,12 +779,13 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **71 required, 2 exempted** (`fuzz` — a 30-second time-boxed search is
-  evidence of effort, not of absence; `kani` — manual-only, no conclusion to gate on).
-  `smoke-fs-wal` was a third until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
-  `smoke-session-smp-soak` a fourth until **[G-8]** was closed on 2026-08-17 and it was
-  promoted with it. Both remaining exemptions are properties of the test, not of an open
-  defect. The promotions are
+  The intended set is **71 required, 3 exempted** — `fuzz` (a 30-second time-boxed search is
+  evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on) and
+  `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
+  exemption until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
+  `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted with
+  it. **No exemption now stands for an open defect** — all three are properties of the test
+  itself. The promotions are
   backed by measurement: across 18 CI runs sampled on 2026-08-16, 64 of 66 jobs had zero
   failures in 1152 job-executions. `smoke-fs-wal` is *demoted* — a flaky required check trains
   the maintainer to re-run red, and its durability claim is now carried by the deterministic
@@ -775,12 +798,27 @@ Ordered as in the audit's §7.5.
   the rule: **never require a context the base branch cannot produce.** Promotion lags the job
   landing by one merge; re-run `--sync-ruleset` after each such PR.
 
-  **What keeps 4.2 open is verification, not promotion.** Reading a ruleset needs
-  Administration permissions the workflow token does not have, so CI proves the classification
-  is complete but not that the ruleset matches it; the two could diverge again via the GitHub
-  UI and nothing in CI would notice. `--check-ruleset` is the check and must be run
-  deliberately. Closing this fully needs a CI token with the scope to read the ruleset — or an
-  explicit decision to accept the manual reconciliation as residual risk, recorded here.
+  **What kept 4.2 open was verification, not promotion**, and the mechanism for it landed on
+  2026-08-17. Reading a ruleset needs the `Administration` permission, which is not among the
+  scopes the workflow `GITHUB_TOKEN` can be granted at all, so the `ci-gating` job proves the
+  classification is complete but not that the ruleset matches it — the two could diverge via
+  the GitHub UI with nothing in CI noticing. `.github/workflows/ruleset-audit.yml` now runs
+  `--check-ruleset` daily, authenticating as a **GitHub App scoped to this repository with
+  Administration: read and nothing else**, so the token is minted per run, expires in an hour,
+  and cannot modify what it inspects. The trade is stated in that file's header: a credential
+  that can read repository administration now lives in Actions secrets, in order to detect
+  drift that requires administration access to cause.
+
+  **4.2 stays 🚧 for one reason: the App does not exist yet.** The workflow is merged and the
+  job fails loudly on every scheduled run until `RULESET_AUDIT_APP_ID` and
+  `RULESET_AUDIT_PRIVATE_KEY` are configured — deliberately, because an audit that skips when
+  unconfigured is a check that cannot fail, which is the defect class this repository has
+  already been bitten by twice. Creating and installing the App is a maintainer action; setup
+  is in the workflow header. **Marking this ✅ before that is done would be the [G-2] mistake
+  again** — a document asserting a property that nothing yet enforces.
+
+  Until then, `python3 tools/check_ci_gating.py --check-ruleset` is the check, and it has to be
+  run deliberately. Read the count from the API, never from this paragraph.
 - **4.3 ⬜ Hard-fail `gitleaks` and `cargo-audit`** (keep Semgrep/Trivy advisory until their
   false-positive rate on a freestanding kernel is characterised).
 
@@ -835,7 +873,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ✅ | Reproducible builds, SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 30+ QEMU integration self-tests, several adversarial |
+| ✅ | 68 QEMU integration self-tests (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), several adversarial, and 8 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---
@@ -846,30 +884,40 @@ If one sentence had to describe the plan: **stop adding userspace until the capa
 system means what the documentation says it means, then build the OS on a foundation that
 holds.**
 
-Concretely — Track 0 in full, then Track 1.2–1.4, then Track 2 in order, with Track 3 and 4
-items landing alongside. The single highest-leverage non-technical change remains finding a
-second reviewer for the capability paths; automated verification has already been pushed
-about as far as it goes without one.
+Concretely — **Track 0 and Track 1 are done**, bar the named remainders. What is left is
+Track 2 in order, with Track 3 and 4 items landing alongside. The single highest-leverage
+non-technical change remains finding a second reviewer for the capability paths; automated
+verification has been pushed about as far as it goes without one, and 4.1 now says so without
+also asking for a `CODEOWNERS` repair that landed a month ago.
 
-**Track 0 is now complete** (0.1, 0.2, 0.3 all landed 2026-07-27). The object model is true:
-IPC is capability-addressed, ambient root authority is retired, and creating a kernel object
-is an exercise of authority the capability graph describes.
+**Track 0 is complete** (0.1, 0.2, 0.3 all landed 2026-07-27), with 0.3 marked `◧` for the
+`tasks[]` remainder that keeps **[I-7]** open. The object model is true: IPC is
+capability-addressed, ambient root authority is retired, and creating a kernel object is an
+exercise of authority the capability graph describes.
 
-Track 1.1 *was* the next blocking item, and 0.3 raised its priority with evidence rather than
-argument. Moving cspaces onto untyped memory made `create_task` take a spinlock for the first
-time, and `task_teardown` likewise — both on paths that keep interrupts masked deliberately.
-`spin_unlock`'s unconditional `sti` (**[C-3.1]**) turned that into `smoke-console-smp`
-failures with the same signature as the reverted per-CPU-lock attempt, from the same cause:
-2 failures in 3 runs, against 2 in 6 on `main`. An IF-transparent critical section in
-`untyped.c`, plus deferring the lock's arming past boot, restored parity (1 failure in 6).
+**Track 1 is complete** except 1.2, which is `◧`: 1.1 landed 2026-08-11, then 1.3, 1.4, 1.5,
+1.55 and 1.6 followed. 1.2's performance goal was met by other means and its remaining reason
+to exist is a per-CPU *block*, not a per-CPU register base.
 
-That is a workaround, and it is the third subsystem to route around C-3.1 rather than fix it.
-Each one is another place that has to be revisited when 1.1 lands. The episode also says
-something about cost: a change that touches task creation now has to reason about interrupt
-policy that is nowhere written down, and the only way to tell a real regression from noise was
-eighteen QEMU boots.
+**One debt from 1.1 has not been collected, and this section previously promised it would
+be.** It read: *"That is a workaround, and it is the third subsystem to route around C-3.1
+rather than fix it. Each one is another place that has to be revisited when 1.1 lands."* 1.1
+landed on 2026-08-11. Checked 2026-08-17: the route-arounds are **still in place**, and
+`src/kernel/untyped.c` still describes C-3.1 as "the defect roadmap 1.1 has to fix before the
+per-CPU lock can land" — a comment that has been wrong for six days. `untyped_arm_locking()`
+still defers the lock past boot and the IF-transparent critical section is still there.
 
-**That prerequisite is now met — and it was not a flaky test.** `smoke-console-smp` had been
+Neither is a defect today: they are conservative, and the per-CPU lock they were written
+against is now the shipping one. But they are conditioned on a premise that no longer holds,
+and a workaround nobody revisits becomes load-bearing by default. **The work is to re-derive
+whether each is still needed now that `spin_unlock` restores the caller's `RFLAGS.IF` rather
+than asserting `sti`** — and to correct the comments either way, because a comment that names
+a closed finding as open is how [G-2] survived nineteen days. That is tracked here rather than
+done opportunistically: it touches boot-time locking and wants its own falsification, not a
+drive-by edit in a PR about something else.
+
+**1.1's own prerequisite was met a fortnight before it landed — and it was not a flaky
+test.** `smoke-console-smp` had been
 failing about a third of the time and was treated as noise. It was correctly reporting an
 intermittent **SMP scheduling deadlock**: `preempt_on_tick` claimed an incoming task
 unconditionally but released the outgoing one only on a ring-3 tick, so a ring-0 tick leaked a

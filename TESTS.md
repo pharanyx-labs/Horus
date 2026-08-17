@@ -1788,9 +1788,11 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 
 ## CI
 
-`.github/workflows/ci.yml` defines **67** jobs, run on every push and pull request;
-`codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule). Both are covered
-by the gating classification below.
+`.github/workflows/ci.yml` defines **69** jobs, run on every push and pull request;
+`codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
+adds one that runs only on a daily schedule. All three are covered by the gating classification
+below — **71** jobs, **74** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+do not copy them forward from here.
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
@@ -1832,9 +1834,9 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **71 required contexts and 2 reasoned exemptions** — `fuzz` (a fixed
-30-second search is evidence of effort, not of absence) and `kani` (manual-only, so there is no
-conclusion to gate on). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
+The intended set is **71 required contexts and 3 reasoned exemptions** — `fuzz` (a fixed
+30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
+conclusion to gate on) and `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
 promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]** was closed on
 2026-08-17, and it was promoted in the same commit. Both remaining exemptions are properties of
 the test itself rather than standing exemptions for an open defect. The promotions are backed

@@ -8,6 +8,61 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — a scheduled job that checks the live ruleset against the checked-in classification (**[C-6]**)
+
+The half of **[C-6]** that CI could not reach. `.github/ci-gating.yml` is the decision record
+and the `ci-gating` job proves it is *complete*; nothing proved the ruleset *matched* it,
+because reading a ruleset needs the `Administration` permission and `Administration` is not
+among the scopes a workflow `GITHUB_TOKEN` can be granted. A change in the GitHub UI could
+diverge the two silently.
+
+`.github/workflows/ruleset-audit.yml` runs `tools/check_ci_gating.py --check-ruleset` daily,
+authenticating as a **GitHub App scoped to this repository with `Administration: read` and
+nothing else** — minted per run, expiring within the hour, unable to modify what it inspects.
+It calls the same tool the maintainer runs by hand rather than reimplementing the comparison,
+because a second copy of it is one more thing that can drift from the classification it
+polices.
+
+**The trade is stated in the workflow header rather than left implicit:** a credential that can
+read repository administration now lives in Actions secrets, in order to detect drift that
+requires administration access to cause. Read-only, one repository, revocable by uninstalling
+the App. The alternative is a check nobody runs, which is what left the required set at 22 of
+66 with no security gate among them.
+
+**[C-6] stays open until the App exists.** The job fails loudly on every scheduled run until
+`RULESET_AUDIT_APP_ID` and `RULESET_AUDIT_PRIVATE_KEY` are set — deliberately, because an audit
+that skips when unconfigured is a check that cannot fail. Setup is in the workflow header.
+
+The job is classified `advisory` (schedule-only, so it never runs on a pull request), and it is
+listed in `.github/ci-gating.yml` rather than excluded from the checker the way `pages.yml` is:
+listing it means **deleting it trips `ci-gating`**, since an entry naming a job that no longer
+exists is an error. A security control that can be removed without anything noticing is the
+shape of [C-6] itself. Required contexts are unchanged at **71**.
+
+### Documentation — the roadmap said things that had stopped being true
+
+Swept end to end on 2026-08-17, prompted by 4.1 and 4.2 both being stale:
+
+- **4.1 asked for work 4.7 had already done.** It required repairing "the stale `CODEOWNERS`
+  paths (seven files listed do not exist; the files containing **[C-1]** are uncovered)" —
+  corrected on 2026-07-27 by 4.7, two tracks away in the same document. Re-derived: **0 of 57
+  patterns** name a missing path, and both **[C-1]** files are covered. What remains on
+  **[C-5]** is a second person, and the item now says only that.
+- **0.3 was `✅` while `SECURITY.md` listed [I-7] as open** — one finding with two statuses in
+  two files, which is exactly what the finding-ID rule forbids. Now `◧`, with the `tasks[]`
+  remainder named.
+- **`◧` was in use on 1.2 but absent from the status legend.** Added.
+- **"The shape of the next year" described 1.1 as the next blocking item.** 1.1 landed
+  2026-08-11, followed by 1.3, 1.4, 1.5, 1.55 and 1.6.
+- **A promise in that section had not been kept, and saying so is the point.** It read *"Each
+  one is another place that has to be revisited when 1.1 lands."* Checked: the three C-3.1
+  route-arounds are **still in place**, and `src/kernel/untyped.c` still calls C-3.1 "the defect
+  roadmap 1.1 has to fix" six days after 1.1 fixed it. Neither is a defect today — they are
+  conservative — but they rest on a premise that no longer holds. Recorded as work with its own
+  falsification rather than corrected opportunistically in a PR about something else.
+- **"30+ QEMU integration self-tests"** re-derived to **68**, with the count's derivation
+  written beside it.
+
 ### Fixed — a dying task's CPU parked on a kernel stack every other CPU also parked on (**[G-8]**, second path)
 
 **[G-8]**'s remaining path, recorded the same day as an unwitnessed lead and closed with one.

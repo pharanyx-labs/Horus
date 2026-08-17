@@ -651,15 +651,29 @@ and a control arm (`EXEC_REENTER_GLOBAL=1`): **0 thefts in 30 boots against 5 in
 `smoke-exec-reenter`. That took the `PROC_SELFTEST` workload at `-smp 4` from ~45–50% failing to
 ~27%.
 
+**A second singleton fixed the same day, and it was the severe one.**
+`create_user_pagedir()` recycled a slot's page tables while another CPU still had them in CR3 —
+a CPU parked in `kernel_idle()` never reloads CR3, and `SYS_KILL` marks a task dead while it is
+still running in ring 3 elsewhere. The frames returned to the pool and were handed out as
+ordinary pages under a live core: a **cross-address-space read/write primitive reachable from
+ring 3**, surfacing as a supervisor write fault at the LAPIC EOI register. `switch_cr3()` now
+publishes each CPU's loaded CR3, the reclaim refuses to free a tree anyone else holds, and the
+tree is parked for retry rather than leaked. Falsified with `CR3_RECLAIM_UNGUARDED=1`:
+**20 free-in-use boots in 20** unguarded, and the fault **0 in 30 against 6 in 30**. Together
+with the exec fix this took the workload from ~45% of boots failing to **2 in 30**, and
+`make smoke-kstack-park` now passes in its exact form.
+
 **What remains** is the rest of the pattern, and it is why this is 🚧 rather than ✅:
 
-- a CR3 can become reachable before `create_user_pagedir` has populated its kernel half —
-  6 boots in 30 take a CPL-0 `vec=14 errc=0x2` at `lapic_eoi` / `interrupt_handler64`;
-- a claim still leaks in the boot/spawn phase before any exec runs, 2 in 30;
+- `loader_staging`, the staged argv and `g_spawn_stdio_spec` are still process-wide and
+  unserialised;
 - **the authority half:** `g_spawn_caller` is written at `do_spawn` entry and read much later by
   `wire_child_stdio`, so a child's stdio can be wired from the wrong parent's cspace. That is
   capability inheritance from a task that never spawned it, and it is the reason this sits in
-  Track 1 rather than being filed as tidying.
+  Track 1 rather than being filed as tidying;
+- a task can be `state == 0` and still executing in ring 3 on another core. The CR3 guard makes
+  that memory-safe; it does not make it sensible, and the slot allocator still reuses such a
+  slot immediately.
 
 Making each singleton per-CPU is not obviously the right answer here as it was for the exec
 hand-off — a staging buffer per CPU is a real memory cost, and the argv/stdio state is logically
@@ -810,7 +824,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **71 required, 4 exempted** — `fuzz` (a 30-second time-boxed search is
+  The intended set is **72 required, 4 exempted** — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
   (its workload trips **[G-9]**, found 2026-08-17). `smoke-fs-wal` was an
@@ -821,8 +835,9 @@ Ordered as in the audit's §7.5.
   merely narrowed — its workload still fails ~27% of boots after the exec component was fixed
   on 2026-08-17. (An earlier revision of this paragraph claimed no exemption stood for an open
   defect while listing `smoke-kstack-park` in the same sentence; the count and the claim had
-  drifted apart, which is the failure this section is supposed to catch.) The count rose to 71
-  on 2026-08-17 with `smoke-exec-reenter`, the gate for that fix and its control arm. The
+  drifted apart, which is the failure this section is supposed to catch.) The count rose to 71 and
+  then 72 on 2026-08-17 with `smoke-exec-reenter` and `smoke-cr3-reclaim`, the gates for
+  [G-9]'s exec component and [G-10]'s page-table use-after-free, each with a control arm. The
   promotions are
   backed by measurement: across 18 CI runs sampled on 2026-08-16, 64 of 66 jobs had zero
   failures in 1152 job-executions. `smoke-fs-wal` is *demoted* — a flaky required check trains

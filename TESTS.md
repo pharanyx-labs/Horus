@@ -546,9 +546,52 @@ The authority half matters more than the correctness half: `g_spawn_caller` is w
 from **the wrong parent's cspace**. That is capability inheritance from a task that never spawned
 it, which is why this is filed rather than left as a TODO.
 
-**No test yet, deliberately.** Writing one means first choosing the fix — serialising the
-spawn/exec critical section, most likely — and that is a design change owing its own commit and
-its own control arm. Recorded here so the gap is visible rather than implied.
+#### The page-table half, fixed and falsified the same day
+
+The "no test yet" note above lasted about an hour. The probe that settled it was cheap and did
+not presuppose a path: record the CR3 each CPU has loaded (`percpu_cr3[]`, written by
+`switch_cr3`) and ask, at the moment of reclaim, whether anyone else still holds the tree being
+freed. **19 boots in 20.**
+
+```
+CR3UAF: freeing the address space of slot 1 while cpu 3 still has it loaded
+        (cr3=0x2c1f000, that cpu is running task 0 '')
+```
+
+`create_user_pagedir()` reclaims a slot's previous occupant, and justified the free with
+
+> *"the caller is on the kernel CR3, so the tree about to be freed is not the one any CPU is
+> walking"*
+
+— which establishes only that *this* core has left it. A CPU parked in `kernel_idle()` never
+reloads CR3, and `SYS_KILL` marks a task dead while it is still running in ring 3 on another
+core, while the slot allocator asks only for `state == 0`. So the frames went back to the pool
+and were handed out as ordinary pages under a live core: a cross-address-space read/write
+primitive, surfacing as a supervisor write fault at `0xFEE000B0` (the LAPIC EOI register, which
+lives in each task's own `pml4[0]` map).
+
+**Fix:** refuse to free a tree another CPU has loaded, and park it in a small fixed table
+(`pending_aspace[]`) for retry on the next rebuild rather than leaking it. Fail closed both
+ways — the overflow leaks rather than freeing in use.
+
+| Arm | Boots | `0xFEE000B0` fault | free-in-use |
+|---|---|---|---|
+| guarded, ship config | 30 | **0** | — |
+| ship config, before the fix | 30 | 6 | — |
+| `CR3_RECLAIM_UNGUARDED=1` | 20 | — | **20** |
+
+Gates: `make smoke-cr3-reclaim` (fault **absent**) and `make smoke-cr3-reclaim-control`
+(free-in-use **present**). Different markers on the two arms, deliberately: the free-in-use
+happens every boot while the fault it causes lands on ~20%, so gating the control on the fault
+would be flaky for nothing.
+
+**Effect on [G-9]:** the `PROC_SELFTEST` workload went from ~45% of boots failing to **2 in 30**
+on the ship config, and `make smoke-kstack-park` passes in its exact form. Still not zero, so
+that gate stays advisory.
+
+**What remains of [G-10]:** `loader_staging`, the staged argv, `g_spawn_stdio_spec` and
+`g_spawn_caller` are all still process-wide and unserialised, and the authority consequence — a
+child's stdio wired from the wrong parent's cspace — is untouched by this fix.
 
 ---
 
@@ -762,6 +805,8 @@ one. `sched_note_park()` records the choice and halts if two CPUs ever pick the 
 |---|---|---|
 | `smoke-kstack-park` | `PROC_SELFTEST=1`, `-smp 4` | self-test completes; ≥2 CPUs actually parked; **no** park stack used by more than one CPU; detector silent |
 | `smoke-kstack-park-control` | + `KSTACK0_SHARED_PARK=1` | at least one park stack used by more than one CPU |
+| `smoke-cr3-reclaim` | `PROC_SELFTEST=1`, `-smp 4`, N boots | no supervisor write fault at `0xFEE000B0` (0 in 30 measured) |
+| `smoke-cr3-reclaim-control` | + `CR3_RECLAIM_UNGUARDED=1` | the free-in-use report is **present** (20 in 20 measured) |
 | `smoke-exec-reenter` | `PROC_SELFTEST=1 SCHED_INVARIANTS=1`, `-smp 4`, N boots | the wrong-CPU exec re-entry report is **absent** (0 in 30 measured) |
 | `smoke-exec-reenter-control` | + `EXEC_REENTER_GLOBAL=1` | it is **present** in at least one boot (5 in 20 measured) |
 
@@ -1911,6 +1956,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-kstack-race` | **S20** — a task's kernel stack is executed by at most one CPU at a time. `KSTACK_RACE_WIDEN=1` stretches the window between handing a task to another CPU and the ISR epilogue leaving that task's stack, so it is entered on essentially every switch instead of at **[G-8]**'s 2–3% per boot. With the deferred release the claim is held across the window, so nothing can take the stack: the session must complete and `PANIC: two CPUs on one kernel stack` must be **absent**. |
 | `smoke-kstack-park` | **ADVISORY, not gating — see finding G-9 below.** **S20**, park path — a CPU whose last runnable task dies parks on its **own** ring-0 stack. Boots the task-killing `PROC_SELFTEST` at `-smp 4` (a healthy session never enters the path: 0 parks in 3 boots) and asserts four things, because three of them pass vacuously alone: the self-test completes, at least two CPUs actually parked, no park stack was used by more than one CPU, and `sched_note_park()`'s report is absent. |
 | `smoke-kstack-park-control` | Control arm. Same workload with `KSTACK0_SHARED_PARK=1` restoring `tasks[0].kernel_stack_top` as the shared park target; at least one park stack must come back used by more than one CPU. Gates on the trace rather than on the collision PANIC deliberately — the PANIC needs two CPUs parked at the same instant, which reproduced only 2 boots in 3. |
+| `smoke-cr3-reclaim` | **[G-10]**, page-table half. A task slot's page tables must not be recycled while any CPU still has them loaded in CR3. Boots the `PROC_SELFTEST` workload at `-smp 4` `CR3_RECLAIM_RUNS` times (default 20) and requires no supervisor write fault at `0xFEE000B0` — the LAPIC EOI register, which lives in each task's own `pml4[0]` identity map and is therefore the first thing to disappear when a leaf PTE is recycled. Measured 0 in 30, against 6 in 30 before the fix. Asserts on the marker, not on the boot's exit status: the rest of **[G-9]** still fails ~7% of these boots and this gate is not about that. |
+| `smoke-cr3-reclaim-control` | Control arm. `CR3_RECLAIM_UNGUARDED=1` restores the unconditional free; the free-in-use report must come back. Only 3 boots are needed because it is deterministic — measured 20 in 20 — which is also why the pair asserts different markers: the free-in-use happens every boot while the fault it causes lands on ~20%, so gating this arm on the fault would be flaky for no gain. |
 | `smoke-exec-reenter` | **[G-9]**, exec component. The exec re-entry hand-off must be consumed by the CPU that armed it. Boots the `PROC_SELFTEST` workload at `-smp 4` `EXEC_REENTER_RUNS` times (default 20) and requires the `SCHED_INVARIANTS` wrong-CPU report to be **absent** from every boot; measured 0 in 30. Asserts on the marker, never on the boot's exit status — the workload still fails ~27% of the time on **[G-10]**, and gating on completion would make this a G-10 detector rather than a witness for this property. |
 | `smoke-exec-reenter-control` | Control arm. `EXEC_REENTER_GLOBAL=1` restores the single shared `g_exec_reenter_task`; the wrong-CPU report must come back in at least one boot. Needs many boots because the theft is a race — measured 5 in 20 (~25%/boot), so a single-boot arm would report a false green three times in four. This arm carries reachability for the pair: if the theft stops reproducing with the global restored, `smoke-exec-reenter`'s green proves nothing either. |
 | `smoke-kstack-race-control` | Control arm, and the load-bearing one. Same widened window, `KSTACK_RELEASE_EARLY=1` restoring the pre-fix release site. The marker must be **present** *and* the session must not report PASS — a build that reproduced the race and still reported success would mean the harness had stopped reading the wire. Without this arm, `smoke-kstack-race` proves only that a kernel with a spin in it still boots. |

@@ -893,7 +893,16 @@ core that ran the exec was still on it. The storage is per-CPU now, with a stand
 in 20. Two residues remain and are not the exec race: a claim leaked in the boot/spawn phase, and
 a CPL-0 write-fault at `lapic_eoi`. See `LIMITATIONS.md` §5.2d.
 
-**G-10 — the spawn/exec path is process-wide singleton state.** *Open, found 2026-08-17.* One
+**G-10 — the spawn/exec path is process-wide singleton state.** *Open, page-table half fixed
+2026-08-17.* The half that is closed was a **use-after-free of page tables reachable from
+ring 3**: `create_user_pagedir()` reclaimed a slot's previous address space on the argument that
+"the caller is on the kernel CR3, so the tree is not the one any CPU is walking" — true of the
+caller, false of a CPU parked in `kernel_idle()` (which never reloads CR3) and false of a task
+`SYS_KILL` marked dead while it was still running in ring 3 elsewhere. The freed frames were
+handed back out as ordinary pages under a live core. `switch_cr3()` now publishes each CPU's
+loaded CR3 and the reclaim refuses to free a tree anyone else holds, parking it for retry.
+Falsified with `CR3_RECLAIM_UNGUARDED=1` at 20 free-in-use boots in 20. The rest of the finding
+stands: one
 ELF staging buffer (`loader_staging`), one staged argv (`g_args_*`), one `g_spawn_stdio_spec`,
 one `g_spawn_caller` — and no lock in `loader.c`, none around `do_spawn`. This is a design-level
 gap rather than a bug to patch in place: the path was written for a kernel that spawned from one

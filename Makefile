@@ -556,6 +556,18 @@ EXEC_REENTER_GLOBAL ?= 0
 ifeq ($(EXEC_REENTER_GLOBAL),1)
 CFLAGS += -DEXEC_REENTER_GLOBAL
 endif
+# CR3_RECLAIM_UNGUARDED=1 restores the pre-2026-08-17 slot reclaim in
+# create_user_pagedir: free the previous occupant's page tables unconditionally,
+# on the uniprocessor argument that "the caller is on the kernel CR3, so the tree
+# is not the one any CPU is walking". Another CPU routinely IS -- one parked in
+# kernel_idle never reloads CR3, and SYS_KILL marks a task dead while it still
+# runs in ring 3 on another core. That is finding [G-10]: the freed frames return
+# to the pool and are handed out as ordinary pages while another core is still
+# translating through them. `make smoke-cr3-reclaim-control` builds it.
+CR3_RECLAIM_UNGUARDED ?= 0
+ifeq ($(CR3_RECLAIM_UNGUARDED),1)
+CFLAGS += -DCR3_RECLAIM_UNGUARDED
+endif
 # KSTACK0_SHARED_PARK=1 restores the pre-2026-08-17 park target: all three
 # fault/exit fallbacks in idt.c resume the CPU on tasks[0].kernel_stack_top, ONE
 # stack shared by every CPU that takes the path. Two CPUs parked there both run
@@ -2574,6 +2586,78 @@ smoke-exec-reenter:
 	fi; \
 	rm -f "$$log"; \
 	echo "EXEC REENTER: PASS - no CPU took another CPU's exec re-entry in $(EXEC_REENTER_RUNS) boots at -smp 4"
+
+# ---- [G-10]: a slot's page tables are not recycled while a CPU is on them
+#
+# create_user_pagedir() used to free the previous occupant's address space
+# unconditionally, justified by "the caller is on the kernel CR3, so the tree is
+# not the one any CPU is walking" -- a uniprocessor argument. A CPU parked in
+# kernel_idle never reloads CR3, and SYS_KILL marks a task dead while it is still
+# running in ring 3 elsewhere, so the freed frames went back to the pool and were
+# handed out as ordinary pages while another core still translated through them.
+#
+# The visible symptom is a supervisor WRITE fault at 0xFEE000B0 -- the LAPIC EOI
+# register, which lives in each task's own pml4[0] identity map and disappears
+# when its leaf PTE is recycled. Measured 2026-08-17: 6 boots in 30 before,
+# 0 in 30 after.
+#
+# The two arms assert different markers, deliberately. The fixed arm asserts the
+# BEHAVIOUR (no such fault), because that is the property. The control arm
+# asserts the CR3UAF report, because the free-in-use happens on every boot while
+# the fault it causes only lands ~20% of the time -- gating the control on the
+# fault would make it flaky for no gain.
+CR3_RECLAIM_RUNS ?= 20
+CR3_RECLAIM_TIMEOUT ?= 180
+CR3_RECLAIM_RE = PAGE FAULT at 0xfee000b0
+
+.PHONY: smoke-cr3-reclaim
+smoke-cr3-reclaim:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 $(CR3_RECLAIM_RUNS)); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc captured, not asserted on: the rest of [G-9] still fails ~7% of these"; \
+	: "boots and this gate is not about that. rc=$$rc"; \
+	hits=$$(grep -ca '$(CR3_RECLAIM_RE)' "$$log"); \
+	if [ "$$hits" -ne 0 ]; then \
+	    echo "CR3 RECLAIM: FAIL - the LAPIC page vanished from a live address space ($$hits/$(CR3_RECLAIM_RUNS) boots)"; \
+	    grep -a -A 4 '$(CR3_RECLAIM_RE)' "$$log" | head -8 | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	rm -f "$$log"; \
+	echo "CR3 RECLAIM: PASS - no recycled page table faulted in $(CR3_RECLAIM_RUNS) boots at -smp 4"
+
+.PHONY: smoke-cr3-reclaim-control
+smoke-cr3-reclaim-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 3); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc captured, not asserted on: this arm halts on purpose. rc=$$rc"; \
+	hits=$$(grep -ca 'CR3UAF' "$$log"); \
+	if [ "$$hits" -eq 0 ]; then \
+	    echo "CR3 RECLAIM CONTROL: FAIL - the unguarded reclaim did NOT free a tree in use."; \
+	    echo "  This arm carries reachability for the pair: if the free-in-use stops"; \
+	    echo "  happening with the guard removed, smoke-cr3-reclaim proves nothing."; \
+	    echo "  Measured 2026-08-17: 20 boots in 20."; \
+	    rm -f "$$log"; exit 1; \
+	fi; \
+	grep -a 'CR3UAF' "$$log" | head -2 | sed 's/^/  /'; \
+	rm -f "$$log"; \
+	echo "CR3 RECLAIM CONTROL: PASS - the unguarded reclaim frees an address space in use ($$hits/3 boots)"
 
 .PHONY: smoke-exec-reenter-control
 smoke-exec-reenter-control:

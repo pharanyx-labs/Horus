@@ -85,6 +85,7 @@ required:
   - smoke-fs-wal-order
   - smoke-heap64
   - smoke-init-fs
+  - smoke-cr3-reclaim
   - smoke-exec-reenter
   - smoke-ioport
   - smoke-irq
@@ -154,6 +155,15 @@ advisory:
     lapic_eoi / interrupt_handler64, which is [G-10] rather than the scheduler.
     A gate that reddens on a quarter of boots for a defect it does not test is
     exactly what this exemption exists to avoid, so it stays.
+    NARROWED AGAIN 2026-08-17 and STILL ADVISORY. [G-10]'s page-table
+    use-after-free is fixed too -- create_user_pagedir was recycling a slot's
+    page tables while another CPU still had them in CR3 -- and that took the
+    workload to 2 failures in 30 on the ship config this gate builds (~7%, from
+    ~45%). `make smoke-kstack-park` now passes in its exact form. It is still not
+    zero: the remainder is a bogus resume %rsp of -7 that the floor guard in
+    interrupt_handler64 misses because it tests only a lower bound. Promote this
+    when that is closed and the rate is 0 over 30, not before -- 7% is one
+    reddened pull request in fourteen, which is exactly the re-run reflex.
 
   ruleset-audit: >-
     Schedule-only (daily cron plus workflow_dispatch), so it never runs on a

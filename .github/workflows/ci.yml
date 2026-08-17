@@ -957,6 +957,34 @@ jobs:
       - name: Restore the pre-fix release site and require the race to REPRODUCE
         run: make smoke-kstack-race-control
 
+  smoke-cr3-reclaim:
+    name: A slot's page tables are not recycled while a CPU is still on them (G-10; and the control arm proves it)
+    runs-on: ubuntu-latest
+    # Two clean builds plus CR3_RECLAIM_RUNS boots and 3 control boots. The
+    # control arm halts as soon as it reproduces, which is every boot.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # create_user_pagedir freed the previous occupant's address space on a
+      # uniprocessor argument. A CPU parked in kernel_idle never reloads CR3, and
+      # SYS_KILL marks a task dead while it still runs in ring 3 elsewhere, so the
+      # frames were recycled under a live core. Finding G-10.
+      - name: Require no recycled page table to fault
+        run: make smoke-cr3-reclaim
+      # The load-bearing arm. Without it the step above is consistent with "this
+      # runner never reused a slot".
+      - name: Remove the guard and require the free-in-use to REPRODUCE
+        run: make smoke-cr3-reclaim-control
+
   smoke-exec-reenter:
     name: An exec re-entry is consumed by the CPU that armed it (G-9 exec component; and the control arm proves it)
     runs-on: ubuntu-latest

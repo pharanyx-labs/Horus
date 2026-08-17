@@ -8,6 +8,45 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — a slot's page tables were recycled while another CPU was still on them (**[G-10]**)
+
+`create_user_pagedir()` reclaims the previous occupant of a task slot before rebuilding it, and
+freed it on this reasoning:
+
+> *"Safe here and nowhere earlier: the caller is on the kernel CR3, so the tree about to be
+> freed is not the one any CPU is walking."*
+
+That establishes only that **this** core has left the tree. Two others routinely have not: a CPU
+whose last task died parks in `kernel_idle()` without ever reloading CR3, and `SYS_KILL` marks a
+task dead while it is still executing in ring 3 on another core — while the slot allocator asks
+only for `state == 0`. So a spawn could recycle the page tables of a **running** task, return
+the frames to the free list, and hand them out as ordinary pages to somebody else while the
+other core was still translating through them. **A cross-address-space read/write primitive
+reachable from ring 3**, not merely a crash; see `SECURITY.md` under adversary A1.
+
+It surfaced as a supervisor *write* fault at `0xFEE000B0` — the LAPIC EOI register, which lives
+in each task's own `pml4[0]` identity map and disappeared when its leaf PTE was recycled.
+
+`switch_cr3()` now publishes what each CPU has loaded (`percpu_cr3[]`), the reclaim refuses to
+free a tree any other CPU holds, and rather than leaking it the tree is parked in a small fixed
+table and retried on the next rebuild. Fail closed both ways: the overflow leaks rather than
+freeing in use. The check cannot go stale unsafely, because no CPU can newly adopt the doomed
+tree — the slot naming it has already been rebuilt, so holders can only leave.
+
+Falsified with `CR3_RECLAIM_UNGUARDED=1`: **free-in-use on 20 boots of 20** with the guard
+removed, and the `0xFEE000B0` fault **0 in 30 against 6 in 30** before. New gates
+`smoke-cr3-reclaim` and `smoke-cr3-reclaim-control`.
+
+**Effect on [G-9]:** the `PROC_SELFTEST` workload at `-smp 4` goes from ~45% of boots failing to
+**2 in 30**, and `make smoke-kstack-park` passes in its exact form. Required contexts 71 → 72.
+
+**Both findings stay open.** [G-10] keeps `loader_staging`, the staged argv,
+`g_spawn_stdio_spec` and `g_spawn_caller` — all still process-wide and unserialised, and the
+authority half (a child's stdio wired from the wrong parent's cspace) is untouched. [G-9] keeps
+its last ~7%: a bogus resume `%rsp` of `-7`, which the floor guard in `interrupt_handler64`
+misses because `if (rsp < 0xFFFF800000000000ULL)` tests only a lower bound — `-7` is
+`0xFFFFFFFFFFFFFFF9` and sails over it. `smoke-kstack-park` therefore stays advisory.
+
 ### Fixed — an exec re-entry could be taken by the wrong CPU (**[G-9]**, exec component)
 
 `g_exec_reenter_task` was a single global naming the task whose `SYS_EXEC_NAMED` re-entry was

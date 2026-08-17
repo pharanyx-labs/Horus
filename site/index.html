@@ -1524,6 +1524,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><th scope="row">Permanent IPC refusal retried forever</th><td class="t-num t-num--was">3 and 5 hangs / 30</td><td class="t-num t-num--now">0 / 40</td><td class="t-note">starved single-core boots</td></tr>
               <tr><th scope="row">Two CPUs on one kernel stack (<strong>G-8</strong>)</th><td class="t-num t-num--was">31 failures / 800</td><td class="t-num t-num--now">0 / 800</td><td class="t-note">adjacent-boot alternating, <code>-smp 4</code> · Fisher p = 6.9 × 10⁻¹⁰</td></tr>
               <tr><th scope="row">Exec re-entry taken by the wrong CPU (<strong>G-9</strong>, exec component)</th><td class="t-num t-num--was">5 thefts / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · Fisher p ≈ 0.008 · the finding stays open</td></tr>
+              <tr><th scope="row">Page tables recycled under a live CPU (<strong>G-10</strong>)</th><td class="t-num t-num--was">6 faults / 30</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · unguarded arm frees in use on 20 / 20</td></tr>
               <tr><th scope="row">Endpoint queue depth 1 → 4, four concurrent clients</th><td class="t-num t-num--was">7042 ms mean</td><td class="t-num t-num--now">5162 ms mean</td><td class="t-note">12 boots each · <code>EP_QUEUE_SLOTS=1</code> rebuilds the old design</td></tr>
             </tbody>
           </table>
@@ -1739,9 +1740,41 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               impossible.
             </p>
             <p>
-              It is filed with a mechanism and no witness. There is no control arm for it yet, so
-              it is published as a lead rather than a diagnosis — and the fix, serialising the
-              spawn path, is a design change that owes its own evidence.
+              <strong>The sharpest of those singletons is now fixed, and it was a memory-safety
+              hole rather than a tidiness problem.</strong> When a task slot was reused, the
+              kernel reclaimed the previous occupant's page tables — justified by a comment
+              reasoning that the caller was on the kernel's own address space, so nobody could
+              be walking the tree. That is true of the core doing the reclaim and false of the
+              others: a CPU parked in the idle loop never reloads its address-space register, and
+              a task killed from another core keeps running in ring 3 until its next timer tick,
+              while the slot allocator asks only whether the task is marked dead. So a spawn
+              could recycle the page tables of a task that was <em>still running on them</em>.
+            </p>
+            <p>
+              The freed frames went straight back to the pool and were handed out as ordinary
+              pages to other tasks, while the first core carried on reading and writing through
+              tables that had come to describe somebody else's memory. That is a
+              cross-address-space read/write primitive reachable from an unprivileged program —
+              no capability required, only the ability to get itself killed at the right moment.
+              It surfaced as a supervisor write fault on the interrupt-acknowledge register,
+              which lives in each task's own low mapping and vanished when its entry was
+              recycled.
+            </p>
+            <p>
+              Each core now publishes which address space it has loaded, and the reclaim refuses
+              to free one that anybody else still holds, parking it for a later attempt instead
+              of leaking it. Removing the guard on demand reproduces the free-in-use on
+              <strong>20 boots out of 20</strong>; with it, the fault goes from
+              <strong>6 boots in 30 to 0 in 30</strong>. Together with the exec fix above, the
+              self-test workload that started this went from failing roughly 45% of boots to
+              2 in 30.
+            </p>
+            <p>
+              <strong>The rest of the finding stands.</strong> The staging buffer, the argument
+              vector and the standard-I/O wiring are still shared, and the authority consequence
+              — a child inheriting standard I/O from the wrong parent's capability space — is
+              untouched by this fix. So is the underlying oddity that a task can be marked dead
+              and still be executing: the guard makes that memory-safe without making it sensible.
             </p>
           </li>
           <li>

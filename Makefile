@@ -544,6 +544,24 @@ KSTACK_RACE_WIDEN_CPUMASK ?= 0x5
 ifeq ($(KSTACK_RELEASE_EARLY),1)
 CFLAGS += -DKSTACK_RELEASE_EARLY
 endif
+# KSTACK0_SHARED_PARK=1 restores the pre-2026-08-17 park target: all three
+# fault/exit fallbacks in idt.c resume the CPU on tasks[0].kernel_stack_top, ONE
+# stack shared by every CPU that takes the path. Two CPUs parked there both run
+# `sti; hlt` on it and both push a trap frame at the same address on the next
+# tick -- S20, in the one place g_kstack_inflight cannot see it (that mask is
+# keyed on task ids and task 0 is legitimately current on several CPUs at once).
+# The defect, on demand.
+KSTACK0_SHARED_PARK ?= 0
+ifeq ($(KSTACK0_SHARED_PARK),1)
+CFLAGS += -DKSTACK0_SHARED_PARK
+endif
+# KSTACK0_PARK_TRACE=1 prints a line every time a CPU parks in the ring-0
+# idle/reaper loop after the last runnable task died. Test-only, and the way the
+# reachability of that path was measured rather than assumed.
+KSTACK0_PARK_TRACE ?= 0
+ifeq ($(KSTACK0_PARK_TRACE),1)
+CFLAGS += -DKSTACK0_PARK_TRACE
+endif
 ifeq ($(KSTACK_RACE_WIDEN),1)
 CFLAGS += -DKSTACK_RACE_WIDEN -DKSTACK_RACE_WIDEN_SPINS=$(KSTACK_RACE_WIDEN_SPINS) \
           -DKSTACK_RACE_WIDEN_CPUMASK=$(KSTACK_RACE_WIDEN_CPUMASK)
@@ -2358,6 +2376,111 @@ smoke-kstack-race-control:
 	grep -a -A 6 '$(KSTACK_RACE_RE)' "$$log" | head -8 | sed 's/^/  /'; \
 	rm -f "$$log"; \
 	echo "KSTACK RACE CONTROL: PASS - the pre-fix release site shares a kernel stack, as it must"
+
+# Where a CPU parks when the last task it was running dies -- S20's second path.
+#
+# The three fault/exit fallbacks in idt.c resume the CPU at kernel_idle() when
+# task_exit_switch() finds nothing else runnable. All three used
+# tasks[0].kernel_stack_top: ONE stack, shared by every CPU that takes the path.
+# Two CPUs parked there both `sti; hlt` on it and both push a trap frame at the
+# same address on the next tick.
+#
+# g_kstack_inflight cannot see this -- it is keyed on task ids and skips task 0,
+# which is legitimately the current task on several CPUs at once as the idle
+# sentinel -- which is why this half of [G-8] survived the 2026-08-17 fix and was
+# recorded as an unwitnessed lead rather than patched. It has a witness now.
+#
+# Measured with KSTACK0_PARK_TRACE=1 on the PROC_SELFTEST workload at -smp 4,
+# which kills tasks on purpose: the path is entered 5-8 times per boot and two
+# CPUs were parked on that one stack 2-3 times per boot, 3 boots out of 3.
+#
+# Both arms boot the same task-killing workload. The fixed arm asserts FOUR
+# things, because three of them can pass vacuously on their own: the self-test
+# completes, the park path was actually entered, every CPU parked on a DIFFERENT
+# stack, and the collision report is absent. Without the "was it entered" check a
+# kernel that simply never parks would score a green gate.
+KSTACK_PARK_RE = PANIC: two CPUs parking on one kernel stack
+# The task-killing self-test under -smp 4 needs well past the 40s default: it
+# reaches `altstack OK` and then times out mid-suspend. Measured, not guessed --
+# three gate runs failed on exactly that before the budget was raised.
+KSTACK_PARK_TIMEOUT ?= 180
+
+# Both arms assert the SAME property, read off KSTACK0_PARK_TRACE: whether any one
+# park stack was used by more than one CPU. That is deterministic. The detector's
+# PANIC is not -- it fires only when two CPUs are parked at the SAME INSTANT, and
+# a first draft of the control arm that gated on it reproduced 2 boots in 3.
+# Whether the park target is per-CPU or shared is a property of the code; whether
+# two CPUs happen to be parked simultaneously is a property of the schedule, and
+# only the first is what this gate is about. The PANIC is still required to be
+# absent on the fixed arm, where it is a free corroboration.
+.PHONY: smoke-kstack-park
+smoke-kstack-park:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
+	    REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+	    tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	if [ $$rc -ne 0 ]; then \
+	    echo "KSTACK PARK: FAIL - the task-killing self-test did not complete (exit $$rc)"; \
+	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	cpus=$$(grep -ha PARKTRACE "$$log" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
+	if [ "$$cpus" -lt 2 ]; then \
+	    echo "KSTACK PARK: FAIL - only $$cpus CPU(s) ever parked; this gate proves nothing"; \
+	    echo "  'no park stack was shared' is vacuously true when one CPU parks."; \
+	    rm -f "$$log"; exit 1; \
+	fi; \
+	dup=$$(grep -ha PARKTRACE "$$log" \
+	       | sed -n 's/.*cpu=\([0-9]*\) rsp=\([^ ]*\).*/\2 \1/p' \
+	       | sort -u | awk '{c[$$1]++} END {for (r in c) if (c[r] > 1) print r}'); \
+	if [ -n "$$dup" ]; then \
+	    echo "KSTACK PARK: FAIL - a park stack was used by more than one CPU: $$dup"; \
+	    grep -ha PARKTRACE "$$log" | sed 's/^/  /' | head -20; rm -f "$$log"; exit 1; \
+	fi; \
+	if grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
+	    echo "KSTACK PARK: FAIL - the collision detector fired"; \
+	    grep -a -A 4 '$(KSTACK_PARK_RE)' "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	rm -f "$$log"; \
+	echo "KSTACK PARK: PASS - $$cpus CPUs parked, each on its own stack, detector silent"
+
+# The defect, on demand: the same task-killing workload with the shared park
+# restored. At least one park stack must come back used by more than one CPU.
+# Without this arm the target above is consistent with "the park path is
+# unreachable" -- which is what it looks like on a HEALTHY session, where the
+# measured park count is 0 in 3 boots. The workload is chosen to kill tasks for
+# exactly that reason.
+.PHONY: smoke-kstack-park-control
+smoke-kstack-park-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
+	    REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+	    tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	: "captured, and deliberately NOT the assertion: this arm halts a CPU on"; \
+	: "purpose, so whether the self-test still finishes is a property of the"; \
+	: "schedule. The assertion is the shared park stack below. rc=$$rc"; \
+	cpus=$$(grep -ha PARKTRACE "$$log" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
+	dup=$$(grep -ha PARKTRACE "$$log" \
+	       | sed -n 's/.*cpu=\([0-9]*\) rsp=\([^ ]*\).*/\2 \1/p' \
+	       | sort -u | awk '{c[$$1]++} END {for (r in c) if (c[r] > 1) print r}'); \
+	if [ -z "$$dup" ]; then \
+	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce."; \
+	    echo "  This arm is what makes smoke-kstack-park a measurement. If it stops"; \
+	    echo "  reproducing, the workload has stopped killing tasks on more than one"; \
+	    echo "  CPU. CPUs seen parking: $$cpus."; \
+	    grep -ha PARKTRACE "$$log" | sed 's/^/  /' | head -20; rm -f "$$log"; exit 1; \
+	fi; \
+	echo "  park stack $$dup used by more than one CPU"; \
+	if grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
+	    grep -a -A 3 '$(KSTACK_PARK_RE)' "$$log" | head -4 | sed 's/^/  /'; \
+	fi; \
+	rm -f "$$log"; \
+	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must"
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.

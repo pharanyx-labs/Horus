@@ -566,17 +566,67 @@ first run shared the machine with a stray QEMU. That is the expected direction: 
 what opens the window, and it is why this finding was first seen on a CI runner and pinned
 cores rather than on an idle workstation.
 
-#### One thing this does not close
+#### The second path: where a CPU parks when the last task dies — closed the same day
 
-The `#PF`/exit fallback in `idt.c` resumes a CPU with `frame->rsp = tasks[0].kernel_stack_top`
-when nothing else is runnable, and every CPU that takes that fallback lands on that one stack.
-That is a second instance of the same family, and the detector does **not** cover it: it is
-keyed on task ids and excludes task 0, which is legitimately "current" on several CPUs at once
-as the idle sentinel. One pre-fix soak capture is suggestive — all four CPUs idle on task 0,
-reporting `PANIC: dispatcher returned a bogus resume rsp=0xfee000b0`, which is the LAPIC EOI
-register address and therefore a word out of another CPU's `lapic_eoi` frame — but suggestive
-is not a witness. **No fix is claimed for it**, and it is written down rather than patched on
-the strength of one reading, which is the discipline the rest of this section exists to teach.
+The paragraph that stood here recorded the `#PF`/exit fallback as an unwitnessed lead: all
+three fallbacks in `idt.c` resumed a CPU with `frame->rsp = tasks[0].kernel_stack_top`, one
+stack shared by every CPU taking the path, with one suggestive capture and no witness. It has a
+witness now, and the lead was right.
+
+**Why it looked latent, and what it actually is.** Measured with `KSTACK0_PARK_TRACE=1`, which
+prints a line per park:
+
+| Workload, `-smp 4` | Parks per boot | Two CPUs on one park stack |
+|---|---|---|
+| healthy scripted session | **0** (3 boots) | — |
+| `PROC_SELFTEST` (kills tasks on purpose) | **5–8** | **2–3 per boot, 3 boots of 3** |
+
+Every park used the same `rsp=0xffffffff80202ff0`. The collision report is exact:
+
+```
+PANIC: two CPUs parking on one kernel stack rsp=0xffffffff80202ff0 this-cpu=1 already-cpu=2 task=1 'exectest'
+  claim: task 1 running_cpu=-1  percpu_current=[0,1,0,3]  imp=[0,0,0,0]
+```
+
+Two CPUs parked there both run `sti; hlt` on it and both push a trap frame at the same address
+on the next tick — which is the `task=0`, `percpu_current=[0,0,0,0]`,
+`bogus resume rsp=0xfee000b0` capture explained: the LAPIC EOI register address is a word out
+of the other CPU's `lapic_eoi` frame.
+
+**The distinction that mattered was "unreachable" versus "unexercised".** Three healthy sessions
+said 0 parks, and that is the reading the earlier note nearly settled for. Choosing a workload
+that kills tasks turned the same code into 5–8 parks a boot. A path that a test never enters is
+not a path that cannot be entered.
+
+**The fix.** Each CPU parks on its own ring-0 stack — the one `enter_cpu_idle()` already uses —
+so the fault path joins the kernel's single park mechanism instead of keeping a worse second
+one. `sched_note_park()` records the choice and halts if two CPUs ever pick the same stack.
+
+**The gates, and the two corrections they needed.**
+
+| Target | Build | Required |
+|---|---|---|
+| `smoke-kstack-park` | `PROC_SELFTEST=1`, `-smp 4` | self-test completes; ≥2 CPUs actually parked; **no** park stack used by more than one CPU; detector silent |
+| `smoke-kstack-park-control` | + `KSTACK0_SHARED_PARK=1` | at least one park stack used by more than one CPU |
+
+- **Both arms assert the same deterministic property**, read off the trace: was any one park
+  stack used by more than one CPU. A first draft gated the control arm on the collision *PANIC*,
+  which requires two CPUs parked at the **same instant** — a property of the schedule, not of
+  the code — and it reproduced 2 boots in 3. Whether the park target is shared is what the
+  change controls; whether two CPUs are simultaneously parked is not.
+- **The fixed arm asserts that the path was entered at all.** Without the "≥2 CPUs parked"
+  check, "no park stack was shared" is vacuously true on a kernel that never parks — which is
+  exactly what a healthy session produces, and would have been a green gate over dead code.
+
+Both arms: **3 of 3**.
+
+**It also exposed a second gap, and S9 was overclaimed because of it.** The per-CPU idle stacks
+had **no guard page**, so `SECURITY.md` S9 ("an unmapped guard page below every kernel stack")
+was false — independently of this finding, since `enter_cpu_idle()` has always parked CPUs
+there. The guard is now the first page of each slot, which leaves the stack *top* exactly where
+`ap_trampoline.S` computes it and so needs no change to the trampoline or its duplicated stride
+constant. Falsified by disabling the arming:
+`WX_SELFTEST: FAIL armed 0 AP idle-stack guards, expected 4`, exit 2.
 
 ---
 
@@ -1703,6 +1753,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-resume-guard-legacy` | Control arm for the fix: same injection and claim, with the guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket restored (`RESUME_GUARD_LEGACY_FATAL=1`). The report must **not** reach serial — the boot goes silent at the login prompt, which is the defect on demand. |
 | `smoke-resume-guard-nofloor` | Control arm for the guard: same injection, guard compiled out (`RESUME_GUARD_DISABLE=1`). The PANIC line must **not** appear; the kernel instead faults at `0x94` on `out->cs`, which is G-8's original datapoint reproduced deliberately. |
 | `smoke-kstack-race` | **S20** — a task's kernel stack is executed by at most one CPU at a time. `KSTACK_RACE_WIDEN=1` stretches the window between handing a task to another CPU and the ISR epilogue leaving that task's stack, so it is entered on essentially every switch instead of at **[G-8]**'s 2–3% per boot. With the deferred release the claim is held across the window, so nothing can take the stack: the session must complete and `PANIC: two CPUs on one kernel stack` must be **absent**. |
+| `smoke-kstack-park` | **S20**, park path — a CPU whose last runnable task dies parks on its **own** ring-0 stack. Boots the task-killing `PROC_SELFTEST` at `-smp 4` (a healthy session never enters the path: 0 parks in 3 boots) and asserts four things, because three of them pass vacuously alone: the self-test completes, at least two CPUs actually parked, no park stack was used by more than one CPU, and `sched_note_park()`'s report is absent. |
+| `smoke-kstack-park-control` | Control arm. Same workload with `KSTACK0_SHARED_PARK=1` restoring `tasks[0].kernel_stack_top` as the shared park target; at least one park stack must come back used by more than one CPU. Gates on the trace rather than on the collision PANIC deliberately — the PANIC needs two CPUs parked at the same instant, which reproduced only 2 boots in 3. |
 | `smoke-kstack-race-control` | Control arm, and the load-bearing one. Same widened window, `KSTACK_RELEASE_EARLY=1` restoring the pre-fix release site. The marker must be **present** *and* the session must not report PASS — a build that reproduced the race and still reported success would mean the harness had stopped reading the wire. Without this arm, `smoke-kstack-race` proves only that a kernel with a spin in it still boots. |
 
 This pair is the inverse of every other target here: it wants a kernel fault and fails if the
@@ -1780,7 +1832,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **70 required contexts and 2 reasoned exemptions** — `fuzz` (a fixed
+The intended set is **71 required contexts and 2 reasoned exemptions** — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence) and `kani` (manual-only, so there is no
 conclusion to gate on). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
 promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]** was closed on

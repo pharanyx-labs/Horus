@@ -492,6 +492,13 @@ void paging_init(void) {
     kstack_guards_init();
     kern_fixed_stack_guards_init();
 #ifdef SMP
+    {   /* Per-CPU ring-0 idle/park stacks (smp.c). Same one-pass arming, same
+         * before-smp_bringup ordering as the IST guards below. */
+        extern void ap_idle_guards_init(void);
+        ap_idle_guards_init();
+    }
+#endif
+#ifdef SMP
     /* Same boot-time, pre-smp_bringup() arming for the per-CPU AP IST fault
      * stacks (defined in gdt.c). The APs inherit this CR3, so their guards are
      * absent from the first fault they take on an IST stack. */

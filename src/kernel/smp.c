@@ -100,7 +100,47 @@ static void smp_busy_delay(int iters) {
  * slots cover ids 0..MAX_CPUS-1; slot 0 (the BSP's) is unused on this path.
  * An AP whose id has no slot parks in the trampoline rather than running off
  * the end of this array. */
-static uint8_t ap_idle_stacks[MAX_CPUS][AP_IDLE_STACK_SIZE] __attribute__((aligned(16)));
+/* Per-CPU ring-0 idle stacks. Slot `c` is [guard page][stack], and the trampoline
+ * and ap_idle_stack_top() both compute the TOP as base + (c+1)*AP_IDLE_STACK_SIZE
+ * -- which is why the guard lives in the slot's FIRST page rather than being
+ * prepended to it. The top does not move, so ap_trampoline.S needs no change and
+ * its duplicated AP_IDLE_STACK_SIZE stays correct; what changes is that the
+ * bottom 4 KiB of each slot is unmapped and the usable stack is 12 KiB.
+ *
+ * These stacks had NO guard until 2026-08-17, which made SECURITY.md's S9 ("an
+ * unmapped guard page below every kernel stack") false: every CPU parked here by
+ * enter_cpu_idle() was running ring-0 code, and taking interrupts, on an
+ * unguarded stack whose neighbour is another CPU's idle stack. The array is
+ * page-aligned so every guard is a whole page kern_arm_guard_page() can clear,
+ * exactly as ap_ist[] in gdt.c and per_task_kstacks[] in paging.c already are. */
+static uint8_t ap_idle_stacks[MAX_CPUS][AP_IDLE_STACK_SIZE]
+    __attribute__((aligned(4096)));
+uint32_t ap_idle_guards_armed = 0;
+
+/* Guard page of CPU `cpu`'s idle stack: the low page of its slot. */
+static uint8_t *ap_idle_guard(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) cpu = 0;
+    return &ap_idle_stacks[0][0] + (uintptr_t)cpu * AP_IDLE_STACK_SIZE;
+}
+
+/* Unmap the guard page below every per-CPU idle stack. Called once at boot from
+ * paging_init(), before smp_bringup(), so the cleared entries are inherited into
+ * each AP's CR3 with no shootdown -- the same one-pass arming kstack_guards_init()
+ * and ap_ist_guards_init() do. Slot 0 is armed too: it is the BSP's, and the BSP
+ * parks here like every other CPU. */
+void ap_idle_guards_init(void) {
+    extern int kern_arm_guard_page(uint64_t vaddr);
+    for (int c = 0; c < MAX_CPUS; c++)
+        if (kern_arm_guard_page((uint64_t)(uintptr_t)ap_idle_guard(c)) == 0)
+            ap_idle_guards_armed++;
+}
+
+#ifdef WX_SELFTEST
+/* Gated: enumerate the idle-stack guards so smoke-wx can assert each is absent
+ * while the stack page just above it stays present. */
+uint32_t ap_idle_guard_count(void) { return (uint32_t)MAX_CPUS; }
+uint64_t ap_idle_guard_vaddr(int i) { return (uint64_t)(uintptr_t)ap_idle_guard(i); }
+#endif
 
 /* ap_trampoline.S bounds the LAPIC id against its own AP_MAX_CPUS: it is
  * assembled with -x assembler-with-cpp and cannot include a header full of C
@@ -174,6 +214,17 @@ uint8_t *ap_idle_stack_top(int cpu) {
     return &ap_idle_stacks[0][0] + (uintptr_t)(cpu + 1) * AP_IDLE_STACK_SIZE;
 }
 
+/* The ring-0 stack CPU `cpu` parks on when the last task it was running dies.
+ * Per-CPU, and that is the whole point: all three fault/exit fallbacks in idt.c
+ * used tasks[0].kernel_stack_top, one stack shared by every CPU taking the path.
+ * Measured on a task-killing workload at -smp 4, the path is entered 5-8 times a
+ * boot and two CPUs were parked on that one stack 2-3 times a boot. This is the
+ * same stack enter_cpu_idle() already parks on, so the fault path now joins the
+ * kernel's one park mechanism instead of hand-rolling a worse second one. */
+uint64_t ap_park_stack_top(int cpu) {
+    return (uint64_t)(uintptr_t)ap_idle_stack_top(cpu);
+}
+
 /* 64-bit C entry for every AP, reached from the trampoline on the AP's private
  * idle stack.  Adopt the shared kernel GDT/IDT, install a per-CPU TSS (own RSP0
  * + IST fault stacks), enable the local APIC + its periodic timer, check in, and
@@ -193,8 +244,7 @@ void ap_entry64(void) {
     /* TR is still 0 here -- this AP has no TSS yet -- so this_cpu() answers from
      * the LAPIC, which is exactly the bootstrap case its fallback exists for. */
     int cpu = this_cpu();
-    uintptr_t idle_top = (uintptr_t)&ap_idle_stacks[0][0]
-                       + (uintptr_t)(cpu + 1) * AP_IDLE_STACK_SIZE;
+    uintptr_t idle_top = (uintptr_t)ap_idle_stack_top(cpu);
     setup_ap_tss(cpu, idle_top);  /* per-CPU TSS + IST, ltr'd */
 
     /* TR now holds this AP's selector, so this_cpu() switches to the STR path.

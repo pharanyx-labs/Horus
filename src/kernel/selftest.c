@@ -382,6 +382,40 @@ void wx_selftest(void) {
             return;
         }
     }
+
+    /* --- Per-CPU ring-0 idle/park stacks (smp.c). These had NO guard until
+     * 2026-08-17, which made S9's "below every kernel stack" false: enter_cpu_idle()
+     * has always parked CPUs here, and since the [G-8] park fix the fault/exit
+     * fallbacks do too, so this is ring-0 execution on a stack whose neighbour is
+     * another CPU's. The guard is the slot's FIRST page, which leaves the stack top
+     * where ap_trampoline.S computes it. Slot 0 is the BSP's and is armed too. */
+    extern uint32_t ap_idle_guards_armed;
+    extern uint32_t ap_idle_guard_count(void);
+    extern uint64_t ap_idle_guard_vaddr(int i);
+    uint32_t idle_n = ap_idle_guard_count();
+    if (ap_idle_guards_armed != idle_n) {
+        print("WX_SELFTEST: FAIL armed ");
+        print_decimal(ap_idle_guards_armed);
+        print(" AP idle-stack guards, expected ");
+        print_decimal((uint64_t)idle_n);
+        print("\n");
+        return;
+    }
+    for (uint32_t i = 0; i < idle_n; i++) {
+        uint64_t guard = ap_idle_guard_vaddr((int)i);
+        if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
+            print("WX_SELFTEST: FAIL AP idle-stack guard still mapped, index ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+        if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT)) {
+            print("WX_SELFTEST: FAIL AP idle stack unmapped, index ");
+            print_decimal((uint64_t)i);
+            print("\n");
+            return;
+        }
+    }
 #endif /* SMP */
 
     /* --- The global invariant, over every entry in this CR3. */

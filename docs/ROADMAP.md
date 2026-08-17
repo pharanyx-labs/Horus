@@ -358,8 +358,12 @@ noise at this sample size, and it is not what the change is for. Every failure i
 inspected and every one is **G-8 signature A**: the ring-3 shell faults and `init` relaunches
 it, which the exit-reason work (#130) now prints in band — `init: shell exited: faulted on
 memory access at addr=0x1065e4f33b2 rip=0x1065e4f33b2 err=0x14`. `rip == addr` with `err=0x14`
-is a ring-3 instruction fetch from an unmapped page: a userspace defect, unrelated to interrupt
-policy, and present at the same rate on both sides. The claim supported here is the negative
+is a ring-3 instruction fetch from an unmapped page, and it was read here as a userspace defect
+unrelated to interrupt policy. **[G-8]**'s diagnosis on 2026-08-17 supersedes the "userspace
+defect" half of that reading: a ring-3 task resumed from a trap frame two CPUs had been writing
+will fetch from wherever the corrupted frame said, so an unmapped-page instruction fetch is a
+*symptom* of the shared kernel stack rather than an independent bug. The load-bearing half
+stands unchanged — the rate was the same on both arms, so it was never about the lock. The claim supported here is the negative
 one: **the per-CPU lock does not raise the failure rate**, on a sample sized to see a ~5% rate,
 and it does not cost wall clock (`-smp 1` means 14.44 s vs 14.47 s).
 
@@ -753,10 +757,12 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **68 required, 3 exempted** (`smoke-session-smp-soak` — **[G-8]**;
-  `fuzz` — a 30-second time-boxed search is evidence of effort, not of absence; `kani` —
-  manual-only, no conclusion to gate on). `smoke-fs-wal` was a fourth until **[I-11]** was
-  fixed on 2026-08-16 and it was promoted back. The promotions are
+  The intended set is **70 required, 2 exempted** (`fuzz` — a 30-second time-boxed search is
+  evidence of effort, not of absence; `kani` — manual-only, no conclusion to gate on).
+  `smoke-fs-wal` was a third until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
+  `smoke-session-smp-soak` a fourth until **[G-8]** was closed on 2026-08-17 and it was
+  promoted with it. Both remaining exemptions are properties of the test, not of an open
+  defect. The promotions are
   backed by measurement: across 18 CI runs sampled on 2026-08-16, 64 of 66 jobs had zero
   failures in 1152 job-executions. `smoke-fs-wal` is *demoted* — a flaky required check trains
   the maintainer to re-run red, and its durability claim is now carried by the deterministic

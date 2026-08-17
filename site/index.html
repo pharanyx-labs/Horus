@@ -1457,7 +1457,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 53 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 68 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1522,13 +1522,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><th scope="row">IPC lost-reply race under SMP</th><td class="t-num t-num--was">9 hangs / 45 (20%)</td><td class="t-num t-num--now">0 / 25</td><td class="t-note">interleaved ISOs · Fisher p ≈ 0.014</td></tr>
               <tr><th scope="row">Scheduler claim auditor (impersonation declared)</th><td class="t-num t-num--was">10 failures / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned to two host cores</td></tr>
               <tr><th scope="row">Permanent IPC refusal retried forever</th><td class="t-num t-num--was">3 and 5 hangs / 30</td><td class="t-num t-num--now">0 / 40</td><td class="t-note">starved single-core boots</td></tr>
+              <tr><th scope="row">Two CPUs on one kernel stack (<strong>G-8</strong>)</th><td class="t-num t-num--was">31 failures / 800</td><td class="t-num t-num--now">0 / 800</td><td class="t-note">adjacent-boot alternating, <code>-smp 4</code> · Fisher p = 6.9 × 10⁻¹⁰</td></tr>
               <tr><th scope="row">Endpoint queue depth 1 → 4, four concurrent clients</th><td class="t-num t-num--was">7042 ms mean</td><td class="t-num t-num--now">5162 ms mean</td><td class="t-note">12 boots each · <code>EP_QUEUE_SLOTS=1</code> rebuilds the old design</td></tr>
             </tbody>
           </table>
         </div>
 
         <p class="note">
-          The last result is quoted for its shape rather than its 27%. The single-slot build's
+          The endpoint-queue result is quoted for its shape rather than its 27%. The single-slot build's
           completion times arrived in <em>three discrete clusters about 520 ms apart</em>, each
           step one more collision-and-retry round. The queue removes the quantisation, which is
           contention disappearing rather than the same work merely going faster.
@@ -1610,37 +1611,54 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-8</span>The SMP session soak is not clean, and the origin of the fault is not established</h3>
+            <h3><span class="id">G-8</span>Two CPUs on one kernel stack — closed, with one path of the same family still open</h3>
             <p>
-              <code>smoke-session-smp-soak</code> fails at roughly <strong>2–3% per boot</strong>
-              on current <code>main</code>. The <em>proximate</em> mechanism is established and
-              proved: the interrupt dispatcher returns a resume <code>%rsp</code> that is not a
-              kernel stack pointer, and the ISR epilogue consumes it — one capture faults at the
-              <code>iretq</code>, another at the first register pop. Two symbolised captures show
-              two <em>different</em> bad values, so it is not one mis-assignment, and the
-              <strong>origin</strong> of the value remains unknown. That is why the finding stays
-              open and the CI job stays advisory rather than gating: at that rate a required
-              check reddens about a third of runs and simply teaches everyone to press re-run,
-              which is the reflex that hid an earlier deadlock for months. That is a mitigation,
-              not a fix.
+              <strong>Closed 2026-08-17.</strong> For eight days the SMP session soak failed at
+              roughly <strong>2–3% per boot</strong> and the origin resisted several
+              investigations. It was this: a scheduler switch path published the outgoing task as
+              claimable by another CPU <em>while the CPU making the switch was still executing
+              interrupt-handler frames on that task's kernel stack</em>. A CPU that took the task
+              inside that window resumed it to ring 3, and its very next trap re-entered the
+              interrupt handler on the same stack, at the same depth, running the same functions
+              — rewriting exactly the words the first CPU had not finished reading.
             </p>
             <p>
-              Two corrections, kept visible because they are the kind this project exists to
-              make. The first: an earlier version of this section said a mechanism was
-              <em>explicitly not claimed</em>, and that one captured signature matched a
-              previously fixed deadlock verbatim — symbolised evidence has since superseded both
-              of those readings.
+              The exactness is why it hid. Two CPUs running the same code at the same depth put
+              the <em>same</em> return addresses and the <em>same</em> stack canary back into
+              their own slots, so every frame validates and every return goes where it should.
+              Only the data differs — and the first datum out is the resume stack pointer the
+              interrupt epilogue is about to load. That accounts for the whole recorded
+              signature: a plausible word from the wrong context, a canary that passed, and a
+              scheduler invariant that read perfectly consistent.
             </p>
             <p>
-              The second is sharper. The kernel has carried a guard against exactly that bad
-              resume value since #123 — but the guard <em>was reporting into a claim that a fatal
-              fault on another CPU takes and never releases</em>, so on the boots it was built to
-              explain it produced nothing at all. Its silence had been read as evidence. It was
-              not evidence: a diagnostic that cannot speak where it fires is indistinguishable
-              from one that never fired. The guard now reports under a bounded claim, and four
-              <code>make smoke-resume-guard*</code> arms gate it in seconds rather than waiting
-              on a 1-in-150 event — two require the report, and two reproduce the silence on
-              demand. The finding itself stays open; what is closed is the instrument.
+              <strong>The invariant was never evidence against it, and that is the correction
+              worth publishing.</strong> The project had recorded that the shared-stack
+              hypothesis had "nothing observed supporting it", because the one capture taken at
+              the right moment showed the task claimed by exactly the CPU running it. A
+              deliberately reproduced collision prints that same consistent line — because it is
+              true. The task really is running on one CPU. The other one is merely still
+              leaving, and no amount of that instrument would ever have said so.
+            </p>
+            <p>
+              The claim is now held until the CPU has physically left the stack, released from
+              the interrupt epilogue's first instruction on the new one. The property is checked
+              on every interrupt rather than argued for, and it is
+              <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">S20</a> in
+              the property table. Two gates settle it in seconds instead of at one boot in 150 —
+              a widened-window build with the fix, which must complete a session, and the same
+              widened window with the old release site, which must reproduce the collision. The
+              soak job gates a merge again.
+            </p>
+            <p>
+              <strong>What is not closed.</strong> When a task dies and nothing else is runnable,
+              the fault path resumes that CPU on <em>task 0's</em> kernel stack — and every CPU
+              taking that path lands on the same one. That is a second instance of the same
+              family, and the new detector does not cover it, because it is keyed on task ids and
+              task 0 is legitimately "current" on several CPUs at once. One pre-fix capture is
+              suggestive rather than decisive. <strong>No fix is claimed for it</strong>: it is
+              written down and left open rather than patched on the strength of one reading,
+              which is the discipline the rest of this finding exists to teach.
             </p>
           </li>
           <li>

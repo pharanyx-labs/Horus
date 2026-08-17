@@ -108,9 +108,70 @@ volatile int percpu_real_task[MAX_CPUS];
  * quietly corrected. */
 int task_running_cpu[MAX_TASKS];
 
+/* ---- THE CLAIM ENDS LATER THAN THE SWITCH DOES -----------------------------
+ *
+ * The invariant above buys exactly one thing: "a task's single kernel stack +
+ * saved trap frame are never touched by two CPUs at once". Releasing the
+ * outgoing task inside the switch path does not deliver that, and finding G-8
+ * is the receipt.
+ *
+ * Every switch path here is called FROM interrupt_handler64, which is running on
+ * the outgoing task's kernel stack — the C frames sit immediately below the trap
+ * frame the CPU pushed on entry. Releasing `cur` and dropping the scheduler lock
+ * publishes that task as claimable while this CPU still has to:
+ *
+ *   - pop six callee-saved registers off that stack in preempt_on_tick's epilogue
+ *   - `ret` through a return address on that stack
+ *   - run interrupt_handler64's floor guard, out->cs read and fpu_restore
+ *   - read its stack-protector canary from that stack
+ *   - pop four more callee-saved registers and `ret` again
+ *   - and only THEN reach isr_common_stub64's `movq %rax,%rsp`
+ *
+ * Another CPU that claims the task in that window resumes it to ring 3 from its
+ * saved frame, and its very next trap re-enters the ISR on the SAME stack, at the
+ * SAME depth, running the SAME functions — so it rewrites precisely the words
+ * this CPU has not finished reading. The overlap being exact is what made the
+ * corruption so hard to see: the return addresses and the stack canary land back
+ * at their own slots with their own values, so the frame validates and the
+ * `ret`s go where they should. Only the DATA differs, and the first datum that
+ * matters is the resume %rsp on its way to `movq %rax,%rsp`. That is G-8's
+ * signature exactly: a resume value that is a plausible word from the wrong
+ * context (a `.text` return address in one capture, `4` in another), a canary
+ * that passed, and a claim invariant that reads perfectly consistent at the
+ * moment of the fault — because it IS consistent. The task really is running on
+ * exactly one CPU. The other one is merely still leaving.
+ *
+ * So the claim is held until the CPU has physically left the stack, and released
+ * from sched_release_deferred() below, which isr_common_stub64 calls immediately
+ * after `movq %rax,%rsp` — the first instruction at which this CPU is provably
+ * reading a different stack. The delay is a few tens of instructions; a CPU that
+ * wanted this task simply takes it on the next tick.
+ *
+ * `g_kstack_inflight` is the standing witness rather than a comment: bit t is set
+ * while some CPU is in that window on task t's stack, and interrupt_handler64
+ * tests it on entry. If any CPU ever enters an ISR for a task whose bit is set,
+ * two CPUs are on one kernel stack and the kernel says so and halts instead of
+ * corrupting itself quietly. One load and a bit test on the common path.
+ *
+ * KSTACK_RELEASE_EARLY=1 restores the pre-fix release site — the defect, on
+ * demand — and is what `make smoke-kstack-race-control` builds. */
+volatile uint64_t g_kstack_inflight = 0;
+
+/* Task this CPU still has to unwind off, or -1. Written only by the owning CPU.
+ * The functions that manage it live below sched_raw_lock(). */
+static int percpu_deferred_release[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
+
 /* Bitmask of CPUs that have run at least one user task (bit c == CPU c). The SMP
  * self-test reads it to confirm work actually landed on more than one core. */
 volatile unsigned smp_cpus_ran_tasks = 0;
+#endif
+
+#ifndef SMP
+/* Uniprocessor: no second CPU to hand a stack to, so the window does not exist.
+ * Defined anyway because isr_common_stub64 calls it unconditionally — a SMP=0
+ * build that silently dropped the call would diverge from the SMP one in the ISR
+ * epilogue, which is the last place in this kernel worth having two versions of. */
+void sched_release_deferred(void) { }
 #endif
 
 /* Task 0's kernel stack is per_task_kstacks[0] (paging.c), bound by
@@ -905,6 +966,127 @@ static void sched_raw_lock(void) {
         while (scheduler_lock.locked) __asm__ volatile ("pause");
 }
 static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked); }
+
+/* Record that this CPU is still executing ISR C frames on task `t`'s kernel
+ * stack, so a second CPU entering an ISR for `t` is detected rather than silently
+ * writing over them. Caller holds sched_raw_lock. */
+static void sched_mark_kstack_inflight(int cpu, int t)
+{
+    if (cpu < 0 || cpu >= MAX_CPUS || t <= 0 || t >= MAX_TASKS) return;
+    percpu_deferred_release[cpu] = t;
+    __sync_fetch_and_or(&g_kstack_inflight, 1ULL << t);
+}
+
+/* Hand task `t` over from `cpu`. Caller holds sched_raw_lock. See the long note
+ * at percpu_deferred_release[] for why this does not simply clear the claim. */
+static void sched_release_outgoing(int cpu, int t)
+{
+    sched_mark_kstack_inflight(cpu, t);
+#ifdef KSTACK_RELEASE_EARLY
+    /* The defect: published as claimable while this CPU is still on its stack. */
+    if (t > 0 && t < MAX_TASKS) task_running_cpu[t] = -1;
+#endif
+}
+
+/* Called by isr_common_stub64 directly after `movq %rax,%rsp`, i.e. on the first
+ * instruction at which this CPU is provably no longer reading the outgoing task's
+ * stack.
+ *
+ * Interrupts are off here (every gate is an interrupt gate), so this cannot be
+ * re-entered, and the frame it pushes goes below the INCOMING task's trap frame —
+ * the same unused region the ISR's own C frames occupied on entry.
+ *
+ * The bit is cleared before the claim is dropped, never after: the other order
+ * leaves a moment in which the task is claimable with its bit still set, so the
+ * next CPU to pick it up would report a collision that had already ended.
+ *
+ * Both arms run this. Under KSTACK_RELEASE_EARLY the claim is already gone (or
+ * already someone else's), which is what the `== cpu` test is for — so the two
+ * arms differ only in WHEN the claim is dropped, and not in what the detector
+ * sees. */
+void sched_release_deferred(void)
+{
+    int cpu = this_cpu();
+    if (cpu < 0 || cpu >= MAX_CPUS) return;
+    int t = percpu_deferred_release[cpu];
+    if (t < 0) return;                      /* the common case: no switch happened */
+    percpu_deferred_release[cpu] = -1;
+    __sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
+    sched_raw_lock();
+    if (t > 0 && t < MAX_TASKS && task_running_cpu[t] == cpu)
+        task_running_cpu[t] = -1;
+    sched_raw_unlock();
+}
+
+#ifdef KSTACK_RACE_WIDEN
+/* Test-only. Holds this CPU inside the switch path AFTER the outgoing task has
+ * been handed over and the scheduler lock dropped, but BEFORE the ISR epilogue
+ * has left that task's kernel stack — i.e. it stretches the exact window this
+ * file's deferred release closes, and nothing else.
+ *
+ * It exists because the window is otherwise a few tens of instructions wide and
+ * only opens when a second CPU happens to tick into it, which is why G-8 read as
+ * ~2-3% per boot and cost 150-boot arms to observe once. Widened, the same window
+ * is entered on essentially every switch, so the two arms answer in one boot each
+ * instead of in a week of soaks:
+ *
+ *   KSTACK_RACE_WIDEN=1                        -> the fix holds the claim across
+ *                                                 the window; nothing can take the
+ *                                                 stack; the session completes
+ *   KSTACK_RACE_WIDEN=1 KSTACK_RELEASE_EARLY=1 -> the pre-fix release publishes it
+ *                                                 mid-window; another CPU takes it
+ *                                                 and the detector fires
+ *
+ * The delay is deliberately a dumb spin with interrupts already off rather than
+ * anything clock-based: it must not itself take a lock, touch a task, or become a
+ * scheduling event, or the arm would be measuring the instrument. Absent from
+ * every shipping configuration; set by `make smoke-kstack-race*` and nothing
+ * else. */
+static void kstack_race_widen(int cpu)
+{
+    /* ---- Only SOME CPUs linger, and that is the whole trick -----------------
+     *
+     * The obvious widener -- spin on every switch -- is self-defeating, and it took
+     * a measurement to see why. A collision needs CPU A to linger in the window on
+     * task T's stack WHILE another CPU takes T, resumes it to ring 3 and lets it
+     * trap. But the taker reaches this same point in this same function on its own
+     * switch, so if it spins too it is always at least one full spin behind -- and
+     * the collision it was supposed to cause is exactly what its own spin prevents.
+     * Measured rather than reasoned after the fact: widening every switch
+     * reproduced on only 2 boots in 7, and thinning it to one switch in 8 on 0 in 3.
+     *
+     * So the CPUs are split. A CPU in KSTACK_RACE_WIDEN_CPUMASK lingers; the rest
+     * take and resume at full speed. The default 0x5 makes cpu 0 and cpu 2 the
+     * lingerers and cpu 1 and cpu 3 the takers under the `-smp 4` the gate boots --
+     * the arrangement the race actually needs, and about twice as fast as spinning
+     * everywhere as a side effect.
+     *
+     * This tilts the ODDS of observing the window and nothing else. It does not
+     * create a window, shorten a claim, or touch a task: the same build with the
+     * deferred release in place lingers in exactly the same places and the takers
+     * find nothing to take, which is what smoke-kstack-race asserts.
+     *
+     * The spin has to stay FULL WIDTH -- the taker needs time for a ~10 ms timer
+     * tick, a selection and a resume into ring 3 -- which is why the count is not
+     * simply lowered instead. A dumb spin with interrupts already off,
+     * deliberately: it must not take a lock, touch a task, or become a scheduling
+     * event, or the arm would be measuring the instrument. */
+    if (cpu < 0 || !(((unsigned)KSTACK_RACE_WIDEN_CPUMASK >> cpu) & 1u)) return;
+    for (volatile unsigned i = 0; i < (unsigned)KSTACK_RACE_WIDEN_SPINS; i++)
+        __asm__ volatile ("pause");
+}
+#define KSTACK_WIDEN(cpu) kstack_race_widen(cpu)
+#else
+#define KSTACK_WIDEN(cpu) ((void)0)
+#endif
+
+/* Which CPU is still unwinding off task `t`, or -1. Failure path only. */
+int sched_kstack_holder(int t)
+{
+    for (int c = 0; c < MAX_CPUS; c++)
+        if (percpu_deferred_release[c] == t) return c;
+    return -1;
+}
 #endif
 
 /* Async signal delivery. When a ring-3 task is about to resume, redirect it into
@@ -1037,10 +1219,25 @@ static void sched_assert_claims(const char *where) {
      * "a RUNNABLE task must remain selectable". Selection requires state == 1, so
      * a dead task can never be the subject of the livelock this guards against.
      */
+    /* ---- The deferred release is a claim with no runner, and it is correct ----
+     *
+     * Since [G-8], a switch path holds the outgoing task's claim until the CPU has
+     * left that task's kernel stack (see percpu_deferred_release[]). Inside that
+     * window -- tens of instructions, but `enter_cpu_idle` audits from inside it --
+     * task_running_cpu[t] names a CPU that is deliberately no longer running t.
+     * That is the property being enforced, not a leak.
+     *
+     * Encoded here rather than left to the two-strike timing argument. The window
+     * is far too short to survive to a second audit, so it would almost certainly
+     * never panic -- but "almost certainly never" is how a checker earns a
+     * reputation for crying wolf, and this file already records what that cost:
+     * a correct kernel accused of a capability leak, blocking a roadmap item for a
+     * fortnight. A documented exception belongs in the checker. */
     for (int t = 1; t < MAX_TASKS; t++) {
         if (tasks[t].state == 0) continue;
         int c = task_running_cpu[t];
         if (c < 0) continue;
+        if (percpu_deferred_release[c] == t) continue;   /* still unwinding off it */
         if (c >= MAX_CPUS) {
             print("PANIC: scheduler claim names a bogus cpu at "); print(where);
             print(": task "); print_decimal((uint64_t)t);
@@ -1235,7 +1432,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (cur > 0 && cur < MAX_TASKS && ring3) {
         tasks[cur].saved_ksp    = frame_rsp;
         tasks[cur].runnable_ctx = 1;
-        task_running_cpu[cur]   = -1;
+        sched_release_outgoing(cpu, cur);
     }
 
     task_running_cpu[next] = cpu;
@@ -1247,6 +1444,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     set_current_task(next);
     uint64_t ksp = tasks[next].saved_ksp;
     sched_raw_unlock();
+    KSTACK_WIDEN(cpu);
     return ksp;
 #endif
 }
@@ -1327,7 +1525,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
 #ifdef SMP
     sched_raw_lock();
     int cpu = this_cpu();
-    task_running_cpu[blocked_task] = -1;   /* blocking: release it */
+    sched_release_outgoing(cpu, blocked_task);   /* blocking: release it, once off its stack */
 
     int next = -1;
     for (int i = 1; i < MAX_TASKS; i++) {
@@ -1341,13 +1539,16 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     }
     if (next < 0) {
         /* No task to switch to on this CPU. blocked_task stays genuinely blocked
-         * and schedulable by any CPU (task_running_cpu already -1 above); return
+         * and becomes schedulable by any CPU as soon as this CPU is off its kernel
+         * stack -- sched_release_outgoing above deferred the release to the ISR
+         * epilogue rather than doing it here, which is [G-8]; return
          * this CPU to idle so a timer tick reschedules the woken task once its
          * cross-core reply lands. Resuming the caller here instead — the old
          * single-CPU fallback — fabricated a zero-length reply into its unfilled
          * buffer, which under SMP split console input and broke logins. */
         uint64_t idle = enter_cpu_idle(cpu);
         sched_raw_unlock();
+        KSTACK_WIDEN(cpu);
         return idle;
     }
 
@@ -1359,6 +1560,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     set_current_task(next);
     uint64_t ksp = tasks[next].saved_ksp;
     sched_raw_unlock();
+    KSTACK_WIDEN(cpu);
     return ksp;
 #else
     int next = -1;
@@ -1580,7 +1782,7 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
     tasks[cur].saved_ksp    = frame_rsp;
     tasks[cur].runnable_ctx = 1;
 #ifdef SMP
-    task_running_cpu[cur]   = -1;
+    sched_release_outgoing(cpu, cur);
     task_running_cpu[next]  = cpu;
 #endif
     switch_cr3(tasks[next].cr3);
@@ -1595,6 +1797,7 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
     uint64_t ksp = tasks[next].saved_ksp;
 #ifdef SMP
     sched_raw_unlock();
+    KSTACK_WIDEN(cpu);
 #endif
     return ksp;
 }
@@ -1725,6 +1928,14 @@ uint64_t task_exit_switch(int dead) {
     }
 #ifdef SMP
     task_running_cpu[next] = cpu;
+    /* `dead` has no claim left to defer -- task_teardown dropped it and no
+     * selection loop looks at a task in state 0 -- but this CPU is still unwinding
+     * off its kernel stack, and the SLOT is now free for init to respawn into.
+     * per_task_kstacks[] is indexed by slot, so a reused slot is the same stack:
+     * marking it keeps the detector honest on the respawn path (signature A's
+     * "init: shell exited, relaunching") without changing any behaviour, since
+     * sched_release_deferred's `== cpu` test finds nothing to release. */
+    sched_mark_kstack_inflight(cpu, dead);
 #endif
     switch_cr3(tasks[next].cr3);
     uint64_t kstop = task_kstack_top(next);
@@ -1738,6 +1949,7 @@ uint64_t task_exit_switch(int dead) {
     uint64_t ksp = tasks[next].saved_ksp;
 #ifdef SMP
     sched_raw_unlock();
+    KSTACK_WIDEN(cpu);
 #endif
     return ksp;
 }

@@ -512,6 +512,43 @@ ifeq ($(RESUME_GUARD_LEGACY_FATAL),1)
 CFLAGS += -DRESUME_GUARD_LEGACY_FATAL
 endif
 
+# ---- G-8: the window between giving a task up and leaving its kernel stack ----
+#
+# KSTACK_RELEASE_EARLY=1 restores the pre-fix release site -- the outgoing task is
+# published as claimable inside the switch path, while this CPU still has ~30
+# instructions of ISR epilogue to execute on that task's kernel stack. That is the
+# defect, on demand.
+#
+# KSTACK_RACE_WIDEN=1 stretches that window with a spin so the race is entered on
+# essentially every switch instead of at G-8's ~2-3% per boot. It is orthogonal to
+# the arm above and is set in BOTH, which is the whole point: the same widened
+# window must be harmless with the fix and fatal without it. A one-armed run here
+# would prove nothing -- see TESTS.md on the two 150-boot arms that established
+# only that the fault was main's.
+#
+# KSTACK_RACE_WIDEN_SPINS is the spin count. It has to be long enough for another
+# CPU to take a timer tick (10 ms at 100 Hz), select the released task and resume
+# it into ring 3, and short enough that the fixed arm still finishes a session
+# inside SESSION_TIMEOUT. Derived by measurement, not chosen: see TESTS.md.
+KSTACK_RELEASE_EARLY ?= 0
+KSTACK_RACE_WIDEN ?= 0
+KSTACK_RACE_WIDEN_SPINS ?= 200000
+# ...and WHICH CPUs do it. Only the CPUs in this mask linger; the rest take and
+# resume at full speed. That split is the whole trick, and it is a measurement:
+# spinning on EVERY switch is self-defeating, because the CPU that must take the
+# released task reaches the same spin on its own switch and is always a full spin
+# behind. Widening everywhere reproduced on only 2 boots in 7; one switch in 8, on
+# 0 in 3. 0x5 lingers on cpu 0 and cpu 2 and takes on cpu 1 and cpu 3, under the
+# `-smp 4` the gate boots.
+KSTACK_RACE_WIDEN_CPUMASK ?= 0x5
+ifeq ($(KSTACK_RELEASE_EARLY),1)
+CFLAGS += -DKSTACK_RELEASE_EARLY
+endif
+ifeq ($(KSTACK_RACE_WIDEN),1)
+CFLAGS += -DKSTACK_RACE_WIDEN -DKSTACK_RACE_WIDEN_SPINS=$(KSTACK_RACE_WIDEN_SPINS) \
+          -DKSTACK_RACE_WIDEN_CPUMASK=$(KSTACK_RACE_WIDEN_CPUMASK)
+endif
+
 # USER_HEAP_HIGH_BASE=1 places every user heap at 8 GiB instead of 16 MiB, which
 # is what makes finding [I-2] REACHABLE rather than latent: the heap syscalls
 # computed the new break in 32 bits, so a base above 2^32 wrapped. Used by
@@ -1958,29 +1995,31 @@ smoke-session-smp:
 # so the test does not pretend a single green boot is evidence. Requires ALL runs
 # to pass — one hang is a failure, never a retry.
 #
-# ---- OPEN FINDING G-8 (2026-08-09): this soak is not clean on main -------------
+# ---- FINDING G-8 (2026-08-09 - 2026-08-17): closed, and this soak gates again ---
 #
-# A residual failure survives at roughly 3% per boot: 1 in 45 pinned to two host
-# cores on e8cc850, 1 in 15 on a CI runner. It is NOT the lost-reply race above --
-# #116 is in every tree measured -- and it is NOT the claim-invariant finding,
-# which is closed and holds 30/30.
+# For eight days a residual failure survived here at roughly 2-3% per boot, and
+# this comment carried the two candidate explanations -- a genuine kernel wedge, or
+# the apropos step exceeding its budget on a starved host -- because a failure rate
+# is not a diagnosis. It was the first.
 #
-# The mechanism is NOT established, and the two candidates want opposite fixes:
+# A switch path published the outgoing task as claimable while the CPU making the
+# switch was still executing ISR C frames on that task's kernel stack. Another CPU
+# took it, resumed it to ring 3, and its next trap re-entered the ISR on the same
+# stack at the same depth, rewriting the frames the first CPU had not finished
+# reading -- including the resume %rsp on its way to the epilogue. See
+# scheduler.c's note at percpu_deferred_release[], and `make smoke-kstack-race`
+# plus its control arm, which reproduce it on demand instead of at 1 boot in 150.
 #
-#   a genuine kernel wedge      -> fix the kernel
-#   the apropos step exceeding  -> fix the budget/harness
-#   its 120s budget on a
-#   starved host
+# The rate, paired and adjacent-boot alternating over 1600 boots at -smp 4: the
+# pre-fix release site 31/800, the shipped deferred release 0/800, Fisher exact
+# two-sided p = 6.9e-10. That is the number this comment has demanded since
+# 2026-08-09, and the CI job is GATING again as of 2026-08-17.
 #
-# The second is live: the note on smoke-session-smp above records that same step
-# already forcing SESSION_TIMEOUT from 60s to 120s on a loaded runner with no code
-# fault. A failure rate is not a diagnosis -- the mistake this repo has now made in
-# both directions (smoke-console-smp was a real deadlock called flaky; the
-# SCHED_INVARIANTS report was a correct kernel called broken).
-#
-# Diagnosing it needs the failing run's serial log, which is why the loop below
-# stopped sending output to /dev/null. The CI job is ADVISORY until this resolves;
-# restore it to gating in the same commit, and quote a rate.
+# It stays a soak rather than a single boot: the class of defect it covers is
+# probabilistic, and one green boot says nothing about a 2-3% event -- which is
+# exactly how the lost-reply race passed every green smoke job. Never re-run it.
+# The failing run's serial log is kept, which is why the loop below stopped
+# sending output to /dev/null.
 SOAK_RUNS ?= 15
 # Minimum [ok] steps a run must report before it counts as a pass.
 #
@@ -2234,6 +2273,91 @@ smoke-resume-guard-nofloor:
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
 		tools/kfault_test.sh boot.iso
+
+# Two CPUs on one kernel stack -- finding G-8, and the gate that closes it.
+#
+# A switch path hands the outgoing task to another CPU while the CPU making the
+# switch still has ~30 instructions of ISR epilogue to run ON THAT TASK'S KERNEL
+# STACK. A CPU that takes the task inside that window resumes it to ring 3, and
+# its next trap re-enters the ISR on the same stack at the same depth running the
+# same functions -- so it rewrites exactly the words the first CPU has not
+# finished reading. See scheduler.c's note at percpu_deferred_release[].
+#
+# The window is a few tens of instructions wide, which is why the natural event
+# is G-8's ~2-3% per boot and why two 150-boot arms were needed to observe it
+# once. KSTACK_RACE_WIDEN=1 stretches it with a spin, so BOTH arms answer in one
+# boot each:
+#
+#   smoke-kstack-race          widened window, deferred release (shipped):
+#                              the claim is held across the window, nothing can
+#                              take the stack, and the session completes.
+#   smoke-kstack-race-control  widened window, PRE-FIX release site: another CPU
+#                              takes the stack and the detector says so.
+#
+# The control arm is the load-bearing one. Without it, the first arm proves only
+# that a kernel with a spin in it still boots. With it, the same widened window
+# is fatal without the fix and harmless with it, which is the difference between
+# a measurement and a story -- and this file has already paid for that lesson
+# twice on this finding.
+#
+# Note what the control arm's own report shows about why G-8 resisted diagnosis:
+# `claim: task 4 running_cpu=0 percpu_current=[4,0,0,0]` -- the scheduler claim
+# invariant HOLDS while two CPUs are on one kernel stack, because the task really
+# is running on exactly one CPU. The other one is merely still leaving. That is
+# bit-for-bit the observation that retired the shared-stack hypothesis in
+# TESTS.md, and it was never evidence against it.
+KSTACK_RACE_RE = PANIC: two CPUs on one kernel stack
+# Per-step budget for the widened session. The widening costs real time, and this
+# is deliberately far above what it needs on a fast host: a REQUIRED gate that goes
+# red because a CI runner was slow teaches the re-run reflex, which is the habit
+# this repo blames for smoke-console-smp surviving months of CI. Generous costs
+# nothing when the session is fast.
+KSTACK_RACE_TIMEOUT ?= 600
+
+.PHONY: smoke-kstack-race
+smoke-kstack-race:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 boot.iso
+	@echo "[kstack] widened window + deferred release: the session must complete"
+	@log=$$(mktemp); rc=0; \
+	QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
+	    python3 tools/session_test.py boot.iso || rc=$$?; \
+	if grep -qa '$(KSTACK_RACE_RE)' "$$log"; then \
+	    echo "KSTACK RACE: FAIL - two CPUs shared a kernel stack with the fix in place"; \
+	    grep -a -A 6 '$(KSTACK_RACE_RE)' "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	if [ $$rc -ne 0 ]; then \
+	    echo "KSTACK RACE: FAIL - session did not complete under the widened window (exit $$rc)"; \
+	    tail -20 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	rm -f "$$log"; \
+	echo "KSTACK RACE: PASS - session completed, no shared kernel stack"
+
+# The defect, on demand. Same widened window, pre-fix release site. Two things
+# must be true and both are checked: the detector's line must appear, AND the
+# session must not pass -- a build that reproduced the race and still reported
+# success would mean the harness had stopped reading the wire.
+.PHONY: smoke-kstack-race-control
+smoke-kstack-race-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 KSTACK_RELEASE_EARLY=1 boot.iso
+	@echo "[kstack] widened window + PRE-FIX release: the race must reproduce"
+	@log=$$(mktemp); rc=0; \
+	QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
+	    python3 tools/session_test.py boot.iso || rc=$$?; \
+	if ! grep -qa '$(KSTACK_RACE_RE)' "$$log"; then \
+	    echo "KSTACK RACE CONTROL: FAIL - the pre-fix build did NOT reproduce the race."; \
+	    echo "  The control arm is what makes smoke-kstack-race a measurement; if it"; \
+	    echo "  stops reproducing, the widened window or the detector has decayed."; \
+	    tail -20 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "KSTACK RACE CONTROL: FAIL - the race reproduced but the session reported PASS"; \
+	    rm -f "$$log"; exit 1; \
+	fi; \
+	grep -a -A 6 '$(KSTACK_RACE_RE)' "$$log" | head -8 | sed 's/^/  /'; \
+	rm -f "$$log"; \
+	echo "KSTACK RACE CONTROL: PASS - the pre-fix release site shares a kernel stack, as it must"
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.

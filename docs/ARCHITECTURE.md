@@ -456,6 +456,40 @@ its task was abandoned mid-kernel, so freeing it lets the task resume from a sta
 discarding kernel work that may include a held lock. Treat a stale claim as a symptom to
 diagnose, never a value to correct; `SCHED_INVARIANTS=1` machine-checks the invariant and
 panics with the offending task, CPU and observer.
+
+### The claim ends later than the switch does — **[G-8]**
+
+**The invariant above buys exactly one property — "one task's kernel stack and trap frame are
+never touched by two CPUs at once" — and until 2026-08-17 it did not deliver it.**
+
+Every switch path is called from `interrupt_handler64`, which is running *on the outgoing
+task's kernel stack*: the C frames sit immediately below the trap frame the CPU pushed on
+entry. Releasing `task_running_cpu[cur]` and dropping the scheduler lock there published the
+task while this CPU still had roughly thirty instructions to execute on that stack — two
+epilogues' worth of callee-saved pops, two `ret`s through return addresses on it, the resume
+`%rsp` floor guard, `fpu_restore`, and a stack-protector canary read — before
+`isr_common_stub64` reached `movq %rax,%rsp`.
+
+A CPU that claimed the task inside that window resumed it to ring 3 and its next trap
+re-entered the ISR **on the same stack, at the same depth, running the same functions**,
+rewriting the words the first CPU had not finished reading.
+
+**The invariant cannot see this, and that is a property of the invariant rather than a bug in
+it.** It relates "which CPU is running task *t*" to "which task CPU *c* is running". A CPU that
+has stopped running a task but has not stopped *reading its stack* satisfies both sides. A
+reproduced collision prints `claim: task 4 running_cpu=3 percpu_current=[0,0,0,4]` — perfectly
+consistent, and consistent because it is true.
+
+So the claim is held until the CPU has physically left the stack. `isr_common_stub64` calls
+`sched_release_deferred()` immediately after `movq %rax,%rsp`, and the hand-over completes
+there. The hold costs a few tens of instructions; a CPU that wanted the task takes it on the
+next tick.
+
+The property is checked rather than argued: `g_kstack_inflight` carries bit *t* for the
+duration of that window on task *t*'s stack, and `interrupt_handler64` tests it on entry —
+one load and a bit test, `MAX_TASKS` being 64 so one word covers every task. Two CPUs on one
+kernel stack halts the machine with both CPU ids and the task named. That is `SECURITY.md`
+**S20**, gated by `make smoke-kstack-race` and its control arm.
 - TLB shootdown is an acknowledged IPI.
 - **SMT siblings are parked in software** — a disable-SMT-in-software measure that closes
   same-core co-residency, the strongest available mitigation against cross-thread

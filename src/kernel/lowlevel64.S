@@ -32,6 +32,26 @@ isr_common_stub64:
      * makes the epilogue below pop *that* task's registers and iretq into it. */
     movq %rax, %rsp
 
+    /* First instruction at which this CPU is provably no longer reading the
+     * OUTGOING task's kernel stack -- so it is the only correct place to finish
+     * handing that task to another CPU. Everything above this line, including the
+     * dispatcher's own epilogue and its stack-protector check, still reads words
+     * from the stack the switch decided to give up; a CPU that took the task
+     * earlier resumed it to ring 3 and its next trap rewrote those words at the
+     * same depth. That is finding G-8, and sched_release_deferred() is where the
+     * claim is actually dropped now (scheduler.c).
+     *
+     * Safe to call here: interrupts are off (every gate is an interrupt gate, so
+     * no re-entry), %rsp already names the INCOMING task's stack so the callee's
+     * frame lands in the same unused region the ISR's own C frames occupied on
+     * entry, and every register below is about to be reloaded by the pops -- so
+     * there is nothing live for the SysV call clobbers to destroy.
+     *
+     * Unconditional, including on SMP=0 where scheduler.c compiles it to an empty
+     * body: the ISR epilogue is the last code in this kernel that should have two
+     * versions. */
+    call sched_release_deferred
+
     popq %r15
     popq %r14
     popq %r13

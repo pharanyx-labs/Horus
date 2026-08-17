@@ -587,10 +587,12 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **68 required contexts and 3 reasoned exemptions** —
-`smoke-session-smp-soak` ([G-8]), `fuzz` (a 30-second time-boxed search is evidence of effort,
-not absence) and `kani` (manual-only, so it has no conclusion to gate on). `smoke-fs-wal` was a
-fourth until [I-11] was fixed on 2026-08-16 and it was promoted back. The
+That intended set is **70 required contexts and 2 reasoned exemptions** — `fuzz` (a 30-second
+time-boxed search is evidence of effort, not absence) and `kani` (manual-only, so it has no
+conclusion to gate on). `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
+was promoted back, and `smoke-session-smp-soak` a fourth until [G-8] was closed on 2026-08-17
+and it was promoted with it — the last exemption in this repo that stood for an open defect
+rather than for a property of the test itself. The
 promotion list is justified by measurement rather than optimism: across 18 CI runs sampled on
 2026-08-16, 64 of 66 jobs had **zero** failures over 1152 job-executions, and the only two that
 failed are both on the exemption list or were deliberate.
@@ -668,95 +670,121 @@ pre-fix flakiness was load-dependent and did not reproduce here, so this is not 
 comparison — the substantive argument is structural (the marker alone can no longer pass, and
 barrier B orders the write before the marker), and the rate is corroboration, not proof.
 
-### 5.2c The SMP session soak is not clean, and the cause is unknown — **[G-8]**
+### 5.2c The SMP session soak — **[G-8]**, diagnosed and closed 2026-08-17
 
-`smoke-session-smp-soak` fails at roughly **2–3% per boot** on current `main` — 1 hang in 45
-pinned to two host cores, and 1 in 45 on a CI runner. Two distinct signatures have been
-captured: one where the session completes 9 of 12 checks and then stalls mid-output, and one
-where **boot never reaches the login prompt at all** and the serial log ends at
-`[console_server] ready`.
+**Closed.** A task was published as claimable by another CPU while the CPU making the switch
+was still executing ISR C frames on that task's kernel stack. `smoke-session-smp-soak` is
+restored to **gating**.
 
-That second signature is the `smoke-console-smp` deadlock's signature verbatim — a defect
-root-caused and fixed in PRs #112–#115, whose stress harness has held 24/24, 24/24 and 30/30
-since. So the open question is whether that fix is incomplete or a second defect presents
-identically. It is **not** the IPC lost-reply race (`#116` is in every tree measured).
+*The mechanism.* Every switch path in `scheduler.c` — `preempt_on_tick`, `ipc_block_switch`,
+`sched_yield_switch` — is called from `interrupt_handler64`, which runs on the outgoing task's
+kernel stack: its C frames sit immediately below the trap frame the CPU pushed on entry.
+Releasing `task_running_cpu[cur]` and dropping the scheduler lock there left this CPU with ~30
+instructions still to execute on that stack — six callee-saved pops, a `ret` through a return
+address on it, the floor guard, `fpu_restore`, a stack-protector canary read, four more pops
+and a second `ret` — before `isr_common_stub64` reached `movq %rax,%rsp`. A CPU that claimed
+the task inside that window resumed it to ring 3, and its next trap re-entered the ISR **on
+the same stack, at the same depth, running the same functions**, rewriting exactly the words
+the first CPU had not finished reading.
 
-The scheduler claim-invariant checker holds 30/30, but that does **not** exclude a leaked
-claim: 30 boots witness a 2% event less than half the time. Re-running it at
-`STRESS_RUNS=150` is the cheapest discriminator and is the next step.
+*Why it was invisible.* The overlap is exact, so the return addresses and the canary land back
+at their own slots holding their own values: every frame validates, every `ret` goes where it
+should, and only the data differs. The first datum out is the resume `%rsp`. That accounts for
+the whole recorded signature — a plausible word from the wrong context (a `.text` return
+address in one capture, `4` in another), a canary that passed, and a claim invariant that read
+consistent.
 
-**Update 2026-08-13 — the proximate mechanism is now established.** A 150-boot soak at
-`-smp 4` on `ba84e90`, the first run taken after #140 made kernel fault reports audible during
-a live session, caught it once. The fault is a `#GP` **at the `iretq`** in
-`isr_common_stub64`: `interrupt_handler64` returned a resume `%rsp` pointing into `.text`, the
-stub's 15 `pop`s then loaded registers from instruction bytes, and `iretq` took `CS` from
-those bytes. This is proved rather than inferred — the reported `rbp` is bit-for-bit the code
-bytes at `resume_rsp + 64`. `TESTS.md` has the disassembly and the arithmetic.
+*The correction this section owes.* The 2026-08-13 update below said the shared-stack
+hypothesis had "nothing observed supporting it" because the one `t > 0` capture showed
+`task_running_cpu[4] == 0` and `percpu_current_task[0] == 4`. **That is withdrawn.** A
+deliberately reproduced collision prints `claim: task 4 running_cpu=3
+percpu_current=[0,0,0,4]` — the invariant holds *while two CPUs are on one kernel stack*,
+because it is true: the task is running on exactly one CPU, and the other is merely still
+leaving. The instrument could not see this and never could. The capture was never evidence
+against the hypothesis; it was evidence the invariant was scoped to the wrong question.
 
-Two consequences for this section. `#123`'s floor guard does **not** cover it: the bad value is
-higher-half, so `rsp < 0xFFFF800000000000` passes it. And the *origin* of the value is still
-unknown, so **[G-8]** stays open and the job stays advisory. The capture also did not
-discriminate on the shared-stack hypothesis — it landed on task 0, which the claim invariant
-explicitly excludes (`t > 0`).
+*The fix.* The claim is held until the CPU has physically left the stack.
+`isr_common_stub64` calls `sched_release_deferred()` immediately after `movq %rax,%rsp` — the
+first instruction at which this CPU is provably reading a different stack — and the hand-over
+completes there. And the property is checked rather than asserted (`SECURITY.md` **S20**):
+`g_kstack_inflight` carries bit *t* for the duration of that window on task *t*'s stack, and
+`interrupt_handler64` tests it on entry, halting if two CPUs are ever on one stack.
 
-One number to keep honest: that run was **1 failure in 150**, which is *not* a measured
-improvement on the 2–3% above. Under a true 2.5% rate, ≤1 event in 150 boots has probability
-~11%.
+*The rate.* Paired, adjacent-boot alternating on one host, `-smp 4`, 1600 boots:
 
-**Update — a second capture, and two corrections (2026-08-13).** A dual-arm run (150 boots each
-on one host) caught the fault again on `main` at `e9aebdd`, in a boot carrying **two** corrupted
-resume values on two CPUs: a `.text` return address, and **`4`**. Three consequences:
+| Arm | Failures | Rate |
+|---|---|---|
+| `KSTACK_RELEASE_EARLY=1` (pre-fix release site) | 31 / 800 | 3.9% |
+| shipped (deferred release) | **0 / 800** | 0% (95% upper bound 0.38%) |
 
-- **The shared-stack hypothesis is not supported.** The second event is the first `t > 0`
-  capture, and there `task_running_cpu[4] == 0` and `percpu_current_task[0] == 4` — the claim
-  invariant **holds**. It is not disproved by one capture, but nothing observed supports it.
-- **It is not one bad write.** Two different garbage values in one boot puts the cause upstream
-  of any single assignment; no `saved_ksp` write produces `4`.
-- **The floor guard did not fire for `rsp = 4`,** which is below its threshold and named in its
-  own comment. So the statement above that the guard "does not cover it" is true for the
-  higher-half value but must not be read as *the guard works and this slipped past its design* —
-  on the one value it was built for, it produced nothing. Until that is explained, treat the
-  guard's behaviour as unverified.
+Fisher exact, two-sided: **p = 6.9 × 10⁻¹⁰**. The 3.9% decomposes onto what this section
+already documented: 13 of the 31 were caught at the collision by the new detector, and the
+other 18 — **2.25%** — ran on into a downstream failure, which is the 2–3% per boot this
+section has carried since 2026-08-09, reproduced. An earlier run of the same design, on
+binaries predating the detector's report deduplication, gave 44/800 against 0/800 — a different
+total, an identical **18/800** downstream subset.
 
-**Update — the guard was mute, and that is now fixed and gated (2026-08-13).** The last bullet
-is resolved: the guard's report was bracketed `kfault_begin(1)`, and `kfault_begin(1)` is
-`panic_begin()`, whose claim is **permanent** — a CPU that asks for it after another CPU's fatal
-exception halts *inside* `panic_begin` without emitting a byte. In the two-event capture above,
-the fatal `#GP` on cpu 3 printed first and kept the claim, so the guard **could not have been
-heard on that boot whether or not it fired**. #140 made this report reach the UART but left it
-behind a claim the failure itself takes away. The guard now reports under the bounded claim,
-releases it, and only then halts — halting is unchanged and is the fail-closed answer, since
-`iretq`-ing onto a rejected value is precisely what must not happen.
+`make smoke-kstack-race` and `smoke-kstack-race-control` settle it in seconds instead of at
+~1 boot in 150: `KSTACK_RACE_WIDEN=1` stretches the window so it is entered on essentially
+every switch, and is set in **both** arms, so the same widened window must be harmless with
+the fix and fatal without it.
 
-Two things follow for this section:
+**What is not closed.** The `#PF`/exit fallback in `idt.c` resumes a CPU with
+`frame->rsp = tasks[0].kernel_stack_top` when nothing else is runnable, and every CPU taking
+that fallback lands on that one stack — a second instance of the same family. The detector is
+keyed on task ids and excludes task 0, which is legitimately "current" on several CPUs at once
+as the idle sentinel, so it does not cover this. One soak capture is suggestive rather than
+decisive: a pre-fix boot with all four CPUs idle on task 0 produced
+`PANIC: dispatcher returned a bogus resume rsp=0xfee000b0` — the LAPIC EOI register address,
+i.e. a word from another CPU's `lapic_eoi` frame. **No witness exists, so no fix is claimed**,
+and it is recorded here rather than patched on the strength of one reading. The history below
+is the standing reminder of what that costs.
 
-- **Withdraw every "the guard did not catch it" statement about that capture.** The absence of
-  the line was never evidence about the guard. `make smoke-resume-guard` /
-  `-preclaim` / `-legacy` / `-nofloor` now settle it in seconds instead of at ~1 boot in 150:
-  the guard fires, its line reaches the wire even from behind a permanent claim, and both the
-  pre-fix bracket and a guard-less build reproduce the silence on demand.
-- **A new narrowing, offered as an inference.** The guard-less arm shows that a resume `%rsp`
-  of `4` still present at `interrupt_handler64`'s `out->cs` read faults at **`0x94`** — G-8's
-  original datapoint, reproduced deliberately. The capture faulted at **`0x4`**, in the stub's
-  first `pop`, so on that boot the value was not `4` at the guard *or* at `out->cs`: it became
-  `4` in the epilogue window, after the guard and before the stub's `movq %rax,%rsp`. The
-  frame's stack canary passed, so this points at a **register** that did not survive rather than
-  a smeared stack. It rests on the guard/`out->cs` ordering in a rebuild of an `idt.c` unchanged
-  since the capture, not on a retained binary; `TESTS.md` records the check.
+---
 
-**[G-8] stays open** — the origin of the bad value is still unknown and the job stays advisory.
-What is closed is the instrument.
+The record of how this was read wrongly, kept because the wrong readings are the point:
 
-The same run was the control for **PR #135** (per-CPU IRQ lock): `main` 1/150, #135 rebased
-**0/150**. That is not a significant difference (Fisher p = 1.0) and no improvement is claimed —
-but it establishes that the fault is `main`'s, not #135's, which is why #135 was no longer held
-for it and merged the same day.
+`smoke-session-smp-soak` failed at roughly **2–3% per boot** — 1 hang in 45 pinned to two host
+cores, and 1 in 45 on a CI runner. Two distinct signatures were captured: one where the session
+completes 9 of 12 checks and then stalls mid-output, and one where **boot never reaches the
+login prompt at all** and the serial log ends at `[console_server] ready`. That second
+signature is the `smoke-console-smp` deadlock's signature verbatim, and the open question was
+read for weeks as whether that fix was incomplete. It was neither. It is **not** the IPC
+lost-reply race (`#116` is in every tree measured).
 
-**Until it is diagnosed, the CI job is advisory rather than gating**, because at that rate a
-required check goes red on about a third of runs and simply teaches everyone to press re-run —
-the reflex that let the `smoke-console-smp` deadlock survive months of CI. That is a
-mitigation, not a fix, and it is the second required check in this document to be downgraded
-for nondeterminism (see **[I-11]**). See `TESTS.md` for the evidence and the next step.
+**2026-08-13 — the proximate mechanism.** A 150-boot soak at `-smp 4` on `ba84e90`, the first
+run after #140 made kernel fault reports audible during a live session, caught it once. The
+fault is a `#GP` **at the `iretq`** in `isr_common_stub64`: `interrupt_handler64` returned a
+resume `%rsp` pointing into `.text`, the stub's 15 `pop`s loaded registers from instruction
+bytes, and `iretq` took `CS` from those bytes. Proved rather than inferred — the reported
+`rbp` is bit-for-bit the code bytes at `resume_rsp + 64`. `TESTS.md` has the disassembly.
+`#123`'s floor guard does not cover that value: it is higher-half, so `rsp < 0xFFFF800000000000`
+passes it.
+
+**2026-08-13 — a second capture, and two corrections.** A dual-arm run caught the fault again
+on `main` at `e9aebdd`, in a boot carrying **two** corrupted resume values on two CPUs: a
+`.text` return address, and **`4`**. It is not one bad write — no `saved_ksp` assignment
+produces `4` — which correctly retired "find the line that stores the wrong value". The same
+run was the control for **PR #135** (per-CPU IRQ lock): `main` 1/150, #135 rebased 0/150, not a
+significant difference (Fisher p = 1.0) and no improvement claimed, but it established the
+fault as `main`'s and unblocked that PR.
+
+**2026-08-13 — the guard was mute, and that was fixed and gated.** The guard's report was
+bracketed `kfault_begin(1)`, and `kfault_begin(1)` is `panic_begin()`, whose claim is
+**permanent** — a CPU that asks for it after another CPU's fatal exception halts *inside*
+`panic_begin` without emitting a byte. In the two-event capture the fatal `#GP` on cpu 3
+printed first and kept the claim, so the guard **could not have been heard on that boot whether
+or not it fired**. #140 made this report reach the UART but left it behind a claim the failure
+itself takes away. Every "the guard did not catch it" statement about that capture was
+withdrawn then, and `make smoke-resume-guard` / `-preclaim` / `-legacy` / `-nofloor` settle it
+in seconds.
+
+**2026-08-13 — a narrowing that was right about the window and wrong about the register.** The
+guard-less arm showed a resume `%rsp` of `4` still present at `out->cs` faults at `0x94`, while
+the capture faulted at `0x4` in the stub's first `pop` — so the value became `4` *after* the
+guard. With the canary passing, that was read as "a register that did not survive". The window
+was identified correctly and is the one closed above; the register reading was the wrong half,
+because a callee-saved register restored from a slot a second CPU rewrote is both.
 
 ### 5.3 No release provenance — **[I-9]**
 

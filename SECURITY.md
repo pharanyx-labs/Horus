@@ -37,11 +37,20 @@ audited by a third party, and has known unfixed security defects.
 Horus remains **research-grade**. It has not been independently audited, no security-critical
 change has ever been reviewed by a second person (**[C-5]**). Every security-specific CI job
 is classified as merge-gating as of 2026-08-16, taking the ruleset from 22 required contexts
-toward 67. But CI cannot verify that the ruleset matches the checked-in classification, and the
-reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. Open
-findings — an SMP fault whose origin is not yet known (**[G-8]**) and the remaining `tasks[]`
-table (**[I-7]**) — are in
+toward 67, and to **70** with the two gates [G-8] added on 2026-08-17. But CI cannot verify
+that the ruleset matches the checked-in classification, and the
+reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. The
+one remaining open finding — the `tasks[]` table (**[I-7]**) — is in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+
+**[G-8]** closed on 2026-08-17, and it is the reason **S20** is in the table below. A switch
+path published the outgoing task as claimable while the CPU making the switch was still
+executing ISR frames on that task's kernel stack; a second CPU took it, resumed it to ring 3,
+and its next trap rewrote those frames — memory corruption across a privilege boundary, and the
+origin of every bogus resume `%rsp` the finding had recorded. The claim is now held until the
+CPU has left the stack, and the property is checked on every interrupt rather than argued for.
+Paired over 1600 boots: the pre-fix release site 31/800, the shipped one 0/800, Fisher
+p = 6.9 × 10⁻¹⁰.
 
 Two closed on 2026-08-16. The write-ahead journal's missing `FLUSH CACHE` (**[I-10]**) — so
 filesystem crash-atomicity no longer depends on the emulator supplying durability the kernel
@@ -186,6 +195,7 @@ Stated as claims, with the mechanism and its witness, so each can be checked.
 | S16 | A task cannot read another's XMM register file | `fxsave`/`fxrstor` across ring transitions | — |
 | S17 | The shipped binary corresponds to the published source | Byte-for-byte reproducible build | the `reproducible` CI job, a required check, which builds twice and diffs. `make reproducible-build` builds **once** and only records the hash |
 | S19 | Audit-log history committed before a kernel compromise cannot be forged or rewritten | Forward-secure hash chain in `src/kernel/kaudit.c`: the MAC key is ratcheted one-way and erased after every entry | Rust unit tests (`rust/src/audit.rs`) |
+| S20 | A task's kernel stack is executed by at most one CPU at a time | The scheduler's claim on the outgoing task is held until the CPU has *left* its stack — released from `sched_release_deferred()`, called by `isr_common_stub64` after `movq %rax,%rsp` — and `g_kstack_inflight` halts the kernel if two CPUs are ever on one stack | `make smoke-kstack-race` **and** `smoke-kstack-race-control` (the pre-fix release site, which must reproduce it) |
 
 S13 and S14 were undermined until 2026-07-27 by the [C-1] defect — an attacker could
 impersonate the server rather than lie to it. S13a and S13b are the properties that now hold

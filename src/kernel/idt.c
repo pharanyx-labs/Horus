@@ -598,7 +598,7 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * is not this CPU is what makes the report mean "two CPUs" rather than "a bit
      * was set": a stale bit belonging to this CPU is not a collision with anyone.
      *
-     * Reported under the BOUNDED claim for the reason the floor guard below is --
+     * Reported under the BOUNDED claim for the reason the resume-rsp guard below is --
      * the failure this watches for is exactly the kind that leaves another CPU
      * halted holding the permanent one, and a guard silenced by the failure it is
      * watching for is not an instrument. */
@@ -657,8 +657,12 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * a banner naming the stub and telling you nothing about which switch path
      * produced it. (Or earlier still, on the out->cs read just below -- rsp==4
      * faults at 0x94, which is exactly what a reproduce-and-symbolise cycle spent
-     * an hour chasing.) Kernel stacks are higher-half, so anything below that is a
-     * returned 0/1/-1 or a wild value, never a frame.
+     * an hour chasing.) Every kernel stack is a .bss array, so a legal value lies
+     * in [__bss_start, __bss_end) and a returned 0/1/-1 or a wild value does not.
+     * This comment used to say "kernel stacks are higher-half, so anything below
+     * that is [bogus]", which was the floor-only rationale and named the blind
+     * spot without noticing it: -7 is 0xFFFF...F9, which is not below anything.
+     * See resume_rsp_is_bogus() for the bound and why it comes from the linker.
      *
      * RESUME_GUARD_DISABLE compiles the guard out. Test-only, and the control arm
      * for `make smoke-resume-guard`: with the same injected bogus value and no

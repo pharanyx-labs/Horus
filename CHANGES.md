@@ -8,6 +8,32 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — three claims the resume-guard commit left describing the defect it had just closed
+
+Documentation only; no behaviour change. Adding a ceiling to the resume-`%rsp` guard falsified
+four statements elsewhere in the tree, and the commit that added it updated one of them.
+
+- **`docs/ROADMAP.md` §1.7** justified `smoke-kstack-park`'s advisory status with "its workload
+  still reddens ~27% of the time for this". `~27%` is the rate measured after the exec fix and
+  **before** the CR3 guard; the same roadmap item quotes **2 in 30** (~7%) eighteen lines
+  earlier. The clause also charged the residue to §1.7's unserialised singletons, when it is the
+  bogus resume `%rsp` — the rest of **[G-9]**, and a different defect. A stale figure and a wrong
+  attribution in one sentence, thirty lines from the measurement that refutes both.
+- **`.github/ci-gating.yml`** gave the same exemption's reason as a `-7` "that the floor guard
+  in `interrupt_handler64` misses because it tests only a lower bound". The guard no longer
+  misses it. The exemption itself is unchanged and still stands — the guard is a detector, so the
+  rate is still ~7% and the promotion condition (0 over 30) is untouched — but an advisory reason
+  that describes a fixed defect is how a gate stays exempt after its excuse expires.
+- **`docs/LIMITATIONS.md`** said of the 2026-08-13 `.text`-pointer capture that "`#123`'s floor
+  guard does not cover that value". The new bound is `[__bss_start, __bss_end)`, and a `.text`
+  pointer is outside it, so that value would now be rejected and reported.
+- **`src/kernel/idt.c`** still explained the predicate as "kernel stacks are higher-half, so
+  anything below that is a returned 0/1/-1 or a wild value" — the floor-only rationale, naming
+  the blind spot without noticing it, since `-7` is not below anything.
+
+No finding changes status: **[G-9]** and **[G-10]** stay open, and `smoke-kstack-park` stays
+advisory. What changes is that no file now states the guard's old predicate as its current one.
+
 ### Fixed — the resume-`%rsp` guard was a floor with no ceiling
 
 `interrupt_handler64` rejects a bogus kernel `%rsp` before the ISR epilogue loads it, and the

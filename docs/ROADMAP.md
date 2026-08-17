@@ -678,8 +678,16 @@ with the exec fix this took the workload from ~45% of boots failing to **2 in 30
 Making each singleton per-CPU is not obviously the right answer here as it was for the exec
 hand-off — a staging buffer per CPU is a real memory cost, and the argv/stdio state is logically
 per-*spawn* rather than per-CPU. A lock around the spawn/exec critical section is the likelier
-shape. Either way it needs its own control arm; `smoke-kstack-park` stays advisory until it
-lands, because its workload still reddens ~27% of the time for this.
+shape. Either way it needs its own control arm; `smoke-kstack-park` stays advisory until its
+workload is clean over 30 boots. It passes in its exact form now and reddens on **2 boots in 30**
+(~7%) — and that residue is the bogus resume `%rsp` that is the rest of **[G-9]**, not these
+singletons, so closing this item is not by itself what promotes the gate.
+
+> *Corrected 2026-08-18: this paragraph read "still reddens ~27% of the time for this". ~27% was
+> the rate after the exec fix and **before** the CR3 guard — the number eighteen lines above
+> supersedes it, and the sentence also charged the residue to the wrong half of the item. A
+> stale figure and a wrong attribution in the same clause, thirty lines from the measurement
+> that refutes both.*
 
 ---
 

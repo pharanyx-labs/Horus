@@ -800,8 +800,10 @@ fault is a `#GP` **at the `iretq`** in `isr_common_stub64`: `interrupt_handler64
 resume `%rsp` pointing into `.text`, the stub's 15 `pop`s loaded registers from instruction
 bytes, and `iretq` took `CS` from those bytes. Proved rather than inferred — the reported
 `rbp` is bit-for-bit the code bytes at `resume_rsp + 64`. `TESTS.md` has the disassembly.
-`#123`'s floor guard does not cover that value: it is higher-half, so `rsp < 0xFFFF800000000000`
-passes it.
+`#123`'s floor guard did not cover that value: it is higher-half, so `rsp < 0xFFFF800000000000`
+passed it. *(Superseded 2026-08-18: the guard is now bounded at both ends against
+`[__bss_start, __bss_end)`, and a `.text` pointer is outside that range, so this capture's value
+would be rejected and reported today. Detection only — see the ~7% note below.)*
 
 **2026-08-13 — a second capture, and two corrections.** A dual-arm run caught the fault again
 on `main` at `e9aebdd`, in a boot carrying **two** corrupted resume values on two CPUs: a

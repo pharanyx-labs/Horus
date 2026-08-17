@@ -618,7 +618,10 @@ the `ci-gating` job proves the classification is *complete* but not that the rul
 it — the two could diverge through a change in the GitHub UI with nothing in CI noticing.
 `.github/workflows/ruleset-audit.yml` now runs `--check-ruleset` daily as a **GitHub App scoped
 to this repository with `Administration: read` and nothing else**: the token is minted per run,
-expires within the hour, and cannot modify the ruleset it reads.
+expires within the hour, and cannot modify the ruleset it reads. Its log states the comparison
+outcome explicitly (`live ruleset 19007209 : 71 required contexts, matches`, or `DIVERGED`, or
+`NOT READ`), so a green run is self-evidencing rather than merely silent — the first live run
+could only be shown to have read anything by falsifying it afterwards with a bad token.
 
 That is a trade and it is written into the workflow header rather than left implicit — a
 credential able to read repository administration now sits in Actions secrets, in order to

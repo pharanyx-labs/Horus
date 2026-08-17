@@ -33,6 +33,18 @@
 # PR has merged. Syncing from a feature branch froze the repository on 2026-08-16;
 # `tools/prune_unsatisfiable_checks.py` recovers from that and encodes the rule.
 #
+# DEMOTION IS THE MIRROR IMAGE, AND MUST LEAD THE MERGE. Moving a job from
+# `required` to `advisory` here changes nothing in the ruleset, so the context is
+# still required and a failing one blocks the very pull request that demotes it.
+# That deadlocked #167 on 2026-08-17: the job it was demoting was red, which was
+# the whole reason for the demotion. Run --sync-ruleset BEFORE merging a demotion.
+# It is the safe direction — removing a requirement cannot freeze anything, where
+# adding one can — and it leaves `main` disagreeing with the ruleset for exactly
+# one merge, the same one-merge window promotion leaves in the other direction.
+#
+#   promote:  merge first, then --sync-ruleset   (adding a requirement)
+#   demote:   --sync-ruleset first, then merge   (removing one)
+#
 # So the checked-in classification is the decision record, CI enforces that it
 # is COMPLETE, and reconciling the ruleset to it stays a visible manual step.
 
@@ -77,7 +89,6 @@ required:
   - smoke-irq
   - smoke-irq-policy
   - smoke-kfault
-  - smoke-kstack-park
   - smoke-kstack-race
   - smoke-mapphys
   - smoke-modules
@@ -120,6 +131,18 @@ advisory:
     gating on it would convert a scheduling hiccup into a merge block while
     adding no assurance. A crash it does find is a finding to triage, not a
     check to re-run.
+
+  smoke-kstack-park: >-
+    [G-9] Its workload -- PROC_SELFTEST at -smp 4 -- trips a PRE-EXISTING
+    scheduler claim leak on roughly 40% of boots, so the gate reddens for a
+    defect it does not test. Measured 2026-08-17: 9 failures in 20 boots at
+    -smp 4 against 0 in 20 at -smp 1, and 8 of those 20 reported
+    "stale scheduler claim at preempt_on_tick" under SCHED_INVARIANTS. The
+    pre-#162 release timing gives 10 in 20, so this is not caused by the [G-8]
+    fixes. The S20 park property it checks is real and the control arm still
+    reproduces the defect on demand; what is not sound is requiring a workload
+    nothing had ever run at -smp 4 before this gate. Promote it in the same
+    commit that closes [G-9], and quote a rate.
 
   ruleset-audit: >-
     Schedule-only (daily cron plus workflow_dispatch), so it never runs on a

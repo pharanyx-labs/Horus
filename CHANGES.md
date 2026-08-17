@@ -8,6 +8,31 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — the ruleset audit's log now says what it compared (**[C-6]**)
+
+`--check-ruleset` printed the classification summary and nothing about the ruleset, so a green
+run was silent on whether the comparison had happened at all. The first live run of
+`ruleset-audit` could only be shown to have really read the ruleset by *falsifying* it
+afterwards with a bad token — which is the wrong way round for a job whose entire purpose is to
+be believed when it is green.
+
+It now prints one line, and the state is set only where the corresponding thing actually
+happened:
+
+```
+live ruleset 19007209      : 71 required contexts, matches
+live ruleset 19007209      : 70 required contexts, DIVERGED (1 missing, 0 unexpected)
+live ruleset 19007209      : NOT READ
+```
+
+`NOT READ` is the default and survives any path that does not complete a comparison, so a run
+that failed to reach the API cannot look, at a glance, like one that read it and found it
+correct. The exit status was already right in every case; this is about what the log says.
+
+Falsified in all four states before being believed: matching (exit 0), a live ruleset short one
+context (`DIVERGED`, exit 1), an unreadable ruleset (`NOT READ`, exit 1), and the line correctly
+absent without `--check-ruleset`.
+
 ### Added — a scheduled job that checks the live ruleset against the checked-in classification (**[C-6]**)
 
 The half of **[C-6]** that CI could not reach. `.github/ci-gating.yml` is the decision record

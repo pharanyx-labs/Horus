@@ -207,6 +207,14 @@ def main():
             return 1
         return sync_ruleset(sorted(required))
 
+    # What the summary below says about the ruleset. Stays "NOT READ" unless the
+    # API call actually returned a required_status_checks rule, so a green log can
+    # never imply a comparison that did not happen -- the point being that a run
+    # which failed to read the ruleset must not look, at a glance, like one that
+    # read it and found it correct. A failed read also lands in `problems` and
+    # exits non-zero; this is about what the LOG says, not what the exit code does.
+    ruleset_state = "NOT READ"
+
     if args.check_ruleset:
         try:
             raw = subprocess.run(["gh", "api", RULESET], capture_output=True,
@@ -219,6 +227,7 @@ def main():
                                   r["parameters"]["required_status_checks"])
             if live is None:
                 problems.append("ruleset has no required_status_checks rule")
+                ruleset_state = "no required_status_checks rule"
             else:
                 missing = sorted(set(required) - set(live))
                 extra = sorted(set(live) - set(required))
@@ -226,6 +235,10 @@ def main():
                     problems.append(f"ruleset is MISSING required context: {c}")
                 for c in extra:
                     problems.append(f"ruleset requires a context this file does not: {c}")
+                ruleset_state = (f"{len(live)} required contexts, matches"
+                                 if not missing and not extra else
+                                 f"{len(live)} required contexts, DIVERGED "
+                                 f"({len(missing)} missing, {len(extra)} unexpected)")
         except subprocess.CalledProcessError as e:
             problems.append(f"could not read the ruleset: {e.stderr.strip()}")
 
@@ -236,6 +249,8 @@ def main():
     for jid in sorted(advisory):
         if jid in jobs:
             print(f"      - {jid}")
+    if args.check_ruleset:
+        print(f"live ruleset {RULESET.rsplit('/', 1)[-1]}      : {ruleset_state}")
 
     if problems:
         print("\nFAIL: CI gating is not fully classified\n", file=sys.stderr)

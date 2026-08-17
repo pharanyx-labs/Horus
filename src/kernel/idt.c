@@ -267,22 +267,60 @@ static uint64_t resume_rsp_inject(uint64_t rsp)
  * about where the value came from -- exactly the obscurity this guard exists to
  * remove.
  *
- * So bound it at both ends, and bound it from the LINKER rather than a constant.
- * Every kernel stack in a 64-bit context is a .bss array:
+ * So bound it at both ends, and bound it from the LINKER rather than a constant:
+ * a stack that MOVES still satisfies a section-derived bound, while one allocated
+ * somewhere new fails loudly instead of silently widening the guard.
  *
- *   - per_task_kstacks[] (paging.c) -- every task's kernel stack, task 0's too
- *   - ap_idle_stacks[]   (smp.c)    -- the per-CPU idle and park stacks
- *   - stack_top, ist{1,2,3}_stack_top, early_handler_stack_top (multiboot.S)
+ * TWO RANGES, and the second one is the whole lesson of this function.
  *
- * so a legal resume value lies in [__bss_start, __bss_end) and nothing else does.
+ * The first version of this guard used [__bss_start, __bss_end) alone, on the
+ * stated premise that "every kernel stack in a 64-bit context is a .bss array",
+ * listing stack_top, ist{1,2,3}_stack_top and early_handler_stack_top together as
+ * multiboot.S .bss objects. Four of those five are. The IST stacks are NOT: they
+ * are emitted in multiboot.S's .data block beside gdt64/tss64, well below
+ * __bss_start (0x...1a8000 against a __bss_start of 0x...1b0000 in the build that
+ * caught this). The premise was checked against the .bss arrays it named and never
+ * against the three objects it got wrong.
+ *
+ * IST1 serves #DF/#GP/#PF. So a bss-only bound rejects the legal resume %rsp of
+ * every page fault taken through IST1 -- and this guard's response to a rejection
+ * is to halt the CPU, fail-closed. The kernel therefore died on the first ring-3
+ * page fault of any workload that took one: `CAPTEST: PASS 100 checks` became
+ * "PANIC: dispatcher returned a bogus resume rsp=0xffffffff801a9f50", which is an
+ * address 0xf50 into ist1_stack_bottom's page and about as legal as a resume value
+ * gets. Ten CI gates went red together, all of them userspace workloads.
+ *
+ * The bug is instructive because the guard's own witnesses could not see it. Both
+ * arms inject a bogus value and ask whether the report APPEARS -- they measure
+ * false negatives. Nothing asked whether the guard stays silent on a LEGAL value,
+ * so a predicate that rejected everything would have passed every test the commit
+ * shipped with. smoke-resume-guard-ist is that missing arm; see TESTS.md.
+ *
+ * The two legal ranges:
+ *
+ *   [__bss_start, __bss_end)          stack_top and early_handler_stack_* plus
+ *                                     per_task_kstacks[] (paging.c) and
+ *                                     ap_idle_stacks[] (smp.c) -- every task
+ *                                     stack, task 0's included, and every
+ *                                     per-CPU idle/park stack.
+ *   [ist1_stack_guard, ist3_stack_top) the IST cluster, in .data.
+ *
+ * The IST bracket spans the three guard pages as well as the three stacks. That
+ * is deliberate and not a widening worth avoiding: kern_fixed_stack_guards_init()
+ * unmaps those pages, so a resume onto one faults on the very first push whether
+ * this predicate accepts it or not. Six contiguous pages named by two linker
+ * symbols is cheaper on a path that runs at every interrupt return than three
+ * separate range tests, and multiboot.S carries the comment that keeps the
+ * cluster contiguous.
+ *
  * (boot_stack_top is in .boot.data, but it is the 32-bit early stack and long
  * mode is entered before interrupt_handler64 exists, so it is never a resume
- * value.) Deriving the bound from the section means a future stack that moves
- * still satisfies it, and one allocated somewhere new fails loudly rather than
- * silently widening the guard.
+ * value.)
  *
- * RESUME_GUARD_FLOOR_ONLY=1 restores the floor-only test -- the blind spot, on
- * demand -- and is what `make smoke-resume-guard-negative-control` builds.
+ * RESUME_GUARD_FLOOR_ONLY=1 restores the floor-only test -- the missing ceiling,
+ * on demand -- and is what `make smoke-resume-guard-negative-control` builds.
+ * RESUME_GUARD_BSS_ONLY=1 restores the bss-only bound described above, the
+ * false-positive on demand, for `make smoke-resume-guard-ist-control`.
  * RESUME_GUARD_DISABLE removes the guard entirely, which is a different arm with
  * a different question (see smoke-resume-guard). */
 static int resume_rsp_is_bogus(uint64_t rsp)
@@ -291,8 +329,16 @@ static int resume_rsp_is_bogus(uint64_t rsp)
     return rsp < 0xFFFF800000000000ULL;
 #else
     extern uint8_t __bss_start[], __bss_end[];
-    return rsp <  (uint64_t)(uintptr_t)__bss_start ||
-           rsp >= (uint64_t)(uintptr_t)__bss_end;
+    if (rsp >= (uint64_t)(uintptr_t)__bss_start &&
+        rsp <  (uint64_t)(uintptr_t)__bss_end)
+        return 0;
+#ifndef RESUME_GUARD_BSS_ONLY
+    extern uint8_t ist1_stack_guard[], ist3_stack_top[];
+    if (rsp >= (uint64_t)(uintptr_t)ist1_stack_guard &&
+        rsp <  (uint64_t)(uintptr_t)ist3_stack_top)
+        return 0;
+#endif
+    return 1;
 #endif
 }
 

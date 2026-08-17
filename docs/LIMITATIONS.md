@@ -969,15 +969,35 @@ or `4` and let every small *negative* value through, `-7` being `0xFFFFFFFFFFFFF
 the floor. A guard whose own comment said it was there to catch "a returned 0/1/-1" tested for
 two of those three.
 
-It is now bounded at both ends, and bounded from the **linker** rather than a constant: every
-64-bit kernel stack is a `.bss` array — `per_task_kstacks[]` (paging.c), `ap_idle_stacks[]`
-(smp.c), and `stack_top` / the IST stacks / `early_handler_stack_top` (multiboot.S) — so a legal
-resume value lies in `[__bss_start, __bss_end)` and nothing else does. A stack that moves still
-satisfies it; one allocated somewhere new fails loudly instead of silently widening the guard.
+It is now bounded at both ends, and bounded from the **linker** rather than a constant. A stack
+that moves still satisfies such a bound; one allocated somewhere new fails loudly instead of
+silently widening the guard.
+
+> **That bound was wrong for one commit, and the correction is the more useful record.** It was
+> first written as `[__bss_start, __bss_end)` alone, on the premise that *every* 64-bit kernel
+> stack is a `.bss` array — `per_task_kstacks[]` (paging.c), `ap_idle_stacks[]` (smp.c), and
+> `stack_top` / the IST stacks / `early_handler_stack_top` (multiboot.S). Four of those five are.
+> **The IST stacks are in `.data`**, emitted in `multiboot.S`'s block beside `gdt64`/`tss64`.
+> IST1 serves `#DF`/`#GP`/`#PF` and this guard halts on a rejection, so that kernel died on the
+> first ring-3 page fault of any workload that took one — `bogus resume rsp=0xffffffff801a9f50`,
+> an address `0xf50` into `ist1_stack_bottom`'s page. Ten CI gates went red at once, every one a
+> userspace workload.
+>
+> The guard now accepts `[__bss_start, __bss_end)` **or** `[ist1_stack_guard, ist3_stack_top)`.
+> The premise had been checked against the `.bss` arrays it named and never against the three
+> objects it got wrong.
 
 Witnessed by `make smoke-resume-guard-negative` (inject `-7`, the report must appear) against
 `make smoke-resume-guard-negative-control` (`RESUME_GUARD_FLOOR_ONLY=1` restores the floor-only
 test, the report must be **absent**).
+
+Witnessed in the other direction — the direction whose absence let the `.bss` bound ship — by
+`make smoke-resume-guard-ist` (no injection; the captest workload faults through IST1 and must
+reach `CAPTEST: PASS` with the guard silent) against `make smoke-resume-guard-ist-control`
+(`RESUME_GUARD_BSS_ONLY=1`, the false rejection must be **present**). Every other arm on this
+guard injects a bogus value and asks whether the report appears, so all of them measure false
+*negatives*; a predicate that rejected the whole address space would pass the lot, and one that
+rejected the IST stacks did, with the resume-guard CI job green throughout.
 
 **This does not fix the ~7%.** The guard is a detector: closing its blind spot converts an
 obscure fault inside the ISR epilogue — a banner naming the stub and nothing about where the

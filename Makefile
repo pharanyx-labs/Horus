@@ -506,6 +506,18 @@ RESUME_GUARD_FLOOR_ONLY ?= 0
 ifeq ($(RESUME_GUARD_FLOOR_ONLY),1)
 CFLAGS += -DRESUME_GUARD_FLOOR_ONLY
 endif
+# RESUME_GUARD_BSS_ONLY=1 restores the bound the ceiling shipped with on
+# 2026-08-18: [__bss_start, __bss_end) and nothing else, on the premise that every
+# 64-bit kernel stack is a .bss array. The IST stacks are in .data, IST1 serves
+# #PF, and the guard halts on a rejection -- so that build dies on the first ring-3
+# page fault of any workload that takes one. This is the FALSE-POSITIVE arm: unlike
+# every other RESUME_GUARD_* flag it does not make the guard miss something, it
+# makes it reject something legal. `make smoke-resume-guard-ist-control` builds it
+# and requires the false rejection to be PRESENT.
+RESUME_GUARD_BSS_ONLY ?= 0
+ifeq ($(RESUME_GUARD_BSS_ONLY),1)
+CFLAGS += -DRESUME_GUARD_BSS_ONLY
+endif
 ifeq ($(RESUME_RSP_INJECT),1)
 CFLAGS += -DRESUME_RSP_INJECT -DRESUME_RSP_INJECT_TICKS=$(RESUME_RSP_INJECT_TICKS) \
           -DRESUME_RSP_INJECT_VALUE='$(RESUME_RSP_INJECT_VALUE)'
@@ -2378,6 +2390,52 @@ smoke-resume-guard-nofloor:
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
 		tools/kfault_test.sh boot.iso
+
+# Does the guard stay SILENT on a legal resume %rsp? Every arm above injects a
+# bogus value and asks whether the report appears -- they measure false negatives,
+# and a predicate that rejected every value in the address space would pass all of
+# them. This pair measures the other direction, and it exists because that gap was
+# not theoretical for even one commit.
+#
+# The ceiling added on 2026-08-18 bounded the guard to [__bss_start, __bss_end) on
+# the premise that every 64-bit kernel stack is a .bss array. The IST stacks are in
+# .data (multiboot.S emits them beside gdt64/tss64), IST1 serves #DF/#GP/#PF, and
+# the guard's response to a rejection is to halt -- so that kernel died on the
+# first ring-3 page fault any workload took, reporting a resume %rsp of
+# 0xffffffff801a9f50, which is 0xf50 into ist1_stack_bottom's page. Ten CI gates
+# went red at once and every resume-guard arm stayed green, because none of them
+# could see a false positive.
+#
+# The workload is captest: it faults through IST1 as a matter of course, and it
+# already prints a hard success marker. No injection in either arm -- the point is
+# what the guard does to values the kernel produces on its own.
+#
+#   smoke-resume-guard-ist          shipped predicate: CAPTEST: PASS, no report.
+#   smoke-resume-guard-ist-control  RESUME_GUARD_BSS_ONLY=1: the false rejection,
+#                                   on demand, and captest never finishes.
+# The banner is matched as a FIXED string up to the high half's leading digits,
+# so it names "the guard rejected a kernel-image address" without pinning the
+# exact stack offset, which shifts with the image layout. Not kfault_test.sh:
+# that anchors its verdict after the console handover, and neither arm here ever
+# reaches a login prompt -- the control arm dies inside captest, which is the
+# whole point.
+RESUME_GUARD_IST_RE = PANIC: dispatcher returned a bogus resume rsp=0xffffffff8
+
+.PHONY: smoke-resume-guard-ist
+smoke-resume-guard-ist:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
+		ABSENT_MARKER='$(RESUME_GUARD_IST_RE)' tools/smoke_test.sh boot.iso
+
+.PHONY: smoke-resume-guard-ist-control
+smoke-resume-guard-ist-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_FAULT='$(RESUME_GUARD_IST_RE)' \
+		tools/smoke_test.sh boot.iso
 
 # Two CPUs on one kernel stack -- finding G-8, and the gate that closes it.
 #

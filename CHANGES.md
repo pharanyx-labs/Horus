@@ -8,6 +8,64 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the resume-`%rsp` ceiling rejected the IST stacks, and every arm it shipped with said it was fine
+
+The ceiling added to `interrupt_handler64`'s resume-`%rsp` guard bounded a legal value to
+`[__bss_start, __bss_end)`, on the stated premise that *every kernel stack in a 64-bit context
+is a `.bss` array*. Four of the five objects it named are. **The three IST stacks are not** —
+`multiboot.S` emits them in its `.data` block beside `gdt64`/`tss64`, at `0x…1a8000` against a
+`__bss_start` of `0x…1b0000`.
+
+IST1 serves `#DF`/`#GP`/`#PF`, and the guard's response to a rejection is to halt, fail-closed.
+So the kernel died on the first ring-3 page fault of any workload that took one:
+
+```
+CAPTEST: begin
+PANIC: dispatcher returned a bogus resume rsp=0xffffffff801a9f50 task=1 'captest'
+KERNEL FATAL RESUME RSP - halting
+```
+
+`0xffffffff801a9f50` is `0xf50` into `ist1_stack_bottom`'s page — about as legal as a resume
+value gets. **Ten CI gates went red together** (captest, coreutils, newlib, CoW, TCC, port-I/O
+bitmap, heap64, boot-module transport, and both console tests), all of them userspace workloads,
+none related to each other except that each takes a page fault.
+
+**The guard now accepts two ranges**: `[__bss_start, __bss_end)` for `stack_top`,
+`early_handler_stack_*`, `per_task_kstacks[]` and `ap_idle_stacks[]`, and
+`[ist1_stack_guard, ist3_stack_top)` for the IST cluster. Both still come from the linker, so a
+stack that *moves* satisfies them and one allocated somewhere new still fails loudly. The IST
+bracket deliberately spans the three guard pages too: `kern_fixed_stack_guards_init()` unmaps
+them, so a resume onto one faults on its first push regardless, and two symbols over six
+contiguous pages is cheaper at every interrupt return than three range tests. `ist3_stack_top`
+is now `.global`, and `multiboot.S` carries the comment that keeps the cluster contiguous.
+
+**Why no existing arm caught it, which is the part worth keeping.** All five resume-guard arms
+inject a bogus value and ask whether the report *appears*. They measure **false negatives**. A
+predicate that rejected the entire address space would have passed every one of them — and a
+predicate that rejected the IST stacks did. The resume-guard CI job stayed **green** in the same
+run where those ten gates went red.
+
+The missing arm is now there, and it is a different shape from anything else in the suite:
+`smoke-resume-guard-ist` injects nothing, boots captest, and requires `CAPTEST: PASS 100 checks`
+with the guard's report **absent**. Its control arm `RESUME_GUARD_BSS_ONLY=1` restores the
+bss-only bound and requires the false rejection to be **present** — the first *false-positive*
+control arm in the tree. Both are steps in the existing `smoke-resume-guard` job, so the
+required-context count stays **72**.
+
+`tools/smoke_test.sh` gained an `EXPECT_FAULT` mode for the control arm. `kfault_test.sh` could
+not serve: it anchors its verdict after the console handover, and a build that dies inside a
+self-test reports "never reached the login prompt" — a failure, not the detection it is. The
+mode asserts that *the named* fault appeared, so a build that dies for an unrelated reason still
+fails, and no `|| true` was involved in inverting the verdict.
+
+Falsified both directions: `smoke-resume-guard-ist` passes with the fix and the false rejection
+is present under the control arm; `smoke-resume-guard` and `smoke-resume-guard-negative` re-run
+to confirm the guard still rejects `4` and `-7`; `smoke-newlib` and `smoke-cow`, both red in CI,
+pass again.
+
+**No security property changed** and no finding moves: **[G-9]** and **[G-10]** stay open, the
+`-7` is still unexplained, and the guard is still a detector rather than a cure.
+
 ### Fixed — three claims the resume-guard commit left describing the defect it had just closed
 
 Documentation only; no behaviour change. Adding a ceiling to the resume-`%rsp` guard falsified

@@ -931,6 +931,17 @@ jobs:
         run: make smoke-resume-guard-negative SMOKE_TIMEOUT=180
       - name: Restore the floor-only predicate and require the report to be INAUDIBLE
         run: make smoke-resume-guard-negative-control SMOKE_TIMEOUT=180
+      # FALSE POSITIVES. Every arm above injects a bogus value and asks whether
+      # the report APPEARS, so a predicate that rejected the entire address space
+      # would pass all of them -- and one that rejected the IST stacks did. The
+      # ceiling shipped bounded to .bss on the premise that every kernel stack is
+      # a .bss array; the IST stacks are in .data, IST1 takes #PF, and the guard
+      # halts on rejection, so the kernel died on the first ring-3 page fault of
+      # any workload. Ten gates went red and this job stayed green.
+      - name: Require the guard to stay SILENT on a legal IST resume rsp
+        run: make smoke-resume-guard-ist SMOKE_TIMEOUT=180
+      - name: Restore the bss-only bound and require the FALSE rejection to appear
+        run: make smoke-resume-guard-ist-control SMOKE_TIMEOUT=180
 
   smoke-kstack-race:
     name: A task's kernel stack is executed by at most one CPU (S20; and the control arm proves it)

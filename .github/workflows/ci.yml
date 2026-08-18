@@ -976,7 +976,7 @@ jobs:
         run: make smoke-kstack-race-control
 
   smoke-cr3-reclaim:
-    name: A slot's page tables are not recycled while a CPU is still on them (G-10; and the control arm proves it)
+    name: A slot's page tables are not recycled while a CPU is on them (G-10; control arm proves it)
     runs-on: ubuntu-latest
     # Two clean builds plus CR3_RECLAIM_RUNS boots and 3 control boots. The
     # control arm halts as soon as it reproduces, which is every boot.
@@ -1004,7 +1004,7 @@ jobs:
         run: make smoke-cr3-reclaim-control
 
   smoke-exec-reenter:
-    name: An exec re-entry is consumed by the CPU that armed it (G-9 exec component; and the control arm proves it)
+    name: An exec re-entry is consumed by the CPU that armed it (G-9; control arm proves it)
     runs-on: ubuntu-latest
     # Two clean builds and 2 x EXEC_REENTER_RUNS boots. Passing boots exit on
     # their marker in ~25s; the control arm halts as soon as it reproduces. The

@@ -8,6 +8,31 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — two job names were too long to be required, which is why they could not be promoted
+
+`smoke-cr3-reclaim` (104 chars) and `smoke-exec-reenter` (105) were the first two jobs in the
+tree to exceed GitHub's **100-character** limit on a status-check context. GitHub publishes the
+truncated string (97 chars + `...`); `.github/workflows/ci.yml` declares the full one; and
+`tools/check_ci_gating.py --check-ruleset` audits the ruleset against the *declared* name.
+
+So the two gates added by #168 were reported as permanently `MISSING` from the ruleset, and the
+obvious remedy — pasting the declared name in — **would have required a context no run can ever
+produce, blocking every pull request indefinitely** on a check that cannot report. The promotion
+was blocked by a string length, and nothing said so.
+
+Both names are shortened (90 and 82 chars) so the declared name and the published context are
+the same string again, and `check_ci_gating.py` now **fails the build** on any job name over
+`CONTEXT_MAX = 100` rather than leaving the limit as folklore. The value is measured off the
+wire, not taken from the REST reference, which does not document it.
+
+Falsified: restoring the 104-char name makes `check_ci_gating.py` exit non-zero with
+`job 'smoke-cr3-reclaim' has a 104-character name`; shortening it passes again. No gate was
+weakened — the two jobs are unchanged in what they run, and the required-context count stays
+**72**.
+
+*This is the mechanism half of **[C-6]** again, one layer down: the classification was complete
+and the audit tool agreed with itself, while the thing it audits could not physically match.*
+
 ### Fixed — the resume-`%rsp` ceiling rejected the IST stacks, and every arm it shipped with said it was fine
 
 The ceiling added to `interrupt_handler64`'s resume-`%rsp` guard bounded a legal value to

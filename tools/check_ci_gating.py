@@ -49,6 +49,12 @@ GATING_YML = ".github/ci-gating.yml"
 RULESET = "repos/pharanyx-labs/Horus/rulesets/19007209"
 
 
+# GitHub truncates a check-run name to this many characters when it publishes it
+# as a status-check context. Not documented in the REST reference; measured off
+# the wire (a 105-char job name came back as 97 chars + "...").
+CONTEXT_MAX = 100
+
+
 def load_jobs(path):
     """Map job id -> list of status-check contexts it produces.
 
@@ -176,6 +182,24 @@ def main():
                             f"gates a merge, and if not, write down why")
         elif in_req and in_adv:
             problems.append(f"job '{jid}' is in both lists")
+
+    # GitHub truncates a status-check context to 100 characters, and the ruleset
+    # stores the context it actually SEES. A job name longer than that therefore
+    # publishes one string and gets audited against another: this script would
+    # report the full name as permanently "missing", and anyone resolving that by
+    # pasting the full name into the ruleset would require a context no run can
+    # ever produce -- every PR blocked forever on a check that cannot report.
+    #
+    # Found the day smoke-cr3-reclaim (104) and smoke-exec-reenter (105) became
+    # the first two jobs to cross it, which is also exactly why they were the two
+    # that could not be promoted. Checked here rather than left as folklore.
+    for jid in sorted(jobs):
+        for ctx in jobs[jid]:
+            if len(ctx) > CONTEXT_MAX:
+                problems.append(
+                    f"job '{jid}' has a {len(ctx)}-character name; GitHub "
+                    f"truncates a status-check context at {CONTEXT_MAX}, so the "
+                    f"ruleset can never match it. Shorten the name.")
 
     # An entry naming a job that no longer exists is how this file would rot into
     # fiction, so it is an error rather than a warning.

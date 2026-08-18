@@ -901,14 +901,40 @@ caller, false of a CPU parked in `kernel_idle()` (which never reloads CR3) and f
 `SYS_KILL` marked dead while it was still running in ring 3 elsewhere. The freed frames were
 handed back out as ordinary pages under a live core. `switch_cr3()` now publishes each CPU's
 loaded CR3 and the reclaim refuses to free a tree anyone else holds, parking it for retry.
-Falsified with `CR3_RECLAIM_UNGUARDED=1` at 20 free-in-use boots in 20. The rest of the finding
-stands: one
-ELF staging buffer (`loader_staging`), one staged argv (`g_args_*`), one `g_spawn_stdio_spec`,
-one `g_spawn_caller` — and no lock in `loader.c`, none around `do_spawn`. This is a design-level
-gap rather than a bug to patch in place: the path was written for a kernel that spawned from one
-core, and every one of those singletons is a place where two cores now meet. The correctness
-consequence is a CR3 becoming reachable before `create_user_pagedir` has populated its kernel
-half; the authority consequence is that `g_spawn_caller` is read long after it is written, so a
-child's stdio can be wired from **the wrong parent's cspace** — capability inheritance from a
-task that never spawned it. The likely fix is serialising the spawn/exec critical section, which
-is its own change with its own witness. See `LIMITATIONS.md` §5.2e.
+Falsified with `CR3_RECLAIM_UNGUARDED=1` at 20 free-in-use boots in 20.
+
+*Closed 2026-08-18.* The remaining singletons — one ELF staging buffer (`loader_staging`), one
+armed header, one staged argv (`g_args_*`), one `g_spawn_stdio_spec`, one `g_spawn_caller` —
+are addressed in the two different ways they needed:
+
+- **The authority half is gone rather than guarded.** `g_spawn_caller` and
+  `g_spawn_stdio_spec` were file-scope globals written at `do_spawn` entry and read hundreds of
+  KiB of ELF copying later by `wire_child_stdio`, so a second CPU entering `do_spawn` in that
+  window redirected the read to *its* cspace and the child inherited a pipe capability from a
+  task that never spawned it. They are parameters now (`do_spawn_stdio` → `do_spawn_inner` →
+  `wire_child_stdio`), which makes the wrong parent unexpressible rather than unlikely.
+- **The buffer half is serialised.** `spawn_stage_acquire()` / `spawn_stage_release()` bracket
+  every arm → consume window in the kernel — the four syscall entry points, the boot launchers,
+  `SYS_SUDO`'s consume, and every gated self-test that stages an image by hand. Per-CPU was the
+  right answer for the exec hand-off and is the wrong one here: a staging buffer per core is
+  `LOADER_STAGING_BYTES` of real memory for state that is logically per-*spawn*. Interrupt
+  latency is not a new cost — `int 0x80` is an interrupt gate, so the whole spawn already ran
+  with `IF=0` — and the lock is outermost, taken by entry points holding nothing.
+- **And the window is now owned.** See G-11: the staged image records the task that armed it,
+  so a theft is refused rather than executed.
+
+See `LIMITATIONS.md` §5.2e.
+
+**G-11 — the armed image was ambient state.** *Closed 2026-08-18.* The staged image is one
+process-wide buffer, and nothing recorded the connection between the task that armed it and the
+task that spawned it. `SYS_SUDO` turns that into a privilege boundary: it re-authenticates the
+caller and then spawns whatever is armed **as uid 0**, in a separate syscall from the arm, so a
+correct password could elevate a program the authenticating task never staged — a confused
+deputy reachable from ring 3 by any task holding the spawn capability. Nothing in userspace
+calls `sudo` today, which is the only reason this is a G-number and not a C-number.
+`loader_arm_commit()` is now the sole way to publish an armed image and records the arming task
+with it; `do_spawn` and `h_sudo` refuse any image whose owner is not the current task, fail
+closed on an unowned one, and audit the refusal. The same check is what lets the spawner's
+identity be handed to `wire_child_stdio` as a *proved* parentage rather than a remembered one.
+Witness `make smoke-spawn-owner`, falsified by `SPAWN_OWNER_UNCHECKED=1`
+(`smoke-spawn-owner-control`, which spawns the foreign image on every boot).

@@ -570,13 +570,33 @@ void h_sudo(struct interrupt_frame64 *r) {
      * because there was nothing to spawn — still logged "sudo success". An
      * auditor would read a successful elevation that never happened. The
      * credential use is worth recording either way, so record what it was. */
+    /* The armed image and the sudo are SEPARATE syscalls, so this is the one
+     * consumer of the staging that cannot be inside the arming task's bracket.
+     * Take the lock for the consume alone -- it stops an arm landing underneath
+     * this spawn -- and let do_spawn's owner check ([G-11], loader.c) decide
+     * whether the image is this caller's to elevate. Before that check, a task
+     * that authenticated correctly could be made to spawn ANOTHER task's image
+     * at uid 0: the password proved who was asking, and nothing proved what was
+     * being asked for. */
+    spawn_stage_acquire();
     if (!program_armed) {
+        spawn_stage_release();
         audit_log(AUDIT_SUDO, 0, 0, "sudo auth ok, no image armed (nothing elevated)");
         r->rax = (uint32_t)SYS_ERR_NOENT;
         return;
     }
+    if (!staged_image_owned_by_current()) {
+        spawn_stage_release();
+        /* Audited as a refusal, not as a failure: a correct password that was
+         * about to elevate somebody else's program is the interesting event. */
+        audit_log(AUDIT_SUDO, 0, (uint32_t)staged_owner_task,
+                  "sudo refused: armed image belongs to another task");
+        r->rax = (uint32_t)SYS_ERR_PERM;
+        return;
+    }
 
     int pid = do_spawn();
+    spawn_stage_release();
     if (pid > 0) {
         tasks[pid].uid = 0;
         tasks[pid].gid = 0;

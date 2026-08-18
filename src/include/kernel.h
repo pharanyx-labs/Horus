@@ -613,11 +613,12 @@ void kobj_gc(void);
  * happened rather than assuming it. */
 uint32_t kobj_live_count(uint32_t kobj_type);
 
-/* Arm the untyped tables' spinlock. Called at the END of scheduler_init: every
- * mutation before that point is single-threaded boot code, and locking there
- * would trip the unconditional `sti` in spin_unlock (finding C-3.1). See the
- * locking note at the top of src/kernel/untyped.c before changing this. */
-void untyped_arm_locking(void);
+/* The untyped tables are locked unconditionally, from the first allocation of
+ * the boot onwards. They were not until 2026-08-18: locking was armed at the end
+ * of scheduler_init, because a boot-window lock would have tripped the
+ * unconditional `sti` spin_unlock used to end with (finding C-3.1, closed by
+ * roadmap 1.1 on 2026-08-11). See the locking note at the top of
+ * src/kernel/untyped.c before reintroducing any such window. */
 
 #ifdef UNTYPED_SELFTEST
 void untyped_selftest(void);
@@ -1881,6 +1882,10 @@ void wx_selftest(void);
 #endif
 #ifdef NZCOW_SELFTEST
 void nzcow_selftest(void);   /* generic (non-zero) copy-on-write break test */
+#endif
+#ifdef SPAWN_OWNER_SELFTEST
+/* Staged-image ownership ([G-11]): refuse a foreign arm, accept your own. */
+void spawn_owner_selftest(void);
 #endif
 #ifdef ASPACE_SELFTEST
 void aspace_selftest(void);

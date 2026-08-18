@@ -102,6 +102,14 @@ required (**[I-1]**).
 `SYS_SPAWN_IMAGE` / `SYS_EXEC_IMAGE` are the `execve`-from-memory path. The image is validated
 by the Rust ELF loader exactly like a named binary.
 
+**Every one of these consumes the same process-wide staging, and since 2026-08-18 it has an
+owner.** Arming an image records the arming task, and a spawn or exec refuses to consume an
+image armed by any other — fail closed, including on an image with no recorded owner. This is
+invisible to a caller that arms and spawns in the usual way (both halves are the same task) and
+matters to the two paths where they can differ: `SYS_SPAWN` with a null name, which spawns
+whatever is already armed, and `SYS_SUDO`. Finding **[G-11]**, property **S21**; the arm →
+consume window is also serialised, so two CPUs cannot interleave through the staging buffer.
+
 ## Signals
 
 | # | Name | Arguments | Authorisation |
@@ -305,7 +313,7 @@ Pipes *are* properly capability-addressed: the slot argument is a cspace slot re
 |---|---|---|---|
 | 29 | `SYS_GETUID` | — | none (self) |
 | 30 | `SYS_AUTH` | `user`, `pass` | none (self-authorising) |
-| 31 | `SYS_SUDO` | `pass` | re-authentication in handler |
+| 31 | `SYS_SUDO` | `pass` | re-authentication in handler **and** the armed image must be one this task armed (**S21**) |
 | 32 | `SYS_GET_PASS` | `buf` | none |
 | 33 | `SYS_USERADD` | `user`, `pass` | `CAP_USER` at `CAPSLOT_USER` |
 | 34 | `SYS_USERDEL` | `user` | `CAP_USER` at `CAPSLOT_USER` |
@@ -318,6 +326,14 @@ roadmap 0.2's sweep of `syscall.c` never reached (finding **[H-1]**). "Admin" he
 possession of `CAP_USER`, and nothing else; a task at uid 0 with an empty cspace is refused.
 Witnessed by `make smoke-captest` (which runs as uid 0 and holds no `CAP_USER`) and by
 `make smoke-session`, which asserts both directions through the real ring-3 shell.
+
+`SYS_SUDO` spawns the currently-armed program image as uid 0, and the arm is a *different
+syscall* from the consume. Until 2026-08-18 nothing tied the two together, so a task that
+authenticated correctly could elevate a program **another** task had armed — a confused deputy
+in which neither party fails a rights check and the authority comes from the pairing (finding
+**[G-11]**, adversary **A1c**). The handler now refuses unless the armed image belongs to the
+caller, and audits that refusal rather than logging a failure: a correct password that was about
+to elevate somebody else's program is the event worth recording.
 
 Passwords are Argon2-hashed. Failed authentication is rate-limited per task
 (`auth_fail_count`, `auth_lockout_until`).

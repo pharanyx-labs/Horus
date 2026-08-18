@@ -329,14 +329,18 @@ int process_user_command(const char *cmd) {
         println("  Inside userspace/: cat shell.bin | nc localhost 4444");
         println("Waiting on 4444 for the binary...");
         struct program_header h;
+        spawn_stage_acquire();
         int r = do_receive_program(&h);
         if (r != 0) {
+            spawn_stage_release();
             println("Receive failed or bad header");
             return -1;
         }
         print("Received '"); print(h.name); print("' ");
         print_decimal(h.size); println(" bytes - spawning...");
         int pid = do_spawn();
+        /* Released before the enter below, which does not return. */
+        spawn_stage_release();
         if (pid > 0) {
             /* Drop into the new task via the full-context path (fabricated frame
              * from do_spawn). Does not return. */
@@ -374,12 +378,18 @@ void spawn_initial_userspace_init(void) {
     if (magic != 0x55524F48) return;
     if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return;
     if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    /* Staged by hand rather than through arm_named_binary, so the bracket goes
+     * on by hand too: everything from the first write into loader_staging to the
+     * spawn that consumes it is one window (roadmap 1.7). This one runs at boot
+     * on the BSP, but the APs are already up by the time init is launched. */
+    spawn_stage_acquire();
     armed_hdr.entry = h_entry;
     armed_hdr.size = h_size;
     const uint8_t *payload = bin + 44;
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
-    program_armed = 1;
+    loader_arm_commit();
     int pid = do_spawn();
+    spawn_stage_release();
     if (pid > 0) {
         tasks[pid].uid = 0;   /* init is the privileged supervisor */
         /* Least privilege: only what init must wield (audit) or delegate onward.
@@ -446,14 +456,16 @@ void spawn_initial_userspace_shell(void) {
     if (magic != 0x55524F48) return;
     if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return;
     if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    spawn_stage_acquire();                      /* see the note in the init launcher */
     armed_hdr.entry = h_entry;
     armed_hdr.size = h_size;
     const uint8_t *payload = bin + 44;
     for (uint32_t i = 0; i < h_size; i++) {
         loader_staging[i] = payload[i];
     }
-    program_armed = 1;
+    loader_arm_commit();
     int pid = do_spawn();
+    spawn_stage_release();
     if (pid > 0) {
         uint32_t s8 = 0;
         uint32_t s9 = 0;

@@ -422,6 +422,13 @@ void kernel_main(uint32_t mb_info) {
      * installs. Boot continues; make smoke-aspace asserts on the marker. */
     aspace_selftest();
 #endif
+#ifdef SPAWN_OWNER_SELFTEST
+    /* After scheduler_init (it needs tasks[] and a spawnable slot) and before
+     * smp_bringup, so the run is single-threaded and the result is about the
+     * ownership rule rather than about a race. Boot continues; make
+     * smoke-spawn-owner asserts on the marker. */
+    spawn_owner_selftest();
+#endif
     smp_bringup();
     __asm__ volatile ("sti" ::: "memory");
     aslr_init_seed();

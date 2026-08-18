@@ -49,13 +49,16 @@ measurements.
 > The notable remaining findings are the CI gating list (**[C-6]** — every security test does
 > now block a merge, and a scheduled job re-checks the live ruleset against the checked-in
 > classification, but it is inert until its read-only GitHub App is created), and no independent
-> review of security-critical changes (**[C-5]**), claims that leak and kernel stacks that
+> review of security-critical changes (**[C-5]**), and claims that leak and kernel stacks that
 > collide on the spawn/reap path under SMP (**[G-9]**, found 2026-08-17 — pre-existing, and
 > uncovered by the [G-8] fixes that stopped masking it; two components were fixed the same day,
-> taking it from ~45% of boots to ~7%, and the rest is open), and the spawn/exec path's
-> unserialised process-wide state (**[G-10]**, whose page-table use-after-free is fixed — it
-> was a cross-address-space read/write primitive reachable from ring 3 — while its remaining
-> singletons can still wire a child's stdio from the wrong parent's cspace).
+> taking it from ~45% of boots to 2 in 30, and the rest is open).
+> **[G-10]** closed on 2026-08-18: its page-table use-after-free — a cross-address-space
+> read/write primitive reachable from ring 3 — was fixed the day before, and the remaining
+> process-wide spawn state is now serialised, with the two globals that could wire a child's
+> stdio from the wrong parent's cspace turned into parameters. Closing it surfaced **[G-11]**,
+> also closed that day: the armed program image was ambient state, so `SYS_SUDO` would elevate
+> whatever was armed to uid 0 whether or not the authenticating task had staged it.
 
 ---
 

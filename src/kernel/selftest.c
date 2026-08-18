@@ -19,6 +19,84 @@ __attribute__((unused)) static void selftest_resume_all(void) {
 #include "fs_proto.h"   /* FS_EP_REQ for the FS self-test harnesses */
 #endif
 
+#ifdef SPAWN_OWNER_SELFTEST
+/* Gated: prove the staged image can only be consumed by the task that armed it
+ * ([G-11], roadmap 1.7).
+ *
+ * The staging is one process-wide buffer, and until 2026-08-18 nothing recorded
+ * the connection between the task that armed an image and the task that spawned
+ * it. SYS_SUDO makes that a privilege boundary rather than an oddity: it
+ * re-authenticates the caller and then spawns whatever is armed AS UID 0, in a
+ * separate syscall from the arm, so a correct password could elevate another
+ * task's program.
+ *
+ * The test forges exactly the state a second task's arm leaves behind -- a
+ * legitimately staged image whose recorded owner is somebody else -- and
+ * requires do_spawn to refuse it. It then re-arms honestly and requires the
+ * spawn to SUCCEED, because a check that refuses everything is not a check;
+ * both directions or neither.
+ *
+ * Deterministic and single-threaded on purpose. The concurrent half of roadmap
+ * 1.7 -- two CPUs interleaving through the arm -> consume window -- has no gate,
+ * because it has no reachable workload: 214 window entries over 16 boots at
+ * -smp 4, never two at once (TESTS.md, finding G-10). This one is about the
+ * rule rather than the race, and a rule wants a test that cannot pass by luck.
+ *
+ * Control arm: SPAWN_OWNER_UNCHECKED=1 removes the refusal, and this prints
+ * FAIL foreign-image-spawned. `make smoke-spawn-owner-control` requires it. */
+void spawn_owner_selftest(void) {
+    int saved = get_current_task();
+    print("SPAWN_OWNER_SELFTEST: begin\n");
+
+    set_current_task(0);
+    spawn_stage_acquire();
+
+    if (arm_named_binary("hello") != 0) {
+        spawn_stage_release();
+        print("SPAWN_OWNER_SELFTEST: FAIL arm\n");
+        set_current_task(saved);
+        return;
+    }
+
+    /* Somebody else armed it. MAX_TASKS-1 is never spawned into during a normal
+     * boot, so this names a task that is not the consumer without disturbing a
+     * live one. */
+    staged_owner_task = MAX_TASKS - 1;
+    int refused = do_spawn();
+    if (refused > 0) {
+        spawn_stage_release();
+        print("SPAWN_OWNER_SELFTEST: FAIL foreign-image-spawned pid ");
+        print_decimal(refused);
+        print("\n");
+        tasks[refused].state = 0;
+        set_current_task(saved);
+        return;
+    }
+
+    /* Now arm it honestly: same image, same caller, owner recorded by
+     * loader_arm_commit rather than forged. This must go through. */
+    if (arm_named_binary("hello") != 0) {
+        spawn_stage_release();
+        print("SPAWN_OWNER_SELFTEST: FAIL rearm\n");
+        set_current_task(saved);
+        return;
+    }
+    int pid = do_spawn();
+    spawn_stage_release();
+    if (pid <= 0) {
+        print("SPAWN_OWNER_SELFTEST: FAIL own-image-refused rc ");
+        print_decimal(pid);
+        print("\n");
+        set_current_task(saved);
+        return;
+    }
+
+    tasks[pid].state = 0;            /* throwaway slot; never scheduled */
+    set_current_task(saved);
+    print("SPAWN_OWNER_SELFTEST: PASS refused a foreign staged image, spawned its own\n");
+}
+#endif /* SPAWN_OWNER_SELFTEST */
+
 #ifdef ASPACE_SELFTEST
 /* Gated: prove a rebuilt address space returns the pages the old one held.
  *
@@ -729,16 +807,20 @@ void elf_loader_selftest(void) {
 
     if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ELF_SELFTEST: FAIL embed-size\n"); return; }
 
-    /* Stage the raw ELF and arm it; try_elf_load recomputes the real entry. */
+    /* Stage the raw ELF and arm it; try_elf_load recomputes the real entry.
+     * Bracketed like every other arm -> consume window (roadmap 1.7): this runs
+     * on the BSP with the APs already running tasks that can spawn. */
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < sz; i++) loader_staging[i] = embedded_elftest_start[i];
     armed_hdr.entry = 0;
     armed_hdr.size  = sz;
     armed_hdr.name[0] = 'e'; armed_hdr.name[1] = 'l'; armed_hdr.name[2] = 'f';
     armed_hdr.name[3] = 't'; armed_hdr.name[4] = 0;
-    program_armed = 1;
+    loader_arm_commit();
 
     int saved = get_current_task();
     int pid = do_spawn();                 /* runs the real try_elf_load + W^X pass */
+    spawn_stage_release();
     if (pid <= 0) { print("ELF_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
 
     uint64_t cr3  = tasks[pid].cr3;
@@ -844,15 +926,17 @@ void elf64_loader_selftest(void) {
     print("ELF64_SELFTEST: begin\n");
     if (sz == 0 || sz > MAX_PROGRAM_SIZE) { print("ELF64_SELFTEST: FAIL embed-size\n"); return; }
 
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < sz; i++) loader_staging[i] = embedded_elftest64_start[i];
     armed_hdr.entry = 0;
     armed_hdr.size  = sz;
     armed_hdr.name[0] = 'e'; armed_hdr.name[1] = 'l'; armed_hdr.name[2] = 'f';
     armed_hdr.name[3] = '6'; armed_hdr.name[4] = '4'; armed_hdr.name[5] = 0;
-    program_armed = 1;
+    loader_arm_commit();
 
     int saved = get_current_task();
     int pid = do_spawn();                 /* the real try_elf_load + RELA + W^X */
+    spawn_stage_release();
     if (pid <= 0) { print("ELF64_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
 
     uint64_t cr3  = tasks[pid].cr3;
@@ -963,14 +1047,16 @@ void aslr_selftest(void) {
     int saved = get_current_task();
 
     for (int i = 0; i < ASLR_PROBE_SPAWNS; i++) {
+        spawn_stage_acquire();
         for (uint32_t j = 0; j < sz; j++) loader_staging[j] = embedded_elftest_start[j];
         armed_hdr.entry = 0;
         armed_hdr.size  = sz;
         armed_hdr.name[0] = 'e'; armed_hdr.name[1] = 'l'; armed_hdr.name[2] = 'f';
         armed_hdr.name[3] = 't'; armed_hdr.name[4] = 0;
-        program_armed = 1;
+        loader_arm_commit();
 
         int pid = do_spawn();
+        spawn_stage_release();
         if (pid <= 0) { print("ASLR_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
         bases[got++] = tasks[pid].image_base;
         tasks[pid].state = 0;          /* throwaway slot; never scheduled */
@@ -1073,12 +1159,15 @@ void h_preempt_trace(struct interrupt_frame64 *r) {
 
 /* Arm the embedded flat payload and spawn one instance; returns its pid. */
 static int preempt_spawn_one(uint32_t entry, uint32_t size, const uint8_t *payload) {
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = entry;
     armed_hdr.size  = size;
     armed_hdr.name[0] = 'p'; armed_hdr.name[1] = 't'; armed_hdr.name[2] = 0;
-    program_armed = 1;
-    return do_spawn();
+    loader_arm_commit();
+    int pid = do_spawn();
+    spawn_stage_release();
+    return pid;
 }
 
 void preempt_selftest(void) {
@@ -1122,12 +1211,15 @@ void preempt_selftest(void) {
  * (its cpu-0 ring-0 context is never pulled into a task), so it monitors freely
  * while the APs do the work. */
 static int smp_spawn_worker(uint32_t entry, uint32_t size, const uint8_t *payload) {
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = entry;
     armed_hdr.size  = size;
     armed_hdr.name[0] = 'w'; armed_hdr.name[1] = 'k'; armed_hdr.name[2] = 0;
-    program_armed = 1;
-    return do_spawn();
+    loader_arm_commit();
+    int pid = do_spawn();
+    spawn_stage_release();
+    return pid;
 }
 
 void smp_selftest(void) {
@@ -1212,7 +1304,9 @@ static int proc_spawn_named(const char *name) {
     uint64_t kcr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
     set_current_task(0);                 /* so do_spawn's spawner-cap grant is skipped */
+    spawn_stage_acquire();
     int pid = (arm_named_binary(name) == 0) ? do_spawn() : -1;
+    spawn_stage_release();
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
     return pid;
 }
@@ -1230,14 +1324,16 @@ static int proc_spawn_embed(const uint8_t *start, const uint8_t *end, const char
     uint64_t kcr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
     set_current_task(0);
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = start[44 + i];
     armed_hdr.entry = h_entry;
     armed_hdr.size  = h_size;
     int k = 0;
     for (; nm[k] && k < 31; k++) armed_hdr.name[k] = nm[k];
     armed_hdr.name[k] = 0;
-    program_armed = 1;
+    loader_arm_commit();
     int pid = do_spawn();
+    spawn_stage_release();
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
     return pid;
 }
@@ -1303,13 +1399,15 @@ void signal_selftest(void) {
     if (full_sz < 44 + h_size) h_size = full_sz - 44;
 
     const uint8_t *payload = bin + 44;
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = h_entry;
     armed_hdr.size  = h_size;
     armed_hdr.name[0] = 's'; armed_hdr.name[1] = 'i'; armed_hdr.name[2] = 'g'; armed_hdr.name[3] = 0;
-    program_armed = 1;
+    loader_arm_commit();
 
     int a = do_spawn();
+    spawn_stage_release();               /* before sched_enter_user, which never returns */
     if (a <= 0) { print("SIGNAL_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
     /* Launch into ring 3 via the fabricated full trap frame. */
@@ -1343,13 +1441,15 @@ void tsd_selftest(void) {
     if (full_sz < 44 + h_size) h_size = full_sz - 44;
 
     const uint8_t *payload = bin + 44;
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = h_entry;
     armed_hdr.size  = h_size;
     armed_hdr.name[0] = 't'; armed_hdr.name[1] = 's'; armed_hdr.name[2] = 'd'; armed_hdr.name[3] = 0;
-    program_armed = 1;
+    loader_arm_commit();
 
     int a = do_spawn();
+    spawn_stage_release();               /* before sched_enter_user, which never returns */
     if (a <= 0) { print("TSD_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
     /* Launch into ring 3 via the fabricated full trap frame. */
@@ -1627,14 +1727,17 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
     if (full < 44 + h_size) h_size = full - 44;
 
     const uint8_t *payload = start + 44;
+    spawn_stage_acquire();
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = h_entry;           /* recomputed by try_elf_load for the PIE ELF */
     armed_hdr.size  = h_size;
     int k = 0;
     while (k < 31 && nm[k]) { armed_hdr.name[k] = nm[k]; k++; }
     armed_hdr.name[k] = 0;
-    program_armed = 1;
-    return do_spawn();
+    loader_arm_commit();
+    int pid = do_spawn();
+    spawn_stage_release();
+    return pid;
 }
 #endif /* FS_SELFTEST || NEWLIB_SELFTEST || NOTIFY_SELFTEST || COW_SELFTEST || COREUTILS_SELFTEST || CAPTEST_SELFTEST */
 

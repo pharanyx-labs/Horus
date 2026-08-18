@@ -636,7 +636,7 @@ Two regression tests witness it and both are falsified by `--features=revoke_leg
 which compiles the old bounded closure back in. The `rust` CI job runs that control arm and
 fails if the tests pass against it — a falsification that is executed, not asserted.
 
-### 1.7 🚧 Serialise the spawn/exec path — **[G-10]**, and the rest of **[G-9]**
+### 1.7 ◧ Serialise the spawn/exec path — **[G-10]** closed, the rest of **[G-9]** open
 
 Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight is a process-wide singleton — the one
 ELF staging buffer `loader_staging`, the staged argv `g_args_*`, `g_spawn_stdio_spec` and
@@ -663,25 +663,45 @@ tree is parked for retry rather than leaked. Falsified with `CR3_RECLAIM_UNGUARD
 with the exec fix this took the workload from ~45% of boots failing to **2 in 30**, and
 `make smoke-kstack-park` now passes in its exact form.
 
-**What remains** is the rest of the pattern, and it is why this is 🚧 rather than ✅:
+**The remaining singletons closed on 2026-08-18, and [G-10] with them.** The lock was the
+likelier shape and it is what landed — per-CPU is right for a hand-off and wrong for a staging
+buffer, which is `LOADER_STAGING_BYTES` of real memory for state that is logically per-*spawn*.
 
-- `loader_staging`, the staged argv and `g_spawn_stdio_spec` are still process-wide and
-  unserialised;
-- **the authority half:** `g_spawn_caller` is written at `do_spawn` entry and read much later by
-  `wire_child_stdio`, so a child's stdio can be wired from the wrong parent's cspace. That is
-  capability inheritance from a task that never spawned it, and it is the reason this sits in
-  Track 1 rather than being filed as tidying;
-- a task can be `state == 0` and still executing in ring 3 on another core. The CR3 guard makes
-  that memory-safe; it does not make it sensible, and the slot allocator still reuses such a
-  slot immediately.
+- **The authority half was deleted rather than guarded.** `g_spawn_caller` and
+  `g_spawn_stdio_spec` are parameters now (`do_spawn_stdio` → `do_spawn_inner` →
+  `wire_child_stdio`), so a child's stdio cannot be wired from a parent that did not spawn it.
+  Not "unlikely": unexpressible.
+- **The staging window is serialised.** `spawn_stage_acquire()` / `spawn_stage_release()`
+  bracket every arm → consume region — the four syscall entry points, both boot launchers,
+  `SYS_SUDO`'s consume and all ten self-test staging sites. Taken *before* the arm, because an
+  arm landing inside another CPU's window is the interleaving. Outermost lock in the kernel;
+  `IF` is already 0 for the whole spawn (`int 0x80` is an interrupt gate), so it costs no
+  interrupt latency.
+- **Closing it surfaced [G-11], which is the more serious half.** The armed image was ambient
+  state: nothing recorded who armed it, and `SYS_SUDO` spawns whatever is armed **as uid 0** in
+  a different syscall from the arm. A task's correct password could therefore elevate another
+  task's program. `loader_arm_commit()` now stamps the arming task and consumption refuses any
+  other, fail closed on an unowned image, audited on refusal. Witness `make smoke-spawn-owner`,
+  falsified by `SPAWN_OWNER_UNCHECKED=1` — the control arm spawns the foreign image on every
+  boot. See `SECURITY.md` **S21** and adversary **A1c**.
 
-Making each singleton per-CPU is not obviously the right answer here as it was for the exec
-hand-off — a staging buffer per CPU is a real memory cost, and the argv/stdio state is logically
-per-*spawn* rather than per-CPU. A lock around the spawn/exec critical section is the likelier
-shape. Either way it needs its own control arm; `smoke-kstack-park` stays advisory until its
-workload is clean over 30 boots. It passes in its exact form now and reddens on **2 boots in 30**
-(~7%) — and that residue is the bogus resume `%rsp` that is the rest of **[G-9]**, not these
-singletons, so closing this item is not by itself what promotes the gate.
+**On the rate this section would like to quote, and does not have.** The interleaving is not
+reachable in any workload this tree can boot, and `SPAWN_STAGE_TRACE=1` is what established
+that rather than an argument: it reports every entry to the staging window and every arrival
+that finds another CPU inside one. A `PROC_SELFTEST` boot at `-smp 4` enters the window
+14 times from three different tasks on three different CPUs, and **not once** do two overlap —
+even with `SPAWN_STAGE_WIDEN=1` holding each window open for 12M `pause` iterations. The reason
+is structural: every spawner in the tree today is `init` or one of `init`'s children, so the
+driver that does most of the spawning cannot be running while `init` is mid-spawn. Two
+concurrent spawners is a property of the OS this roadmap is building, not of the one it has.
+**So no gate claims a rate here** — a control arm that cannot fail is not a control arm — and
+`SPAWN_STAGE_UNSERIALISED=1` is kept for the day a workload with two live spawners exists.
+
+**What keeps this ◧ rather than ✅** is the rest of **[G-9]**: the workload still reddens on
+**2 boots in 30** (~7%), and that residue is the bogus resume `%rsp`, not these singletons.
+`smoke-kstack-park` therefore stays advisory. Also unchanged: a task can be `state == 0` and
+still executing in ring 3 on another core — the CR3 guard makes that memory-safe without making
+it sensible, and the slot allocator still reuses such a slot immediately.
 
 > *Corrected 2026-08-18: this paragraph read "still reddens ~27% of the time for this". ~27% was
 > the rate after the exec fix and **before** the CR3 guard — the number eighteen lines above
@@ -832,7 +852,8 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **72 required, 4 exempted** — `fuzz` (a 30-second time-boxed search is
+  The intended set is **73 required, 4 exempted** (74 jobs, 77 contexts — re-derive it with
+  `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
   (its workload trips **[G-9]**, found 2026-08-17). `smoke-fs-wal` was an
@@ -840,8 +861,9 @@ Ordered as in the audit's §7.5.
   `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted with
   it. **Three of the four are properties of the test itself; `smoke-kstack-park` is the one
   exemption that stands for an open defect**, and it stays until [G-9] is closed rather than
-  merely narrowed — its workload still fails ~27% of boots after the exec component was fixed
-  on 2026-08-17. (An earlier revision of this paragraph claimed no exemption stood for an open
+  merely narrowed — its workload still fails **2 boots in 30** (~7%) after [G-9]'s exec
+  component and [G-10]'s page-table half both landed on 2026-08-17, and the residue is the
+  bogus resume `%rsp` this gate does not test. (An earlier revision of this paragraph claimed no exemption stood for an open
   defect while listing `smoke-kstack-park` in the same sentence; the count and the claim had
   drifted apart, which is the failure this section is supposed to catch.) The count rose to 71 and
   then 72 on 2026-08-17 with `smoke-exec-reenter` and `smoke-cr3-reclaim`, the gates for
@@ -956,26 +978,37 @@ also asking for a `CODEOWNERS` repair that landed a month ago.
 capability-addressed, ambient root authority is retired, and creating a kernel object is an
 exercise of authority the capability graph describes.
 
-**Track 1 is complete** except 1.2, which is `◧`: 1.1 landed 2026-08-11, then 1.3, 1.4, 1.5,
-1.55 and 1.6 followed. 1.2's performance goal was met by other means and its remaining reason
-to exist is a per-CPU *block*, not a per-CPU register base.
+**Track 1 is complete** except 1.2 and 1.7, both `◧`: 1.1 landed 2026-08-11, then 1.3, 1.4,
+1.5, 1.55 and 1.6 followed. 1.2's performance goal was met by other means and its remaining
+reason to exist is a per-CPU *block*, not a per-CPU register base. 1.7 met its own goal on
+2026-08-18 — **[G-10]** closed, and **[G-11]** found and closed with it — and stays `◧` only
+because the rest of **[G-9]** does.
 
-**One debt from 1.1 has not been collected, and this section previously promised it would
-be.** It read: *"That is a workaround, and it is the third subsystem to route around C-3.1
-rather than fix it. Each one is another place that has to be revisited when 1.1 lands."* 1.1
-landed on 2026-08-11. Checked 2026-08-17: the route-arounds are **still in place**, and
-`src/kernel/untyped.c` still describes C-3.1 as "the defect roadmap 1.1 has to fix before the
-per-CPU lock can land" — a comment that has been wrong for six days. `untyped_arm_locking()`
-still defers the lock past boot and the IF-transparent critical section is still there.
+**The debt from 1.1 was collected on 2026-08-18, seven days late.** This section promised it
+would be, and then did not: *"That is a workaround, and it is the third subsystem to route
+around C-3.1 rather than fix it. Each one is another place that has to be revisited when 1.1
+lands."* 1.1 landed on 2026-08-11, and as of 2026-08-17 both route-arounds in `untyped.c` were
+still in place, with a comment still calling C-3.1 *"the defect roadmap 1.1 has to fix"* — wrong
+for six days, which is how [G-2] survived nineteen.
 
-Neither is a defect today: they are conservative, and the per-CPU lock they were written
-against is now the shipping one. But they are conditioned on a premise that no longer holds,
-and a workaround nobody revisits becomes load-bearing by default. **The work is to re-derive
-whether each is still needed now that `spin_unlock` restores the caller's `RFLAGS.IF` rather
-than asserting `sti`** — and to correct the comments either way, because a comment that names
-a closed finding as open is how [G-2] survived nineteen days. That is tracked here rather than
-done opportunistically: it touches boot-time locking and wants its own falsification, not a
-drive-by edit in a PR about something else.
+Both are re-derived and gone:
+
+- the **IF-transparent pushfq/popfq bracket** around each critical section is a no-op by
+  construction now: `pushfq` → `spin_lock`'s `cli` and saved IF → `spin_unlock`'s restore →
+  `popfq` puts back exactly what was captured. Removing it changes no `IRQ_POLICY_AUDIT` count
+  either, because those counters increment inside `spin_unlock`, whose call sites are unchanged,
+  so the legacy-vs-per-CPU comparison in `TESTS.md` stands as measured;
+- the **deferral of locking past boot** (`untyped_arm_locking`) existed only because that
+  unconditional `sti` would have enabled interrupts in the boot window. The one early-boot
+  requirement `spin_lock` has is a valid `this_cpu()`, and `setup_tss64` (`src/boot/multiboot.S`)
+  does `ltr $0x38` immediately before calling `kernel_main`, so the STR fast path returns 0 from
+  the first C statement without touching the LAPIC. The tables are locked unconditionally.
+
+Verified in both arms rather than argued: **3 boots in 3** to the ring-3 login prompt under the
+default build *and* under `IRQ_LEGACY_GLOBAL_LOCK=1`. That second arm is the one this could
+plausibly have broken — with the deferral gone it takes a lock in the boot window whose release,
+in that build, still fires an unconditional `sti` — and a control arm that no longer boots is a
+control arm that no longer measures anything.
 
 **1.1's own prerequisite was met a fortnight before it landed — and it was not a flaky
 test.** `smoke-console-smp` had been

@@ -24,6 +24,10 @@
 #define MAX_PROGRAM_SIZE LOADER_STAGING_BYTES
 extern struct program_header armed_hdr;
 extern int program_armed;
+/* Which task armed the staged image ([G-11]). Written only by
+ * loader_arm_commit(); read through staged_image_owned_by_current(), which is
+ * the fail-closed gate every consumer of the staging must pass. */
+extern int staged_owner_task;
 
 /* ---- Audit event-type codes (consumed by handlers across modules) -------- */
 #ifndef AUDIT_AUTH
@@ -112,7 +116,16 @@ int  try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end
 void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stack_top); /* loader.c */
 void load_staged_image_into(int tid, uint64_t load_base);                  /* loader.c */
 int  do_receive_program(struct program_header *hdr_out);                   /* loader.c */
+void loader_arm_commit(void);                                              /* loader.c */
+void loader_disarm(void);                                                  /* loader.c */
+int  staged_image_owned_by_current(void);                                  /* loader.c */
 int  do_spawn(void);                                                       /* kspawn.c */
+int  do_spawn_stdio(uint32_t stdio_spec);                                  /* kspawn.c */
+/* Serialise the arm -> consume window over the process-wide staging (roadmap
+ * 1.7). Held by the CPU running a spawn/exec from before the image is armed
+ * until the staged state has been consumed; see the long note in kspawn.c. */
+void spawn_stage_acquire(void);                                            /* kspawn.c */
+void spawn_stage_release(void);                                            /* kspawn.c */
 
 /* ---- Syscall handlers defined outside syscall.c but wired into the ------- *
  * dispatch table there. Every one has the uniform handler signature. */

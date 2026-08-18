@@ -350,7 +350,23 @@ tss64_end:
  * page-aligned guard page that kern_fixed_stack_guards_init() unmaps at boot, so
  * an overflow of a fault handler's own stack faults on the guard instead of
  * silently running into the TSS or the adjacent IST stack. Page-aligned because
- * the guard is unmapped a whole 4 KiB page at a time. */
+ * the guard is unmapped a whole 4 KiB page at a time.
+ *
+ * THESE THREE ARE IN .data, NOT .bss, and that matters outside this file. They
+ * are emitted here, in the middle of the .data block that holds gdt64/tss64,
+ * rather than after the `.section .bss` below -- so unlike every OTHER kernel
+ * stack in the image (stack_top, early_handler_stack_*, per_task_kstacks[],
+ * ap_idle_stacks[]) they are NOT inside [__bss_start, __bss_end).
+ *
+ * interrupt_handler64's resume-%rsp guard has to know that. Its first version
+ * accepted only the .bss range on the premise that every 64-bit kernel stack was
+ * a .bss array; these three are the counterexample, and since IST1 takes #PF,
+ * that guard then rejected the legal resume %rsp of every page fault and halted
+ * the kernel. ist1_stack_guard and ist3_stack_top are .global so it can bracket
+ * the cluster by linker symbol instead of restating the premise. The cluster is
+ * contiguous and must stay so: guard/stack/guard/stack/guard/stack, ist1 first
+ * and ist3 last. Adding an IST4 means extending the bracket, and moving one out
+ * of this block means giving it its own. */
 .align 4096
 .global ist1_stack_guard
 ist1_stack_guard:
@@ -373,6 +389,8 @@ ist3_stack_guard:
     .space 4096
 ist3_stack_bottom:
     .space 4096
+/* .global: the end of the IST cluster, for the resume-%rsp guard's bracket. */
+.global ist3_stack_top
 ist3_stack_top:
 
 /* ---- Low boot data (.boot.data: VA == PA) -----------------------------------

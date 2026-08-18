@@ -85,6 +85,8 @@ required:
   - smoke-fs-wal-order
   - smoke-heap64
   - smoke-init-fs
+  - smoke-cr3-reclaim
+  - smoke-exec-reenter
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy
@@ -143,6 +145,32 @@ advisory:
     reproduces the defect on demand; what is not sound is requiring a workload
     nothing had ever run at -smp 4 before this gate. Promote it in the same
     commit that closes [G-9], and quote a rate.
+    NARROWED 2026-08-17 and STILL ADVISORY. [G-9] was a cluster. Its exec
+    hand-off component -- a single global g_exec_reenter_task consumed on the
+    exit of every syscall on every CPU -- is fixed, falsified with
+    EXEC_REENTER_GLOBAL=1 (0 thefts in 30 boots against 5 in 20), and is now
+    gated by smoke-exec-reenter. That took the workload from ~45-50% failing to
+    ~27%, which is an improvement and not a close: 2 boots in 30 still leak a
+    claim before any exec runs, and 6 in 30 take a CPL-0 vec=14 errc=0x2 at
+    lapic_eoi / interrupt_handler64, which is [G-10] rather than the scheduler.
+    A gate that reddens on a quarter of boots for a defect it does not test is
+    exactly what this exemption exists to avoid, so it stays.
+    NARROWED AGAIN 2026-08-17 and STILL ADVISORY. [G-10]'s page-table
+    use-after-free is fixed too -- create_user_pagedir was recycling a slot's
+    page tables while another CPU still had them in CR3 -- and that took the
+    workload to 2 failures in 30 on the ship config this gate builds (~7%, from
+    ~45%). `make smoke-kstack-park` now passes in its exact form. It is still not
+    zero: the remainder is a bogus resume %rsp of -7. Promote this when that is
+    closed and the rate is 0 over 30, not before -- 7% is one reddened pull
+    request in fourteen, which is exactly the re-run reflex.
+    GUARD FIXED 2026-08-18, RATE UNCHANGED, STILL ADVISORY. The clause above
+    said the -7 was one the floor guard "misses because it tests only a lower
+    bound". That was true when written and is not now: resume_rsp_is_bogus()
+    tests against [__bss_start, __bss_end) at both ends, so -7 is rejected and
+    reported rather than loaded, falsified with RESUME_GUARD_FLOOR_ONLY=1. That
+    changes what a failing boot TELLS you, not how often one fails -- the guard
+    is a detector, and what produces -7 is still unknown. So the rate stays ~7%,
+    the promotion condition is unchanged, and this exemption stands.
 
   ruleset-audit: >-
     Schedule-only (daily cron plus workflow_dispatch), so it never runs on a

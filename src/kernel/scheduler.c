@@ -2018,6 +2018,34 @@ uint64_t exec_reenter_switch(int t) {
 #ifdef SMP
     sched_raw_lock();
     int cpu = this_cpu();
+#ifdef SCHED_INVARIANTS
+    /* ---- The exec hand-off belongs to THIS cpu -- finding [G-9] -------------
+     *
+     * This function re-enters the SAME task the caller was already running: it
+     * claims `t`, installs its CR3 and hands the ISR epilogue the frame that the
+     * exec tail fabricated at the top of t's kernel stack. It has no outgoing
+     * task to release, because there is not supposed to be one.
+     *
+     * That held only as long as the hand-off could not be taken by the wrong
+     * core. It was a single global `g_exec_reenter_task` consumed on the exit of
+     * every syscall on every CPU, so an exec armed on one core was routinely
+     * consumed by another -- which then claimed the exec'ing task (leaking
+     * whatever it had been running, since there is no release here) and resumed
+     * that task's freshly built trap frame while the core that ran the exec was
+     * still executing on it. One race, all three [G-9] signatures.
+     *
+     * The storage is per-CPU now (kspawn.c), so this is a property rather than a
+     * hope -- and one comparison is cheap enough to keep asserting it. */
+    if (percpu_current_task[cpu] != t) {
+        panic_begin();
+        panic_str("\nPANIC: exec re-entry taken by the wrong cpu: cpu ");
+        panic_dec(cpu);
+        panic_str(" is running task ");   panic_dec(percpu_current_task[cpu]);
+        panic_str(" but re-entered task "); panic_dec(t);
+        panic_str(" (the per-CPU exec hand-off has been shared again; see [G-9])\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+#endif
     task_running_cpu[t] = cpu;
 #endif
     switch_cr3(tasks[t].cr3);

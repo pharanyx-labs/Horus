@@ -49,9 +49,13 @@ measurements.
 > The notable remaining findings are the CI gating list (**[C-6]** — every security test does
 > now block a merge, and a scheduled job re-checks the live ruleset against the checked-in
 > classification, but it is inert until its read-only GitHub App is created), and no independent
-> review of security-critical changes (**[C-5]**), and a scheduler claim that leaks on the
-> spawn/reap path under SMP (**[G-9]**, found 2026-08-17 — pre-existing, and uncovered by the
-> [G-8] fixes that stopped masking it).
+> review of security-critical changes (**[C-5]**), claims that leak and kernel stacks that
+> collide on the spawn/reap path under SMP (**[G-9]**, found 2026-08-17 — pre-existing, and
+> uncovered by the [G-8] fixes that stopped masking it; two components were fixed the same day,
+> taking it from ~45% of boots to ~7%, and the rest is open), and the spawn/exec path's
+> unserialised process-wide state (**[G-10]**, whose page-table use-after-free is fixed — it
+> was a cross-address-space read/write primitive reachable from ring 3 — while its remaining
+> singletons can still wire a child's stdio from the wrong parent's cspace).
 
 ---
 

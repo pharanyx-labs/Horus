@@ -177,6 +177,84 @@ int page_ref_dec(uint32_t phys_addr) {
 }
 
 void ensure_lapic_mapped(uint64_t *root);
+
+/* ---- Which address space each CPU currently has loaded --------------------
+ *
+ * Written by switch_cr3(), read by the reclaim in create_user_pagedir(). It
+ * exists because "is anybody still translating through this tree?" is a question
+ * the kernel could not previously answer, and freed page tables on the strength
+ * of a uniprocessor argument instead -- finding [G-10].
+ *
+ * One store per CR3 load, on a path that has just done a full TLB flush, so the
+ * cost is not measurable next to what it guards. */
+volatile uint64_t percpu_cr3[MAX_CPUS];
+extern volatile int percpu_current_task[MAX_CPUS];
+
+/* Is `cr3` loaded on any CPU other than this one?
+ *
+ * ---- WHY THIS IS NOT ITSELF A RACE ----------------------------------------
+ *
+ * The answer can only become MORE true between the check and the free if some
+ * CPU can newly adopt `cr3` -- and none can. The only task naming this tree is
+ * the dead occupant of the slot being rebuilt (state == 0, and this function
+ * holds page_lock while it rebuilds), and every selection loop in scheduler.c
+ * requires state == 1. So the set of CPUs holding it is closed and can only
+ * shrink: a holder may leave, none may arrive. A "no" is therefore durable, and
+ * a "yes" is conservative -- which is the safe direction, because the cost of a
+ * false "yes" is a leaked page-directory tree and the cost of a false "no" is
+ * another core translating through recycled frames. */
+static int aspace_loaded_on_another_cpu(uint64_t cr3)
+{
+    int me = this_cpu();
+    for (int c = 0; c < MAX_CPUS; c++) {
+        if (c == me) continue;
+        if (percpu_cr3[c] == cr3) return 1;
+    }
+    return 0;
+}
+
+/* ---- Address spaces whose reclaim had to wait ------------------------------
+ *
+ * Refusing to free a tree another CPU still holds would, on its own, LEAK it:
+ * the slot's cr3 is cleared straight afterwards, so nothing names the tree
+ * again. That is not a fair trade, because the reclaim exists precisely to stop
+ * slot reuse growing memory without bound -- and the holder is usually a CPU
+ * parked in kernel_idle, which fires on nearly every boot.
+ *
+ * So park it here instead and retry on the next rebuild, by which point that CPU
+ * has almost always taken other work and left. The table is deliberately small
+ * and fixed: at most MAX_CPUS trees can be pinned at once (one per CPU), so
+ * anything beyond that is slack, and if it ever does fill the overflow LEAKS
+ * rather than freeing in use. Fail closed in both directions.
+ *
+ * Deferring is safe for the same reason the check is: no CPU can newly adopt a
+ * parked tree, because the slot that named it has already been rebuilt with a
+ * fresh cr3. Holders can only leave. */
+#define PENDING_ASPACE_MAX  (MAX_CPUS * 2)
+static uint64_t pending_aspace[PENDING_ASPACE_MAX];
+static void free_user_aspace(uint64_t pml4_phys);   /* defined below */
+
+/* Free anything parked that nobody holds any more. Caller holds page_lock. */
+static void reclaim_deferred_aspaces(void)
+{
+    for (int i = 0; i < PENDING_ASPACE_MAX; i++) {
+        if (pending_aspace[i] == 0) continue;
+        if (aspace_loaded_on_another_cpu(pending_aspace[i])) continue;
+        free_user_aspace(pending_aspace[i]);
+        pending_aspace[i] = 0;
+    }
+}
+
+/* Park `cr3` for a later attempt. Caller holds page_lock. */
+static void defer_aspace_reclaim(uint64_t cr3)
+{
+    for (int i = 0; i < PENDING_ASPACE_MAX; i++) {
+        if (pending_aspace[i] != 0) continue;
+        pending_aspace[i] = cr3;
+        return;
+    }
+    /* Full: leak this one. Bounded and deliberate -- never free in use. */
+}
 static void kstack_guards_init(void);   /* defined below per_task_kstacks */
 static void kern_fixed_stack_guards_init(void);   /* BSP boot + IST stack guards */
 
@@ -832,11 +910,67 @@ void create_user_pagedir(uint32_t task_id) {
 
     spin_lock(&page_lock);
 
-    /* Reclaim the previous occupant of this slot before building the new one.
-     * Safe here and nowhere earlier: the caller is on the kernel CR3, so the
-     * tree about to be freed is not the one any CPU is walking. */
+    /* ---- Reclaim the previous occupant of this slot -- but only if nobody is
+     * still translating through it. Finding [G-10].
+     *
+     * This used to free unconditionally, on the stated grounds that "the caller
+     * is on the kernel CR3, so the tree about to be freed is not the one any CPU
+     * is walking". That is a UNIPROCESSOR argument: it establishes only that THIS
+     * core has left the tree. Two other cores routinely have not.
+     *
+     *   - A CPU whose last runnable task died parks in kernel_idle() without ever
+     *     reloading CR3, so it keeps translating through the dead task's tables
+     *     for as long as it stays idle. Measured: this alone fired on 19 boots
+     *     in 20.
+     *   - Worse, SYS_KILL marks the victim dead from another core while it is
+     *     still executing in ring 3. Nothing IPIs it, so it runs on until its
+     *     next tick -- and the slot allocator (kspawn.c) asks only for
+     *     `state == 0`, so a spawn can recycle the page tables of a task that is
+     *     still running on them.
+     *
+     * The frames went straight back to the free list and were handed out as
+     * ordinary pages, so the other core carried on reading and writing through
+     * page tables that had come to describe somebody else's memory. The visible
+     * symptom was a supervisor write-fault at 0xFEE000B0 -- the LAPIC EOI
+     * register, which lives in each task's own pml4[0] identity map and vanished
+     * when its leaf PTE was recycled -- on roughly 20% of boots.
+     *
+     * Fail closed: if any other CPU has it loaded, leak the tree rather than free
+     * it. A leaked page directory is what the exec path already accepts
+     * deliberately (see do_exec_named); a freed-in-use one is a cross-address-
+     * space read/write primitive. See aspace_loaded_on_another_cpu() for why the
+     * check cannot go stale in the unsafe direction. */
     if (tasks[task_id].cr3) {
+#ifdef CR3_RECLAIM_UNGUARDED
+        /* The defect, on demand: reclaim on the pre-fix uniprocessor argument.
+         * Under SCHED_INVARIANTS it also says so, which is what makes the control
+         * arm deterministic instead of waiting for the ~20%/boot fault. */
+#ifdef SCHED_INVARIANTS
+        if (aspace_loaded_on_another_cpu(tasks[task_id].cr3)) {
+            kfault_begin(1);
+            /* "PANIC:" so tools/smoke_test.sh latches it as a FAIL_MARKER and
+             * ends the boot at once. Without it the control arm has no marker to
+             * stop on and every boot burns the full timeout waiting for a
+             * completion that this halt has already prevented. */
+            kfault_str("\nPANIC: CR3UAF: freeing the address space of slot ");
+            kfault_dec((int)task_id);
+            kfault_str(" while another cpu still has it loaded (cr3=");
+            kfault_hex((uint64_t)tasks[task_id].cr3);
+            kfault_str(")\n");
+            kfault_end(1);
+        }
+#endif
         free_user_aspace(tasks[task_id].cr3);
+#else
+        /* Retry anything parked by an earlier rebuild first: the CPU that pinned
+         * it has usually moved on by now, so this is where most trees are
+         * actually reclaimed. */
+        reclaim_deferred_aspaces();
+        if (!aspace_loaded_on_another_cpu(tasks[task_id].cr3))
+            free_user_aspace(tasks[task_id].cr3);
+        else
+            defer_aspace_reclaim(tasks[task_id].cr3);
+#endif
         tasks[task_id].cr3 = 0;
     }
     
@@ -977,6 +1111,14 @@ void switch_cr3(addr_t cr3) {
         for(;;) { asm volatile("cli; hlt"); }
     }
     asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+    /* Publish what this CPU is now translating through, so the reclaim in
+     * create_user_pagedir() can refuse to free a tree another core still holds
+     * ([G-10]). After the load, never before: the window that matters is the one
+     * in which the CPU is actually using the tree. */
+    {
+        int c = this_cpu();
+        if (c >= 0 && c < MAX_CPUS) percpu_cr3[c] = (uint64_t)cr3;
+    }
     /* The CR3 reload above already flushed this CPU's non-global TLB entries, so
      * a purely local address-space switch needs no cross-CPU shootdown. (A real
      * shootdown -- for tearing down or reducing permissions on a mapping another

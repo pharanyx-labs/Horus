@@ -924,6 +924,24 @@ jobs:
         run: make smoke-resume-guard-legacy SMOKE_TIMEOUT=180
       - name: Compile the guard out and require the report to be INAUDIBLE
         run: make smoke-resume-guard-nofloor SMOKE_TIMEOUT=180
+      # The guard's OTHER half. Everything above injects 4, which is below the
+      # floor; -7 is 0xFFFFFFFFFFFFFFF9 and sits ABOVE it, so a floor-only test
+      # missed the whole negative class. A real boot produced exactly -7.
+      - name: Return a NEGATIVE bogus resume rsp and require the guard's PANIC line
+        run: make smoke-resume-guard-negative SMOKE_TIMEOUT=180
+      - name: Restore the floor-only predicate and require the report to be INAUDIBLE
+        run: make smoke-resume-guard-negative-control SMOKE_TIMEOUT=180
+      # FALSE POSITIVES. Every arm above injects a bogus value and asks whether
+      # the report APPEARS, so a predicate that rejected the entire address space
+      # would pass all of them -- and one that rejected the IST stacks did. The
+      # ceiling shipped bounded to .bss on the premise that every kernel stack is
+      # a .bss array; the IST stacks are in .data, IST1 takes #PF, and the guard
+      # halts on rejection, so the kernel died on the first ring-3 page fault of
+      # any workload. Ten gates went red and this job stayed green.
+      - name: Require the guard to stay SILENT on a legal IST resume rsp
+        run: make smoke-resume-guard-ist SMOKE_TIMEOUT=180
+      - name: Restore the bss-only bound and require the FALSE rejection to appear
+        run: make smoke-resume-guard-ist-control SMOKE_TIMEOUT=180
 
   smoke-kstack-race:
     name: A task's kernel stack is executed by at most one CPU (S20; and the control arm proves it)
@@ -956,6 +974,64 @@ jobs:
       # is fatal at the pre-fix release site and harmless at the shipped one.
       - name: Restore the pre-fix release site and require the race to REPRODUCE
         run: make smoke-kstack-race-control
+
+  smoke-cr3-reclaim:
+    name: A slot's page tables are not recycled while a CPU is still on them (G-10; and the control arm proves it)
+    runs-on: ubuntu-latest
+    # Two clean builds plus CR3_RECLAIM_RUNS boots and 3 control boots. The
+    # control arm halts as soon as it reproduces, which is every boot.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # create_user_pagedir freed the previous occupant's address space on a
+      # uniprocessor argument. A CPU parked in kernel_idle never reloads CR3, and
+      # SYS_KILL marks a task dead while it still runs in ring 3 elsewhere, so the
+      # frames were recycled under a live core. Finding G-10.
+      - name: Require no recycled page table to fault
+        run: make smoke-cr3-reclaim
+      # The load-bearing arm. Without it the step above is consistent with "this
+      # runner never reused a slot".
+      - name: Remove the guard and require the free-in-use to REPRODUCE
+        run: make smoke-cr3-reclaim-control
+
+  smoke-exec-reenter:
+    name: An exec re-entry is consumed by the CPU that armed it (G-9 exec component; and the control arm proves it)
+    runs-on: ubuntu-latest
+    # Two clean builds and 2 x EXEC_REENTER_RUNS boots. Passing boots exit on
+    # their marker in ~25s; the control arm halts as soon as it reproduces. The
+    # cost driver is [G-10], which stalls ~27% of boots to the 180s budget, so
+    # this is sized well above measured rather than tightly.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # g_exec_reenter_task was ONE global consumed on the exit of every syscall
+      # on every CPU. An exec armed on one core was taken by another, which
+      # claimed the exec'ing task and resumed the frame the exec tail had just
+      # built -- while the core that ran the exec was still on it. Finding G-9.
+      - name: Require no CPU to take another CPU's exec re-entry
+        run: make smoke-exec-reenter
+      # The load-bearing arm. Without it, the step above is consistent with
+      # "the workload did not happen to exec concurrently on this runner".
+      - name: Restore the shared hand-off and require the theft to REPRODUCE
+        run: make smoke-exec-reenter-control
 
   smoke-kstack-park:
     name: A dying task's CPU parks on its own kernel stack (S20 park path; ADVISORY -- open finding G-9)

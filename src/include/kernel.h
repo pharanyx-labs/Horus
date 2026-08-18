@@ -1437,9 +1437,11 @@ uint64_t task_exit_switch(int dead);
 /* Re-enter task `t` via the fresh context SYS_EXEC_NAMED fabricated for it (same
  * task, replaced image). Returns its saved kernel %rsp for the ISR epilogue. */
 uint64_t exec_reenter_switch(int t);
-/* Set by h_exec_named; consumed by interrupt_handler64 to resume the exec'd task
- * via exec_reenter_switch instead of the old image's trap frame. -1 = none. */
-extern int g_exec_reenter_task;
+/* Per-CPU exec re-entry hand-off (kspawn.c). Armed by the exec tail on the CPU
+ * performing the exec, taken by that same CPU on its syscall exit. It was a
+ * single shared `int` until [G-9]; see the note at its definition. */
+void exec_reenter_arm(int t);
+int  exec_reenter_take(void);
 char console_getc(void);
 void console_putc(char c);
 void console_puts(const char *s);

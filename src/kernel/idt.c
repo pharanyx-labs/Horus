@@ -234,8 +234,13 @@ static uint64_t resume_rsp_inject(uint64_t rsp)
      * `4 < 0xFFFF800000000000` at compile time and jumps straight into the
      * guard's report, so the arm would prove the REPORT works while never
      * executing the cmp/jae a real occurrence goes through. An opaque value
-     * makes the gate exercise the same two instructions. */
-    static volatile uint64_t bogus = 4;
+     * makes the gate exercise the same two instructions.
+     *
+     * The value is settable because the guard has two halves to witness and 4
+     * only exercises one of them. RESUME_RSP_INJECT_VALUE=-7 drives the ceiling
+     * added for the negative case -- which is the value a real boot produced,
+     * so that arm and a real occurrence still print the same line. */
+    static volatile uint64_t bogus = (uint64_t)(RESUME_RSP_INJECT_VALUE);
     static volatile int fired = 0;
     static unsigned owned_ticks = 0;
 
@@ -249,6 +254,93 @@ static uint64_t resume_rsp_inject(uint64_t rsp)
     return bogus;
 }
 #endif
+
+/* ---- Is this a resume %rsp the ISR epilogue may legally load? --------------
+ *
+ * The guard used to ask only `rsp < 0xFFFF800000000000ULL`: a floor, no ceiling.
+ * That catches a returned 0, 1 or 4 and misses every small NEGATIVE value,
+ * because -7 is 0xFFFFFFFFFFFFFFF9 and sits *above* the floor. The comment above
+ * the old test said it was there to catch "a returned 0/1/-1", and it caught two
+ * of those three. Observed, not theorised: a boot of the PROC_SELFTEST workload
+ * at -smp 4 put -7 into %rsp, sailed through the guard, and faulted at rsp-8
+ * inside the epilogue's first push with a banner naming the stub and nothing
+ * about where the value came from -- exactly the obscurity this guard exists to
+ * remove.
+ *
+ * So bound it at both ends, and bound it from the LINKER rather than a constant:
+ * a stack that MOVES still satisfies a section-derived bound, while one allocated
+ * somewhere new fails loudly instead of silently widening the guard.
+ *
+ * TWO RANGES, and the second one is the whole lesson of this function.
+ *
+ * The first version of this guard used [__bss_start, __bss_end) alone, on the
+ * stated premise that "every kernel stack in a 64-bit context is a .bss array",
+ * listing stack_top, ist{1,2,3}_stack_top and early_handler_stack_top together as
+ * multiboot.S .bss objects. Four of those five are. The IST stacks are NOT: they
+ * are emitted in multiboot.S's .data block beside gdt64/tss64, well below
+ * __bss_start (0x...1a8000 against a __bss_start of 0x...1b0000 in the build that
+ * caught this). The premise was checked against the .bss arrays it named and never
+ * against the three objects it got wrong.
+ *
+ * IST1 serves #DF/#GP/#PF. So a bss-only bound rejects the legal resume %rsp of
+ * every page fault taken through IST1 -- and this guard's response to a rejection
+ * is to halt the CPU, fail-closed. The kernel therefore died on the first ring-3
+ * page fault of any workload that took one: `CAPTEST: PASS 100 checks` became
+ * "PANIC: dispatcher returned a bogus resume rsp=0xffffffff801a9f50", which is an
+ * address 0xf50 into ist1_stack_bottom's page and about as legal as a resume value
+ * gets. Ten CI gates went red together, all of them userspace workloads.
+ *
+ * The bug is instructive because the guard's own witnesses could not see it. Both
+ * arms inject a bogus value and ask whether the report APPEARS -- they measure
+ * false negatives. Nothing asked whether the guard stays silent on a LEGAL value,
+ * so a predicate that rejected everything would have passed every test the commit
+ * shipped with. smoke-resume-guard-ist is that missing arm; see TESTS.md.
+ *
+ * The two legal ranges:
+ *
+ *   [__bss_start, __bss_end)          stack_top and early_handler_stack_* plus
+ *                                     per_task_kstacks[] (paging.c) and
+ *                                     ap_idle_stacks[] (smp.c) -- every task
+ *                                     stack, task 0's included, and every
+ *                                     per-CPU idle/park stack.
+ *   [ist1_stack_guard, ist3_stack_top) the IST cluster, in .data.
+ *
+ * The IST bracket spans the three guard pages as well as the three stacks. That
+ * is deliberate and not a widening worth avoiding: kern_fixed_stack_guards_init()
+ * unmaps those pages, so a resume onto one faults on the very first push whether
+ * this predicate accepts it or not. Six contiguous pages named by two linker
+ * symbols is cheaper on a path that runs at every interrupt return than three
+ * separate range tests, and multiboot.S carries the comment that keeps the
+ * cluster contiguous.
+ *
+ * (boot_stack_top is in .boot.data, but it is the 32-bit early stack and long
+ * mode is entered before interrupt_handler64 exists, so it is never a resume
+ * value.)
+ *
+ * RESUME_GUARD_FLOOR_ONLY=1 restores the floor-only test -- the missing ceiling,
+ * on demand -- and is what `make smoke-resume-guard-negative-control` builds.
+ * RESUME_GUARD_BSS_ONLY=1 restores the bss-only bound described above, the
+ * false-positive on demand, for `make smoke-resume-guard-ist-control`.
+ * RESUME_GUARD_DISABLE removes the guard entirely, which is a different arm with
+ * a different question (see smoke-resume-guard). */
+static int resume_rsp_is_bogus(uint64_t rsp)
+{
+#ifdef RESUME_GUARD_FLOOR_ONLY
+    return rsp < 0xFFFF800000000000ULL;
+#else
+    extern uint8_t __bss_start[], __bss_end[];
+    if (rsp >= (uint64_t)(uintptr_t)__bss_start &&
+        rsp <  (uint64_t)(uintptr_t)__bss_end)
+        return 0;
+#ifndef RESUME_GUARD_BSS_ONLY
+    extern uint8_t ist1_stack_guard[], ist3_stack_top[];
+    if (rsp >= (uint64_t)(uintptr_t)ist1_stack_guard &&
+        rsp <  (uint64_t)(uintptr_t)ist3_stack_top)
+        return 0;
+#endif
+    return 1;
+#endif
+}
 
 /* The ring-0 stack this CPU parks on when the task it was running dies and
  * task_exit_switch() finds nothing else runnable. Reached from three places (the
@@ -399,10 +491,13 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * fresh ring-3 context for it at the top of its kernel stack — which is
          * the SAME memory as this trap `frame`. Resume that context via the
          * saved-frame path (installs the new CR3 + kernel stack). */
-        if (g_exec_reenter_task > 0) {
-            int t = g_exec_reenter_task;
-            g_exec_reenter_task = -1;
-            return exec_reenter_switch(t);
+        /* Per-CPU: this only ever returns an exec armed by THIS core. As a shared
+         * global it returned whichever exec happened to be pending anywhere, and
+         * the wrong core would then resume another core's task on that core's
+         * live trap frame -- finding [G-9]. See the note in kspawn.c. */
+        {
+            int t = exec_reenter_take();
+            if (t > 0) return exec_reenter_switch(t);
         }
         /* SYS_YIELD: voluntary full-context switch (same path as preemption). */
         if (g_want_yield == ipc_caller) {
@@ -549,7 +644,7 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * is not this CPU is what makes the report mean "two CPUs" rather than "a bit
      * was set": a stale bit belonging to this CPU is not a collision with anyone.
      *
-     * Reported under the BOUNDED claim for the reason the floor guard below is --
+     * Reported under the BOUNDED claim for the reason the resume-rsp guard below is --
      * the failure this watches for is exactly the kind that leaves another CPU
      * halted holding the permanent one, and a guard silenced by the failure it is
      * watching for is not an instrument. */
@@ -608,14 +703,18 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * a banner naming the stub and telling you nothing about which switch path
      * produced it. (Or earlier still, on the out->cs read just below -- rsp==4
      * faults at 0x94, which is exactly what a reproduce-and-symbolise cycle spent
-     * an hour chasing.) Kernel stacks are higher-half, so anything below that is a
-     * returned 0/1/-1 or a wild value, never a frame.
+     * an hour chasing.) Every kernel stack is a .bss array, so a legal value lies
+     * in [__bss_start, __bss_end) and a returned 0/1/-1 or a wild value does not.
+     * This comment used to say "kernel stacks are higher-half, so anything below
+     * that is [bogus]", which was the floor-only rationale and named the blind
+     * spot without noticing it: -7 is 0xFFFF...F9, which is not below anything.
+     * See resume_rsp_is_bogus() for the bound and why it comes from the linker.
      *
      * RESUME_GUARD_DISABLE compiles the guard out. Test-only, and the control arm
      * for `make smoke-resume-guard`: with the same injected bogus value and no
      * guard, the kernel reproduces the silence on demand. See TESTS.md. */
 #ifndef RESUME_GUARD_DISABLE
-    if (rsp < 0xFFFF800000000000ULL) {
+    if (resume_rsp_is_bogus(rsp)) {
         /* Was println() -- and this guard exists precisely to catch a fault
          * that has only ever been observed during a live session, when
          * println() reaches nothing but the klog. A guard whose report is

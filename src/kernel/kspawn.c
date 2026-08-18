@@ -349,10 +349,62 @@ int do_spawn(void) {
     return pid;
 }
 
-/* Set by h_exec_named to ask interrupt_handler64 to re-enter this task via the
+/* Set by the exec tail to ask interrupt_handler64 to re-enter this task via the
  * fresh context sched_prepare_user_context fabricated for it, instead of iretq'ing
- * back into the (now-replaced) old image. -1 when no exec re-entry is pending. */
-int g_exec_reenter_task = -1;
+ * back into the (now-replaced) old image. -1 when no exec re-entry is pending.
+ *
+ * ---- PER-CPU, AND THAT IS THE WHOLE POINT ([G-9]) --------------------------
+ *
+ * This used to be a single `int`. The consume site (idt.c) runs on the exit of
+ * EVERY syscall on EVERY CPU and had no test that the pending exec belonged to
+ * the CPU reading it, so an exec armed on one core was routinely taken by
+ * another. The thief claimed the exec'ing task, installed its CR3, and resumed
+ * its freshly fabricated frame -- while the core that actually ran the exec was
+ * still executing on that same trap frame, which is the top of that task's
+ * kernel stack.
+ *
+ * That single race produced all three of the signatures filed under [G-9]:
+ *
+ *   - the leaked claim ("task N claimed by cpu C but that cpu was running M"):
+ *     the thief abandons whatever it was running without releasing it, because
+ *     exec_reenter_switch has no outgoing task to release -- it is written for
+ *     the case where the incoming task IS the outgoing one;
+ *   - the opposite direction ("a task running with no claim"), once the real
+ *     exec'ing CPU carries on running a task the thief has re-claimed;
+ *   - two CPUs on one kernel stack, reported by the stack canary in h_write,
+ *     because both cores are then reading and writing one trap frame.
+ *
+ * Per-CPU storage removes the sharing rather than guarding it: there is no
+ * window left in which the wrong core can observe the hand-off at all. The
+ * identity assertion in exec_reenter_switch (scheduler.c, SCHED_INVARIANTS
+ * builds) is the standing witness that it stays that way.
+ *
+ * EXEC_REENTER_GLOBAL=1 restores the single shared slot -- the defect, on
+ * demand -- and is what `make smoke-exec-reenter-control` builds. */
+#ifdef EXEC_REENTER_GLOBAL
+static int g_exec_reenter[1] = { -1 };
+#define EXEC_REENTER_IDX  0
+#else
+static int g_exec_reenter[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
+#define EXEC_REENTER_IDX  this_cpu()
+#endif
+
+/* Arm the re-entry for the CPU performing the exec. */
+void exec_reenter_arm(int t) {
+    int i = EXEC_REENTER_IDX;
+    if (i < 0 || i >= (int)(sizeof g_exec_reenter / sizeof g_exec_reenter[0])) i = 0;
+    g_exec_reenter[i] = t;
+}
+
+/* Take this CPU's pending re-entry, or -1. Clears it, so a given exec is
+ * consumed exactly once by exactly the core that armed it. */
+int exec_reenter_take(void) {
+    int i = EXEC_REENTER_IDX;
+    if (i < 0 || i >= (int)(sizeof g_exec_reenter / sizeof g_exec_reenter[0])) i = 0;
+    int t = g_exec_reenter[i];
+    if (t > 0) g_exec_reenter[i] = -1;
+    return t;
+}
 
 /* SYS_EXEC_NAMED (64): replace the calling task's image with a named embedded
  * binary, keeping the same task id and cspace (capabilities survive the exec,
@@ -370,7 +422,7 @@ int g_exec_reenter_task = -1;
  * already staged from the caller's still-live address space. Like do_spawn the
  * rebuild+load runs in the kernel address space; unlike do_spawn we do NOT
  * restore the caller — on success we hand interrupt_handler64 a fresh ring-3
- * context (g_exec_reenter_task) for the new image, so this never returns. The old
+ * context (exec_reenter_arm) for the new image, so this never returns. The old
  * page directory/frames leak, consistent with the kernel's non-freeing teardown.
  * Takes no trap frame: it never returns to the caller, so it has no return value
  * to write, and the frame it would write to is the one it just overwrote with
@@ -421,13 +473,13 @@ static void exec_into_armed_image(void) {
      * selectors) and hand it to the ISR epilogue via saved_ksp. A hand-rolled
      * lretq from inside the syscall ISR runs with interrupts off and the wrong
      * initial context; this reuses the proven resume path instead. interrupt_
-     * handler64 sees g_exec_reenter_task and switches CR3 + kernel stack + resumes
+     * handler64 takes THIS CPU's armed re-entry and switches CR3 + kernel stack + resumes
      * the fabricated frame. Runs with the kernel CR3 still active; the switch to
      * tasks[cur].cr3 happens in exec_reenter_switch before the iretq. */
     uint64_t new_eip = tasks[cur].eip;
     uint64_t new_esp = tasks[cur].esp ? (uint64_t)tasks[cur].esp : 0x007ff000ULL;
     sched_prepare_user_context(cur, new_eip, new_esp);
-    g_exec_reenter_task = cur;
+    exec_reenter_arm(cur);
     /* No return value is written. `r` IS the fabricated frame -- sched_prepare_
      * user_context built the new ring-3 context over this same memory (top of
      * the task's kernel stack), so a store to r->rax would land on the new

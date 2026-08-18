@@ -25,6 +25,20 @@
 #                        log. Checked at the end, on the full log, so it is a
 #                        real assertion of absence rather than a race with
 #                        whatever happened to have been printed by then.)
+#        EXPECT_FAULT   (optional: a string that inverts the fault verdict — the
+#                        run PASSES if a kernel fault/panic containing it appears
+#                        and FAILS if none does. For control arms whose whole
+#                        point is that a reintroduced defect kills the kernel
+#                        BEFORE the login prompt, which is where kfault_test.sh
+#                        cannot help: that script anchors its verdict after the
+#                        console handover, so a build that dies during a
+#                        self-test reports "never reached the login prompt" —
+#                        a failure, not the detection it actually is.
+#                        Deliberately a whole mode rather than `|| true` around
+#                        an inverted run: the assertion is that THIS fault
+#                        appeared, not merely that something went wrong, so a
+#                        build that dies for an unrelated reason still fails.
+#                        Mutually exclusive with ABSENT_MARKER.)
 #        SMOKE_DISK_CACHE   (optional: QEMU cache mode for SMOKE_DISK; default
 #                        writethrough — see the DRIVE_ARG comment)
 #        SMOKE_DISK_BLKDEBUG (optional: path to a blkdebug config, layered over
@@ -54,7 +68,14 @@ REQUIRE_MARKER="${REQUIRE_MARKER:-}"
 FAIL_MARKER="${FAIL_MARKER:-}"
 MARKER_ONLY="${MARKER_ONLY:-}"
 ABSENT_MARKER="${ABSENT_MARKER:-}"
+EXPECT_FAULT="${EXPECT_FAULT:-}"
 WAIT_FOR_EXIT="${WAIT_FOR_EXIT:-}"
+
+# Fail closed on a nonsensical combination rather than silently letting one win.
+if [ -n "$EXPECT_FAULT" ] && [ -n "$ABSENT_MARKER" ]; then
+    echo "SMOKE FAIL: EXPECT_FAULT and ABSENT_MARKER are mutually exclusive" >&2
+    exit 1
+fi
 
 PASS_MARKER="Horus Secure Microkernel"   # printed by userspace/shell.c _start()
 LOGIN_MARKER="horus login"               # reached the login prompt (do_login)
@@ -217,7 +238,18 @@ status="timeout"
 quit_sent=0
 deadline=$(( SECONDS + TIMEOUT ))
 while [ "$SECONDS" -lt "$deadline" ]; do
-    if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then status="fault"; break; fi
+    if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then
+        # Under EXPECT_FAULT, only the fault we NAMED ends the run. Any other
+        # fault must keep going so it is reported as the wrong one at the end
+        # rather than being accepted as the expected detection.
+        if [ -n "$EXPECT_FAULT" ]; then
+            if grep -qF "$EXPECT_FAULT" "$LOG" 2>/dev/null; then
+                status="expected_fault"; break
+            fi
+        else
+            status="fault"; break
+        fi
+    fi
     if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then status="marker_fail"; break; fi
     # MARKER_ONLY: the required marker alone is success (no shell banner).
     if [ "$MARKER_ONLY" = "1" ] && [ -n "$REQUIRE_MARKER" ]; then
@@ -302,6 +334,9 @@ case "$status" in
         fi
         exit 0
         ;;
+    expected_fault)
+        echo "SMOKE PASS: expected fault '$EXPECT_FAULT' observed on serial"
+        exit 0 ;;
     marker_fail) echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER' on serial"; exit 1 ;;
     qmp_failed)
         echo "SMOKE FAIL: could not ask QEMU to quit over QMP after the marker"

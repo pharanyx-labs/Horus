@@ -8,6 +8,221 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the resume-`%rsp` ceiling rejected the IST stacks, and every arm it shipped with said it was fine
+
+The ceiling added to `interrupt_handler64`'s resume-`%rsp` guard bounded a legal value to
+`[__bss_start, __bss_end)`, on the stated premise that *every kernel stack in a 64-bit context
+is a `.bss` array*. Four of the five objects it named are. **The three IST stacks are not** —
+`multiboot.S` emits them in its `.data` block beside `gdt64`/`tss64`, at `0x…1a8000` against a
+`__bss_start` of `0x…1b0000`.
+
+IST1 serves `#DF`/`#GP`/`#PF`, and the guard's response to a rejection is to halt, fail-closed.
+So the kernel died on the first ring-3 page fault of any workload that took one:
+
+```
+CAPTEST: begin
+PANIC: dispatcher returned a bogus resume rsp=0xffffffff801a9f50 task=1 'captest'
+KERNEL FATAL RESUME RSP - halting
+```
+
+`0xffffffff801a9f50` is `0xf50` into `ist1_stack_bottom`'s page — about as legal as a resume
+value gets. **Ten CI gates went red together** (captest, coreutils, newlib, CoW, TCC, port-I/O
+bitmap, heap64, boot-module transport, and both console tests), all of them userspace workloads,
+none related to each other except that each takes a page fault.
+
+**The guard now accepts two ranges**: `[__bss_start, __bss_end)` for `stack_top`,
+`early_handler_stack_*`, `per_task_kstacks[]` and `ap_idle_stacks[]`, and
+`[ist1_stack_guard, ist3_stack_top)` for the IST cluster. Both still come from the linker, so a
+stack that *moves* satisfies them and one allocated somewhere new still fails loudly. The IST
+bracket deliberately spans the three guard pages too: `kern_fixed_stack_guards_init()` unmaps
+them, so a resume onto one faults on its first push regardless, and two symbols over six
+contiguous pages is cheaper at every interrupt return than three range tests. `ist3_stack_top`
+is now `.global`, and `multiboot.S` carries the comment that keeps the cluster contiguous.
+
+**Why no existing arm caught it, which is the part worth keeping.** All five resume-guard arms
+inject a bogus value and ask whether the report *appears*. They measure **false negatives**. A
+predicate that rejected the entire address space would have passed every one of them — and a
+predicate that rejected the IST stacks did. The resume-guard CI job stayed **green** in the same
+run where those ten gates went red.
+
+The missing arm is now there, and it is a different shape from anything else in the suite:
+`smoke-resume-guard-ist` injects nothing, boots captest, and requires `CAPTEST: PASS 100 checks`
+with the guard's report **absent**. Its control arm `RESUME_GUARD_BSS_ONLY=1` restores the
+bss-only bound and requires the false rejection to be **present** — the first *false-positive*
+control arm in the tree. Both are steps in the existing `smoke-resume-guard` job, so the
+required-context count stays **72**.
+
+`tools/smoke_test.sh` gained an `EXPECT_FAULT` mode for the control arm. `kfault_test.sh` could
+not serve: it anchors its verdict after the console handover, and a build that dies inside a
+self-test reports "never reached the login prompt" — a failure, not the detection it is. The
+mode asserts that *the named* fault appeared, so a build that dies for an unrelated reason still
+fails, and no `|| true` was involved in inverting the verdict.
+
+Falsified both directions: `smoke-resume-guard-ist` passes with the fix and the false rejection
+is present under the control arm; `smoke-resume-guard` and `smoke-resume-guard-negative` re-run
+to confirm the guard still rejects `4` and `-7`; `smoke-newlib` and `smoke-cow`, both red in CI,
+pass again.
+
+**No security property changed** and no finding moves: **[G-9]** and **[G-10]** stay open, the
+`-7` is still unexplained, and the guard is still a detector rather than a cure.
+
+### Fixed — three claims the resume-guard commit left describing the defect it had just closed
+
+Documentation only; no behaviour change. Adding a ceiling to the resume-`%rsp` guard falsified
+four statements elsewhere in the tree, and the commit that added it updated one of them.
+
+- **`docs/ROADMAP.md` §1.7** justified `smoke-kstack-park`'s advisory status with "its workload
+  still reddens ~27% of the time for this". `~27%` is the rate measured after the exec fix and
+  **before** the CR3 guard; the same roadmap item quotes **2 in 30** (~7%) eighteen lines
+  earlier. The clause also charged the residue to §1.7's unserialised singletons, when it is the
+  bogus resume `%rsp` — the rest of **[G-9]**, and a different defect. A stale figure and a wrong
+  attribution in one sentence, thirty lines from the measurement that refutes both.
+- **`.github/ci-gating.yml`** gave the same exemption's reason as a `-7` "that the floor guard
+  in `interrupt_handler64` misses because it tests only a lower bound". The guard no longer
+  misses it. The exemption itself is unchanged and still stands — the guard is a detector, so the
+  rate is still ~7% and the promotion condition (0 over 30) is untouched — but an advisory reason
+  that describes a fixed defect is how a gate stays exempt after its excuse expires.
+- **`docs/LIMITATIONS.md`** said of the 2026-08-13 `.text`-pointer capture that "`#123`'s floor
+  guard does not cover that value". The new bound is `[__bss_start, __bss_end)`, and a `.text`
+  pointer is outside it, so that value would now be rejected and reported.
+- **`src/kernel/idt.c`** still explained the predicate as "kernel stacks are higher-half, so
+  anything below that is a returned 0/1/-1 or a wild value" — the floor-only rationale, naming
+  the blind spot without noticing it, since `-7` is not below anything.
+
+No finding changes status: **[G-9]** and **[G-10]** stay open, and `smoke-kstack-park` stays
+advisory. What changes is that no file now states the guard's old predicate as its current one.
+
+### Fixed — the resume-`%rsp` guard was a floor with no ceiling
+
+`interrupt_handler64` rejects a bogus kernel `%rsp` before the ISR epilogue loads it, and the
+test was `if (rsp < 0xFFFF800000000000ULL)`. That catches a returned `0`, `1` or `4` and misses
+every small **negative** value, because `-7` is `0xFFFFFFFFFFFFFFF9` and sits *above* the floor.
+The comment above it said it was there to catch "a returned 0/1/-1"; it tested for two of those
+three.
+
+Not hypothetical: a `PROC_SELFTEST` boot at `-smp 4` returned `-7` as the resume `%rsp`, passed
+the guard, and faulted at `rsp - 8` inside the epilogue's first push — producing exactly the
+banner-naming-the-stub-and-nothing-else that this guard exists to prevent.
+
+The bound now comes from the **linker** rather than a constant. Every 64-bit kernel stack is a
+`.bss` array — `per_task_kstacks[]`, `ap_idle_stacks[]`, and `stack_top` / the IST stacks /
+`early_handler_stack_top` — so a legal resume value lies in `[__bss_start, __bss_end)` and
+nothing else does. A stack that moves still satisfies it; one allocated somewhere new fails
+loudly rather than silently widening the guard.
+
+Witnessed by `smoke-resume-guard-negative` (inject `-7`, the report must appear) against
+`smoke-resume-guard-negative-control` (`RESUME_GUARD_FLOOR_ONLY=1`, the report must be absent),
+both added to the existing `smoke-resume-guard` CI job so the required-context count is
+unchanged at 72. `RESUME_RSP_INJECT_VALUE` makes the injected value selectable, since `4` only
+ever exercised one half of the guard.
+
+**This is a detector, not a cure.** It does not change the ~7% of `PROC_SELFTEST` boots that
+still fail — what produces `-7` is still unknown, and remains the open part of **[G-9]**. What
+changes is that those boots now name the value, the task and the CPU instead of faulting
+obscurely.
+
+The first version of the pair was wrong in an instructive way: both new arms reused the
+`rsp=0x4` regex, so the positive arm failed against a guard that was in fact working, and the
+**control arm passed vacuously** — a pattern that can never match is trivially absent. Caught
+because the positive arm failed; a control-only change would have shipped green and proved
+nothing. Recorded in `TESTS.md`.
+
+### Fixed — a slot's page tables were recycled while another CPU was still on them (**[G-10]**)
+
+`create_user_pagedir()` reclaims the previous occupant of a task slot before rebuilding it, and
+freed it on this reasoning:
+
+> *"Safe here and nowhere earlier: the caller is on the kernel CR3, so the tree about to be
+> freed is not the one any CPU is walking."*
+
+That establishes only that **this** core has left the tree. Two others routinely have not: a CPU
+whose last task died parks in `kernel_idle()` without ever reloading CR3, and `SYS_KILL` marks a
+task dead while it is still executing in ring 3 on another core — while the slot allocator asks
+only for `state == 0`. So a spawn could recycle the page tables of a **running** task, return
+the frames to the free list, and hand them out as ordinary pages to somebody else while the
+other core was still translating through them. **A cross-address-space read/write primitive
+reachable from ring 3**, not merely a crash; see `SECURITY.md` under adversary A1.
+
+It surfaced as a supervisor *write* fault at `0xFEE000B0` — the LAPIC EOI register, which lives
+in each task's own `pml4[0]` identity map and disappeared when its leaf PTE was recycled.
+
+`switch_cr3()` now publishes what each CPU has loaded (`percpu_cr3[]`), the reclaim refuses to
+free a tree any other CPU holds, and rather than leaking it the tree is parked in a small fixed
+table and retried on the next rebuild. Fail closed both ways: the overflow leaks rather than
+freeing in use. The check cannot go stale unsafely, because no CPU can newly adopt the doomed
+tree — the slot naming it has already been rebuilt, so holders can only leave.
+
+Falsified with `CR3_RECLAIM_UNGUARDED=1`: **free-in-use on 20 boots of 20** with the guard
+removed, and the `0xFEE000B0` fault **0 in 30 against 6 in 30** before. New gates
+`smoke-cr3-reclaim` and `smoke-cr3-reclaim-control`.
+
+**Effect on [G-9]:** the `PROC_SELFTEST` workload at `-smp 4` goes from ~45% of boots failing to
+**2 in 30**, and `make smoke-kstack-park` passes in its exact form. Required contexts 71 → 72.
+
+**Both findings stay open.** [G-10] keeps `loader_staging`, the staged argv,
+`g_spawn_stdio_spec` and `g_spawn_caller` — all still process-wide and unserialised, and the
+authority half (a child's stdio wired from the wrong parent's cspace) is untouched. [G-9] keeps
+its last ~7%: a bogus resume `%rsp` of `-7`, which the floor guard in `interrupt_handler64`
+misses because `if (rsp < 0xFFFF800000000000ULL)` tests only a lower bound — `-7` is
+`0xFFFFFFFFFFFFFFF9` and sails over it. `smoke-kstack-park` therefore stays advisory.
+
+### Fixed — an exec re-entry could be taken by the wrong CPU (**[G-9]**, exec component)
+
+`g_exec_reenter_task` was a single global naming the task whose `SYS_EXEC_NAMED` re-entry was
+pending, and `idt.c` consumed it on the exit of **every syscall on every CPU** with no test that
+the exec belonged to the CPU reading it. An exec armed on one core was routinely taken by
+another, which claimed the exec'ing task, installed its CR3 and resumed the trap frame the exec
+tail had just fabricated — while the core that actually ran the exec was still executing on that
+same frame, at the top of that task's kernel stack.
+
+One race, all three **[G-9]** signatures: the leaked claim (`exec_reenter_switch` is written for
+the case where the incoming task *is* the outgoing one, so it has no release at all), the
+opposite direction, and two CPUs on one kernel stack. Caught in the act by a probe:
+
+```
+CLAIMORPHAN: cpu 0 entering task 1 at exec_reenter_switch while still claiming live task 3
+  percpu_current=3  deferred=-1  state=1
+```
+
+The storage is per-CPU now, behind `exec_reenter_arm()` / `exec_reenter_take()` — the sharing is
+removed rather than guarded — plus a one-comparison assertion in `exec_reenter_switch` under
+`SCHED_INVARIANTS` as the standing witness. Falsified with `EXEC_REENTER_GLOBAL=1`, pinned,
+`-smp 4`: **0 thefts in 30 boots fixed, 5 in 20 with the global restored** (Fisher p ≈ 0.008).
+Overall workload failure ~45–50% → ~27%. New gates `smoke-exec-reenter` (absent) and
+`smoke-exec-reenter-control` (present); both assert on the marker rather than on the boot's exit
+status, since the workload still fails on [G-10].
+
+Three earlier hypotheses were wrong and are recorded in `TESTS.md` rather than quietly dropped:
+`sched_enter_user()`'s stub bypass (real, but all its callers are boot-time BSP paths), the
+unguarded defensive claim in `preempt_on_tick`, and `create_task()` inheriting a claim through
+slot reuse. A probe that recorded the origin of every claim killed all three; reading the code
+had endorsed each of them. An early measurement of the fix also reported a clean 0-in-20 — taken
+with diagnostic scaffolding that scanned every task slot on every ISR exit, and the perturbation
+hid the residues. The arm you measure must be the arm you ship.
+
+**[G-9] stays OPEN.** It was a cluster, not one defect. Two residues remain, neither the exec
+race: a stale claim in the boot/spawn phase before any exec runs (2 in 30), and a CPL-0
+`vec=14 errc=0x2` at `lapic_eoi` / `interrupt_handler64` in 6 of 30 boots. `smoke-kstack-park`
+therefore **stays advisory** and required contexts stay at 70 — promoting it on a partial fix
+would restore a required gate that still reddens ~27% of the time for something it does not test.
+
+### Found — the spawn/exec path is process-wide singleton state, unserialised (**[G-10]**)
+
+Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight is a file-scope singleton — the one ELF
+staging buffer `loader_staging`, the staged argv `g_args_*`, `g_spawn_stdio_spec` and
+`g_spawn_caller` — with no lock in `loader.c` and none around `do_spawn`. `g_exec_reenter_task`
+was one instance of this pattern; the rest are untouched.
+
+The correctness half is the [G-9] residue above: a CR3 reachable before `create_user_pagedir` has
+populated its kernel half is exactly what a supervisor write-fault in `lapic_eoi` looks like. The
+authority half is worse — `g_spawn_caller` is written at `do_spawn` entry and read much later by
+`wire_child_stdio`, so a child can have its stdio wired from **the wrong parent's cspace**, which
+is capability inheritance from a task that never spawned it.
+
+Filed with a mechanism and no control arm: it has not been reproduced in isolation, and the fix
+(serialising the spawn/exec critical section) is a design change owing its own commit and its own
+witness.
+
 ### Found — a scheduler claim leaks on the spawn/reap path under SMP (**[G-9]**, pre-existing)
 
 `smoke-kstack-park` turned `main` red. The gate's property is sound and the kernel fix it guards

@@ -494,8 +494,33 @@ RESUME_RSP_INJECT ?= 0
 RESUME_RSP_INJECT_TICKS ?= 400
 RESUME_RSP_INJECT_PRECLAIM ?= 0
 RESUME_GUARD_DISABLE ?= 0
+# Which bogus value to inject. 4 is the 2026-08-13 capture and exercises the
+# guard's FLOOR; -7 is the 2026-08-17 capture and exercises the CEILING added
+# after a real boot showed -7 sailing over a floor-only test (0xFFFFFFFFFFFFFFF9
+# is above 0xFFFF800000000000). Both halves of the guard need an arm.
+RESUME_RSP_INJECT_VALUE ?= 4
+# RESUME_GUARD_FLOOR_ONLY=1 restores the pre-2026-08-18 floor-only predicate --
+# the blind spot on demand. `make smoke-resume-guard-negative-control` builds it
+# and requires the report to be ABSENT, the same shape as KFAULT_LEGACY_PRINTLN.
+RESUME_GUARD_FLOOR_ONLY ?= 0
+ifeq ($(RESUME_GUARD_FLOOR_ONLY),1)
+CFLAGS += -DRESUME_GUARD_FLOOR_ONLY
+endif
+# RESUME_GUARD_BSS_ONLY=1 restores the bound the ceiling shipped with on
+# 2026-08-18: [__bss_start, __bss_end) and nothing else, on the premise that every
+# 64-bit kernel stack is a .bss array. The IST stacks are in .data, IST1 serves
+# #PF, and the guard halts on a rejection -- so that build dies on the first ring-3
+# page fault of any workload that takes one. This is the FALSE-POSITIVE arm: unlike
+# every other RESUME_GUARD_* flag it does not make the guard miss something, it
+# makes it reject something legal. `make smoke-resume-guard-ist-control` builds it
+# and requires the false rejection to be PRESENT.
+RESUME_GUARD_BSS_ONLY ?= 0
+ifeq ($(RESUME_GUARD_BSS_ONLY),1)
+CFLAGS += -DRESUME_GUARD_BSS_ONLY
+endif
 ifeq ($(RESUME_RSP_INJECT),1)
-CFLAGS += -DRESUME_RSP_INJECT -DRESUME_RSP_INJECT_TICKS=$(RESUME_RSP_INJECT_TICKS)
+CFLAGS += -DRESUME_RSP_INJECT -DRESUME_RSP_INJECT_TICKS=$(RESUME_RSP_INJECT_TICKS) \
+          -DRESUME_RSP_INJECT_VALUE='$(RESUME_RSP_INJECT_VALUE)'
 endif
 ifeq ($(RESUME_RSP_INJECT_PRECLAIM),1)
 CFLAGS += -DRESUME_RSP_INJECT_PRECLAIM
@@ -543,6 +568,30 @@ KSTACK_RACE_WIDEN_SPINS ?= 200000
 KSTACK_RACE_WIDEN_CPUMASK ?= 0x5
 ifeq ($(KSTACK_RELEASE_EARLY),1)
 CFLAGS += -DKSTACK_RELEASE_EARLY
+endif
+# EXEC_REENTER_GLOBAL=1 restores the pre-2026-08-17 exec hand-off: ONE shared
+# `int` naming the task whose exec re-entry is pending, consumed on the exit of
+# every syscall on every CPU with no test that the exec belonged to that CPU.
+# That is finding [G-9]: an exec armed on one core is taken by another, which
+# claims the exec'ing task, installs its CR3 and resumes its freshly fabricated
+# trap frame while the core that ran the exec is still on that same frame.
+# Per-CPU storage is the fix; this flag is the defect on demand, and is what
+# `make smoke-exec-reenter-control` builds.
+EXEC_REENTER_GLOBAL ?= 0
+ifeq ($(EXEC_REENTER_GLOBAL),1)
+CFLAGS += -DEXEC_REENTER_GLOBAL
+endif
+# CR3_RECLAIM_UNGUARDED=1 restores the pre-2026-08-17 slot reclaim in
+# create_user_pagedir: free the previous occupant's page tables unconditionally,
+# on the uniprocessor argument that "the caller is on the kernel CR3, so the tree
+# is not the one any CPU is walking". Another CPU routinely IS -- one parked in
+# kernel_idle never reloads CR3, and SYS_KILL marks a task dead while it still
+# runs in ring 3 on another core. That is finding [G-10]: the freed frames return
+# to the pool and are handed out as ordinary pages while another core is still
+# translating through them. `make smoke-cr3-reclaim-control` builds it.
+CR3_RECLAIM_UNGUARDED ?= 0
+ifeq ($(CR3_RECLAIM_UNGUARDED),1)
+CFLAGS += -DCR3_RECLAIM_UNGUARDED
 endif
 # KSTACK0_SHARED_PARK=1 restores the pre-2026-08-17 park target: all three
 # fault/exit fallbacks in idt.c resume the CPU on tasks[0].kernel_stack_top, ONE
@@ -2254,6 +2303,13 @@ smoke-kfault-legacy:
 #
 # Three arms, because one of them alone would not be evidence. See TESTS.md.
 RESUME_GUARD_RE = PANIC: dispatcher returned a bogus resume rsp=0x4
+# The negative arms match the VALUE they inject, not just the banner. Reusing
+# RESUME_GUARD_RE (which ends in `0x4`) made both of them meaningless: the
+# EXPECT_REPORT=1 arm failed against a guard that was in fact reporting
+# correctly, and -- worse -- the EXPECT_REPORT=0 control PASSED because a regex
+# that can never match is trivially absent. A control arm that cannot fail is
+# not a control arm.
+RESUME_GUARD_NEG_RE = PANIC: dispatcher returned a bogus resume rsp=0xfffffffffffffff9
 
 .PHONY: smoke-resume-guard
 smoke-resume-guard:
@@ -2262,6 +2318,36 @@ smoke-resume-guard:
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 boot.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
+		tools/kfault_test.sh boot.iso
+
+# The negative half of the guard. A floor with no ceiling catches a returned 0,
+# 1 or 4 and misses every small NEGATIVE value: -7 is 0xFFFFFFFFFFFFFFF9, which
+# is ABOVE 0xFFFF800000000000. That is not hypothetical -- a PROC_SELFTEST boot
+# at -smp 4 on 2026-08-17 put -7 into the resume %rsp, passed the old guard, and
+# faulted at rsp-8 inside the epilogue's first push with a banner naming the stub
+# and nothing about where the value came from.
+.PHONY: smoke-resume-guard-negative
+smoke-resume-guard-negative:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
+		REPORT_RE='$(RESUME_GUARD_NEG_RE)' REPORT_LABEL='bogus negative resume rsp' \
+		tools/kfault_test.sh boot.iso
+
+# The control arm, and the one that makes the pair a measurement. Same -7, but
+# with the floor-only predicate restored: the guard must NOT be heard. Without
+# it, smoke-resume-guard-negative is consistent with "the guard was already
+# catching this", which is exactly what everyone believed until a boot proved
+# otherwise. Requires the report to be ABSENT -- same shape as
+# smoke-kfault-legacy.
+.PHONY: smoke-resume-guard-negative-control
+smoke-resume-guard-negative-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 RESUME_GUARD_FLOOR_ONLY=1
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 RESUME_GUARD_FLOOR_ONLY=1 boot.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
+		REPORT_RE='$(RESUME_GUARD_NEG_RE)' REPORT_LABEL='bogus negative resume rsp' \
 		tools/kfault_test.sh boot.iso
 
 # The arm that witnesses the fix. Same injection, but the permanent panic claim
@@ -2304,6 +2390,52 @@ smoke-resume-guard-nofloor:
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
 		tools/kfault_test.sh boot.iso
+
+# Does the guard stay SILENT on a legal resume %rsp? Every arm above injects a
+# bogus value and asks whether the report appears -- they measure false negatives,
+# and a predicate that rejected every value in the address space would pass all of
+# them. This pair measures the other direction, and it exists because that gap was
+# not theoretical for even one commit.
+#
+# The ceiling added on 2026-08-18 bounded the guard to [__bss_start, __bss_end) on
+# the premise that every 64-bit kernel stack is a .bss array. The IST stacks are in
+# .data (multiboot.S emits them beside gdt64/tss64), IST1 serves #DF/#GP/#PF, and
+# the guard's response to a rejection is to halt -- so that kernel died on the
+# first ring-3 page fault any workload took, reporting a resume %rsp of
+# 0xffffffff801a9f50, which is 0xf50 into ist1_stack_bottom's page. Ten CI gates
+# went red at once and every resume-guard arm stayed green, because none of them
+# could see a false positive.
+#
+# The workload is captest: it faults through IST1 as a matter of course, and it
+# already prints a hard success marker. No injection in either arm -- the point is
+# what the guard does to values the kernel produces on its own.
+#
+#   smoke-resume-guard-ist          shipped predicate: CAPTEST: PASS, no report.
+#   smoke-resume-guard-ist-control  RESUME_GUARD_BSS_ONLY=1: the false rejection,
+#                                   on demand, and captest never finishes.
+# The banner is matched as a FIXED string up to the high half's leading digits,
+# so it names "the guard rejected a kernel-image address" without pinning the
+# exact stack offset, which shifts with the image layout. Not kfault_test.sh:
+# that anchors its verdict after the console handover, and neither arm here ever
+# reaches a login prompt -- the control arm dies inside captest, which is the
+# whole point.
+RESUME_GUARD_IST_RE = PANIC: dispatcher returned a bogus resume rsp=0xffffffff8
+
+.PHONY: smoke-resume-guard-ist
+smoke-resume-guard-ist:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
+		ABSENT_MARKER='$(RESUME_GUARD_IST_RE)' tools/smoke_test.sh boot.iso
+
+.PHONY: smoke-resume-guard-ist-control
+smoke-resume-guard-ist-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_FAULT='$(RESUME_GUARD_IST_RE)' \
+		tools/smoke_test.sh boot.iso
 
 # Two CPUs on one kernel stack -- finding G-8, and the gate that closes it.
 #
@@ -2518,6 +2650,148 @@ smoke-kstack-park-control:
 	fi; \
 	rm -f "$$log"; \
 	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must"
+
+# ---- [G-9], exec hand-off component: the re-entry belongs to the CPU that armed it
+#
+# g_exec_reenter_task was ONE global consumed on the exit of every syscall on
+# every CPU, so an exec armed on one core was taken by another -- which claimed
+# the exec'ing task, installed its CR3 and resumed the trap frame the exec tail
+# had just built, while the core that ran the exec was still on that same frame.
+#
+# BOTH ARMS ARE MARKER ASSERTIONS, NOT EXIT STATUSES, and deliberately so: the
+# PROC_SELFTEST workload at -smp 4 still fails ~27% of boots on [G-10], which has
+# nothing to do with this property. Gating on "did the boot finish" would make
+# this pair a [G-10] detector. Gating on the marker asks only the question these
+# arms exist to ask.
+#
+# The control arm needs MANY boots because the theft is a race: measured 5 hits
+# in 20 boots (25%/boot), against 0 in 30 for the fix. One boot would report a
+# false green three times in four.
+EXEC_REENTER_RUNS ?= 20
+EXEC_REENTER_TIMEOUT ?= 180
+EXEC_REENTER_RE = exec re-entry taken by the wrong cpu
+
+.PHONY: smoke-exec-reenter
+smoke-exec-reenter:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc is captured and deliberately NOT the assertion: [G-10] still stalls"; \
+	: "~27% of these boots, and gating on completion would make this pair a"; \
+	: "G-10 detector rather than a witness for this property. rc=$$rc"; \
+	hits=$$(grep -ca '$(EXEC_REENTER_RE)' "$$log"); \
+	if [ "$$hits" -ne 0 ]; then \
+	    echo "EXEC REENTER: FAIL - the exec hand-off was taken by the wrong CPU ($$hits/$(EXEC_REENTER_RUNS) boots)"; \
+	    grep -a -A 1 '$(EXEC_REENTER_RE)' "$$log" | head -6 | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	rm -f "$$log"; \
+	echo "EXEC REENTER: PASS - no CPU took another CPU's exec re-entry in $(EXEC_REENTER_RUNS) boots at -smp 4"
+
+# ---- [G-10]: a slot's page tables are not recycled while a CPU is on them
+#
+# create_user_pagedir() used to free the previous occupant's address space
+# unconditionally, justified by "the caller is on the kernel CR3, so the tree is
+# not the one any CPU is walking" -- a uniprocessor argument. A CPU parked in
+# kernel_idle never reloads CR3, and SYS_KILL marks a task dead while it is still
+# running in ring 3 elsewhere, so the freed frames went back to the pool and were
+# handed out as ordinary pages while another core still translated through them.
+#
+# The visible symptom is a supervisor WRITE fault at 0xFEE000B0 -- the LAPIC EOI
+# register, which lives in each task's own pml4[0] identity map and disappears
+# when its leaf PTE is recycled. Measured 2026-08-17: 6 boots in 30 before,
+# 0 in 30 after.
+#
+# The two arms assert different markers, deliberately. The fixed arm asserts the
+# BEHAVIOUR (no such fault), because that is the property. The control arm
+# asserts the CR3UAF report, because the free-in-use happens on every boot while
+# the fault it causes only lands ~20% of the time -- gating the control on the
+# fault would make it flaky for no gain.
+CR3_RECLAIM_RUNS ?= 20
+CR3_RECLAIM_TIMEOUT ?= 180
+CR3_RECLAIM_RE = PAGE FAULT at 0xfee000b0
+
+.PHONY: smoke-cr3-reclaim
+smoke-cr3-reclaim:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 $(CR3_RECLAIM_RUNS)); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc captured, not asserted on: the rest of [G-9] still fails ~7% of these"; \
+	: "boots and this gate is not about that. rc=$$rc"; \
+	hits=$$(grep -ca '$(CR3_RECLAIM_RE)' "$$log"); \
+	if [ "$$hits" -ne 0 ]; then \
+	    echo "CR3 RECLAIM: FAIL - the LAPIC page vanished from a live address space ($$hits/$(CR3_RECLAIM_RUNS) boots)"; \
+	    grep -a -A 4 '$(CR3_RECLAIM_RE)' "$$log" | head -8 | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	rm -f "$$log"; \
+	echo "CR3 RECLAIM: PASS - no recycled page table faulted in $(CR3_RECLAIM_RUNS) boots at -smp 4"
+
+.PHONY: smoke-cr3-reclaim-control
+smoke-cr3-reclaim-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 3); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc captured, not asserted on: this arm halts on purpose. rc=$$rc"; \
+	hits=$$(grep -ca 'CR3UAF' "$$log"); \
+	if [ "$$hits" -eq 0 ]; then \
+	    echo "CR3 RECLAIM CONTROL: FAIL - the unguarded reclaim did NOT free a tree in use."; \
+	    echo "  This arm carries reachability for the pair: if the free-in-use stops"; \
+	    echo "  happening with the guard removed, smoke-cr3-reclaim proves nothing."; \
+	    echo "  Measured 2026-08-17: 20 boots in 20."; \
+	    rm -f "$$log"; exit 1; \
+	fi; \
+	grep -a 'CR3UAF' "$$log" | head -2 | sed 's/^/  /'; \
+	rm -f "$$log"; \
+	echo "CR3 RECLAIM CONTROL: PASS - the unguarded reclaim frees an address space in use ($$hits/3 boots)"
+
+.PHONY: smoke-exec-reenter-control
+smoke-exec-reenter-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=1 boot.iso
+	@log=$$(mktemp); rc=0; \
+	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
+	    one=$$(mktemp); \
+	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	: "rc captured, not asserted on -- this arm halts a CPU on purpose. rc=$$rc"; \
+	hits=$$(grep -ca '$(EXEC_REENTER_RE)' "$$log"); \
+	if [ "$$hits" -eq 0 ]; then \
+	    echo "EXEC REENTER CONTROL: FAIL - the shared hand-off did NOT reproduce in $(EXEC_REENTER_RUNS) boots."; \
+	    echo "  This arm carries reachability for the pair: if the theft stops happening with"; \
+	    echo "  the global restored, then smoke-exec-reenter's green says nothing either."; \
+	    echo "  Expected ~25%/boot (measured 5 in 20 on 2026-08-17)."; \
+	    rm -f "$$log"; exit 1; \
+	fi; \
+	grep -a '$(EXEC_REENTER_RE)' "$$log" | head -2 | sed 's/^/  /'; \
+	rm -f "$$log"; \
+	echo "EXEC REENTER CONTROL: PASS - the shared hand-off is taken by the wrong CPU ($$hits/$(EXEC_REENTER_RUNS) boots), as it must be"
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.

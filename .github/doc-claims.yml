@@ -1,0 +1,144 @@
+# Claims the documentation makes that a machine can check.
+#
+# Every number in this repository's docs has gone stale within days at least
+# once. The 2026-08-19 audit found nine of them wrong across five files while
+# two other files carried the same numbers correctly -- which is the only reason
+# the drift was visible at all. Writing "re-derive every number you cite" into
+# CLAUDE.md did not stop it, because a rule that only a reader enforces is a
+# rule that fails silently.
+#
+# So the derivable claims are checked instead. `tools/check_doc_claims.py`
+# computes each value from the source of truth and requires every declared
+# occurrence to agree, and the `doc-claims` CI job fails the build when one does
+# not. Adding a claim here is how you make a number in a document load-bearing.
+#
+# Two kinds of entry:
+#
+#   counts:    a value derived from the tree, plus every place that states it.
+#              A file that is declared to state a claim and does not is an
+#              error too -- otherwise rewording a sentence would silently
+#              delete the check along with the claim.
+#
+#   forbidden: text that was true once and is not any more. When you correct a
+#              fact, put its old phrasing here so it cannot come back. This is a
+#              ratchet: it costs one line per correction and it is the only part
+#              of this file that catches prose rather than digits.
+
+counts:
+  - id: ci_jobs
+    describe: jobs defined in .github/workflows/ci.yml
+    derive: ci_jobs
+    occurrences:
+      - file: README.md
+        pattern: '`\.github/workflows/ci\.yml` runs (\d+) jobs'
+      - file: README.md
+        pattern: "the bulk of CI's (\\d+) jobs"
+      - file: TESTS.md
+        pattern: '`\.github/workflows/ci\.yml` defines \*\*(\d+)\*\* jobs'
+      - file: docs/LIMITATIONS.md
+        pattern: '`\.github/workflows/ci\.yml` defines \*\*(\d+)\*\* jobs'
+
+  - id: all_jobs
+    describe: jobs across ci.yml, codeql.yml and ruleset-audit.yml
+    derive: all_jobs
+    occurrences:
+      - file: TESTS.md
+        pattern: 'below — \*\*(\d+)\*\* jobs'
+      - file: docs/LIMITATIONS.md
+        pattern: 'one more — \*\*(\d+)\*\* across the three'
+      - file: docs/ROADMAP.md
+        pattern: '\((\d+) jobs, \d+ contexts'
+
+  - id: contexts
+    describe: status-check contexts those jobs produce
+    derive: contexts
+    occurrences:
+      - file: README.md
+        pattern: 'The intended set is \d+ of its (\d+) contexts'
+      - file: TESTS.md
+        pattern: '\*\*\d+\*\* jobs, \*\*(\d+)\*\* contexts'
+      - file: docs/LIMITATIONS.md
+        pattern: 'producing \*\*(\d+)\*\* status-check contexts'
+      - file: docs/ROADMAP.md
+        pattern: '\(\d+ jobs, (\d+) contexts'
+
+  - id: required
+    describe: contexts classified as merge-gating in .github/ci-gating.yml
+    derive: required
+    occurrences:
+      - file: README.md
+        pattern: 'The intended set is (\d+) of its \d+ contexts'
+      - file: TESTS.md
+        pattern: 'The intended set is \*\*(\d+) required contexts'
+      - file: docs/LIMITATIONS.md
+        pattern: 'That intended set is \*\*(\d+) required contexts'
+      - file: docs/ROADMAP.md
+        pattern: 'The intended set is \*\*(\d+) required, \d+ exempted\*\*'
+
+  - id: advisory
+    describe: contexts exempted with a written reason
+    derive: advisory
+    occurrences:
+      - file: TESTS.md
+        pattern: '\*\*\d+ required contexts and (\d+) reasoned exemptions\*\*'
+      - file: docs/LIMITATIONS.md
+        pattern: '\*\*\d+ required contexts and (\d+) reasoned exemptions\*\*'
+      - file: docs/ROADMAP.md
+        pattern: '\*\*\d+ required, (\d+) exempted\*\*'
+
+  - id: smoke_targets
+    describe: "smoke-* targets in the Makefile"
+    derive: smoke_targets
+    occurrences:
+      - file: docs/ROADMAP.md
+        pattern: '\| (\d+) `smoke-\*` targets'
+
+  - id: control_arms
+    describe: control-arm smoke targets that must reproduce a defect
+    derive: control_arms
+    occurrences:
+      - file: docs/ROADMAP.md
+        pattern: 'and (\d+) of them control arms'
+
+  - id: captest_checks
+    describe: check() assertions in userspace/captest.c
+    derive: captest_checks
+    occurrences:
+      - file: SECURITY.md
+        pattern: '`make smoke-captest` \((\d+) checks\)'
+      - file: TESTS.md
+        pattern: '\| `smoke-captest` \| \*\*(\d+) checks\*\*'
+      - file: docs/BUILDING.md
+        pattern: 'are all refused \((\d+) checks'
+      - file: tests/README.md
+        pattern: 'Capability conformance \((\d+) checks'
+      - file: site/index.html
+        pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
+
+forbidden:
+  - pattern: 'build twice from clean and diff'
+    reason: >-
+      make reproducible-build builds ONCE and records .build.sha. The
+      double-build-and-diff is the `reproducible` CI job's. Corrected
+      2026-08-19; it had been wrong since the target was written.
+
+  - pattern: 'currently also \*commits\* a prebuilt'
+    reason: >-
+      No build artefact is tracked. kernel.elf and boot.iso are gitignored
+      (.gitignore:10-11) and `git ls-files` lists neither. Corrected 2026-08-19.
+
+  - pattern: 'that App does not exist yet|inert until (that|its read-only GitHub) App is created|stays open until the App is created'
+    reason: >-
+      The ruleset-audit GitHub App went live 2026-08-19; the scheduled run that
+      morning read the ruleset and reported it matching. What remains of [C-6]
+      is that syncing is manual and lags a merge.
+
+  - pattern: '\*Open, page-table half fixed'
+    reason: >-
+      [G-10] closed 2026-08-18. Its header in ARCHITECTURE.md said open while
+      its own body and six other files said closed. Corrected 2026-08-19.
+
+  - pattern: 'cargo test .*\|\| true'
+    reason: >-
+      The `|| true` on `make test` was removed 2026-08-16; the exit status is
+      real. Any document describing it as still swallowed is stale.

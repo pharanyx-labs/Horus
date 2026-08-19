@@ -48,7 +48,8 @@ measurements.
 > pre-fix release site fails 31/800 and the shipped one 0/800.
 > The notable remaining findings are the CI gating list (**[C-6]** — every security test does
 > now block a merge, and a scheduled job re-checks the live ruleset against the checked-in
-> classification, but it is inert until its read-only GitHub App is created), and no independent
+> classification, and its read-only GitHub App went live on 2026-08-19 — so what remains of it is
+> that syncing the ruleset is still a manual step that lags a merge), and no independent
 > review of security-critical changes (**[C-5]**), and claims that leak and kernel stacks that
 > collide on the spawn/reap path under SMP (**[G-9]**, found 2026-08-17 — pre-existing, and
 > uncovered by the [G-8] fixes that stopped masking it; two components were fixed the same day,
@@ -107,10 +108,10 @@ a syscall number without adding its table entry.
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
 boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 72 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 73 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 73 of its 77 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 74 of its 78 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
@@ -312,7 +313,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 72 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 73 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

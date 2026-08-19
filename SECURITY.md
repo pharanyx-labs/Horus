@@ -41,11 +41,16 @@ toward 67, then to 71 with the three gates [G-8] added on 2026-08-17, then to 70
 `smoke-kstack-park` was demoted to advisory that day for [G-9], and back up with
 `smoke-exec-reenter` and `smoke-cr3-reclaim`, the gates for [G-9]'s exec component and
 [G-10]'s page-table use-after-free, then to **73** with `smoke-spawn-owner`, the [G-11] gate
-added on 2026-08-18. A scheduled
+added on 2026-08-18. The checked-in set is **74** as of 2026-08-19, with `doc-claims` — the gate
+that derives every documented count and fails the build when a document disagrees — and the live
+ruleset is one context behind it until `--sync-ruleset` is run, which is what "lags a merge"
+means in practice. A scheduled
 `ruleset-audit` job now verifies the live ruleset against that classification daily, as a
-GitHub App with `Administration: read` — the permission a workflow token cannot be granted —
-but it is inert until that App is created, and the
-reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. The
+GitHub App with `Administration: read` — the permission a workflow token cannot be granted.
+**That App went live on 2026-08-19**: the scheduled run that morning read the ruleset and
+reported `live ruleset 19007209 : 73 required contexts, matches`, where the run 24 hours
+earlier had failed on the absent secrets. What keeps **[C-6]** open is now only the other half —
+reconciliation is manual and lags by one merge — so it narrows again rather than closing. The
 remaining open findings — the `tasks[]` table (**[I-7]**) and claims that leak and kernel stacks
 that collide on the spawn/reap path under SMP (**[G-9]**, narrowed twice on 2026-08-17: its exec
 hand-off and page-table components are fixed and falsified, ~7% of boots still fail) — are in
@@ -239,6 +244,7 @@ Stated as claims, with the mechanism and its witness, so each can be checked.
 | S14 | File permissions are enforced against that identity | `fs_server` reference monitor | `make smoke-fs-perms` |
 | S15 | An address-space slot rebuilt after task death leaks nothing | Cspace zeroed on reuse; page pool reclaimed | `make smoke-aspace` |
 | S16 | A task cannot read another's XMM register file | `fxsave`/`fxrstor` across ring transitions | — |
+| S22 | A number stated in the documentation matches the tree it describes | `.github/doc-claims.yml` declares each derivable count and every place that states it; `tools/check_doc_claims.py` derives and compares, and rejects a declared claim whose pattern has stopped matching | `doc-claims`, a required check. Falsified three ways: a stale number, a reworded sentence that deletes a claim, and a retired phrasing reasserted |
 | S17 | The shipped **kernel image** corresponds to the published source | Byte-for-byte reproducible build of `kernel.elf` | the `reproducible` CI job, a required check, which builds twice and diffs the recorded hash, and which since 2026-08-19 also runs `make smoke-repro-sha` (the record must cover every artifact) against `make smoke-repro-sha-control` (the pre-fix step, which records one of two and reports success). `make reproducible-build` builds **once** and records both artifacts in `.build.sha`. **`boot.iso` is deliberately not covered by this property**: grub-mkrescue stamps a wall-clock UUID into it, so it is not byte-reproducible — see `docs/LIMITATIONS.md` §5.3a. This row said "the shipped binary" until 2026-08-19, which read as the ISO |
 | S19 | Audit-log history committed before a kernel compromise cannot be forged or rewritten | Forward-secure hash chain in `src/kernel/kaudit.c`: the MAC key is ratcheted one-way and erased after every entry | Rust unit tests (`rust/src/audit.rs`) |
 | S20 | A task's kernel stack is executed by at most one CPU at a time | Two paths. (a) The scheduler's claim on the outgoing task is held until the CPU has *left* its stack — released from `sched_release_deferred()`, called by `isr_common_stub64` after `movq %rax,%rsp` — with `g_kstack_inflight` halting the kernel if two CPUs are ever on one stack. (b) A CPU whose last runnable task dies parks on its **own** ring-0 stack, not on the one `tasks[0].kernel_stack_top` every CPU used to share; `sched_note_park()` halts if two ever pick the same one | `make smoke-kstack-race` and `smoke-kstack-park`, each with a control arm that restores the defect and must reproduce it |
@@ -305,9 +311,10 @@ push protection; cargo-fuzz on the FFI boundary; Kani proofs on capability revoc
   among the scopes a workflow `GITHUB_TOKEN` can be granted, so `ci-gating` proves the
   classification is *complete* and not that the ruleset *matches* it. A scheduled
   `ruleset-audit` job closes that by authenticating as a GitHub App with `Administration: read`
-  scoped to this repository — but it is **inert until that App is created**, and it fails loudly
-  every day until then rather than skipping. Syncing the ruleset also remains a manual step that
-  must lag a job landing by one merge. Read the count from
+  scoped to this repository. **Live since 2026-08-19** — it now reads the ruleset and states the
+  comparison, having failed loudly rather than skipped for the days it was unconfigured. Syncing
+  the ruleset remains a manual step that must lag a job landing by one merge, which is what is
+  left of this finding. Read the count from
   `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
 - No build provenance attestation or signed release artifacts. Finding **[I-9]**.
 

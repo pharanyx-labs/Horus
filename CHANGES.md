@@ -8,6 +8,61 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — documented numbers are now derived and gated, not trusted (**S22**)
+
+An audit on 2026-08-19 found **nine** stale numbers across five files in a single morning — CI
+job counts, status-check contexts, the required set, the capability suite's check count — while
+two other files carried the same numbers correctly, which is the only reason the drift was
+visible at all. `CLAUDE.md` has said *"re-derive every number you cite"* the whole time. A rule
+only a reader enforces fails silently, and silence is how it failed.
+
+`.github/doc-claims.yml` now declares each derivable count **and every place that states it**;
+`tools/check_doc_claims.py` derives the value from the source of truth and compares; the new
+required CI job `doc-claims` fails the build when a document disagrees. It imports
+`check_ci_gating.load_jobs` rather than reimplementing the context-expansion rules, because a
+second copy of them is one more thing to drift, and drift is the subject.
+
+**Three failure modes, all three falsified.** A stale number (`README.md` 72 → 69 jobs, the
+value that really was wrong that morning) is caught with both values named. A claim deleted by
+rewording is caught too — a declared occurrence whose pattern matches nothing is an error,
+because tolerating it would mean rewording a sentence silently deletes the check along with the
+claim, which is the failure mode in miniature. And a retired phrasing reasserted is caught by a
+ratchet: when a fact is corrected its old wording joins a `forbidden` list, so it cannot
+reappear in a different file months later.
+
+A match inside quotation marks or a markdown code span is ignored, because this project records
+the wrong thing when correcting it — *"this paragraph previously said X"* — and a blanket ban
+would forbid exactly the practice that makes a correction auditable. That allowance was not
+theoretical: the checker's first run flagged three lines and all three were corrections quoting
+what they had corrected. Code spans were added to the rule after it flagged **its own**
+documentation in `TESTS.md`.
+
+It checks numbers and retired phrasings, not prose. A document can still be wrong in a way no
+regex catches; that is what review is for.
+
+### Fixed — the ruleset-audit App exists, and five documents still said it did not
+
+**[C-6] narrows again.** The scheduled `ruleset-audit` run at 07:56Z on 2026-08-19 read the live
+ruleset and reported `live ruleset 19007209 : 73 required contexts, matches`; the run 24 hours
+earlier had failed at the secret-presence step with `RULESET_AUDIT_APP_ID` missing, and
+`.github/workflows/ruleset-audit.yml` has not changed since it merged. Reading a ruleset needs
+`Administration: read`, which no workflow token can hold — so the comparison line printing at
+all is the evidence that the App and its two secrets now exist.
+
+It failed loudly rather than skipping for every day it was unconfigured, which is the only
+reason the day it started working is legible. An audit that skips when unconfigured is a check
+that cannot fail.
+
+`README.md`, `SECURITY.md` (twice), `docs/LIMITATIONS.md` §5.2, `docs/ROADMAP.md` §4.2 and
+`site/index.html` all still said the App did not exist and the job failed daily. All six are
+corrected, and the old phrasing is now in the `forbidden` list above so it cannot come back.
+
+**What is left of [C-6] is the other half**, and this commit demonstrates it: adding the
+`doc-claims` job took the checked-in set to **74** required contexts while the live ruleset
+stayed at 73, so `--check-ruleset` reports `DIVERGED (1 missing, 0 unexpected)` until
+`--sync-ruleset` is run with an admin token after this merges. Promotion lags a merge by
+construction; the audit makes the lag visible the next morning instead of indefinitely.
+
 ### Fixed — the build-hash recording step could not fail, over an artifact it never built
 
 `make reproducible-build` ended with:

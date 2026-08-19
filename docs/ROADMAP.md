@@ -861,7 +861,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **73 required, 4 exempted** (74 jobs, 77 contexts — re-derive it with
+  The intended set is **74 required, 4 exempted** (75 jobs, 78 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
@@ -901,13 +901,20 @@ Ordered as in the audit's §7.5.
   that can read repository administration now lives in Actions secrets, in order to detect
   drift that requires administration access to cause.
 
-  **4.2 stays 🚧 for one reason: the App does not exist yet.** The workflow is merged and the
-  job fails loudly on every scheduled run until `RULESET_AUDIT_APP_ID` and
-  `RULESET_AUDIT_PRIVATE_KEY` are configured — deliberately, because an audit that skips when
-  unconfigured is a check that cannot fail, which is the defect class this repository has
-  already been bitten by twice. Creating and installing the App is a maintainer action; setup
-  is in the workflow header. **Marking this ✅ before that is done would be the [G-2] mistake
-  again** — a document asserting a property that nothing yet enforces.
+  **The App went live on 2026-08-19.** The scheduled run at 07:56Z read the ruleset and
+  reported `live ruleset 19007209 : 73 required contexts, matches`; the run 24 hours earlier had
+  failed at the secret-presence step with `RULESET_AUDIT_APP_ID` missing, and the workflow has
+  not changed since it merged. It failed loudly rather than skipping for every day it was
+  unconfigured — an audit that skips when unconfigured is a check that cannot fail, which is the
+  defect class this repository has already been bitten by twice — and that is why the day it
+  started working is visible at all.
+
+  **4.2 stays 🚧 for the other reason: syncing is still manual.** `--sync-ruleset` writes the
+  ruleset and needs an admin token, so a PR adding a gating job leaves the ruleset one context
+  behind until someone runs it afterwards. The audit now makes that lag visible the next
+  morning rather than indefinitely, which is a different thing from removing it. **Marking this
+  ✅ while promotion is still a human step would be the [G-2] mistake** — a document asserting a
+  property that nothing yet enforces.
 
   Until then, `python3 tools/check_ci_gating.py --check-ruleset` is the check, and it has to be
   run deliberately. Read the count from the API, never from this paragraph.

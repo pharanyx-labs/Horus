@@ -39,6 +39,32 @@ jobs:
       - name: Check CI gating classification
         run: tools/check_ci_gating.py
 
+  doc-claims:
+    name: Every documented count matches the tool that derives it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install PyYAML
+        run: pip install --disable-pip-version-check pyyaml
+      # Every number written into a document here has gone stale within days.
+      # The 2026-08-19 audit found nine wrong across five files -- CI job and
+      # context counts, the required set, the capability suite's check count --
+      # while two other files carried them correctly, which is the only reason
+      # the drift was visible. CLAUDE.md has said "re-derive every number you
+      # cite" the whole time; a rule only a reader enforces fails silently.
+      #
+      # So the derivable claims are derived and compared against every place
+      # that states them (.github/doc-claims.yml). A declared occurrence that
+      # matches NOTHING fails too: otherwise rewording a sentence would delete
+      # the check along with the claim, which is the failure mode in miniature.
+      # The manifest also carries phrasings that were true once and are not now,
+      # so a corrected fact cannot reappear in another file later.
+      #
+      # Static only -- no network, no QEMU, no ruleset read. Comparing the live
+      # ruleset needs Administration:read and belongs to `ruleset-audit`.
+      - name: Check documented claims against the tree
+        run: tools/check_doc_claims.py
+
   rust:
     name: Rust unit tests + clippy (deny-warnings gate)
     runs-on: ubuntu-latest

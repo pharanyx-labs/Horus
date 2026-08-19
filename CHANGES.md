@@ -8,6 +8,65 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the build-hash recording step could not fail, over an artifact it never built
+
+`make reproducible-build` ended with:
+
+```make
+@sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
+```
+
+and built the goal `all`, which is `all: kernel.elf`. The target *deletes* `boot.iso` at the
+top and nothing rebuilt it, so that `sha256sum` failed on a missing operand on **every run it
+has ever had**: `2>/dev/null` discarded the message naming the file, `|| true` discarded the
+status, and the target printed "Reproducible build recorded." over a `.build.sha` that had only
+ever contained one line. Three mechanisms had to line up for that to be silent, and all three
+did. The artifact a third party actually obtains — the ISO — was the one the supply-chain
+control did not cover.
+
+The recording step is now `tools/record_build_sha.sh`: it fails on a missing artifact, does not
+redirect stderr, and writes `.build.sha` by rename after removing the previous one, so a failed
+run leaves **no** file rather than a partial one that reads identically to a complete record of
+a smaller build. `reproducible-build` builds `boot.iso` as well, because recording a hash for
+an artifact you did not build is the defect rather than a shortcut.
+
+**Falsified deterministically, both directions.** `make smoke-repro-sha` requires the step to
+refuse a build missing an artifact *and* to write nothing when it refuses, then requires it to
+record both artifacts when the build is complete — because a step that refused everything would
+pass a one-directional test while making the target permanently red. `REPRO_SHA_UNCHECKED=1`
+(`make smoke-repro-sha-control`) restores the old line **and** the goal list that made it
+silent, and reports `REPRO_SHA_CONTROL: FAIL recorded 1 of 2 artifacts and reported success`;
+the same gate run under that flag fails, as it must. Restoring only the `|| true` would have
+passed for the wrong reason — with every artifact present, a swallowed status changes nothing
+observable — so both halves are in the arm. Host-side and sub-second; no new CI job and no new
+status-check context, so the required set is unmoved at 73.
+
+**Found by fixing it: `boot.iso` is not byte-reproducible** (`docs/LIMITATIONS.md` §5.3a, new).
+With the ISO finally built twice, two clean builds of identical source give a byte-identical
+`kernel.elf` and two different ISOs. Extracting both and diffing shows every Horus-authored
+file — kernel, every boot module, `grub.cfg` — identical, and four grub-generated objects
+differing: `/.disk/<wall-clock-second>.uuid` and the three EFI loaders that embed that UUID.
+`xorriso` honours `SOURCE_DATE_EPOCH` and says so in its log; the marker is `grub-mkrescue`'s,
+written before `xorriso` runs.
+
+**The first measurement of that said the opposite.** Two ISOs built back to back came out
+bit-identical, which read as "the ISO is reproducible". They were identical because both
+`grub-mkrescue` calls landed inside the same wall-clock second — the marker's resolution.
+Repeated across a second boundary they differ; repeated inside one they do not. A measurement
+fast enough to be convenient was fast enough to be wrong, and it is recorded because that is
+the failure mode this project keeps meeting under new names.
+
+Consequently the `reproducible` CI job compares the `kernel.elf` line and requires the record to
+name **both** artifacts, but does not diff the ISO: gating a required check on a wall clock is a
+flake, not a gate. Property **S17** said "the shipped binary corresponds to the published
+source", which reads as the ISO; it now names the kernel image, which is what the job
+establishes. Roadmap 3.1 moves ✅ → ◧ for the same reason. Closing it means assembling the image
+with `xorriso` directly, or deriving the UUID from `SOURCE_DATE_EPOCH` — neither is done.
+
+Also removed, same class and same commit: `make iso` ended its `grub-mkrescue` line with
+`2>/dev/null || true`, so it announced success and left no `horus.iso` when the tool was
+missing. It now reports the failure the way the `boot.iso` recipe already did.
+
 ### Documentation — one finding carried two statuses, and every CI count had gone stale
 
 No behaviour changed. This is the reconciliation pass §3 of `CLAUDE.md` requires, run against

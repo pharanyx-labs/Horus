@@ -10,14 +10,14 @@ operating system built from the ground up.**
 
 [![Target: x86-64](https://img.shields.io/badge/target-x86__64-informational)](docs/ARCHITECTURE.md)
 [![Security core: no_std Rust](https://img.shields.io/badge/security%20core-no__std%20Rust-orange)](docs/BUILDING.md#rust-core)
-[![Build: byte-for-byte reproducible](https://img.shields.io/badge/build-byte--for--byte%20reproducible-brightgreen)](docs/BUILDING.md#reproducible-builds)
+[![Kernel image: byte-for-byte reproducible](https://img.shields.io/badge/kernel.elf-byte--for--byte%20reproducible-brightgreen)](docs/BUILDING.md#reproducible-builds)
 [![Boot: TPM 2.0 measured](https://img.shields.io/badge/boot-TPM%202.0%20measured-brightgreen)](docs/ARCHITECTURE.md#12-trusted-boot-and-the-tpm)
 [![Status: research-grade](https://img.shields.io/badge/status-research--grade-yellow)](docs/LIMITATIONS.md)
 
 Horus boots on x86-64 hardware and under QEMU, drops to a ring-3 shell, and runs ordinary C
 programs — including GNU coreutils and the Tiny C Compiler — on a microkernel whose device
 drivers and filesystem live in userspace. The security-critical parsing and validation code
-is written in memory-safe `no_std` Rust. The build is byte-for-byte reproducible, the boot
+is written in memory-safe `no_std` Rust. The kernel image is byte-for-byte reproducible, the boot
 chain is measured into a TPM, and the volume encryption key is sealed against those
 measurements.
 
@@ -103,9 +103,10 @@ requirement. An unknown, reserved, or unimplemented syscall number does not fall
 a handler — it returns `SYS_ERR_NOSYS`. A compile-time assertion makes it impossible to add
 a syscall number without adding its table entry.
 
-**Verify, don't assert.** Claims are backed by artifacts. The build is verified reproducible
-by building twice and diffing. Boot-module integrity is tested by *corrupting a module* and
-asserting rejection. Measured boot is tested by tampering and asserting the PCRs diverge.
+**Verify, don't assert.** Claims are backed by artifacts. `kernel.elf` is verified reproducible
+by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
+Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
+boot is tested by tampering and asserting the PCRs diverge.
 Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 72 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
@@ -259,15 +260,21 @@ make smoke              # headless boot; asserts the ring-3 shell banner appears
 make test               # cargo test, then a clean rebuild — see the caveat below
 make SMP=0              # build without SMP
 make DEBUG_SHELL=1      # build with the in-kernel debug shell
-make reproducible-build # one SOURCE_DATE_EPOCH build; records .build.sha
+make reproducible-build # one SOURCE_DATE_EPOCH build; records both artifacts' hashes
 make run-tpm            # boot under an emulated TPM (requires swtpm)
 ```
 
 One of those is weaker than its name suggests, and it is better to say so here than to let
-someone rely on it. `make reproducible-build` builds **once** and records `sha256sum` in
-`.build.sha` — the double-build-and-diff that actually establishes the property lives only in
-the `reproducible` CI job, which is a required check. Locally, run it twice and compare
-`.build.sha`.
+someone rely on it. `make reproducible-build` builds **once** and records `sha256sum` for
+`kernel.elf` and `boot.iso` in `.build.sha` — the double-build-and-diff that actually
+establishes the property lives only in the `reproducible` CI job, which is a required check.
+Locally, run it twice and compare the `kernel.elf` line.
+
+Compare that line and not the file: **`boot.iso` is not byte-reproducible**, because
+grub-mkrescue stamps a wall-clock UUID into every image it builds. The ISO's *payload* — the
+kernel, every boot module, `grub.cfg` — is identical across builds; four grub-generated
+objects are not. See `docs/LIMITATIONS.md` §5.3a. Until 2026-08-19 the recording step hid this
+by never building the ISO at all and swallowing the error that said so.
 
 `make test` is the Rust unit tests plus a clean rebuild; it does **not** boot QEMU, so it is
 not the full self-test sweep — use the `smoke-*` targets for that. Until 2026-08-15 it ended in

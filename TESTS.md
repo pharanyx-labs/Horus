@@ -2075,8 +2075,60 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 
 | Target | Proves |
 |---|---|
-| `reproducible-build` | `kernel.elf` is byte-for-byte identical across two clean builds. **A required CI check.** |
+| `reproducible-build` | `kernel.elf` is byte-for-byte identical across two clean builds, and the record covers every artifact the build produces. **A required CI check.** `boot.iso` is recorded but deliberately not compared — it is not byte-reproducible (`docs/LIMITATIONS.md` §5.3a). |
+| `smoke-repro-sha` | The hash-recording step refuses a build missing an artifact, and writes no `.build.sha` at all when it refuses; and records every artifact when the build is complete. Both directions. Host-side, sub-second. Falsified by `smoke-repro-sha-control`. |
+| `smoke-repro-sha-control` | `REPRO_SHA_UNCHECKED=1`. Restores the pre-2026-08-19 recording step *and* the goal list that made it silent; the incomplete record and the success report must both appear. |
 | `security` | Semgrep, Trivy, gitleaks, cppcheck, flawfinder, cargo-audit, plus a CycloneDX SBOM. **A required status check.** Its *findings* stay advisory (one deliberate `continue-on-error`), but since #154 the job asserts each scanner is actually installed and fails if one is missing — it had previously been a required check on which every step carried `continue-on-error`, so it could not go red for any reason, including scanning nothing at all. |
+
+### The build-hash record: a step that could not fail, over an artifact that was never built
+
+**Fixed 2026-08-19.** The recording step at the end of `reproducible-build` was:
+
+```make
+@sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
+```
+
+and the target's build goal was `all`, which is `all: kernel.elf`. Since the target *deletes*
+`boot.iso` at the top and nothing rebuilt it, that `sha256sum` failed on a missing operand on
+every run it has ever had. `2>/dev/null` discarded the message naming the file and `|| true`
+discarded the status, so the target printed "Reproducible build recorded." over a `.build.sha`
+containing one line. Three mechanisms had to line up for that to be silent and all three did.
+
+**The fix is `tools/record_build_sha.sh`**, invoked with the artifact list. It fails on a
+missing artifact, does not redirect stderr, and writes `.build.sha` by rename from a temporary
+after removing the old one — so a failed run leaves no file rather than a partial one that
+cannot be told apart from a complete record of a smaller build.
+
+**Falsified deterministically, in both directions.**
+
+| Arm | Command | Required |
+|---|---|---|
+| fixed, incomplete build | `make smoke-repro-sha` | `REPRO_SHA: PASS refused an incomplete build, wrote nothing` — and no `.build.sha` on disk |
+| fixed, complete build | `make smoke-repro-sha` | `REPRO_SHA: PASS recorded 2 artifacts, kernel.elf boot.iso` |
+| control | `make smoke-repro-sha-control` | `REPRO_SHA_CONTROL: FAIL recorded 1 of 2 artifacts and reported success` |
+| the gate against the defect | `make smoke-repro-sha REPRO_SHA_UNCHECKED=1` | **must fail**: `REPRO_SHA: FAIL recorded-a-build-missing-boot.iso`, make exits 1 |
+
+Both directions matter here for the usual reason: a recording step that refused everything
+would satisfy the first row while making `reproducible-build` permanently red, so the second
+row is what stops the fix from being "refuse always".
+
+The control arm restores **both** halves — the swallowed status *and* the goal list that
+omitted `boot.iso`. That is deliberate and was checked: with the ISO present, a swallowed
+status changes nothing observable, so an arm that restored only the `|| true` would pass for
+the wrong reason and prove nothing about the gate.
+
+Host-side and sub-second — it exercises the recording step against a scratch directory, not a
+real build, because what is under test is the step's behaviour when an artifact is absent. The
+end-to-end half lives in the `reproducible` CI job, which now requires the record to name both
+artifacts before it diffs the `kernel.elf` line.
+
+**What building the ISO revealed:** `boot.iso` is not byte-reproducible. `grub-mkrescue`
+stamps `/.disk/<wall-clock-second>.uuid` into the image and embeds that UUID in the EFI loaders
+it generates, while everything this project authors inside the ISO is byte-identical across
+builds. The CI job therefore compares only the `kernel.elf` line. The first measurement said
+the ISO *was* reproducible, because two back-to-back builds landed inside the same wall-clock
+second; crossing a second boundary makes them differ. Recorded because a measurement fast
+enough to be convenient was fast enough to be wrong. See `docs/LIMITATIONS.md` §5.3a.
 
 ---
 

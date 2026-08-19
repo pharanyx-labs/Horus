@@ -2560,17 +2560,46 @@ smoke-kstack-race:
 # session must not pass -- a build that reproduced the race and still reported
 # success would mean the harness had stopped reading the wire.
 .PHONY: smoke-kstack-race-control
+# The pre-fix release site reproduces the race PROBABILISTICALLY, and this arm
+# used to assert it from a SINGLE boot. Measured 2026-08-19: 7 reproductions in
+# 12 boots on a workstation (58%), so it misses about 42% of the time there. On
+# CI it reddened main TWICE the same day -- runs 32244509317 and 32251467694,
+# two of the last eight runs -- with the fixed arm green in the same job both
+# times, on trees whose content had already passed that same job on a branch.
+#
+# A single boot cannot assert a probabilistic event; this repository's own rule
+# is to quote a rate over N boots, and the arm was quoting one while asserting
+# from n=1.
+#
+# So it boots up to KSTACK_RACE_CONTROL_BOOTS times and stops at the first
+# reproduction, naming the boot it came on. At the measured 58% the expected
+# cost is under two boots, and the chance of a false failure across 8 is
+# 0.42^8 -- about one run in a thousand. Nothing is weakened: a mechanism that
+# has actually decayed reproduces on none of the 8 and fails exactly as before,
+# which is what the message below is for. The fixed arm is left at one boot on
+# purpose -- its assertion is that the panic NEVER appears, which a single boot
+# can falsify, and its statistical power comes from smoke-session-smp-soak and
+# tools/stress_boot.sh rather than from this pair.
+KSTACK_RACE_CONTROL_BOOTS ?= 8
+
 smoke-kstack-race-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 KSTACK_RELEASE_EARLY=1 boot.iso
 	@echo "[kstack] widened window + PRE-FIX release: the race must reproduce"
-	@log=$$(mktemp); rc=0; \
-	QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
-	    python3 tools/session_test.py boot.iso || rc=$$?; \
-	if ! grep -qa '$(KSTACK_RACE_RE)' "$$log"; then \
-	    echo "KSTACK RACE CONTROL: FAIL - the pre-fix build did NOT reproduce the race."; \
-	    echo "  The control arm is what makes smoke-kstack-race a measurement; if it"; \
-	    echo "  stops reproducing, the widened window or the detector has decayed."; \
+	@log=$$(mktemp); hit=0; n=0; rc=0; \
+	while [ $$n -lt $(KSTACK_RACE_CONTROL_BOOTS) ]; do \
+	    n=$$((n+1)); rc=0; \
+	    QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
+	        python3 tools/session_test.py boot.iso || rc=$$?; \
+	    if grep -qa '$(KSTACK_RACE_RE)' "$$log"; then hit=$$n; break; fi; \
+	    echo "  boot $$n/$(KSTACK_RACE_CONTROL_BOOTS): no race yet"; \
+	done; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "KSTACK RACE CONTROL: FAIL - the pre-fix build did NOT reproduce the race"; \
+	    echo "  in $(KSTACK_RACE_CONTROL_BOOTS) boots. It reproduced 7 of 12 when this arm"; \
+	    echo "  was written, so a clean sweep of 8 is about one run in a thousand by"; \
+	    echo "  chance. The control arm is what makes smoke-kstack-race a measurement;"; \
+	    echo "  if it stops reproducing, the widened window or the detector has decayed."; \
 	    tail -20 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
 	if [ $$rc -eq 0 ]; then \
@@ -2579,7 +2608,7 @@ smoke-kstack-race-control:
 	fi; \
 	grep -a -A 6 '$(KSTACK_RACE_RE)' "$$log" | head -8 | sed 's/^/  /'; \
 	rm -f "$$log"; \
-	echo "KSTACK RACE CONTROL: PASS - the pre-fix release site shares a kernel stack, as it must"
+	echo "KSTACK RACE CONTROL: PASS - the pre-fix release site shares a kernel stack, as it must (boot $$hit of $(KSTACK_RACE_CONTROL_BOOTS))"
 
 # Where a CPU parks when the last task it was running dies -- S20's second path.
 #

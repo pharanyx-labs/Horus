@@ -556,8 +556,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **72** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **74** across the three, producing **77** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **73** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **75** across the three, producing **78** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -588,7 +588,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **73 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **74 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands
@@ -631,12 +631,32 @@ detect drift that requires administration access to cause. It is read-only, sing
 and revocable by uninstalling the App; the alternative was a check nobody runs, which is what
 left the required set at 22 of 66 with no security gate among them.
 
-**The finding stays open until the App is created and its two secrets exist.** The job fails
-loudly on every scheduled run until then, deliberately: an audit that skips when unconfigured
-is a check that cannot fail, and this repository has been bitten by that twice already
-(`make test`'s `|| true`, and the scanner-presence step before #154). Until it is configured,
-`tools/check_ci_gating.py --check-ruleset` is the check and has to be run deliberately. Read
-the count from the API, never from this paragraph.
+**The App went live on 2026-08-19, and the audit is now a real check.** The scheduled run at
+07:56Z that morning reported
+
+```
+jobs across 3 workflows      : 74
+live ruleset 19007209        : 73 required contexts, matches
+PASS: every CI job is classified — merge-gating, or exempted with a reason
+```
+
+and the run 24 hours before it had failed at the secret-presence step with
+`RULESET_AUDIT_APP_ID` missing. The workflow itself has not changed since it merged, so the
+difference is the App and its two secrets. That the comparison line printed at all is the
+evidence: reading a ruleset needs `Administration: read`, which no workflow token can hold.
+
+It failed loudly rather than skipping for every day it was unconfigured, which is why the
+transition is legible at all — an audit that skips when unconfigured is a check that cannot
+fail, and this repository has been bitten by that twice already (`make test`'s `|| true`, and
+the scanner-presence step before #154).
+
+**What keeps [C-6] open is now only the second half.** `--sync-ruleset` writes the ruleset and
+needs an admin token, so a PR that adds a gating job leaves the ruleset one context behind until
+someone runs it afterwards. This very commit demonstrates it: adding the `doc-claims` job took
+the checked-in set to 74 while the live ruleset stayed at 73, and `--check-ruleset` reports
+`DIVERGED (1 missing, 0 unexpected)` until the sync is run. Promotion lags a merge by construction; the audit is what makes the
+lag visible the next morning instead of indefinitely. Read the count from the API or from that
+job's log, never from this paragraph.
 
 Two counts moved in the right direction since. `strict_required_status_checks_policy` is now
 **true**, so a stale-base merge is no longer permitted. And the `security` job is a required

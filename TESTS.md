@@ -776,7 +776,7 @@ harmless with the fix and fatal without it:
 | Target | Build | Required |
 |---|---|---|
 | `smoke-kstack-race` | widened window, deferred release | session completes, marker **absent** |
-| `smoke-kstack-race-control` | widened window, `KSTACK_RELEASE_EARLY=1` | marker **present**, and the session must **not** report PASS |
+| `smoke-kstack-race-control` | widened window, `KSTACK_RELEASE_EARLY=1` | marker **present** within `KSTACK_RACE_CONTROL_BOOTS` (8) boots, stopping at the first, and the session must **not** report PASS |
 
 The control arm is the load-bearing one: without it, the first arm is consistent with "a kernel
 with a spin in it still boots".
@@ -2050,6 +2050,30 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-exec-reenter` | **[G-9]**, exec component. The exec re-entry hand-off must be consumed by the CPU that armed it. Boots the `PROC_SELFTEST` workload at `-smp 4` `EXEC_REENTER_RUNS` times (default 20) and requires the `SCHED_INVARIANTS` wrong-CPU report to be **absent** from every boot; measured 0 in 30. Asserts on the marker, never on the boot's exit status — the workload still fails 2 boots in 30 (~7%) on the rest of **[G-9]**, and gating on completion would make this a detector for that rather than a witness for this property. |
 | `smoke-exec-reenter-control` | Control arm. `EXEC_REENTER_GLOBAL=1` restores the single shared `g_exec_reenter_task`; the wrong-CPU report must come back in at least one boot. Needs many boots because the theft is a race — measured 5 in 20 (~25%/boot), so a single-boot arm would report a false green three times in four. This arm carries reachability for the pair: if the theft stops reproducing with the global restored, `smoke-exec-reenter`'s green proves nothing either. |
 | `smoke-kstack-race-control` | Control arm, and the load-bearing one. Same widened window, `KSTACK_RELEASE_EARLY=1` restoring the pre-fix release site. The marker must be **present** *and* the session must not report PASS — a build that reproduced the race and still reported success would mean the harness had stopped reading the wire. Without this arm, `smoke-kstack-race` proves only that a kernel with a spin in it still boots. |
+
+**The control arm boots up to eight times, and did not always used to.** The pre-fix release
+site reproduces the race *probabilistically*, and this arm asserted it from a **single boot**.
+Measured 2026-08-19: **7 reproductions in 12 boots** locally (58%), so it misses about 42% of
+the time on a workstation. On CI it reddened `main` **twice the same day** (runs `32244509317` and
+`32251467694`) — two of the last eight runs — with the fixed arm green in the same job both times, on
+trees whose content had already passed that job on a branch.
+
+A single boot cannot assert a probabilistic event. This document's own rule is to quote a rate
+over N boots, and the arm was quoting one while asserting from n=1. It now boots up to
+`KSTACK_RACE_CONTROL_BOOTS` (8), stops at the first reproduction and names the boot it came on.
+At 58% the expected cost is under two boots and a false failure across eight is 0.42⁸ — about
+one run in a thousand.
+
+**Nothing was weakened, and that was falsified rather than argued.** Rebuilt with
+`KSTACK_RELEASE_EARLY` *removed*, so the defect is absent, the arm attempted all 8 boots, found
+nothing, and failed with `KSTACK RACE CONTROL: FAIL - the pre-fix build did NOT reproduce the
+race in 8 boots` (exit 2). With the defect present it reproduced on boot 1 of 8. Adding retries
+to a probabilistic check is exactly the change that can turn a gate into one that cannot fail,
+so the arm that proves it still can is the one worth running.
+
+The fixed arm stays at **one** boot deliberately: its assertion is that the panic *never*
+appears, which a single boot can falsify. Its statistical power comes from
+`smoke-session-smp-soak` and `tools/stress_boot.sh`, not from this pair.
 
 This pair is the inverse of every other target here: it wants a kernel fault and fails if the
 kernel takes one quietly.

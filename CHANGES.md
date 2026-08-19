@@ -8,6 +8,39 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — a control arm that asserted a coin flip from a single boot
+
+`smoke-kstack-race-control` reddened `main` **twice** on 2026-08-19 (runs `32244509317` and `32251467694`)
+with `KSTACK RACE CONTROL: FAIL - the pre-fix build did NOT reproduce the race`, while the
+fixed arm passed in the same job both times — on trees whose content had already passed that
+job on a branch. Two of the last eight CI runs, both on main.
+
+**The gate was asserting a probabilistic event from n=1.** The two arms are not symmetric: the
+fixed arm asserts the panic *never* appears, which a single boot can falsify, while the control
+arm asserts it *does* appear — and the pre-fix release site only reproduces the race sometimes.
+Measured: **7 of 12 boots** locally (58%), so it missed about 42% of the time on a
+workstation; on CI it took down two of the last eight runs. `TESTS.md` has said "a single green run says
+nothing about a concurrency change; quote a rate over N boots" throughout — the arm was quoting
+a rate while asserting from one boot.
+
+It now boots up to `KSTACK_RACE_CONTROL_BOOTS` (8), stops at the first reproduction and names
+the boot it came on. At 58% the expected cost is under two boots, and a clean sweep of eight by
+chance is 0.42⁸ — about one run in a thousand. The failure message carries the 7/12 baseline, so
+a future reader can tell *decayed* from *unlucky* instead of guessing.
+
+**Falsified both ways, because adding retries to a probabilistic check is exactly how a gate
+becomes one that cannot fail.** With the defect present it reproduced on boot 1 of 8 and passed.
+Rebuilt with `KSTACK_RELEASE_EARLY` removed — the defect absent — it attempted all 8 boots,
+found nothing, and failed with exit 2 and the message above. Retrying did not blunt it.
+
+The fixed arm is left at one boot deliberately, and the comment says so: its statistical power
+comes from `smoke-session-smp-soak` and `tools/stress_boot.sh`, not from this pair. Making both
+arms look symmetric would have implied a strength this pair does not have.
+
+No security property changed, and no finding moves: **[G-8]** stays closed and **[G-9]** stays
+open. What changed is that the gate for [G-8] can now be trusted to mean what it says on any
+single run.
+
 ### Added — documented numbers are now derived and gated, not trusted (**S22**)
 
 An audit on 2026-08-19 found **nine** stale numbers across five files in a single morning — CI

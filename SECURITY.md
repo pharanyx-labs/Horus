@@ -239,7 +239,7 @@ Stated as claims, with the mechanism and its witness, so each can be checked.
 | S14 | File permissions are enforced against that identity | `fs_server` reference monitor | `make smoke-fs-perms` |
 | S15 | An address-space slot rebuilt after task death leaks nothing | Cspace zeroed on reuse; page pool reclaimed | `make smoke-aspace` |
 | S16 | A task cannot read another's XMM register file | `fxsave`/`fxrstor` across ring transitions | — |
-| S17 | The shipped binary corresponds to the published source | Byte-for-byte reproducible build | the `reproducible` CI job, a required check, which builds twice and diffs. `make reproducible-build` builds **once** and only records the hash |
+| S17 | The shipped **kernel image** corresponds to the published source | Byte-for-byte reproducible build of `kernel.elf` | the `reproducible` CI job, a required check, which builds twice and diffs the recorded hash, and which since 2026-08-19 also runs `make smoke-repro-sha` (the record must cover every artifact) against `make smoke-repro-sha-control` (the pre-fix step, which records one of two and reports success). `make reproducible-build` builds **once** and records both artifacts in `.build.sha`. **`boot.iso` is deliberately not covered by this property**: grub-mkrescue stamps a wall-clock UUID into it, so it is not byte-reproducible — see `docs/LIMITATIONS.md` §5.3a. This row said "the shipped binary" until 2026-08-19, which read as the ISO |
 | S19 | Audit-log history committed before a kernel compromise cannot be forged or rewritten | Forward-secure hash chain in `src/kernel/kaudit.c`: the MAC key is ratcheted one-way and erased after every entry | Rust unit tests (`rust/src/audit.rs`) |
 | S20 | A task's kernel stack is executed by at most one CPU at a time | Two paths. (a) The scheduler's claim on the outgoing task is held until the CPU has *left* its stack — released from `sched_release_deferred()`, called by `isr_common_stub64` after `movq %rax,%rsp` — with `g_kstack_inflight` halting the kernel if two CPUs are ever on one stack. (b) A CPU whose last runnable task dies parks on its **own** ring-0 stack, not on the one `tasks[0].kernel_stack_top` every CPU used to share; `sched_note_park()` halts if two ever pick the same one | `make smoke-kstack-race` and `smoke-kstack-park`, each with a control arm that restores the defect and must reproduce it |
 | S21 | A program image can only be spawned by the task that armed it, and a child inherits its stdio from that same task | `loader_arm_commit()` records the arming task; `do_spawn` and `h_sudo` refuse a foreign or unowned image; the spawner's identity is a parameter of `wire_child_stdio` rather than a global | `make smoke-spawn-owner`, with `smoke-spawn-owner-control` (`SPAWN_OWNER_UNCHECKED=1`) spawning the foreign image on every boot |
@@ -328,6 +328,8 @@ research should track `main` and rebuild.
   syscall surface; it is a development aid, not a shipping configuration.
 - `PREEMPT_SELFTEST` and the other `*_SELFTEST` builds add test-only syscalls that are
   absent (and fail closed) in the default kernel.
-- Verify reproducibility before trusting a binary: `make reproducible-build`.
+- Verify reproducibility before trusting a binary: run `make reproducible-build` twice and
+  compare the `kernel.elf` line of `.build.sha`. A single run records hashes; it does not
+  compare them. The `boot.iso` line will differ between runs and that is expected (§5.3a).
 - For measured boot, record the expected PCR values with `tools/tpm_expected_pcr.py` and
   compare them against the running system.

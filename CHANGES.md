@@ -8,6 +8,113 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the build-hash recording step could not fail, over an artifact it never built
+
+`make reproducible-build` ended with:
+
+```make
+@sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
+```
+
+and built the goal `all`, which is `all: kernel.elf`. The target *deletes* `boot.iso` at the
+top and nothing rebuilt it, so that `sha256sum` failed on a missing operand on **every run it
+has ever had**: `2>/dev/null` discarded the message naming the file, `|| true` discarded the
+status, and the target printed "Reproducible build recorded." over a `.build.sha` that had only
+ever contained one line. Three mechanisms had to line up for that to be silent, and all three
+did. The artifact a third party actually obtains — the ISO — was the one the supply-chain
+control did not cover.
+
+The recording step is now `tools/record_build_sha.sh`: it fails on a missing artifact, does not
+redirect stderr, and writes `.build.sha` by rename after removing the previous one, so a failed
+run leaves **no** file rather than a partial one that reads identically to a complete record of
+a smaller build. `reproducible-build` builds `boot.iso` as well, because recording a hash for
+an artifact you did not build is the defect rather than a shortcut.
+
+**Falsified deterministically, both directions.** `make smoke-repro-sha` requires the step to
+refuse a build missing an artifact *and* to write nothing when it refuses, then requires it to
+record both artifacts when the build is complete — because a step that refused everything would
+pass a one-directional test while making the target permanently red. `REPRO_SHA_UNCHECKED=1`
+(`make smoke-repro-sha-control`) restores the old line **and** the goal list that made it
+silent, and reports `REPRO_SHA_CONTROL: FAIL recorded 1 of 2 artifacts and reported success`;
+the same gate run under that flag fails, as it must. Restoring only the `|| true` would have
+passed for the wrong reason — with every artifact present, a swallowed status changes nothing
+observable — so both halves are in the arm. Host-side and sub-second; no new CI job and no new
+status-check context, so the required set is unmoved at 73.
+
+**Found by fixing it: `boot.iso` is not byte-reproducible** (`docs/LIMITATIONS.md` §5.3a, new).
+With the ISO finally built twice, two clean builds of identical source give a byte-identical
+`kernel.elf` and two different ISOs. Extracting both and diffing shows every Horus-authored
+file — kernel, every boot module, `grub.cfg` — identical, and four grub-generated objects
+differing: `/.disk/<wall-clock-second>.uuid` and the three EFI loaders that embed that UUID.
+`xorriso` honours `SOURCE_DATE_EPOCH` and says so in its log; the marker is `grub-mkrescue`'s,
+written before `xorriso` runs.
+
+**The first measurement of that said the opposite.** Two ISOs built back to back came out
+bit-identical, which read as "the ISO is reproducible". They were identical because both
+`grub-mkrescue` calls landed inside the same wall-clock second — the marker's resolution.
+Repeated across a second boundary they differ; repeated inside one they do not. A measurement
+fast enough to be convenient was fast enough to be wrong, and it is recorded because that is
+the failure mode this project keeps meeting under new names.
+
+Consequently the `reproducible` CI job compares the `kernel.elf` line and requires the record to
+name **both** artifacts, but does not diff the ISO: gating a required check on a wall clock is a
+flake, not a gate. Property **S17** said "the shipped binary corresponds to the published
+source", which reads as the ISO; it now names the kernel image, which is what the job
+establishes. Roadmap 3.1 moves ✅ → ◧ for the same reason. Closing it means assembling the image
+with `xorriso` directly, or deriving the UUID from `SOURCE_DATE_EPOCH` — neither is done.
+
+Also removed, same class and same commit: `make iso` ended its `grub-mkrescue` line with
+`2>/dev/null || true`, so it announced success and left no `horus.iso` when the tool was
+missing. It now reports the failure the way the `boot.iso` recipe already did.
+
+### Documentation — one finding carried two statuses, and every CI count had gone stale
+
+No behaviour changed. This is the reconciliation pass §3 of `CLAUDE.md` requires, run against
+the tree as it stands after the [G-10]/[G-11] work, and every number below was re-derived from
+the tool or off the wire rather than copied forward.
+
+**[G-10] was open and closed at the same time.** `docs/ARCHITECTURE.md` §14 headed the entry
+*"Open, page-table half fixed 2026-08-17"* while its own body three paragraphs down, plus
+`README.md`, `SECURITY.md`, `docs/ROADMAP.md`, `docs/LIMITATIONS.md` §5.2e, `TESTS.md` and this
+file, all said closed 2026-08-18. The header is now the status the code supports. `site/index.html`
+carried the same contradiction in a softer form: its G-10 card was headed *"closed 2026-08-18"*
+and then described the singletons in the present tense, as state that still exists.
+
+**The CI counts were stale in five places and current in three**, which is the harder failure to
+notice. Live, from `tools/check_ci_gating.py --check-ruleset`: **74 jobs across three workflows,
+77 status-check contexts, 73 required, 4 reasoned exemptions**, and the live ruleset matches.
+Corrected: `README.md` (69 jobs → 72, "66 jobs" → 72, 71 contexts → 73 of 77), `TESTS.md`
+(69 jobs → 72, 71/74 → 74/77), `docs/LIMITATIONS.md` §5.2 (69 → 72, 71 → 74, 74 → 77 contexts,
+70 required → 73) and `site/index.html` (68 gating and 3 exempted → 73 and 4, "both workflows"
+→ three). `docs/ROADMAP.md` and `TESTS.md`'s own gating section were already right, which is
+how the divergence was visible at all.
+
+**`smoke-captest` says 100 checks on the wire**, and three documents disagreed about it.
+`docs/BUILDING.md` and `tests/README.md` still said 29 — the count from before the
+audit-driven expansions — where `SECURITY.md`, `TESTS.md` and `site/index.html` all said 100. Read off a live
+`make smoke-captest` run: `CAPTEST: PASS 100 checks`. The BUILDING.md row now carries the
+instruction to read it off the wire rather than the row. `SECURITY.md`'s S18 row says *10*
+checks and that is not a contradiction — it is section 4b of `userspace/captest.c`, which has
+exactly ten, counted rather than assumed.
+
+**Two claims in `docs/BUILDING.md` were simply false**, both known and both flagged in
+`CLAUDE.md` §6:
+
+- `make reproducible-build` was documented as "build twice from clean and diff `kernel.elf`".
+  It builds **once**, with `SOURCE_DATE_EPOCH` pinned, and records `.build.sha`. The
+  double-build-and-diff exists only in the `reproducible` CI job. A reader following the comment
+  would have taken a hash compared against nothing for a reproducibility check.
+  `docs/ROADMAP.md` §3.1 repeated it and is corrected with it.
+- The supply-chain paragraph said the repository "currently also *commits* a prebuilt
+  `kernel.elf`" and pointed at `docs/LIMITATIONS.md` §5.6. Neither half held: `kernel.elf` and
+  `boot.iso` are gitignored (`.gitignore:10-11`), `git ls-files` tracks no build artefact, and
+  §5.6 is the mislocated-governance-files finding — the outbound-provenance gap it meant to name
+  is **[I-9]**, §5.3. `docs/LIMITATIONS.md` had been asserting the opposite ("no `kernel.elf`,
+  no `boot.iso`, no object files") for as long as BUILDING.md asserted this.
+
+The `CLAUDE.md` known-trap entry for the reproducible-build comment is struck through, since it
+is now fixed; its line number had drifted, so it names the section instead.
+
 ### Fixed — the armed program image belonged to nobody, and `sudo` would elevate it anyway (**[G-11]**)
 
 A program image is staged in one process-wide buffer, and until now nothing recorded **which

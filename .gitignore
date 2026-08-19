@@ -11,6 +11,13 @@ kernel.elf
 boot.iso
 horus.iso
 .build.sha
+# scratch dir for smoke-repro-sha; removed on success, left behind on a failure
+.repro-sha-test/
+# the reproducible CI job's scratch files, if you run its steps by hand
+first.sha
+second.sha
+first.kernel
+second.kernel
 
 # Rust build output
 rust/target/

@@ -1448,19 +1448,63 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # reproducible-build now builds boot.iso as well, because recording a
+      # hash for an artifact the target never built is what this commit fixes.
       - name: Install build toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential binutils make
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
+      # The recording step used to be `sha256sum kernel.elf boot.iso >
+      # .build.sha 2>/dev/null || true`, over a build that never produced
+      # boot.iso -- so it hashed one artifact, hid the error naming the other,
+      # swallowed the status, and announced success. These two steps are the
+      # gate on that: an incomplete build must be refused, and the arm that
+      # restores the old line must record an incomplete build and report
+      # success. Host-side and sub-second; the budget below is for the builds.
+      - name: The recording step must refuse an incomplete build
+        run: make smoke-repro-sha
+      - name: Restore the swallowed status and require the incomplete record
+        run: make smoke-repro-sha-control
       - name: Build twice and compare kernel.elf hashes
         run: |
           make reproducible-build
-          sha256sum kernel.elf | tee first.sha
+          cp .build.sha first.sha
           make reproducible-build
-          sha256sum kernel.elf | tee second.sha
-          if ! diff -u first.sha second.sha; then
+          cp .build.sha second.sha
+          # Completeness, end to end: smoke-repro-sha proves the step refuses a
+          # short record, this proves a real build produces a full one.
+          for f in first.sha second.sha; do
+            n=$(wc -l < "$f")
+            if [ "$n" -ne 2 ]; then
+              echo "::error::$f records $n artifacts, expected 2 (kernel.elf, boot.iso)"
+              cat "$f"; exit 1
+            fi
+          done
+          # kernel.elf is the reproducible artifact and the one gated here.
+          #
+          # boot.iso is deliberately NOT compared, and the reason is measured
+          # rather than assumed. grub-mkrescue stamps a marker named for the
+          # wall-clock second -- /.disk/YYYY-MM-DD-HH-MM-SS-00.uuid -- into the
+          # tree it hands to xorriso, and embeds that same UUID in the EFI
+          # loaders it generates (efi.img, efi/boot/bootx64.efi,
+          # System/Library/CoreServices/boot.efi). xorriso itself honours
+          # SOURCE_DATE_EPOCH and says so in this log; the marker is not
+          # xorriso's to date. Extract two ISOs of one build and diff them and
+          # every Horus-authored file -- kernel.elf, every boot module,
+          # grub.cfg -- is byte-identical, with only those four grub-generated
+          # objects differing. Two builds inside one wall-clock second are
+          # bit-identical; two seconds apart are not, which is also how a
+          # too-quick first measurement of this called the ISO reproducible.
+          # Gating on it would redden this required job on a clock, so the
+          # limitation is documented (docs/LIMITATIONS.md 5.3a) rather than
+          # gated into a flake. See CHANGES.md 2026-08-19.
+          grep ' kernel\.elf$' first.sha  > first.kernel
+          grep ' kernel\.elf$' second.sha > second.kernel
+          if ! diff -u first.kernel second.kernel; then
             echo "::error::kernel.elf is not byte-for-byte reproducible"
             exit 1
           fi

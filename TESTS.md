@@ -2078,6 +2078,7 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 | `reproducible-build` | `kernel.elf` is byte-for-byte identical across two clean builds, and the record covers every artifact the build produces. **A required CI check.** `boot.iso` is recorded but deliberately not compared — it is not byte-reproducible (`docs/LIMITATIONS.md` §5.3a). |
 | `smoke-repro-sha` | The hash-recording step refuses a build missing an artifact, and writes no `.build.sha` at all when it refuses; and records every artifact when the build is complete. Both directions. Host-side, sub-second. Falsified by `smoke-repro-sha-control`. |
 | `smoke-repro-sha-control` | `REPRO_SHA_UNCHECKED=1`. Restores the pre-2026-08-19 recording step *and* the goal list that made it silent; the incomplete record and the success report must both appear. |
+| `doc-claims` | Every count declared in `.github/doc-claims.yml` matches the value derived from the tree, every declared occurrence still matches its pattern, and no retired phrasing has reappeared unquoted. **A required CI check.** `tools/check_doc_claims.py`; static, no QEMU. |
 | `security` | Semgrep, Trivy, gitleaks, cppcheck, flawfinder, cargo-audit, plus a CycloneDX SBOM. **A required status check.** Its *findings* stay advisory (one deliberate `continue-on-error`), but since #154 the job asserts each scanner is actually installed and fails if one is missing — it had previously been a required check on which every step carried `continue-on-error`, so it could not go red for any reason, including scanning nothing at all. |
 
 ### The build-hash record: a step that could not fail, over an artifact that was never built
@@ -2130,14 +2131,57 @@ the ISO *was* reproducible, because two back-to-back builds landed inside the sa
 second; crossing a second boundary makes them differ. Recorded because a measurement fast
 enough to be convenient was fast enough to be wrong. See `docs/LIMITATIONS.md` §5.3a.
 
+### Documented numbers are derived, not trusted — property S22
+
+**Added 2026-08-19**, after an audit found nine stale numbers across five files in one morning:
+CI job counts, context counts, the required set, and the capability suite's check count, which
+two other files carried correctly. CLAUDE.md has said *"re-derive every number you cite"* since
+long before that. A rule only a reader enforces fails silently, and silence is how it failed.
+
+`.github/doc-claims.yml` declares each derivable count and **every place that states it**;
+`tools/check_doc_claims.py` derives the value from the source of truth and compares. The
+`doc-claims` CI job gates it.
+
+| Derived | From |
+|---|---|
+| `ci_jobs`, `all_jobs`, `contexts`, `required`, `advisory` | the workflow files and `.github/ci-gating.yml`, via `check_ci_gating.load_jobs` — imported, not reimplemented, because a second copy of the context-expansion rules is one more thing to drift |
+| `smoke_targets`, `control_arms` | `^smoke-*:` in the `Makefile` |
+| `captest_checks` | `check(` calls in `userspace/captest.c` — verified equal to the runtime `CAPTEST: PASS 100 checks` on 2026-08-19 |
+
+**Three failure modes, all three falsified.**
+
+| Arm | Injected | Required |
+|---|---|---|
+| stale number | `README.md` 72 → 69 jobs, the value that was actually wrong that morning | `README.md: says 69 for ci_jobs …, live value is 72`, exit 1 |
+| claim deleted by rewording | replace the sentence with "CI runs a lot of jobs" | `claim 'ci_jobs' is declared here but its pattern matches nothing`, exit 1 |
+| retired phrasing reasserted | put `build twice from clean and diff` back into `docs/BUILDING.md` | `forbidden phrasing …`, exit 1 |
+
+The second arm is the one worth explaining. If a declared occurrence matching nothing were
+merely tolerated, rewording a sentence would delete the check silently along with the claim —
+the failure mode in miniature. So a claim that stops matching is an error, and the fix is to
+update the pattern or remove the occurrence deliberately.
+
+**Retired phrasings are a ratchet.** When a fact is corrected, its old wording goes in the
+manifest's `forbidden` list so it cannot reappear in another file later. A match **inside double
+quotes is ignored**: this project's style is to record the wrong thing when correcting it —
+*"this paragraph previously said X"* — and a blanket ban would forbid exactly the practice that
+makes a correction auditable. Quoted text is reported, not asserted. That allowance was not
+theoretical: the first run of this checker flagged three lines, and all three were corrections
+quoting what they had corrected.
+
+**What it deliberately does not do.** No network, no QEMU, no ruleset read — comparing the live
+ruleset needs `Administration: read` and belongs to `ruleset-audit`. It checks numbers and
+retired phrasings, not prose: a document can still be wrong in a way no regex catches, which is
+what review is for.
+
 ---
 
 ## CI
 
-`.github/workflows/ci.yml` defines **72** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **73** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **74** jobs, **77** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **75** jobs, **78** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
@@ -2180,7 +2224,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **73 required contexts and 4 reasoned exemptions** — read off
+The intended set is **74 required contexts and 4 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and

@@ -1615,9 +1615,29 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               repository with read-only administration access, minted per run. The trade is
               written down rather than glossed: a credential that can read repository
               administration now sits in CI secrets, to detect drift that requires
-              administration access to cause. The finding stays open until that App is created —
-              and the job fails loudly every day until it is, because an audit that quietly
-              skips when unconfigured is a check that cannot fail.
+              administration access to cause. <strong>That app went live on 2026-08-19</strong>:
+              the scheduled run that morning read the ruleset and reported it matching, where the
+              run a day earlier had failed on the missing credentials. It failed loudly rather
+              than skipping for every day it was unconfigured — an audit that quietly skips when
+              unconfigured is a check that cannot fail — which is why the day it started working
+              is visible at all.
+            </p>
+            <p>
+              <strong>What is left of this finding is the other half.</strong> Writing the
+              required list back needs an administrator's credentials, so it stays a human step:
+              a change that adds a gating job leaves the list one entry behind until someone
+              runs the sync afterwards. The daily audit does not remove that lag — it makes it
+              visible the next morning instead of indefinitely.
+            </p>
+            <p>
+              <strong>The same class of drift, in the documents themselves, is now gated too.</strong>
+              An audit on 2026-08-19 found nine stale numbers across five files in one morning,
+              while two other files carried them correctly. The house rule to re-derive every
+              number had been written down the whole time — a rule only a reader enforces fails
+              silently. Each derivable count and every place stating it is now declared in one
+              file, computed from the source, and compared on every merge. Reword a sentence so
+              a declared claim vanishes and that fails too, because a check deleted along with
+              its claim is the same failure wearing a different hat.
             </p>
           </li>
           <li>

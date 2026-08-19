@@ -57,6 +57,11 @@ required:
   # ci.yml
   - altconfigs
   - ci-gating
+  # Gating rather than advisory on purpose. It checks the documentation against
+  # the tree, and documentation that lies is how [G-2] survived nineteen days
+  # after three files said the property was retired. An advisory doc check is a
+  # doc check nobody reads, which is the state this job exists to leave.
+  - doc-claims
   - kernel
   - reproducible
   - rust

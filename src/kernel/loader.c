@@ -12,6 +12,66 @@ uint8_t *loader_staging = 0;
 struct program_header armed_hdr;
 int program_armed = 0;
 
+/* ---- WHO ARMED IT -- roadmap 1.7, finding [G-11] --------------------------
+ *
+ * The staged image is one process-wide buffer: `loader_staging`, `armed_hdr`
+ * and `program_armed`, written by whichever task last armed one and read by
+ * whichever task next spawns or execs. Nothing recorded the connection between
+ * the two, so "the armed image" was ambient state — authority-shaped state that
+ * a caller is trusted for having, rather than for holding a capability to.
+ *
+ * Two consequences, one latent and one live:
+ *
+ *  - SYS_SUDO (kusers.c) re-authenticates the caller and then spawns whatever
+ *    image is armed AS UID 0. The arm and the spawn are separate syscalls, so
+ *    the image sudo elevates need never have been armed by the task that typed
+ *    the password: task A arms its own image, task B authenticates, and B's
+ *    successful sudo spawns A's image with A's code at uid 0. A confused
+ *    deputy, reachable from ring 3 by any task holding the spawn capability.
+ *    Nothing in userspace calls sudo today, which is why this is [G-11] and not
+ *    a [C-n] -- latency, not soundness, is the only thing between them.
+ *
+ *  - Within one spawn, two CPUs arming concurrently used to interleave freely
+ *    (roadmap 1.7). spawn_stage_acquire() in kspawn.c serialises that window;
+ *    this stamp is the standing check that the serialisation is actually in
+ *    place, because a theft shows up here as a REFUSAL rather than as the wrong
+ *    image running.
+ *
+ * So arming records the arming task and consumption refuses any other. Fail
+ * closed: an image with no recorded owner (owner -1) cannot be consumed at all,
+ * which is what makes forgetting to stamp a broken spawn rather than a silent
+ * ambient one.
+ *
+ * SPAWN_OWNER_UNCHECKED=1 removes the refusal -- the defect on demand -- and is
+ * what `make smoke-spawn-owner-control` builds. */
+int staged_owner_task = -1;
+
+/* Commit an arm: publish the staged image together with its owner. The only way
+ * to set program_armed, so an image cannot become consumable without recording
+ * who armed it. */
+void loader_arm_commit(void) {
+    staged_owner_task = get_current_task();
+    program_armed = 1;
+}
+
+/* Drop the staged image (consumed, or an arm that failed part-way). Clearing the
+ * owner with it means a stale owner can never authorise a later image. */
+void loader_disarm(void) {
+    program_armed = 0;
+    staged_owner_task = -1;
+}
+
+/* May the current task consume the staged image? Fail closed on an unowned or
+ * foreign arm. SPAWN_OWNER_UNCHECKED=1 is the control arm: it answers yes
+ * unconditionally, which is the pre-2026-08-18 behaviour exactly. */
+int staged_image_owned_by_current(void) {
+#ifdef SPAWN_OWNER_UNCHECKED
+    return 1;
+#else
+    return program_armed && staged_owner_task == get_current_task();
+#endif
+}
+
 /* Named embedded binaries — always available for spawn-by-name.
  * Each .bin file has a 44-byte Horus header: magic(4), entry(4), size(4),
  * name[32], followed by the ELF/flat payload. */
@@ -110,7 +170,7 @@ int arm_named_binary(const char *name) {
         armed_hdr.size  = h_size;
         for (int k = 0; k < 31; k++) armed_hdr.name[k] = (char)bin[12 + k];
         armed_hdr.name[31] = 0;
-        program_armed = 1;
+        loader_arm_commit();
         return 0;
     }
     return -4;  /* not found */
@@ -133,7 +193,7 @@ int arm_named_binary(const char *name) {
  * unrecognised container. `name_hint` (may be NULL) names a bare-ELF image and
  * backfills an empty Horus name. Returns 0 on success, negative on error. */
 int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
-    program_armed = 0;
+    loader_disarm();
     if (ubuf == 0)                             return -1;
     if (len < 4 || len > MAX_PROGRAM_SIZE)     return -2;
 
@@ -187,7 +247,7 @@ int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
     armed_hdr.size  = payload_len;
     for (int k = 0; k < 32; k++) armed_hdr.name[k] = hname[k];
     armed_hdr.name[31] = 0;
-    program_armed = 1;
+    loader_arm_commit();
     return 0;
 }
 
@@ -213,7 +273,7 @@ static int loader_receive_to_staging(struct program_header *out_hdr) {
     }
 
     armed_hdr = hdr;
-    program_armed = 1;
+    loader_arm_commit();
 
     if (out_hdr) {
         *out_hdr = hdr;
@@ -225,7 +285,7 @@ static int loader_receive_to_staging(struct program_header *out_hdr) {
 int do_receive_program(struct program_header *hdr_out) {
     if (!hdr_out) return -3;
 
-    program_armed = 0;
+    loader_disarm();
 
     int rc = loader_receive_to_staging(hdr_out);
     return rc;
@@ -728,7 +788,7 @@ void load_staged_image_into(int tid, uint64_t load_base) {
         tasks[tid].name[4] = '0' + tid; tasks[tid].name[5] = 0;
     }
 
-    program_armed = 0;
+    loader_disarm();
 }
 
 /* --- spawn argument vector staging ------------------------------------------

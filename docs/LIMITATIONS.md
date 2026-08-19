@@ -877,9 +877,9 @@ i.e. a return through a corrupted pointer), 5 stalled with no marker, and 3 trip
 **Consequence for CI.** `smoke-kstack-park` is **advisory**, not gating: the S20 park property
 it checks is sound and its control arm still reproduces the park defect on demand, but requiring
 a workload that reddens for an unrelated defect teaches the re-run reflex. It **stays advisory**
-after the 2026-08-17 narrowing below — the workload still fails ~27% of boots, for a reason that
-is still not what the gate tests. Promote it in the same commit that closes the rest of
-**[G-9]**, and quote a rate.
+after the 2026-08-17 narrowing below and the 2026-08-18 close of [G-10] — the workload still
+fails **2 boots in 30** (~7%), for a reason that is still not what the gate tests. Promote it in
+the same commit that closes the rest of **[G-9]**, and quote a rate.
 
 #### Narrowed 2026-08-17: one component found, fixed, and falsified — the rest still open
 
@@ -1009,29 +1009,33 @@ diagnostic scaffolding that scanned every task slot on every ISR exit, and the p
 both residues; the table above is the unscaffolded run and is the one to trust. Recorded because
 "the instrument changed the result" is the failure mode this section keeps rediscovering.
 
-### 5.2e The spawn/exec path is process-wide singleton state, unserialised — **[G-10]**
+### 5.2e The spawn/exec path is process-wide singleton state, unserialised — **[G-10]**, closed
 
-**Open, found 2026-08-17.** Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight lives in
-file-scope singletons, and nothing serialises two CPUs through them:
+**Found 2026-08-17; closed 2026-08-18 in three parts** (page tables, then the authority half,
+then the staging window). Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight lived in
+file-scope singletons, with nothing serialising two CPUs through them:
 
-| State | Where |
-|---|---|
-| `loader_staging` — the one ELF staging buffer | `kernel.h:99` |
-| `g_args_argc`, `g_args_total`, `g_args_strbuf`, `g_args_len` — staged argv | `kspawn.c:9-12` |
-| `g_spawn_stdio_spec`, `g_spawn_caller` | `kspawn.c:21-22` |
+| State | Then | Now |
+|---|---|---|
+| `loader_staging` — the one ELF staging buffer | unserialised | still one buffer, but every arm → consume window is bracketed by `spawn_stage_acquire()` |
+| `g_args_argc`, `g_args_total`, `g_args_strbuf`, `g_args_len` — staged argv | unserialised | same bracket |
+| `g_spawn_stdio_spec`, `g_spawn_caller` | globals read long after they were written | **gone** — parameters of `do_spawn_stdio` / `wire_child_stdio` |
+| the armed image itself | anybody's to spawn | owned by the task that armed it (§5.2f, **[G-11]**) |
 
-There is no lock in `loader.c` and none around `do_spawn`. `g_exec_reenter_task` (§5.2d) was one
-instance of this pattern and is now per-CPU; the rest are not.
+`g_exec_reenter_task` (§5.2d) was one instance of this pattern and became per-CPU. Per-CPU is
+deliberately *not* how the rest was fixed: a staging buffer per core is `LOADER_STAGING_BYTES`
+of real memory for state that is logically per-*spawn*, so the window is serialised instead.
 
-Two consequences, of different severities:
+Two consequences, of different severities — both of them past tense since 2026-08-18, and stated
+here as they stood because the order in which they were understood is the useful part:
 
-- **Correctness.** Concurrent spawns interleave through one staging buffer, and a CR3 can become
-  reachable before `create_user_pagedir` has populated its kernel half — which is exactly what
-  a supervisor write-fault in `lapic_eoi` looks like, and is the ~20% residue in §5.2d.
-- **Authority.** `g_spawn_caller` is written at `do_spawn` entry and read much later by
-  `wire_child_stdio`, so a child can have its stdio wired from **the wrong parent's cspace** —
+- **Correctness.** Concurrent spawns interleaved through one staging buffer, and a CR3 could
+  become reachable before `create_user_pagedir` had populated its kernel half — which is exactly
+  what a supervisor write-fault in `lapic_eoi` looks like, and was the ~20% residue in §5.2d.
+- **Authority.** `g_spawn_caller` was written at `do_spawn` entry and read much later by
+  `wire_child_stdio`, so a child could have its stdio wired from **the wrong parent's cspace** —
   capability inheritance from a task that never spawned it. That is an authority question, not
-  merely a correctness one, and it is why this is filed rather than left as a TODO.
+  merely a correctness one, and it is why this was filed rather than left as a TODO.
 
 #### The page-table half: fixed and falsified 2026-08-17
 
@@ -1095,12 +1099,92 @@ lands on only ~20%, so gating the control arm on the fault would make it flaky f
 failing to **2 in 30**, and `make smoke-kstack-park` passes in its exact form. It is not zero,
 so the gate stays advisory (see §5.2d).
 
-**What remains of [G-10]** is everything except the page tables: `loader_staging`, the staged
-argv, `g_spawn_stdio_spec` and `g_spawn_caller` are all still process-wide and still
-unserialised, and the authority consequence described above — a child's stdio wired from the
-wrong parent's cspace — is **not** addressed by this fix. So is the underlying oddity that a
-task can be `state == 0` and still executing in ring 3 on another core, which the CR3 guard
-makes memory-safe without making it sensible.
+#### The authority half and the staging window: fixed 2026-08-18
+
+**The authority half was removed, not guarded.** `g_spawn_caller` and `g_spawn_stdio_spec` are
+parameters now — `do_spawn_stdio(spec)` → `do_spawn_inner(caller, spec)` →
+`wire_child_stdio(child, caller, spec)`. There is no longer a window in which the identity of
+the spawning parent can be observed by anyone but the spawn that set it, so "the child inherited
+a pipe from a task that never spawned it" stops being unlikely and becomes unexpressible. The
+same call also carries a *proof* rather than a memory: `do_spawn_stdio` has already refused to
+consume an image the caller did not arm (§5.2f), so the parent whose cspace is read is the task
+that staged the program being loaded.
+
+**The staging window is serialised.** `spawn_stage_acquire()` / `spawn_stage_release()` bracket
+every arm → consume region: `h_spawn`, `h_spawn_image`, `h_exec_named`, `h_exec_image`, the two
+boot launchers in `kshell.c`, `h_sudo`'s consume, and all ten self-test sites that stage an
+image by hand. Taken before the arm, because an arm landing inside another CPU's window *is* the
+interleaving. It is the outermost lock in the kernel — entry points hold nothing when they take
+it, and `cap_lock` / the untyped lock / `sched_raw_lock` are all taken underneath. Interrupt
+latency is not a new cost: `int 0x80` is an interrupt gate, so the spawn already ran with `IF=0`
+on that CPU, and `spin_lock`/`spin_unlock` have preserved the caller's `IF` since roadmap 1.1.
+
+**On the measurement, and what it does and does not show.** The interleaving is not reachable in
+any workload this repository can currently boot, and that is worth stating precisely rather than
+quoting a rate that does not exist. `SPAWN_STAGE_TRACE=1` reports every entry to the staging
+window and every arrival that finds another CPU inside it; `SPAWN_STAGE_WIDEN=1` holds the
+window open for a fixed spin (12M `pause`, measured in the emitted code, bounded to the first 24
+windows) to make an overlap likely if one is possible:
+
+| Arm | Boots | Windows entered | Contended arrivals | Thefts |
+|---|---|---|---|---|
+| serialised (`SPAWN_STAGE_WIDEN=1 SPAWN_STAGE_TRACE=1`) | 8 | 112 | **0** | 0 |
+| unserialised (`+ SPAWN_STAGE_UNSERIALISED=1`) | 8 | 102 | **0** | 0 |
+
+The reason is structural, and the trace is what showed it: the 14 windows in a
+`PROC_SELFTEST` boot come from three tasks (the in-kernel driver as task 0, `init`, and the
+proctest driver) that never overlap, because **every spawner in the tree today is either the
+boot path or a child of it** — `init` spawns its servers sequentially, and the driver that
+spawns the rest is itself one of `init`'s children, so it cannot be running while `init` is
+mid-spawn. Two concurrent spawners is a property of the OS this roadmap is building, not of the
+one it has.
+
+**So no gate claims a rate here.** A probabilistic smoke target whose control arm cannot fail
+is exactly the "test that cannot fail" this repository refuses to add. What is gated is the
+deterministic half — `make smoke-spawn-owner` (§5.2f) — and the serialisation rests on the
+structural argument plus the fail-closed ownership check, with `SPAWN_STAGE_UNSERIALISED=1`
+retained so the arm is there the moment a workload with two live spawners exists.
+
+**Still open, and unchanged by any of this:** a task can be `state == 0` and still executing in
+ring 3 on another core. The CR3 guard makes that memory-safe without making it sensible, and the
+slot allocator still reuses such a slot immediately.
+
+### 5.2f The armed image was ambient state — **[G-11]**
+
+**Found and closed 2026-08-18.** The staged image is one process-wide buffer, and until this
+change nothing recorded the connection between the task that armed an image and the task that
+spawned it. Authority-shaped state that a caller is trusted for *having* rather than for holding
+a capability to is the same shape as [G-2]'s ambient `uid == 0`, and it had the same kind of
+consequence hiding behind it.
+
+`SYS_SUDO` is where it bites. It re-authenticates the caller and then spawns whatever image is
+armed **as uid 0**, endowing it with `CAP_FRAME`, `CAP_USER` and a `CAP_TCB` — and the arm is a
+*different syscall* from the consume, so the image being elevated need never have been staged by
+the task that typed the password:
+
+1. task A (any task holding the spawn capability) arms its own image;
+2. task B authenticates correctly with `SYS_SUDO`;
+3. B's successful sudo spawns **A's** program at uid 0.
+
+A confused deputy, reachable from ring 3. It is a G-number rather than a C-number for one
+reason: nothing in userspace calls `sudo` today — `include/syscall.h:805` is the only caller of
+the wrapper — so the path is latent. Latency is not soundness, and this is exactly the shape of
+defect that sat unnoticed for nineteen days as [H-1].
+
+**The fix.** `loader_arm_commit()` is the only way to publish an armed image, and it records the
+arming task; `loader_disarm()` clears both together, so a stale owner can never authorise a
+later image. `do_spawn` refuses to consume an image whose owner is not the current task, and
+`h_sudo` refuses before spending the elevation, auditing the refusal rather than logging a
+failure — a correct password that was about to elevate somebody else's program is the
+interesting event. Fail closed: an image with **no** recorded owner cannot be consumed at all,
+so forgetting to stamp one is a broken spawn rather than a silent ambient one.
+
+**The witness, falsified both ways.** `make smoke-spawn-owner` forges exactly the state a second
+task's arm leaves behind — a legitimately staged image whose recorded owner is another task —
+requires the spawn to be refused, then re-arms honestly and requires it to succeed, because a
+check that refuses everything is not a check. `make smoke-spawn-owner-control`
+(`SPAWN_OWNER_UNCHECKED=1`) removes the refusal and reports
+`SPAWN_OWNER_SELFTEST: FAIL foreign-image-spawned pid 1` on every boot.
 
 ### 5.3 No release provenance — **[I-9]**
 

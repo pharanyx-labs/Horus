@@ -582,7 +582,23 @@ static void h_run(struct interrupt_frame64 *r) {
 }
 
 /* SYS_RECEIVE_PROGRAM: stage a program image and return its header.
- * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
+ * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table.
+ *
+ * DELIBERATELY NOT BRACKETED BY spawn_stage_acquire() (roadmap 1.7), and this is
+ * the one arm → consume window in the kernel that is not. The arm here is a
+ * blocking read of up to MAX_PROGRAM_SIZE bytes off the second serial port, and
+ * the consume is a later SYS_SPAWN — a different syscall, seconds later, driven
+ * by whoever is at the other end of the wire. Holding the staging lock across
+ * that would mask interrupts on this CPU for the whole transfer and stall every
+ * other spawner behind a human, which is a worse property than the one it would
+ * buy.
+ *
+ * What makes that safe is the ownership stamp ([G-11], loader.c): if another
+ * task arms an image between this receive and the spawn that consumes it, the
+ * spawn is REFUSED rather than loading the wrong program. The failure mode
+ * degrades to "your upload was overwritten, try again", which is the fail-closed
+ * direction. Do not "fix" this by adding the bracket without first making the
+ * transfer non-blocking. */
 static void h_receive_program(struct interrupt_frame64 *r) {
     void *user_hdr = (void *)(addr_t)r->rbx;
     struct program_header k_hdr;

@@ -87,6 +87,7 @@ required:
   - smoke-init-fs
   - smoke-cr3-reclaim
   - smoke-exec-reenter
+  - smoke-spawn-owner
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy
@@ -149,12 +150,13 @@ advisory:
     hand-off component -- a single global g_exec_reenter_task consumed on the
     exit of every syscall on every CPU -- is fixed, falsified with
     EXEC_REENTER_GLOBAL=1 (0 thefts in 30 boots against 5 in 20), and is now
-    gated by smoke-exec-reenter. That took the workload from ~45-50% failing to
-    ~27%, which is an improvement and not a close: 2 boots in 30 still leak a
-    claim before any exec runs, and 6 in 30 take a CPL-0 vec=14 errc=0x2 at
-    lapic_eoi / interrupt_handler64, which is [G-10] rather than the scheduler.
-    A gate that reddens on a quarter of boots for a defect it does not test is
-    exactly what this exemption exists to avoid, so it stays.
+    gated by smoke-exec-reenter. With [G-10]'s page-table half fixed the same
+    day, the workload went from ~45-50% failing to 2 boots in 30 (~7%). That is
+    an improvement and not a close: the residue is a bogus resume %rsp handed
+    back by the dispatcher -- the rest of [G-9], and not what this gate tests.
+    A gate that reddens for a defect it does not test teaches the re-run reflex,
+    which is exactly what this exemption exists to avoid, so it stays until
+    [G-9] is closed rather than merely narrowed.
     NARROWED AGAIN 2026-08-17 and STILL ADVISORY. [G-10]'s page-table
     use-after-free is fixed too -- create_user_pagedir was recycling a slot's
     page tables while another CPU still had them in CR3 -- and that took the

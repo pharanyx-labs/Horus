@@ -11,15 +11,154 @@ static uint32_t g_args_total = 0;              /* bytes used in g_args_strbuf */
 static char     g_args_strbuf[SPAWN_ARGS_BYTES];
 static uint16_t g_args_len[SPAWN_MAX_ARGS];    /* length incl NUL of each arg */
 
-/* Pipe-stdio spec for the next spawn (consume-once, like the argv staging above).
- * Set by h_spawn_image from the caller's 6th syscall register just before
- * do_spawn(); consumed and cleared inside do_spawn_inner while the child is built
- * but before it can be scheduled (runnable_ctx is still 0), so wiring the child's
- * stdio races nothing. Low 16 bits = the caller's cspace slot holding the pipe
- * READ end to become the child's stdin (0 = none); high 16 bits = the WRITE end
- * for the child's stdout (0 = none). 0 = no redirection (the console default). */
-static uint32_t g_spawn_stdio_spec = 0;
-static int      g_spawn_caller     = -1;   /* the spawner, for reading its pipe caps */
+/* ---- ONE OWNER FOR THE SPAWN STAGING -- roadmap 1.7 -----------------------
+ *
+ * Everything SYS_SPAWN / SYS_EXEC_* needs in flight is process-wide: the ELF
+ * staging buffer and armed header (loader.c), and the argv staging below. The
+ * path was written for a kernel that spawned from one core, and under SMP two
+ * CPUs interleaved through it freely -- CPU A arms its image, CPU B arms
+ * another, and A loads B's.
+ *
+ * Two of the four singletons were removed rather than guarded on 2026-08-17:
+ * the exec re-entry hand-off is per-CPU ([G-9]) and the page-table reclaim is
+ * CR3-guarded ([G-10]). Per-CPU is the wrong answer for the rest. A staging
+ * buffer per CPU is LOADER_STAGING_BYTES of real memory per core for state that
+ * is logically per-SPAWN, not per-CPU, and the argv/stdio state has the same
+ * shape. So this window is serialised instead.
+ *
+ * The lock is taken BEFORE the image is armed and released once the staged
+ * state has been consumed -- not around each singleton separately, because the
+ * hazard is the interleaving of a multi-step sequence, and a lock per field
+ * would leave every interleaving of the sequence available. Interrupt latency
+ * is not a new cost here: `int 0x80` is an interrupt gate, so the whole spawn
+ * already ran with IF=0 on that CPU, and spin_lock/spin_unlock have preserved
+ * the caller's IF since roadmap 1.1.
+ *
+ * Lock ORDER: this is the outermost lock in the kernel. It is taken by syscall
+ * entry points holding nothing, and cap_lock / the untyped lock / sched_raw_lock
+ * are taken underneath it. Never take it while holding one of those.
+ *
+ * The exec path releases from inside exec_into_armed_image(), because that
+ * function does not return to its caller in the usual sense -- it hands the ISR
+ * epilogue a fresh ring-3 context. Releasing at the end of the staged-state
+ * consumption keeps the acquire/release pair on one CPU, which is what
+ * spin_lock's per-CPU IRQ bookkeeping requires.
+ *
+ * SPAWN_STAGE_UNSERIALISED=1 makes the acquire/release no-ops -- the
+ * pre-2026-08-18 kernel exactly. It gates NOTHING, and that is a measured
+ * decision rather than an omission: across 16 boots at -smp 4 with the window
+ * held open on purpose (SPAWN_STAGE_WIDEN), it was entered 214 times and never
+ * once by two CPUs at a time, in either arm. Every spawner in this tree is init
+ * or one of init's children, so the busiest one cannot run while init is
+ * mid-spawn. A control arm that cannot fail cannot gate anything, so no smoke
+ * target claims a rate here; the flag is kept for the day a workload has two
+ * live spawners. Whatever theft such a workload produces is REPORTED rather than
+ * executed, because the ownership stamp (loader.c, [G-11]) refuses a foreign
+ * image -- so the arm measures the serialisation without also being an exploit.
+ * See TESTS.md, finding G-10. */
+/* Unused, deliberately, in the SPAWN_STAGE_UNSERIALISED control arm: the arm is
+ * "the same kernel with the lock taken out", so the declaration stays and only
+ * the acquire/release vanish. */
+static __attribute__((unused)) spinlock_t spawn_stage_lock;
+
+/* Which CPU is inside the arm -> consume window, or -1. Instrument only, and
+ * compiled out unless SPAWN_STAGE_TRACE=1: the mutual exclusion is the lock's
+ * job. It exists to answer the question a green run cannot -- was the window
+ * ever entered twice at all? -- because a serialised build that never saw
+ * contention proves nothing about serialisation, and in this tree it never does
+ * (see the note above). Read BEFORE the acquire, which is the only point at
+ * which "somebody else is in there" is observable. Same role KSTACK0_PARK_TRACE
+ * plays for the park path. Not a defect flag; not shipped. */
+#ifdef SPAWN_STAGE_TRACE
+static volatile int spawn_window_cpu = -1;
+#endif
+
+void spawn_stage_acquire(void) {
+#ifdef SPAWN_STAGE_TRACE
+    int occupant = spawn_window_cpu;
+    /* Every entry, not only the contended ones: a run with no contention means
+     * one of two very different things -- the window is genuinely never entered
+     * twice, or it is barely entered at all -- and only the entry count tells
+     * them apart. This is the same reason KSTACK0_PARK_TRACE counts parks. */
+    print("SPAWN STAGE: window cpu ");
+    print_decimal(this_cpu());
+    print(" task ");
+    print_decimal(get_current_task());
+    print("\n");
+    if (occupant >= 0 && occupant != this_cpu()) {
+        print("SPAWN STAGE: contended - cpu ");
+        print_decimal(this_cpu());
+        print(" arrived while cpu ");
+        print_decimal(occupant);
+        print(" was inside the staging window\n");
+    }
+#endif
+#ifndef SPAWN_STAGE_UNSERIALISED
+    spin_lock(&spawn_stage_lock);
+#endif
+#ifdef SPAWN_STAGE_TRACE
+    spawn_window_cpu = this_cpu();
+#endif
+}
+
+void spawn_stage_release(void) {
+#ifdef SPAWN_STAGE_TRACE
+    spawn_window_cpu = -1;
+#endif
+#ifndef SPAWN_STAGE_UNSERIALISED
+    spin_unlock(&spawn_stage_lock);
+#endif
+}
+
+/* Not a defect: holds the arm -> consume window open so that an interleaving
+ * happens if one is possible at all. Set in BOTH arms; that is what makes the
+ * pair a measurement rather than two unrelated runs (same role KSTACK_RACE_WIDEN
+ * plays for [G-8]). Under the lock the widened window is held, so it costs the
+ * other CPU a spin; unserialised, it is the race.
+ *
+ * It did not produce one. 12M spins per window (verified in the emitted code,
+ * because a widener the optimiser deleted would be worse than none) across 16
+ * boots produced 214 window entries and 0 overlaps. That is the answer, not a
+ * failure of the instrument: see the note on SPAWN_STAGE_UNSERIALISED above. */
+#ifdef SPAWN_STAGE_WIDEN
+#ifndef SPAWN_STAGE_WIDEN_SPINS
+#define SPAWN_STAGE_WIDEN_SPINS 12000000u
+#endif
+/* Bounded to the first SPAWN_STAGE_WIDEN_WINDOWS spawns: the workload's
+ * concurrent spawns are all in the first seconds of boot (init launching
+ * fs_server / console_server / the shell while a self-test driver launches its
+ * children), and widening every later spawn only makes the boot slower without
+ * making the window more likely to be entered twice. */
+#ifndef SPAWN_STAGE_WIDEN_WINDOWS
+#define SPAWN_STAGE_WIDEN_WINDOWS 24
+#endif
+static volatile uint32_t spawn_widen_left = SPAWN_STAGE_WIDEN_WINDOWS;
+static void spawn_stage_widen(void) {
+    if (spawn_widen_left == 0) return;
+    spawn_widen_left--;
+    for (volatile uint32_t i = 0; i < SPAWN_STAGE_WIDEN_SPINS; i++)
+        __asm__ volatile ("pause" ::: "memory");
+}
+#else
+static void spawn_stage_widen(void) { }
+#endif
+
+/* Report a refused consume: the staged image belongs to another task. Serialised
+ * this cannot happen, and 0 is the assertion; unserialised it counts how often a
+ * CPU stole the staging. Printed rather than panicking because the refusal has
+ * ALREADY made it safe -- the spawn fails closed -- and a boot that keeps
+ * running reports every theft in it instead of only the first. It is also the
+ * line the [G-11] self-test looks for, where the foreign owner is forged rather
+ * than raced. */
+static void spawn_stage_report_theft(int owner) {
+    print("SPAWN STAGE: theft - image armed by task ");
+    print_decimal(owner);
+    print(", consumed by task ");
+    print_decimal(get_current_task());
+    print(" on cpu ");
+    print_decimal(this_cpu());
+    print(" (see roadmap 1.7)\n");
+}
 
 /* Copy a NUL-terminated string from user vaddr `usrc` into `dst` (cap bytes incl
  * NUL). Returns length excluding NUL, or -1 on fault / no NUL within cap. */
@@ -115,20 +254,29 @@ static void build_child_argv(int tid) {
     g_args_argc = 0; g_args_total = 0;
 }
 
-/* Wire the child's stdin/stdout to pipe ends the spawner holds (consume-once
- * g_spawn_stdio_spec). Runs inside do_spawn_inner, before sched_prepare_user_
- * context publishes a resumable frame — so the child cannot be picked by any CPU
- * until its stdio slots and stdio_flags are set. Copies the spawner's pipe-end
- * cap into the child's reserved slot with a fresh serial and bumps that end's
- * refcount, so the child holds a first-class end that task_teardown will release.
- * A malformed/absent slot is silently left as the console default (fail-safe). */
-static void wire_child_stdio(int child) {
-    uint32_t spec = g_spawn_stdio_spec;
-    g_spawn_stdio_spec = 0;                       /* consume-once */
+/* Wire the child's stdin/stdout to pipe ends the spawner holds. Runs inside
+ * do_spawn_inner, before sched_prepare_user_context publishes a resumable frame
+ * — so the child cannot be picked by any CPU until its stdio slots and
+ * stdio_flags are set. Copies the spawner's pipe-end cap into the child's
+ * reserved slot with a fresh serial and bumps that end's refcount, so the child
+ * holds a first-class end that task_teardown will release. A malformed/absent
+ * slot is silently left as the console default (fail-safe).
+ *
+ * `caller` and `spec` are PARAMETERS, and that is the fix, not a tidy-up
+ * (roadmap 1.7, the authority half). They were two file-scope globals:
+ * g_spawn_caller was written at do_spawn() entry and read here, hundreds of KiB
+ * of ELF copying later, so a second CPU entering do_spawn in that window
+ * redirected this read to ITS cspace. The child then inherited a pipe capability
+ * from a task that never spawned it — capability inheritance across a parentage
+ * that does not exist, which no rights mask can catch because the rights were
+ * never widened; the wrong cspace was consulted. Passing them down the call
+ * chain makes the wrong parent unexpressible rather than unlikely, and
+ * do_spawn_stdio has already checked that `caller` is the task that armed the
+ * image it is loading. */
+static void wire_child_stdio(int child, int caller, uint32_t spec) {
     tasks[child].stdio_flags = 0;
     if (spec == 0) return;
 
-    int caller = g_spawn_caller;
     if (caller <= 0 || caller >= MAX_TASKS) return;
     capability_t *pcs = tasks[caller].cspace;     /* spawner */
     capability_t *ccs = tasks[child].cspace;      /* child   */
@@ -158,7 +306,7 @@ static void wire_child_stdio(int child) {
     }
 }
 
-static int do_spawn_inner(void) {
+static int do_spawn_inner(int caller, uint32_t stdio_spec) {
     if (!program_armed) {
         return -1;
     }
@@ -214,7 +362,7 @@ static int do_spawn_inner(void) {
     /* Wire pipe stdio (if this spawn requested it) BEFORE publishing a resumable
      * frame below — until sched_prepare_user_context sets runnable_ctx, no CPU can
      * schedule the child, so it cannot reach posix_init before its stdio is set. */
-    wire_child_stdio(new_id);
+    wire_child_stdio(new_id, caller, stdio_spec);
 
     /* Fabricate an initial resumable trap frame so sched_enter_user and the
      * preemptive scheduler can iretq into this task (entry/esp/cr3 are final). */
@@ -278,12 +426,35 @@ static void grant_child_tcb_cap(int spawner, int pid) {
  * the duration and restores the caller's address space + current task on return,
  * so SYS_SPAWN works from ring 3 and the caller continues. The caller is also
  * granted a CAP_TCB to the new child. */
-int do_spawn(void) {
+int do_spawn(void) { return do_spawn_stdio(0); }
+
+int do_spawn_stdio(uint32_t stdio_spec) {
     extern uint64_t pml4[];
     uint64_t caller_cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(caller_cr3));
     int caller_task = get_current_task();
-    g_spawn_caller = caller_task;   /* for wire_child_stdio, before the cr3 switch */
+
+    /* The image this is about to load must be the one THIS task armed
+     * ([G-11]). Checked here, before a single frame is allocated, because it is
+     * the one point that sees both the staged image and its consumer:
+     *
+     *  - it refuses SYS_SUDO's confused deputy, where the arm and the elevated
+     *    spawn are separate syscalls and need not have come from the same task;
+     *  - it is the standing witness that spawn_stage_acquire() actually brackets
+     *    every arm -> consume window, since a stolen staging arrives here as a
+     *    foreign owner rather than as the wrong image running;
+     *  - and it is what lets `caller_task` be handed to wire_child_stdio as the
+     *    child's parent: the task that armed the image and the task whose cspace
+     *    the child's stdio is inherited from are now provably the same one.
+     *
+     * Fail closed, and loudly enough to count: -3 rather than a spawn of
+     * somebody else's program. */
+    if (program_armed && !staged_image_owned_by_current()) {
+        spawn_stage_report_theft(staged_owner_task);
+        return -3;
+    }
+    spawn_stage_widen();
+
     uint64_t kcr3 = virt_to_phys(pml4);   /* CR3 takes a physical address */
 
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
@@ -302,7 +473,7 @@ int do_spawn(void) {
      * an enter() in loader.c paired with an exit() here would be exactly the kind
      * of split bracket that rots. */
     sched_impersonate_enter();
-    int pid = do_spawn_inner();
+    int pid = do_spawn_inner(caller_task, stdio_spec);
     set_current_task(caller_task);
     sched_impersonate_exit();
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
@@ -505,14 +676,30 @@ void h_exec_named(struct interrupt_frame64 *r) {
         return;
     }
     name[len] = 0;
-    if (arm_named_binary(name) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
+
+    /* From here to the release below, this CPU owns the staging (roadmap 1.7):
+     * the armed image, the argv, and the header they are described by. The
+     * bracket starts BEFORE the arm, because arming is half of what is being
+     * serialised -- an arm that lands inside another CPU's window is exactly the
+     * interleaving this closes. */
+    spawn_stage_acquire();
+    if (arm_named_binary(name) != 0) {
+        spawn_stage_release();
+        r->rax = (uint32_t)SYS_ERR_NOENT;
+        return;
+    }
 
     /* Stage the new argv (esi = user char* array, edi = argc) NOW, while the
      * caller's old address space is still active so copy_from_user can read the
      * strings; it is marshalled onto the fresh stack after the rebuild. */
     stage_spawn_args(r->rsi, r->rdi);
 
-    exec_into_armed_image();   /* no clean return on success */
+    exec_into_armed_image();   /* consumes the staging; no clean return on success */
+    /* Reached with the new image's ring-3 context already fabricated and armed:
+     * exec_into_armed_image returns to us, and the ISR epilogue -- not this
+     * function -- performs the switch. The staged state is consumed by now, so
+     * the window is over and the release is on the CPU that acquired. */
+    spawn_stage_release();
 }
 
 /* SYS_EXEC_IMAGE (71): replace the caller's image with a program image the caller
@@ -525,13 +712,19 @@ void h_exec_image(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
+    spawn_stage_acquire();
     int rc = arm_image_from_user(r->rbx, r->rcx, 0);
-    if (rc != 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* image intact on failure */
+    if (rc != 0) {                                   /* image intact on failure */
+        spawn_stage_release();
+        r->rax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
 
     /* Stage argv while the caller's old address space is still active. */
     stage_spawn_args(r->rsi, r->rdi);
 
-    exec_into_armed_image();   /* no clean return on success */
+    exec_into_armed_image();   /* consumes the staging; no clean return on success */
+    spawn_stage_release();
 }
 
 /* SYS_SPAWN_IMAGE (70): spawn a child from a program image the caller supplies in
@@ -540,34 +733,49 @@ void h_exec_image(struct interrupt_frame64 *r) {
  * ebx=image, ecx=len, edx=one-word spawn arg, esi=argv, edi=argc. Returns the
  * child pid, or a negative SYS_ERR_*. Slot-3 WRITE|EXEC enforced by the table. */
 void h_spawn_image(struct interrupt_frame64 *r) {
+    spawn_stage_acquire();
     int rc = arm_image_from_user(r->rbx, r->rcx, 0);
-    if (rc != 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (rc != 0) {
+        spawn_stage_release();
+        r->rax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
 
     /* Stage the caller's argv before the child exists; do_spawn_inner marshals it
      * onto the child's stack. Read here while the caller is still current. */
     stage_spawn_args(r->rsi, r->rdi);
-    /* Pipe-stdio redirection (r8, the 6th syscall arg): consumed in do_spawn_inner
-     * to wire the child's fd0/fd1 to the spawner's pipe ends. 0 = console default. */
-    g_spawn_stdio_spec = (uint32_t)r->r8;
-    int pid = do_spawn();       /* consumes the armed image */
+    /* Pipe-stdio redirection (r8, the 6th syscall arg): passed down to
+     * wire_child_stdio, which wires the child's fd0/fd1 to THIS caller's pipe
+     * ends. 0 = console default. It travels as an argument rather than in a
+     * global for the reason wire_child_stdio's header note gives. */
+    int pid = do_spawn_stdio((uint32_t)r->r8);   /* consumes the armed image */
     g_args_argc = 0;            /* drop staging if the spawn failed before consuming it */
+    spawn_stage_release();
     if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;
     r->rax = (uint32_t)pid;
 }
 
 
 void h_spawn(struct interrupt_frame64 *r) {
+    char name[32];
     if (r->rbx) {
-        char name[32];
         uint32_t len = r->rcx ? r->rcx : 31u;
         if (len > 31) len = 31;
+        /* Read the name BEFORE taking the staging lock: copy_from_user can fault
+         * on a bad pointer, and there is nothing to serialise until an image is
+         * about to be armed. Keeping the fault outside the critical section also
+         * keeps the section short enough to reason about. */
         if (copy_from_user(name, (void *)(addr_t)r->rbx, len) != 0) {
             r->rax = (uint32_t)SYS_ERR_FAULT;
             return;
         }
         name[len] = 0;
+    }
+    spawn_stage_acquire();
+    if (r->rbx) {
         int rc = arm_named_binary(name);
         if (rc != 0) {
+            spawn_stage_release();
             r->rax = (uint32_t)SYS_ERR_NOENT;
             return;
         }
@@ -578,6 +786,7 @@ void h_spawn(struct interrupt_frame64 *r) {
     stage_spawn_args(r->rsi, r->rdi);
     int pid = do_spawn();
     g_args_argc = 0;   /* drop staging if the spawn failed before consuming it */
+    spawn_stage_release();
     /* Hand the child its one-word spawn argument (edx), retrievable via
      * SYS_SPAWN_ARG. Zero for callers that don't pass one. */
     if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;

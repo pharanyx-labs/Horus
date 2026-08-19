@@ -40,17 +40,21 @@ is classified as merge-gating as of 2026-08-16, taking the ruleset from 22 requi
 toward 67, then to 71 with the three gates [G-8] added on 2026-08-17, then to 70 when
 `smoke-kstack-park` was demoted to advisory that day for [G-9], and back up with
 `smoke-exec-reenter` and `smoke-cr3-reclaim`, the gates for [G-9]'s exec component and
-[G-10]'s page-table use-after-free, which take it to **72**. A scheduled
+[G-10]'s page-table use-after-free, then to **73** with `smoke-spawn-owner`, the [G-11] gate
+added on 2026-08-18. A scheduled
 `ruleset-audit` job now verifies the live ruleset against that classification daily, as a
 GitHub App with `Administration: read` — the permission a workflow token cannot be granted —
 but it is inert until that App is created, and the
 reconciliation is manual and lags by one merge, so **[C-6]** narrows rather than closes. The
-remaining open findings — the `tasks[]` table (**[I-7]**), claims that leak and kernel stacks
+remaining open findings — the `tasks[]` table (**[I-7]**) and claims that leak and kernel stacks
 that collide on the spawn/reap path under SMP (**[G-9]**, narrowed twice on 2026-08-17: its exec
-hand-off and page-table components are fixed and falsified, ~7% of boots still fail), and the
-spawn/exec path's unserialised process-wide state (**[G-10]**, whose page-table use-after-free is
-fixed but which can still wire a child's stdio from the wrong parent's cspace) — are in
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+hand-off and page-table components are fixed and falsified, ~7% of boots still fail) — are in
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). **[G-10]** closed on 2026-08-18: the spawn/exec
+path's remaining process-wide state is serialised, and the two globals that could wire a child's
+stdio from the wrong parent's cspace are parameters, so that inheritance is now unexpressible
+rather than unlikely. Closing it surfaced **[G-11]**, also closed that day — the armed program
+image was ambient state, and `SYS_SUDO` would elevate whatever was armed to uid 0 whether or not
+the authenticating task had staged it (**S21**).
 
 **[G-8]** closed on 2026-08-17 in two parts, and it is the reason **S20** is in the table below. A switch
 path published the outgoing task as claimable while the CPU making the switch was still
@@ -138,6 +142,16 @@ accrued to a privileged-identity, unprivileged-cspace task that no adversary des
 nothing else. Witnessed twice: `smoke-captest` runs as uid 0 holding no `CAP_USER` and is
 refused `useradd`/`userdel`/`passwd`-of-another; `smoke-session` drives the real shell and
 asserts root may add a user while a standard user is refused.
+
+**A1c — A ring-3 task that can stage a program image, against a task that can authenticate.**
+*Defended since 2026-08-18* (**[G-11]**, **S21**). Neither task is privileged in A1's sense and
+neither confuses a rights check: the attacker arms an image it is perfectly entitled to arm, and
+the victim authenticates with its own correct password. The authority came from the *pairing* —
+`SYS_SUDO` consumed whatever image happened to be armed, in a different syscall from the arm, so
+the deputy elevated the attacker's program to uid 0 on the victim's credential. Recorded as its
+own adversary for the reason A1b was: a defect that no described adversary could reach is a
+defect nobody goes looking for. The armed image now carries the identity of the task that armed
+it, and a consume by any other task is refused and audited.
 
 **A2 — Compromised userspace server.** `fs_server` or `console_server` under attacker
 control. Confined to its own address space and its delegated capabilities; cannot reach
@@ -228,6 +242,7 @@ Stated as claims, with the mechanism and its witness, so each can be checked.
 | S17 | The shipped binary corresponds to the published source | Byte-for-byte reproducible build | the `reproducible` CI job, a required check, which builds twice and diffs. `make reproducible-build` builds **once** and only records the hash |
 | S19 | Audit-log history committed before a kernel compromise cannot be forged or rewritten | Forward-secure hash chain in `src/kernel/kaudit.c`: the MAC key is ratcheted one-way and erased after every entry | Rust unit tests (`rust/src/audit.rs`) |
 | S20 | A task's kernel stack is executed by at most one CPU at a time | Two paths. (a) The scheduler's claim on the outgoing task is held until the CPU has *left* its stack — released from `sched_release_deferred()`, called by `isr_common_stub64` after `movq %rax,%rsp` — with `g_kstack_inflight` halting the kernel if two CPUs are ever on one stack. (b) A CPU whose last runnable task dies parks on its **own** ring-0 stack, not on the one `tasks[0].kernel_stack_top` every CPU used to share; `sched_note_park()` halts if two ever pick the same one | `make smoke-kstack-race` and `smoke-kstack-park`, each with a control arm that restores the defect and must reproduce it |
+| S21 | A program image can only be spawned by the task that armed it, and a child inherits its stdio from that same task | `loader_arm_commit()` records the arming task; `do_spawn` and `h_sudo` refuse a foreign or unowned image; the spawner's identity is a parameter of `wire_child_stdio` rather than a global | `make smoke-spawn-owner`, with `smoke-spawn-owner-control` (`SPAWN_OWNER_UNCHECKED=1`) spawning the foreign image on every boot |
 
 S13 and S14 were undermined until 2026-07-27 by the [C-1] defect — an attacker could
 impersonate the server rather than lie to it. S13a and S13b are the properties that now hold

@@ -274,11 +274,6 @@ void scheduler_init(void) {
     storage_lock = (spinlock_t){0};
 
     current_kernel_stack_top = KERNEL_TSS_STACK;
-
-    /* Last unlocked boot mutation of the untyped tables is create_task(0) above;
-     * from here on allocation can be concurrent, so arm the lock. Deliberately
-     * not armed earlier — see the locking note at the top of untyped.c. */
-    untyped_arm_locking();
 }
 
 void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
@@ -1938,9 +1933,12 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
      *
      * Safe to call with interrupts masked — task_teardown is reached from the
      * page-fault handler (idt.c), and it is the first thing on that path to take
-     * a lock at all. kobj_gc's critical section is IF-transparent (ut_lock /
-     * ut_unlock in untyped.c) precisely so this call cannot enable interrupts
-     * inside a fault handler via spin_unlock's unconditional `sti` (C-3.1). */
+     * a lock at all. That is a property of spin_unlock itself since roadmap 1.1:
+     * it restores the caller's RFLAGS.IF instead of asserting `sti` (C-3.1), so
+     * a fault handler cannot have interrupts enabled underneath it by taking a
+     * lock. Until 2026-08-18 it was instead a property of a pushfq/popfq bracket
+     * inside untyped.c, which is why that bracket is gone -- see the locking note
+     * at the top of that file. */
     kobj_gc();
 }
 

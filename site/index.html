@@ -1525,6 +1525,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><th scope="row">Two CPUs on one kernel stack (<strong>G-8</strong>)</th><td class="t-num t-num--was">31 failures / 800</td><td class="t-num t-num--now">0 / 800</td><td class="t-note">adjacent-boot alternating, <code>-smp 4</code> · Fisher p = 6.9 × 10⁻¹⁰</td></tr>
               <tr><th scope="row">Exec re-entry taken by the wrong CPU (<strong>G-9</strong>, exec component)</th><td class="t-num t-num--was">5 thefts / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · Fisher p ≈ 0.008 · the finding stays open</td></tr>
               <tr><th scope="row">Page tables recycled under a live CPU (<strong>G-10</strong>)</th><td class="t-num t-num--was">6 faults / 30</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · unguarded arm frees in use on 20 / 20</td></tr>
+              <tr><th scope="row">A foreign staged image spawned by <code>sudo</code> (<strong>G-11</strong>)</th><td class="t-num t-num--was">3 spawns / 3</td><td class="t-num t-num--now">0 / 3</td><td class="t-note">deterministic single boot · the control arm removes the owner check</td></tr>
               <tr><th scope="row">Endpoint queue depth 1 → 4, four concurrent clients</th><td class="t-num t-num--was">7042 ms mean</td><td class="t-num t-num--now">5162 ms mean</td><td class="t-note">12 boots each · <code>EP_QUEUE_SLOTS=1</code> rebuilds the old design</td></tr>
             </tbody>
           </table>
@@ -1709,8 +1710,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               <strong>This is a narrowing, not a close, and the difference is the point.</strong>
-              The workload still fails about a quarter of the time — a claim leaked before any
-              exec runs, and a supervisor write-fault in the interrupt path — so the finding stays
+              The workload still fails 2 boots in 30 — a claim leaked before any exec runs, and a
+              bogus stack pointer handed back by the dispatcher — so the finding stays
               open and the gate whose red flag started all this stays advisory rather than being
               promoted back on a partial fix. Three earlier explanations for this defect were
               published-in-progress and were all wrong; each looked right when read and was killed
@@ -1722,7 +1723,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <li>
             <h3><span class="id">G-10</span>The spawn path was written for one core</h3>
             <p>
-              <strong>Open, found 2026-08-17</strong> while narrowing the finding above.
+              <strong>Found 2026-08-17, closed 2026-08-18</strong> — while narrowing the finding
+              above.
               Everything spawning or exec'ing a program needs while it is in flight — the buffer
               the executable is staged in, the argument vector, the standard-I/O wiring, the
               identity of the spawning task — is a single process-wide variable, and nothing
@@ -1770,11 +1772,61 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               2 in 30.
             </p>
             <p>
-              <strong>The rest of the finding stands.</strong> The staging buffer, the argument
-              vector and the standard-I/O wiring are still shared, and the authority consequence
-              — a child inheriting standard I/O from the wrong parent's capability space — is
-              untouched by this fix. So is the underlying oddity that a task can be marked dead
-              and still be executing: the guard makes that memory-safe without making it sensible.
+              <strong>The rest of it closed the next day, in two different ways.</strong> The
+              authority half was <em>deleted</em>: the spawning task's identity and the
+              standard-I/O request are arguments passed down the call chain now, not globals read
+              back later, so a child inheriting standard I/O from the wrong parent's capability
+              space stops being unlikely and becomes unsayable. The staging buffer and argument
+              vector keep one copy — a copy per core is real memory for state that belongs to a
+              spawn, not to a core — and every window from arming an image to consuming it is held
+              under one lock instead.
+            </p>
+            <p>
+              <strong>And the honest part: the race this closes cannot be reached by anything
+              this system can currently boot.</strong> Rather than quote a rate that does not
+              exist, the window was instrumented — every entry, and every arrival that finds
+              another core already inside — and then deliberately held open for millions of
+              cycles. Across 16 boots at four cores, the window was entered 214 times and
+              <strong>never once</strong> by two cores at the same time. The reason is structural:
+              every task that spawns anything today is the init process or one of its children,
+              so the busiest spawner cannot be running while init is mid-spawn. Two concurrent
+              spawners is a property of the operating system this is becoming, not of the one it
+              is. So no test claims a rate here, and the arm that removes the lock is kept for the
+              day a workload has two live spawners — a control arm that cannot fail is not
+              evidence.
+            </p>
+            <p>
+              Still unchanged: a task can be marked dead and still be executing. The guard makes
+              that memory-safe without making it sensible.
+            </p>
+          </li>
+          <li>
+            <h3><span class="id">G-11</span>The armed program image belonged to nobody</h3>
+            <p>
+              <strong>Found and closed 2026-08-18</strong>, while serialising the window above —
+              and it is the more serious of the two. A program image is staged in one shared
+              buffer, and nothing recorded which task had staged it. One system call turns that
+              from an oddity into a privilege boundary: <code>sudo</code> re-authenticates the
+              caller and then spawns whatever image is armed <em>as root</em>, in a different
+              system call from the arming.
+            </p>
+            <p>
+              So one task arms its own program; a second task types its own correct password; and
+              the second task's successful <code>sudo</code> launches the <em>first</em> task's
+              program with root's identity and capabilities. Neither party fails a permission
+              check. The authority comes from the pairing — the classic confused deputy, and the
+              same shape as this kernel's oldest defect: authority a caller is trusted for
+              <em>having</em> rather than for holding a capability to.
+            </p>
+            <p>
+              Arming an image now records the task that armed it, and consuming one refuses any
+              other — fail closed, including for an image with no recorded owner, so forgetting to
+              record one breaks the spawn instead of quietly restoring the old behaviour. The
+              refusal is audited rather than logged as a failure: a correct password about to
+              elevate somebody else's program is the event worth keeping. The witness asserts both
+              directions in a single boot — a forged foreign owner must be refused, and the task's
+              own image must still spawn — because a check that refuses everything is not a check.
+              Removing the check on demand spawns the foreign image on every boot, 3 in 3.
             </p>
           </li>
           <li>

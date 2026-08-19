@@ -593,6 +593,59 @@ CR3_RECLAIM_UNGUARDED ?= 0
 ifeq ($(CR3_RECLAIM_UNGUARDED),1)
 CFLAGS += -DCR3_RECLAIM_UNGUARDED
 endif
+# ---- roadmap 1.7: the spawn/exec staging window -----------------------------
+#
+# SPAWN_STAGE_UNSERIALISED=1 restores the pre-2026-08-18 spawn path: no lock at
+# all over the arm -> consume window on the process-wide staging (the ELF staging
+# buffer, the armed header, the staged argv). Two CPUs then interleave through
+# it, which is what roadmap 1.7 is about.
+#
+# NO SMOKE TARGET USES THIS, deliberately. Measured over 16 boots at -smp 4 with
+# SPAWN_STAGE_WIDEN=1 holding the window open: 214 entries, 0 contended, in both
+# arms -- every spawner in the tree is init or one of its children, so two of
+# them are never in the window at once. A control arm that cannot fail cannot
+# gate anything. Kept for the day a workload has two live spawners; the theft it
+# would then re-enable is REPORTED rather than executed, because do_spawn's owner
+# check refuses a foreign image.
+SPAWN_STAGE_UNSERIALISED ?= 0
+ifeq ($(SPAWN_STAGE_UNSERIALISED),1)
+CFLAGS += -DSPAWN_STAGE_UNSERIALISED
+endif
+# SPAWN_STAGE_WIDEN=1 is NOT a defect. It widens the arm -> consume window with a
+# fixed spin so the interleaving is entered on most boots instead of on a lucky
+# one, and it is set in BOTH arms when measuring -- that is what makes the pair a
+# measurement rather than two unrelated runs. Same role KSTACK_RACE_WIDEN plays
+# for [G-8]. Never ship it: it makes every spawn slower on purpose.
+SPAWN_STAGE_WIDEN ?= 0
+SPAWN_STAGE_WIDEN_SPINS ?= 12000000
+ifeq ($(SPAWN_STAGE_WIDEN),1)
+CFLAGS += -DSPAWN_STAGE_WIDEN -DSPAWN_STAGE_WIDEN_SPINS=$(SPAWN_STAGE_WIDEN_SPINS)u
+endif
+# SPAWN_OWNER_UNCHECKED=1 restores the pre-2026-08-18 consume: any task may spawn
+# whatever image is armed, whoever armed it. That is finding [G-11] -- SYS_SUDO
+# authenticates the caller and then elevates an image that need never have been
+# theirs. `make smoke-spawn-owner-control` builds it and requires the self-test
+# to FAIL.
+# SPAWN_STAGE_TRACE=1 is NOT a defect either: it reports every arrival at the
+# staging window that finds another CPU already inside it. That is the
+# reachability half of the measurement -- a serialised build with zero thefts
+# says nothing unless the window was actually entered twice. Set in BOTH arms.
+SPAWN_STAGE_TRACE ?= 0
+ifeq ($(SPAWN_STAGE_TRACE),1)
+CFLAGS += -DSPAWN_STAGE_TRACE
+endif
+SPAWN_OWNER_UNCHECKED ?= 0
+ifeq ($(SPAWN_OWNER_UNCHECKED),1)
+CFLAGS += -DSPAWN_OWNER_UNCHECKED
+endif
+# SPAWN_OWNER_SELFTEST=1 runs the deterministic [G-11] witness at boot: forge a
+# foreign owner on a legitimately staged image, require the spawn to be refused,
+# then re-arm honestly and require it to succeed. Drives `make smoke-spawn-owner`.
+SPAWN_OWNER_SELFTEST ?= 0
+ifeq ($(SPAWN_OWNER_SELFTEST),1)
+CFLAGS += -DSPAWN_OWNER_SELFTEST
+endif
+
 # KSTACK0_SHARED_PARK=1 restores the pre-2026-08-17 park target: all three
 # fault/exit fallbacks in idt.c resume the CPU on tasks[0].kernel_stack_top, ONE
 # stack shared by every CPU that takes the path. Two CPUs parked there both run
@@ -2659,10 +2712,12 @@ smoke-kstack-park-control:
 # had just built, while the core that ran the exec was still on that same frame.
 #
 # BOTH ARMS ARE MARKER ASSERTIONS, NOT EXIT STATUSES, and deliberately so: the
-# PROC_SELFTEST workload at -smp 4 still fails ~27% of boots on [G-10], which has
-# nothing to do with this property. Gating on "did the boot finish" would make
-# this pair a [G-10] detector. Gating on the marker asks only the question these
-# arms exist to ask.
+# PROC_SELFTEST workload at -smp 4 still fails 2 boots in 30 (~7%) on the rest of
+# [G-9] -- the bogus resume %rsp -- which has nothing to do with this property.
+# Gating on "did the boot finish" would make this pair a detector for that.
+# Gating on the marker asks only the question these arms exist to ask.
+# (Read "~27% of boots on [G-10]" until 2026-08-18: that rate predates [G-10]'s
+# page-table fix, and [G-10] closed that day.)
 #
 # The control arm needs MANY boots because the theft is a race: measured 5 hits
 # in 20 boots (25%/boot), against 0 in 30 for the fix. One boot would report a
@@ -2684,9 +2739,9 @@ smoke-exec-reenter:
 	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
 	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
-	: "rc is captured and deliberately NOT the assertion: [G-10] still stalls"; \
-	: "~27% of these boots, and gating on completion would make this pair a"; \
-	: "G-10 detector rather than a witness for this property. rc=$$rc"; \
+	: "rc is captured and deliberately NOT the assertion: the rest of [G-9]"; \
+	: "still stalls 2 in 30 of these boots, and gating on completion would"; \
+	: "make this pair a detector for that, not a witness. rc=$$rc"; \
 	hits=$$(grep -ca '$(EXEC_REENTER_RE)' "$$log"); \
 	if [ "$$hits" -ne 0 ]; then \
 	    echo "EXEC REENTER: FAIL - the exec hand-off was taken by the wrong CPU ($$hits/$(EXEC_REENTER_RUNS) boots)"; \
@@ -2766,6 +2821,36 @@ smoke-cr3-reclaim-control:
 	grep -a 'CR3UAF' "$$log" | head -2 | sed 's/^/  /'; \
 	rm -f "$$log"; \
 	echo "CR3 RECLAIM CONTROL: PASS - the unguarded reclaim frees an address space in use ($$hits/3 boots)"
+
+# ---- [G-11]: the staged image can only be spawned by the task that armed it
+#
+# Deterministic, single-threaded, and both directions. The self-test forges the
+# state a second task's arm leaves behind -- a legitimately staged image whose
+# recorded owner is another task -- and requires do_spawn to refuse it, then
+# re-arms honestly and requires the spawn to succeed. A gate that only checked
+# the refusal would pass on a kernel that refused every spawn.
+#
+# The control arm is the falsification: SPAWN_OWNER_UNCHECKED=1 restores the
+# pre-2026-08-18 consume and the self-test reports
+# "FAIL foreign-image-spawned pid 1" on every boot.
+.PHONY: smoke-spawn-owner
+smoke-spawn-owner:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1
+	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SPAWN_OWNER_SELFTEST: PASS' \
+		FAIL_MARKER='SPAWN_OWNER_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+.PHONY: smoke-spawn-owner-control
+smoke-spawn-owner-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 SPAWN_OWNER_UNCHECKED=1
+	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 SPAWN_OWNER_UNCHECKED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SPAWN_OWNER_SELFTEST: FAIL foreign-image-spawned' \
+		tools/smoke_test.sh boot.iso
+	@echo "SPAWN OWNER CONTROL: PASS - unchecked, a foreign staged image is spawned"
 
 .PHONY: smoke-exec-reenter-control
 smoke-exec-reenter-control:

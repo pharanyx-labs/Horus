@@ -1008,7 +1008,7 @@ jobs:
     runs-on: ubuntu-latest
     # Two clean builds and 2 x EXEC_REENTER_RUNS boots. Passing boots exit on
     # their marker in ~25s; the control arm halts as soon as it reproduces. The
-    # cost driver is [G-10], which stalls ~27% of boots to the 180s budget, so
+    # cost driver is the rest of [G-9], which stalls 2 boots in 30 to the 180s budget, so
     # this is sized well above measured rather than tightly.
     timeout-minutes: 90
     steps:
@@ -1032,6 +1032,37 @@ jobs:
       # "the workload did not happen to exec concurrently on this runner".
       - name: Restore the shared hand-off and require the theft to REPRODUCE
         run: make smoke-exec-reenter-control
+
+  smoke-spawn-owner:
+    name: A staged image is spawnable only by the task that armed it (G-11; control arm proves it)
+    runs-on: ubuntu-latest
+    # Two clean builds and two single boots. Both arms are deterministic and
+    # exit on their marker in ~25s, so this is the cheapest security gate in the
+    # file; the budget is for the builds.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The staged image was ambient state: nothing recorded which task armed
+      # it, and SYS_SUDO spawns whatever is armed AS UID 0 in a different
+      # syscall from the arm -- so a correct password could elevate another
+      # task's program. Finding G-11, property S21. The self-test forges a
+      # foreign owner, requires the refusal, then re-arms honestly and requires
+      # the spawn to succeed: a check that refuses everything is not a check.
+      - name: Require a foreign staged image to be refused (and your own accepted)
+        run: make smoke-spawn-owner
+      # The load-bearing arm. Without it, the step above is consistent with a
+      # kernel that never reached the check at all.
+      - name: Remove the owner check and require the foreign image to be SPAWNED
+        run: make smoke-spawn-owner-control
 
   smoke-kstack-park:
     name: A dying task's CPU parks on its own kernel stack (S20 park path; ADVISORY -- open finding G-9)

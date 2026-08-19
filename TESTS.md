@@ -503,8 +503,11 @@ host cores, `-smp 4`:
 0 in 30 against 5 in 20 is Fisher p ≈ 0.008. Gates: `make smoke-exec-reenter` (the wrong-CPU
 report must be **absent** over `EXEC_REENTER_RUNS` boots) and `make smoke-exec-reenter-control`
 (it must be **present** in at least one). Both assert on the marker, not on the boot's exit
-status, because the workload still fails ~27% of the time on **[G-10]** and gating on completion
-would turn this pair into a G-10 detector.
+status, because the workload still fails 2 boots in 30 (~7%) on the rest of **[G-9]** — the
+bogus resume `%rsp` — and gating on completion would turn this pair into a detector for that
+instead of a witness for this property. (This paragraph read "~27% of the time on **[G-10]**"
+until 2026-08-18: that was the rate before [G-10]'s page-table half landed, and [G-10] itself
+closed that day.)
 
 **A measurement that lied, recorded because it nearly shipped.** An earlier run of the fix
 reported **0 claim panics in 20 boots** and looked like a clean close. It was built with the
@@ -522,11 +525,15 @@ re-earns: *the arm you measure must be the arm you ship.*
   kernel half was built, which points at **[G-10]**, not at the scheduler.
 
 `smoke-kstack-park` therefore **stays advisory**. Promoting it on a partial fix would restore a
-required gate that still reddens ~27% of the time for something it does not test.
+required gate that still reddens on 2 boots in 30 (~7%) for something it does not test.
 
 ---
 
-### Open finding G-10: the spawn/exec path is process-wide singleton state, unserialised
+### Closed finding G-10: the spawn/exec path is process-wide singleton state, unserialised
+
+**Found 2026-08-17 while narrowing [G-9]; closed 2026-08-18.** The section below is kept in the
+order it happened — the lead, then the page-table half, then the rest — because how the finding
+was narrowed is the part worth reusing.
 
 **Found 2026-08-17 while narrowing [G-9]. No witness yet — this is a lead with a mechanism.**
 
@@ -589,9 +596,82 @@ would be flaky for nothing.
 on the ship config, and `make smoke-kstack-park` passes in its exact form. Still not zero, so
 that gate stays advisory.
 
-**What remains of [G-10]:** `loader_staging`, the staged argv, `g_spawn_stdio_spec` and
-`g_spawn_caller` are all still process-wide and unserialised, and the authority consequence — a
-child's stdio wired from the wrong parent's cspace — is untouched by this fix.
+#### The rest of it, 2026-08-18: one half deleted, one half serialised
+
+**The authority half is gone rather than guarded.** `g_spawn_caller` and `g_spawn_stdio_spec`
+are parameters now — `do_spawn_stdio(spec)` → `do_spawn_inner(caller, spec)` →
+`wire_child_stdio(child, caller, spec)`. There is no window left in which a second CPU can
+redirect the read, so "the child inherited a pipe capability from a task that never spawned it"
+is unexpressible rather than unlikely. No control arm is offered for this, deliberately: the
+defect was the *existence* of the global, and a flag that put it back would be re-introducing
+the state rather than exercising a check. What is checked instead is the stronger property that
+replaced it — the parent whose cspace is read is the task that armed the image being loaded,
+which is [G-11]'s ownership check, and that has a control arm.
+
+**The staging window is serialised.** `spawn_stage_acquire()` / `spawn_stage_release()` bracket
+every arm → consume region: `h_spawn`, `h_spawn_image`, `h_exec_named`, `h_exec_image`, both
+`kshell.c` launchers, `h_sudo`'s consume, and all ten self-test sites that stage by hand.
+
+**And the measurement says the race is not reachable in any workload this tree can boot.** That
+is stated rather than glossed, because a serialised build with zero incidents proves nothing
+unless the window was entered twice at all. `SPAWN_STAGE_TRACE=1` reports every entry to the
+staging window and every arrival that finds another CPU inside one; `SPAWN_STAGE_WIDEN=1` holds
+each of the first 24 windows open for 12M `pause` iterations (verified in the emitted code, not
+assumed from the source) to make an overlap likely if one is possible:
+
+| Arm | Boots | Completed | Windows entered | Contended arrivals | Thefts |
+|---|---|---|---|---|---|
+| serialised, `SPAWN_STAGE_WIDEN=1 SPAWN_STAGE_TRACE=1` | 8 | 8 | 112 | **0** | 0 |
+| `+ SPAWN_STAGE_UNSERIALISED=1` (control) | 8 | 7 | 102 | **0** | 0 |
+
+The trace is what explained it. The 14 windows per boot come from three tasks — the in-kernel
+driver as task 0, `init`, and the proctest driver — on three different CPUs, and they never
+overlap because **every spawner in the tree today is `init` or one of `init`'s children**:
+`init` spawns its servers sequentially, and the driver that spawns everything else is itself one
+of those children, so it cannot be running while `init` is mid-spawn.
+
+**So no smoke target claims a rate for this, and none is added.** A probabilistic pair whose
+control arm cannot fail is a test that cannot fail. `SPAWN_STAGE_UNSERIALISED=1` stays in the
+Makefile so the arm exists the moment a workload with two live spawners does. What is gated is
+the deterministic property that makes a residual interleaving safe rather than exploitable:
+`make smoke-spawn-owner`, below.
+
+---
+
+### Closed finding G-11: the armed program image was ambient state
+
+**Found and closed 2026-08-18, while serialising [G-10]'s staging window.** Nothing recorded
+which task armed the staged image, and one syscall turns that from an oddity into a privilege
+boundary. `SYS_SUDO` re-authenticates the caller and then spawns whatever image is armed **as
+uid 0**, endowing it with `CAP_FRAME`, `CAP_USER` and a `CAP_TCB` — and the arm is a *different
+syscall* from the consume:
+
+1. task A (any task holding the spawn capability) arms its own image;
+2. task B authenticates correctly with `SYS_SUDO`;
+3. B's sudo spawns **A's** program at uid 0.
+
+Neither task confuses a rights check. The authority came from the pairing, which is why it is
+recorded as its own adversary (`SECURITY.md` **A1c**) rather than folded into A1. It is a
+G-number and not a C-number only because nothing in userspace calls `sudo` today.
+
+**Fix.** `loader_arm_commit()` is the sole way to publish an armed image and records the arming
+task; `loader_disarm()` clears both together. `do_spawn` refuses an image owned by another task,
+`h_sudo` refuses before spending the elevation and audits the refusal rather than logging a
+failure. Fail closed: an image with no recorded owner cannot be consumed at all, so forgetting
+to stamp one is a broken spawn, not a silent ambient one.
+
+**Witness, falsified both ways** (`make smoke-spawn-owner`, single boot, deterministic):
+
+| Arm | Marker | Result |
+|---|---|---|
+| default | `SPAWN_OWNER_SELFTEST: PASS refused a foreign staged image, spawned its own` | present, 3 boots in 3 |
+| `SPAWN_OWNER_UNCHECKED=1` | `SPAWN_OWNER_SELFTEST: FAIL foreign-image-spawned pid 1` | present, 3 boots in 3 |
+
+The self-test asserts **both** directions in one run: it forges the state a second task's arm
+leaves behind (a legitimately staged image whose recorded owner is another task) and requires
+the refusal, then re-arms honestly and requires the spawn to succeed. A gate that only checked
+the refusal would pass on a kernel that refused every spawn — which is the failure mode a
+fail-closed change is most likely to have.
 
 ---
 
@@ -1966,7 +2046,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-resume-guard-ist-control` | Control arm. `RESUME_GUARD_BSS_ONLY=1` restores the bound the ceiling first shipped with — `[__bss_start, __bss_end)` alone, on the premise that every 64-bit kernel stack is a `.bss` array. The three IST stacks are in `.data`; IST1 serves `#DF`/`#GP`/`#PF`; the guard halts on a rejection. So that build dies on the first ring-3 page fault with `bogus resume rsp=0xffffffff801a9f50` — an address `0xf50` into `ist1_stack_bottom`'s page. Requires that fault to be **present**, via `smoke_test.sh`'s `EXPECT_FAULT` (`kfault_test.sh` cannot serve here: it anchors its verdict after the console handover, and this build dies long before a login prompt). |
 | `smoke-cr3-reclaim` | **[G-10]**, page-table half. A task slot's page tables must not be recycled while any CPU still has them loaded in CR3. Boots the `PROC_SELFTEST` workload at `-smp 4` `CR3_RECLAIM_RUNS` times (default 20) and requires no supervisor write fault at `0xFEE000B0` — the LAPIC EOI register, which lives in each task's own `pml4[0]` identity map and is therefore the first thing to disappear when a leaf PTE is recycled. Measured 0 in 30, against 6 in 30 before the fix. Asserts on the marker, not on the boot's exit status: the rest of **[G-9]** still fails ~7% of these boots and this gate is not about that. |
 | `smoke-cr3-reclaim-control` | Control arm. `CR3_RECLAIM_UNGUARDED=1` restores the unconditional free; the free-in-use report must come back. Only 3 boots are needed because it is deterministic — measured 20 in 20 — which is also why the pair asserts different markers: the free-in-use happens every boot while the fault it causes lands on ~20%, so gating this arm on the fault would be flaky for no gain. |
-| `smoke-exec-reenter` | **[G-9]**, exec component. The exec re-entry hand-off must be consumed by the CPU that armed it. Boots the `PROC_SELFTEST` workload at `-smp 4` `EXEC_REENTER_RUNS` times (default 20) and requires the `SCHED_INVARIANTS` wrong-CPU report to be **absent** from every boot; measured 0 in 30. Asserts on the marker, never on the boot's exit status — the workload still fails ~27% of the time on **[G-10]**, and gating on completion would make this a G-10 detector rather than a witness for this property. |
+| `smoke-spawn-owner` | **[G-11]**, property **S21**. A staged program image is spawnable only by the task that armed it. One boot with `SPAWN_OWNER_SELFTEST=1`: the self-test forges a foreign owner on a legitimately staged image and requires `do_spawn` to refuse it, then re-arms honestly and requires the spawn to succeed. Deterministic — the concurrent half of roadmap 1.7 is not reachable in any bootable workload (see the G-10 section), and this gate is about the rule rather than the race. Control arm `SPAWN_OWNER_UNCHECKED=1` (`make smoke-spawn-owner-control`) removes the refusal and spawns the foreign image on every boot. |
+| `smoke-exec-reenter` | **[G-9]**, exec component. The exec re-entry hand-off must be consumed by the CPU that armed it. Boots the `PROC_SELFTEST` workload at `-smp 4` `EXEC_REENTER_RUNS` times (default 20) and requires the `SCHED_INVARIANTS` wrong-CPU report to be **absent** from every boot; measured 0 in 30. Asserts on the marker, never on the boot's exit status — the workload still fails 2 boots in 30 (~7%) on the rest of **[G-9]**, and gating on completion would make this a detector for that rather than a witness for this property. |
 | `smoke-exec-reenter-control` | Control arm. `EXEC_REENTER_GLOBAL=1` restores the single shared `g_exec_reenter_task`; the wrong-CPU report must come back in at least one boot. Needs many boots because the theft is a race — measured 5 in 20 (~25%/boot), so a single-boot arm would report a false green three times in four. This arm carries reachability for the pair: if the theft stops reproducing with the global restored, `smoke-exec-reenter`'s green proves nothing either. |
 | `smoke-kstack-race-control` | Control arm, and the load-bearing one. Same widened window, `KSTACK_RELEASE_EARLY=1` restoring the pre-fix release site. The marker must be **present** *and* the session must not report PASS — a build that reproduced the race and still reported success would mean the harness had stopped reading the wire. Without this arm, `smoke-kstack-race` proves only that a kernel with a spin in it still boots. |
 
@@ -2047,13 +2128,15 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **70 required contexts and 4 reasoned exemptions** — `fuzz` (a fixed
+The intended set is **73 required contexts and 4 reasoned exemptions** — read off
+`tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
 promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]** was closed on
-2026-08-17, and it was promoted in the same commit. Both remaining exemptions are properties of
-the test itself rather than standing exemptions for an open defect. The promotions are backed
+2026-08-17, and it was promoted in the same commit. Three of the four are properties of the test
+itself; `smoke-kstack-park` is the one exemption that stands for an **open defect**, and it stays
+until the rest of **[G-9]** is closed rather than merely narrowed. The promotions are backed
 by measurement, not optimism: across 18 CI runs sampled on 2026-08-16, **64 of 66 jobs had zero
 failures over 1152 job-executions**; the only two that ever failed are `security` (2/18, both
 deliberate, during #154) and `smoke-session-smp-soak` (1/18, which was [G-8] at its documented

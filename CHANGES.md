@@ -8,6 +8,100 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the armed program image belonged to nobody, and `sudo` would elevate it anyway (**[G-11]**)
+
+A program image is staged in one process-wide buffer, and until now nothing recorded **which
+task armed it**. `SYS_SUDO` re-authenticates the caller and then spawns whatever image is armed
+**as uid 0**, endowing it with `CAP_FRAME`, `CAP_USER` and a `CAP_TCB` — and the arm is a
+*different syscall* from the consume:
+
+1. task A (any task holding the spawn capability) arms its own image;
+2. task B authenticates correctly with `SYS_SUDO`;
+3. B's successful sudo spawns **A's** program at uid 0.
+
+Neither task fails a rights check. The authority came from the pairing — a confused deputy
+reachable from ring 3, and the same shape as **[G-2]**: state a caller is trusted for *having*
+rather than for holding a capability to. It is a G-number and not a C-number for one reason:
+nothing in userspace calls `sudo` today, so the path is latent. Latency is not soundness.
+
+`loader_arm_commit()` is now the only way to publish an armed image and records the arming task
+with it; `loader_disarm()` clears both together, so a stale owner cannot authorise a later
+image. `do_spawn` refuses an image owned by another task and `h_sudo` refuses **before** spending
+the elevation, auditing the refusal rather than logging a failure. Fail closed: an image with no
+recorded owner cannot be consumed at all, so forgetting to stamp one is a broken spawn rather
+than a silently ambient one.
+
+**Falsified both ways, deterministically.** `make smoke-spawn-owner` forges the state a second
+task's arm leaves behind — a legitimately staged image whose recorded owner is another task —
+requires the spawn to be refused, then re-arms honestly and requires it to succeed, because a
+check that refuses everything is not a check. `SPAWN_OWNER_UNCHECKED=1`
+(`make smoke-spawn-owner-control`) removes the refusal and reports
+`SPAWN_OWNER_SELFTEST: FAIL foreign-image-spawned pid 1` on **3 boots in 3**; the fixed arm
+passes 3 in 3. New required CI job `smoke-spawn-owner`; new property **S21** and adversary
+**A1c** in `SECURITY.md`.
+
+### Fixed — the rest of the spawn/exec singletons, closing **[G-10]**
+
+The page-table half closed on 2026-08-17. The rest closed here, in the two different ways they
+needed:
+
+- **The authority half was deleted, not guarded.** `g_spawn_caller` and `g_spawn_stdio_spec`
+  were file-scope globals written at `do_spawn` entry and read hundreds of KiB of ELF copying
+  later by `wire_child_stdio`, so a second CPU entering `do_spawn` in that window redirected the
+  read to *its* cspace and the child inherited a pipe capability from a task that never spawned
+  it. They are parameters now (`do_spawn_stdio` → `do_spawn_inner` → `wire_child_stdio`). No
+  control arm is offered, deliberately: the defect was the *existence* of the global, and a flag
+  restoring it would be re-introducing the state rather than exercising a check. The property is
+  instead carried by [G-11]'s ownership check, which proves the parent whose cspace is read is
+  the task that armed the image.
+- **The staging window is serialised.** `spawn_stage_acquire()` / `spawn_stage_release()`
+  bracket every arm → consume region — the four syscall entry points, both `kshell.c` launchers,
+  `h_sudo`'s consume and all ten self-test staging sites — taken *before* the arm, because an
+  arm landing inside another CPU's window is the interleaving. Per-CPU was right for the exec
+  hand-off and wrong here: a staging buffer per core is `LOADER_STAGING_BYTES` of real memory for
+  state that is logically per-*spawn*. It is the outermost lock in the kernel, and costs no
+  interrupt latency — `int 0x80` is an interrupt gate, so the spawn already ran with `IF=0`.
+
+**The measurement is a negative result, and it is reported as one.** `SPAWN_STAGE_TRACE=1`
+reports every entry to the staging window and every arrival that finds another CPU inside;
+`SPAWN_STAGE_WIDEN=1` holds each of the first 24 windows open for 12M `pause` iterations
+(verified in the emitted code). Across **16 boots at `-smp 4`** the window was entered **214
+times and never once contended**, in either arm. The reason is structural, and the trace is what
+showed it: the 14 windows per boot come from three tasks that cannot overlap, because every
+spawner in the tree today is `init` or one of `init`'s children.
+
+**So no gate claims a rate here.** A probabilistic pair whose control arm cannot fail is exactly
+the test-that-cannot-fail this repository refuses to add. `SPAWN_STAGE_UNSERIALISED=1` is kept
+so the arm exists the day a workload with two live spawners does.
+
+**[G-9] is unaffected and stays open** — its residue is the bogus resume `%rsp`, 2 boots in 30,
+and `smoke-kstack-park` stays advisory for it.
+
+### Changed — the two roadmap-1.1 workarounds in `untyped.c` were collected, seven days late
+
+`spin_unlock()` stopped asserting an unconditional `sti` on 2026-08-11 (**[C-3.1]**, roadmap
+1.1). Two workarounds written against that defect stayed in `untyped.c`, and its locking note
+went on describing C-3.1 as *"the defect roadmap 1.1 has to fix"* for a week afterwards — a
+comment naming a closed finding as open is how [G-2] survived nineteen days.
+
+Both are re-derived and removed:
+
+- the pushfq/popfq **IF-transparent bracket** around every critical section is now a no-op by
+  construction (`pushfq` → `spin_lock`'s `cli` + saved IF → `spin_unlock`'s restore → `popfq`
+  restores what was captured), and removing it changes no `IRQ_POLICY_AUDIT` count either,
+  because those counters increment inside `spin_unlock`, whose call sites are unchanged;
+- the **deferral of locking past boot** (`untyped_arm_locking`) existed only because that `sti`
+  would have enabled interrupts in the boot window. `this_cpu()` — the one thing `spin_lock`
+  needs early — is valid from the first C statement of `kernel_main`, because `setup_tss64`
+  does `ltr $0x38` immediately before calling it, so the STR fast path returns 0 without
+  touching the LAPIC. The tables are now locked unconditionally.
+
+Smoke-tested by default **and** under `IRQ_LEGACY_GLOBAL_LOCK=1` — **3 boots in 3** to the
+ring-3 login prompt in each. The legacy arm is the one that could plausibly have broken: with the
+deferral gone it takes a lock in the boot window whose release, in that build, still fires an
+unconditional `sti`. A control arm that no longer boots is a control arm that no longer measures
+anything.
+
 ### Fixed — two job names were too long to be required, which is why they could not be promoted
 
 `smoke-cr3-reclaim` (104 chars) and `smoke-exec-reenter` (105) were the first two jobs in the

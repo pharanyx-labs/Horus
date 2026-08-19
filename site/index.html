@@ -1590,11 +1590,11 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               witness.
             </p>
             <p>
-              Since 2026-08-16 the decision is checked in. Every job in both workflows must be
-              listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
+              Since 2026-08-16 the decision is checked in. Every job in all three workflows must
+              be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 68 gating and 3 exempted, and the promotions are backed by
+              intended set is 73 gating and 4 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -1727,16 +1727,16 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               above.
               Everything spawning or exec'ing a program needs while it is in flight — the buffer
               the executable is staged in, the argument vector, the standard-I/O wiring, the
-              identity of the spawning task — is a single process-wide variable, and nothing
-              serialises two CPUs through any of it. The exec note above was one instance of that
-              pattern; the rest are untouched.
+              identity of the spawning task — was a single process-wide variable, and nothing
+              serialised two CPUs through any of it. The exec note above was one instance of that
+              pattern; the rest are dealt with below.
             </p>
             <p>
-              The correctness consequence is visible already: an address space can become
-              reachable before its kernel half has been built, which is what a supervisor
+              The correctness consequence was visible already: an address space could become
+              reachable before its kernel half had been built, which is what a supervisor
               write-fault in the interrupt-acknowledge path looks like. The consequence that
-              matters more is about authority — the spawning task's identity is written at the
-              start of a spawn and read much later, so a child's standard I/O can be wired from
+              mattered more was about authority — the spawning task's identity was written at the
+              start of a spawn and read much later, so a child's standard I/O could be wired from
               <em>the wrong parent's</em> capability space. That is authority inherited from a
               task that never spawned it, which is precisely what this kernel exists to make
               impossible.

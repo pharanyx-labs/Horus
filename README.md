@@ -106,10 +106,10 @@ a syscall number without adding its table entry.
 **Verify, don't assert.** Claims are backed by artifacts. The build is verified reproducible
 by building twice and diffing. Boot-module integrity is tested by *corrupting a module* and
 asserting rejection. Measured boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 69 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 72 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 71 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 73 of its 77 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
@@ -305,7 +305,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 66 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 72 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

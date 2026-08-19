@@ -8,6 +8,54 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Documentation — one finding carried two statuses, and every CI count had gone stale
+
+No behaviour changed. This is the reconciliation pass §3 of `CLAUDE.md` requires, run against
+the tree as it stands after the [G-10]/[G-11] work, and every number below was re-derived from
+the tool or off the wire rather than copied forward.
+
+**[G-10] was open and closed at the same time.** `docs/ARCHITECTURE.md` §14 headed the entry
+*"Open, page-table half fixed 2026-08-17"* while its own body three paragraphs down, plus
+`README.md`, `SECURITY.md`, `docs/ROADMAP.md`, `docs/LIMITATIONS.md` §5.2e, `TESTS.md` and this
+file, all said closed 2026-08-18. The header is now the status the code supports. `site/index.html`
+carried the same contradiction in a softer form: its G-10 card was headed *"closed 2026-08-18"*
+and then described the singletons in the present tense, as state that still exists.
+
+**The CI counts were stale in five places and current in three**, which is the harder failure to
+notice. Live, from `tools/check_ci_gating.py --check-ruleset`: **74 jobs across three workflows,
+77 status-check contexts, 73 required, 4 reasoned exemptions**, and the live ruleset matches.
+Corrected: `README.md` (69 jobs → 72, "66 jobs" → 72, 71 contexts → 73 of 77), `TESTS.md`
+(69 jobs → 72, 71/74 → 74/77), `docs/LIMITATIONS.md` §5.2 (69 → 72, 71 → 74, 74 → 77 contexts,
+70 required → 73) and `site/index.html` (68 gating and 3 exempted → 73 and 4, "both workflows"
+→ three). `docs/ROADMAP.md` and `TESTS.md`'s own gating section were already right, which is
+how the divergence was visible at all.
+
+**`smoke-captest` says 100 checks on the wire**, and three documents disagreed about it.
+`docs/BUILDING.md` and `tests/README.md` still said 29 — the count from before the
+audit-driven expansions — where `SECURITY.md`, `TESTS.md` and `site/index.html` all said 100. Read off a live
+`make smoke-captest` run: `CAPTEST: PASS 100 checks`. The BUILDING.md row now carries the
+instruction to read it off the wire rather than the row. `SECURITY.md`'s S18 row says *10*
+checks and that is not a contradiction — it is section 4b of `userspace/captest.c`, which has
+exactly ten, counted rather than assumed.
+
+**Two claims in `docs/BUILDING.md` were simply false**, both known and both flagged in
+`CLAUDE.md` §6:
+
+- `make reproducible-build` was documented as "build twice from clean and diff `kernel.elf`".
+  It builds **once**, with `SOURCE_DATE_EPOCH` pinned, and records `.build.sha`. The
+  double-build-and-diff exists only in the `reproducible` CI job. A reader following the comment
+  would have taken a hash compared against nothing for a reproducibility check.
+  `docs/ROADMAP.md` §3.1 repeated it and is corrected with it.
+- The supply-chain paragraph said the repository "currently also *commits* a prebuilt
+  `kernel.elf`" and pointed at `docs/LIMITATIONS.md` §5.6. Neither half held: `kernel.elf` and
+  `boot.iso` are gitignored (`.gitignore:10-11`), `git ls-files` tracks no build artefact, and
+  §5.6 is the mislocated-governance-files finding — the outbound-provenance gap it meant to name
+  is **[I-9]**, §5.3. `docs/LIMITATIONS.md` had been asserting the opposite ("no `kernel.elf`,
+  no `boot.iso`, no object files") for as long as BUILDING.md asserted this.
+
+The `CLAUDE.md` known-trap entry for the reproducible-build comment is struck through, since it
+is now fixed; its line number had drifted, so it names the section instead.
+
 ### Fixed — the armed program image belonged to nobody, and `sudo` would elevate it anyway (**[G-11]**)
 
 A program image is staged in one process-wide buffer, and until now nothing recorded **which

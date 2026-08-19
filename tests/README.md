@@ -24,7 +24,7 @@ security properties are elsewhere:
 | Kani proofs (revocation subtree) | `rust/src/` | `cargo kani` |
 | FFI boundary fuzzing | `rust/fuzz/` | `cargo +nightly fuzz run <target>` |
 | Kernel integration self-tests | `src/kernel/selftest.c`, `userspace/` | `make smoke-<name>` |
-| Capability conformance (29 checks) | `userspace/captest.c` | `make smoke-captest` |
+| Capability conformance (100 checks — the suite prints its own count as `CAPTEST: PASS <n> checks`; read it from there) | `userspace/captest.c` | `make smoke-captest` |
 | Scripted shell sessions | `tools/*_session.py` | `make smoke-session` |
 
 See [`../TESTS.md`](../TESTS.md) for the full catalogue and what each test proves.

@@ -189,7 +189,7 @@ Individual self-tests are `make smoke-<name>`. A few of the important ones:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (29 checks) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (100 checks — read the count off `CAPTEST: PASS <n> checks` on the wire, not from here) |
 | `smoke-wx` | No kernel page is both writable and executable (sweeps every leaf PTE) |
 | `smoke-cpu` | SMEP and SMAP are actually set in CR4 |
 | `smoke-smp` | APs run scheduled tasks; TLB shootdown completes |
@@ -217,18 +217,34 @@ than one.
 ## Reproducible builds
 
 ```bash
-make reproducible-build   # build twice from clean and diff kernel.elf
+make reproducible-build   # ONE clean SOURCE_DATE_EPOCH build; records .build.sha
 make verify-build         # alias
 ```
+
+**The target does not build twice, and its name suggests otherwise.** It removes
+`kernel.elf`/`boot.iso`, builds once with `SOURCE_DATE_EPOCH` pinned, and records the hashes
+in `.build.sha`. The double-build-and-diff that actually proves reproducibility lives only in
+the `reproducible` CI job, which runs the target twice and diffs the two `kernel.elf` hashes.
+Locally, run it twice and diff yourself — a single invocation records a hash and compares it
+to nothing. (This paragraph replaces a comment that claimed the target built twice; the
+Makefile is the truth.)
 
 This is a required CI check. Reproducibility comes from `-frandom-seed`,
 `-fdebug-prefix-map`, `--build-id=none`, and avoiding any timestamp or path leakage into the
 image.
 
 **A reproducible build is a supply-chain control, not a nicety:** it is what lets a third
-party confirm that a binary corresponds to the source beside it. Note that the repository
-currently also *commits* a prebuilt `kernel.elf`, which undercuts that — see
-`docs/LIMITATIONS.md` §5.6. Always rebuild rather than trusting the committed artifact.
+party confirm that a binary corresponds to the source beside it. What is still missing is the
+outbound half — no tags, no releases, no signed artifacts, no SLSA provenance — so a third
+party cannot tie a `boot.iso` they obtained to this repository's CI (**[I-9]**,
+`docs/LIMITATIONS.md` §5.3).
+
+This paragraph previously said the repository "currently also *commits* a prebuilt
+`kernel.elf`" and pointed at §5.6. Neither half was true: `kernel.elf` and `boot.iso` are
+gitignored (`.gitignore:10-11`), `git ls-files` tracks no build artefact, and §5.6 is the
+mislocated-governance-files finding. Recorded rather than silently deleted, because
+`docs/LIMITATIONS.md` had been asserting the opposite — "no `kernel.elf`, no `boot.iso`, no
+object files" — for as long as this paragraph asserted it.
 
 ---
 

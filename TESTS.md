@@ -2082,10 +2082,10 @@ when `print()` still drives the UART; "the report appeared **after** the login p
 
 ## CI
 
-`.github/workflows/ci.yml` defines **69** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **72** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **71** jobs, **74** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **74** jobs, **77** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are

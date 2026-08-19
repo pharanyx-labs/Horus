@@ -759,7 +759,8 @@ server, and a framebuffer server. Each holds only the `CAP_IO_DEVICE` for its ow
 
 ### 3.1 ✅ Reproducible builds
 
-`make reproducible-build` builds twice and diffs `kernel.elf`; gated in CI.
+`make reproducible-build` records one clean `SOURCE_DATE_EPOCH` build; the `reproducible` CI
+job runs it twice and diffs the `kernel.elf` hashes. Gated in CI.
 
 ### 3.2 ✅ Measured boot and sealed volume key
 

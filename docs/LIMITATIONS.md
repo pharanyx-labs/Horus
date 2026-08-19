@@ -556,8 +556,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **69** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **71** across the three, producing **74** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **72** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **74** across the three, producing **77** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -588,7 +588,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **70 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **73 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands
@@ -621,7 +621,7 @@ it — the two could diverge through a change in the GitHub UI with nothing in C
 `.github/workflows/ruleset-audit.yml` now runs `--check-ruleset` daily as a **GitHub App scoped
 to this repository with `Administration: read` and nothing else**: the token is minted per run,
 expires within the hour, and cannot modify the ruleset it reads. Its log states the comparison
-outcome explicitly (`live ruleset 19007209 : 71 required contexts, matches`, or `DIVERGED`, or
+outcome explicitly (`live ruleset 19007209 : <n> required contexts, matches`, or `DIVERGED`, or
 `NOT READ`), so a green run is self-evidencing rather than merely silent — the first live run
 could only be shown to have read anything by falsifying it afterwards with a bad token.
 

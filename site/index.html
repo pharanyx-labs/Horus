@@ -648,7 +648,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
       It is a real system, not a paper design: it boots on x86-64 hardware and under QEMU,
       drops to an unprivileged shell, and runs ordinary C programs including GNU coreutils
       and the Tiny C Compiler — on a kernel whose filesystem and console driver are
-      themselves unprivileged programs. The build is byte-for-byte reproducible, the boot
+      themselves unprivileged programs. The kernel image is byte-for-byte reproducible, the boot
       chain is measured into a TPM, and the disk encryption key is sealed against those
       measurements.
     </p>
@@ -1356,7 +1356,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 <span class="p">$</span> make smoke-captest         <span class="c"># 100 capability checks</span>
 <span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
 <span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
-<span class="p">$</span> make reproducible-build    <span class="c"># build twice, diff</span></pre>
+<span class="p">$</span> make reproducible-build    <span class="c"># <span class="x">run twice, diff the record</span></span></pre>
           </div>
         </div>
 
@@ -1414,7 +1414,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">newlib libc, shell pipelines over in-kernel pipes, eleven coreutils, TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Programs and man pages loaded from the filesystem as boot modules</th><td class="t-note">smoke-modules</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Forward-secure audit log — history before a compromise cannot be rewritten</th><td class="t-note">cargo test</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Reproducible builds</strong> — byte-for-byte deterministic</th><td class="t-note">required CI check</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Reproducible builds</strong> — <code>kernel.elf</code> byte-for-byte deterministic; the ISO is not, and the reason is grub's, not ours</th><td class="t-note">required CI check</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot interrupt policy recorded and gated at five named milestones</th><td class="t-note">smoke-irq-policy</td></tr>
 
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">IPC receive — queues and reply capabilities landed, but receive still polls an empty queue instead of blocking</th><td class="t-note">roadmap 1.3</td></tr>
@@ -1590,11 +1590,11 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               witness.
             </p>
             <p>
-              Since 2026-08-16 the decision is checked in. Every job in both workflows must be
-              listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
+              Since 2026-08-16 the decision is checked in. Every job in all three workflows must
+              be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 68 gating and 3 exempted, and the promotions are backed by
+              intended set is 73 gating and 4 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -1727,16 +1727,16 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               above.
               Everything spawning or exec'ing a program needs while it is in flight — the buffer
               the executable is staged in, the argument vector, the standard-I/O wiring, the
-              identity of the spawning task — is a single process-wide variable, and nothing
-              serialises two CPUs through any of it. The exec note above was one instance of that
-              pattern; the rest are untouched.
+              identity of the spawning task — was a single process-wide variable, and nothing
+              serialised two CPUs through any of it. The exec note above was one instance of that
+              pattern; the rest are dealt with below.
             </p>
             <p>
-              The correctness consequence is visible already: an address space can become
-              reachable before its kernel half has been built, which is what a supervisor
+              The correctness consequence was visible already: an address space could become
+              reachable before its kernel half had been built, which is what a supervisor
               write-fault in the interrupt-acknowledge path looks like. The consequence that
-              matters more is about authority — the spawning task's identity is written at the
-              start of a spawn and read much later, so a child's standard I/O can be wired from
+              mattered more was about authority — the spawning task's identity was written at the
+              start of a spawn and read much later, so a child's standard I/O could be wired from
               <em>the wrong parent's</em> capability space. That is authority inherited from a
               task that never spawned it, which is precisely what this kernel exists to make
               impossible.
@@ -1838,6 +1838,33 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               inheritance: the kernel records that a task is waiting on an endpoint, which is the
               prerequisite, but nothing propagates priority along that edge, and there are no task
               priorities to propagate yet.
+            </p>
+          </li>
+          <li>
+            <h3><span class="id">iso</span>The ISO does not rebuild to the same bytes</h3>
+            <p>
+              <strong>Found 2026-08-19</strong>, by fixing the step that had been hiding it. The
+              kernel image is byte-for-byte reproducible and gated on every merge. The ISO — the
+              thing anyone would actually download — is not, and the cause is not this project's
+              code: <code>grub-mkrescue</code> stamps a marker named for the wall-clock second
+              into every image it builds, and embeds that identifier in the three EFI loaders it
+              generates. Extract two ISOs of one build and diff them and every file this project
+              authors is identical; only those four grub-generated objects differ.
+            </p>
+            <p>
+              It went unseen because the step that recorded the build's hashes could not fail.
+              It hashed two artifacts over a build that made only one, discarded the error naming
+              the missing file, discarded the exit status, and announced success — so the record
+              had always held a single line and the ISO had never been compared to anything. That
+              step now refuses an incomplete build and writes nothing when it refuses, with the
+              old behaviour kept as a switch that must reproduce the failure on demand.
+            </p>
+            <p>
+              <strong>The first measurement of this was wrong, in the reassuring direction.</strong>
+              Two ISOs built back to back came out identical, which read as proof of
+              reproducibility. They matched because both builds landed inside the same wall-clock
+              second. Repeat the pair across a second boundary and they differ. A measurement fast
+              enough to be convenient was fast enough to be wrong.
             </p>
           </li>
           <li>

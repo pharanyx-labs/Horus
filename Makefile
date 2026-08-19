@@ -1075,9 +1075,15 @@ clean: userspace-clean
 clean-rust:
 	rm -rf rust/target
 
+# A bare ISO with no boot modules -- `boot.iso` above is the one that boots a
+# usable system, and the one `make run`/`make smoke` use. The grub-mkrescue
+# line here used to end `2>/dev/null || true`, so `make iso` announced success
+# and left no horus.iso when the tool was missing. Same defect class as the
+# build-hash recording step (see reproducible-build below): a step that cannot
+# fail. It now reports like boot.iso's does.
 iso: kernel.elf
 	@mkdir -p iso/boot/grub && cp kernel.elf iso/boot/ && cp grub.cfg iso/boot/grub/grub.cfg
-	@grub-mkrescue -o horus.iso iso 2>/dev/null || true
+	@grub-mkrescue -o horus.iso iso 2>&1 || (echo "grub-mkrescue failed (install grub-pc-bin xorriso)" && exit 1)
 
 # Userspace is built position-independent (-fPIE): the shipped binaries are
 # linked as static-PIE ELFs (ET_DYN) and loaded by the kernel at a randomized
@@ -2978,15 +2984,78 @@ smoke:
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso
 
+# ---- reproducible builds -------------------------------------------------
+#
+# The artifacts a reproducible build must cover. boot.iso is on this list
+# because it is the artifact a third party actually obtains; until 2026-08-19
+# the recording step silently settled for kernel.elf alone (see
+# tools/record_build_sha.sh for how three mechanisms conspired to keep that
+# quiet, and TESTS.md for the gate that now refuses it).
+REPRO_ARTIFACTS := kernel.elf boot.iso
+
+# The epoch is pinned rather than taken from the environment: a build whose
+# timestamps depend on when it ran cannot be compared to one that ran later,
+# which is the whole exercise.
+REPRO_EPOCH := 1609459200
+
+ifeq ($(REPRO_SHA_UNCHECKED),1)
+# CONTROL ARM -- restores the pre-2026-08-19 behaviour, and it takes BOTH
+# halves to reproduce the defect. Recording with a swallowed status is harmless
+# while every artifact exists; what made it silent is that the goal list did not
+# build boot.iso, so the sha256sum it hid was always a failing one. Restore only
+# the `|| true` and the arm passes for the wrong reason.
+REPRO_GOALS  := all
+REPRO_RECORD := sha256sum $(REPRO_ARTIFACTS) > .build.sha 2>/dev/null || true
+else
+REPRO_GOALS  := all boot.iso
+REPRO_RECORD := $(CURDIR)/tools/record_build_sha.sh $(REPRO_ARTIFACTS)
+endif
+
 .PHONY: reproducible-build verify-build
 reproducible-build:
-	@rm -f kernel.elf boot.iso
-	@SOURCE_DATE_EPOCH=1609459200 $(MAKE) --no-print-directory clean all
-	@sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
-	@echo "Reproducible build recorded."
+	@rm -f $(REPRO_ARTIFACTS) .build.sha
+# `clean` is a separate invocation from the build goals on purpose: as one
+# goal list under -j they are free to run concurrently, and a clean racing a
+# compile is a build that reports whatever it happens to finish with.
+	@SOURCE_DATE_EPOCH=$(REPRO_EPOCH) $(MAKE) --no-print-directory clean
+	@SOURCE_DATE_EPOCH=$(REPRO_EPOCH) $(MAKE) --no-print-directory $(REPRO_GOALS)
+	@$(REPRO_RECORD)
+	@echo "Reproducible build recorded: $(REPRO_ARTIFACTS)"
 
 verify-build: reproducible-build
 	@echo "Verify complete."
+
+# The gate on the recording step itself. Host-side and sub-second: it exercises
+# $(REPRO_RECORD) in the exact form `reproducible-build` invokes it, against a
+# scratch directory rather than a real build, because what is under test is the
+# step's behaviour when an artifact is absent -- not the compiler.
+#
+# Both directions, deliberately. An incomplete build must be refused AND a
+# complete one must be recorded: a recording step that refused everything would
+# pass a one-directional test while making the target permanently red.
+.PHONY: smoke-repro-sha
+smoke-repro-sha:
+	@rm -rf .repro-sha-test && mkdir -p .repro-sha-test
+	@: > .repro-sha-test/kernel.elf
+	@cd .repro-sha-test && if $(REPRO_RECORD) >record.log 2>&1; then 	    echo "REPRO_SHA: FAIL recorded-a-build-missing-$(word 2,$(REPRO_ARTIFACTS))"; 	    exit 1; 	 elif [ -e .build.sha ]; then 	    echo "REPRO_SHA: FAIL partial-record-left-behind"; 	    exit 1; 	 else 	    echo "REPRO_SHA: PASS refused an incomplete build, wrote nothing"; 	 fi
+	@: > .repro-sha-test/boot.iso
+	@cd .repro-sha-test && if $(REPRO_RECORD) >>record.log 2>&1; then 	    n=$$(wc -l < .build.sha); 	    if [ "$$n" -ne $(words $(REPRO_ARTIFACTS)) ]; then 	        echo "REPRO_SHA: FAIL recorded $$n of $(words $(REPRO_ARTIFACTS)) artifacts"; exit 1; 	    fi; 	    for a in $(REPRO_ARTIFACTS); do 	        grep -q " $$a$$" .build.sha || { echo "REPRO_SHA: FAIL $$a not recorded"; exit 1; }; 	    done; 	    echo "REPRO_SHA: PASS recorded $$n artifacts, $(REPRO_ARTIFACTS)"; 	 else 	    echo "REPRO_SHA: FAIL refused a complete build"; 	    cat record.log; exit 1; 	 fi
+	@rm -rf .repro-sha-test
+
+# The load-bearing arm. Without it, smoke-repro-sha is consistent with a
+# recording step that was never reached.
+.PHONY: smoke-repro-sha-control repro-sha-control-arm
+smoke-repro-sha-control:
+	@$(MAKE) --no-print-directory REPRO_SHA_UNCHECKED=1 repro-sha-control-arm
+
+# Not named smoke-*: it is how smoke-repro-sha-control re-enters make with the
+# flag set, not a gate of its own, and every count in the docs is derived by
+# grepping for ^smoke-.
+repro-sha-control-arm:
+	@rm -rf .repro-sha-test && mkdir -p .repro-sha-test
+	@: > .repro-sha-test/kernel.elf
+	@cd .repro-sha-test && if $(REPRO_RECORD); then 	    n=$$(wc -l < .build.sha 2>/dev/null || echo 0); 	    echo "REPRO_SHA_CONTROL: FAIL recorded $$n of $(words $(REPRO_ARTIFACTS)) artifacts and reported success"; 	 else 	    echo "REPRO_SHA_CONTROL: the control arm REFUSED -- it no longer reproduces the defect"; 	    exit 1; 	 fi
+	@rm -rf .repro-sha-test
 
 .PHONY: security security-install semgrep trivy gitleaks cppcheck flawfinder cargo-audit
 

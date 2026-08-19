@@ -757,9 +757,18 @@ server, and a framebuffer server. Each holds only the `CAP_IO_DEVICE` for its ow
 
 ## Track 3 — Assurance and observability
 
-### 3.1 ✅ Reproducible builds
+### 3.1 ◧ Reproducible builds — `kernel.elf` yes, `boot.iso` no
 
-`make reproducible-build` builds twice and diffs `kernel.elf`; gated in CI.
+`make reproducible-build` records one clean `SOURCE_DATE_EPOCH` build — `kernel.elf` **and**
+`boot.iso`; the `reproducible` CI job runs it twice, requires the record to name both, and
+diffs the `kernel.elf` hashes. Gated in CI.
+
+`◧` rather than `✅` since 2026-08-19: **`boot.iso` is not byte-reproducible.** `grub-mkrescue`
+stamps a wall-clock UUID into every image and embeds it in the EFI loaders it generates, so the
+artifact a third party would actually obtain does not reproduce, while everything this project
+authors inside it does. It went unnoticed because the recording step deleted the ISO, never
+rebuilt it, and swallowed the error — see `docs/LIMITATIONS.md` §5.3a. Finishing this means
+assembling the image with `xorriso` directly or deriving the UUID from `SOURCE_DATE_EPOCH`.
 
 ### 3.2 ✅ Measured boot and sealed volume key
 
@@ -955,8 +964,8 @@ Ordered as in the audit's §7.5.
 | ✅ | ChaCha20 CSPRNG replacing an LCG-plus-TSC construction |
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
-| ✅ | Reproducible builds, SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 68 QEMU integration self-tests (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), several adversarial, and 8 of them control arms that must reproduce a defect |
+| ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
+| ✅ | 82 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 10 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

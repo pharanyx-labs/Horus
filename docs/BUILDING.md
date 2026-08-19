@@ -158,6 +158,7 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 | `SPAWN_STAGE_UNSERIALISED=1` | Restores the pre-2026-08-18 spawn path: no lock over the arm → consume window on the process-wide staging (the ELF staging buffer, the armed header, the staged argv), so two CPUs interleave through it (**[G-10]**). Kept buildable even though **no current workload reaches the window twice** — see `TESTS.md`, finding G-10 — so the arm exists the day a second live spawner does. | No gate: a control arm that cannot fail cannot gate anything. The refusal it would produce is `SPAWN STAGE: theft`, and `do_spawn`'s owner check makes it fail closed. |
 | `SPAWN_STAGE_WIDEN=1` | Not a defect — holds each of the first `SPAWN_STAGE_WIDEN_WINDOWS` (24) staging windows open for `SPAWN_STAGE_WIDEN_SPINS` (12,000,000) `pause` iterations, so an overlap happens if one is possible at all. Set in **both** arms when measuring. | Used with `SPAWN_STAGE_TRACE=1` for the measurement in `TESTS.md`; not a gate |
 | `SPAWN_STAGE_TRACE=1` | Not a defect — reports every entry to the staging window and every arrival that finds another CPU already inside one. This is the *reachability* instrument: a serialised build with zero incidents says nothing unless the window was entered twice, and this is what established that in this tree it never is. Same role `KSTACK0_PARK_TRACE` plays for the park path. | Used for the measurement in `TESTS.md`; not a gate |
+| `REPRO_SHA_UNCHECKED=1` | Restores the pre-2026-08-19 build-hash recording step **and** the goal list that made it silent: `reproducible-build` builds `all` (which is `kernel.elf` alone) and records with `sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null \|\| true`. Both halves are needed — a swallowed status is harmless while every artifact exists, so restoring only the `\|\| true` makes the arm pass for the wrong reason. Gate: `make smoke-repro-sha-control`, which requires the incomplete record **and** the success report; `make smoke-repro-sha` must FAIL under the same flag. |
 
 None of these is a shipping configuration. `IRQ_LEGACY_GLOBAL_LOCK` also appears in the
 interrupt-policy table above, and until 2026-08-15 that was the only place it was documented;
@@ -189,7 +190,7 @@ Individual self-tests are `make smoke-<name>`. A few of the important ones:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (29 checks) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (100 checks — read the count off `CAPTEST: PASS <n> checks` on the wire, not from here) |
 | `smoke-wx` | No kernel page is both writable and executable (sweeps every leaf PTE) |
 | `smoke-cpu` | SMEP and SMAP are actually set in CR4 |
 | `smoke-smp` | APs run scheduled tasks; TLB shootdown completes |
@@ -198,6 +199,7 @@ Individual self-tests are `make smoke-<name>`. A few of the important ones:
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-tamper` | A corrupted module additionally diverges the measured PCRs |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |
+| `smoke-repro-sha` | The build-hash record covers every artifact, or the recording step refuses and writes nothing |
 | `smoke-fs-perms` | POSIX rwx is enforced against the kernel-attested uid |
 | `smoke-fs-wal` | The journal recovers a crash-interrupted write |
 
@@ -217,18 +219,57 @@ than one.
 ## Reproducible builds
 
 ```bash
-make reproducible-build   # build twice from clean and diff kernel.elf
+make reproducible-build   # ONE clean SOURCE_DATE_EPOCH build; records .build.sha
 make verify-build         # alias
 ```
+
+**The target does not build twice, and its name suggests otherwise.** It removes
+`kernel.elf`/`boot.iso`, builds both once with `SOURCE_DATE_EPOCH` pinned, and records their
+hashes in `.build.sha`. The double-build-and-diff that actually proves reproducibility lives
+only in the `reproducible` CI job, which runs the target twice, requires the record to name
+both artifacts, and diffs the `kernel.elf` hashes. Locally, run it twice and diff yourself — a
+single invocation records hashes and compares them to nothing.
+
+`.build.sha` is plain `sha256sum` output, so `sha256sum -c .build.sha` checks the artifacts you
+have against the record.
+
+**Two things this section used to get wrong, both now gated rather than merely reworded.**
+
+1. It said the target built twice. It never has.
+2. The recording step could not fail. It was
+   `sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true`, run over a build goal of
+   `all` — and `all: kernel.elf`. The target deletes `boot.iso` and never rebuilt it, so that
+   `sha256sum` failed on a missing operand every time it ran, `2>/dev/null` hid the message and
+   `|| true` hid the status. `.build.sha` had only ever held one line, and the artifact a third
+   party actually obtains was the one the supply-chain control did not cover.
+
+The step is now `tools/record_build_sha.sh`, which fails on a missing artifact and writes
+`.build.sha` by rename so a failed run leaves no file rather than a plausible partial. Witness
+`make smoke-repro-sha`, falsified by `make smoke-repro-sha-control` (`REPRO_SHA_UNCHECKED=1`).
+
+**`boot.iso` is not byte-reproducible**, which is what building it revealed. `grub-mkrescue`
+stamps `/.disk/<wall-clock-second>.uuid` into the image and embeds that UUID in the EFI loaders
+it generates; everything this project authors inside the ISO is identical across builds. Two
+builds within one second are bit-identical and two seconds apart are not — which is also how a
+first, too-quick measurement of this called the ISO reproducible. See `docs/LIMITATIONS.md`
+§5.3a.
 
 This is a required CI check. Reproducibility comes from `-frandom-seed`,
 `-fdebug-prefix-map`, `--build-id=none`, and avoiding any timestamp or path leakage into the
 image.
 
 **A reproducible build is a supply-chain control, not a nicety:** it is what lets a third
-party confirm that a binary corresponds to the source beside it. Note that the repository
-currently also *commits* a prebuilt `kernel.elf`, which undercuts that — see
-`docs/LIMITATIONS.md` §5.6. Always rebuild rather than trusting the committed artifact.
+party confirm that a binary corresponds to the source beside it. What is still missing is the
+outbound half — no tags, no releases, no signed artifacts, no SLSA provenance — so a third
+party cannot tie a `boot.iso` they obtained to this repository's CI (**[I-9]**,
+`docs/LIMITATIONS.md` §5.3).
+
+This paragraph previously said the repository "currently also *commits* a prebuilt
+`kernel.elf`" and pointed at §5.6. Neither half was true: `kernel.elf` and `boot.iso` are
+gitignored (`.gitignore:10-11`), `git ls-files` tracks no build artefact, and §5.6 is the
+mislocated-governance-files finding. Recorded rather than silently deleted, because
+`docs/LIMITATIONS.md` had been asserting the opposite — "no `kernel.elf`, no `boot.iso`, no
+object files" — for as long as this paragraph asserted it.
 
 ---
 

@@ -1850,6 +1850,52 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
+            <h3><span class="id">H-2</span>Anyone could write the kernel's log</h3>
+            <p>
+              <strong>Closed 2026-08-20.</strong> Reading the kernel message log has required an
+              unforgeable token since July, when identity-based authority was retired: a program
+              runs <code>dmesg</code> only if it holds the capability for it. Writing to that same
+              log required nothing whatsoever. Every ordinary write to standard output was appended
+              to the log on its way to the terminal, so any program at all could put lines into
+              <code>dmesg</code> that a reader cannot tell apart from the kernel's own — and could
+              push 16 KiB of noise through to evict every real line, since the log is a fixed ring
+              that overwrites its oldest entries.
+            </p>
+            <p>
+              That is an anti-forensics tool aimed at exactly the record someone reads
+              <em>after</em> an incident, and it is worth being precise about why it existed:
+              converting "who may read this" into a capability says nothing about who may write it.
+              The sweep that fixed the read side was organised by system call rather than by
+              object, so the write side was never a question anyone asked.
+            </p>
+            <p>
+              The two destinations are now gated differently, which is the distinction the old code
+              never drew. The bytes still reach the terminal with no permission asked — writing to
+              your own screen is not an authority this system rations. They reach the kernel's log
+              only if the program holds the log capability <em>with the write right</em>. The gate
+              asks the capability graph and nothing else; asking the user id here would have
+              recreated the very defect this project spent July removing.
+            </p>
+            <p>
+              It closes the finding rather than narrowing it, for a reason that lies outside the
+              check itself: the log capability is minted read-only at the root of the system, and
+              delegation can only ever hand out less than you hold, so no program can obtain the
+              write right at all. The authority remains <em>expressible</em> for the day something
+              legitimately needs it, without being granted to anything today. Removing the append
+              outright would have been fewer lines and would have closed that door permanently.
+            </p>
+            <p>
+              The witness is a program that is <em>given</em> the log capability and still refused.
+              It holds the read right — so it can read the ring back and check its own work — and
+              is denied the direction it was not given, which is a stronger claim than a program
+              holding nothing being denied everything. It pushes 28800 bytes through standard
+              output, more than the ring holds, and requires both that none of it appears in the
+              log and that a marker placed there beforehand survives. Both are checked before
+              either is reported, so removing the gate on demand reproduces both failures at once,
+              3 boots in 3 — a fix that only rate-limited would keep the marker and still forge.
+            </p>
+          </li>
+          <li>
             <h3><span class="id">1.3</span>Priority inheritance is inexpressible</h3>
             <p>
               Endpoints are bounded FIFO queues, reply capabilities are one-shot, and

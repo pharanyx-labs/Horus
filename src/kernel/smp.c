@@ -484,6 +484,12 @@ void smp_bringup(void) {
     /* Gated: a waiter blocks in SYS_WAIT_NOTIFY and a sender fires a badge with
      * SYS_NOTIFY; prove the badge round-trips to userspace (NOTIFY_SELFTEST: PASS). */
     notify_selftest();
+#elif defined(KLOG_FORGE_SELFTEST)
+    /* Gated: a ring-3 task endowed with CAP_KERNEL_LOG (READ) floods SYS_WRITE
+     * fd 1 with more bytes than the kernel message ring holds, and proves the
+     * ring took none of them and lost nothing it already had (KLOGTEST: PASS).
+     * The witness for [H-2]; falsified by KLOG_WRITE_UNGATED=1. */
+    klog_forge_selftest();
 #elif defined(MAPPHYS_SELFTEST)
     /* Gated: a ring-3 task endowed with CAP_IO_DEVICE maps the allowlisted VGA
      * framebuffer into its own address space and round-trips a cell through it,

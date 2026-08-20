@@ -1335,6 +1335,38 @@ jobs:
       - name: Remove the owner check and require the foreign image to be SPAWNED
         run: make smoke-spawn-owner-control
 
+  smoke-klog-forge:
+    name: A ring-3 task cannot forge into or evict from the kernel log (H-2/S23; control arm proves it)
+    runs-on: ubuntu-latest
+    # Two clean builds and two single boots, both deterministic and both exiting
+    # on their marker in ~25s. The budget is for the builds, not the boots.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # SYS_DMESG -- the READ side of the kernel message ring -- has required
+      # CAP_KERNEL_LOG since I-1. The WRITE side required nothing: h_write called
+      # print(), which appended every byte to klog before it tested console
+      # ownership, so any task could forge dmesg lines and flood the 16 KiB ring
+      # to evict genuine ones. Finding H-2, property S23. The probe is ENDOWED
+      # with CAP_KERNEL_LOG (READ only -- root_cnode[15] mints no other right) so
+      # that it reads the ring back and is still refused the write direction: a
+      # bare task would prove a weaker claim than the finding makes.
+      - name: Require a ring-3 flood to reach the console and NOT the kernel log
+        run: make smoke-klog-forge
+      # The load-bearing arm. Without it, the step above is consistent with a
+      # kernel whose klog simply stopped recording anything at all.
+      - name: Remove the gate and require the forgery AND the eviction to REPRODUCE
+        run: make smoke-klog-forge-control
+
   smoke-kstack-park:
     name: A dying task's CPU parks on its own kernel stack (S20 park path; ADVISORY -- open finding G-9)
     runs-on: ubuntu-latest

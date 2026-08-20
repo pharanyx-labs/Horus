@@ -180,7 +180,7 @@ deep, past the old bound) and `test_revoke_deep_chain_is_fully_closed` (a 300-li
 falsified against `--features=revoke_legacy_bounded`, which restores the bounded closure; CI
 runs that control arm and fails if the tests pass against it.
 
-### 1.6 Three syscalls are still ungated by any capability — **[H-2]**
+### 1.6 ~~Three syscalls are still ungated by any capability~~ — **[H-2] FIXED 2026-08-20**
 
 **[I-1]** and **[H-1]** removed authority derived from *identity*. They did not remove
 authority derived from *nothing*, and README and the website have both stated the stronger
@@ -188,27 +188,62 @@ claim. The complete residual list, so that nobody has to take the absolute phras
 
 | Path | Gate | Assessment |
 |---|---|---|
-| `SYS_WRITE` fd 1 | none (`syscall.c:257-274`) | Log forgery and eviction — **[H-2]**, below |
+| `SYS_WRITE` fd 1 → the console | none | Correct and deliberate: every task has a stdout, and writing to a terminal is not an authority this system rations. Marked ambient in `SYSCALLS.md` |
+| `SYS_WRITE` fd 1 → `klog` | `CAP_KERNEL_LOG` + `CAP_RIGHT_WRITE` | **Fixed 2026-08-20** — **[H-2]**, below |
 | `SYS_READ` fd 0 / `SYS_GET_LINE` | none, but both refuse once `console_hw_owned()` | Correctly mitigated; the guard is present and deliberate |
 | `SYS_SYSINFO` | none | A version string. Acceptable, and marked ambient in `SYSCALLS.md` |
 
-**[H-2]** is the one with teeth, and it is an asymmetry rather than an oversight in isolation:
-the *read* side of the kernel log was converted to require `CAP_KERNEL_LOG` under **[I-1]**
-(`SYS_DMESG`), and the write side was never considered. `h_write` clamps to 255 bytes and calls
-`print()`, which appends to `klog` unconditionally — `terminal.c`'s `klog_append` runs before
-the `drive_hw` test, so the append survives the handoff to `console_server`. `klog_buf` is
-16 KiB. Any unprivileged ring-3 task can therefore forge lines that appear in `dmesg`
-indistinguishable from kernel diagnostics, and can flood 16 KiB to evict genuine ones — an
-anti-forensics primitive against the log a maintainer reads after an incident.
+**[H-2]** was the one with teeth, and it was an asymmetry rather than an oversight in
+isolation: the *read* side of the kernel log was converted to require `CAP_KERNEL_LOG` under
+**[I-1]** (`SYS_DMESG`), and the write side was never considered. `h_write` clamped to 255
+bytes and called `print()`, which appended to `klog` unconditionally — `terminal.c`'s
+`klog_append` ran before the `drive_hw` test, so the append survived the handoff to
+`console_server`. `klog_buf` is 16 KiB. Any unprivileged ring-3 task could therefore forge
+lines that appear in `dmesg` indistinguishable from kernel diagnostics, and could flood 16 KiB
+to evict genuine ones — an anti-forensics primitive against the log a maintainer reads after
+an incident.
 
-**What it does not reach**, and this is the part of the design that is right: the
+**What it did not reach**, and this is the part of the design that was right: the
 tamper-evident audit chain in `src/kernel/kaudit.c` is a separate buffer under a ratcheted,
-erased-after-use MAC key (property S19). Forging or evicting `klog` does not touch it.
+erased-after-use MAC key (property S19). Forging or evicting `klog` never touched it.
 
-Unfixed. The cheap remediation is to tag `klog` entries with their originating task and
-rate-limit ring-3 appends, so forged lines are attributable and eviction is bounded; the
-thorough one is a write-side capability. Either needs a `captest` check that a ring-3 write
-cannot evict a marker line already in `klog`, falsified against the current behaviour.
+#### The fix, and why it closes rather than narrows the finding
+
+`print()` is split. Kernel-origin output goes through `print()` and always records;
+ring-3-origin output goes through `print_from_user(str, may_klog)`, and `h_write` computes
+`may_klog` by asking the capability graph — `cap_lookup(CAPSLOT_KERNEL_LOG, CAP_RIGHT_WRITE)`,
+with the object type checked too. No uid, no task id, no slot convention: an ambient gate here
+would have re-created **[I-1]** inside the fix for **[H-2]**.
+
+The console still takes the bytes either way, which is the distinction the old code did not
+draw. Writing to the *terminal* is ungated on purpose; writing to the *kernel's log* is an
+authority.
+
+**It closes the finding completely, and the reason is a property of the root cnode rather than
+of `h_write`:** `root_cnode[15]` mints `CAP_KERNEL_LOG` with `CAP_RIGHT_READ` and nothing else,
+and delegation may only ever reduce rights, so **no task in this system can hold the WRITE
+right the gate asks for**. The authority is expressible — mint it with WRITE the day a
+userspace logger has a reason to exist — without being granted to anyone. Deleting the append
+outright would have been fewer lines and would have made that future case unexpressible.
+
+Witness `make smoke-klog-forge`: a ring-3 probe endowed with `CAP_KERNEL_LOG` (READ — so it can
+read the ring back and check its own work, and is still refused the direction it was not given)
+pushes 28800 bytes through fd 1, more than the ring holds, and requires both that none of it
+appears in `klog` and that a marker seeded before ring-3 entry is still there. Falsified by
+`KLOG_WRITE_UNGATED=1` (`make smoke-klog-forge-control`), which restores the unconditional
+append: `KLOGTEST: FAIL forged+evicted`, 3 boots in 3, and `smoke-klog-forge` goes red under
+the same flag.
+
+Both halves are asserted and both are evaluated before either is reported, so the control arm
+exercises both branches on every boot. Asserting only one would pass a half-fix: rate-limiting
+ring-3 appends would keep the marker and still leak the forgery, and dropping the bytes while
+still advancing the ring would lose the marker.
+
+> *An earlier revision of this section said the cheap remediation was to tag `klog` entries
+> with their originating task and rate-limit ring-3 appends, and the thorough one a write-side
+> capability. The capability turned out to be the cheap one too — the gate is four lines —
+> because the rights that make it fail closed were already minted correctly in 2026-07-27's
+> root cnode and nobody had asked what they implied.*
 
 ---
 
@@ -556,8 +591,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **73** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **75** across the three, producing **78** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **74** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **76** across the three, producing **79** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -588,7 +623,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **74 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **75 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands

@@ -448,7 +448,12 @@ static void serial_update_colour(void) {
     last_serial_attr = current_attr;
 }
 
-void print(const char* str) {
+/* The console writer. `to_klog` decides whether the bytes are also recorded in
+ * the kernel message ring, and that is an AUTHORITY decision, not a formatting
+ * one -- see print_from_user() below and finding [H-2]. Kernel-origin output
+ * always records; ring-3 output records only if the writing task holds
+ * CAP_KERNEL_LOG with WRITE. */
+static void print_core(const char* str, int to_klog) {
     uint64_t flags = console_lock_acquire();
     /* Snapshot ownership once for the whole call so a line is emitted whole to one
      * sink, never split across a handoff. `drive_hw` false => a ring-3 server owns
@@ -457,7 +462,11 @@ void print(const char* str) {
 
     while (*str) {
         char c = *str;
-        klog_append(c);   /* always: the kernel log survives the handoff to ring 3 */
+        /* The kernel log survives the handoff to ring 3: this append is placed
+         * BEFORE the drive_hw test on purpose, so a kernel diagnostic is still
+         * recorded once console_server owns the wire. That placement is also
+         * what made [H-2] reachable when the caller was ring 3. */
+        if (to_klog) klog_append(c);
 
         if (!drive_hw) { str++; continue; }
 
@@ -506,6 +515,27 @@ void print(const char* str) {
     if (drive_hw) update_cursor();
     console_lock_release(flags);
 }
+
+/* Kernel-origin output. Always recorded to klog: every caller is ring 0, and the
+ * log is the kernel's own record of what it did. */
+void print(const char* str) { print_core(str, 1); }
+
+/* Ring-3-origin output (the SYS_WRITE fd 1 path, and nothing else).
+ *
+ * `may_klog` is the caller's proved authority to append to the kernel message
+ * ring, not a preference: h_write() resolves it through cap_lookup() and passes
+ * 0 when the writing task holds no CAP_KERNEL_LOG with WRITE. Finding [H-2] was
+ * that this distinction did not exist -- h_write called print(), print() called
+ * klog_append() unconditionally, and so any unprivileged ring-3 task could write
+ * lines into `dmesg` that a reader cannot tell from kernel diagnostics, and could
+ * flood the 16 KiB ring to evict genuine ones. That is an anti-forensics
+ * primitive against the log a maintainer reads after an incident, and the read
+ * side of the same ring had required CAP_KERNEL_LOG since [I-1].
+ *
+ * The console still takes the bytes either way. Writing to the terminal is not
+ * the authority in question and is deliberately ungated (docs/SYSCALLS.md);
+ * writing to the KERNEL'S LOG is, and it fails closed. */
+void print_from_user(const char* str, int may_klog) { print_core(str, may_klog != 0); }
 
 void println(const char* str) { print(str); print("\n"); }
 

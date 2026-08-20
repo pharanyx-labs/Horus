@@ -254,7 +254,44 @@ static void h_brk(struct interrupt_frame64 *r) {
     r->rax = aligned;
 }
 
-/* SYS_WRITE (11): write to fd 1 (console). Length clamped to the scratch buf. */
+/* SYS_WRITE (11): write to fd 1 (console). Length clamped to the scratch buf.
+ *
+ * SC_NONE in the dispatch table, and that stays right: writing to the TERMINAL
+ * is not an authority this system rations -- every ring-3 task has a stdout, and
+ * `SYSCALLS.md` marks fd 1 ambient deliberately. What IS an authority, and was
+ * being handed out with it, is appending to the KERNEL MESSAGE RING.
+ *
+ * Finding [H-2]. `print()` calls `klog_append()` for every byte before it tests
+ * console ownership, so until this gate existed an unprivileged task could
+ *   (a) forge lines that appear in `dmesg` indistinguishable from kernel
+ *       diagnostics, and
+ *   (b) push 16 KiB through fd 1 to evict every genuine line from `klog_buf`,
+ * which is an anti-forensics primitive aimed at the log a maintainer reads after
+ * an incident. The asymmetry is the tell: SYS_DMESG -- the READ side of this same
+ * ring -- was converted to require CAP_KERNEL_LOG by [I-1], and the write side
+ * was never considered.
+ *
+ * So the append is gated on the capability and the console write is not. Note
+ * what this deliberately does NOT do: it does not gate on uid, on task id, or on
+ * "is this the shell" (no ambient authority -- see [I-1]/[H-1]). It asks the
+ * capability graph, and it fails closed when the answer is no.
+ *
+ * Today that closes the finding completely rather than narrowing it, and the
+ * reason is worth stating because it is a property of the root cnode rather than
+ * of this function: `root_cnode[15]` mints CAP_KERNEL_LOG with CAP_RIGHT_READ and
+ * nothing else (`capability.c`), and delegation may only ever reduce rights, so
+ * NO task in the system can hold the WRITE right this asks for. The authority is
+ * expressible -- mint it with WRITE the day a userspace logger has a reason to
+ * exist -- without being granted. Deleting the append outright would have been
+ * fewer lines and would have made that future case unexpressible.
+ *
+ * The type test alongside the rights test is not redundant. `cap_lookup()` falls
+ * back to the root cnode for a task with no cspace, where slot 16 is
+ * CAP_BOOT_MODULE, not CAP_KERNEL_LOG; the rights mask already refuses it (that
+ * cap is READ too), and this makes the refusal independent of that coincidence.
+ *
+ * Witness: `make smoke-klog-forge`. Falsified by `KLOG_WRITE_UNGATED=1`
+ * (`make smoke-klog-forge-control`), which restores the unconditional append. */
 static void h_write(struct interrupt_frame64 *r) {
     int fd = r->rbx;
     void *buf = (void*)(addr_t)r->rcx;
@@ -269,7 +306,18 @@ static void h_write(struct interrupt_frame64 *r) {
         return;
     }
     kbuf[to_copy] = 0;
-    print(kbuf);
+
+#ifdef KLOG_WRITE_UNGATED
+    /* Control arm for [H-2] -- the pre-fix behaviour, where a ring-3 write went
+     * into the kernel log with no authority at all. Never set in a ship build;
+     * `smoke-klog-forge-control` sets it and REQUIRES the FAIL marker. */
+    int may_klog = 1;
+#else
+    struct capability *logc = cap_lookup(CAPSLOT_KERNEL_LOG, CAP_RIGHT_WRITE);
+    int may_klog = (logc && logc->type == CAP_KERNEL_LOG);
+#endif
+
+    print_from_user(kbuf, may_klog);
     r->rax = to_copy;
 }
 

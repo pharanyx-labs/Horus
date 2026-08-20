@@ -1459,6 +1459,54 @@ void tsd_selftest(void) {
 }
 #endif /* TSD_SELFTEST */
 
+#ifdef KLOG_FORGE_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- kernel-log forgery self-test (KLOG_FORGE_SELFTEST builds only) ---------
+ * The witness for finding [H-2]: a ring-3 task cannot forge lines into the
+ * kernel message ring, and cannot evict what is already in it, by writing to
+ * fd 1.
+ *
+ * The probe (userspace/klogtest.c) is endowed with CAP_KERNEL_LOG so it can READ
+ * the ring back and check its own work. That capability carries CAP_RIGHT_READ
+ * and nothing else -- root_cnode[15] mints it that way, and delegation may only
+ * narrow -- so endowing the probe does NOT hand it the write authority the gate
+ * asks for. That is the point: the probe holds the capability for this object
+ * and is still refused the direction it was not given, which is a strictly
+ * stronger claim than a bare task being refused everything.
+ *
+ * The marker below must go into the ring before ring-3 entry and must be
+ * distinctive enough that the probe cannot match it by accident. Keep it in step
+ * with KERNEL_MARKER in userspace/klogtest.c. */
+void klog_forge_selftest(void) {
+    extern uint8_t embedded_klogtest_bin_start[], embedded_klogtest_bin_end[];
+
+    print("KLOG_FORGE_SELFTEST: launch\n");
+
+    int a = fs_spawn_embedded(embedded_klogtest_bin_start,
+                              embedded_klogtest_bin_end, "klogtest");
+    if (a <= 0) { print("KLOGTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+
+    /* uid 0 above, and it buys the probe NOTHING here -- the gate in h_write()
+     * asks the capability graph, not the uid ([I-1], [H-1]). It is set only so
+     * this harness matches the others; if setting it ever started to matter, the
+     * ambient-authority regression would be the finding. */
+
+    /* Slot 16 (CAPSLOT_KERNEL_LOG) from root slot 15 = CAP_KERNEL_LOG, READ. */
+    if (cap_install_from_root(a, CAPSLOT_KERNEL_LOG, 15, 0) != 0) {
+        print("KLOGTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+
+    /* Seeded last, immediately before ring-3 entry, so no further kernel output
+     * pushes it out of the ring before the probe has looked for it. */
+    print("KLOGTEST-KMARK-7F3A\n");
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* KLOG_FORGE_SELFTEST */
+
 #ifdef MAPPHYS_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- SYS_MAP_PHYS device-frame mapping self-test (MAPPHYS_SELFTEST builds only)
@@ -1712,8 +1760,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK only) ----
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {

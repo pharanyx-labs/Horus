@@ -692,6 +692,17 @@ embedded_notifytest_bin_start:
 embedded_notifytest_bin_end:
 #endif
 
+#ifdef KLOG_FORGE_SELFTEST
+/* PIE klogtest binary: endowed with CAP_KERNEL_LOG (READ), it floods fd 1 and
+ * proves the kernel message ring took none of it -- finding [H-2]. */
+.align 16
+.global embedded_klogtest_bin_start
+embedded_klogtest_bin_start:
+.incbin "userspace/klogtest.bin"
+.global embedded_klogtest_bin_end
+embedded_klogtest_bin_end:
+#endif
+
 #ifdef MAPPHYS_SELFTEST
 /* PIE mapphystest binary: endowed with CAP_IO_DEVICE, it maps the allowlisted
  * VGA framebuffer via SYS_MAP_PHYS and round-trips a cell through the mapping. */

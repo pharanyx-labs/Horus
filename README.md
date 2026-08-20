@@ -97,7 +97,11 @@ holds. Three console-adjacent syscalls are still ungated by any capability — `
 fd 1, `SYS_READ` fd 0 and `SYS_SYSINFO`; they are enumerated in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and marked *ambient* at each entry in
 [`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated absolutely and enforced
-partially is worse than no claim.
+partially is worse than no claim. Those three are ungated *deliberately*: a terminal write, a
+terminal read and a version string are not authorities this system rations. Until 2026-08-20
+one of them carried an authority that was never meant to ride along with it — `SYS_WRITE`
+fd 1 also appended to the kernel message ring, whose *read* side has required
+`CAP_KERNEL_LOG` since **[I-1]** — and that half is now gated (**[H-2]**, property S23).
 
 **Fail closed.** Every syscall passes through a dispatch table with a declared capability
 requirement. An unknown, reserved, or unimplemented syscall number does not fall through to
@@ -108,10 +112,10 @@ a syscall number without adding its table entry.
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
 boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 73 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 74 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 74 of its 78 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 75 of its 79 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
@@ -313,7 +317,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 73 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 74 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

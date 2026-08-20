@@ -816,6 +816,18 @@ task that needs it. `SYS_GET_TASK_INFO`'s root promotion is gone with them: cros
 introspection now needs a `CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7), and `info.eip` is
 zeroed for any task but the caller (finding **[I-4]**).
 
+*The `CAP_KERNEL_LOG` conversion covered only one direction until 2026-08-20* (finding
+**[H-2]**). `SYS_DMESG` — the **read** side of the kernel message ring — was gated by that
+sweep; the **write** side was not, because nobody had noticed there was one. `SYS_WRITE` fd 1
+called `print()`, and `print()` appended every byte to `klog` before it tested console
+ownership, so an unprivileged task could write lines a `dmesg` reader cannot distinguish from
+kernel diagnostics and could flood the 16 KiB ring to evict genuine ones. `print()` is now
+split — kernel-origin output always records, ring-3 output records only against a proved
+`CAP_KERNEL_LOG` + WRITE — and since `root_cnode[15]` mints that capability READ-only and
+delegation may only narrow, no task can hold the right at all. The lesson generalises past
+this line: **converting "who may read X" to a capability says nothing about who may write X**,
+and a sweep organised by syscall rather than by object will keep finding this shape.
+
 *Closed properly only on 2026-08-15* (finding **[H-1]**). Roadmap 0.2's sweep covered
 `syscall.c` and `syscall_fs.c` and missed `kusers.c`, whose `current_user_is_admin()` kept a
 `uid == 0` fallback — the sole gate on `SYS_USERADD` / `SYS_USERDEL` / `SYS_PASSWD`, which are

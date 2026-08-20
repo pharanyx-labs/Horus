@@ -348,6 +348,43 @@ static int kern_page_set_absent(uint64_t vaddr) {
     return 0;
 }
 
+/* Is the kernel's own mapping of `vaddr` PRESENT?
+ *
+ * Mirrors kern_page_set_absent()'s walk exactly, and exists for the resume-%rsp
+ * guards. A range check cannot answer this question: the three guarded stack
+ * arrays -- per_task_kstacks (above), ap_idle_stacks (smp.c) and ap_ist (gdt.c)
+ * -- all live INSIDE [__bss_start, __bss_end), and their guard pages are armed by
+ * making the page absent rather than by moving it somewhere a bounds test could
+ * see. So a stack pointer that has walked off one stack and into the next slot's
+ * guard page passes every address-range test there is, and then takes a
+ * not-present supervisor write the moment the ISR epilogue pushes to it.
+ *
+ * That is exactly the [G-9] residue captured on 2026-08-20:
+ *
+ *   PAGE FAULT at 0xffffffff806fa0a0 err=0x2(not-present,write,supervisor)
+ *     rip=interrupt_handler64+0x4a8   ->  ap_idle_stacks + 0x90a0
+ *
+ * with AP_IDLE_STACK_SIZE == 0x9000 and slot `c` laid out [guard page][stack],
+ * 0x90a0 is 0xa0 into CPU 1's GUARD PAGE. The producer-side guard had already
+ * been asked about that value and had said it was fine, because it is .bss.
+ *
+ * Returns 1 if present, 0 if absent or unresolvable. Conservative in the safe
+ * direction: an address this cannot resolve reads as absent, so the caller
+ * refuses it rather than resuming on it. */
+int kern_addr_present(uint64_t vaddr) {
+    extern uint64_t high_pdpt[512];
+    uint64_t phys = virt_to_phys(vaddr);
+    if ((phys >> 21) >= KERN_SPLIT_PDES) return 0;
+
+    uint64_t *kern_pd = (uint64_t *)PHYS_KVA(high_pdpt[510] & PTE_ADDR_MASK);
+    uint64_t pde = kern_pd[phys >> 21];
+    if (!(pde & PAGE_PRESENT)) return 0;
+    if (pde & PAGE_PS) return 1;                 /* a present 2 MiB mapping */
+
+    uint64_t *pt = (uint64_t *)PHYS_KVA(pde & PTE_ADDR_MASK);
+    return (pt[(phys >> 12) & 511] & PAGE_PRESENT) ? 1 : 0;
+}
+
 /* Public wrapper: unmap one page of the kernel's own mapping, returning 0 when
  * it is now absent. Exists so the SMP AP IST-stack guards (whose stacks live in
  * gdt.c, out of this file's reach) arm through the exact same kernel-window

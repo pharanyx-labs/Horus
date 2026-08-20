@@ -1120,6 +1120,68 @@ guard injects a bogus value and asks whether the report appears, so all of them 
 *negatives*; a predicate that rejected the whole address space would pass the lot, and one that
 rejected the IST stacks did, with the resume-guard CI job green throughout.
 
+#### Narrowed again 2026-08-20: four producers ruled out, and the fault located
+
+The `-7` above is one signature; it is not the only one, and the search is now much smaller.
+
+**It reproduces, and the earlier "does not reproduce" was a broken harness.** Pinning is what
+opens the window — `tools/stress_boot.sh` pins to two host cores for exactly this reason, and an
+unpinned run measures nothing:
+
+| Tree | Pinned boots (`PROC_SELFTEST=1`, `-smp 4`, host cores 0,1) | Failed |
+|---|---|---|
+| `5fb95fe` (before 2026-08-20's work) | 40 | 3 (~7.5%) |
+| `b36bc0f` | 40 | 1 |
+| `d07b980` + the guard below | 57 | 2 |
+
+**The fault is the same every time, and it is not a wild pointer.** Symbolised against the
+`kernel.elf` that produced it:
+
+```
+PAGE FAULT at 0xffffffff806fa0a0 err=0x2(not-present,write,supervisor) task=1 'exectest'
+  rip=0xffffffff80106658 cs=0x8 rflags=0x10086
+  claim: task 1 running_cpu=0  percpu_current=[1,0,3,1]
+
+  rip  0xffffffff80106658 -> interrupt_handler64 + 0x4a8
+  addr 0xffffffff806fa0a0 -> ap_idle_stacks + 0x90a0
+```
+
+`AP_IDLE_STACK_SIZE` is `0x9000` and slot `c` is `[guard page][stack]`:
+
+| slot | guard | stack | top |
+|---|---|---|---|
+| 0 | `0x00000`–`0x00fff` | `0x01000`–`0x08fff` | `0x09000` |
+| 1 | `0x09000`–`0x09fff` | `0x0a000`–`0x11fff` | `0x12000` |
+
+So `0x90a0` is `0xa0` into **CPU 1's guard page**, which is to say `0xa0` *above slot 0's stack
+top*. `ap_park_stack_top(0)` returns exactly `0x9000`. The faulting address is therefore not a
+corrupted pointer at all — it is a stack pointer that has ended up **above the top of the stack
+it belongs to**, and slot 1's guard page happens to backstop slot 0's top as a side effect of
+the layout. Whether that is an underflow on the park path or a top used with a positive offset
+is not yet established, and this section will not guess.
+
+**Two eliminations, both measured.**
+
+1. **The claim invariant is intact in every capture from this run** — `running_cpu=0` with
+   `percpu_current[0]=1`. The "unclaimed running task" description above belongs to the older
+   `-7` signature and is *not* what this one shows. Two different things have been filed under
+   one number.
+2. **The four `saved_ksp` producers are ruled out.** `preempt_on_tick`, `ipc_block_switch`,
+   `sched_yield_switch` and `task_exit_switch` all now validate the value they return, against
+   the page tables rather than an address range, and **the guard did not fire once in 57 boots
+   that included a reproduction.** Whatever produces this does not come through them. What is
+   left is `exec_reenter_switch`, the page-fault path, and the possibility that the resume value
+   was never wrong — that the CPU was *already* running on a bad stack when the interrupt
+   arrived.
+
+**Why a range check could never have caught it.** `per_task_kstacks`, `ap_idle_stacks` and
+`ap_ist` all live inside `[__bss_start, __bss_end)`, and their guard pages are armed by being
+made **absent**, not by being placed outside any range. A pointer that has walked into a guard
+page passes every address-range test in the tree and then takes a not-present supervisor write
+the moment anything pushes to it. The predicate now asks the page tables
+(`kern_addr_present()`), which is the only thing that can distinguish a live stack from the
+guard beside it.
+
 **This does not fix the ~7%.** The guard is a detector: closing its blind spot converts an
 obscure fault inside the ISR epilogue — a banner naming the stub and nothing about where the
 value came from — into a line that names the value, the task and the CPU. What produces `-7` is

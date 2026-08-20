@@ -1567,6 +1567,26 @@ static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int n
             handle_demand_page_fault(v, (uint32_t)PAGE_WRITE);
             e = pt_walk(ucr3, v);
         }
+        /* An ABSENT page is REFUSED here, and is deliberately not resolved by
+         * calling handle_demand_page_fault(). That looks like an omission next
+         * to the COW case just above, and issue #176 is the record of someone
+         * (me) reading it that way.
+         *
+         * The refusal is the safe direction, and driving the pager here would
+         * turn a fail-closed bug into a fail-open one. #176's real cause was a
+         * userspace wrapper truncating its buffer pointer to 32 bits, so the
+         * kernel was handed an address the caller never named. Refusing it
+         * surfaced as SYS_ERR_FAULT and cost a debugging session; MAPPING it
+         * would have silently allocated a page at the bogus address and written
+         * there, and the caller would have seen a successful syscall that
+         * populated nothing it could find.
+         *
+         * The kernel cannot tell a truncated pointer from an intended one --
+         * both are ordinary user addresses. So the only conservative rule is
+         * that a copy targets memory the task ALREADY has, and anything else is
+         * the caller's error. `tools/check_syscall_abi.py` is what stops the
+         * truncation upstream; this is what keeps the blast radius small when
+         * something else produces a bogus address. */
         if ((e & need) != need) { rc = -1; break; }
 
         uint64_t phys, chunk;

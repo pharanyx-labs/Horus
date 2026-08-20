@@ -1335,6 +1335,21 @@ jobs:
       - name: Remove the owner check and require the foreign image to be SPAWNED
         run: make smoke-spawn-owner-control
 
+  syscall-abi:
+    name: Every user pointer reaches the kernel full-width (issue #176)
+    runs-on: ubuntu-latest
+    # Source analysis only -- no build, no QEMU. Seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # sys_dmesg() and sys_audit_digest() passed their buffer as
+      # (uint32_t)(unsigned long)ptr, handing the kernel the low 32 bits of an
+      # address the caller never named. A runtime gate only covers the syscalls
+      # some probe happens to call; this covers every wrapper in the header,
+      # including ones nothing calls yet, because it is a property of the source.
+      - name: Refuse any syscall wrapper that narrows a pointer
+        run: python3 tools/check_syscall_abi.py
+
   smoke-klog-forge:
     name: A ring-3 task cannot forge into or evict from the kernel log (H-2/S23; control arm proves it)
     runs-on: ubuntu-latest
@@ -1366,6 +1381,15 @@ jobs:
       # kernel whose klog simply stopped recording anything at all.
       - name: Remove the gate and require the forgery AND the eviction to REPRODUCE
         run: make smoke-klog-forge-control
+      # The probe's buffer is a STATIC, so it lives above 4 GiB
+      # (USER_IMAGE_ASLR_BASE is 16 GiB) and exercises the full-width pointer ABI
+      # as a side effect of reading the log back. SYSCALL_PTR_TRUNC32=1 restores
+      # the wrappers that truncated it to 32 bits (issue #176); the probe must
+      # then be unable to read the log at all. Without this arm, nothing notices
+      # if the buffer ever goes back to the stack and the ABI half stops being
+      # tested.
+      - name: Restore the 32-bit pointer truncation and require the probe to FAIL
+        run: make smoke-klog-forge-abi-control
 
   smoke-kstack-park:
     name: A dying task's CPU parks on its own kernel stack (S20 park path; ADVISORY -- open finding G-9)

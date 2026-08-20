@@ -133,6 +133,14 @@ forbidden:
       morning read the ruleset and reported it matching. What remains of [C-6]
       is that syncing is manual and lags a merge.
 
+  - pattern: 'pt_walk\(tasks\[cur\]\.cr3, v\) disagrees with the hardware walk|refuses a user address that ring 3 demonstrably has mapped'
+    reason: >-
+      Issue #176's original analysis, and it was wrong. The kernel's walk agreed
+      with the hardware exactly (ucr3 == livecr3, measured); it was walking a
+      DIFFERENT address, because sys_dmesg/sys_audit_digest truncated the
+      caller's pointer to 32 bits. Corrected 2026-08-20 -- the fix is in
+      include/syscall.h, not in paging.c.
+
   - pattern: '\*Open, page-table half fixed'
     reason: >-
       [G-10] closed 2026-08-18. Its header in ARCHITECTURE.md said open while

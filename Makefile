@@ -406,6 +406,17 @@ endif
 # into the kernel log with no authority tested at all ([H-2]). Not a build option
 # -- a control arm. `smoke-klog-forge-control` sets it and REQUIRES the FAIL
 # marker; `smoke-klog-forge` must go red under it.
+# SYSCALL_PTR_TRUNC32=1 restores the pre-2026-08-20 sys_dmesg/sys_audit_digest
+# wrappers, which passed their buffer as (uint32_t)(unsigned long)ptr and so
+# handed the kernel the low 32 bits of an address the caller never named
+# (issue #176). Not a build option -- a control arm. Every static in a PIE image
+# is above 4 GiB (USER_IMAGE_ASLR_BASE is 16 GiB), so under this flag
+# smoke-klog-forge's probe cannot read the log back at all.
+# The flag is applied to USERSPACE_CFLAGS further down, AFTER that variable is
+# assigned with `=` -- setting it here would be silently overwritten, which is
+# the same shape of silent loss as the defect it reproduces.
+SYSCALL_PTR_TRUNC32 ?= 0
+
 KLOG_WRITE_UNGATED ?= 0
 ifeq ($(KLOG_WRITE_UNGATED),1)
 CFLAGS += -DKLOG_WRITE_UNGATED
@@ -1125,6 +1136,13 @@ USERSPACE_CFLAGS = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
 # check first failed, and it failed loudly rather than passing on the wrong one.
 ifeq ($(IRQ_POLICY_AUDIT),1)
 USERSPACE_CFLAGS += -DIRQ_POLICY_AUDIT
+endif
+# Issue #176's control arm. Applied HERE, at top level: USERSPACE_CFLAGS is
+# assigned with `=` just above, so setting it beside the other control-arm flags
+# would be overwritten -- and it must not sit inside another flag's ifeq, which
+# is where it was first written and where it silently never fired.
+ifeq ($(SYSCALL_PTR_TRUNC32),1)
+USERSPACE_CFLAGS += -DSYSCALL_PTR_TRUNC32
 endif
 USERSPACE_CFLAGS_64 = $(USERSPACE_CFLAGS)
 # 32-bit, for the i386 ELF-loader self-test image ONLY (userspace/elftest.o ->
@@ -1892,6 +1910,20 @@ smoke-klog-forge:
 # tested. The FAIL marker must be PRESENT -- deterministically, on every boot,
 # since nothing here is racy. If this arm ever goes green, the gate above is
 # passing for a reason other than the one it claims.
+# ---- issue #176: a user pointer reaches the kernel full-width ---------------
+# The static-storage half of smoke-klog-forge. SYSCALL_PTR_TRUNC32=1 restores the
+# truncating wrappers; the probe's buffer is a static, hence above 4 GiB, hence
+# truncated -- so it cannot read the kernel log back and reports FAIL setup.
+# Requires that FAIL to be PRESENT. If this arm ever goes green the probe has
+# stopped using a static buffer and the ABI half of the gate is inert.
+.PHONY: smoke-klog-forge-abi-control
+smoke-klog-forge-abi-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 SYSCALL_PTR_TRUNC32=1
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 SYSCALL_PTR_TRUNC32=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='KLOGTEST: FAIL setup' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-klog-forge-control
 smoke-klog-forge-control:
 	@$(MAKE) --no-print-directory clean

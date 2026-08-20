@@ -8,6 +8,57 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — two syscall wrappers handed the kernel an address the caller never named
+
+**Issue #176.** `sys_dmesg()` and `sys_audit_digest()` passed their buffer as
+`(uint32_t)(unsigned long)ptr`. The argument registers are 64-bit, so the cast was pure loss:
+the kernel received the low 32 bits of the pointer and resolved *that* address in the caller's
+own page tables.
+
+**Why it stayed invisible is the useful part.** `USER_IMAGE_ASLR_BASE` is 16 GiB with 4 TiB of
+randomisation, so every static and global in every PIE image is above 4 GiB *by construction*
+and was always truncated — while a stack buffer sits near 8 MiB and never was. Every caller in
+the tree passed a stack buffer. And the only two conformance checks that name these syscalls
+(`captest`) both assert a **capability refusal**, which returns before the pointer is ever
+read. So a defect that was 100% reproducible for an entire class of buffer was invisible to a
+100-check suite.
+
+**It was not fail-closed.** What issue #176 observed — `SYS_ERR_FAULT` — is what happens when
+nothing is mapped at the truncated address. When something *is* mapped there, and low user
+addresses are populated (the stack at ~8 MiB, the heap at 16 MiB in a non-high-heap build),
+`copy_to_user` writes kernel-supplied bytes into a page of the caller's address space that the
+caller never nominated. It is confined to the caller — `user_copy` walks `tasks[cur].cr3` and
+never another task's — so this is corruption rather than a privilege boundary. But "the kernel
+wrote to an address the caller did not name" invalidates every argument of the form "we
+validated the pointer the caller gave us".
+
+Both wrappers now pass their pointer through `SYSCALL_UPTR()`. New property **S24**.
+
+**The fix that matters is the one that stops the class.** `tools/check_syscall_abi.py` parses
+the header and fails the build if any wrapper narrows a pointer — all 46 pointer arguments,
+including wrappers nothing calls yet, decided at build time rather than by whichever syscalls
+a probe happens to exercise. Required CI job `syscall-abi`. Falsified two ways: a narrowed
+pointer in one wrapper, and a narrowed `SYSCALL_UPTR` definition, which is the obvious way to
+defeat a per-wrapper check.
+
+**Runtime arm.** `userspace/klogtest.c`'s scan window is a `static` again — the workaround
+issue #176 asked to have deleted alongside the fix — so `smoke-klog-forge` now reads the kernel
+log into a buffer above 4 GiB and exercises the pointer ABI as a side effect. It carries an
+explicit floor check (`FAIL setup buffer-not-high`) so that if the buffer ever stops being
+high the gate fails rather than silently testing nothing. Falsified by `SYSCALL_PTR_TRUNC32=1`
+(`make smoke-klog-forge-abi-control`): `KLOGTEST: FAIL setup dmesg rc=-14`, **3 boots in 3**.
+
+**`user_copy` was left refusing an absent page**, deliberately, and now says why. Resolving it
+by calling `handle_demand_page_fault()` looks like the missing half of the COW case just above
+it, and is how issue #176 was first misread — but it would have turned a fail-closed bug into a
+fail-open one, silently allocating a page at the bogus address and reporting success.
+
+**The issue's own analysis was wrong and is corrected there.** It reported that the kernel's
+`pt_walk()` disagreed with the hardware walk, and that pre-faulting from ring 3 did not help.
+Both observations were real; the inference was not. `ucr3 == livecr3` — same tree, no
+divergence — and the pre-fault did not help because the kernel was never looking at the page
+ring 3 had faulted in.
+
 ### Fixed — the kernel log took anybody's bytes, and only the read side asked for a capability
 
 **[H-2].** `SYS_DMESG` has required `CAP_KERNEL_LOG` since **[I-1]** retired ambient `uid == 0`

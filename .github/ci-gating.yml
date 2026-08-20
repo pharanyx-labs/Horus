@@ -94,6 +94,7 @@ required:
   - smoke-exec-reenter
   - smoke-spawn-owner
   - smoke-klog-forge
+  - syscall-abi
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy

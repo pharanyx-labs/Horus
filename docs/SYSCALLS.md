@@ -135,6 +135,23 @@ fails closed.
 Both grow the authorised ceiling on demand; physical pages arrive lazily via the demand pager.
 Both currently perform 32-bit arithmetic on 64-bit heap bounds — finding **[I-2]**.
 
+## Pointer arguments
+
+**Every pointer argument is passed full-width.** The argument registers are 64-bit
+(`syscall()` in `include/syscall.h` takes `uint64_t`), so narrowing a pointer on the way in is
+pure loss — and silent, because the low 32 bits of a valid address are usually themselves a
+valid-looking address.
+
+`sys_dmesg()` and `sys_audit_digest()` narrowed theirs to `uint32_t` until 2026-08-20
+(issue #176), so the kernel was handed the low 32 bits of a buffer the caller never named and
+resolved *that* in the caller's own address space. It was invisible because
+`USER_IMAGE_ASLR_BASE` is 16 GiB: every static and global in a PIE image is above 4 GiB and was
+always truncated, while a stack buffer sits near 8 MiB and never was — and every caller in the
+tree passed a stack buffer.
+
+Wrappers now pass pointers through `SYSCALL_UPTR()`, and `tools/check_syscall_abi.py` (the
+required `syscall-abi` job) fails the build if any wrapper narrows one. Property **S24**.
+
 ## Console and basic I/O
 
 | # | Name | Arguments | Authorisation |

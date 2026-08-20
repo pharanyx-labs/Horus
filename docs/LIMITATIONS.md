@@ -245,6 +245,49 @@ still advancing the ring would lose the marker.
 > because the rights that make it fail closed were already minted correctly in 2026-07-27's
 > root cnode and nobody had asked what they implied.*
 
+### 1.7 ~~Two syscall wrappers truncated their buffer pointer to 32 bits~~ — **FIXED 2026-08-20** — issue #176
+
+`sys_dmesg()` and `sys_audit_digest()` passed their buffer as
+`(uint32_t)(unsigned long)ptr`. The argument registers are 64-bit, so the cast was pure loss:
+the kernel received the low 32 bits of the pointer and resolved *that* address in the caller's
+own page tables.
+
+**Why a 100-check conformance suite could not see it.** `USER_IMAGE_ASLR_BASE` is 16 GiB with
+4 TiB of randomisation, so every static and global in a PIE image is above 4 GiB *by
+construction* and was always truncated — while a stack buffer sits near 8 MiB and never was.
+Every caller in the tree passed a stack buffer. The two `captest` checks that name these
+syscalls both assert a **capability refusal**, and the dispatch gate returns before the handler
+ever reads the pointer. The one success-path caller, the shell's `dmesg`, used
+`char buf[512]` on the stack. So the defect was 100% reproducible for an entire class of
+buffer and reachable by no test in the tree.
+
+**It was not fail-closed.** The `SYS_ERR_FAULT` that surfaced it is what happens when nothing
+is mapped at the truncated address. Low user addresses *are* populated — the stack at ~8 MiB,
+the heap at 16 MiB in a non-high-heap build — and when the truncated address hits one,
+`copy_to_user` writes kernel-supplied bytes into a page the caller never nominated. Confined to
+the caller (`user_copy` walks `tasks[cur].cr3`, never another task's), so this is corruption
+rather than a privilege boundary — but it invalidates any argument of the form "we validated
+the pointer the caller gave us", because the pointer the kernel validated is not the one the
+caller passed.
+
+Both wrappers now use `SYSCALL_UPTR()`. Property **S24**. The gate is
+`tools/check_syscall_abi.py` (required job `syscall-abi`), which decides the property for all
+46 pointer arguments at build time rather than for whichever syscalls a probe happens to call;
+the runtime arm is `make smoke-klog-forge`, whose probe reads the log into a `static` — hence
+above-4-GiB — buffer, falsified by `SYSCALL_PTR_TRUNC32=1`
+(`make smoke-klog-forge-abi-control`), 3 boots in 3.
+
+`user_copy()` still **refuses** an absent page rather than resolving it through
+`handle_demand_page_fault()`, and the comment there now says why: that refusal is what kept
+this bug fail-closed in the case that was observed, and driving the pager would have allocated
+a page at the bogus address and reported success.
+
+> *Issue #176's original analysis was wrong and is corrected on the issue. It reported that
+> `pt_walk(tasks[cur].cr3, v)` disagreed with the hardware walk. The two agreed exactly —
+> measured, `ucr3 == livecr3` — and the kernel was faithfully walking a different address. The
+> observations were right; the inference was not, and it pointed at `paging.c` for a defect
+> that lived in `include/syscall.h`.*
+
 ---
 
 ## 2. Correctness limitations
@@ -591,8 +634,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **74** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **76** across the three, producing **79** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **75** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **77** across the three, producing **80** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -623,7 +666,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **75 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **76 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands

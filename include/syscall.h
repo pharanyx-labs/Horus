@@ -218,6 +218,43 @@ struct fs_stat {
  * negative error codes still work: the kernel stores a (uint32_t)SYS_ERR_* into
  * rax, which zero-extends, and every wrapper hands the result back as `int` --
  * taking exactly the low 32 bits that hold the code. */
+/* Pass a user POINTER to the kernel.
+ *
+ * The argument registers are 64-bit (see syscall() below), so this is only ever
+ * a widening cast -- which is exactly why getting it wrong is silent. Two
+ * wrappers, sys_dmesg() and sys_audit_digest(), passed their buffer as
+ * `(uint32_t)(unsigned long)ptr` and so handed the kernel the low 32 bits of an
+ * address the caller never named (issue #176).
+ *
+ * That was invisible for as long as it was because of WHERE the survivors live:
+ * USER_IMAGE_ASLR_BASE is 16 GiB with 4 TiB of randomisation, so every static
+ * and global in every PIE image is above 4 GiB *by construction* and always
+ * truncated -- while a stack buffer sits around 8 MiB and is unaffected. Every
+ * caller in the tree happened to pass a stack buffer, and the two captest checks
+ * that name these syscalls both assert a CAPABILITY REFUSAL, which returns
+ * before the pointer is ever read.
+ *
+ * The failure is not fail-closed, and that is the part worth keeping. The
+ * kernel walks the truncated address in the caller's own address space: if
+ * nothing is mapped there it refuses (what #176 observed), but if something IS
+ * -- the stack lives at ~8 MiB and the heap at 16 MiB in a non-high-heap build,
+ * both reachable by truncation -- then copy_to_user writes kernel-supplied bytes
+ * into a page of the caller's address space that the caller never nominated.
+ * Confined to the caller (user_copy walks tasks[cur].cr3, never another task's),
+ * so this is corruption and not a privilege boundary -- but "the kernel wrote to
+ * an address the caller did not name" invalidates every argument of the form
+ * "we validated the pointer the caller gave us".
+ *
+ * Use this for every pointer argument. `tools/check_syscall_abi.py` fails the
+ * build if any wrapper narrows a pointer, and is a required CI job. */
+#ifdef SYSCALL_PTR_TRUNC32
+/* Control arm for issue #176 -- the pre-2026-08-20 truncating cast, verbatim.
+ * Never a shipping configuration; `make smoke-klog-forge` must go red under it. */
+#define SYSCALL_UPTR(p) ((uint64_t)(uint32_t)(unsigned long)(p))
+#else
+#define SYSCALL_UPTR(p) ((uint64_t)(uintptr_t)(p))
+#endif
+
 static inline uint64_t syscall(uint32_t num, uint64_t a, uint64_t b, uint64_t c) {
     uint64_t ret;
     asm volatile (
@@ -972,7 +1009,7 @@ static inline int sys_irq_register(uint32_t irq, uint32_t notif_slot, uint32_t b
  * status: 0 = retained window intact, >0 = (first tampered index + 1),
  * -1 = chain uninitialized, -3 = copy failed. Requires a CAP_AUDIT read cap. */
 static inline int sys_audit_digest(void *out) {
-    return syscall(SYS_AUDIT_DIGEST, (uint32_t)(unsigned long)out, 0, 0);
+    return syscall(SYS_AUDIT_DIGEST, SYSCALL_UPTR(out), 0, 0);
 }
 
 /* Copy up to `max` bytes of the kernel message ring (boot + kernel log) into
@@ -994,7 +1031,7 @@ static inline int sys_task_resume(int tid) {
 }
 
 static inline int sys_dmesg(void *buf, uint32_t offset, uint32_t max) {
-    return syscall(SYS_DMESG, (uint32_t)(unsigned long)buf, offset, max);
+    return syscall(SYS_DMESG, SYSCALL_UPTR(buf), offset, max);
 }
 
 #endif

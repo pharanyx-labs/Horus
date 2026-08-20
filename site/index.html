@@ -1850,6 +1850,55 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
+            <h3><span class="id">#176</span>The kernel was handed an address nobody asked for</h3>
+            <p>
+              <strong>Found and closed 2026-08-20</strong>, while writing the witness for the
+              finding below. Two system calls — reading the kernel log, and fetching the audit
+              digest — took the address of the caller's buffer and threw away its upper half
+              before handing it to the kernel. The registers that carry it are twice that wide,
+              so nothing required the loss; it was a stray cast. The kernel then did exactly what
+              it was told, with an address the program had never named.
+            </p>
+            <p>
+              It survived because of <em>where</em> things live. Programs are loaded at a random
+              address far above the four-gigabyte line, so every fixed variable in every program
+              was affected, always — while a temporary on the call stack sits low enough to be
+              untouched, and every caller in the system happened to use one. The two conformance
+              checks that name these calls both test that a program <em>without</em> permission
+              is refused, and a refusal is decided before the address is ever looked at. So a
+              fault that was perfectly reproducible for an entire class of buffer was invisible
+              to a hundred-check suite.
+            </p>
+            <p>
+              It was also not safe-by-default, which is the part worth being plain about. The
+              symptom that exposed it — a refusal — is what happens when nothing occupies the
+              truncated address. When something does, and the low addresses are occupied by the
+              stack and the heap, the kernel writes its data into a page of the program's memory
+              that the program never nominated. It stays inside that one program and reaches no
+              other, so this is corruption rather than a broken permission boundary. But it
+              undoes any claim of the form "we checked the address we were given", because the
+              address checked was not the address given.
+            </p>
+            <p>
+              The repair is one cast in each call. The part that matters is the check that now
+              refuses to build the system if any such call narrows an address again — decided by
+              reading the source, so it covers every one of them, including calls nothing uses
+              yet, rather than only those some test happens to exercise. The obvious way to
+              defeat a per-call check is to weaken the shared helper they all use, so that is
+              checked separately. And the test that first hit this now deliberately uses a fixed
+              variable rather than a temporary, with an explicit assertion that it really does
+              sit above the line — so the day it stops testing this, it fails instead of quietly
+              passing.
+            </p>
+            <p>
+              The first diagnosis was wrong, and the correction is on the public issue. The
+              kernel appeared to disagree with the processor about the program's memory map;
+              measurement showed the two agreed exactly, and the kernel was faithfully consulting
+              a different address. The observations were right and the conclusion was not — it
+              pointed at the memory-management code for a defect that lived in a header.
+            </p>
+          </li>
+          <li>
             <h3><span class="id">H-2</span>Anyone could write the kernel's log</h3>
             <p>
               <strong>Closed 2026-08-20.</strong> Reading the kernel message log has required an

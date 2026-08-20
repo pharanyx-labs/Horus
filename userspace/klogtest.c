@@ -42,23 +42,21 @@
  * fail in the direction that looks exactly like a real finding while actually
  * being a bug in the test.
  *
- * `win` is a LOCAL, and that is load-bearing rather than stylistic. As a static
- * (.bss) buffer every SYS_DMESG into it returns SYS_ERR_FAULT, while the very
- * same call into a stack buffer, from the same task in the same instant,
- * succeeds:
+ * `win` is STATIC on purpose, and that is a second property under test.
  *
- *     KLOGDBG: &win=0x000001d41735e100
- *     KLOGDBG: ring3 rw ok            <- ring 3 reads AND writes that address
- *     KLOGDBG: dmesg->stack rc=64
- *     KLOGDBG: dmesg->bss   rc=-14    <- SYS_ERR_FAULT
+ * It was a local until issue #176 was understood, because every SYS_DMESG into a
+ * static returned SYS_ERR_FAULT while the identical call into a stack buffer
+ * succeeded. The cause was not in the kernel: sys_dmesg() passed its buffer as
+ * `(uint32_t)(unsigned long)buf`, so the kernel was handed the low 32 bits of an
+ * address this program never named, and faithfully walked that instead.
  *
- * So copy_to_user() refuses a user address that ring 3 demonstrably has mapped
- * read-write, which means pt_walk(tasks[cur].cr3, v) disagrees with the hardware
- * walk for this task's image .bss. Pre-faulting the page from ring 3 first does
- * not change it. That is a kernel defect and it is NOT [H-2]; it is recorded
- * here, and reported separately, rather than quietly worked around. The
- * workaround is one word (`static` removed) and the reason it was needed is the
- * part worth keeping. */
+ * Which storage class the buffer has is therefore the whole difference between
+ * exercising the bug and missing it: USER_IMAGE_ASLR_BASE is 16 GiB, so a static
+ * is above 4 GiB by construction and always truncated, while this task's stack
+ * sits near 8 MiB and is never affected. A stack buffer here would make this
+ * gate silently stop testing the ABI. Hence the explicit floor check in
+ * _start(): if the buffer is NOT above 4 GiB the probe FAILS rather than passing
+ * a test it is no longer running. */
 #define CHUNK          1024
 #define CARRY          32       /* must exceed the longest needle; checked below */
 
@@ -102,8 +100,9 @@ static int contains(const char *hay, int hlen, const char *needle) {
 /* 1 if `needle` appears anywhere in the kernel message ring. On a SYS_DMESG
  * error, writes the negative code to *err and returns 0 — the caller must check
  * *err before believing a 0, or a denied read would be reported as "absent". */
+static char win[CARRY + CHUNK];
+
 static int klog_contains(const char *needle, int *err) {
-    char win[CARRY + CHUNK];
     int carry = 0;
     unsigned off = 0;
     *err = 0;
@@ -124,6 +123,16 @@ static int klog_contains(const char *needle, int *err) {
 
 void _start(void) {
     int err = 0;
+
+    /* (0) Setup: the destination must be above 4 GiB, or the ABI half of this
+     *     gate (issue #176) is not being exercised at all. See the note on
+     *     `win`. A failure here means the loader stopped honouring
+     *     USER_IMAGE_ASLR_BASE, not that the kernel log is unsafe -- so it is
+     *     reported as a distinct marker. */
+    if ((unsigned long)(void *)win < (1UL << 32)) {
+        report("KLOGTEST: FAIL setup buffer-not-high\n");
+        sys_exit();
+    }
 
     /* (1) Setup: the kernel's marker must be in the ring before we touch it. */
     if (!klog_contains(KERNEL_MARKER, &err) || err) {

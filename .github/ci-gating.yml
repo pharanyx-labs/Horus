@@ -93,6 +93,7 @@ required:
   - smoke-cr3-reclaim
   - smoke-exec-reenter
   - smoke-spawn-owner
+  - smoke-klog-forge
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy

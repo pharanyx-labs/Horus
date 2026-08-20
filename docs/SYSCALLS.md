@@ -143,7 +143,7 @@ Both currently perform 32-bit arithmetic on 64-bit heap bounds — finding **[I-
 | 5 | *clear screen* | — | slot 3: WRITE |
 | 6 | *sysinfo* | `buf` (64 bytes) | none (ambient version string) |
 | 7 | *debug exec* | `cmd` | `DEBUG_SHELL` builds only |
-| 11 | `SYS_WRITE` | `fd`, `buf`, `len` | none (fd 1 = ambient console) |
+| 11 | `SYS_WRITE` | `fd`, `buf`, `len` | console: none (fd 1 = ambient). `klog`: `CAP_KERNEL_LOG` + WRITE |
 | 12 | `SYS_READ` | `fd`, `buf`, `len` | fd 0 ambient; fd ≥ 3 needs slot 3 READ |
 | 13 | `SYS_OPEN` | `name`, `flags` | slot 3: READ |
 | 82 | `SYS_CONSOLE_OWNED` | — | none (read-only status) |
@@ -153,6 +153,17 @@ Both currently perform 32-bit arithmetic on 64-bit heap bounds — finding **[I-
 owns the UART** (`console_hw_owned()`). A kernel-side read would race the owner and steal
 bytes from a typed line, so clients must route input through the server. The in-kernel path
 exists only for before handoff and after the owner dies.
+
+**`SYS_WRITE` fd 1 has two destinations and they are gated differently** (finding **[H-2]**,
+fixed 2026-08-20). The bytes always reach the console: a terminal write is not an authority
+this system rations, and that entry stays ambient on purpose. They reach the kernel message
+ring only if the calling task holds `CAP_KERNEL_LOG` with `CAP_RIGHT_WRITE`, checked by
+`cap_lookup` in `h_write` and passed to `print_from_user`. Until that split existed, the *read*
+side of the ring required a capability (`SYS_DMESG`, below) while the *write* side required
+nothing, so any task could forge `dmesg` lines and flood the 16 KiB ring to evict real ones.
+No task holds that write right today — `root_cnode[15]` mints the capability READ-only and
+delegation may only narrow — so the append is currently unreachable from ring 3 by
+construction rather than by policy.
 
 `SYS_DMESG` requires a `CAP_KERNEL_LOG` capability, which `init` delegates to the shell
 (finding **[I-1]**; it was previously an ambient `uid == 0` check). The kernel log discloses

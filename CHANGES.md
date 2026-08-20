@@ -8,6 +8,60 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — the kernel log took anybody's bytes, and only the read side asked for a capability
+
+**[H-2].** `SYS_DMESG` has required `CAP_KERNEL_LOG` since **[I-1]** retired ambient `uid == 0`
+in July. The *write* side of the same 16 KiB ring required nothing at all: `h_write` called
+`print()`, and `print()` appended every byte to `klog` before it tested console ownership. So
+any unprivileged ring-3 task could write lines into `dmesg` that a reader cannot tell from
+kernel diagnostics, and could push 16 KiB through fd 1 to evict every genuine line — an
+anti-forensics primitive against the log a maintainer reads after an incident.
+
+It reached nothing else. The tamper-evident audit chain in `src/kernel/kaudit.c` is a separate
+buffer under a ratcheted, erased-after-use MAC key (property **S19**), and forging or evicting
+`klog` never touched it.
+
+`print()` is now split by the origin of the bytes. Kernel-origin output goes through `print()`
+and always records; ring-3 output goes through `print_from_user(str, may_klog)`, and `h_write`
+computes `may_klog` by asking the capability graph — `cap_lookup(CAPSLOT_KERNEL_LOG,
+CAP_RIGHT_WRITE)`, with the object type checked too. Not the uid, not the task id, not a slot
+convention: an ambient gate here would have re-created **[I-1]** inside the fix for **[H-2]**.
+
+**The console still takes the bytes either way, and that is the distinction the old code never
+drew.** Writing to a terminal is not an authority this system rations, and `SYS_WRITE` fd 1
+stays ambient in `docs/SYSCALLS.md` on purpose. Writing to the *kernel's log* is an authority.
+
+**This closes the finding rather than narrowing it, for a reason that belongs to the root cnode
+rather than to `h_write`.** `root_cnode[15]` mints `CAP_KERNEL_LOG` with `CAP_RIGHT_READ` and
+nothing else, and delegation may only ever reduce rights — so no task in this system can hold
+the write right the gate asks for. The authority is *expressible*, for the day a userspace
+logger has a reason to exist, without being granted to anyone. Deleting the append outright
+would have been fewer lines and would have made that future case unexpressible.
+
+**Falsified.** `make smoke-klog-forge` boots a ring-3 probe endowed with `CAP_KERNEL_LOG`, which
+carries READ only — so it can read the ring back and check its own work and is still refused the
+direction it was not given, a stronger claim than a bare task being refused everything. It
+pushes 28800 bytes through fd 1, more than the ring holds, and requires both that none of it
+appears in `klog` and that a marker seeded before ring-3 entry survives. `KLOG_WRITE_UNGATED=1`
+(`make smoke-klog-forge-control`) restores the unconditional append and reports
+`KLOGTEST: FAIL forged+evicted`, **3 boots in 3**, with `smoke-klog-forge` red under the same
+flag. Both halves are evaluated before either is reported, so the control arm exercises both
+branches every boot — asserting one alone would pass a half-fix, since rate-limiting keeps the
+marker while still leaking the forgery and dropping the bytes without holding the ring loses the
+marker.
+
+New property **S23**; adversary **A1**'s "not defended against kernel-log forgery or eviction"
+is retired. New gates `smoke-klog-forge` / `smoke-klog-forge-control` (84 `smoke-*` targets, 11
+control arms). `smoke`, `smoke-captest` (100 checks) and `smoke-session` unaffected.
+
+**Found along the way, and deliberately not fixed here:** `copy_to_user()` refuses a user
+address that ring 3 demonstrably has mapped read-write. A `SYS_DMESG` into the probe's image
+`.bss` returns `SYS_ERR_FAULT` while the same call into a stack buffer, from the same task in
+the same instant, returns the bytes; pre-faulting the page from ring 3 first does not change it.
+So `pt_walk(tasks[cur].cr3, v)` disagrees with the hardware walk for that address. The probe
+uses a local instead, and `userspace/klogtest.c` records the measurement rather than quietly
+working around it. That is its own finding and wants its own witness.
+
 ### Fixed — a wedged runner idled for six hours because nothing capped it
 
 Three CI runs were lost on 2026-08-19 to package-mirror stalls, and none of them *failed* — they

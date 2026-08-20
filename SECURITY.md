@@ -119,10 +119,13 @@ compromise, another task's memory, another user's files, or privilege escalation
 *Status: defended for memory isolation, syscall authorisation, and — since 2026-07-27 — IPC
 isolation.* A task can reach a service only through a delegated capability naming that
 service's endpoint, and a client capability confers send only. Not defended against denial of
-service (no CPU or kernel-memory quotas), and not defended against kernel-log forgery or
-eviction: `SYS_WRITE` fd 1 takes no capability and appends unconditionally to the 16 KiB
-`klog` that `SYS_DMESG` — which *does* require `CAP_KERNEL_LOG` — reads back. See
-`docs/LIMITATIONS.md` §1.6.
+service (no CPU or kernel-memory quotas). **Kernel-log forgery and eviction were open until
+2026-08-20** (**[H-2]**): `SYS_WRITE` fd 1 took no capability and appended unconditionally to
+the 16 KiB `klog` that `SYS_DMESG` — which *does* require `CAP_KERNEL_LOG` — reads back, so any
+task could forge lines indistinguishable from kernel diagnostics and flood the ring to evict
+genuine ones. The append now requires `CAP_KERNEL_LOG` with the WRITE right (S23); the console
+write it rides on stays ungated, because writing to a terminal is not the authority in
+question. See `docs/LIMITATIONS.md` §1.6.
 
 **Memory isolation was broken under SMP until 2026-08-17 (`[G-10]`), and the honest reading is
 that this row was overclaimed.** `create_user_pagedir()` recycled a task slot's page tables
@@ -248,6 +251,7 @@ Stated as claims, with the mechanism and its witness, so each can be checked.
 | S17 | The shipped **kernel image** corresponds to the published source | Byte-for-byte reproducible build of `kernel.elf` | the `reproducible` CI job, a required check, which builds twice and diffs the recorded hash, and which since 2026-08-19 also runs `make smoke-repro-sha` (the record must cover every artifact) against `make smoke-repro-sha-control` (the pre-fix step, which records one of two and reports success). `make reproducible-build` builds **once** and records both artifacts in `.build.sha`. **`boot.iso` is deliberately not covered by this property**: grub-mkrescue stamps a wall-clock UUID into it, so it is not byte-reproducible — see `docs/LIMITATIONS.md` §5.3a. This row said "the shipped binary" until 2026-08-19, which read as the ISO |
 | S19 | Audit-log history committed before a kernel compromise cannot be forged or rewritten | Forward-secure hash chain in `src/kernel/kaudit.c`: the MAC key is ratcheted one-way and erased after every entry | Rust unit tests (`rust/src/audit.rs`) |
 | S20 | A task's kernel stack is executed by at most one CPU at a time | Two paths. (a) The scheduler's claim on the outgoing task is held until the CPU has *left* its stack — released from `sched_release_deferred()`, called by `isr_common_stub64` after `movq %rax,%rsp` — with `g_kstack_inflight` halting the kernel if two CPUs are ever on one stack. (b) A CPU whose last runnable task dies parks on its **own** ring-0 stack, not on the one `tasks[0].kernel_stack_top` every CPU used to share; `sched_note_park()` halts if two ever pick the same one | `make smoke-kstack-race` and `smoke-kstack-park`, each with a control arm that restores the defect and must reproduce it |
+| S23 | A ring-3 task cannot forge entries into the kernel message ring, nor evict what is already there | `h_write` resolves `CAP_KERNEL_LOG` + `CAP_RIGHT_WRITE` through `cap_lookup` (type checked) and passes the result to `print_from_user`; without it the bytes reach the console and not `klog`. `root_cnode[15]` mints that capability READ-only and delegation may only narrow, so no task can currently hold the write right at all | `make smoke-klog-forge`, with `smoke-klog-forge-control` (`KLOG_WRITE_UNGATED=1`) reporting `FAIL forged+evicted` on every boot, 3 in 3 |
 | S21 | A program image can only be spawned by the task that armed it, and a child inherits its stdio from that same task | `loader_arm_commit()` records the arming task; `do_spawn` and `h_sudo` refuse a foreign or unowned image; the spawner's identity is a parameter of `wire_child_stdio` rather than a global | `make smoke-spawn-owner`, with `smoke-spawn-owner-control` (`SPAWN_OWNER_UNCHECKED=1`) spawning the foreign image on every boot |
 
 S13 and S14 were undermined until 2026-07-27 by the [C-1] defect — an attacker could

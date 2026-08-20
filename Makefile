@@ -388,6 +388,29 @@ ASFLAGS += -DNOTIFY_SELFTEST
 NOTIFY_SELFTEST_DEP = userspace/notifytest.bin
 endif
 
+# KLOG_FORGE_SELFTEST=1 embeds klogtest and, at boot, spawns it endowed with a
+# CAP_KERNEL_LOG capability (READ -- that is the only right root_cnode[15] mints,
+# and delegation may only narrow). The probe reads the kernel message ring, floods
+# SYS_WRITE fd 1 with 28800 bytes -- more than the 16 KiB ring holds -- and reads
+# the ring again: it must contain none of the flood and must still contain the
+# marker the kernel seeded before ring-3 entry (prints KLOGTEST: PASS to serial).
+# The witness for [H-2]; gated off the ship kernel.
+KLOG_FORGE_SELFTEST ?= 0
+ifeq ($(KLOG_FORGE_SELFTEST),1)
+CFLAGS  += -DKLOG_FORGE_SELFTEST
+ASFLAGS += -DKLOG_FORGE_SELFTEST
+KLOG_FORGE_SELFTEST_DEP = userspace/klogtest.bin
+endif
+
+# KLOG_WRITE_UNGATED=1 rebuilds the pre-2026-08-20 h_write: a ring-3 write goes
+# into the kernel log with no authority tested at all ([H-2]). Not a build option
+# -- a control arm. `smoke-klog-forge-control` sets it and REQUIRES the FAIL
+# marker; `smoke-klog-forge` must go red under it.
+KLOG_WRITE_UNGATED ?= 0
+ifeq ($(KLOG_WRITE_UNGATED),1)
+CFLAGS += -DKLOG_WRITE_UNGATED
+endif
+
 # MAPPHYS_SELFTEST=1 embeds mapphystest and, at boot, spawns it endowed with a
 # CAP_IO_DEVICE cap; the probe maps the allowlisted VGA framebuffer into its own
 # address space via SYS_MAP_PHYS, reads back a kernel-seeded sentinel (proving the
@@ -972,7 +995,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1338,7 +1361,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -1848,6 +1871,35 @@ smoke-captest:
 # planting a root-owned binary in /bin, rather than that being trusted to the boot
 # chain. Falsification-tested: with the verification removed, the tampered module
 # provisions happily and this test goes green-to-red.
+# ---- [H-2]: the kernel log is not a ring-3 scratchpad -----------------------
+# A ring-3 probe endowed with CAP_KERNEL_LOG (READ, the only right that exists
+# for it) floods SYS_WRITE fd 1 with 28800 bytes -- more than the 16 KiB ring --
+# and then reads the ring back through SYS_DMESG. It must find NONE of the flood
+# (no forgery) and must still find the marker the kernel seeded before ring-3
+# entry (no eviction). Both halves are asserted because a half-fix passes either
+# one alone: rate-limiting keeps the marker and still leaks the forgery, and
+# dropping the bytes while still advancing the ring loses the marker.
+.PHONY: smoke-klog-forge
+smoke-klog-forge:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='KLOGTEST: PASS' \
+		FAIL_MARKER='KLOGTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Control arm for the above: KLOG_WRITE_UNGATED=1 restores the pre-2026-08-20
+# h_write, which appended every ring-3 byte to the kernel log with no authority
+# tested. The FAIL marker must be PRESENT -- deterministically, on every boot,
+# since nothing here is racy. If this arm ever goes green, the gate above is
+# passing for a reason other than the one it claims.
+.PHONY: smoke-klog-forge-control
+smoke-klog-forge-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 KLOG_WRITE_UNGATED=1
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 KLOG_WRITE_UNGATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='KLOGTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-modules-tamper
 smoke-modules-tamper:
 	@$(MAKE) --no-print-directory clean

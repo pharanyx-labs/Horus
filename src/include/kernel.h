@@ -1448,6 +1448,10 @@ void console_putc(char c);
 void console_puts(const char *s);
 void println(const char *s);
 void print(const char *s);
+/* The ring-3 console write path (SYS_WRITE fd 1). `may_klog` is the caller's
+ * PROVED CAP_KERNEL_LOG(WRITE) authority to append to the kernel message ring;
+ * 0 means console only. Finding [H-2] -- see the comment on the definition. */
+void print_from_user(const char *s, int may_klog);
 /* Linux-style timestamped boot/kernel-log helpers (terminal.c). */
 void kmsg_clock_init(void);         /* calibrate the TSC boot clock; call once, early */
 void kmsg_begin(void);              /* emit just the "[    S.uuuuuu] " prefix */
@@ -1945,7 +1949,12 @@ void proc_selftest(void);
 #ifdef NOTIFY_SELFTEST
 void notify_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST)
+#ifdef KLOG_FORGE_SELFTEST
+/* [H-2] witness: a ring-3 probe holding CAP_KERNEL_LOG(READ) proves it can
+ * neither forge into nor evict from the kernel message ring via SYS_WRITE. */
+void klog_forge_selftest(void);
+#endif
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST)
 void mapphys_selftest(void);
 void ioport_selftest(void);
 void irq_selftest(void);
@@ -1953,7 +1962,9 @@ void console_selftest(void);
 void console_isolation_selftest(void);
 /* The map-phys harness endows its ring-3 probe with a CAP_IO_DEVICE cap by
  * copying it out of the root cnode, exactly as the FS/newlib harnesses do for
- * their server caps. */
+ * their server caps. The [H-2] harness uses it the same way for CAP_KERNEL_LOG,
+ * and gets READ only -- root_cnode[15] mints no other right, which is what makes
+ * that endowment a test of the gate rather than a way around it. */
 int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
 #endif
 

@@ -100,6 +100,21 @@ counts:
       - file: docs/ROADMAP.md
         pattern: 'and (\d+) of them control arms'
 
+  - id: syscalls_covered
+    describe: "syscalls whose handler a tracked workload enters (.github/syscall-coverage.yml `covered`)"
+    derive: syscalls_covered
+    occurrences:
+      - file: SECURITY.md
+        pattern: '\*\*(\d+) of 76\*\*'
+      - file: TESTS.md
+        pattern: '\*\*(\d+) of 76\*\*'
+      - file: docs/LIMITATIONS.md
+        pattern: '\*\*(\d+) of 76\*\*'
+      - file: CHANGES.md
+        pattern: '(\d+) of 76 implemented syscalls'
+      - file: site/index.html
+        pattern: '<strong>(\d+) of 76</strong>'
+
   - id: captest_checks
     describe: check() assertions in userspace/captest.c
     derive: captest_checks

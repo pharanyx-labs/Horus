@@ -85,6 +85,22 @@ def _inside_quotes(line, idx):
             or line.count("`", 0, idx) % 2 == 1)
 
 
+SYSCALL_COVERAGE_YML = ".github/syscall-coverage.yml"
+SYSCALL_TABLE_SRC = "src/kernel/syscall.c"
+
+
+def _syscalls_implemented():
+    """Entries in the dispatch table with a real handler (not NULL)."""
+    src = Path(SYSCALL_TABLE_SRC).read_text()
+    tbl = src[src.index("static const syscall_desc_t syscall_table["):]
+    tbl = tbl[: tbl.index("\n};")]
+    return len([
+        1 for _, h in re.findall(
+            r"\[\s*(SYS_[A-Z0-9_]+)\s*\]\s*=\s*\{\s*([A-Za-z0-9_]+)", tbl)
+        if h not in ("0", "NULL")
+    ])
+
+
 def derive():
     """Every value the manifest may refer to, computed from the tree."""
     jobs_by_wf = {wf: load_jobs(wf) for wf in WORKFLOWS}
@@ -107,6 +123,16 @@ def derive():
         "smoke_targets": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*:"),
         "control_arms": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*-control[a-z0-9-]*:"),
         "captest_checks": _grep_count(CAPTEST, r"\s*check\("),
+        # Syscall handler-entry coverage. Both halves are derived rather than
+        # written down, because both move whenever a syscall is added or a
+        # workload starts covering one -- and a coverage number that has to be
+        # edited by hand is a coverage number that will be wrong. The measured
+        # count lives in .github/syscall-coverage.yml, which
+        # tools/check_syscall_coverage.py has already proved equals the boot.
+        "syscalls_implemented": _syscalls_implemented(),
+        "syscalls_covered": len(
+            (yaml.safe_load(Path(SYSCALL_COVERAGE_YML).read_text()) or {}).get(
+                "covered") or []),
     }
 
 

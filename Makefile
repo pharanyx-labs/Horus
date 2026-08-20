@@ -419,6 +419,14 @@ endif
 # reports it on the wire as `SYSCOV <n>`. Not a defect arm and not a shipping
 # configuration -- a measurement instrument, like SPAWN_STAGE_TRACE and
 # KSTACK0_PARK_TRACE. See tools/check_syscall_coverage.py.
+# KSP_GUARD_INJECT=1 forges the exact value [G-9] was seen to hand back (-7) in
+# task_exit_switch, so the producer-side guard has a falsifying arm. A guard that
+# has never been seen to fire is not a guard. Never a shipping configuration.
+KSP_GUARD_INJECT ?= 0
+ifeq ($(KSP_GUARD_INJECT),1)
+CFLAGS += -DKSP_GUARD_INJECT
+endif
+
 SYSCALL_COVERAGE ?= 0
 ifeq ($(SYSCALL_COVERAGE),1)
 CFLAGS += -DSYSCALL_COVERAGE
@@ -1919,6 +1927,23 @@ smoke-klog-forge:
 # tested. The FAIL marker must be PRESENT -- deterministically, on every boot,
 # since nothing here is racy. If this arm ever goes green, the gate above is
 # passing for a reason other than the one it claims.
+# ---- [G-9]: a bogus resume %rsp is refused where it is produced -------------
+# The producer-side half of the resume guard. KSP_GUARD_INJECT=1 forges -7 -- the
+# exact value [G-9] was seen to hand back -- in task_exit_switch, the producer the
+# PROC_SELFTEST workload drives. The report must name that producer.
+#
+# Asserts on the marker and not on the boot's verdict: the point is that the CPU
+# REFUSED and parked rather than iretq'ing onto -7, so the session continuing is
+# the success condition, not a clean exit status.
+.PHONY: smoke-ksp-guard-control
+smoke-ksp-guard-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
+		tools/smoke_test.sh boot.iso
+
 # ---- syscall handler-entry coverage ----------------------------------------
 # Measures which syscall HANDLER BODIES a tracked workload actually enters, and
 # diffs the union against .github/syscall-coverage.yml.
@@ -1929,14 +1954,22 @@ smoke-klog-forge:
 # handler runs -- so both syscalls were tested, neither handler had ever
 # executed, and issue #176 sat behind 100 passing checks.
 #
-# Two builds because the two workloads need different kernels; their coverage is
-# unioned. Neither arm asserts on the workload's own verdict: this gate is about
-# which handlers ran, and making it also a session/captest regression gate would
-# have it go red for reasons that are already somebody else's gate.
+# Three builds, because the three workloads need different kernels; their
+# coverage is unioned. No arm asserts on its workload's own verdict: this gate is
+# about which handlers ran, and making it also a session/captest/modules
+# regression gate would have it go red for reasons that are already somebody
+# else's gate.
+#
+# The modules arm is what drives the pipe syscalls. The pipeline runner executes
+# /bin PROGRAMS, and only a COREUTILS_MODULES=1 image provisions them -- in a
+# default boot `cat` and `wc` are shell builtins and the runner reports "not
+# found in /bin". That image cannot run session_test.py either: with /bin/echo
+# present, `echo hello > note` stops redirecting and prints literally, so the two
+# workloads genuinely need separate images rather than one merged script.
 .PHONY: smoke-syscall-coverage
 smoke-syscall-coverage:
 	@set -eu; \
-	cov=$$(mktemp -d); trap 'rm -rf "$$cov"' EXIT; \
+	cov="$(SYSCOV_EVIDENCE_DIR)"; rm -rf "$$cov"; mkdir -p "$$cov"; \
 	$(MAKE) --no-print-directory clean; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 boot.iso; \
@@ -1947,7 +1980,20 @@ smoke-syscall-coverage:
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 CAPTEST_SELFTEST=1 boot.iso; \
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 	    tools/smoke_test.sh boot.iso > "$$cov/captest.log" 2>&1 || true; \
-	python3 tools/check_syscall_coverage.py "$$cov/session.log" "$$cov/captest.log"
+	$(MAKE) --no-print-directory clean; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 boot.iso; \
+	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
+	    tools/modules_session.py boot.iso >/dev/null 2>&1 || true; \
+	echo "syscov: serial transcripts kept in $$cov/"; \
+	python3 tools/check_syscall_coverage.py "$$cov/session.log" "$$cov/captest.log" \
+	    "$$cov/modules.log"
+
+# The three transcripts are KEPT rather than made in a mktemp that the shell
+# deletes on the way out. A failure here is "which syscall stopped being
+# entered", and answering that needs the wire, not the exit status -- the same
+# reason the SMP soak keeps its evidence. Gitignored; never committed.
+SYSCOV_EVIDENCE_DIR ?= .syscov-evidence
 
 SYSCOV_SESSION_TIMEOUT ?= 180
 

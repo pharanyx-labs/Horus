@@ -16,7 +16,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from session_test import Serial, SessionFail  # noqa: E402
+from session_test import Serial, SessionFail, _dump_serial  # noqa: E402
 
 ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "60"))
@@ -88,6 +88,25 @@ def run():
         cmd("tail -c 3 cu.txt", "six")
         step("tail runs (upstream tail.c, from /bin)")
 
+        # A real pipeline between two /bin programs. This is the only thing in
+        # the tree that drives SYS_PIPE / SYS_PIPE_READ / SYS_PIPE_WRITE /
+        # SYS_PIPE_CLOSE and SYS_STDIO_INFO at all: until 2026-08-20 those five
+        # syscalls were implemented, documented, reachable -- and no tracked
+        # workload had ever entered their handler bodies
+        # (.github/syscall-coverage.yml, `make smoke-syscall-coverage`).
+        #
+        # It belongs HERE rather than in session_test.py because the pipeline
+        # runner executes /bin PROGRAMS, and only a COREUTILS_MODULES=1 image
+        # provisions them -- in a default boot `cat` and `wc` are shell builtins
+        # and the runner reports "not found in /bin". That image is this script's
+        # whole subject.
+        #
+        # `seq 1 5 | wc -l` needs no file, so it does not depend on the steps
+        # above. Asserting the COUNT rather than just a clean exit is what proves
+        # the bytes crossed the pipe instead of the two stages merely starting.
+        cmd("seq 1 5 | wc -l", "5")
+        step("a pipeline moves bytes between two /bin stages (drives the pipe syscalls)")
+
         print("MODULES_SESSION: PASS")
         return 0
     except SessionFail as e:
@@ -96,6 +115,13 @@ def run():
         print("---- serial tail ----\n" + tail, file=sys.stderr)
         return 1
     finally:
+        # Dump the full serial on PASS as well as FAIL. session_test.py has done
+        # this since the SMP soak needed evidence from green runs; this script
+        # needs it because `make smoke-syscall-coverage` reads the SYSCOV lines
+        # off this transcript, and they are only emitted on a healthy boot. With
+        # only the failure-path dump, the coverage arm saw an empty log --
+        # which the checker refuses rather than reporting 43 false regressions.
+        _dump_serial(getattr(s, "buf", ""))
         s.close()
 
 

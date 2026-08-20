@@ -1334,6 +1334,63 @@ static void sched_assert_claims(const char *where) {
 /* Called from the timer ISR. Returns the kernel %rsp the ISR epilogue should
  * resume on: the same frame when we don't switch, or the next task's saved
  * frame when we do. */
+/* ---- the resume %rsp is validated where it is PRODUCED -- finding [G-9] -----
+ *
+ * interrupt_handler64 already refuses a bogus resume value and reports it
+ * (idt.c, resume_rsp_is_bogus). That is a CONSUMER-side check: it knows the
+ * value and the CPU, and nothing about where the value came from. The open
+ * residue of [G-9] is a `-7` handed back by the dispatcher, and the reason it is
+ * still open is exactly that nobody knows which switch function produced it.
+ *
+ * All four switch functions end in the same three lines -- take
+ * tasks[next].saved_ksp, drop the scheduler lock, return it -- and every one of
+ * their selection loops requires saved_ksp to be merely NON-ZERO. `-7` is
+ * non-zero. So each of them checks the value before handing it back:
+ *
+ *   - the report NAMES the producer, so the next reproduction is a fact rather
+ *     than a mystery. Same move that made the last [G-9] progress: bounding the
+ *     consumer-side guard at both ends turned an obscure fault inside the ISR
+ *     epilogue into a line naming the value, the task and the CPU;
+ *   - the caller gets 0 instead of garbage. Every caller already treats 0 as
+ *     "nothing runnable" and parks this CPU on its own ring-0 stack, which is
+ *     survivable. iretq onto `-7` is not.
+ *
+ * Reported through kfault_str() for the reason the fault banner uses it: print()
+ * is klog-only once console_server owns the console, and a live session is the
+ * only place this has ever been seen.
+ *
+ * This does NOT claim to fix [G-9]. It converts an unexplained crash into a named
+ * refusal and narrows the search to whichever producer the report names -- or, if
+ * the workload still fails while this stays silent, rules all four out and points
+ * at the remaining producers (exec_reenter_switch, the page-fault path). Either
+ * answer is progress; today there is neither. */
+static int ksp_is_bogus(uint64_t ksp)
+{
+    extern uint8_t __bss_start[], __bss_end[];
+    if (ksp >= (uint64_t)(uintptr_t)__bss_start &&
+        ksp <  (uint64_t)(uintptr_t)__bss_end)
+        return 0;
+    extern uint8_t ist1_stack_guard[], ist3_stack_top[];
+    if (ksp >= (uint64_t)(uintptr_t)ist1_stack_guard &&
+        ksp <  (uint64_t)(uintptr_t)ist3_stack_top)
+        return 0;
+    return 1;
+}
+
+/* Report and refuse. Returns 0 so the caller takes its "nothing runnable" path.
+ * `who` is the producing function; `t` the task whose saved_ksp it is. */
+static uint64_t ksp_refuse(const char *who, int t, uint64_t ksp)
+{
+    kfault_begin(0);
+    kfault_str("\nSCHED BOGUS KSP from "); kfault_str(who);
+    kfault_str(" task=");  kfault_dec(t);
+    kfault_str(" ksp=");   kfault_hex(ksp);
+    kfault_str(" cpu=");   kfault_dec(this_cpu());
+    kfault_str(" -- refusing, parking this CPU instead\n");
+    kfault_end(0);
+    return 0;
+}
+
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!preempt_enabled) return frame_rsp;
 #ifndef SMP
@@ -1494,6 +1551,9 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     uint64_t ksp = tasks[next].saved_ksp;
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+    if (ksp_is_bogus(ksp)) return ksp_refuse("preempt_on_tick", next, ksp);
     return ksp;
 #endif
 }
@@ -1610,6 +1670,9 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     uint64_t ksp = tasks[next].saved_ksp;
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+    if (ksp_is_bogus(ksp)) return ksp_refuse("ipc_block_switch", next, ksp);
     return ksp;
 #else
     int next = -1;
@@ -1848,6 +1911,9 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
 #endif
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+    if (ksp_is_bogus(ksp)) return ksp_refuse("sched_yield_switch", next, ksp);
     return ksp;
 }
 
@@ -2003,6 +2069,14 @@ uint64_t task_exit_switch(int dead) {
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
 #endif
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+#ifdef KSP_GUARD_INJECT
+    /* Control arm: forge exactly the value [G-9] was seen to hand back, on the
+     * producer the PROC_SELFTEST workload drives. Never a shipping config. */
+    ksp = (uint64_t)-7;
+#endif
+    if (ksp_is_bogus(ksp)) return ksp_refuse("task_exit_switch", next, ksp);
     return ksp;
 }
 

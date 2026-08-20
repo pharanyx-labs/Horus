@@ -96,6 +96,7 @@ required:
   - smoke-klog-forge
   - syscall-abi
   - syscall-coverage
+  - ksp-guard
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy

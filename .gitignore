@@ -122,3 +122,6 @@ tamper.iso
 # Soak evidence: full serial logs of failing boots (see smoke-session-smp-soak).
 # Kept only when a run fails; uploaded as a CI artifact, never committed.
 soak-evidence/
+
+# syscall-coverage serial transcripts (make smoke-syscall-coverage); evidence, never committed
+.syscov-evidence/

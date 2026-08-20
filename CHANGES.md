@@ -8,6 +8,117 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — a bogus resume `%rsp` is now refused where it is produced, and names the producer
+
+**[G-9]**'s open residue is a `-7` handed back by the dispatcher. `interrupt_handler64` already
+refuses and reports it, but that is a *consumer-side* check: it knows the value and the CPU and
+nothing about where the value came from, which is exactly why the finding is still open.
+
+All four switch functions — `preempt_on_tick`, `ipc_block_switch`, `sched_yield_switch`,
+`task_exit_switch` — end in the same three lines: take `tasks[next].saved_ksp`, drop the
+scheduler lock, return it. **Every selection loop above them required that value to be merely
+non-zero**, which rejects a cleared slot and nothing else. `-7` is non-zero.
+
+Each now checks the value against the same linker-derived bounds the consumer-side guard uses.
+On failure it reports the **producing function by name**, with the task and CPU, and returns 0
+— every caller already treats 0 as "nothing runnable" and parks this CPU on its own ring-0
+stack, which is survivable where `iretq` onto `-7` is not.
+
+Falsified by `KSP_GUARD_INJECT=1` (`make smoke-ksp-guard-control`, new required job
+`ksp-guard`), which forges `-7` in `task_exit_switch`:
+`SCHED BOGUS KSP from task_exit_switch task=2 ksp=0xfffffffffffffff9 cpu=0`.
+
+**This is a detector, not a fix, and [G-9] keeps its status.** What was measured today, with the
+guard active and nothing injected:
+
+| Run | Result |
+|---|---|
+| `PROC_SELFTEST` @ `-smp 4`, 50 boots, **unpinned** | 50 pass, 0 guard fires |
+| `PROC_SELFTEST` @ `-smp 4`, 30 boots, **pinned** (`tools/stress_boot.sh`, the documented harness) | 30 pass, 0 guard fires |
+| `make smoke-kstack-park` (the exempted gate carrying the ~7% figure) | 1 pass, 0 guard fires |
+
+**None of that is evidence the defect is gone.** At the documented 2-in-30, thirty clean boots
+happen about 13% of the time by luck, and a single pass of a probabilistic gate is worth
+nothing — this repository's own rule. The unpinned fifty are worth less still: `stress_boot.sh`
+pins to two host cores precisely because unpinned runs leave the window closed, so those fifty
+were the wrong experiment and are recorded only so the next person does not repeat them.
+
+What the guard buys is that the *next* reproduction names a producer instead of a value — or,
+if the workload fails while the guard stays silent, rules all four out and points at
+`exec_reenter_switch` and the page-fault path. Either is progress; today there is neither.
+
+### Changed — ten coverage hypotheses were measured, and four of them were wrong
+
+`.github/syscall-coverage.yml` carried ten `uncovered` entries whose reason named another build
+that supposedly *would* reach the syscall. Its own header called those hypotheses and said
+promoting one should be a measurement rather than an edit to the reason. They have now been
+measured, by booting each of those builds under `SYSCALL_COVERAGE=1`.
+
+**Six confirmed.** `SYS_EXEC_NAMED`, `SYS_SIGACTION`, `SYS_SPAWN_ARG` and `SYS_TASK_EXIT_INFO`
+are entered by a `PROC_SELFTEST=1` boot; `SYS_IRQ_REGISTER` by `IRQ_SELFTEST=1`;
+`SYS_PREEMPT_TRACE` by `PREEMPT_SELFTEST=1`.
+
+**Four were wrong**, which is the part worth having done:
+
+- `SYS_SIGACTION` and `SYS_SIGRETURN` were attributed to `SIGNAL_SELFTEST`. That build
+  **passes while entering only syscalls 0 and 11** — it never drives either. Sigaction is
+  reached by `PROC_SELFTEST` instead; sigreturn by nothing measured.
+- `SYS_IRQ_POLICY_INFO` was attributed to `IRQ_POLICY_AUDIT=1`. Nothing in that image calls it.
+- `SYS_EXEC` and `SYS_EXEC_IMAGE` are reached by none of the five builds tried, and by no build
+  known in this tree.
+
+Each entry now records what was **observed**, with the date, rather than what was assumed.
+
+**The six confirmed are deliberately not promoted to `covered`**, and that is a cost judgement
+rather than a doubt. `covered` means *a tracked arm enters it*, and each build is a full kernel
+build plus a boot. `PROC_SELFTEST` is the only one worth its cost — 4 promotions, 21 syscalls
+entered — and it is precisely the one that cannot be added yet: **its workload still trips
+[G-9] on ~7% of boots**, so it would make the coverage gate intermittently red for a reason
+that has nothing to do with coverage. `IRQ_SELFTEST` buys one promotion for a full build and
+`PREEMPT_SELFTEST` buys exactly one.
+
+Promoting them is a follow-up to closing **[G-9]**, and these measurements are where it should
+start. The coverage number is unchanged at 51 of 76 — no syscall became better tested today,
+but six claims stopped being guesses and four stopped being false.
+
+### Added — a pipeline, and eight syscalls that turned out to be reachable after all
+
+The syscall-coverage manifest listed the pipe family as uncovered because
+`tools/session_test.py` ran no pipeline. Closing that turned out to be less trivial than the
+note suggested, and the reason is worth recording: **the shell's pipeline runner executes
+`/bin` PROGRAMS**, and in a default boot `cat` and `wc` are shell *builtins* — the runner
+answers `cat: not found in /bin`. Only a `COREUTILS_MODULES=1` image provisions them.
+
+That image cannot run `session_test.py` either: with `/bin/echo` present, `echo hello > note`
+stops redirecting and prints literally, so the script fails four steps before it would reach
+the pipeline. The two workloads genuinely need separate images. The pipeline therefore lives in
+`tools/modules_session.py`, whose subject *is* that image, and
+`make smoke-syscall-coverage` grew a third arm to run it.
+
+`seq 1 5 | wc -l` asserts the **count**, not a clean exit — that is what proves the bytes
+crossed the pipe rather than the two stages merely starting.
+
+**Measured coverage went 43 → 51 of 76.** Five of the eight were the intended targets
+(`SYS_PIPE`, `SYS_PIPE_READ`, `SYS_PIPE_WRITE`, `SYS_PIPE_CLOSE`, `SYS_STDIO_INFO`). The other
+three — `SYS_BOOT_MODULE_READ`, `SYS_GET_ARGV`, `SYS_SPAWN_IMAGE` — were listed with reasons
+naming a build that would reach them, and the modules workload turned out to *be* that build.
+Those three are the first of the manifest's hypotheses to be settled by measurement rather than
+by editing the reason, which is what its header asks for.
+
+**The gate caught two regressions I introduced while doing it.** An experiment left the session
+arm building `COREUTILS_MODULES=1`; `session_test.py` then died at the `echo` redirect and
+never reached `dmesg` or `sudo`, so both went from covered to unentered. The arm is restored,
+and the failure is the drift-in-either-direction case the gate was built for.
+
+**Both coverage numbers are now derived, not written.** `syscalls_implemented` and
+`syscalls_covered` are declared in `.github/doc-claims.yml`, so the five documents quoting
+"51 of 76" are checked against the tree. A coverage number maintained by hand is a coverage
+number that goes stale, and this repository has the scar tissue to prove it.
+
+The three serial transcripts are kept in `.syscov-evidence/` (gitignored) instead of a
+`mktemp` the shell deletes on exit: a failure here is "which syscall stopped being entered",
+and answering that needs the wire rather than the exit status.
+
 ### Added — which syscall handlers a test actually enters is now measured
 
 Issue #176 was reproducible for every static buffer in the system and invisible to a 100-check
@@ -22,7 +133,7 @@ as `SYSCOV <n>`, through `kfault_str()` rather than `print()` for the reason the
 uses it: `print()` is klog-only once `console_server` owns the console, and a live session is
 exactly when the interesting syscalls run. Same idiom as `KSTACK0_PARK_TRACE`.
 
-**Measured, not asserted: 43 of 76 implemented syscalls** have their handler entered by the two
+**Measured, not asserted: 51 of 76 implemented syscalls** have their handler entered by the three
 tracked workloads. `.github/syscall-coverage.yml` classifies all 76 — `covered`, or `uncovered`
 with a written reason — and `tools/check_syscall_coverage.py` (required job `syscall-coverage`,
 `make smoke-syscall-coverage`) fails if a syscall is in neither list, if a `covered` one stops

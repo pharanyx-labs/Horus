@@ -8,6 +8,50 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — which syscall handlers a test actually enters is now measured
+
+Issue #176 was reproducible for every static buffer in the system and invisible to a 100-check
+conformance suite. The reason is structural rather than an oversight: **`captest` is a refusal
+suite by construction.** Its two checks naming `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert
+`SYS_ERR_PERM`, and the central capability gate returns *before* `d->fn` runs — so both
+syscalls were named by the suite, both counted as tested, and neither handler body had ever
+executed. Nothing in the tree could tell the difference.
+
+`SYSCALL_COVERAGE=1` records the first entry into each handler body and reports it on the wire
+as `SYSCOV <n>`, through `kfault_str()` rather than `print()` for the reason the fault banner
+uses it: `print()` is klog-only once `console_server` owns the console, and a live session is
+exactly when the interesting syscalls run. Same idiom as `KSTACK0_PARK_TRACE`.
+
+**Measured, not asserted: 43 of 76 implemented syscalls** have their handler entered by the two
+tracked workloads. `.github/syscall-coverage.yml` classifies all 76 — `covered`, or `uncovered`
+with a written reason — and `tools/check_syscall_coverage.py` (required job `syscall-coverage`,
+`make smoke-syscall-coverage`) fails if a syscall is in neither list, if a `covered` one stops
+being entered, if an `uncovered` one starts being entered, or if a serial log contains no
+`SYSCOV` lines at all.
+
+**It deliberately does not demand 76 of 76.** That would be a large body of test-writing
+disguised as a gate. It demands the number be *decided* rather than drifting, and that every
+gap be written down — the `.github/ci-gating.yml` bargain applied to test coverage.
+
+Two things this makes visible immediately. The pipe family and `SYS_STDIO_INFO` are uncovered
+only because `tools/session_test.py` runs no pipeline — a gap in the workload, not the kernel,
+and the cheapest on the list to close. And the audit syscalls are uncovered for exactly the
+reason that hid #176: captest holds no `CAP_AUDIT` and asserts the refusal.
+
+The `uncovered` reasons state why the *tracked workloads* do not reach each syscall. Where a
+reason names another build that would, **that is a hypothesis this manifest has not measured** —
+adding those builds to the tracked set is the follow-up, and each promotion should be a
+measurement rather than an edit to the reason.
+
+### Fixed — a job name lost half of itself to a YAML comment
+
+`syscall-abi`'s `name:` contained an unquoted `#`, so YAML read `#176)` as a comment and the
+job shipped as `Every user pointer reaches the kernel full-width (issue`. Harmless in itself —
+the truncated string was both the reported context and the one written into the ruleset, so
+they agreed — but `check_ci_gating.py` compares parsed name to parsed name and could never have
+noticed. It now checks the **raw** text and rejects any unquoted `#` in a `name:`, which is
+where the evidence still exists.
+
 ### Fixed — two syscall wrappers handed the kernel an address the caller never named
 
 **Issue #176.** `sys_dmesg()` and `sys_audit_digest()` passed their buffer as

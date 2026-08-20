@@ -1224,6 +1224,46 @@ _Static_assert(SYSCALL_TABLE_SIZE == SYS_IPC_RECV_BLOCK + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 
+/* ---- syscall success-path coverage (SYSCALL_COVERAGE builds only) ----------
+ *
+ * Records the first time each syscall's HANDLER BODY is entered, and says so on
+ * the wire. Not "was the syscall called" and not "did it succeed" -- entered.
+ *
+ * That is the precise signal, because it is precisely what was missing when
+ * issue #176 hid behind a 100-check conformance suite. `captest` is a REFUSAL
+ * suite by construction: the two checks naming SYS_DMESG and SYS_AUDIT_DIGEST
+ * both assert SYS_ERR_PERM, and the central gate above returns before `d->fn`
+ * is ever reached. So both syscalls were named by the suite, both were
+ * "tested", and neither handler had ever run. A defect in the handler's
+ * argument handling was therefore invisible to every gate in the tree.
+ *
+ * Deliberately NOT recorded as "returned success". A return-value test needs a
+ * per-syscall rule about what success looks like -- SYS_BRK returns an address
+ * that is negative as an int32, SYS_READ returns a count, SYS_IPC_RECV_BLOCK
+ * blocks -- and a heuristic in a gate is a gate that lies eventually. "The body
+ * ran" is decidable, uniform, and is the property whose absence caused the miss.
+ *
+ * Emitted through kfault_str() rather than print(), for the reason the kernel
+ * fault banner uses it (idt.c): print() is klog-only once console_server owns
+ * the console, so anything reported through it during a live session is
+ * inaudible on the wire -- and a live session is exactly when the interesting
+ * syscalls run. Same idiom as KSTACK0_PARK_TRACE. */
+#ifdef SYSCALL_COVERAGE
+static uint8_t syscov_seen[SYSCALL_TABLE_SIZE];
+static void syscov_note(uint32_t num) {
+    if (num >= SYSCALL_TABLE_SIZE) return;
+    if (syscov_seen[num]) return;
+    syscov_seen[num] = 1;
+    kfault_begin(0);
+    kfault_str("\nSYSCOV ");
+    kfault_dec((int)num);
+    kfault_str("\n");
+    kfault_end(0);
+}
+#else
+static inline void syscov_note(uint32_t num) { (void)num; }
+#endif
+
 void syscall_handler(struct interrupt_frame64 *r) {
     if (get_current_task() < MAX_TASKS) {
         tasks[get_current_task()].in_kernel = 1;
@@ -1242,9 +1282,11 @@ void syscall_handler(struct interrupt_frame64 *r) {
         if (!c || (d->ctype != SC_ANYTYPE && (int)c->type != d->ctype)) {
             r->rax = (uint32_t)SYS_ERR_PERM;
         } else {
+            syscov_note(num);
             d->fn(r);
         }
     } else {
+        syscov_note(num);
         d->fn(r);
     }
 

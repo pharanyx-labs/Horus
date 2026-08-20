@@ -8,6 +8,37 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Fixed — a wedged runner idled for six hours because nothing capped it
+
+Three CI runs were lost on 2026-08-19 to package-mirror stalls, and none of them *failed* — they
+**hung**. Nineteen jobs at 08:38 sat on `Install build toolchain + QEMU` for 95 minutes with the
+run record's `updated_at` frozen at its `created_at`; CodeQL did the same; a job in the 12:12 run
+was still on that step two hours later. The post-merge run for **[#173]** was finally cancelled
+at 22:32, seven hours after it started, with 23 jobs cancelled and the kstack arm's steps never
+executed — so `main` had no verdict at all.
+
+`ci.yml` set `timeout-minutes` on **7 of 73** jobs, and on **none** of its 315 steps. Everything
+else inherited the 360-minute default, which is long enough that a wedged runner looks alive for
+most of a working day.
+
+Every job now carries a backstop, and the comment on each says what it is not: a *budget*. These
+jobs finish in minutes; the cap exists so a hung one concludes in 90 minutes instead of six
+hours. The seven jobs with deliberately tighter caps (30–90) keep them.
+
+**The obvious fix was measured and rejected.** A short timeout on the install step itself looks
+right — installs have a median of about 20 seconds — but the tail is long and *legitimate*: p90
+ran to 20 minutes and the slowest successful install took 32. In PR **[#172]**'s run, which was
+green on all 77 checks, **12 of 74 installs exceeded 15 minutes**. A 15-minute step budget would
+have turned that green run red. The failure mode here is not a slow install; it is one that never
+returns, and only the backstop distinguishes them.
+
+What this does not do is stop the stalls. It bounds them: a run concludes and says so instead of
+idling. Making the install itself resilient — bounded retries around `apt-get` — is the next
+step, and is deliberately not bundled here, since it edits 72 steps' shell rather than adding
+metadata.
+
+No security property changed and no finding moves.
+
 ### Fixed — a control arm that asserted a coin flip from a single boot
 
 `smoke-kstack-race-control` reddened `main` **twice** on 2026-08-19 (runs `32244509317` and `32251467694`)

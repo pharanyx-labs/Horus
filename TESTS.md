@@ -2208,6 +2208,15 @@ adds one that runs only on a daily schedule. All three are covered by the gating
 below — **75** jobs, **78** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
+Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
+360, which let three runs on 2026-08-19 hang on a package-mirror stall rather than fail: jobs sat
+on their install step for 95 minutes, two hours, and in one case until the run was cancelled
+seven hours in with `main` still holding no verdict. A short timeout on the *install step* was
+measured and rejected: the median install is about 20 seconds but the legitimate tail reaches 32
+minutes, and 12 of 74 installs exceeded 15 minutes in a run that was green on all 77 checks. A
+step budget would have reddened it. The distinction that matters is between slow and never
+returning, and only a generous cap draws it.
+
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
 

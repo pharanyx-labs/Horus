@@ -290,12 +290,12 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **43 of 76** implemented syscalls have their handler
-body entered by the two tracked workloads (the scripted ring-3 session and the conformance
-suite). The other 33 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+**Measured 2026-08-20**, and gated since: **51 of 76** implemented syscalls have their handler
+body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
+boot-modules session). The other 25 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This is stated as a limitation rather than a finding because nothing here is known to be
-broken. What is known is that a defect in any of those 33 handlers would be invisible in the
+broken. What is known is that a defect in any of those 25 handlers would be invisible in the
 same way issue #176 was — and #176 is the reason the number exists at all. `captest` is a
 **refusal** suite by construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both
 assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. Both syscalls

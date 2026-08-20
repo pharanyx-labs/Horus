@@ -9,8 +9,10 @@
 # 100% reproducible for every static buffer in the system -- was invisible to
 # all 100 checks.
 #
-# The tracked workloads are the two in `make smoke-syscall-coverage`: the full
-# ring-3 session (tools/session_test.py) and the capability conformance suite.
+# The tracked workloads are the three in `make smoke-syscall-coverage`: the full
+# ring-3 session (tools/session_test.py), the capability conformance suite, and
+# the boot-modules session (tools/modules_session.py), which is the only image
+# with real programs in /bin and therefore the only one that can run a pipeline.
 # Their union is MEASURED on every run by tools/check_syscall_coverage.py, which
 # fails if:
 #   - an implemented syscall is in neither list (an unanswered question, the
@@ -59,14 +61,22 @@ covered:
   - SYS_CAP_GRANT
   - SYS_SIGNAL
   - SYS_SIGMASK
+  - SYS_GET_ARGV
+  - SYS_SPAWN_IMAGE
   - SYS_SIGALTSTACK
   - SYS_IPC_SENDER
   - SYS_FS_SET_META
   - SYS_IPC_REPLY_TO
   - SYS_BOOT_MODULE_INFO
+  - SYS_BOOT_MODULE_READ
   - SYS_MAP_PHYS
   - SYS_IOPORT_GRANT
   - SYS_CONSOLE_OWNED
+  - SYS_PIPE
+  - SYS_PIPE_READ
+  - SYS_PIPE_WRITE
+  - SYS_PIPE_CLOSE
+  - SYS_STDIO_INFO
   - SYS_DMESG
   - SYS_TASK_RESUME
   - SYS_RETYPE
@@ -114,28 +124,12 @@ uncovered:
     the by-name exec entry point; exercised by gated exec selftest builds that are not in the tracked set
   SYS_SPAWN_ARG: >-
     stages an argv for a spawn; only the gated argv selftest builds drive it
-  SYS_GET_ARGV: >-
-    read by a spawned child collecting its argv; only the gated argv selftest builds drive it
-  SYS_SPAWN_IMAGE: >-
-    the spawn-a-staged-image entry point; exercised by gated selftest builds that are not in the tracked set
   SYS_EXEC_IMAGE: >-
     the exec-a-staged-image entry point; exercised by gated selftest builds that are not in the tracked set
   SYS_FS_INODE_LINK: >-
     links an inode into a directory; neither workload creates a hard link
-  SYS_BOOT_MODULE_READ: >-
-    only a COREUTILS_MODULES provisioning boot reads modules
   SYS_IRQ_REGISTER: >-
     routes a hardware IRQ to a notification and needs CAP_IO_DEVICE; only the gated IRQ selftest build endows a task with one
-  SYS_PIPE: >-
-    the shell builds pipes for pipelines; session_test.py runs no pipeline. A gap in the WORKLOAD, not in the kernel -- the cheapest one on this list to close
-  SYS_PIPE_READ: >-
-    reached only by a task reading a pipe the shell built for a pipeline, and neither workload runs one
-  SYS_PIPE_WRITE: >-
-    reached only by a task writing a pipe the shell built for a pipeline, and neither workload runs one
-  SYS_PIPE_CLOSE: >-
-    reached only when a pipeline stage tears its end down, and neither workload runs a pipeline
-  SYS_STDIO_INFO: >-
-    as SYS_PIPE: read by a child wiring up inherited stdio
   SYS_IRQ_POLICY_INFO: >-
     answers NOSYS unless IRQ_POLICY_AUDIT is set; that build is not in the tracked set
   SYS_TASK_EXIT_INFO: >-

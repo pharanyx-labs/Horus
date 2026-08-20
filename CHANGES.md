@@ -8,6 +8,44 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — a pipeline, and eight syscalls that turned out to be reachable after all
+
+The syscall-coverage manifest listed the pipe family as uncovered because
+`tools/session_test.py` ran no pipeline. Closing that turned out to be less trivial than the
+note suggested, and the reason is worth recording: **the shell's pipeline runner executes
+`/bin` PROGRAMS**, and in a default boot `cat` and `wc` are shell *builtins* — the runner
+answers `cat: not found in /bin`. Only a `COREUTILS_MODULES=1` image provisions them.
+
+That image cannot run `session_test.py` either: with `/bin/echo` present, `echo hello > note`
+stops redirecting and prints literally, so the script fails four steps before it would reach
+the pipeline. The two workloads genuinely need separate images. The pipeline therefore lives in
+`tools/modules_session.py`, whose subject *is* that image, and
+`make smoke-syscall-coverage` grew a third arm to run it.
+
+`seq 1 5 | wc -l` asserts the **count**, not a clean exit — that is what proves the bytes
+crossed the pipe rather than the two stages merely starting.
+
+**Measured coverage went 43 → 51 of 76.** Five of the eight were the intended targets
+(`SYS_PIPE`, `SYS_PIPE_READ`, `SYS_PIPE_WRITE`, `SYS_PIPE_CLOSE`, `SYS_STDIO_INFO`). The other
+three — `SYS_BOOT_MODULE_READ`, `SYS_GET_ARGV`, `SYS_SPAWN_IMAGE` — were listed with reasons
+naming a build that would reach them, and the modules workload turned out to *be* that build.
+Those three are the first of the manifest's hypotheses to be settled by measurement rather than
+by editing the reason, which is what its header asks for.
+
+**The gate caught two regressions I introduced while doing it.** An experiment left the session
+arm building `COREUTILS_MODULES=1`; `session_test.py` then died at the `echo` redirect and
+never reached `dmesg` or `sudo`, so both went from covered to unentered. The arm is restored,
+and the failure is the drift-in-either-direction case the gate was built for.
+
+**Both coverage numbers are now derived, not written.** `syscalls_implemented` and
+`syscalls_covered` are declared in `.github/doc-claims.yml`, so the five documents quoting
+"51 of 76" are checked against the tree. A coverage number maintained by hand is a coverage
+number that goes stale, and this repository has the scar tissue to prove it.
+
+The three serial transcripts are kept in `.syscov-evidence/` (gitignored) instead of a
+`mktemp` the shell deletes on exit: a failure here is "which syscall stopped being entered",
+and answering that needs the wire rather than the exit status.
+
 ### Added — which syscall handlers a test actually enters is now measured
 
 Issue #176 was reproducible for every static buffer in the system and invisible to a 100-check
@@ -22,7 +60,7 @@ as `SYSCOV <n>`, through `kfault_str()` rather than `print()` for the reason the
 uses it: `print()` is klog-only once `console_server` owns the console, and a live session is
 exactly when the interesting syscalls run. Same idiom as `KSTACK0_PARK_TRACE`.
 
-**Measured, not asserted: 43 of 76 implemented syscalls** have their handler entered by the two
+**Measured, not asserted: 51 of 76 implemented syscalls** have their handler entered by the three
 tracked workloads. `.github/syscall-coverage.yml` classifies all 76 — `covered`, or `uncovered`
 with a written reason — and `tools/check_syscall_coverage.py` (required job `syscall-coverage`,
 `make smoke-syscall-coverage`) fails if a syscall is in neither list, if a `covered` one stops

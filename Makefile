@@ -415,6 +415,15 @@ endif
 # The flag is applied to USERSPACE_CFLAGS further down, AFTER that variable is
 # assigned with `=` -- setting it here would be silently overwritten, which is
 # the same shape of silent loss as the defect it reproduces.
+# SYSCALL_COVERAGE=1 records the first entry into each syscall HANDLER BODY and
+# reports it on the wire as `SYSCOV <n>`. Not a defect arm and not a shipping
+# configuration -- a measurement instrument, like SPAWN_STAGE_TRACE and
+# KSTACK0_PARK_TRACE. See tools/check_syscall_coverage.py.
+SYSCALL_COVERAGE ?= 0
+ifeq ($(SYSCALL_COVERAGE),1)
+CFLAGS += -DSYSCALL_COVERAGE
+endif
+
 SYSCALL_PTR_TRUNC32 ?= 0
 
 KLOG_WRITE_UNGATED ?= 0
@@ -1910,6 +1919,38 @@ smoke-klog-forge:
 # tested. The FAIL marker must be PRESENT -- deterministically, on every boot,
 # since nothing here is racy. If this arm ever goes green, the gate above is
 # passing for a reason other than the one it claims.
+# ---- syscall handler-entry coverage ----------------------------------------
+# Measures which syscall HANDLER BODIES a tracked workload actually enters, and
+# diffs the union against .github/syscall-coverage.yml.
+#
+# The distinction that matters is "entered", not "named by a test". captest is a
+# REFUSAL suite by construction -- its checks for SYS_DMESG and SYS_AUDIT_DIGEST
+# both assert SYS_ERR_PERM, and the central capability gate returns before the
+# handler runs -- so both syscalls were tested, neither handler had ever
+# executed, and issue #176 sat behind 100 passing checks.
+#
+# Two builds because the two workloads need different kernels; their coverage is
+# unioned. Neither arm asserts on the workload's own verdict: this gate is about
+# which handlers ran, and making it also a session/captest regression gate would
+# have it go red for reasons that are already somebody else's gate.
+.PHONY: smoke-syscall-coverage
+smoke-syscall-coverage:
+	@set -eu; \
+	cov=$$(mktemp -d); trap 'rm -rf "$$cov"' EXIT; \
+	$(MAKE) --no-print-directory clean; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 boot.iso; \
+	SESSION_SERIAL_LOG="$$cov/session.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
+	    python3 tools/session_test.py boot.iso >/dev/null 2>&1 || true; \
+	$(MAKE) --no-print-directory clean; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 CAPTEST_SELFTEST=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 CAPTEST_SELFTEST=1 boot.iso; \
+	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
+	    tools/smoke_test.sh boot.iso > "$$cov/captest.log" 2>&1 || true; \
+	python3 tools/check_syscall_coverage.py "$$cov/session.log" "$$cov/captest.log"
+
+SYSCOV_SESSION_TIMEOUT ?= 180
+
 # ---- issue #176: a user pointer reaches the kernel full-width ---------------
 # The static-storage half of smoke-klog-forge. SYSCALL_PTR_TRUNC32=1 restores the
 # truncating wrappers; the probe's buffer is a static, hence above 4 GiB, hence

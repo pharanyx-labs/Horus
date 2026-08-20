@@ -95,6 +95,7 @@ required:
   - smoke-spawn-owner
   - smoke-klog-forge
   - syscall-abi
+  - syscall-coverage
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy

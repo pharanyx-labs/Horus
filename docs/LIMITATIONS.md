@@ -288,6 +288,29 @@ a page at the bogus address and reported success.
 > observations were right; the inference was not, and it pointed at `paging.c` for a defect
 > that lived in `include/syscall.h`.*
 
+### 1.8 A third of the syscall table has no test that runs its handler
+
+**Measured 2026-08-20**, and gated since: **43 of 76** implemented syscalls have their handler
+body entered by the two tracked workloads (the scripted ring-3 session and the conformance
+suite). The other 33 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+
+This is stated as a limitation rather than a finding because nothing here is known to be
+broken. What is known is that a defect in any of those 33 handlers would be invisible in the
+same way issue #176 was — and #176 is the reason the number exists at all. `captest` is a
+**refusal** suite by construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both
+assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. Both syscalls
+were named by the suite; neither handler had ever executed.
+
+`tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift in either
+direction, so the number cannot quietly fall. It deliberately does not require 76 of 76 —
+that would be a large body of test-writing disguised as a gate. Property **S25**.
+
+**Two of the 33 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
+uncovered only because `tools/session_test.py` runs no pipeline — a gap in the workload, not
+the kernel. And the `uncovered` reasons that name another build which *would* reach a syscall
+are **hypotheses this manifest has not measured**; promoting them should be a measurement, not
+an edit to the reason.
+
 ---
 
 ## 2. Correctness limitations
@@ -634,8 +657,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **75** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **77** across the three, producing **80** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **76** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **78** across the three, producing **81** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -666,7 +689,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **76 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **77 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands

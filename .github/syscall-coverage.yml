@@ -1,0 +1,142 @@
+# Which syscall HANDLER BODIES a tracked workload actually enters.
+#
+# Not "is the syscall named by a test" and not "does it return success" --
+# entered. That distinction is the whole reason this file exists. `captest` is a
+# REFUSAL suite by construction: its two checks naming SYS_DMESG and
+# SYS_AUDIT_DIGEST both assert SYS_ERR_PERM, and the central capability gate
+# returns before the handler runs. Both syscalls were "tested"; neither handler
+# had ever executed; and issue #176 -- a pointer truncation in both wrappers,
+# 100% reproducible for every static buffer in the system -- was invisible to
+# all 100 checks.
+#
+# The tracked workloads are the two in `make smoke-syscall-coverage`: the full
+# ring-3 session (tools/session_test.py) and the capability conformance suite.
+# Their union is MEASURED on every run by tools/check_syscall_coverage.py, which
+# fails if:
+#   - an implemented syscall is in neither list (an unanswered question, the
+#     [C-6] failure mode applied to test coverage);
+#   - a syscall listed `covered` is NOT entered (a test quietly stopped
+#     exercising it);
+#   - a syscall listed `uncovered` IS entered (the reason has gone stale and it
+#     should be promoted).
+#
+# This does not demand 76 of 76. It demands that the number be decided rather
+# than drifting, and that every gap be written down.
+#
+# The `uncovered` reasons say why the TRACKED WORKLOADS do not reach each one.
+# Where a reason names another build that would, that is a hypothesis this file
+# has not measured -- adding those builds to the tracked set is the follow-up,
+# and each promotion should be a measurement, not an edit to the reason.
+
+covered:
+  - SYS_EXIT
+  - SYS_SBRK
+  - SYS_WRITE
+  - SYS_WAIT
+  - SYS_GET_TASK_INFO
+  - SYS_GETPID
+  - SYS_IPC_SEND
+  - SYS_IPC_RECV
+  - SYS_IPC_CALL
+  - SYS_NOTIFY
+  - SYS_WAIT_NOTIFY
+  - SYS_SPAWN
+  - SYS_GETUID
+  - SYS_AUTH
+  - SYS_SUDO
+  - SYS_USERADD
+  - SYS_USERDEL
+  - SYS_PASSWD
+  - SYS_REGISTER_FS_SERVER
+  - SYS_CONNECT_FS_SERVER
+  - SYS_CAP_REVOKE
+  - SYS_FS_INODE_ALLOC
+  - SYS_FBLOCK_READ
+  - SYS_FBLOCK_WRITE
+  - SYS_FS_STAT
+  - SYS_FS_SET_SIZE
+  - SYS_KILL
+  - SYS_CAP_GRANT
+  - SYS_SIGNAL
+  - SYS_SIGMASK
+  - SYS_SIGALTSTACK
+  - SYS_IPC_SENDER
+  - SYS_FS_SET_META
+  - SYS_IPC_REPLY_TO
+  - SYS_BOOT_MODULE_INFO
+  - SYS_MAP_PHYS
+  - SYS_IOPORT_GRANT
+  - SYS_CONSOLE_OWNED
+  - SYS_DMESG
+  - SYS_TASK_RESUME
+  - SYS_RETYPE
+  - SYS_UNTYPED_INFO
+  - SYS_IPC_RECV_BLOCK
+
+uncovered:
+  SYS_GET_LINE: >-
+    kernel-side console input; fails closed once console_server owns the UART, so a live session never reaches it
+  SYS_READ: >-
+    fd 0 refuses under console_hw_owned() for the same reason as SYS_GET_LINE, and neither workload drives an fd>=3 ramfs read
+  SYS_OPEN: >-
+    ramfs open; the shell uses the fs_server IPC path instead
+  SYS_EXEC: >-
+    exec/spawn family; exercised by gated selftest builds that are not in the tracked set
+  SYS_IPC_REPLY: >-
+    servers in this tree reply through the reply-capability path, not this call
+  SYS_RECEIVE_PROGRAM: >-
+    receives a program image over IPC; no tracked workload provisions a program this way
+  SYS_GET_PASS: >-
+    the same kernel-side console-input path; login reads the password through console_server, not through the kernel
+  SYS_ROTATE_KEYS: >-
+    rotates the audit-chain keys and needs CAP_AUDIT, which captest does not hold -- it asserts the refusal, which returns before the handler
+  SYS_READ_AUDIT: >-
+    needs CAP_AUDIT; captest holds none and asserts the REFUSAL, which returns before the handler -- exactly the shape that hid issue #176
+  SYS_REGISTER_STORAGE_BACKEND: >-
+    fs_server storage wiring; runs during provisioning boots, not these
+  SYS_BLOCK_READ: >-
+    a raw block read through the storage backend; the tracked workloads reach storage through fs_server's higher-level calls instead
+  SYS_BLOCK_WRITE: >-
+    a raw block write through the storage backend; the tracked workloads reach storage through fs_server's higher-level calls instead
+  SYS_AUDIT_DIGEST: >-
+    as SYS_READ_AUDIT, and one of the two wrappers issue #176 was about
+  SYS_PREEMPT_TRACE: >-
+    reports preemption counters and exists only in the PREEMPT_SELFTEST build, which is not in the tracked set
+  SYS_SIGACTION: >-
+    signal delivery; SIGNAL_SELFTEST build only
+  SYS_SIGRETURN: >-
+    the return path out of a signal handler, so it runs only once a handler has been delivered; SIGNAL_SELFTEST build only
+  SYS_FS_INODE_FREE: >-
+    fs_server inode teardown; not reached by either workload's file operations
+  SYS_BRK: >-
+    newlib's allocator uses SYS_SBRK (17), which IS covered; brk is the unused half of the pair
+  SYS_EXEC_NAMED: >-
+    the by-name exec entry point; exercised by gated exec selftest builds that are not in the tracked set
+  SYS_SPAWN_ARG: >-
+    stages an argv for a spawn; only the gated argv selftest builds drive it
+  SYS_GET_ARGV: >-
+    read by a spawned child collecting its argv; only the gated argv selftest builds drive it
+  SYS_SPAWN_IMAGE: >-
+    the spawn-a-staged-image entry point; exercised by gated selftest builds that are not in the tracked set
+  SYS_EXEC_IMAGE: >-
+    the exec-a-staged-image entry point; exercised by gated selftest builds that are not in the tracked set
+  SYS_FS_INODE_LINK: >-
+    links an inode into a directory; neither workload creates a hard link
+  SYS_BOOT_MODULE_READ: >-
+    only a COREUTILS_MODULES provisioning boot reads modules
+  SYS_IRQ_REGISTER: >-
+    routes a hardware IRQ to a notification and needs CAP_IO_DEVICE; only the gated IRQ selftest build endows a task with one
+  SYS_PIPE: >-
+    the shell builds pipes for pipelines; session_test.py runs no pipeline. A gap in the WORKLOAD, not in the kernel -- the cheapest one on this list to close
+  SYS_PIPE_READ: >-
+    reached only by a task reading a pipe the shell built for a pipeline, and neither workload runs one
+  SYS_PIPE_WRITE: >-
+    reached only by a task writing a pipe the shell built for a pipeline, and neither workload runs one
+  SYS_PIPE_CLOSE: >-
+    reached only when a pipeline stage tears its end down, and neither workload runs a pipeline
+  SYS_STDIO_INFO: >-
+    as SYS_PIPE: read by a child wiring up inherited stdio
+  SYS_IRQ_POLICY_INFO: >-
+    answers NOSYS unless IRQ_POLICY_AUDIT is set; that build is not in the tracked set
+  SYS_TASK_EXIT_INFO: >-
+    task reaping; driven by the PROC_SELFTEST workload, not by these two

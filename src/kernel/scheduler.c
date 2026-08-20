@@ -1377,6 +1377,33 @@ static int ksp_is_bogus(uint64_t ksp)
     return 1;
 }
 
+/* The range test above is necessary and NOT sufficient, and [G-9] is the proof.
+ *
+ * per_task_kstacks, ap_idle_stacks and ap_ist all live inside
+ * [__bss_start, __bss_end), and their guard pages are armed by being made
+ * ABSENT rather than by being placed somewhere a bounds test could see. So a
+ * stack pointer that has walked into a neighbouring slot's guard page passes
+ * every address-range check there is -- and then takes a not-present supervisor
+ * write the instant the ISR epilogue pushes to it. Captured 2026-08-20:
+ *
+ *   PAGE FAULT at 0xffffffff806fa0a0 err=0x2(not-present,write,supervisor)
+ *     rip=interrupt_handler64+0x4a8  ->  ap_idle_stacks + 0x90a0
+ *
+ * AP_IDLE_STACK_SIZE is 0x9000 and slot `c` is [guard page][stack], so 0x90a0 is
+ * 0xa0 into CPU 1's GUARD PAGE. The range-only guard had been handed that value
+ * and passed it, which is why it never fired while the workload kept failing.
+ *
+ * So the question is asked of the page tables instead. This is a walk on the
+ * switch path, not the interrupt path -- it runs when a CPU actually changes
+ * task, which is where the cost belongs. */
+static int ksp_is_unmapped(uint64_t ksp)
+{
+    /* The push lands BELOW the resume value, so the byte the epilogue actually
+     * writes is what has to be mapped. Check both: a value one byte into a live
+     * page whose neighbour is a guard is still fatal. */
+    return !kern_addr_present(ksp) || !kern_addr_present(ksp - 8);
+}
+
 /* Report and refuse. Returns 0 so the caller takes its "nothing runnable" path.
  * `who` is the producing function; `t` the task whose saved_ksp it is. */
 static uint64_t ksp_refuse(const char *who, int t, uint64_t ksp)
@@ -1553,7 +1580,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     KSTACK_WIDEN(cpu);
     /* The selection loop only required saved_ksp to be NON-ZERO, which
      * rejects a cleared slot and nothing else. `-7` is non-zero. */
-    if (ksp_is_bogus(ksp)) return ksp_refuse("preempt_on_tick", next, ksp);
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("preempt_on_tick", next, ksp);
     return ksp;
 #endif
 }
@@ -1672,7 +1699,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     KSTACK_WIDEN(cpu);
     /* The selection loop only required saved_ksp to be NON-ZERO, which
      * rejects a cleared slot and nothing else. `-7` is non-zero. */
-    if (ksp_is_bogus(ksp)) return ksp_refuse("ipc_block_switch", next, ksp);
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("ipc_block_switch", next, ksp);
     return ksp;
 #else
     int next = -1;
@@ -1913,7 +1940,7 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
 #endif
     /* The selection loop only required saved_ksp to be NON-ZERO, which
      * rejects a cleared slot and nothing else. `-7` is non-zero. */
-    if (ksp_is_bogus(ksp)) return ksp_refuse("sched_yield_switch", next, ksp);
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("sched_yield_switch", next, ksp);
     return ksp;
 }
 
@@ -2076,7 +2103,7 @@ uint64_t task_exit_switch(int dead) {
      * producer the PROC_SELFTEST workload drives. Never a shipping config. */
     ksp = (uint64_t)-7;
 #endif
-    if (ksp_is_bogus(ksp)) return ksp_refuse("task_exit_switch", next, ksp);
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("task_exit_switch", next, ksp);
     return ksp;
 }
 

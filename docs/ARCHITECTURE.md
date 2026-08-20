@@ -903,7 +903,13 @@ one core could be taken by another — which then resumed that task's fresh trap
 core that ran the exec was still on it. The storage is per-CPU now, with a standing assertion in
 `exec_reenter_switch`; falsified with `EXEC_REENTER_GLOBAL=1` at 0 thefts in 30 boots against 5
 in 20. Two residues remain and are not the exec race: a claim leaked in the boot/spawn phase, and
-a CPL-0 write-fault at `lapic_eoi`. See `LIMITATIONS.md` §5.2d.
+a CPL-0 write-fault at `lapic_eoi`. *Narrowed again 2026-08-20*: the surviving fault is a
+supervisor write to `ap_idle_stacks + 0x90a0` from `interrupt_handler64 + 0x4a8` — `0xa0`
+**above** slot 0's stack top, inside slot 1's guard page — and the four `saved_ksp`
+producers are ruled out by a page-table-based guard that did not fire in 57 boots
+containing a reproduction. The claim invariant is intact in those captures, so the
+"unclaimed running task" description belongs to the other signature filed under this
+number. See `LIMITATIONS.md` §5.2d.
 
 **G-10 — the spawn/exec path is process-wide singleton state.** *Closed 2026-08-18; its page-table
 half fixed 2026-08-17.* The half that closed first was a **use-after-free of page tables reachable

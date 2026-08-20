@@ -1871,6 +1871,10 @@ void serial_write_char(char c);
 int  copy_from_user(void *kdst, const void *usrc, size_t len);
 int  copy_to_user(void *udst, const void *ksrc, size_t len);
 int  user_protect_page(uint64_t vaddr, int writable, int executable);
+/* 1 if the kernel's own mapping of `vaddr` is present. Used by the resume-%rsp
+ * guards: guard pages live inside .bss and are armed by being made ABSENT, so
+ * only a page-table question can tell a real stack from the guard beside it. */
+int kern_addr_present(uint64_t vaddr);
 uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr);
 #ifdef ELF_SELFTEST
 void elf_loader_selftest(void);

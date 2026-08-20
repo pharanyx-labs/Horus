@@ -1335,8 +1335,34 @@ jobs:
       - name: Remove the owner check and require the foreign image to be SPAWNED
         run: make smoke-spawn-owner-control
 
+  syscall-coverage:
+    name: "Which syscall handlers a test actually enters is decided, not drifting"
+    runs-on: ubuntu-latest
+    # Two clean builds and two full workloads (a scripted ring-3 session, then
+    # the conformance suite). The session is the long pole.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # captest is a REFUSAL suite: its checks for SYS_DMESG and SYS_AUDIT_DIGEST
+      # both assert SYS_ERR_PERM, and the capability gate returns before the
+      # handler runs. Both syscalls were named by the suite, neither handler had
+      # ever executed, and issue #176 -- reproducible for every static buffer in
+      # the system -- was invisible to all 100 checks. This measures which
+      # handler bodies actually run and fails on drift in EITHER direction.
+      - name: Measure handler entry and diff against the manifest
+        run: make smoke-syscall-coverage
+
   syscall-abi:
-    name: Every user pointer reaches the kernel full-width (issue #176)
+    name: "Every user pointer reaches the kernel full-width (issue #176)"
     runs-on: ubuntu-latest
     # Source analysis only -- no build, no QEMU. Seconds.
     timeout-minutes: 10

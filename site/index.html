@@ -1850,6 +1850,41 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
+            <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
+            <p>
+              <strong>Measured 2026-08-20</strong>, and checked on every merge since.
+              <strong>43 of 76</strong> system calls have their handler actually executed by the
+              two workloads this project tracks — a scripted end-to-end session, and the
+              permission conformance suite. The other 33 are each listed with a written reason.
+            </p>
+            <p>
+              Nothing on that list is known to be broken. What is known is that a fault in any of
+              them would hide exactly as the one above it did. The conformance suite is a
+              <em>refusal</em> suite by design: it checks that a program without permission is
+              turned away, and a refusal is decided before the call's body ever runs. So two
+              calls could be named by the suite, counted as tested, and have their implementation
+              never once execute — which is precisely what happened, and why a fault reproducible
+              for every fixed variable in the system survived a hundred passing checks.
+            </p>
+            <p>
+              The build can now record the first time each call's body is entered and say so on
+              the wire, and a checked-in file classifies all 76 — covered, or not covered with a
+              reason. The check fails if a call is in neither list, if a covered one stops being
+              exercised, if an uncovered one starts being exercised and its reason has gone
+              stale, or if the recording produced nothing at all. That last case is the one that
+              would otherwise let the whole check pass while measuring nothing.
+            </p>
+            <p>
+              It deliberately does not demand all 76. That would be a large amount of
+              test-writing wearing the costume of a guarantee. What it demands is that the number
+              be decided rather than drifting, and that every gap be written down — the same
+              bargain this project already makes with which tests are allowed to block a merge.
+              Two of the gaps are cheap: a family of calls is untested only because the scripted
+              session never runs a command pipeline, which is a gap in the script rather than in
+              the kernel.
+            </p>
+          </li>
+          <li>
             <h3><span class="id">#176</span>The kernel was handed an address nobody asked for</h3>
             <p>
               <strong>Found and closed 2026-08-20</strong>, while writing the witness for the

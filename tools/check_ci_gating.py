@@ -20,6 +20,7 @@ Exit status is 0 only when every job is classified and every advisory entry name
 a real job and carries a reason.
 """
 import argparse
+import re
 import json
 import subprocess
 import sys
@@ -171,6 +172,37 @@ def main():
     required_ids = set(gating.get("required") or [])
 
     problems = []
+
+    # A job `name:` carrying an UNQUOTED '#' loses everything from the '#' on --
+    # YAML reads it as a comment. The name is the status-check context, so the
+    # truncated string is what lands in the ruleset, and because this tool
+    # compares parsed-name to parsed-name it agrees with itself and notices
+    # nothing. That is how `syscall-abi` shipped as "...full-width (issue" on
+    # 2026-08-20. Harmless there only because both sides truncated identically;
+    # the hazard is a later rename changing the context and freezing every PR
+    # between the merge and the next --sync-ruleset. Checked against the RAW
+    # text, since by the time YAML is parsed the evidence is gone.
+    for wf in WORKFLOWS:
+        try:
+            raw = open(wf, encoding="utf-8").read()
+        except OSError:
+            continue
+        for lineno, line in enumerate(raw.splitlines(), 1):
+            m = re.match(r"\s*name:\s*(.*?)\s*$", line)
+            if not m:
+                continue
+            # Test the captured value rather than a lookahead: `\s*` will give
+            # the space back so a lookahead sees whitespace instead of the quote
+            # it was meant to reject, and the check silently passes everything.
+            val = m.group(1)
+            if val[:1] in ('"', "'"):
+                continue
+            if " #" in val:
+                problems.append(
+                    f"{wf}:{lineno}: name has an unquoted '#', so YAML "
+                    f"truncates it to \"{val.split(' #')[0]}\" -- quote the "
+                    f"whole value"
+                )
 
     # The whole point: a job in NEITHER list is an unanswered gating question, and
     # answering it by default is what produced [C-6]. Adding a job to ci.yml must

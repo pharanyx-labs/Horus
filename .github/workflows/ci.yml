@@ -25,6 +25,11 @@ jobs:
   ci-gating:
     name: Every CI job is classified as gating or exempted (with a reason)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
@@ -42,6 +47,11 @@ jobs:
   doc-claims:
     name: Every documented count matches the tool that derives it
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
@@ -68,6 +78,11 @@ jobs:
   rust:
     name: Rust unit tests + clippy (deny-warnings gate)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install clippy component
@@ -109,6 +124,11 @@ jobs:
   kernel:
     name: Build kernel.elf + bootable ISO (x86_64)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain
@@ -140,6 +160,11 @@ jobs:
   altconfigs:
     name: Build alternate configs (${{ matrix.config }})
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -168,6 +193,11 @@ jobs:
   smoke:
     name: QEMU smoke-boot (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -185,6 +215,11 @@ jobs:
   smoke-aspace:
     name: QEMU address-space reclaim self-test (a rebuilt slot leaks nothing)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -202,6 +237,11 @@ jobs:
   smoke-wx:
     name: QEMU kernel W^X self-test (no writable+executable page anywhere)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -219,6 +259,11 @@ jobs:
   smoke-wx-smp:
     name: QEMU kernel W^X self-test, SMP (per-CPU AP IST stack guards)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -246,6 +291,11 @@ jobs:
   smoke-heap64:
     name: QEMU 64-bit heap self-test (heap above 4 GiB is reachable and pageable)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -263,6 +313,11 @@ jobs:
   smoke-captest:
     name: QEMU capability/syscall conformance self-test (refusals)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -280,6 +335,11 @@ jobs:
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -297,6 +357,11 @@ jobs:
   smoke-modules-tamper:
     name: QEMU boot-module integrity gate (a tampered module payload is refused)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -314,6 +379,11 @@ jobs:
   smoke-tpm:
     name: Measured boot (TPM PCRs match the reproducible manifest)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU + swtpm
@@ -331,6 +401,11 @@ jobs:
   smoke-tpm-tamper:
     name: Measured boot falsification (a tampered module diverges the PCRs)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU + swtpm
@@ -348,6 +423,11 @@ jobs:
   smoke-tpm-seal-roundtrip:
     name: TPM seal/unseal round-trip (PolicyPCR-bound secret)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU + swtpm
@@ -365,6 +445,11 @@ jobs:
   smoke-tpm-seal:
     name: TPM-sealed vdisk KEK (measured-good boot unlocks; changed PCR stays locked)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU + swtpm
@@ -382,6 +467,11 @@ jobs:
   smoke-coreutils-shell:
     name: QEMU GNU coreutils via the shell (head / wc / seq on real files)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -399,6 +489,11 @@ jobs:
   smoke-tcc:
     name: QEMU TCC (Tiny C Compiler) runs from /bin over the shell
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -418,6 +513,11 @@ jobs:
   smoke-term:
     name: QEMU console raw-terminal layer (termios + winsize + raw I/O)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -435,6 +535,11 @@ jobs:
   smoke-cpu:
     name: QEMU CPU-protection self-test (SMEP/SMAP actually in CR4)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -452,6 +557,11 @@ jobs:
   smoke-percpu:
     name: QEMU per-CPU identity self-test (TR-derived cpu id == LAPIC, every core)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -469,6 +579,11 @@ jobs:
   smoke-flush:
     name: QEMU flush-on-switch self-test (side-channel barriers detection + policy)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -486,6 +601,11 @@ jobs:
   smoke-stackguard:
     name: QEMU stack-guard self-test (canary re-seeded from CSPRNG, not the build constant)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -503,6 +623,11 @@ jobs:
   smoke-elf:
     name: QEMU ELF-loader W^X self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -520,6 +645,11 @@ jobs:
   smoke-elf64:
     name: QEMU ELF64 loader relocation self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -537,6 +667,11 @@ jobs:
   smoke-preempt:
     name: QEMU preemptive-scheduling self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -554,6 +689,11 @@ jobs:
   smoke-signal:
     name: QEMU signal-handling self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -571,6 +711,11 @@ jobs:
   smoke-tsd:
     name: QEMU RDTSC/TSD self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -588,6 +733,11 @@ jobs:
   smoke-e820:
     name: QEMU E820 physical-pool self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -605,6 +755,11 @@ jobs:
   smoke-smp:
     name: QEMU SMP self-test (headless, -smp 4)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -622,6 +777,11 @@ jobs:
   smoke-smt:
     name: QEMU SMT sibling-parking self-test (headless, -smp 4 cores=2 threads=2)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -639,6 +799,11 @@ jobs:
   smoke-console-smp:
     name: QEMU SMP console-output regression (headless, -smp 4)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -656,6 +821,11 @@ jobs:
   smoke-irq-policy:
     name: QEMU boot interrupt-policy gate (IF at each milestone)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -677,6 +847,11 @@ jobs:
   smoke-sched-invariants:
     name: QEMU SMP scheduler claim invariant, 30 boots (headless, -smp 4)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -699,6 +874,11 @@ jobs:
   smoke-proc:
     name: QEMU process-control self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -716,6 +896,11 @@ jobs:
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -733,6 +918,11 @@ jobs:
   smoke-nzcow:
     name: QEMU non-zero copy-on-write self-test (generic break path, headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -750,6 +940,11 @@ jobs:
   smoke-aslr:
     name: QEMU image-base ASLR self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -767,6 +962,11 @@ jobs:
   smoke-notify:
     name: QEMU async-notification self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -784,6 +984,11 @@ jobs:
   smoke-recvblock:
     name: QEMU blocking-receive self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -801,6 +1006,11 @@ jobs:
   smoke-recvblock-smp:
     name: QEMU blocking-receive self-test under SMP (-smp 4, cross-CPU wake)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -818,6 +1028,11 @@ jobs:
   smoke-mapphys:
     name: QEMU map-phys device-frame self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -835,6 +1050,11 @@ jobs:
   smoke-ioport:
     name: QEMU port-I/O bitmap self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -852,6 +1072,11 @@ jobs:
   smoke-irq:
     name: QEMU IRQ-notification bridge self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -869,6 +1094,11 @@ jobs:
   smoke-console:
     name: QEMU ring-3 console-server self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -886,6 +1116,11 @@ jobs:
   smoke-console-isolation:
     name: QEMU console blast-radius self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -903,6 +1138,11 @@ jobs:
   smoke-kfault:
     name: A CPL-0 fault is heard on serial (and the control arm is not)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -925,6 +1165,11 @@ jobs:
   smoke-resume-guard:
     name: The resume-%rsp floor guard fires and is heard (and both control arms are not)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1136,6 +1381,11 @@ jobs:
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1153,6 +1403,11 @@ jobs:
   smoke-session-smp:
     name: Scripted integration session under SMP (-smp 4, drives the real shell)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1245,6 +1500,11 @@ jobs:
   smoke-fs:
     name: QEMU filesystem self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1262,6 +1522,11 @@ jobs:
   smoke-fs-perms:
     name: QEMU filesystem permissions self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1279,6 +1544,11 @@ jobs:
   smoke-fs-conc:
     name: QEMU filesystem multi-client concurrency self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1296,6 +1566,11 @@ jobs:
   smoke-fs-persist:
     name: QEMU filesystem persistence self-test (two-boot, headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1313,6 +1588,11 @@ jobs:
   smoke-fs-wal:
     name: QEMU filesystem journal crash-recovery self-test (two-boot, headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1330,6 +1610,11 @@ jobs:
   smoke-fs-wal-flush:
     name: QEMU journal durability gate (a failed FLUSH CACHE aborts the commit)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1355,6 +1640,11 @@ jobs:
   smoke-fs-wal-order:
     name: QEMU journal write-ahead ordering (barriers bracket the commit record)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1378,6 +1668,11 @@ jobs:
   smoke-fs-large:
     name: QEMU large-file (double-indirect) self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1395,6 +1690,11 @@ jobs:
   smoke-pipe:
     name: QEMU pipe self-test (round-trip / EOF / EPIPE / back-pressure)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1412,6 +1712,11 @@ jobs:
   smoke-init-fs:
     name: QEMU delegated boot-through-init filesystem self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1429,6 +1734,11 @@ jobs:
   smoke-newlib-tamper:
     name: Supply-chain falsification (a tampered newlib tarball is refused)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       # The test itself needs no QEMU, no kernel build and no network -- the
@@ -1445,6 +1755,11 @@ jobs:
   smoke-newlib:
     name: QEMU newlib libc self-test (headless)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1472,6 +1787,11 @@ jobs:
   reproducible:
     name: Verify reproducible kernel build
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       # reproducible-build now builds boot.iso as well, because recording a
@@ -1554,6 +1874,11 @@ jobs:
   security:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
@@ -1676,6 +2001,11 @@ jobs:
   fuzz:
     name: FFI fuzzing (cargo-fuzz, advisory)
     runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 

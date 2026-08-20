@@ -8,6 +8,39 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — [G-9] narrowed: four producers ruled out, and the fault located
+
+**It reproduces, and my previous report that it did not was a broken harness.** Pinning to two
+host cores is what opens the window — `tools/stress_boot.sh` does it for exactly this reason —
+and the unpinned runs measured nothing. Pinned, `PROC_SELFTEST=1` at `-smp 4`: 3 failures in 40
+on the pre-2026-08-20 tree, 1 in 40 mid-way, 2 in 57 on current `main`.
+
+**The fault is the same every time and it is not a wild pointer.** Symbolised against the
+`kernel.elf` that produced it: `rip = interrupt_handler64 + 0x4a8`, writing to
+`ap_idle_stacks + 0x90a0`, not-present, supervisor. With `AP_IDLE_STACK_SIZE = 0x9000` and each
+slot laid out `[guard page][stack]`, that address is `0xa0` into **CPU 1's guard page** — which
+is `0xa0` *above slot 0's stack top*, and `ap_park_stack_top(0)` returns exactly that top. So
+it is a stack pointer that has ended up above the stack it belongs to, with slot 1's guard
+backstopping slot 0's top as a side effect of the layout.
+
+**Two eliminations, both measured.** The four `saved_ksp` producers — `preempt_on_tick`,
+`ipc_block_switch`, `sched_yield_switch`, `task_exit_switch` — now validate what they return
+against the **page tables** rather than an address range, and did not fire once across 57 boots
+that contained a reproduction. And the claim invariant is **intact** in every capture
+(`running_cpu` agrees with `percpu_current`), so the "unclaimed running task" description
+belongs to the older `-7` signature: two different faults have been filed under one number.
+
+**Why the range check could never have caught it.** `per_task_kstacks`, `ap_idle_stacks` and
+`ap_ist` all live inside `[__bss_start, __bss_end)`, and their guards are armed by being made
+*absent*, not by being placed outside any range. A pointer that has walked into a guard page
+passes every address-range test in the tree. `kern_addr_present()` asks the page tables
+instead, checking both the resume value and the byte 8 below it, where the epilogue actually
+pushes.
+
+[G-9] stays open. What is left is `exec_reenter_switch`, the page-fault path, and the
+possibility that the resume value was never wrong — that the CPU was already running on a bad
+stack when the interrupt arrived.
+
 ### Added — a bogus resume `%rsp` is now refused where it is produced, and names the producer
 
 **[G-9]**'s open residue is a `-7` handed back by the dispatcher. `interrupt_handler64` already

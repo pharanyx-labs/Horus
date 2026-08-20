@@ -26,9 +26,24 @@
 # than drifting, and that every gap be written down.
 #
 # The `uncovered` reasons say why the TRACKED WORKLOADS do not reach each one.
-# Where a reason names another build that would, that is a hypothesis this file
-# has not measured -- adding those builds to the tracked set is the follow-up,
-# and each promotion should be a measurement, not an edit to the reason.
+#
+# Ten of them used to name another build that supposedly would, as unmeasured
+# hypotheses. All ten were measured on 2026-08-20 by booting those builds under
+# SYSCALL_COVERAGE=1, and each now records what was OBSERVED rather than what was
+# assumed. Six were confirmed; FOUR WERE WRONG -- SIGNAL_SELFTEST does not drive
+# sigaction or sigreturn (it passes while entering only syscalls 0 and 11), and
+# IRQ_POLICY_AUDIT does not drive SYS_IRQ_POLICY_INFO. Two more, SYS_EXEC and
+# SYS_EXEC_IMAGE, are reached by no build known in this tree.
+#
+# The six confirmed are NOT promoted to `covered`, and the reason is a cost
+# judgement rather than a doubt: `covered` means "a TRACKED arm enters it", and
+# each of those builds is a full kernel build plus a boot. PROC_SELFTEST is the
+# only one worth its cost (4 promotions, 21 syscalls entered) and it is the one
+# that must not be added yet -- its workload still trips [G-9] on ~7% of boots,
+# so it would make this gate intermittently red for a reason that is not about
+# coverage. IRQ_SELFTEST buys one promotion for a full build and PREEMPT_SELFTEST
+# buys exactly one. Promoting them is a follow-up to closing [G-9], and the
+# measurements above are what that follow-up should start from.
 
 covered:
   - SYS_EXIT
@@ -91,7 +106,7 @@ uncovered:
   SYS_OPEN: >-
     ramfs open; the shell uses the fs_server IPC path instead
   SYS_EXEC: >-
-    exec/spawn family; exercised by gated selftest builds that are not in the tracked set
+    MEASURED 2026-08-20: NOT entered by any of PROC_SELFTEST, SIGNAL_SELFTEST, PREEMPT_SELFTEST, IRQ_SELFTEST or IRQ_POLICY_AUDIT. No build in this tree is known to reach it
   SYS_IPC_REPLY: >-
     servers in this tree reply through the reply-capability path, not this call
   SYS_RECEIVE_PROGRAM: >-
@@ -111,26 +126,26 @@ uncovered:
   SYS_AUDIT_DIGEST: >-
     as SYS_READ_AUDIT, and one of the two wrappers issue #176 was about
   SYS_PREEMPT_TRACE: >-
-    reports preemption counters and exists only in the PREEMPT_SELFTEST build, which is not in the tracked set
+    MEASURED 2026-08-20: entered by a PREEMPT_SELFTEST=1 boot. Not a tracked arm; that build enters exactly 1 syscall, the worst ratio on this list
   SYS_SIGACTION: >-
-    signal delivery; SIGNAL_SELFTEST build only
+    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot -- NOT by SIGNAL_SELFTEST=1, which this entry previously claimed. That build passes while entering only syscalls 0 and 11, so it never drives sigaction at all
   SYS_SIGRETURN: >-
-    the return path out of a signal handler, so it runs only once a handler has been delivered; SIGNAL_SELFTEST build only
+    MEASURED 2026-08-20: NOT entered by a SIGNAL_SELFTEST=1 boot, which this entry previously claimed. That build passes while entering only syscalls 0 and 11
   SYS_FS_INODE_FREE: >-
     fs_server inode teardown; not reached by either workload's file operations
   SYS_BRK: >-
     newlib's allocator uses SYS_SBRK (17), which IS covered; brk is the unused half of the pair
   SYS_EXEC_NAMED: >-
-    the by-name exec entry point; exercised by gated exec selftest builds that are not in the tracked set
+    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not promoted to `covered` because that build is not a tracked arm -- see the note on measured-but-untracked below
   SYS_SPAWN_ARG: >-
-    stages an argv for a spawn; only the gated argv selftest builds drive it
+    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not a tracked arm
   SYS_EXEC_IMAGE: >-
-    the exec-a-staged-image entry point; exercised by gated selftest builds that are not in the tracked set
+    MEASURED 2026-08-20: NOT entered by any of the five selftest builds tried. No build in this tree is known to reach it
   SYS_FS_INODE_LINK: >-
     links an inode into a directory; neither workload creates a hard link
   SYS_IRQ_REGISTER: >-
-    routes a hardware IRQ to a notification and needs CAP_IO_DEVICE; only the gated IRQ selftest build endows a task with one
+    MEASURED 2026-08-20: entered by an IRQ_SELFTEST=1 boot. Not a tracked arm; that build enters 4 syscalls in total, so it buys one promotion for a full build
   SYS_IRQ_POLICY_INFO: >-
-    answers NOSYS unless IRQ_POLICY_AUDIT is set; that build is not in the tracked set
+    MEASURED 2026-08-20: NOT entered by an IRQ_POLICY_AUDIT=1 boot, which this entry previously claimed would reach it. Nothing in that image calls it
   SYS_TASK_EXIT_INFO: >-
-    task reaping; driven by the PROC_SELFTEST workload, not by these two
+    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not a tracked arm

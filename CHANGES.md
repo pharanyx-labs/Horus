@@ -8,6 +8,40 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Changed — ten coverage hypotheses were measured, and four of them were wrong
+
+`.github/syscall-coverage.yml` carried ten `uncovered` entries whose reason named another build
+that supposedly *would* reach the syscall. Its own header called those hypotheses and said
+promoting one should be a measurement rather than an edit to the reason. They have now been
+measured, by booting each of those builds under `SYSCALL_COVERAGE=1`.
+
+**Six confirmed.** `SYS_EXEC_NAMED`, `SYS_SIGACTION`, `SYS_SPAWN_ARG` and `SYS_TASK_EXIT_INFO`
+are entered by a `PROC_SELFTEST=1` boot; `SYS_IRQ_REGISTER` by `IRQ_SELFTEST=1`;
+`SYS_PREEMPT_TRACE` by `PREEMPT_SELFTEST=1`.
+
+**Four were wrong**, which is the part worth having done:
+
+- `SYS_SIGACTION` and `SYS_SIGRETURN` were attributed to `SIGNAL_SELFTEST`. That build
+  **passes while entering only syscalls 0 and 11** — it never drives either. Sigaction is
+  reached by `PROC_SELFTEST` instead; sigreturn by nothing measured.
+- `SYS_IRQ_POLICY_INFO` was attributed to `IRQ_POLICY_AUDIT=1`. Nothing in that image calls it.
+- `SYS_EXEC` and `SYS_EXEC_IMAGE` are reached by none of the five builds tried, and by no build
+  known in this tree.
+
+Each entry now records what was **observed**, with the date, rather than what was assumed.
+
+**The six confirmed are deliberately not promoted to `covered`**, and that is a cost judgement
+rather than a doubt. `covered` means *a tracked arm enters it*, and each build is a full kernel
+build plus a boot. `PROC_SELFTEST` is the only one worth its cost — 4 promotions, 21 syscalls
+entered — and it is precisely the one that cannot be added yet: **its workload still trips
+[G-9] on ~7% of boots**, so it would make the coverage gate intermittently red for a reason
+that has nothing to do with coverage. `IRQ_SELFTEST` buys one promotion for a full build and
+`PREEMPT_SELFTEST` buys exactly one.
+
+Promoting them is a follow-up to closing **[G-9]**, and these measurements are where it should
+start. The coverage number is unchanged at 51 of 76 — no syscall became better tested today,
+but six claims stopped being guesses and four stopped being false.
+
 ### Added — a pipeline, and eight syscalls that turned out to be reachable after all
 
 The syscall-coverage manifest listed the pipe family as uncovered because

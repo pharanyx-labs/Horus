@@ -8,6 +8,45 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — a bogus resume `%rsp` is now refused where it is produced, and names the producer
+
+**[G-9]**'s open residue is a `-7` handed back by the dispatcher. `interrupt_handler64` already
+refuses and reports it, but that is a *consumer-side* check: it knows the value and the CPU and
+nothing about where the value came from, which is exactly why the finding is still open.
+
+All four switch functions — `preempt_on_tick`, `ipc_block_switch`, `sched_yield_switch`,
+`task_exit_switch` — end in the same three lines: take `tasks[next].saved_ksp`, drop the
+scheduler lock, return it. **Every selection loop above them required that value to be merely
+non-zero**, which rejects a cleared slot and nothing else. `-7` is non-zero.
+
+Each now checks the value against the same linker-derived bounds the consumer-side guard uses.
+On failure it reports the **producing function by name**, with the task and CPU, and returns 0
+— every caller already treats 0 as "nothing runnable" and parks this CPU on its own ring-0
+stack, which is survivable where `iretq` onto `-7` is not.
+
+Falsified by `KSP_GUARD_INJECT=1` (`make smoke-ksp-guard-control`, new required job
+`ksp-guard`), which forges `-7` in `task_exit_switch`:
+`SCHED BOGUS KSP from task_exit_switch task=2 ksp=0xfffffffffffffff9 cpu=0`.
+
+**This is a detector, not a fix, and [G-9] keeps its status.** What was measured today, with the
+guard active and nothing injected:
+
+| Run | Result |
+|---|---|
+| `PROC_SELFTEST` @ `-smp 4`, 50 boots, **unpinned** | 50 pass, 0 guard fires |
+| `PROC_SELFTEST` @ `-smp 4`, 30 boots, **pinned** (`tools/stress_boot.sh`, the documented harness) | 30 pass, 0 guard fires |
+| `make smoke-kstack-park` (the exempted gate carrying the ~7% figure) | 1 pass, 0 guard fires |
+
+**None of that is evidence the defect is gone.** At the documented 2-in-30, thirty clean boots
+happen about 13% of the time by luck, and a single pass of a probabilistic gate is worth
+nothing — this repository's own rule. The unpinned fifty are worth less still: `stress_boot.sh`
+pins to two host cores precisely because unpinned runs leave the window closed, so those fifty
+were the wrong experiment and are recorded only so the next person does not repeat them.
+
+What the guard buys is that the *next* reproduction names a producer instead of a value — or,
+if the workload fails while the guard stays silent, rules all four out and points at
+`exec_reenter_switch` and the page-fault path. Either is progress; today there is neither.
+
 ### Changed — ten coverage hypotheses were measured, and four of them were wrong
 
 `.github/syscall-coverage.yml` carried ten `uncovered` entries whose reason named another build

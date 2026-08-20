@@ -419,6 +419,14 @@ endif
 # reports it on the wire as `SYSCOV <n>`. Not a defect arm and not a shipping
 # configuration -- a measurement instrument, like SPAWN_STAGE_TRACE and
 # KSTACK0_PARK_TRACE. See tools/check_syscall_coverage.py.
+# KSP_GUARD_INJECT=1 forges the exact value [G-9] was seen to hand back (-7) in
+# task_exit_switch, so the producer-side guard has a falsifying arm. A guard that
+# has never been seen to fire is not a guard. Never a shipping configuration.
+KSP_GUARD_INJECT ?= 0
+ifeq ($(KSP_GUARD_INJECT),1)
+CFLAGS += -DKSP_GUARD_INJECT
+endif
+
 SYSCALL_COVERAGE ?= 0
 ifeq ($(SYSCALL_COVERAGE),1)
 CFLAGS += -DSYSCALL_COVERAGE
@@ -1919,6 +1927,23 @@ smoke-klog-forge:
 # tested. The FAIL marker must be PRESENT -- deterministically, on every boot,
 # since nothing here is racy. If this arm ever goes green, the gate above is
 # passing for a reason other than the one it claims.
+# ---- [G-9]: a bogus resume %rsp is refused where it is produced -------------
+# The producer-side half of the resume guard. KSP_GUARD_INJECT=1 forges -7 -- the
+# exact value [G-9] was seen to hand back -- in task_exit_switch, the producer the
+# PROC_SELFTEST workload drives. The report must name that producer.
+#
+# Asserts on the marker and not on the boot's verdict: the point is that the CPU
+# REFUSED and parked rather than iretq'ing onto -7, so the session continuing is
+# the success condition, not a clean exit status.
+.PHONY: smoke-ksp-guard-control
+smoke-ksp-guard-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
+		tools/smoke_test.sh boot.iso
+
 # ---- syscall handler-entry coverage ----------------------------------------
 # Measures which syscall HANDLER BODIES a tracked workload actually enters, and
 # diffs the union against .github/syscall-coverage.yml.

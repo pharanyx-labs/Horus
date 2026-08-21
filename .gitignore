@@ -11,6 +11,10 @@ kernel.elf
 boot.iso
 horus.iso
 .build.sha
+# Scratch output of a local double-build reproducibility check. Both were tracked
+# from the initial commit, holding the same stale kernel.elf hash. Untracked 2026-08-21.
+.build1.sha
+.build2.sha
 # scratch dir for smoke-repro-sha; removed on success, left behind on a failure
 .repro-sha-test/
 # the reproducible CI job's scratch files, if you run its steps by hand

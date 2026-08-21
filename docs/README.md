@@ -1,4 +1,4 @@
-# Horus Documentation
+# Horus documentation
 
 Technical documentation for the Horus microkernel. Start with the
 [project README](../README.md) for an overview.
@@ -25,17 +25,17 @@ Technical documentation for the Horus microkernel. Start with the
 **Evaluating the system**
 
 4. **[LIMITATIONS.md](LIMITATIONS.md)** — What does not work, what is not enforced, and where
-   the documentation used to overstate the case. Read this before drawing any conclusion
-   about Horus's readiness.
+   the documentation used to overstate the case. This is the authoritative status of every
+   finding. Read it before drawing any conclusion about Horus's readiness.
 
-5. **[AUDIT-2026-07-27.md](AUDIT-2026-07-27.md)** — The current full security and engineering
-   audit: kernel findings, process findings, and the enhancement roadmap. Supersedes
-   [AUDIT-2026-07.md](AUDIT-2026-07.md).
+5. **[AUDIT.md](AUDIT.md)** — The full security and engineering audit, with the July 2026
+   predecessor audit as Appendix A.
 
 **Working on the system**
 
 6. **[BUILDING.md](BUILDING.md)** — Toolchain, build targets, configuration flags, running
-   under QEMU and on hardware, reproducible builds, boot modules, troubleshooting.
+   under QEMU and on hardware, reproducible builds, boot modules, troubleshooting. Its
+   defect-flag table is the index of the control arms, and CI checks that it is complete.
 
 7. **[../TESTS.md](../TESTS.md)** — The test catalogue and what each test proves.
 
@@ -47,15 +47,31 @@ Technical documentation for the Horus microkernel. Start with the
 
 ---
 
+## Investigations
+
+The forensic record of the harder findings — how each was narrowed, which hypotheses were
+wrong, and how the rate was measured. Kept in full because in a security project the
+reasoning is the evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md),
+not here.
+
+| Investigation | Status |
+|---|---|
+| [`G-08-two-cpus-one-kernel-stack.md`](investigations/G-08-two-cpus-one-kernel-stack.md) | Closed 2026-08-17 |
+| [`G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md) | **Open** |
+| [`G-10-spawn-path-uaf.md`](investigations/G-10-spawn-path-uaf.md) | Closed 2026-08-18 |
+| [`G-11-armed-image-ownership.md`](investigations/G-11-armed-image-ownership.md) | Closed 2026-08-18 |
+
+---
+
 ## Reference material
 
 | File | Contents |
 |---|---|
 | [`cap_algebra.tla`](cap_algebra.tla) | TLA+ specification of the capability algebra |
 | [`paging_isolation.tla`](paging_isolation.tla) | TLA+ specification of address-space isolation |
-| [`proposals/console-server.md`](proposals/console-server.md) | The RFC behind the ring-3 console driver |
-| [`AUDIT-2026-07.md`](AUDIT-2026-07.md) | The previous audit (findings A1–A4, P1–P5), retained as a record |
-| [`../CHANGES.md`](../CHANGES.md) | Historical development log |
+| [`design/console-server.md`](design/console-server.md) | The design behind the ring-3 console driver, as built |
+| [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log: 117 narrative entries, newest first |
+| [`../CHANGES.md`](../CHANGES.md) | The changelog |
 
 The TLA+ specifications are **not yet model-checked in CI** — see roadmap item 3.5.
 
@@ -67,6 +83,12 @@ These documents are rewritten rather than patched when they drift from the code.
 set claimed IPC was "capability-gated" when the kernel did not in fact bind endpoints to
 capabilities — precisely the kind of overstatement that makes documentation dangerous in a
 security project.
+
+Three classes of claim are now checked rather than promised, because each had already gone
+stale silently: `tools/check_doc_claims.py` derives every documented count and the phrasings
+that must not reappear, `tools/check_gate_pairs.py` refuses an orphan control arm, and
+`tools/check_defect_flags.py` holds BUILDING.md's defect-flag table to being the complete list
+it claims to be. Each is a required CI job.
 
 **Where a document and the code disagree, the code is authoritative.** Please open an issue
 so the document gets fixed rather than the reader misled.

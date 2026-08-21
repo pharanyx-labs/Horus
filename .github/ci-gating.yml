@@ -96,6 +96,10 @@ required:
   - smoke-klog-forge
   - syscall-abi
   - gate-pairs
+  # Gating for the reason doc-claims is. The table it checks is the only
+  # index of the control arms, and an arm nobody can find is one nobody
+  # re-runs -- so a silent omission there quietly retires a falsification.
+  - defect-flags-documented
   - syscall-coverage
   - ksp-guard
   - defect-flags

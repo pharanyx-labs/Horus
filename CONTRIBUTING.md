@@ -17,7 +17,7 @@ Read, in this order:
 2. [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — what does not work. Many good ideas are
    already known gaps.
 3. [`docs/ROADMAP.md`](docs/ROADMAP.md) — what is planned, and in what order.
-4. [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md) — the open findings.
+4. [`docs/AUDIT.md`](docs/AUDIT.md) — the open findings.
 
 If you want high-impact work, the roadmap's **Track 0** items are the ones that matter most,
 and **Track 0.1** (capability-addressed IPC) is the single most valuable change available.

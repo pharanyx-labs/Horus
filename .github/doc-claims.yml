@@ -110,8 +110,6 @@ counts:
         pattern: '\*\*(\d+) of 76\*\*'
       - file: docs/LIMITATIONS.md
         pattern: '\*\*(\d+) of 76\*\*'
-      - file: CHANGES.md
-        pattern: '(\d+) of 76 implemented syscalls'
       - file: site/index.html
         pattern: '<strong>(\d+) of 76</strong>'
 
@@ -125,7 +123,7 @@ counts:
         pattern: '\| `smoke-captest` \| \*\*(\d+) checks\*\*'
       - file: docs/BUILDING.md
         pattern: 'are all refused \((\d+) checks'
-      - file: tests/README.md
+      - file: TESTS.md
         pattern: 'Capability conformance \((\d+) checks'
       - file: site/index.html
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
@@ -165,3 +163,22 @@ forbidden:
     reason: >-
       The `|| true` on `make test` was removed 2026-08-16; the exit status is
       real. Any document describing it as still swallowed is stale.
+
+  - pattern: 'host-side scratch code; built by no target and run by no workflow'
+    reason: >-
+      The repository layout table advertised tests/ as dead weight. Either it is
+      wired to a target or it does not belong in the table. Corrected 2026-08-21.
+
+  - pattern: 'This table is the complete list — if you'
+    reason: >-
+      docs/BUILDING.md asserted its defect-flag table was complete while three
+      DEFECT_FLAGS members had no row (RESUME_RSP_INJECT, RESUME_RSP_INJECT_PRECLAIM,
+      WAL_CRASHTEST). The claim is now derived by tools/check_defect_flags.py rather
+      than asserted. Corrected 2026-08-21.
+
+  - pattern: 'docs/AUDIT-2026-07(-27)?\.md|docs/proposals/console-server\.md'
+    reason: >-
+      The two audits were merged into docs/AUDIT.md (the July 2026 one is Appendix A)
+      and the console-server document moved to docs/design/, since it describes what
+      was built rather than a proposal. Corrected 2026-08-21.
+

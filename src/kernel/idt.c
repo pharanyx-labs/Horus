@@ -37,7 +37,7 @@ static uint8_t ps2_e0_prefix;
  * sys_notify is safe to call from the ISR: syscalls and IRQs both run behind
  * interrupt gates (IF=0), so no code on this CPU can be holding ipc_lock when the
  * ISR takes it (no same-CPU deadlock); under SMP it is ordinary brief spinlock
- * contention. See docs/proposals/console-server.md. */
+ * contention. See docs/design/console-server.md. */
 #define IRQ_NOTIFY_MAX 2      /* index 0 = IRQ0 (timer), 1 = IRQ1 (keyboard) */
 struct irq_notify_reg { int task; uint32_t slot; uint32_t badge; int active; };
 static struct irq_notify_reg irq_reg[IRQ_NOTIFY_MAX];

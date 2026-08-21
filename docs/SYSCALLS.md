@@ -49,7 +49,7 @@ performs its own check; the reason is noted per entry in `src/kernel/syscall.c`.
 > `SYS_IPC_RECV`, `SYS_IPC_RECV_BLOCK`, `SYS_IPC_REPLY_TO`, and `SYS_IPC_SENDER` all require it, and clients are
 > minted `WRITE`-only. Replies land on the caller's private per-task reply endpoint, which no
 > other task can name. Fixed 2026-07-27 — see **[C-1]** in
-> [`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
+> [`AUDIT.md`](AUDIT.md).
 
 ## Return values
 

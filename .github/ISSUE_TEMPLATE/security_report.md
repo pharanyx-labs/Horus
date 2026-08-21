@@ -18,7 +18,7 @@ assignees: pharanyx-labs
 > ## Already known?
 >
 > Please check [docs/LIMITATIONS.md](../../docs/LIMITATIONS.md) and
-> [docs/AUDIT-2026-07-27.md](../../docs/AUDIT-2026-07-27.md) first. Several significant
+> [docs/AUDIT.md](../../docs/AUDIT.md) first. Several significant
 > weaknesses are documented and tracked — most notably **[C-1]**: IPC endpoints are not
 > capability-addressed, so any ring-3 task can intercept or forge messages to any userspace
 > server. Reports of that, or of anything else already listed, are duplicates.

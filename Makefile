@@ -88,7 +88,7 @@ DEFECT_FLAGS = \
 	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
-	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED
+	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -606,6 +606,29 @@ endif
 # concentrates risk: a bug here breaks init, shell, fs_server and console_server
 # at once, so the shared copy is held to a standard the seven private copies
 # never were. Prints LIBHORUS_SELFTEST: PASS from ring 3. Gated off the ship kernel.
+# CLAIM_TRACE=1 is an INSTRUMENT, not a defect arm -- it changes no behaviour, it
+# reports. percpu_deferred_release[] is one slot per CPU; if a CPU ever defers a
+# second release before its ISR epilogue consumed the first, the first task's
+# claim is orphaned and the audit that later finds it names the wrong site. This
+# says so at the overwrite. Same role SPAWN_STAGE_TRACE plays for the staging
+# window. Requires SCHED_INVARIANTS for the auditor it complements.
+CLAIM_TRACE ?= 0
+ifeq ($(CLAIM_TRACE),1)
+CFLAGS  += -DCLAIM_TRACE
+ASFLAGS += -DCLAIM_TRACE
+endif
+
+# CLAIM_RELEASE_SKIP=1 removes `call sched_release_deferred` from the ISR
+# epilogue, so a CPU reaches ring 3 still owing a release. It is the falsifying
+# arm for the ring-3 claim invariant added 2026-08-21 -- without it that guard
+# would be an assertion nobody had ever seen fire, which is the shape this repo
+# already records costing it a fortnight.
+CLAIM_RELEASE_SKIP ?= 0
+ifeq ($(CLAIM_RELEASE_SKIP),1)
+CFLAGS  += -DCLAIM_RELEASE_SKIP
+ASFLAGS += -DCLAIM_RELEASE_SKIP
+endif
+
 LIBHORUS_SELFTEST ?= 0
 ifeq ($(LIBHORUS_SELFTEST),1)
 CFLAGS  += -DLIBHORUS_SELFTEST
@@ -3347,6 +3370,42 @@ smoke-exec-reenter-control:
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.
+# ---- The claim-release invariant ------------------------------------------
+#
+# "A CPU in ring 3 owes no deferred release." Every route to ring 3 goes through
+# an epilogue and every epilogue must call sched_release_deferred(); a CPU
+# observed in ring 3 still owing one means some path reached user mode without
+# paying, and that task's claim is stuck forever -- unschedulable by every CPU
+# including its holder. That is the [G-9] leak's shape.
+#
+# It is stated as an invariant rather than left to the periodic claim audit
+# because the audit CANNOT see it: sched_assert_claims() deliberately exempts a
+# task whose holder's deferred slot names it. An unpaid debt hides inside the
+# very exemption that keeps the auditor honest.
+.PHONY: smoke-claim-release
+smoke-claim-release:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		FAIL_MARKER='deferred release outstanding' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm. CLAIM_RELEASE_SKIP=1 removes the release from the ISR epilogue, so
+# every switching CPU reaches ring 3 owing one and the guard must fire. Without
+# this arm the gate above would be an assertion nobody had ever seen fire -- and
+# this file already records what that costs: `smoke-ksp-guard` shipped a control
+# arm with no positive counterpart, and the resume-guard shipped a bound that
+# rejected the IST stacks.
+.PHONY: smoke-claim-release-control
+smoke-claim-release-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_RELEASE_SKIP=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_RELEASE_SKIP=1 boot.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_FAULT='ring 3 reached with a deferred release outstanding' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-libhorus
 smoke-libhorus:
 	@$(MAKE) --no-print-directory clean

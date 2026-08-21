@@ -50,7 +50,16 @@ isr_common_stub64:
      * Unconditional, including on SMP=0 where scheduler.c compiles it to an empty
      * body: the ISR epilogue is the last code in this kernel that should have two
      * versions. */
+#ifndef CLAIM_RELEASE_SKIP
     call sched_release_deferred
+#else
+    /* CONTROL ARM -- never ship. Skips the deferred release on the ISR epilogue,
+     * so every CPU that switches tasks reaches ring 3 still owing one. This is
+     * what makes the "a CPU in ring 3 owes no deferred release" invariant in
+     * preempt_on_tick a falsifiable check rather than an assertion nobody has
+     * seen fire: under this flag it must panic, and without it must stay silent
+     * through a boot to ring 3. */
+#endif
 
     popq %r15
     popq %r14

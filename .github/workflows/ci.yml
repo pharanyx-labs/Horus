@@ -1440,6 +1440,29 @@ jobs:
       - name: Refuse an orphan control arm, or a gate nobody runs
         run: python3 tools/check_gate_pairs.py
 
+  claim-release:
+    name: "A CPU in ring 3 owes no deferred release (G-9 class; control arm proves it)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The claim audit cannot see an unpaid deferred release: it exempts exactly
+      # that state as a legitimate mid-handover. So the debt is checked where it
+      # is provably settled instead -- at ring 3.
+      - name: The invariant holds on a clean build
+        run: make smoke-claim-release
+      - name: Control arm — strip the release and it must fire
+        run: make smoke-claim-release-control
+
   libhorus:
     name: "The shared userspace runtime keeps its bounds, and refuses rather than spins"
     runs-on: ubuntu-latest

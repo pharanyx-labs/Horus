@@ -34,6 +34,15 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **[G-9] is reproducible now** — 2–4% of boots on `PROC_SELFTEST` at `-smp 4`, captured
+  per-boot (2/60, 3/80, 1/80). It previously took "eighteen boots across three builds, by hand".
+- **[G-9]'s recorded signature was wrong.** Every document described a claim held by a CPU that
+  had *gone idle*. All five 2026-08-21 captures show the holder **running another live task**,
+  owing no deferred release and not impersonating — so the leak is **not** in the
+  deferred-release machinery, which is where the two previous fixes went.
+- Four leads killed with instruments rather than arguments (`CLAIM_TRACE=1`, zero hits in 220
+  boots): deferred-slot overwrite, `sched_enter_user` owing a release, a declined release in
+  `sched_release_deferred`, and the SYSCALL fast path (unreachable — `EFER.SCE` is never set).
 - **[G-9]'s scope is wider than recorded.** The scheduler claim leak was documented against
   `PROC_SELFTEST` at `-smp 4` (~40% of boots, always task 3). On 2026-08-21 the same shape
   appeared in the **default boot** — `init` spawning the shell, task 4, on an idled CPU — at
@@ -45,6 +54,25 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   advisory because it reddens for a defect it does not test, this gate tests the claim
   invariant and what it caught was a claim leak. A red here is a [G-9] reproduction to
   capture, not a flake to re-run.
+
+### Fixed
+
+- **`sched_enter_user()` reached ring 3 without paying its deferred release.** It carried a
+  second hand-written copy of the ISR epilogue that omitted `call sched_release_deferred`, so a
+  CPU arriving there while owing a release orphaned that task's claim — and its
+  `g_kstack_inflight` bit, which makes the **[G-8]** detector report a collision that is not
+  happening. Latent in current workloads; fixed because it is wrong, not because it explains
+  the observed leak.
+
+### Added
+
+- **The invariant that makes the class non-recurrable:** *a CPU in ring 3 owes no deferred
+  release*, asserted in `preempt_on_tick` under `SCHED_INVARIANTS`. The periodic claim audit
+  **cannot** catch an unpaid debt — it exempts exactly that state as a legitimate mid-handover —
+  so an orphaned release hides inside the exemption that keeps the auditor honest. Gated by
+  `make smoke-claim-release` (required job `claim-release`), falsified by `CLAIM_RELEASE_SKIP=1`.
+- `CLAIM_TRACE=1`, an instrument recording claim provenance and reporting two orphaning events
+  as they happen.
 
 ### Fixed
 

@@ -160,15 +160,35 @@ volatile uint64_t g_kstack_inflight = 0;
 #ifdef CLAIM_TRACE
 static const char *g_switch_via[MAX_CPUS];
 #define SWITCH_VIA(c, s_) do { if ((c) >= 0 && (c) < MAX_CPUS) g_switch_via[c] = (s_); } while (0)
-#define CLAIM_NOTE(t, c, s_) claim_note((t), (c), (s_))
+static void claim_note(int t, int c, const char *site);
+static void claimlog(int t, int cpu, int val, const char *site);
+#define CLAIM_NOTE(t, c, s_) do { claim_note((t), (c), (s_)); claimlog((t), (c), (c), (s_)); } while (0)
+#define REL_LOG(t, c, s_)    claimlog((t), (c), -1, (s_))
 #else
 #define SWITCH_VIA(c, s_) ((void)0)
 #define CLAIM_NOTE(t, c, s_) ((void)0)
+#define REL_LOG(t, c, s_)    ((void)0)
 #endif
 
 /* Task this CPU still has to unwind off, or -1. Written only by the owning CPU.
  * The functions that manage it live below sched_raw_lock(). */
 static int percpu_deferred_release[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
+
+/* The task a CPU has CLAIMED but not yet become current on, or -1.
+ *
+ * Between `task_running_cpu[next] = cpu` and `set_current_task(next)` a switch
+ * path has taken the claim but percpu_current_task[] still names the OUTGOING
+ * task. That gap is five statements wide and includes switch_cr3(). A CPU
+ * diverted inside it -- by a fault, or by any path that does not complete the
+ * switch -- leaves `next` claimed with nothing on any CPU naming it, and no
+ * release owed by anybody.
+ *
+ * The claim audit cannot see that: on the reap path the outgoing task is DEAD
+ * (state 0) and therefore exempt, so the CPU looks idle-ish and the orphaned
+ * claim surfaces later at whatever site runs the next audit. This makes the gap
+ * observable, so "a CPU was diverted mid-commit" becomes a thing the kernel can
+ * say rather than a thing that has to be inferred from a corpse. */
+static int percpu_commit_gap[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
 
 /* Bitmask of CPUs that have run at least one user task (bit c == CPU c). The SMP
  * self-test reads it to confirm work actually landed on more than one core. */
@@ -302,6 +322,39 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
      * (not left to slot-reuse staleness) so every rebuild of a slot is explicit. */
     tasks[id].image_premap_pages = premap_pages;
 
+#ifdef SMP
+    /* Defence in depth: a reused slot starts unclaimed no matter what happened to
+     * its previous occupant. With the lock in task_teardown above, this should
+     * already hold -- the assertion under SCHED_INVARIANTS below says so out loud
+     * rather than letting a silent inheritance become the next four-day search. */
+    if (id > 0 && id < MAX_TASKS) { task_running_cpu[id] = -1; REL_LOG(id, this_cpu(), "create_task/reuse"); }
+#endif
+#if defined(SMP) && defined(SCHED_INVARIANTS)
+    /* ---- A REUSED SLOT MUST NOT INHERIT A CLAIM ----------------------------
+     *
+     * task_teardown() releases the claim, so by the time a slot is reused
+     * task_running_cpu[id] should be -1. If it is not, some CPU claimed this slot
+     * AFTER its occupant died -- which is possible because task_teardown mutates
+     * state/runnable_ctx/saved_ksp/task_running_cpu with NO scheduler lock, while
+     * every selection loop reads those four fields under it. A CPU can therefore
+     * pass the checks, have the task die under it, and write its claim onto a
+     * corpse. The audit exempts dead tasks, so that claim is invisible until this
+     * moment -- when state goes back to 1 and the slot is live again, claimed by a
+     * CPU that is running something else and owes no release.
+     *
+     * This was lead #3 of the [G-9] investigation, dismissed on 2026-08-17 by a
+     * probe that "fired zero times in 20 boots". Twenty boots against a ~2% event
+     * is roughly 33% power: that measurement could not have distinguished absence
+     * from bad luck, and it was read as absence. */
+    if (id > 0 && id < MAX_TASKS && task_running_cpu[id] >= 0) {
+        print("\nPANIC: reused task slot "); print_decimal((uint64_t)id);
+        print(" still claimed by cpu "); print_decimal((uint64_t)task_running_cpu[id]);
+        print(" (that cpu is running ");
+        print_decimal((uint64_t)percpu_current_task[task_running_cpu[id]]);
+        println(") -- a claim was written onto a dead slot; see [G-9]");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+#endif
     tasks[id].state = 1;
     tasks[id].esp = (addr_t)(stack_top ? (stack_top - 256) : 0);
     tasks[id].eip = entry;
@@ -965,6 +1018,21 @@ volatile int smp_sched_enabled = 0;
 /* Raw test-and-set on the scheduler lock for use *inside* an interrupt handler,
  * where IF is already clear (the gate is an interrupt gate): unlike spin_lock()
  * it must not touch IF, or the ISR epilogue's iretq would race a re-entry. */
+#ifdef DEFER_WINDOW_WIDEN
+/* Test-only. Holds a CPU inside the window between the deferred-release consume
+ * and the claim actually being dropped -- and nothing else. That window is a few
+ * instructions plus a lock acquisition, which is why the event it produces
+ * appears on a few boots in a hundred and why 200-boot arms cannot tell 4.5%
+ * from 6.5%. Widened, the same window is entered on essentially every release,
+ * so the two arms answer in one boot each instead of in an afternoon of soaks.
+ *
+ * Set in BOTH arms; that is what makes the pair a measurement rather than an
+ * observation, exactly as KSTACK_RACE_WIDEN is used for [G-8]. */
+#define DEFER_WIDEN() do { for (volatile unsigned _i = 0; _i < 200000u; _i++) { } } while (0)
+#else
+#define DEFER_WIDEN() ((void)0)
+#endif
+
 static void sched_raw_lock(void) {
     while (__sync_lock_test_and_set(&scheduler_lock.locked, 1))
         while (scheduler_lock.locked) __asm__ volatile ("pause");
@@ -979,6 +1047,43 @@ static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked)
  * path could; this asks the same question of the residual leak. */
 static const char *g_claim_site[MAX_TASKS];
 static int         g_claim_site_cpu[MAX_TASKS];
+
+/* ---- Full history of task_running_cpu[t], not just its last write ----------
+ *
+ * Last-write provenance has taken this as far as it goes: it says a claim was
+ * taken by preempt_on_tick/next and never released, while the chokepoint that
+ * watches for a CPU walking away from a claimed task stays silent. Those two
+ * cannot both be true of one linear history, so the history is what to record.
+ *
+ * Eight entries per task, oldest overwritten. Written under whatever lock the
+ * caller already holds; the sequence number orders them globally. */
+#define CLAIMLOG_N 14
+struct claimlog { unsigned seq; int cpu; int val; const char *site; };
+static struct claimlog g_claimlog[MAX_TASKS][CLAIMLOG_N];
+static unsigned        g_claimlog_i[MAX_TASKS];
+static volatile unsigned g_claimlog_clock;
+
+static void claimlog(int t, int cpu, int val, const char *site) {
+    if (t <= 0 || t >= MAX_TASKS) return;
+    unsigned i = g_claimlog_i[t] % CLAIMLOG_N;
+    g_claimlog[t][i].seq  = __sync_add_and_fetch(&g_claimlog_clock, 1);
+    g_claimlog[t][i].cpu  = cpu;
+    g_claimlog[t][i].val  = val;
+    g_claimlog[t][i].site = site;
+    g_claimlog_i[t]++;
+}
+static void claimlog_dump(int t) {
+    panic_str("  history of task_running_cpu["); panic_dec(t); panic_str("]:\n");
+    for (unsigned k = 0; k < CLAIMLOG_N; k++) {
+        unsigned i = (g_claimlog_i[t] + k) % CLAIMLOG_N;
+        if (!g_claimlog[t][i].site) continue;
+        panic_str("    #");   panic_dec((int)g_claimlog[t][i].seq);
+        panic_str(" cpu ");   panic_dec(g_claimlog[t][i].cpu);
+        panic_str(" -> ");    panic_dec(g_claimlog[t][i].val);
+        panic_str("  ");      panic_str(g_claimlog[t][i].site);
+        panic_str("\n");
+    }
+}
 static void claim_note(int t, int c, const char *site) {
     if (t > 0 && t < MAX_TASKS) { g_claim_site[t] = site; g_claim_site_cpu[t] = c; }
 }
@@ -1025,6 +1130,7 @@ static void sched_mark_kstack_inflight(int cpu, int t)
     claim_trace_defer(cpu, t);
 #endif
     percpu_deferred_release[cpu] = t;
+    REL_LOG(t, cpu, "defer-SET");
     __sync_fetch_and_or(&g_kstack_inflight, 1ULL << t);
 }
 
@@ -1061,12 +1167,53 @@ void sched_release_deferred(void)
     if (cpu < 0 || cpu >= MAX_CPUS) return;
     int t = percpu_deferred_release[cpu];
     if (t < 0) return;                      /* the common case: no switch happened */
+
+    /* ---- THE EXEMPTION MUST OUTLIVE THE RELEASE -- finding [G-9] ------------
+     *
+     * percpu_deferred_release[cpu] is not just this CPU's to-do note: it is the
+     * AUDITOR'S EXEMPTION. sched_assert_claims() skips a claim while the holder's
+     * deferred slot names it, on the correct reasoning that such a claim is
+     * mid-handover rather than leaked.
+     *
+     * This function used to clear that slot FIRST, then take the lock, then drop
+     * the claim. For the width of a lock acquisition the task was therefore
+     * claimed, un-exempt, and mid-release -- and an audit running on another CPU
+     * in that window sees exactly what a genuine leak looks like. It is not one.
+     * The release is in flight; the auditor is reading a torn intermediate state
+     * of its own exemption protocol.
+     *
+     * That is the residual [G-9], and it is a FALSE POSITIVE of the checker, not a
+     * scheduler defect -- the same shape as the 2026-08-09 finding, where the
+     * checker read a deliberate impersonation as a leak. Captured by logging what
+     * the consume actually observed: every healthy cycle logs
+     * defer-CONSUME -> consume-SAW -> release, and every panicking one stops
+     * between the first two, i.e. inside the lock acquisition.
+     *
+     * So the slot is cleared LAST, under the same lock that drops the claim. The
+     * exemption now covers the whole operation and there is no torn window to
+     * observe. The inflight bit still clears BEFORE the claim drops, for the
+     * reason given at g_kstack_inflight: the other order leaves a task claimable
+     * with its bit still set, which makes the [G-8] detector report a collision
+     * that has already ended. */
+#ifdef DEFER_CLEAR_EARLY
+    /* CONTROL ARM -- never ship. The pre-fix order: drop the auditor's exemption
+     * BEFORE taking the lock, so the task is claimed, un-exempt and mid-release
+     * for the width of a lock acquisition. */
     percpu_deferred_release[cpu] = -1;
-    __sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
+#endif
+    REL_LOG(t, cpu, "defer-CONSUME");
+    DEFER_WIDEN();
     sched_raw_lock();
+    __sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
     if (t > 0 && t < MAX_TASKS) {
+        /* Record what the branch below actually sees. Inference has now been
+         * wrong twice about this value; log it rather than deduce it. */
+#ifdef CLAIM_TRACE
+        claimlog(t, cpu, task_running_cpu[t], "consume-SAW");
+#endif
         if (task_running_cpu[t] == cpu) {
             task_running_cpu[t] = -1;
+            REL_LOG(t, cpu, "sched_release_deferred");
         }
 #ifdef CLAIM_TRACE
         else if (task_running_cpu[t] >= 0) {
@@ -1097,6 +1244,7 @@ void sched_release_deferred(void)
         }
 #endif
     }
+    percpu_deferred_release[cpu] = -1;   /* exemption ends only now; see above */
     sched_raw_unlock();
 }
 
@@ -1286,6 +1434,29 @@ static void sched_claim_panic(const char *what, const char *where,
     panic_str(" (persisted across two audits; observed by cpu ");
     panic_dec(this_cpu());
     panic_str(")\n");
+#ifdef SMP
+    /* The holder's full state. Which of these is set decides the diagnosis, and
+     * without them every report looks identical:
+     *   commit_gap == t  -> diverted between the claim and set_current_task
+     *   deferred   == t  -> a release is owed and was never paid
+     *   idle             -> the CPU parked while holding a live claim
+     * The audit exempts a deferred claim, so an unpaid one is invisible above;
+     * printing it here is what tells the two apart at the moment of the panic. */
+    panic_str("  holder cpu "); panic_dec(c);
+    panic_str(": commit_gap="); panic_dec(percpu_commit_gap[c]);
+    panic_str(" deferred=");    panic_dec(percpu_deferred_release[c]);
+    panic_str(" idle=");        panic_dec(percpu_idle[c]);
+    panic_str(" current=");     panic_dec(percpu_current_task[c]);
+    panic_str(" impersonating="); panic_dec(percpu_impersonating[c]);
+#ifdef CLAIM_TRACE
+    claimlog_dump(t);
+#endif
+    panic_str("\n  task ");      panic_dec(t);
+    panic_str(": state=");      panic_dec(tasks[t].state);
+    panic_str(" runnable_ctx="); panic_dec(tasks[t].runnable_ctx);
+    panic_str(" inflight=");    panic_dec((int)((g_kstack_inflight >> t) & 1));
+    panic_str("\n");
+#endif
 #ifdef CLAIM_TRACE
     panic_str("  last claimed by: ");
     panic_str(g_claim_site[t] ? g_claim_site[t] : "(never recorded)");
@@ -1745,6 +1916,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     }
     task_running_cpu[next] = cpu;
     CLAIM_NOTE(next, cpu, "preempt_on_tick/next");
+    percpu_commit_gap[cpu] = next;
     smp_cpus_ran_tasks |= (1u << cpu);
     switch_cr3(tasks[next].cr3);
     uint64_t kstop = task_kstack_top(next);
@@ -1897,6 +2069,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     }
     task_running_cpu[next] = cpu;
     CLAIM_NOTE(next, cpu, "block_or_yield/next");
+    percpu_commit_gap[cpu] = next;
     switch_cr3(tasks[next].cr3);
     uint64_t kstop = task_kstack_top(next);
     set_tss_kernel_stack(kstop);
@@ -2224,6 +2397,7 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
 #ifdef SMP
     sched_release_outgoing(cpu, cur);
     task_running_cpu[next]  = cpu;
+    CLAIM_NOTE(next, cpu, "sched_yield_switch/next");
 #endif
     switch_cr3(tasks[next].cr3);
     uint64_t kstop = task_kstack_top(next);
@@ -2308,11 +2482,40 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     tasks[id].sig_altstack_sp   = 0;   /* clear so a reused slot never inherits a stale altstack */
     tasks[id].sig_altstack_size = 0;
     tasks[id].sig_on_stack      = 0;
+    /* ---- DEATH MUST SERIALISE WITH SELECTION -- finding [G-9] ---------------
+     *
+     * These four fields are exactly what every selection loop tests, under
+     * sched_raw_lock, to decide a task is runnable:
+     *
+     *     state == 1 && runnable_ctx && saved_ksp && task_running_cpu[c] < 0
+     *
+     * Until now this function wrote all four with NO lock, from syscall and fault
+     * context. So a CPU could pass all four checks holding the lock, have the task
+     * die underneath it, and then write its claim onto a corpse -- AFTER this
+     * function had already released it. The claim is invisible from there: the
+     * audit exempts dead tasks, deliberately and correctly. It becomes visible
+     * only when the slot is reused, at which point state goes back to 1 and the
+     * task is live, runnable, claimed by a CPU that is running something else and
+     * owes no release to anybody. That is the residual [G-9] signature exactly.
+     *
+     * Taking the lock here is safe and cannot deadlock: every caller reaches this
+     * through an interrupt gate (0x8E), so IF is clear and no timer tick can land
+     * on this CPU while it is held. Cross-CPU it is an ordinary brief spinlock.
+     * The comment below already relies on that same property for kobj_gc().
+     *
+     * kobj_gc() stays OUTSIDE the lock: it is a capability-graph sweep that takes
+     * its own locks, and nesting the scheduler lock underneath it would invert an
+     * ordering nothing else observes. */
+#ifdef SMP
+    sched_raw_lock();
+#endif
     tasks[id].state       = 0;   /* dead: the scheduler will not select it */
     tasks[id].runnable_ctx = 0;  /* and it has no resumable context any more */
     tasks[id].saved_ksp    = 0;
 #ifdef SMP
     task_running_cpu[id]  = -1;  /* release the SMP mutual-exclusion guard */
+    REL_LOG(id, this_cpu(), "task_teardown");
+    sched_raw_unlock();
 #endif
 
     /* A dead task's capabilities stop counting: its cspace is no longer swept by
@@ -2417,6 +2620,7 @@ uint64_t task_exit_switch(int dead) {
 #ifdef SMP
     task_running_cpu[next] = cpu;
     CLAIM_NOTE(next, cpu, "task_exit_switch/next");
+    percpu_commit_gap[cpu] = next;
     /* `dead` has no claim left to defer -- task_teardown dropped it and no
      * selection loop looks at a task in state 0 -- but this CPU is still unwinding
      * off its kernel stack, and the SLOT is now free for init to respawn into.
@@ -2692,8 +2896,46 @@ void set_current_task(int v) {
     if (v > 0) sched_park_clear(c);
 #endif
 
+#if defined(SMP) && defined(CLAIM_TRACE)
+    /* ---- The universal orphan probe ----------------------------------------
+     *
+     * set_current_task() is the single switch chokepoint. Rather than enumerate
+     * the paths that might fail to release (five rounds of that have been wrong),
+     * ask the chokepoint: is this CPU walking away from a LIVE task it still
+     * claims? The deferred slot is excluded -- holding the outgoing claim until
+     * the ISR epilogue is [G-8]'s fix, not a leak. */
+    {
+        int prev = percpu_current_task[c];
+        /* IMPERSONATION IS NOT A MOVE. sys_ipc_send / h_ipc_reply_to / do_spawn
+         * temporarily install another task as current so a copy resolves through
+         * ITS address space (sched_impersonate_enter/exit). The CPU is still
+         * really running `prev` and correctly still claims it -- percpu_real_task[]
+         * exists precisely to say so. Without this exclusion the probe fires on
+         * 39 boots in 40 on perfectly correct code, which is how a probe earns a
+         * reputation for crying wolf. */
+        if (prev > 0 && prev < MAX_TASKS && prev != v &&
+            tasks[prev].state != 0 &&
+            task_running_cpu[prev] == c &&
+            percpu_impersonating[c] == 0 &&
+            percpu_deferred_release[c] != prev) {
+            panic_begin();
+            panic_str("\nCLAIMTRACE: cpu "); panic_dec(c);
+            panic_str(" moves from task "); panic_dec(prev);
+            panic_str(" to "); panic_dec(v);
+            panic_str(" while still claiming it -- ORPHANED (state=");
+            panic_dec(tasks[prev].state);
+            panic_str(" deferred="); panic_dec(percpu_deferred_release[c]);
+            panic_str(" claimed by "); panic_str(g_claim_site[prev] ? g_claim_site[prev] : "(never)");
+            panic_str(" via "); panic_str(g_switch_via[c] ? g_switch_via[c] : "(unset)");
+            panic_str(")\n");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+    }
+#endif
     percpu_current_task[c] = v;
 #ifdef SMP
+    /* The commit gap closes here: this CPU is now current on the task it claimed. */
+    if (percpu_commit_gap[c] == v) percpu_commit_gap[c] = -1;
     if (v > 0) percpu_idle[c] = 0;   /* running a real task: no longer idle-parked */
 #endif
 

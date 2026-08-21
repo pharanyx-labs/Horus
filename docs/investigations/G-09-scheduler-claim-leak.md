@@ -9,6 +9,10 @@ witness it are listed in [`../../TESTS.md`](../../TESTS.md).*
 
 ---
 
+**Status: CLOSED 2026-08-21.** Natural rate 9 in 200 boots → 0 in 200 (Fisher p = 0.0036),
+with the mechanism proven by a deterministic control pair rather than by that rate. See the
+final section below.
+
 **Found 2026-08-17 by `smoke-kstack-park`, and pre-existing.** `PROC_SELFTEST` at `-smp 4`
 violates the claim invariant on ~40% of boots. Nothing had run that workload at more than one
 CPU before: `smoke-proc` boots it uniprocessor, where it is clean 20/20.
@@ -94,6 +98,60 @@ which is what turned the search from the write path to the scheduler.
 **Next step:** find which path leaves a CPU idle holding a claim. `sched_enter_user()` is worth
 looking at first — it has its own inline `iretq` epilogue and so bypasses `isr_common_stub64`,
 and with it `sched_release_deferred()`. Offered as a lead with its check named, not a diagnosis.
+
+#### 2026-08-21 (final): the last component was the checker, not the scheduler
+
+**The defect.** `percpu_deferred_release[]` is not merely a CPU's note of work owed. It is the
+**claim auditor's exemption**: `sched_assert_claims()` skips a claim while the holder's deferred
+slot names it, on the correct reasoning that such a claim is mid-handover.
+`sched_release_deferred()` cleared that slot *before* taking the lock that drops the claim:
+
+```c
+percpu_deferred_release[cpu] = -1;   /* exemption gone */
+__sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
+sched_raw_lock();                    /* another CPU can audit throughout here */
+task_running_cpu[t] = -1;            /* claim dropped only now */
+```
+
+For the width of a lock acquisition the task is claimed, un-exempt and mid-release. A CPU
+auditing in that window sees exactly what a leak looks like. **It is not one** — the auditor is
+reading a torn intermediate state of its own exemption protocol.
+
+**This is the auditor's second false positive**, the same family as 2026-08-09, where it read a
+deliberate spawn-time impersonation as a leak. Both times it observed its own exemption machinery
+mid-update. *A checker that exempts a state must hold the exemption for the whole of that state.*
+
+**The fix.** Clear the slot last, under the same lock that drops the claim. The
+`g_kstack_inflight` bit still clears *before* the claim, for the reason recorded at its
+declaration — the other order leaves a task claimable with its bit still set, which makes the
+**[G-8]** detector report a collision that has already ended.
+
+**How it was found, after four wrong hypotheses.** Last-write provenance was not enough: it said
+"claimed by `preempt_on_tick/next`, never released" while the chokepoint watching for a CPU
+abandoning a claimed task stayed silent — two things that cannot both be true of one history. So
+the code was made to record the history itself: a ring of every write to `task_running_cpu[t]`
+plus the deferred lifecycle. Every healthy cycle logs `defer-CONSUME → consume-SAW → release`;
+every panicking one stops between the first two, i.e. inside the lock acquisition. That is not a
+leak — it is a CPU part-way through the release.
+
+**Falsification, and why it had to be deterministic.** The natural event is ~4.5% with variance
+wide enough that 200-boot arms cannot separate 4.5% from 6.5%: the baseline itself ran 2/50 and
+then 9/200, and an intermediate measurement of 13/200 was briefly read as a regression before a
+significance test showed p = 0.39. `DEFER_WINDOW_WIDEN=1` stretches the window and is set in
+**both** arms:
+
+| Arm | Boots | Panics |
+|---|---|---|
+| widened, exemption held to the end (shipped) | 10 | **0** |
+| widened, `DEFER_CLEAR_EARLY=1` (pre-fix) | 10 | **8** |
+
+Fisher p ≈ 0.0007. Gated by `make smoke-defer-exemption` / `smoke-defer-exemption-control`
+(required job `defer-exemption`).
+
+**What 0 in 200 does and does not establish.** It bounds the residual natural rate at **under
+1.49%** at 95% confidence. It is not proof of zero, and this document was burned once today by
+reading a clean run as absence — the "30 runs, 0 failures" row corrected earlier had only 26%
+power against a 1% event. The deterministic pair, not the clean run, is the evidence.
 
 #### 2026-08-21 (later): a root cause, found, fixed and deterministically gated
 

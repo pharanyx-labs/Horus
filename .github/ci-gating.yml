@@ -112,6 +112,11 @@ required:
   # before its resume value was validated, so a refusal parked the CPU and left
   # the task it had claimed unschedulable forever.
   - switch-commit
+  # Gating. It witnesses the last component of [G-9]: the claim auditor's own
+  # exemption was dropped before the release it exempts, so the checker accused a
+  # release that was in flight. The natural event is ~4.5% with variance too wide
+  # to gate on; the widened pair is deterministic.
+  - defer-exemption
   - syscall-coverage
   - ksp-guard
   - defect-flags
@@ -182,8 +187,14 @@ advisory:
     an improvement and not a close: the residue is a bogus resume %rsp handed
     back by the dispatcher -- the rest of [G-9], and not what this gate tests.
     A gate that reddens for a defect it does not test teaches the re-run reflex,
-    which is exactly what this exemption exists to avoid, so it stays until
-    [G-9] is closed rather than merely narrowed.
+    which is exactly what this exemption exists to avoid, so it stayed until
+    [G-9] was closed rather than merely narrowed.
+    [G-9] CLOSED 2026-08-21, so the condition this exemption was written against
+    no longer holds and it is now PENDING PROMOTION. It is deliberately not
+    promoted in the same commit that closed the finding: a required context must
+    exist on `main` before the ruleset can name it, so promotion lags a merge by
+    one (see [C-6]). The workload underneath it measured 0 failures in 200 boots
+    after the fix, where it ran ~7% before.
     NARROWED AGAIN 2026-08-17 and STILL ADVISORY. [G-10]'s page-table
     use-after-free is fixed too -- create_user_pagedir was recycling a slot's
     page tables while another CPU still had them in CR3 -- and that took the

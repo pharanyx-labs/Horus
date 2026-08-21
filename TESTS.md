@@ -1070,10 +1070,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **83** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **84** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **85** jobs, **88** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **86** jobs, **89** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1125,7 +1125,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **84 required contexts and 4 reasoned exemptions** — read off
+The intended set is **85 required contexts and 4 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1164,6 +1164,34 @@ it is the reason **[C-6]** stays open.
 `strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
 passed CI against a stale base. (This document previously said it was false; that was correct
 when written and is not any more.)
+
+---
+
+## The claim audit's exemption outlives the release it exempts — [G-9] closed
+
+**`smoke-defer-exemption`, required job `defer-exemption`.** `percpu_deferred_release[]` is not
+just a CPU's note of work owed — `sched_assert_claims()` uses it as the **exemption** that says a
+claim is mid-handover rather than leaked. `sched_release_deferred()` cleared it *before* taking
+the lock that drops the claim, so for the width of a lock acquisition the task was claimed,
+un-exempt and mid-release. A CPU auditing in that window reported a leak that was not one.
+
+**The checker's second false positive**, and the same family as 2026-08-09, where it read a
+deliberate spawn-time impersonation as a leak. Both times it observed its own exemption machinery
+mid-update. *A checker that exempts a state must hold the exemption for the whole of that state.*
+
+**Why the pair is widened.** The natural event is ~4.5% with variance wide enough that 200-boot
+arms cannot separate 4.5% from 6.5% — the baseline itself ran 2/50 and then 9/200, and an
+intermediate 13/200 was briefly read as a regression before a significance test returned p = 0.39.
+`DEFER_WINDOW_WIDEN=1` is set in **both** arms, which is what makes them a measurement.
+
+| Arm | Boots | Panics |
+|---|---|---|
+| widened, exemption held to the end (shipped) | 10 | **0** |
+| widened, `DEFER_CLEAR_EARLY=1` (pre-fix) | 10 | **8** |
+
+Fisher p ≈ 0.0007. Natural rate 9 in 200 → **0 in 200** (p = 0.0036), which bounds the residual
+at under 1.49% at 95% confidence — a bound, not a proof of zero. The deterministic pair is the
+evidence; the clean run is corroboration.
 
 ---
 

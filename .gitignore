@@ -125,3 +125,6 @@ soak-evidence/
 
 # syscall-coverage serial transcripts (make smoke-syscall-coverage); evidence, never committed
 .syscov-evidence/
+
+# Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
+.build-flags

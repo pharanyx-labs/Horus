@@ -1440,6 +1440,29 @@ jobs:
       - name: Refuse an orphan control arm, or a gate nobody runs
         run: python3 tools/check_gate_pairs.py
 
+  switch-commit:
+    name: "A refused switch leaves no claim behind (G-9 root cause; control arm proves it)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # ksp_refuse() returns 0, which is also task_exit_switch's legal "nothing
+      # runnable" return. Committing the switch before validating therefore
+      # orphaned the claim on a task the caller then parked away from.
+      - name: A refused resume value orphans no claim
+        run: make smoke-switch-commit
+      - name: Control arm — commit first and the claim is orphaned
+        run: make smoke-switch-commit-control
+
   claim-release:
     name: "A CPU in ring 3 owes no deferred release (G-9 class; control arm proves it)"
     runs-on: ubuntu-latest

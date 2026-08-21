@@ -1070,10 +1070,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **82** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **83** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **84** jobs, **87** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **85** jobs, **88** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1125,7 +1125,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **83 required contexts and 4 reasoned exemptions** — read off
+The intended set is **84 required contexts and 4 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1164,6 +1164,38 @@ it is the reason **[C-6]** stays open.
 `strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
 passed CI against a stale base. (This document previously said it was false; that was correct
 when written and is not any more.)
+
+---
+
+## A refused switch leaves no claim behind — [G-9]'s root cause
+
+**`smoke-switch-commit`, required job `switch-commit`.** `task_exit_switch()` returns `0` for
+two incompatible things: *"nothing runnable, caller parks"* (no claim taken) and, via
+`ksp_refuse()`, *"I already claimed `next` and named it current, but its resume value is
+bogus"*. All three callers in `idt.c` read `if (rsp) return rsp;` and otherwise park the CPU, so
+a refusal was indistinguishable from an empty run queue — and the claimed task stayed claimed
+forever, skipped by every selection loop, unschedulable by every CPU including its holder.
+
+**The resume guard added *for* [G-9] is what committed the switch before validating it.** The
+instrument installed to catch the leak was creating one.
+
+All four switch paths now validate before committing: nothing is claimed, no address space
+installed, no task named current until the resume value is known good, so a refusal has no state
+to unwind.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-switch-commit` (`KSP_GUARD_INJECT=1`) | `stale scheduler claim` **absent** | guard fires, no claim orphaned |
+| `smoke-switch-commit-control` (+ `SWITCH_COMMIT_EARLY=1`) | `stale scheduler claim` **present** | **every boot** |
+
+**Deterministic, not a soak.** `KSP_GUARD_INJECT` forges the bogus resume value, so the pair
+reproduces on every boot where the natural event runs at ~3%. That is the difference between a
+gate and a campaign — and this finding has cost two of the latter.
+
+**It did not close [G-9].** The natural rate went 2–4% → **2 in 130 (1.5%)**, which is not
+statistically distinguishable from where it started. One cause is removed and gated; another
+path is still leaking, with the same claim site and no chokepoint hit. Recorded in
+`docs/investigations/G-09-scheduler-claim-leak.md` rather than rounded up here.
 
 ---
 

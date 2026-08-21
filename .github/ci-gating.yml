@@ -108,6 +108,10 @@ required:
   # path reached ring 3 without paying its deferred release. The periodic audit
   # structurally cannot catch that, so this is the only check that can.
   - claim-release
+  # Gating. It witnesses the [G-9] root cause found 2026-08-21: a switch committed
+  # before its resume value was validated, so a refusal parked the CPU and left
+  # the task it had claimed unschedulable forever.
+  - switch-commit
   - syscall-coverage
   - ksp-guard
   - defect-flags

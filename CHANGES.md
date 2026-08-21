@@ -57,6 +57,16 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **[G-9] root cause found: a switch was committed before its resume value was validated.**
+  `task_exit_switch()` returns `0` both for "nothing runnable, caller parks" and — via
+  `ksp_refuse()` — for "I already claimed `next`, but its resume value is bogus". Its three
+  callers cannot tell those apart, so they park the CPU and the claimed task is orphaned
+  forever. The resume guard added *for* [G-9] is what created this. All four switch paths now
+  validate before committing. Deterministically gated by `smoke-switch-commit` /
+  `smoke-switch-commit-control` (`SWITCH_COMMIT_EARLY=1` + `KSP_GUARD_INJECT=1`).
+  **[G-9] remains open**: the natural rate moved 2–4% → 2 in 130 boots, which is not a
+  statistically distinguishable improvement, and a second path is still leaking.
+
 - **`sched_enter_user()` reached ring 3 without paying its deferred release.** It carried a
   second hand-written copy of the ISR epilogue that omitted `call sched_release_deferred`, so a
   CPU arriving there while owing a release orphaned that task's claim — and its

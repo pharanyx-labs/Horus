@@ -88,7 +88,7 @@ DEFECT_FLAGS = \
 	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
-	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP
+	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -624,6 +624,21 @@ endif
 # would be an assertion nobody had ever seen fire, which is the shape this repo
 # already records costing it a fortnight.
 CLAIM_RELEASE_SKIP ?= 0
+ifeq ($(CLAIM_RELEASE_SKIP),1)
+CFLAGS  += -DCLAIM_RELEASE_SKIP
+ASFLAGS += -DCLAIM_RELEASE_SKIP
+endif
+
+# SWITCH_COMMIT_EARLY=1 restores the pre-2026-08-21 order in task_exit_switch:
+# commit the switch, then validate the resume value. ksp_refuse() returns 0, which
+# is ALSO that function's legal "nothing runnable, caller parks" return, so its
+# callers park the CPU and the task it just claimed is orphaned forever. Pair with
+# KSP_GUARD_INJECT=1 to make it deterministic.
+SWITCH_COMMIT_EARLY ?= 0
+ifeq ($(SWITCH_COMMIT_EARLY),1)
+CFLAGS  += -DSWITCH_COMMIT_EARLY
+ASFLAGS += -DSWITCH_COMMIT_EARLY
+endif
 ifeq ($(CLAIM_RELEASE_SKIP),1)
 CFLAGS  += -DCLAIM_RELEASE_SKIP
 ASFLAGS += -DCLAIM_RELEASE_SKIP
@@ -3382,6 +3397,47 @@ smoke-exec-reenter-control:
 # because the audit CANNOT see it: sched_assert_claims() deliberately exempts a
 # task whose holder's deferred slot names it. An unpaid debt hides inside the
 # very exemption that keeps the auditor honest.
+# ---- Validate before committing a switch ------------------------------------
+#
+# task_exit_switch() returns 0 for TWO incompatible things: "nothing runnable,
+# caller parks" (no claim taken) and, via ksp_refuse(), "I already claimed `next`
+# and named it current, but its resume value is bogus". Its three callers in
+# idt.c all read `if (rsp) return rsp;` and otherwise park the CPU -- so a
+# refusal was indistinguishable from an empty run queue and `next` stayed claimed
+# forever, unschedulable by every CPU including the holder. That is a [G-9] leak,
+# and the resume guard added FOR [G-9] is what produced it.
+#
+# KSP_GUARD_INJECT forges the bogus value, so this pair is deterministic where
+# the natural event reproduces at ~3% -- a gate rather than a soak.
+#
+# The base arm asserts BOTH directions on markers rather than on completion: the
+# guard's own report must be PRESENT (so a build where it never fires cannot pass
+# by silence) and `stale scheduler claim` ABSENT. It cannot require the workload
+# to finish, because under this artificial injection every resume value is forged
+# bogus, so each CPU refuses in turn and the session stalls -- which is the
+# residual behaviour the fix trades for, and is expected here.
+.PHONY: smoke-switch-commit
+smoke-switch-commit:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 boot.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
+		FAIL_MARKER='stale scheduler claim' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm: same injection, pre-fix ordering. The claim is taken before the
+# value is validated, the refusal parks the CPU, and the claim is orphaned --
+# every boot.
+.PHONY: smoke-switch-commit-control
+smoke-switch-commit-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 SWITCH_COMMIT_EARLY=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 SWITCH_COMMIT_EARLY=1 boot.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_FAULT='stale scheduler claim' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-claim-release
 smoke-claim-release:
 	@$(MAKE) --no-print-directory clean

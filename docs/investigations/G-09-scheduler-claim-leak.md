@@ -95,6 +95,91 @@ which is what turned the search from the write path to the scheduler.
 looking at first — it has its own inline `iretq` epilogue and so bypasses `isr_common_stub64`,
 and with it `sched_release_deferred()`. Offered as a lead with its check named, not a diagnosis.
 
+#### 2026-08-21 (later): a root cause, found, fixed and deterministically gated
+
+**One real cause is closed. The finding is not.** The natural rate went from ~2–4% to
+**2 in 130 boots (1.5%)** — an improvement that is *not* statistically distinguishable from
+the old rate, and a second path is still leaking. Read this section as one cause removed, not
+as a fix for the whole finding.
+
+**The cause: a sentinel collision in `task_exit_switch()`.** It returns `0` for two
+incompatible things:
+
+```c
+if (next < 0) { ...; return 0; }             /* nothing runnable -- NO claim taken */
+...
+task_running_cpu[next] = cpu;                /* claim taken */
+set_current_task(next);                      /* CPU committed to it */
+if (ksp_is_bogus(ksp)) return ksp_refuse();  /* ALSO 0 -- claim already taken */
+```
+
+All three callers in `idt.c` read it identically — `if (rsp) return rsp;` and otherwise park
+the CPU at `resume_shell_after_fault`. So a refusal is indistinguishable from an empty run
+queue: the CPU parks, and `next` stays claimed **forever**, skipped by every selection loop,
+unschedulable by every CPU including the holder.
+
+**The resume guard added *for* [G-9] is what commits the switch before validating it.** The
+instrument installed to catch this leak was creating one.
+
+**Why four days of investigation walked past it.** The audit reports the corpse ~10ms later at
+`preempt_on_tick`, a site with nothing to do with it, because that is simply where the next
+tick ran. The claim invariant structurally cannot name the culprit — which is why the search
+kept returning to the deferred-release machinery.
+
+**Deterministic reproduction.** `KSP_GUARD_INJECT=1` forges the bogus value and
+`SWITCH_COMMIT_EARLY=1` restores the old ordering. Every boot:
+
+```
+DEFECT FLAGS: KSP_GUARD_INJECT SWITCH_COMMIT_EARLY
+SCHED BOGUS KSP from task_exit_switch task=2 ... refusing, parking this CPU instead
+PANIC: stale scheduler claim: task 2 claimed by cpu 0 but that cpu was running 0
+```
+
+Note `running 0` — the **idle** variant this document originally described. The later captures
+showed "running another live task" only because the parked CPU had picked up new work before
+the audit ran. **Both recorded signatures are the same bug**, which is worth knowing: the
+"corrected" signature above and the original are not two findings.
+
+**Fix: validate before committing.** All four switch paths now check the resume value before
+claiming `next`, installing its address space, or naming it current — so a refusal has no state
+to unwind. Releasing the claim on the refusal path was considered and rejected: it publishes a
+task whose saved frame is known bogus.
+
+**A residual behaviour, stated rather than discovered later.** With the fix, a genuinely bogus
+resume value is refused by each CPU in turn instead of being locked away behind a leaked claim.
+That is a loud stall rather than silent corruption of the claim invariant — a deliberate trade,
+and the better of the two.
+
+**Gated:** `make smoke-switch-commit` / `smoke-switch-commit-control` (required job
+`switch-commit`).
+
+**What is still open, and the next lead is specific.** 2 in 130 boots post-fix (5 captures in
+total across 220), every one `last claimed by task_exit_switch/next`, and the
+`set_current_task` chokepoint probe does **not** fire for any of them.
+
+That absence is evidence rather than a dead end. The chokepoint only reports a CPU moving *off a
+live claimed task*; it cannot see a CPU diverted **between** claiming `next` and reaching
+`set_current_task(next)`. In `task_exit_switch` that gap is five statements wide:
+
+```c
+task_running_cpu[next] = cpu;          /* claimed here */
+sched_mark_kstack_inflight(cpu, dead);
+switch_cr3(tasks[next].cr3);           /* <-- faults here and the claim stands */
+uint64_t kstop = task_kstack_top(next);
+set_tss_kernel_stack(kstop);
+set_current_task(next);                /* only now is the CPU "on" next */
+```
+
+If anything in that gap faults or diverts, `percpu_current_task[cpu]` still names the **dead**
+task — state 0, and therefore exempt from the audit — so the chokepoint is silent, the claim on
+`next` stands, and the CPU is later seen running something else entirely. That matches all five
+captures exactly.
+
+**Next step:** bracket that gap. Record entry and exit around it per CPU, and report any CPU
+that enters and does not leave. `switch_cr3()` is the first suspect — a stale or freed `cr3` is
+[G-10] territory, and [G-10]'s page-table use-after-free was closed on evidence gathered before
+the `percpu_cr3` tracking existed.
+
 #### 2026-08-21: a reproduction, a corrected signature, and four leads killed
 
 **Still open.** What changed is that it is now cheap to reproduce and the recorded signature was

@@ -158,8 +158,11 @@ int task_running_cpu[MAX_TASKS];
 volatile uint64_t g_kstack_inflight = 0;
 
 #ifdef CLAIM_TRACE
+static const char *g_switch_via[MAX_CPUS];
+#define SWITCH_VIA(c, s_) do { if ((c) >= 0 && (c) < MAX_CPUS) g_switch_via[c] = (s_); } while (0)
 #define CLAIM_NOTE(t, c, s_) claim_note((t), (c), (s_))
 #else
+#define SWITCH_VIA(c, s_) ((void)0)
 #define CLAIM_NOTE(t, c, s_) ((void)0)
 #endif
 
@@ -1708,6 +1711,38 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
         sched_release_outgoing(cpu, cur);
     }
 
+    /* ---- VALIDATE BEFORE COMMITTING THE SWITCH -- finding [G-9] -------------
+     *
+     * The resume value is checked BEFORE this CPU claims `next`, installs its
+     * address space, or names it current. It used to be checked after all of
+     * that, and ksp_refuse() then returned 0 having already committed the switch,
+     * so the claim on `next` was taken and never undone.
+     *
+     * In task_exit_switch that is directly fatal, because 0 is ALSO its legal
+     * return for "nothing else runnable, caller parks" (the `next < 0` branch
+     * above). Its three callers in idt.c all read `if (rsp) return rsp;` and
+     * otherwise park the CPU at resume_shell_after_fault -- so a refusal was
+     * indistinguishable from an empty run queue: the CPU parked and `next` stayed
+     * claimed by it forever, unschedulable by every CPU including the holder.
+     * Captured 2026-08-21:
+     *   "task 3 claimed by cpu 3 but that cpu was running 1
+     *    last claimed #34 by task_exit_switch/next -- NEVER RELEASED"
+     *
+     * The other three paths return their refusal into the consumer guard, which
+     * halts -- loud rather than leaked -- but they are reordered too: two shapes
+     * of one sequence is how the [G-9] class keeps regrowing.
+     *
+     * Nothing is committed until the value is known good, so a refusal has no
+     * state to unwind. Releasing the claim on the refusal path was considered and
+     * rejected: it publishes a task whose saved frame is known bogus, and the next
+     * CPU to select it refuses it too. */
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+    uint64_t ksp = tasks[next].saved_ksp;
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) {
+        sched_raw_unlock();
+        return ksp_refuse("preempt_on_tick", next, ksp);
+    }
     task_running_cpu[next] = cpu;
     CLAIM_NOTE(next, cpu, "preempt_on_tick/next");
     smp_cpus_ran_tasks |= (1u << cpu);
@@ -1715,13 +1750,12 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     uint64_t kstop = task_kstack_top(next);
     set_tss_kernel_stack(kstop);
     if (cpu == 0) current_kernel_stack_top = kstop;
+#ifdef SMP
+    SWITCH_VIA(cpu, "preempt_on_tick");
+#endif
     set_current_task(next);
-    uint64_t ksp = tasks[next].saved_ksp;
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
-    /* The selection loop only required saved_ksp to be NON-ZERO, which
-     * rejects a cleared slot and nothing else. `-7` is non-zero. */
-    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("preempt_on_tick", next, ksp);
     return ksp;
 #endif
 }
@@ -1829,19 +1863,50 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         return idle;
     }
 
+    /* ---- VALIDATE BEFORE COMMITTING THE SWITCH -- finding [G-9] -------------
+     *
+     * The resume value is checked BEFORE this CPU claims `next`, installs its
+     * address space, or names it current. It used to be checked after all of
+     * that, and ksp_refuse() then returned 0 having already committed the switch,
+     * so the claim on `next` was taken and never undone.
+     *
+     * In task_exit_switch that is directly fatal, because 0 is ALSO its legal
+     * return for "nothing else runnable, caller parks" (the `next < 0` branch
+     * above). Its three callers in idt.c all read `if (rsp) return rsp;` and
+     * otherwise park the CPU at resume_shell_after_fault -- so a refusal was
+     * indistinguishable from an empty run queue: the CPU parked and `next` stayed
+     * claimed by it forever, unschedulable by every CPU including the holder.
+     * Captured 2026-08-21:
+     *   "task 3 claimed by cpu 3 but that cpu was running 1
+     *    last claimed #34 by task_exit_switch/next -- NEVER RELEASED"
+     *
+     * The other three paths return their refusal into the consumer guard, which
+     * halts -- loud rather than leaked -- but they are reordered too: two shapes
+     * of one sequence is how the [G-9] class keeps regrowing.
+     *
+     * Nothing is committed until the value is known good, so a refusal has no
+     * state to unwind. Releasing the claim on the refusal path was considered and
+     * rejected: it publishes a task whose saved frame is known bogus, and the next
+     * CPU to select it refuses it too. */
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+    uint64_t ksp = tasks[next].saved_ksp;
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) {
+        sched_raw_unlock();
+        return ksp_refuse("ipc_block_switch", next, ksp);
+    }
     task_running_cpu[next] = cpu;
     CLAIM_NOTE(next, cpu, "block_or_yield/next");
     switch_cr3(tasks[next].cr3);
     uint64_t kstop = task_kstack_top(next);
     set_tss_kernel_stack(kstop);
     if (cpu == 0) current_kernel_stack_top = kstop;
+#ifdef SMP
+    SWITCH_VIA(cpu, "ipc_block_switch");
+#endif
     set_current_task(next);
-    uint64_t ksp = tasks[next].saved_ksp;
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
-    /* The selection loop only required saved_ksp to be NON-ZERO, which
-     * rejects a cleared slot and nothing else. `-7` is non-zero. */
-    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("ipc_block_switch", next, ksp);
     return ksp;
 #else
     int next = -1;
@@ -1956,6 +2021,7 @@ void __attribute__((noreturn)) kernel_idle(void) {
      * busy: real kernel work must not be abandoned. */
     int cpu = this_cpu();
     if (cpu >= 0 && cpu < MAX_CPUS) {
+        SWITCH_VIA(cpu, "kernel_idle");
         percpu_current_task[cpu] = 0;
         percpu_idle[cpu]         = 1;
     }
@@ -2016,6 +2082,9 @@ void __attribute__((noreturn)) sched_enter_user(int tid) {
     if (cpu == 0) current_kernel_stack_top = kstop;
 #else
     current_kernel_stack_top = kstop;
+#endif
+#ifdef SMP
+    SWITCH_VIA(cpu, "sched_enter_user");
 #endif
     set_current_task(tid);
     /* First entry does not come through interrupt_handler64, so load this task's
@@ -2118,6 +2187,40 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
 
     tasks[cur].saved_ksp    = frame_rsp;
     tasks[cur].runnable_ctx = 1;
+    /* ---- VALIDATE BEFORE COMMITTING THE SWITCH -- finding [G-9] -------------
+     *
+     * The resume value is checked BEFORE this CPU claims `next`, installs its
+     * address space, or names it current. It used to be checked after all of
+     * that, and ksp_refuse() then returned 0 having already committed the switch,
+     * so the claim on `next` was taken and never undone.
+     *
+     * In task_exit_switch that is directly fatal, because 0 is ALSO its legal
+     * return for "nothing else runnable, caller parks" (the `next < 0` branch
+     * above). Its three callers in idt.c all read `if (rsp) return rsp;` and
+     * otherwise park the CPU at resume_shell_after_fault -- so a refusal was
+     * indistinguishable from an empty run queue: the CPU parked and `next` stayed
+     * claimed by it forever, unschedulable by every CPU including the holder.
+     * Captured 2026-08-21:
+     *   "task 3 claimed by cpu 3 but that cpu was running 1
+     *    last claimed #34 by task_exit_switch/next -- NEVER RELEASED"
+     *
+     * The other three paths return their refusal into the consumer guard, which
+     * halts -- loud rather than leaked -- but they are reordered too: two shapes
+     * of one sequence is how the [G-9] class keeps regrowing.
+     *
+     * Nothing is committed until the value is known good, so a refusal has no
+     * state to unwind. Releasing the claim on the refusal path was considered and
+     * rejected: it publishes a task whose saved frame is known bogus, and the next
+     * CPU to select it refuses it too. */
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+    uint64_t ksp = tasks[next].saved_ksp;
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) {
+#ifdef SMP
+        sched_raw_unlock();
+#endif
+        return ksp_refuse("sched_yield_switch", next, ksp);
+    }
 #ifdef SMP
     sched_release_outgoing(cpu, cur);
     task_running_cpu[next]  = cpu;
@@ -2130,15 +2233,14 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
 #else
     current_kernel_stack_top = kstop;
 #endif
+#ifdef SMP
+    SWITCH_VIA(cpu, "sched_yield_switch");
+#endif
     set_current_task(next);
-    uint64_t ksp = tasks[next].saved_ksp;
 #ifdef SMP
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
 #endif
-    /* The selection loop only required saved_ksp to be NON-ZERO, which
-     * rejects a cleared slot and nothing else. `-7` is non-zero. */
-    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("sched_yield_switch", next, ksp);
     return ksp;
 }
 
@@ -2269,6 +2371,49 @@ uint64_t task_exit_switch(int dead) {
 #endif
         return 0;   /* nothing else to run — caller idles */
     }
+    /* ---- VALIDATE BEFORE COMMITTING THE SWITCH -- finding [G-9] -------------
+     *
+     * The resume value is checked BEFORE this CPU claims `next`, installs its
+     * address space, or names it current. It used to be checked after all of
+     * that, and ksp_refuse() then returned 0 having already committed the switch,
+     * so the claim on `next` was taken and never undone.
+     *
+     * In task_exit_switch that is directly fatal, because 0 is ALSO its legal
+     * return for "nothing else runnable, caller parks" (the `next < 0` branch
+     * above). Its three callers in idt.c all read `if (rsp) return rsp;` and
+     * otherwise park the CPU at resume_shell_after_fault -- so a refusal was
+     * indistinguishable from an empty run queue: the CPU parked and `next` stayed
+     * claimed by it forever, unschedulable by every CPU including the holder.
+     * Captured 2026-08-21:
+     *   "task 3 claimed by cpu 3 but that cpu was running 1
+     *    last claimed #34 by task_exit_switch/next -- NEVER RELEASED"
+     *
+     * The other three paths return their refusal into the consumer guard, which
+     * halts -- loud rather than leaked -- but they are reordered too: two shapes
+     * of one sequence is how the [G-9] class keeps regrowing.
+     *
+     * Nothing is committed until the value is known good, so a refusal has no
+     * state to unwind. Releasing the claim on the refusal path was considered and
+     * rejected: it publishes a task whose saved frame is known bogus, and the next
+     * CPU to select it refuses it too. */
+    /* The selection loop only required saved_ksp to be NON-ZERO, which
+     * rejects a cleared slot and nothing else. `-7` is non-zero. */
+    uint64_t ksp = tasks[next].saved_ksp;
+#ifdef KSP_GUARD_INJECT
+    /* Control arm: forge exactly the value [G-9] was seen to hand back, on the
+     * producer the PROC_SELFTEST workload drives. Never a shipping config.
+     * Applied after the load and before the check, so the arm still exercises
+     * the guard now that the check runs before the switch is committed. */
+    ksp = (uint64_t)-7;
+#endif
+#ifndef SWITCH_COMMIT_EARLY
+    if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) {
+#ifdef SMP
+        sched_raw_unlock();
+#endif
+        return ksp_refuse("task_exit_switch", next, ksp);
+    }
+#endif
 #ifdef SMP
     task_running_cpu[next] = cpu;
     CLAIM_NOTE(next, cpu, "task_exit_switch/next");
@@ -2289,20 +2434,26 @@ uint64_t task_exit_switch(int dead) {
 #else
     current_kernel_stack_top = kstop;
 #endif
+#ifdef SMP
+    SWITCH_VIA(cpu, "task_exit_switch");
+#endif
     set_current_task(next);
-    uint64_t ksp = tasks[next].saved_ksp;
 #ifdef SMP
     sched_raw_unlock();
     KSTACK_WIDEN(cpu);
 #endif
-    /* The selection loop only required saved_ksp to be NON-ZERO, which
-     * rejects a cleared slot and nothing else. `-7` is non-zero. */
-#ifdef KSP_GUARD_INJECT
-    /* Control arm: forge exactly the value [G-9] was seen to hand back, on the
-     * producer the PROC_SELFTEST workload drives. Never a shipping config. */
-    ksp = (uint64_t)-7;
-#endif
+#ifdef SWITCH_COMMIT_EARLY
+    /* CONTROL ARM -- never ship. The pre-2026-08-21 order: commit the switch
+     * (claim `next`, install its CR3, name it current) and only THEN validate the
+     * resume value. ksp_refuse() returns 0, which is ALSO this function's legal
+     * "nothing runnable, caller parks" return -- so its three callers in idt.c
+     * park the CPU and `next` stays claimed forever, unschedulable by every CPU
+     * including the holder.
+     *
+     * Paired with KSP_GUARD_INJECT=1 this is deterministic, where the natural
+     * event reproduces at ~3% -- which is what makes it a gate and not a soak. */
     if (ksp_is_bogus(ksp) || ksp_is_unmapped(ksp)) return ksp_refuse("task_exit_switch", next, ksp);
+#endif
     return ksp;
 }
 
@@ -2354,6 +2505,9 @@ uint64_t exec_reenter_switch(int t) {
     if (cpu == 0) current_kernel_stack_top = kstop;
 #else
     current_kernel_stack_top = kstop;
+#endif
+#ifdef SMP
+    SWITCH_VIA(cpu, "exec_reenter_switch");
 #endif
     set_current_task(t);
     uint64_t ksp = tasks[t].saved_ksp;

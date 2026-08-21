@@ -804,7 +804,7 @@ disabled; DMA-capable devices (no IOMMU); and any channel through the shared L2/
 ## 14. Known architectural gaps
 
 These are design-level, not bugs to be patched in place. Each is tracked in
-[`ROADMAP.md`](ROADMAP.md) and analysed in [`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
+[`ROADMAP.md`](ROADMAP.md) and analysed in [`AUDIT.md`](AUDIT.md).
 
 **G-2 — Ambient `uid == 0` authority runs parallel to the capability system.** *Closed*
 (roadmap 0.2, finding **[I-1]**). Nine syscall handlers used to gate on the caller's uid
@@ -851,7 +851,7 @@ compound this is also gone; every task has a private one.
 
 *This paragraph continued "**What remains is a blocking receive:** an empty queue still returns
 `-2` and the server polls" for four days after that stopped being true.* `SYS_IPC_RECV_BLOCK`
-(syscall 94, `syscall.c:1032`) sleeps on an empty queue, and both ring-3 servers use it —
+(syscall 94, `h_ipc_recv_block` in `syscall_ipc.c`) sleeps on an empty queue, and both ring-3 servers use it —
 `console_server.c:229` unconditionally, `fs_server.c:644` once the volume is provisioned, since
 before that it must keep polling the root inode for a login to unlock it. Session time on one
 core fell 15.18 s → 6.25 s with non-overlapping ranges. `smoke-recvblock` and

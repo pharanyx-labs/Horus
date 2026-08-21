@@ -135,11 +135,14 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 
 | Flag | Reproduces | Gate |
 |---|---|---|
-| `IRQ_LEGACY_GLOBAL_LOCK=1` | The pre-1.1 spinlock: one global nesting depth shared by every CPU, incremented non-atomically, with an unconditional `sti` on the outermost release — findings **[C-3]** and **[C-3.1]** exactly as they stood. Detailed in the interrupt-policy table above. | `make smoke-irq-policy` (`Makefile:665-678`) |
+| `IRQ_LEGACY_GLOBAL_LOCK=1` | The pre-1.1 spinlock: one global nesting depth shared by every CPU, incremented non-atomically, with an unconditional `sti` on the outermost release — findings **[C-3]** and **[C-3.1]** exactly as they stood. Detailed in the interrupt-policy table above. | `make smoke-irq-policy` (`Makefile`, `smoke-irq-policy:`) |
 | `USER_HEAP_HIGH_BASE=1` | Places every user heap at **8 GiB** instead of 16 MiB — above the 4 GiB line — so the 32-bit truncation in the heap syscalls and the pager's region gate (**[I-2]**) is *reachable* rather than latent. Built from a tree without the fix, the gate reports `CAPTEST: FAIL (sbrk-grow-failed)`. | `make smoke-heap64` |
 | `EP_QUEUE_SLOTS=1` | A single-slot endpoint queue, pre-**[I-5]**, for the roadmap 1.3 queue and blocking-receive gates. | `make smoke-recvblock` |
 | `KFAULT_INJECT` | Takes a deliberate supervisor page fault (a read of `0x94`, G-8's address) on a timer tick **after** `console_server` owns the console. `KFAULT_INJECT_TICKS` (default 400) sets how long after. | `make smoke-kfault` |
 | `KFAULT_LEGACY_PRINTLN` | Reports a CPL-0 page fault through `println()` as the kernel used to — i.e. into the klog, where nothing on the wire can hear it. | `make smoke-kfault-legacy`, which requires the report to be **absent** |
+| `RESUME_RSP_INJECT=1` | Forces `interrupt_handler64`'s resume `%rsp` to a bogus value once, after the console handover, so the floor guard in `idt.c` can be **gated** rather than waited on: the natural event is about 1 boot in 150, and "no `PANIC` line appeared" is worth nothing until the guard is known to be able to speak on that path. `RESUME_RSP_INJECT_VALUE` (default `4`) picks which half of the guard is exercised — `4` is the 2026-08-13 capture and tests the **floor**; `-7` is the 2026-08-17 capture and tests the **ceiling** added after a real boot showed `-7` sailing over a floor-only predicate (`0xFFFFFFFFFFFFFFF9` is above `0xFFFF800000000000`). Both halves need an arm. `RESUME_RSP_INJECT_TICKS` (default `400`) sets how long after the handover. | `make smoke-resume-guard`, which requires the guard's report to be **present** |
+| `RESUME_RSP_INJECT_PRECLAIM=1` | The same injection, but taken with another CPU's **fatal** exception claim already held — the state a real `FATAL` leaves behind, and the exact state of the 2026-08-13 capture, where cpu 3 halted holding it. The guard used to report under `kfault_begin(1)`, which loses that claim and halts **without printing**; this arm is what makes the difference audible. | `make smoke-resume-guard-preclaim` (report **present**), against `make smoke-resume-guard-preclaim-control`, which restores the pre-fix bracket and requires it **absent** |
+| `WAL_CRASHTEST=1` | Not a defect — builds the in-kernel journal crash-recovery test. Boot 1 commits a write and halts **before** applying it; boot 2 replays the committed transaction at mount. Pure kernel, no userspace binaries, which is why it is a build flag rather than a workload. | `make smoke-fs-wal`, a two-boot gate requiring `WAL_CRASHTEST: crashed-after-commit` then `WAL_CRASHTEST: PASS` |
 | `RESUME_GUARD_LEGACY_FATAL=1` | Restores the resume-`%rsp` floor guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket, so the report is swallowed by a permanent panic claim another CPU already holds. The report must **not** reach serial. | `make smoke-resume-guard-legacy` |
 | `RESUME_GUARD_DISABLE=1` | Compiles the floor guard out entirely; the kernel instead faults at `0x94` on `out->cs`, which is **[G-8]**'s original datapoint reproduced deliberately. | `make smoke-resume-guard-nofloor` |
 | `--features=revoke_legacy_bounded` (cargo) | Restores the pre-2026-08-16 revocation closure: a fixed 256-entry worklist of revoked serials, falling back to nulling every capability that merely shares the root object when a subtree overflows it (**[I-3]**). Reachable from ring 3, and it destroys unrelated peers' authority. | `cargo test --manifest-path rust/Cargo.toml --release --features=revoke_legacy_bounded` — the two subtree-exactness tests must **fail**. The `rust` CI job runs exactly this and fails if they pass. |
@@ -176,9 +179,12 @@ noticed by luck rather than by method.
 
 None of these is a shipping configuration. `IRQ_LEGACY_GLOBAL_LOCK` also appears in the
 interrupt-policy table above, and until 2026-08-15 that was the only place it was documented;
-`USER_HEAP_HIGH_BASE` was not documented anywhere. This table is the complete list — if you
-add a control arm, it belongs here in the same commit, because a control arm nobody can find
-is one nobody will re-run.
+`USER_HEAP_HIGH_BASE` was not documented anywhere. This table is the complete list, and `tools/check_defect_flags.py`
+(CI job `defect-flags`) fails the build if it stops being — it derives the flag set from the
+Makefile's `DEFECT_FLAGS` and compares. It has to be checked rather than promised: this
+sentence was already false when it was written, and three flags were missing from the table
+below when that was noticed on 2026-08-21. A control arm nobody can find is one nobody will
+re-run.
 
 Note that `WAL_NO_FLUSH=1` is unusual among these in being **deterministic**: the barriers are
 either compiled in or they are not, so its gates do not need a rate quoted over N boots the

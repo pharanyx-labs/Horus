@@ -30,7 +30,7 @@ static void scrub(char *buf, size_t n) {
  * output is never lost even if the server is not up yet, unreachable, or errors.
  * Bounded retries keep a transient "mailbox full / not yet serving" condition from
  * hanging the shell. Part of moving the console into ring 3 (Phase 6); see
- * docs/proposals/console-server.md. */
+ * docs/design/console-server.md. */
 static struct con_request  con_rq;   /* static: keep these off the shell's stack */
 static struct con_response con_rp;
 static int con_write_all(const char *s, size_t len) {

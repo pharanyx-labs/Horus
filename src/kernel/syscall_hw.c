@@ -10,7 +10,7 @@
  *
  * Every syscall here is gated on CAP_IO_DEVICE in the dispatch table (syscall.c),
  * so only a task explicitly endowed with that capability -- the console server --
- * can reach any of it. See docs/proposals/console-server.md.
+ * can reach any of it. See docs/design/console-server.md.
  */
 #include "syscall_internal.h"
 

@@ -7,7 +7,7 @@ draws an incorrect conclusion about its readiness. This document is deliberately
 an issue.**
 
 Findings referenced as **[C-n]** / **[I-n]** / **[M-n]** are from
-[`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md). **[G-n]** are the known architectural gaps in
+[`AUDIT.md`](AUDIT.md). **[G-n]** are the known architectural gaps in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §14. **[H-n]** are from the independent external audit of
 2026-08-15, which supersedes the 2026-07-27 status for several findings; that document is not
 in the tree, so the findings it raised are recorded here and in `CHANGES.md`.
@@ -102,7 +102,7 @@ recording as **withdrawn**: that captest had been silently holding `CAP_USER` vi
 `do_spawn_inner`'s propagation. It does not, and the refusals pass identically with and without
 the slot explicitly cleared. The propagation reads `cap_lookup(6, …)` *after*
 `load_staged_image_into` has made the child current, so it inspects the child's own empty
-cspace and never fires — `kspawn.c:188-197`. Dead, and dead in the fail-closed direction;
+cspace and never fires — `kspawn.c`, `do_spawn_inner`. Dead, and dead in the fail-closed direction;
 "fixing" it would silently widen authority to every spawned child and must not be done as a
 tidy-up.)
 
@@ -657,8 +657,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **79** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **81** across the three, producing **84** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **80** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **82** across the three, producing **85** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -689,7 +689,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **80 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **81 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands

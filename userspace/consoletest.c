@@ -8,7 +8,7 @@
  * prints a FAIL marker through the kernel console (the only path it has).
  *
  * This mirrors how fsclient first proved the filesystem server over IPC. See
- * include/console_proto.h and docs/proposals/console-server.md.
+ * include/console_proto.h and docs/design/console-server.md.
  */
 
 #include "syscall.h"

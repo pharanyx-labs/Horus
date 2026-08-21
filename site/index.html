@@ -1642,6 +1642,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </li>
           <li>
             <h3><span class="id">G-8</span>Two CPUs on one kernel stack — closed, both paths</h3>
+            <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-08-two-cpus-one-kernel-stack.md">Read the full investigation &rarr;</a></p>
             <p>
               <strong>Closed 2026-08-17.</strong> For eight days the SMP session soak failed at
               roughly <strong>2–3% per boot</strong> and the origin resisted several
@@ -1703,6 +1704,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </li>
           <li>
             <h3><span class="id">G-9</span>An exec re-entry taken by the wrong CPU — one component closed, the finding open</h3>
+            <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-09-scheduler-claim-leak.md">Read the full investigation &rarr;</a></p>
             <p>
               <strong>Open, narrowed 2026-08-17.</strong> Closing G-8 stopped a defect that
               killed every boot of a task-killing workload, and what it uncovered underneath was
@@ -1742,6 +1744,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </li>
           <li>
             <h3><span class="id">G-10</span>The spawn path was written for one core</h3>
+            <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-10-spawn-path-uaf.md">Read the full investigation &rarr;</a></p>
             <p>
               <strong>Found 2026-08-17, closed 2026-08-18</strong> — while narrowing the finding
               above.
@@ -1822,6 +1825,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </li>
           <li>
             <h3><span class="id">G-11</span>The armed program image belonged to nobody</h3>
+            <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-11-armed-image-ownership.md">Read the full investigation &rarr;</a></p>
             <p>
               <strong>Found and closed 2026-08-18</strong>, while serialising the window above —
               and it is the more serious of the two. A program image is staged in one shared
@@ -2103,7 +2107,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md"><b>SYSCALLS.md</b><span>The complete ABI, with the authorisation each call requires</span></a>
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md"><b>TESTS.md</b><span>Every test target, what it proves, and where the suite has been wrong</span></a>
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md"><b>LIMITATIONS.md</b><span>Honest accounting of what does not work or is not enforced</span></a>
-          <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/AUDIT-2026-07-27.md"><b>AUDIT-2026-07-27.md</b><span>The current full security and engineering audit</span></a>
+          <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/AUDIT.md"><b>AUDIT.md</b><span>The full security and engineering audit, predecessor included</span></a>
+          <a href="https://github.com/pharanyx-labs/Horus/tree/main/docs/investigations"><b>investigations/</b><span>How the harder findings were narrowed, and which hypotheses were wrong</span></a>
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/CONTRIBUTING.md"><b>CONTRIBUTING.md</b><span>How to contribute, and the invariant-preservation rule</span></a>
         </div>
       </div>

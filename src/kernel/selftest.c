@@ -1516,7 +1516,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
  * off-list frame is refused. We seed a sentinel into a VGA cell here; the probe
  * (userspace/mapphystest.c) reads it back through its own mapping, writes+reads a
  * magic, checks the allowlist refusal, and prints MAPPHYS_SELFTEST: PASS. Entry
- * into ring 3 does not return. See docs/proposals/console-server.md. */
+ * into ring 3 does not return. See docs/design/console-server.md. */
 void mapphys_selftest(void) {
     extern uint8_t embedded_mapphystest_bin_start[], embedded_mapphystest_bin_end[];
 
@@ -1558,7 +1558,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
  * console ports and that the grant is precise -- an allowlisted port succeeds, a
  * non-allowlisted port still #GPs. The probe (userspace/ioporttest.c) self-asserts
  * and prints IOPORT_SELFTEST: PASS. Entry into ring 3 does not return. See
- * docs/proposals/console-server.md. */
+ * docs/design/console-server.md. */
 void ioport_selftest(void) {
     extern uint8_t embedded_ioporttest_bin_start[], embedded_ioporttest_bin_end[];
 
@@ -1589,7 +1589,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
  * (userspace/irqtest.c) registers the timer IRQ, blocks in SYS_WAIT_NOTIFY, and a
  * real timer interrupt wakes it with the registered badge (IRQ_SELFTEST: PASS).
  * The timer self-triggers, so no key injection is needed. Entry into ring 3 does
- * not return. See docs/proposals/console-server.md. */
+ * not return. See docs/design/console-server.md. */
 void irq_selftest(void) {
     extern uint8_t embedded_irqtest_bin_start[], embedded_irqtest_bin_end[];
 
@@ -1625,7 +1625,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
  * write a line; the server emits it to serial with its own hands, so
  * "CONSOLE_SELFTEST: PASS" appearing on serial proves the whole ring-3 console
  * output path (client -> IPC -> server -> hardware). Entry into ring 3 does not
- * return. See docs/proposals/console-server.md. */
+ * return. See docs/design/console-server.md. */
 void console_selftest(void) {
     extern uint8_t embedded_console_server_bin_start[], embedded_console_server_bin_end[];
     extern uint8_t embedded_consoletest_bin_start[], embedded_consoletest_bin_end[];
@@ -1719,7 +1719,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
  * the capability system, which is exactly the blast-radius reduction the program
  * set out to achieve. The handler prints CONSOLE_ISOLATION: PASS through the
  * (still-alive) kernel console. Entry into ring 3 does not return. See
- * docs/proposals/console-server.md. */
+ * docs/design/console-server.md. */
 void console_isolation_selftest(void) {
     extern uint8_t embedded_console_server_bin_start[], embedded_console_server_bin_end[];
 

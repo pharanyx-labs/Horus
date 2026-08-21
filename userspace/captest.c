@@ -64,7 +64,8 @@ static void check(int ok, const char *what) {
  * for the reason it looks like: do_spawn_inner does contain code to propagate
  * CAP_USER from a spawner that holds it, but it calls cap_lookup(6, ...) after
  * load_staged_image_into has already made the CHILD the current task, so the
- * lookup reads the child's freshly-zeroed cspace and never fires (kspawn.c:188).
+ * lookup reads the child's freshly-zeroed cspace and never fires (kspawn.c,
+ * do_spawn_inner, at the cap6_serial hand-off).
  * Verified rather than assumed: the 4b refusals pass identically whether or not
  * the harness clears the slot.
  */

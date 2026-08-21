@@ -620,9 +620,6 @@ uint32_t kobj_live_count(uint32_t kobj_type);
  * roadmap 1.1 on 2026-08-11). See the locking note at the top of
  * src/kernel/untyped.c before reintroducing any such window. */
 
-#ifdef UNTYPED_SELFTEST
-void untyped_selftest(void);
-#endif
 /* Canonical task_info ABI. MUST stay byte-identical to the copy in
  * include/syscall.h — the kernel fills this
  * layout and ring-3 reads it across copy_to_user (SYS_GET_TASK_INFO). A prior
@@ -756,9 +753,9 @@ void users_init(void);
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (object-store server only: uid 0 + CAP_BLOCK_DEV) */
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> module count; store owner only (uid 0 + CAP_BLOCK_DEV) */
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module; store owner only (uid 0 + CAP_BLOCK_DEV) */
-#define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an ALLOWLISTED device frame into the caller's own address space (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
-#define SYS_IOPORT_GRANT       80   /* () -> 0; grant the caller native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
-#define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/proposals/console-server.md */
+#define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an ALLOWLISTED device frame into the caller's own address space (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/design/console-server.md */
+#define SYS_IOPORT_GRANT       80   /* () -> 0; grant the caller native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/design/console-server.md */
+#define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/design/console-server.md */
 #define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (fd-1 output must route through it), else 0; read-only status, self-authorizing */
 #define SYS_PIPE               83   /* () -> (read_slot<<16)|write_slot; create a pipe, install a read-end + write-end CAP_PIPE in the caller's cspace */
 #define SYS_PIPE_READ          84   /* (slot, buf, len) -> bytes read; 0 = EOF (no writers), SYS_ERR_AGAIN = empty but writers remain */
@@ -877,7 +874,7 @@ struct boot_module_info {
  * MMIO frame into a user address space, and — in later console-server jobs — hold
  * a port-I/O grant / claim an IRQ line). Distinct from CAP_CONSOLE, which is only
  * a software privilege token for the kernel shell. Only a driver server is ever
- * endowed with it. See docs/proposals/console-server.md. */
+ * endowed with it. See docs/design/console-server.md. */
 #define CAP_IO_DEVICE           12
 /* A pipe end (roadmap userspace: shell pipelines). object = pipe index; the
  * direction is the rights bit: CAP_RIGHT_READ = read end, CAP_RIGHT_WRITE = write
@@ -1444,8 +1441,6 @@ uint64_t exec_reenter_switch(int t);
 void exec_reenter_arm(int t);
 int  exec_reenter_take(void);
 char console_getc(void);
-void console_putc(char c);
-void console_puts(const char *s);
 /* Set by the Makefile from DEFECT_ACTIVE: the space-separated list of
  * defect-reproducing flags this kernel was built with, or "none". Printed at
  * boot so a serial transcript is self-describing -- see main.c. The fallback
@@ -1591,11 +1586,11 @@ void set_tss_kernel_stack(uint64_t kstack_top);
 /* TSS I/O-permission bitmap (gdt.c): tss_io_bitmap_init prefills the console
  * allowlist at boot; tss_set_io_allowed flips the running CPU's iomap_base so a
  * granted task's ring-3 in/out reaches the console ports while everyone else's
- * #GPs. See docs/proposals/console-server.md. */
+ * #GPs. See docs/design/console-server.md. */
 void tss_io_bitmap_init(void);
 void tss_set_io_allowed(int allowed);
 /* IRQ -> userspace notification bridge (idt.c): register/clear routing a hardware
- * IRQ to an async notification for a ring-3 driver. See docs/proposals/console-server.md. */
+ * IRQ to an async notification for a ring-3 driver. See docs/design/console-server.md. */
 int  irq_notify_register(int irq, int task, uint32_t slot, uint32_t badge);
 void irq_notify_clear_task(int task);
 void cpu_detect_features(void);

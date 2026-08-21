@@ -8,6 +8,64 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — a build now says which defect flags made it, and a flag change forces a rebuild
+
+**A `-D` flag is not a prerequisite of an object file.** `make FLAG=1` followed by `make`
+leaves every unchanged `.c` compiled *with* the flag, and nothing says so. On 2026-08-20 that
+handed a [G-9] measurement campaign a kernel still carrying `KSP_GUARD_INJECT`: the guard
+"fired" in 2 boots of 3 with the control arm's own injected constant, which for a few minutes
+read as a reproduction of the very defect being hunted. It was caught because `-7` is
+implausibly exact and 67% implausibly high — **by luck, not by method**.
+
+The gates were never at risk: every `smoke-*` target runs `make clean` first. But this
+project's method is *hand-run measurement* read off the wire, and a defect flag that can
+survive into a build you believe is clean is a hole in the evidence, not a nicety.
+
+Two mechanisms, because either alone can be wrong:
+
+- **Prevention.** The whole `CFLAGS`/`ASFLAGS` strings are stamped into `.build-flags` and
+  every object depends on it, so any flag change forces a rebuild — all flags, not just the
+  defect list. Rewritten only when the content differs, so it does not itself cause churn.
+- **Detection.** Every boot prints `DEFECT FLAGS: <list>`, compiled in from the Makefile's
+  `DEFECT_FLAGS` list, so a serial transcript is self-describing and auditable after the fact.
+  It prints **unconditionally, including `none`** — an absent line is ambiguous between
+  "clean", "the reporting was removed" and "the boot died early", and only one of those is good
+  news. The announcement lives in the same object set it describes, so a stale image reports
+  its staleness truthfully rather than claiming to be clean.
+
+Four gates, falsified: `smoke-defect-flags` (clean says `none`) against `-control` (an injected
+build names its flag), and `smoke-defect-flags-rebuild` — which replays the exact 2026-08-20
+sequence and requires `none` — against `-control`, where `BUILD_FLAGS_UNSTAMPED=1` drops the
+dependency and the stale flag must **survive**. New required job `defect-flags`.
+
+`make print-defect-flags` answers the question without building anything, for a measurement
+script that wants to record the configuration it is about to boot.
+
+**It immediately found 38 smoke targets relying on the bug.** They built with a flag and then
+ran `$(MAKE) boot.iso` *without* it:
+
+```
+$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+$(MAKE) --no-print-directory boot.iso        # <- no flag
+```
+
+That produced a correct ISO only because the second invocation recompiled nothing. Once a flag
+change forces a rebuild, the same sequence rebuilds everything *flagless* and the ISO no longer
+contains the self-test — `smoke-captest` booted to a login prompt with captest never running.
+All 38 now pass their flags to both invocations, which is what they always meant. The one
+exception is `smoke-defect-flags-rebuild`, where rebuilding flagless *is* the test.
+
+Worth being plain about what this means: those targets were correct by accident, and any of
+them would have silently started testing a plain kernel the day someone touched the build in a
+way that invalidated an object. The gates were green either way, which is the part that should
+be uncomfortable.
+
+**One regression caught in the making.** Adding those targets put the first explicit rule ahead
+of `all`, and in make the first target is the default goal — so plain `make` silently stopped
+building the kernel and only printed a flag list. Everything downstream still worked, because
+`make iso`, `make smoke` and CI all name their targets, which is exactly why it would have gone
+unnoticed. `.DEFAULT_GOAL := all` is now pinned explicitly.
+
 ### Changed — [G-9] narrowed: four producers ruled out, and the fault located
 
 **It reproduces, and my previous report that it did not was a broken harness.** Pinning to two

@@ -87,6 +87,26 @@ static void assert_higher_half(void) {
         for (;;) asm volatile("cli; hlt");
     }
     kmsg("boot: high-half relocation verified");
+
+    /* Every boot states which defect-reproducing flags it was built with, so a
+     * serial transcript can be audited after the fact instead of being trusted.
+     *
+     * It prints unconditionally, including "none". An ABSENT line is ambiguous --
+     * it could mean a clean build, or that this reporting was removed, or that
+     * the boot died earlier -- and the whole point is to make the clean case
+     * POSITIVE evidence rather than the absence of evidence.
+     *
+     * The provocation: on 2026-08-20 a [G-9] measurement campaign ran against a
+     * kernel that still carried KSP_GUARD_INJECT, because a -D flag is not a
+     * prerequisite of an object file and `make PROC_SELFTEST=1` after
+     * `make KSP_GUARD_INJECT=1` rebuilt nothing. The guard "fired" in 2 of 3
+     * boots with the injected constant, which briefly read as a reproduction of
+     * the defect being hunted. .build-flags now forces the rebuild; this line is
+     * the independent check on it, because a build system can be wrong too. */
+    kmsg_begin();
+    print("DEFECT FLAGS: ");
+    print(DEFECT_FLAGS_STR);
+    print("\n");
 }
 
 /* ---- Multiboot2 memory map -> physical pool size --------------------------

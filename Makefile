@@ -86,7 +86,8 @@ DEFECT_FLAGS = \
 	CR3_RECLAIM_UNGUARDED EXEC_REENTER_GLOBAL \
 	SPAWN_OWNER_UNCHECKED SPAWN_STAGE_UNSERIALISED SPAWN_STAGE_WIDEN SPAWN_STAGE_TRACE \
 	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
-	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT SYSCALL_COVERAGE
+	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
+	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -503,6 +504,14 @@ endif
 KSP_GUARD_INJECT ?= 0
 ifeq ($(KSP_GUARD_INJECT),1)
 CFLAGS += -DKSP_GUARD_INJECT
+endif
+
+# KSP_GUARD_ALWAYS=1 makes ksp_is_bogus() reject EVERY stack pointer -- the
+# false-positive mutation that every inject-and-look arm would happily pass.
+# `make smoke-ksp-guard` must go red under it.
+KSP_GUARD_ALWAYS ?= 0
+ifeq ($(KSP_GUARD_ALWAYS),1)
+CFLAGS += -DKSP_GUARD_ALWAYS
 endif
 
 SYSCALL_COVERAGE ?= 0
@@ -2066,6 +2075,30 @@ smoke-defect-flags-rebuild-control:
 		REQUIRE_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh boot.iso
 
 # ---- [G-9]: a bogus resume %rsp is refused where it is produced -------------
+# The FALSE-POSITIVE arm, and the one whose absence is a known way to ship a
+# regression. `smoke-ksp-guard-control` injects a bogus value and asks whether
+# the guard fires -- it measures false NEGATIVES, so a predicate that rejected
+# every stack pointer would satisfy it. This asks the opposite question: on an
+# ordinary boot, where every resume value is legal, the guard must stay SILENT.
+#
+# That is exactly how the resume-%rsp guard shipped a bound which rejected the
+# IST stacks (see smoke-resume-guard-ist): every arm it had injected a bogus
+# value, none asked whether it stayed quiet on a good one, and ten CI gates went
+# red at once. This pair does not repeat that.
+#
+# Deliberately the DEFAULT workload rather than PROC_SELFTEST: the latter still
+# trips [G-9] on ~1-2% of boots, which would make this gate intermittently red
+# for a reason that is not about the guard. Booting to a ring-3 login exercises
+# every switch path this guard sits on.
+.PHONY: smoke-ksp-guard
+smoke-ksp-guard:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) FAIL_MARKER='SCHED BOGUS KSP' \
+		tools/smoke_test.sh boot.iso
+
+
 # The producer-side half of the resume guard. KSP_GUARD_INJECT=1 forges -7 -- the
 # exact value [G-9] was seen to hand back -- in task_exit_switch, the producer the
 # PROC_SELFTEST workload drives. The report must name that producer.

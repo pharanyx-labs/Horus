@@ -1387,6 +1387,14 @@ jobs:
       # guard refuses an implausible value and NAMES the producer, so the next
       # reproduction of G-9's residue is a fact rather than a mystery. This is the
       # arm that proves the guard can fire at all.
+      # The FALSE-POSITIVE direction, and the one whose absence is a known way to
+      # ship a regression: on an ordinary boot every resume value is legal and
+      # the guard must stay SILENT. Without this, a predicate that rejected every
+      # stack pointer would satisfy the injection arm below perfectly -- which is
+      # exactly how the resume-%rsp guard once shipped a bound that rejected the
+      # IST stacks and reddened ten gates at once.
+      - name: Require the guard to stay silent on a healthy boot
+        run: make smoke-ksp-guard
       - name: Forge -7 and require the guard to name task_exit_switch
         run: make smoke-ksp-guard-control
 
@@ -1415,6 +1423,22 @@ jobs:
       # handler bodies actually run and fails on drift in EITHER direction.
       - name: Measure handler entry and diff against the manifest
         run: make smoke-syscall-coverage
+
+  gate-pairs:
+    name: "Every control arm has a base gate, and every gate runs"
+    runs-on: ubuntu-latest
+    # Source analysis only -- no build, no QEMU. Seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # The control-arm discipline is this repo's answer to "would this gate fail
+      # if the property broke", and nothing checked that the pairs stayed intact.
+      # smoke-ksp-guard-control was found on 2026-08-21 with no positive
+      # counterpart: an arm proving the guard COULD fire, with nothing asking
+      # whether it stayed silent on a legal value -- the same missing direction
+      # that once let the resume-%rsp guard reject the IST stacks.
+      - name: Refuse an orphan control arm, or a gate nobody runs
+        run: python3 tools/check_gate_pairs.py
 
   syscall-abi:
     name: "Every user pointer reaches the kernel full-width (issue #176)"

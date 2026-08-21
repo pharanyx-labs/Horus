@@ -1366,6 +1366,16 @@ static void sched_assert_claims(const char *where) {
  * answer is progress; today there is neither. */
 static int ksp_is_bogus(uint64_t ksp)
 {
+#ifdef KSP_GUARD_ALWAYS
+    /* Control arm for the FALSE-POSITIVE direction: a predicate that rejects
+     * every stack pointer. Every other arm on this guard injects a bogus value
+     * and asks whether the guard fires -- they measure false negatives, and this
+     * mutation satisfies all of them. `make smoke-ksp-guard` must go RED under
+     * this flag; if it does not, that gate is not testing anything. Never a
+     * shipping configuration. */
+    (void)ksp;
+    return 1;
+#endif
     extern uint8_t __bss_start[], __bss_end[];
     if (ksp >= (uint64_t)(uintptr_t)__bss_start &&
         ksp <  (uint64_t)(uintptr_t)__bss_end)

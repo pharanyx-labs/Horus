@@ -1,0 +1,23 @@
+# Smoke gates that CI deliberately does not run.
+#
+# tools/check_gate_pairs.py fails the build if a gate is neither invoked nor
+# listed here, and fails again if a listed one turns out to BE invoked (a stale
+# reason). The point is the same bargain .github/ci-gating.yml makes for jobs: a
+# gate nobody runs is allowed to exist, but not silently.
+#
+# This is not a place to park gates that are inconvenient. Both entries below are
+# superseded by a stronger form that CI does run.
+
+not_in_ci:
+  smoke-sched-invariants: >-
+    Superseded by smoke-sched-invariants-stress, which CI runs. That target does
+    not invoke this one -- it repeats the build and boots it under
+    tools/stress_boot.sh many times instead -- so a single boot of the same image
+    would add runtime without adding evidence. The scheduler-invariant assertions
+    are the same in both; only the boot count differs.
+
+  smoke-console-smp-stress: >-
+    The many-boot form of smoke-console-smp, which CI does run. Kept for local
+    use when investigating the console interleaving: the defect it hunts was
+    intermittent, and reproducing it wants tens of boots rather than the one CI
+    can afford on every pull request.

@@ -87,7 +87,8 @@ DEFECT_FLAGS = \
 	SPAWN_OWNER_UNCHECKED SPAWN_STAGE_UNSERIALISED SPAWN_STAGE_WIDEN SPAWN_STAGE_TRACE \
 	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
-	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE
+	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
+	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -598,6 +599,33 @@ endif
 # receive syscall per message -- the witness that it slept rather than polled --
 # and that the wake left it holding the one-shot reply right; it prints
 # RECVBLOCK_SELFTEST: PASS from ring 3. Gated off the ship kernel.
+# LIBHORUS_SELFTEST=1 embeds a ring-3 task that asserts libhorus's own contracts
+# -- the bounds and termination guarantees every freestanding program now depends
+# on, and ipc_call_retry's refusal-is-not-retried property, which is a security
+# property (finding G-8 signature C) rather than a convenience. Sharing a runtime
+# concentrates risk: a bug here breaks init, shell, fs_server and console_server
+# at once, so the shared copy is held to a standard the seven private copies
+# never were. Prints LIBHORUS_SELFTEST: PASS from ring 3. Gated off the ship kernel.
+LIBHORUS_SELFTEST ?= 0
+ifeq ($(LIBHORUS_SELFTEST),1)
+CFLAGS  += -DLIBHORUS_SELFTEST
+ASFLAGS += -DLIBHORUS_SELFTEST
+LIBHORUS_SELFTEST_DEP = userspace/libhorustest.bin
+endif
+
+# LIBHORUS_RETRY_ANY=1 restores the pre-libhorus retry loop -- `while (r < 0)
+# spin_delay();` -- which retries EVERY negative rc including SYS_ERR_PERM. That
+# is finding G-8 signature C on demand: a denied task spins forever and the
+# refusal is indistinguishable from a hang. USERSPACE only (libhorus is a ring-3
+# library), so it goes on USERSPACE_CFLAGS, not CFLAGS.
+LIBHORUS_RETRY_ANY ?= 0
+
+# LIBHORUS_STRNCPY_UNTERMINATED=1 restores C strncpy's semantics for ustrncpy:
+# terminate only if the source fits. Its callers write a name into a fixed buffer
+# and then treat it as a C string, so the unterminated case is the one nobody
+# tests and an attacker picks. USERSPACE only, as above.
+LIBHORUS_STRNCPY_UNTERMINATED ?= 0
+
 RECVBLOCK_SELFTEST ?= 0
 ifeq ($(RECVBLOCK_SELFTEST),1)
 CFLAGS  += -DRECVBLOCK_SELFTEST
@@ -1121,7 +1149,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1288,6 +1316,19 @@ ifeq ($(CONSOLE_ISOLATION_TEST),1)
 USERSPACE_CFLAGS += -DCONSOLE_ISOLATION_TEST
 endif
 
+# Both libhorus control arms are RING-3 flags: they change a userspace library,
+# not the kernel, so they belong on USERSPACE_CFLAGS. Applied here, at top level,
+# AFTER USERSPACE_CFLAGS is assigned with `=` and outside any other flag's ifeq --
+# the same placement SYSCALL_PTR_TRUNC32 needs, and for the same reason: inside
+# another conditional they would apply only when that condition held, and the arm
+# would silently build the fixed code.
+ifeq ($(LIBHORUS_RETRY_ANY),1)
+USERSPACE_CFLAGS += -DLIBHORUS_RETRY_ANY
+endif
+ifeq ($(LIBHORUS_STRNCPY_UNTERMINATED),1)
+USERSPACE_CFLAGS += -DLIBHORUS_STRNCPY_UNTERMINATED
+endif
+
 userspace/%.o: userspace/%.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
 
@@ -1295,8 +1336,57 @@ userspace/%.o: userspace/%.c
 # malloc.o is always linked so any binary can call malloc/free without
 # extra Makefile rules.
 MALLOC_OBJ = userspace/malloc.o
-userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) userspace/pie.ld
-	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ)
+
+# libhorus is available to every freestanding binary: it is the shared runtime
+# those programs previously hand-copied 22 definitions of. Offering it
+# unconditionally rather than per-program is what makes adding a server a
+# one-line change (see USERPROG below).
+#
+# AN ARCHIVE, NOT AN OBJECT, and that distinction was measured rather than
+# assumed. A plain .o is linked whole. The first draft of this rule added one to
+# every binary and the comment claimed the cost was nil; `size` said otherwise:
+#
+#   captest .text     9339 -> 10389   (+1050, for a library it never calls)
+#   fs_server .text   9899 -> 10285   (+386)
+#
+# With the archive, a member is extracted only when it resolves an undefined
+# symbol, and captest returns to 9339 exactly -- byte-identical to before
+# libhorus existed. fs_server stays at 10285: it uses seven of these functions
+# and now carries the whole member rather than its own seven copies. That is the
+# trade, stated in bytes rather than asserted.
+#
+# The archive must come AFTER the objects that reference it on the link line;
+# ld resolves archives in order, and an archive listed first sees no undefined
+# symbols yet and contributes nothing.
+#
+# NOT added to the newlib link rules. Those programs have a real libc, and
+# giving them a second memcpy under a different name would be an ambiguity
+# waiting to be resolved wrongly.
+LIBHORUS_LIB = userspace/libhorus.a
+$(LIBHORUS_LIB): userspace/libhorus.o
+	$(AR) rcs $@ $<
+
+userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) $(LIBHORUS_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ) $(LIBHORUS_LIB)
+
+# Adding a freestanding userspace program is one line:
+#
+#     $(eval $(call USERPROG,myserver))
+#
+# which declares userspace/myserver.c -> userspace/myserver.pie.elf and adds it
+# to USERPROGS so the ISO rule picks it up. Before this, each program needed its
+# own hand-written stanza and its own reading of the pattern rules, which is why
+# several of them ended up subtly different from each other.
+#
+# It does NOT wire capability delegation -- that is init.c's launch_*() and it is
+# deliberately manual. Which authority a program receives is the security
+# decision this whole system exists to make explicit, and a macro that guessed
+# would be a macro that granted. See docs/ARCHITECTURE.md, "Adding a userspace
+# program".
+define USERPROG
+USERPROGS += userspace/$(1).pie.elf
+userspace/$(1).pie.elf: userspace/$(1).o $$(MALLOC_OBJ) $$(LIBHORUS_LIB) userspace/pie.ld
+endef
 
 # Newlib-linked PIE ELFs: compiled with newlib headers, linked against libc.a.
 # crt0.o provides _start → posix_init() → main().
@@ -1494,7 +1584,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -3257,6 +3347,50 @@ smoke-exec-reenter-control:
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.
+.PHONY: smoke-libhorus
+smoke-libhorus:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='LIBHORUS_SELFTEST: PASS' \
+		FAIL_MARKER='LIBHORUS_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 1 -- the security one. LIBHORUS_RETRY_ANY=1 restores the loop that
+# retries EVERY negative rc, so the selftest's call against an empty capability
+# slot never returns and the PASS marker never appears.
+#
+# The assertion is the marker's ABSENCE, and it has to be: a test for a hang has
+# nothing to compare, because the code under test does not come back to be
+# compared. Same shape as smoke-kfault-legacy. Without this arm, smoke-libhorus
+# would pass identically against a library that spins on every refusal -- which
+# is precisely the defect it exists to reject.
+.PHONY: smoke-libhorus-retry-control
+smoke-libhorus-retry-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_RETRY_ANY=1
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_RETRY_ANY=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='LIBHORUS_SELFTEST: calling an empty slot' \
+		FAIL_MARKER='LIBHORUS_SELFTEST: PASS' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 2 -- the termination guarantee. LIBHORUS_STRNCPY_UNTERMINATED=1
+# restores C strncpy's semantics, so the truncating copy leaves no NUL and the
+# selftest reports strncpy-truncate-unterminated. Here the FAIL marker must be
+# PRESENT: the defect is detectable rather than fatal, so this arm asserts the
+# check fires rather than that the boot dies.
+.PHONY: smoke-libhorus-strncpy-control
+smoke-libhorus-strncpy-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_STRNCPY_UNTERMINATED=1
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_STRNCPY_UNTERMINATED=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='LIBHORUS_SELFTEST: FAIL strncpy-truncate-unterminated' \
+		FAIL_MARKER='LIBHORUS_SELFTEST: PASS' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-recvblock
 smoke-recvblock:
 	@$(MAKE) --no-print-directory clean

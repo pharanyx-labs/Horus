@@ -747,6 +747,18 @@ embedded_consoletest_bin_start:
 embedded_consoletest_bin_end:
 #endif
 
+#ifdef LIBHORUS_SELFTEST
+/* libhorus conformance suite: one ring-3 task asserting the shared userspace
+ * runtime's own contracts, including that ipc_call_retry refuses rather than
+ * spins on a permanent denial (finding G-8 signature C). */
+.align 16
+.global embedded_libhorustest_bin_start
+embedded_libhorustest_bin_start:
+.incbin "userspace/libhorustest.bin"
+.global embedded_libhorustest_bin_end
+embedded_libhorustest_bin_end:
+#endif
+
 #ifdef RECVBLOCK_SELFTEST
 /* PIE blocking-receive pair (roadmap 1.3): a server that waits with
  * SYS_IPC_RECV_BLOCK and a client that delays before each request, so the

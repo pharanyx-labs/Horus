@@ -16,6 +16,28 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **`libhorus`, the shared runtime for freestanding userspace** (`include/libhorus.h`,
+  `userspace/libhorus.a`). Replaces 22 hand-copied definitions across 7 files. Linked as an
+  archive so a program that uses none of it pays nothing — `captest`'s `.text` is
+  byte-identical to before it existed.
+- **`ipc_call_retry`** makes the IPC retry contract a library guarantee: retry only while
+  `ipc_transient()`, bound even that, and return a permanent refusal unretried. The
+  pre-libhorus loop spun on `SYS_ERR_PERM` forever, turning a capability denial into an
+  indistinguishable hang (**[G-8]** signature C). Two programs had independently re-derived
+  the correct loop; it is now written once.
+- **`smoke-libhorus`** (required job `libhorus`), with control arms `LIBHORUS_RETRY_ANY=1`
+  and `LIBHORUS_STRNCPY_UNTERMINATED=1`. The first executable witness that a permanent IPC
+  refusal is not retried — the property had been asserted by comments and tested by nothing.
+- **`$(call USERPROG,name)`**, so adding a freestanding program is one line. Capability
+  delegation stays hand-written in `init.c` on purpose: a macro that guessed would be a macro
+  that granted.
+
+### Fixed
+
+- `fsclient.c`'s `put_int` negated a signed `int` (`(unsigned)(-v)`), which is undefined for
+  `INT_MIN` and reachable, since the value printed is an IPC rc a server chooses. libhorus's
+  `kput_int` accumulates in unsigned.
+
 - `tools/check_defect_flags.py` and the required `defect-flags-documented` job. The
   defect-flag table in `docs/BUILDING.md` claimed to be the complete list and was not:
   `RESUME_RSP_INJECT`, `RESUME_RSP_INJECT_PRECLAIM` and `WAL_CRASHTEST` had no row, and one

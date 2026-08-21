@@ -16,16 +16,24 @@
  */
 
 #include "syscall.h"
+#include "libhorus.h"
 
 #define RB_MESSAGES 4
 #define RB_PAYLOAD  16
 
-static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
 
 /* Busy-wait in ring 3: a cooperative yield cannot switch between two ring-3
  * tasks, so the timer preemption is what hands the CPU to the server. Sized so
- * that a polling server would go round its loop many times across the window. */
-static void spin_delay(void) { for (volatile unsigned i = 0; i < 400000u; i++) { } }
+ * that a polling server would go round its loop many times across the window.
+ *
+ * TEN TIMES libhorus's default spin_delay(), and that is the point of this test rather
+ * than an accident. The window has to be wide enough that a *polling* server
+ * would be observed spinning through it; at the 40,000 default it is not, and
+ * the gate would pass against the very implementation it exists to reject. So
+ * this calls spin_delay_n() with its own count instead of taking the shared
+ * default -- a deduplication that quietly changed this number would have
+ * weakened smoke-recvblock without touching it. */
+#define RB_SPIN 400000u
 
 void _start(void) {
     unsigned char req[RB_PAYLOAD];
@@ -36,7 +44,7 @@ void _start(void) {
     for (int m = 0; m < RB_MESSAGES; m++) {
         /* Leave the server with an empty queue for long enough that a poller
          * would have to spin. */
-        spin_delay();
+        spin_delay_n(RB_SPIN);
 
         int rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, req, RB_PAYLOAD, rep);
         if (rc < 0) {
@@ -46,7 +54,7 @@ void _start(void) {
             unsigned tries = 0;
             while (rc == IPC_AGAIN) {
                 if (++tries > 200000u) { kput("RECVBLOCK_SELFTEST: FAIL client-call-timeout\n"); sys_exit(); }
-                spin_delay();
+                spin_delay_n(RB_SPIN);
                 rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, req, RB_PAYLOAD, rep);
             }
             if (rc < 0) { kput("RECVBLOCK_SELFTEST: FAIL client-call-refused\n"); sys_exit(); }

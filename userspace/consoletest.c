@@ -13,29 +13,24 @@
 
 #include "syscall.h"
 #include "console_proto.h"
+#include "libhorus.h"
 
-static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
-static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
-static void umemcpy(void *d, const void *s, unsigned n) { uint8_t *a = d; const uint8_t *b = s; while (n--) *a++ = *b++; }
-static unsigned uslen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
 
 /* Busy-wait in ring 3 between IPC retries so the timer preempts us and runs the
  * server (a cooperative yield cannot switch two ring-3 tasks). */
-static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { } }
 
 /* One request/reply round-trip; retries while the request mailbox is momentarily
  * full (another request in flight) or the server is not yet serving. */
 static int rpc(struct con_request *rq, struct con_response *rp) {
     rq->magic = CON_PROTO_MAGIC;
-    int r;
-    /* Transient only, and bounded. See the IPC retry contract in syscall.h: the
-     * old `while (r < 0)` retried SYS_ERR_PERM forever (finding G-8). */
-    unsigned tries = 0;
-    while ((r = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, rq, sizeof(*rq), rp)) < 0) {
-        if (!ipc_transient(r)) return r;                /* permanent: report up */
-        if (++tries > 2000000u) return -103;
-        spin_delay();
-    }
+    /* The retry contract (transient only, and bounded) lives in
+     * libhorus's ipc_call_retry. It used to be written out here, and in
+     * fsclient.c, from the same finding -- G-8 signature C, where the old
+     * `while (r < 0)` retried SYS_ERR_PERM forever and turned a capability
+     * refusal into an unkillable hang. Two copies of a rule is one copy from
+     * drifting. */
+    int r = ipc_call_retry(CAPSLOT_CONSOLE_EP, 0, rq, sizeof(*rq), rp);
+    if (r < 0) return r;
     if (rp->magic != CON_PROTO_MAGIC) return -102;
     return rp->rc;
 }

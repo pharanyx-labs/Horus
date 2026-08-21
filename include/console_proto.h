@@ -15,7 +15,7 @@
  * endpoint (the same model as the filesystem server, see include/fs_proto.h).
  *
  * Transport is the kernel's single-slot endpoint mailbox (IPC_MSG_MAX = 256), so
- * both structs below must stay <= 256 bytes. See docs/proposals/console-server.md.
+ * both structs below must stay <= 256 bytes. See docs/design/console-server.md.
  */
 
 #include <stdint.h>

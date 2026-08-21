@@ -13,7 +13,7 @@
  *
  * This is the gated CONSOLE_SELFTEST milestone (server + client driven over IPC),
  * exactly as the filesystem server was first proven via FS_SELFTEST before
- * becoming the default. See docs/proposals/console-server.md and include/console_proto.h.
+ * becoming the default. See docs/design/console-server.md and include/console_proto.h.
  */
 
 #include "syscall.h"
@@ -82,7 +82,7 @@ static void ser_puts(const char *s) { while (*s) con_putc(*s++); }
  *
  * Keyboard (PS/2) input stays with the kernel for now; moving it here needs the
  * IRQ->notification bridge wired so the kernel stops draining the controller
- * (a follow-up). See docs/proposals/console-server.md. */
+ * (a follow-up). See docs/design/console-server.md. */
 static char con_getc(void) {
     for (;;) {
         if (inb(COM1_LSR) & 0x01)          /* serial receive-data-ready */

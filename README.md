@@ -24,42 +24,19 @@ measurements.
 > ### Assurance status
 >
 > Horus is **research-grade**, not production-ready, and has not been independently audited.
+> It is the work of a single maintainer, and no security-critical change has had independent
+> review (**[C-5]**).
 >
-> The 2026-07 audit's critical finding — IPC endpoints were not capability-addressed, so any
-> ring-3 task could intercept or forge messages to any userspace server — is **fixed as of
-> 2026-07-27** ([C-1]/[C-2] in [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md)).
-> Open findings are tracked in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and
-> [`docs/ROADMAP.md`](docs/ROADMAP.md). Fixed-size kernel object tables (**[I-7]**) were
-> retired on 2026-07-27 — cspaces, endpoints and notifications are now carved from untyped
-> memory, though `tasks[]` has yet to follow. Ambient `uid == 0` authority (**[I-1]**) was
-> retired the same day *except* for the user database, which this banner and three other
-> documents wrongly reported as closed for nineteen days; that last gate went on 2026-08-15
-> (**[H-1]**). The global IRQ nesting counter and `spin_unlock`'s unconditional `sti`
-> (**[C-3]**, **[C-3.1]**) were fixed on 2026-08-11 — the lock is per-CPU and restores the
-> caller's own `RFLAGS.IF`, with `IRQ_LEGACY_GLOBAL_LOCK=1` retained as the control arm.
-> The write-ahead journal was unflushed on real hardware until 2026-08-16, when the ATA
-> driver gained `FLUSH CACHE` and the journal gained three ordering barriers (**[I-10]**).
-> The revocation closure an unprivileged task could force to over-approximate was made exact
-> the same day (**[I-3]**).
+> What that means concretely, finding by finding, is in
+> [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — the authoritative status of every one — and
+> the analysis is in [`docs/AUDIT.md`](docs/AUDIT.md). The harder investigations are written
+> up in [`docs/investigations/`](docs/investigations/), including the ones this project got
+> wrong for days before getting right.
 >
-> The SMP fault whose origin had resisted diagnosis for eight days (**[G-8]**) was closed on
-> 2026-08-17: a switch path handed a task to another CPU while the CPU making the switch was
-> still executing on that task's kernel stack. Measured over 1600 alternating boots, the
-> pre-fix release site fails 31/800 and the shipped one 0/800.
-> The notable remaining findings are the CI gating list (**[C-6]** — every security test does
-> now block a merge, and a scheduled job re-checks the live ruleset against the checked-in
-> classification, and its read-only GitHub App went live on 2026-08-19 — so what remains of it is
-> that syncing the ruleset is still a manual step that lags a merge), and no independent
-> review of security-critical changes (**[C-5]**), and claims that leak and kernel stacks that
-> collide on the spawn/reap path under SMP (**[G-9]**, found 2026-08-17 — pre-existing, and
-> uncovered by the [G-8] fixes that stopped masking it; two components were fixed the same day,
-> taking it from ~45% of boots to 2 in 30, and the rest is open).
-> **[G-10]** closed on 2026-08-18: its page-table use-after-free — a cross-address-space
-> read/write primitive reachable from ring 3 — was fixed the day before, and the remaining
-> process-wide spawn state is now serialised, with the two globals that could wire a child's
-> stdio from the wrong parent's cspace turned into parameters. Closing it surfaced **[G-11]**,
-> also closed that day: the armed program image was ambient state, so `SYS_SUDO` would elevate
-> whatever was armed to uid 0 whether or not the authenticating task had staged it.
+> Notable open findings: **[C-5]** (no independent review), **[C-6]** (the branch ruleset is
+> reconciled to the checked-in gating decision by hand, so it lags a merge), and **[G-9]**
+> (a scheduler claim leaks on the spawn/reap path under SMP — narrowed from about 45% of
+> boots to 1–2%, and open).
 
 ---
 
@@ -98,10 +75,9 @@ fd 1, `SYS_READ` fd 0 and `SYS_SYSINFO`; they are enumerated in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and marked *ambient* at each entry in
 [`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated absolutely and enforced
 partially is worse than no claim. Those three are ungated *deliberately*: a terminal write, a
-terminal read and a version string are not authorities this system rations. Until 2026-08-20
-one of them carried an authority that was never meant to ride along with it — `SYS_WRITE`
-fd 1 also appended to the kernel message ring, whose *read* side has required
-`CAP_KERNEL_LOG` since **[I-1]** — and that half is now gated (**[H-2]**, property S23).
+terminal read and a version string are not authorities this system rations. Writing to fd 1
+no longer carries anything else with it: it once also appended to the kernel message ring,
+whose *read* side requires `CAP_KERNEL_LOG`, and that half is gated now (**[H-2]**, S23).
 
 **Fail closed.** Every syscall passes through a dispatch table with a declared capability
 requirement. An unknown, reserved, or unimplemented syscall number does not fall through to
@@ -112,10 +88,10 @@ a syscall number without adding its table entry.
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
 boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 79 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 80 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 80 of its 84 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 81 of its 85 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
@@ -269,22 +245,19 @@ make reproducible-build # one SOURCE_DATE_EPOCH build; records both artifacts' h
 make run-tpm            # boot under an emulated TPM (requires swtpm)
 ```
 
-One of those is weaker than its name suggests, and it is better to say so here than to let
-someone rely on it. `make reproducible-build` builds **once** and records `sha256sum` for
-`kernel.elf` and `boot.iso` in `.build.sha` — the double-build-and-diff that actually
-establishes the property lives only in the `reproducible` CI job, which is a required check.
-Locally, run it twice and compare the `kernel.elf` line.
+Two of those are weaker than their names suggest, and it is better to say so here than to let
+someone rely on them.
 
-Compare that line and not the file: **`boot.iso` is not byte-reproducible**, because
-grub-mkrescue stamps a wall-clock UUID into every image it builds. The ISO's *payload* — the
-kernel, every boot module, `grub.cfg` — is identical across builds; four grub-generated
-objects are not. See `docs/LIMITATIONS.md` §5.3a. Until 2026-08-19 the recording step hid this
-by never building the ISO at all and swallowing the error that said so.
+`make reproducible-build` builds **once** and records `sha256sum` for `kernel.elf` and
+`boot.iso` in `.build.sha`. The double-build-and-diff that actually establishes the property
+lives only in the `reproducible` CI job, which is a required check; locally, run the target
+twice and compare the `kernel.elf` line. Compare that line and not the file — **`boot.iso` is
+not byte-reproducible**, because grub-mkrescue stamps a wall-clock UUID into every image it
+builds. The ISO's *payload* — the kernel, every boot module, `grub.cfg` — is identical across
+builds; four grub-generated objects are not. See `docs/LIMITATIONS.md` §5.3a.
 
-`make test` is the Rust unit tests plus a clean rebuild; it does **not** boot QEMU, so it is
-not the full self-test sweep — use the `smoke-*` targets for that. Until 2026-08-15 it ended in
-`|| true` and could not fail at all, which meant a developer following this README got a green
-result from a suite that had entirely failed.
+`make test` is the Rust unit tests plus a clean rebuild. It does **not** boot QEMU, so it is
+not the full self-test sweep — use the `smoke-*` targets for that.
 
 Complete build documentation, including every configuration flag, in
 [`docs/BUILDING.md`](docs/BUILDING.md).
@@ -304,8 +277,7 @@ userspace/         init, fs_server, console_server, shell, self-test programs
 userspace/ports/   ported third-party programs (coreutils, tcc)
 newlib/            vendored libc
 tools/             build helpers, QEMU session drivers, manifest generation
-tests/             host-side scratch code; built by no target and run by no workflow
-docs/              architecture, syscalls, roadmap, limitations, audits
+docs/              architecture, syscalls, roadmap, limitations, audit, investigations
 site/              the project website published to GitHub Pages
 ```
 
@@ -317,7 +289,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 79 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 80 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.
@@ -342,10 +314,12 @@ more than testing that the happy path works.
 | [`docs/BUILDING.md`](docs/BUILDING.md) | Build, configure, run, reproduce |
 | [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | Honest accounting of what does not work or is not enforced |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Prioritised plan toward a complete OS |
-| [`docs/AUDIT-2026-07-27.md`](docs/AUDIT-2026-07-27.md) | Current full security and engineering audit |
+| [`docs/AUDIT.md`](docs/AUDIT.md) | The full security and engineering audit |
+| [`docs/investigations/`](docs/investigations/) | How the harder findings were narrowed, and which hypotheses were wrong |
 | [`TESTS.md`](TESTS.md) | Test catalogue |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute, and the invariant-preservation rules |
-| [`CHANGES.md`](CHANGES.md) | Historical development log |
+| [`CHANGES.md`](CHANGES.md) | Changelog |
+| [`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md) | Development log — the reasoning behind each changelog line |
 
 ---
 

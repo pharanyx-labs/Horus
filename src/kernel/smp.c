@@ -494,25 +494,25 @@ void smp_bringup(void) {
     /* Gated: a ring-3 task endowed with CAP_IO_DEVICE maps the allowlisted VGA
      * framebuffer into its own address space and round-trips a cell through it,
      * proving the SYS_MAP_PHYS device-delegation path (MAPPHYS_SELFTEST: PASS).
-     * First driver-privilege-separation job; see docs/proposals/console-server.md. */
+     * First driver-privilege-separation job; see docs/design/console-server.md. */
     mapphys_selftest();
 #elif defined(IOPORT_SELFTEST)
     /* Gated: a ring-3 task endowed with CAP_IO_DEVICE is granted native port I/O
      * (SYS_IOPORT_GRANT / TSS I/O bitmap); an allowlisted port succeeds and a
      * non-allowlisted port #GPs (IOPORT_SELFTEST: PASS). Second
-     * driver-privilege-separation job; see docs/proposals/console-server.md. */
+     * driver-privilege-separation job; see docs/design/console-server.md. */
     ioport_selftest();
 #elif defined(IRQ_SELFTEST)
     /* Gated: a ring-3 task endowed with CAP_IO_DEVICE routes the timer IRQ to a
      * notification (SYS_IRQ_REGISTER) and a real hardware interrupt wakes it with
      * the registered badge (IRQ_SELFTEST: PASS). Third driver-privilege-separation
-     * job; see docs/proposals/console-server.md. */
+     * job; see docs/design/console-server.md. */
     irq_selftest();
 #elif defined(CONSOLE_SELFTEST)
     /* Gated: stand up the ring-3 console_server (owns the console hardware via the
      * J2/J3 mechanisms) and a client that drives it over IPC; the server emits the
      * client's line to serial natively (CONSOLE_SELFTEST: PASS). First J5 cutover
-     * milestone; see docs/proposals/console-server.md. */
+     * milestone; see docs/design/console-server.md. */
     console_selftest();
 #elif defined(RECVBLOCK_SELFTEST)
     /* Gated: a ring-3 server waits on an empty endpoint with SYS_IPC_RECV_BLOCK
@@ -524,7 +524,7 @@ void smp_bringup(void) {
 #elif defined(CONSOLE_ISOLATION_TEST)
     /* Gated: the ring-3 console_server takes the hardware then deliberately faults;
      * the kernel contains it as a ring-3 fault and stays alive (CONSOLE_ISOLATION:
-     * PASS). The Phase 6 close-out blast-radius proof; see docs/proposals/console-server.md. */
+     * PASS). The Phase 6 close-out blast-radius proof; see docs/design/console-server.md. */
     console_isolation_selftest();
 #elif defined(COW_SELFTEST)
     /* Gated: read two fresh heap pages (shared zero page) then write one, and

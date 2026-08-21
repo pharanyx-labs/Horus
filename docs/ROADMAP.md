@@ -9,7 +9,7 @@ fixing the foundation later. So the sequence is: **make the object model true, m
 objects allocatable, then grow the OS on top.**
 
 Findings referenced as **[C-n]** / **[I-n]** / **[F-n]** are from
-[`AUDIT-2026-07-27.md`](AUDIT-2026-07-27.md).
+[`AUDIT.md`](AUDIT.md).
 
 ---
 
@@ -713,6 +713,36 @@ it sensible, and the slot allocator still reuses such a slot immediately.
 
 ## Track 2 — Toward a complete OS *(Track 0 complete)*
 
+### The order these are taken in, and why
+
+Track 2's items are listed by subject below, but they are **worked in the order set out here**.
+The dependencies are real, and taking them out of order means building twice.
+
+| # | Item | Why here |
+|---|---|---|
+| 1 | **`libhorus`** — a freestanding mini-libc and a program template (part of 2.5) | Touches no security surface at all, and every later step multiplies its cost by every new server it adds |
+| 2 | **2.1** Frame capabilities, shared memory, `mmap` | Kernel work, and the continuation of "make the object model true". Prerequisite for real `fork`, shared buffers, and dynamic linking |
+| 3 | **2.4** VFS and a mount table | Needs `libhorus`. Gives step 4 the `/dev` and `/proc` namespaces it wants |
+| 4 | **2.3** Process and session model | Needs 1–3. This is what makes the shell a shell |
+
+**Step 1 first, because the freestanding half of userspace has no shared runtime.** There are
+two link paths. The newlib path is opt-in per binary and costs ~450 KiB statically (2.5). The
+freestanding path — used by **every server**: `init`, `shell`, `fs_server`, `console_server` —
+has nothing. So `umemset`/`umemcpy` are independently reimplemented four times
+(`console_server.c`, `consoletest.c`, `fsclient.c`, `fs_server.c`), `println` twice with
+different signatures (`fs_server.c`, `shell.c`), and `posix.c` carries a third private set.
+Adding a server means re-deriving all of it, plus a bespoke Makefile stanza and a hand-written
+`launch_*()` in `init.c`, because there is no template and no documented procedure. That tax is
+paid again by 2.3, 2.4, 2.6 and 2.7 — so it is paid down first.
+
+**This is a departure from the stance below, and deliberately so.** "Stop adding userspace
+until the capability system means what the documentation says it means" was written when the
+capability system did not. Steps 1 and 2 remain consistent with it: step 1 adds no authority
+of any kind, and step 2 *is* capability work. Steps 3 and 4 are what that sentence warns
+against, and they are sequenced last for exactly that reason — they begin once 2.1 has given
+the object model real virtual-memory objects to name.
+
+
 ### 2.1 ⬜ Virtual memory objects and shared memory — **[F-2.1]**
 
 Frame capabilities backed by real pool frames; `SYS_MAP_FRAME(frame_cap, vaddr, rights)` and
@@ -861,7 +891,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **80 required, 4 exempted** (81 jobs, 84 contexts — re-derive it with
+  The intended set is **81 required, 4 exempted** (82 jobs, 85 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
@@ -982,6 +1012,12 @@ Ordered as in the audit's §7.5.
 If one sentence had to describe the plan: **stop adding userspace until the capability
 system means what the documentation says it means, then build the OS on a foundation that
 holds.**
+
+That sentence still governs, and Track 2's ordering above is how it is honoured rather than
+abandoned: the two steps taken first are the one that adds no authority and the one that
+extends the object model. The process and session model — the item most likely to accrete
+ambient authority if rushed — is sequenced last, behind the frame capabilities it should be
+built on.
 
 Concretely — **Track 0 and Track 1 are done**, bar the named remainders. What is left is
 Track 2 in order, with Track 3 and 4 items landing alongside. The single highest-leverage

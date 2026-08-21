@@ -1440,6 +1440,24 @@ jobs:
       - name: Refuse an orphan control arm, or a gate nobody runs
         run: python3 tools/check_gate_pairs.py
 
+  defect-flags-documented:
+    name: "Every defect flag has a row in the table that claims to list them all"
+    runs-on: ubuntu-latest
+    # Source analysis only -- no build, no QEMU. Seconds. Deliberately NOT a step
+    # in the `defect-flags` job, which boots QEMU and takes 45 minutes: a check
+    # this cheap should not wait on one that expensive to tell you a doc is wrong.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # docs/BUILDING.md asserts its defect-flag table is "the complete list".
+      # That sentence was false when it was written: RESUME_RSP_INJECT,
+      # RESUME_RSP_INJECT_PRECLAIM and WAL_CRASHTEST were all DEFECT_FLAGS
+      # members with no row, and one of them appeared nowhere in the file. A
+      # control arm nobody can find is one nobody will re-run, which makes an
+      # undocumented arm indistinguishable from a deleted one.
+      - name: Refuse an undocumented defect flag, or a row no build can produce
+        run: python3 tools/check_defect_flags.py
+
   syscall-abi:
     name: "Every user pointer reaches the kernel full-width (issue #176)"
     runs-on: ubuntu-latest

@@ -56,6 +56,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_ci_gating import load_jobs, WORKFLOWS, CI_YML, GATING_YML  # noqa: E402
 
 CLAIMS_YML = ".github/doc-claims.yml"
+# The development log is a frozen record of what was written on the day it was
+# written, which is the entire reason to keep it. Entries there assert things
+# that were true then and are not now -- that IS the content -- so the ratchet
+# must not scan it, for the same reason it already skips quoted text: the log
+# is reporting a past state, not asserting a present one. Numeric claims are
+# excluded from it too, by never declaring an occurrence in it.
+HISTORICAL = "docs/history/"
 MAKEFILE = "Makefile"
 CAPTEST = "userspace/captest.c"
 
@@ -173,7 +180,7 @@ def main():
                 subprocess.run(["git", "ls-files", "*.md", "*.html", "*.yml"],
                                capture_output=True, text=True,
                                check=True).stdout.split())):
-            if path in (CLAIMS_YML,):
+            if path in (CLAIMS_YML,) or path.startswith(HISTORICAL):
                 continue
             try:
                 text = Path(path).read_text()

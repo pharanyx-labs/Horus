@@ -22,6 +22,30 @@ Always task 3 — the driver that spawns and reaps — and always a CPU that has
 still holding the claim. "Persisted across two audits" is the two-strike guard, so it is a leak
 and not a mid-flight snapshot.
 
+> ### Scope, widened 2026-08-21: this is not confined to `PROC_SELFTEST`
+>
+> Everything below was measured against `PROC_SELFTEST` at `-smp 4`, and the finding was
+> written as though that workload were the whole of it. It is not. On 2026-08-21 the same
+> shape appeared in the **default boot** — no selftest workload at all, just `init` spawning
+> the shell — under `SCHED_INVARIANTS=1`:
+>
+> ```
+> PANIC: stale scheduler claim at preempt_on_tick: task 4 claimed by cpu 1
+>        but that cpu was running 0 (persisted across two audits; observed by cpu 3)
+> ```
+>
+> Task 4 is the shell; the claiming CPU is idle. It is the same leak — a claim left behind by
+> a CPU that then went idle — at a far lower rate: **1 boot in 120**, against ~40% for
+> `PROC_SELFTEST`. A control measurement on the immediately preceding commit was 0 in 270,
+> but the difference is not significant (Fisher exact, p ≈ 0.31) and one event does not
+> support a rate estimate worth quoting. See `TESTS.md`, "the claim invariant fired again".
+>
+> **Two consequences.** The blast radius is wider than this document said — the leak is
+> reachable from the ordinary boot path, not only from a spawn-and-reap stress driver. And
+> `smoke-sched-invariants-stress`, a required gate at 30 boots, has roughly a **26% chance**
+> of catching a 1%-per-boot event, so its green runs have never established absence at this
+> rate. Neither fact changes the mechanism below; both change what its absence is worth.
+
 | Configuration | Boots | Failed | Stale claim reported |
 |---|---|---|---|
 | `-smp 1` | 20 | **0** | 0 |

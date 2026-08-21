@@ -191,3 +191,11 @@ forbidden:
       about absence that the sample cannot support. Corrected 2026-08-21, when
       the invariant fired again in the default boot workload.
 
+  - pattern: 'always a CPU that has gone idle while'
+    reason: >-
+      [G-9]'s signature was recorded as a claim held by an IDLE cpu. Every
+      capture on 2026-08-21 shows the holder running another LIVE task, with no
+      deferred debt and no impersonation -- which is what moved the search off
+      the deferred-release machinery two fixes had already targeted. Corrected
+      2026-08-21; the idle shape was one observation, not the definition.
+

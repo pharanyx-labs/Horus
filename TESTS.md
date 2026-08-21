@@ -1070,10 +1070,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **81** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **82** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **83** jobs, **86** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **84** jobs, **87** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1125,7 +1125,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **82 required contexts and 4 reasoned exemptions** — read off
+The intended set is **83 required contexts and 4 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1164,6 +1164,39 @@ it is the reason **[C-6]** stays open.
 `strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
 passed CI against a stale base. (This document previously said it was false; that was correct
 when written and is not any more.)
+
+---
+
+## The claim-release invariant — a CPU in ring 3 owes no deferred release
+
+**`smoke-claim-release`, required job `claim-release`.** Since **[G-8]**, a switch path holds the
+outgoing task's claim until the CPU has left that task's kernel stack, and drops it from
+`sched_release_deferred()` on the ISR epilogue. If any route to ring 3 skips that call, the claim
+is stuck forever: every selection loop skips a claimed task, so it becomes unschedulable by every
+CPU **including its holder**. That is **[G-9]**'s shape.
+
+**The periodic claim audit structurally cannot catch this.** `sched_assert_claims()` deliberately
+exempts a task whose holder's deferred slot names it — correctly, because such a claim is
+mid-handover rather than leaked. An *unpaid* debt therefore hides inside the very exemption that
+keeps the auditor honest, and surfaces ~10ms later at whatever site happens to run the next audit.
+That is why every report for this finding has named `preempt_on_tick`, which had nothing to do
+with it.
+
+So the debt is checked where it is provably settled instead: at ring 3. Every route there goes
+through an epilogue, so a CPU observed in ring 3 owing a release means some path reached user mode
+without paying.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-claim-release` | the guard stays **silent** through a boot to ring 3 | passes; measured 0 in 30 |
+| `smoke-claim-release-control` (`CLAIM_RELEASE_SKIP=1`) | `ring 3 reached with a deferred release outstanding` **present** | fires on boot 1, naming the owed task |
+
+It found one real hole immediately: `sched_enter_user()` carried a second hand-written copy of the
+ISR epilogue that omitted the release call. Latent in this workload — `CLAIM_TRACE=1` shows the
+path is never reached owing a debt — but it orphaned both the claim and the task's
+`g_kstack_inflight` bit, and a stuck inflight bit makes the **[G-8]** detector report a collision
+that is not happening. Two copies of one sequence is what allowed it; this gate is what stops a
+third drifting.
 
 ---
 

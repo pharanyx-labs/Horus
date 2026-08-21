@@ -64,8 +64,16 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   forever. The resume guard added *for* [G-9] is what created this. All four switch paths now
   validate before committing. Deterministically gated by `smoke-switch-commit` /
   `smoke-switch-commit-control` (`SWITCH_COMMIT_EARLY=1` + `KSP_GUARD_INJECT=1`).
-  **[G-9] remains open**: the natural rate moved 2–4% → 2 in 130 boots, which is not a
-  statistically distinguishable improvement, and a second path is still leaking.
+  This was one of three components; see below.
+
+- **[G-9] is CLOSED.** Its last and largest component was not a scheduler defect at all: the
+  claim auditor's own exemption, `percpu_deferred_release[]`, was cleared *before* the lock that
+  drops the claim, so an audit landing in that window accused a release that was in flight. The
+  checker's second false positive — 2026-08-09 was the first, reading a deliberate impersonation
+  as a leak. Fixed by clearing the exemption last, under the same lock. Natural rate **9 in 200
+  boots → 0 in 200** (Fisher p = 0.0036); mechanism proven deterministically, **8/10 against
+  0/10** with `DEFER_WINDOW_WIDEN=1` set in both arms (p ≈ 0.0007). Gated by
+  `smoke-defer-exemption` / `-control` (required job `defer-exemption`).
 
 - **`sched_enter_user()` reached ring 3 without paying its deferred release.** It carried a
   second hand-written copy of the ISR epilogue that omitted `call sched_release_deferred`, so a

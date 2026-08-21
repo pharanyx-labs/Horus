@@ -1523,7 +1523,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><th scope="row">Scheduler claim auditor (impersonation declared)</th><td class="t-num t-num--was">10 failures / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned to two host cores</td></tr>
               <tr><th scope="row">Permanent IPC refusal retried forever</th><td class="t-num t-num--was">3 and 5 hangs / 30</td><td class="t-num t-num--now">0 / 40</td><td class="t-note">starved single-core boots</td></tr>
               <tr><th scope="row">Two CPUs on one kernel stack (<strong>G-8</strong>)</th><td class="t-num t-num--was">31 failures / 800</td><td class="t-num t-num--now">0 / 800</td><td class="t-note">adjacent-boot alternating, <code>-smp 4</code> · Fisher p = 6.9 × 10⁻¹⁰</td></tr>
-              <tr><th scope="row">Exec re-entry taken by the wrong CPU (<strong>G-9</strong>, exec component)</th><td class="t-num t-num--was">5 thefts / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · Fisher p ≈ 0.008 · the finding stays open</td></tr>
+              <tr><th scope="row">Exec re-entry taken by the wrong CPU (<strong>G-9</strong>, exec component)</th><td class="t-num t-num--was">5 thefts / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · Fisher p ≈ 0.008 · one of three components</td></tr>
               <tr><th scope="row">Page tables recycled under a live CPU (<strong>G-10</strong>)</th><td class="t-num t-num--was">6 faults / 30</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · unguarded arm frees in use on 20 / 20</td></tr>
               <tr><th scope="row">A foreign staged image spawned by <code>sudo</code> (<strong>G-11</strong>)</th><td class="t-num t-num--was">3 spawns / 3</td><td class="t-num t-num--now">0 / 3</td><td class="t-note">deterministic single boot · the control arm removes the owner check</td></tr>
               <tr><th scope="row">Endpoint queue depth 1 → 4, four concurrent clients</th><td class="t-num t-num--was">7042 ms mean</td><td class="t-num t-num--now">5162 ms mean</td><td class="t-note">12 boots each · <code>EP_QUEUE_SLOTS=1</code> rebuilds the old design</td></tr>
@@ -1703,10 +1703,27 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-9</span>An exec re-entry taken by the wrong CPU — one component closed, the finding open</h3>
+            <h3><span class="id">G-9</span>A scheduler claim that leaked — closed, and the last component was the checker</h3>
             <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-09-scheduler-claim-leak.md">Read the full investigation &rarr;</a></p>
             <p>
-              <strong>Open, narrowed 2026-08-17.</strong> Closing G-8 stopped a defect that
+              <strong>The last component was not a scheduler bug at all.</strong> The checker that
+              watches for a leaked claim exempts one while the CPU holding it is mid-handover — and
+              it tracked that exemption in a variable the release path cleared <em>before</em> it
+              took the lock that actually drops the claim. For the width of a lock acquisition the
+              claim was held, unexempt, and already being released. A core auditing in that window
+              saw exactly what a leak looks like. It was reading a torn intermediate state of its
+              own bookkeeping. Second time this checker has done that: in August it read a
+              deliberate impersonation the same way.
+            </p>
+            <p>
+              The natural event appeared on about one boot in twenty-two, with enough variance that
+              two hundred boots could not tell four percent from six. So the window was widened
+              deliberately and set in <em>both</em> arms: with the fix, ten boots of ten are silent;
+              without it, eight of ten accuse. That pair is the evidence — the clean two hundred
+              boots that followed only bound the rate, they do not prove a zero.
+            </p>
+            <p>
+              <strong>Closed 21 August 2026.</strong> Closing G-8 stopped a defect that
               killed every boot of a task-killing workload, and what it uncovered underneath was
               a second one that had been hidden behind it: at four CPUs, that workload violated
               the scheduler's claim invariant on roughly 40% of boots. It had never been run at

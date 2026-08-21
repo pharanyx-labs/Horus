@@ -697,9 +697,11 @@ concurrent spawners is a property of the OS this roadmap is building, not of the
 **So no gate claims a rate here** — a control arm that cannot fail is not a control arm — and
 `SPAWN_STAGE_UNSERIALISED=1` is kept for the day a workload with two live spawners exists.
 
-**What keeps this ◧ rather than ✅** is the rest of **[G-9]**: the workload still reddens on
-**2 boots in 30** (~7%), and that residue is the bogus resume `%rsp`, not these singletons.
-`smoke-kstack-park` therefore stays advisory. Also unchanged: a task can be `state == 0` and
+**[G-9] closed 2026-08-21**, so what kept this ◧ is gone: the residue was three further
+components, the last of which was the claim auditor clearing its own exemption before the release
+it exempts — a false positive of the checker rather than a leak. Natural rate 9/200 → 0/200,
+mechanism proven 8/10 against 0/10 with the window widened in both arms. `smoke-kstack-park` can
+now be promoted; that promotion lags this merge by one, as [C-6] describes. Also unchanged: a task can be `state == 0` and
 still executing in ring 3 on another core — the CR3 guard makes that memory-safe without making
 it sensible, and the slot allocator still reuses such a slot immediately.
 
@@ -904,7 +906,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **84 required, 4 exempted** (85 jobs, 88 contexts — re-derive it with
+  The intended set is **85 required, 4 exempted** (86 jobs, 89 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
@@ -1015,7 +1017,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 99 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 19 of them control arms that must reproduce a defect |
+| ✅ | 101 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 20 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

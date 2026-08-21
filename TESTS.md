@@ -1029,10 +1029,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **80** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **81** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **82** jobs, **85** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **83** jobs, **86** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1084,7 +1084,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **81 required contexts and 4 reasoned exemptions** — read off
+The intended set is **82 required contexts and 4 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1123,6 +1123,50 @@ it is the reason **[C-6]** stays open.
 `strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
 passed CI against a stale base. (This document previously said it was false; that was correct
 when written and is not any more.)
+
+---
+
+## The shared userspace runtime
+
+### `smoke-libhorus` — libhorus keeps its bounds, and refuses rather than spins
+
+Every freestanding userspace program — `init`, `shell`, `fs_server`, `console_server` and the
+selftests — links `libhorus`. That sharing is a trade: before it, a bug in one program's
+private `umemcpy` broke one program; now a bug in `libhorus` breaks all four servers at once.
+The trade is only worth making if the shared copy is held to a standard the seven private
+copies never were, which is what this gate is for.
+
+A ring-3 task asserts the properties the call sites actually depend on: that every bounded
+write stays inside its bounds (checked with a guard byte either side, because a length check
+alone cannot see an off-by-one), that `n == 0` writes nothing, and that `ustrncpy` **always**
+terminates — at exact fit, at truncation, and at `n == 1`.
+
+**The one that is a security property.** `ipc_call_retry` must return a *permanent* IPC refusal
+rather than retry it. `SYS_ERR_PERM` means the caller holds no capability for that endpoint,
+and the pre-libhorus loop — `while (r < 0) spin_delay();` — spun on it forever, turning the one
+event the capability system exists to make visible into an indistinguishable hang. That is
+finding **[G-8]** signature C. Until now the property was asserted by comments in two programs
+and tested by nothing; the selftest calls into an empty capability slot and requires the call
+to come back.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-libhorus` | `LIBHORUS_SELFTEST: PASS` present | passes |
+| `smoke-libhorus-retry-control` (`LIBHORUS_RETRY_ANY=1`) | pre-call line present, `PASS` **absent** | passes; `smoke-libhorus` **times out** under the same flag |
+| `smoke-libhorus-strncpy-control` (`LIBHORUS_STRNCPY_UNTERMINATED=1`) | `FAIL strncpy-truncate-unterminated` present | passes; `smoke-libhorus` **goes red** under the same flag |
+
+**A test for a hang cannot be an equality check**, which is why the retry arm asserts an
+*absence*. Under the defect the call never returns, so there is no value to compare — the
+assertion has to be that the marker which follows it never appears. Same shape as
+`smoke-kfault-legacy`.
+
+**The migration's own witness was the existing suite.** `libhorus` was extracted from 22
+hand-copied definitions, deliberately verbatim, so that each program's diff is a deletion plus
+an `#include` and no call site changes meaning. `smoke-fs`, `smoke-fs-perms`, `smoke-console`,
+`smoke-recvblock`, `smoke-init-fs`, `smoke-captest` and `smoke` are what hold that claim up.
+One of them earned its keep immediately: `smoke-fs` caught a name collision in `fsclient.c`
+that the default build does not compile at all, because `fsclient` is only built under
+`FS_SELFTEST=1`. A green `make` says nothing about the programs `make` does not build.
 
 ---
 

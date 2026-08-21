@@ -24,22 +24,16 @@
 
 #include "syscall.h"
 #include "fs_proto.h"
+#include "libhorus.h"
 
 #define BLK        512u
 #define DIRENTS_PER_BLK (BLK / sizeof(struct fs_dirent))   /* 16 */
 
 /* Console output goes through SYS_WRITE (fd 1); SYS_PRINT is not dispatched. */
-static void println(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); sys_write(1, "\n", 1); }
 
 /* Busy-wait in ring 3 between non-blocking IPC polls so the timer can preempt
  * us and run the peer (the cooperative yield() cannot switch two ring-3 tasks). */
-static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { } }
 
-static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
-static void umemcpy(void *d, const void *s, unsigned n) { uint8_t *a = d; const uint8_t *b = s; while (n--) *a++ = *b++; }
-static unsigned uslen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
-static int ustreq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
-static void ustrncpy(char *d, const char *s, unsigned n) { unsigned i = 0; for (; i + 1 < n && s[i]; i++) d[i] = s[i]; d[i] = 0; }
 
 /* Number of data blocks a directory inode currently spans. */
 static unsigned dir_nblocks(uint32_t dir_ino) {
@@ -464,7 +458,7 @@ static int module_dest_ok(const char *path) {
  * rather than over IPC. */
 static int install_module_at(const char *path, uint32_t mod_index, uint32_t size) {
     if (!module_dest_ok(path)) {
-        println("[fs_server] refusing boot module with a disallowed destination path");
+        kputln("[fs_server] refusing boot module with a disallowed destination path");
         return -1;
     }
     const char *slash = 0;
@@ -547,11 +541,11 @@ static void provision_boot_modules(void) {
         if (rc == 1) installed++;
         else if (rc < 0) skipped++;
     }
-    if (skipped  > 0) println("[fs_server] some boot modules did not fit the store volume");
+    if (skipped  > 0) kputln("[fs_server] some boot modules did not fit the store volume");
     /* One marker whether or not modules were shipped: the skeleton is always
      * created, so a default (module-free) boot still reports a real filesystem. */
     (void)installed;
-    println("[fs_server] filesystem provisioned");
+    kputln("[fs_server] filesystem provisioned");
 }
 
 /* The gate endpoint init shares with us (slot 3, object 0), and the badge we
@@ -561,7 +555,7 @@ static void provision_boot_modules(void) {
 #define FS_READY_BADGE 0x5D0Eu
 
 void _start(void) {
-    println("[fs_server] userspace FS server starting (encrypted object store).");
+    kputln("[fs_server] userspace FS server starting (encrypted object store).");
 
     /* Register FIRST, before any provisioning work.
      *
@@ -594,8 +588,8 @@ void _start(void) {
             if (reg == 0) break;
             sys_yield();
         }
-        if (reg == 0) println("[fs_server] registered; serving.");
-        else          println("[fs_server] warning: registration failed; serving anyway.");
+        if (reg == 0) kputln("[fs_server] registered; serving.");
+        else          kputln("[fs_server] warning: registration failed; serving anyway.");
     }
 
     /* Provision /bin from the boot modules with the CPU to ourselves, BEFORE the
@@ -642,7 +636,7 @@ void _start(void) {
         int r;
         if (provisioned) {
             r = sys_ipc_recv_block(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
-            if (r < 0) { println("[fs_server] listen capability lost; exiting"); sys_exit(); }
+            if (r < 0) { kputln("[fs_server] listen capability lost; exiting"); sys_exit(); }
         } else {
             r = sys_ipc_recv(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
             if (r < 0) { spin_delay(); continue; }       /* no request yet */
@@ -676,11 +670,11 @@ void _start(void) {
             int rr;
             while ((rr = sys_ipc_reply_to(CAPSLOT_FS_LISTEN, (const char *)&rp, sizeof(rp))) < 0) {
                 if (!ipc_transient(rr)) {
-                    println("[fs_server] reply refused (capability lost?); dropping");
+                    kputln("[fs_server] reply refused (capability lost?); dropping");
                     break;
                 }
                 if (++tries > 2000000u) {
-                    println("[fs_server] reply retry exhausted; dropping");
+                    kputln("[fs_server] reply retry exhausted; dropping");
                     break;
                 }
                 spin_delay();

@@ -1659,6 +1659,33 @@ void console_selftest(void) {
 }
 #endif /* CONSOLE_SELFTEST */
 
+#ifdef LIBHORUS_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- libhorus conformance self-test (LIBHORUS_SELFTEST builds only) ---------
+ *
+ * Spawns one ring-3 task and lets it assert against the shared userspace runtime
+ * every freestanding program now links. It is endowed with NOTHING beyond what a
+ * spawn gives it, and that is deliberate: the test that matters most calls
+ * ipc_call_retry on an empty capability slot and requires it to come back with a
+ * refusal instead of spinning. Installing any endpoint capability here would
+ * remove the very condition under test.
+ *
+ * Entry into ring 3 does not return. */
+void libhorus_selftest(void) {
+    extern uint8_t embedded_libhorustest_bin_start[], embedded_libhorustest_bin_end[];
+
+    print("LIBHORUS_SELFTEST: spawning\n");
+
+    int t = fs_spawn_embedded(embedded_libhorustest_bin_start,
+                              embedded_libhorustest_bin_end, "libhorustest");
+    if (t <= 0) { print("LIBHORUS_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(t);
+}
+#endif /* LIBHORUS_SELFTEST */
+
 #ifdef RECVBLOCK_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Blocking IPC receive self-test (RECVBLOCK_SELFTEST builds only) --------
@@ -1760,7 +1787,8 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST)
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
+    || defined(LIBHORUS_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

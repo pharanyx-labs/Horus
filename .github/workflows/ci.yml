@@ -1440,6 +1440,37 @@ jobs:
       - name: Refuse an orphan control arm, or a gate nobody runs
         run: python3 tools/check_gate_pairs.py
 
+  libhorus:
+    name: "The shared userspace runtime keeps its bounds, and refuses rather than spins"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Sharing a runtime concentrates risk: a bug in libhorus now breaks init,
+      # shell, fs_server and console_server at once, where a bug in one private
+      # copy used to break one program. The shared copy is held to a standard the
+      # seven private copies never were.
+      - name: libhorus conformance from ring 3
+        run: make smoke-libhorus
+      # The security half. Without this arm the gate above passes identically
+      # against a library that spins on every refusal -- G-8 signature C, where a
+      # capability denial is indistinguishable from a hang.
+      - name: Control arm — a permanent refusal must not be retried
+        run: make smoke-libhorus-retry-control
+      # The termination half: strncpy's semantics leave the buffer unterminated
+      # exactly when the source did not fit.
+      - name: Control arm — ustrncpy must always terminate
+        run: make smoke-libhorus-strncpy-control
+
   defect-flags-documented:
     name: "Every defect flag has a row in the table that claims to list them all"
     runs-on: ubuntu-latest

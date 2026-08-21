@@ -731,6 +731,67 @@ hardware back to the kernel fallback.
 
 ---
 
+### `libhorus` — the shared freestanding runtime
+
+There are two ways to link a userspace binary. The **newlib** path (`crt0.c` + `posix.c` +
+`-lc`) gives a real libc and costs about 450 KiB statically per binary; coreutils and TCC use
+it. The **freestanding** path links the program's object, `malloc.o`, and `libhorus.a` — and
+it is what every server above uses.
+
+Until 2026-08-21 the freestanding path had no shared runtime at all, and the result was 22
+hand-copied definitions across 7 files: `umemset` and `umemcpy` written out four times each,
+the same string-equality function twice under two names. Every copy was correct, which is what
+made it a problem — nothing was wrong, so nothing pushed back.
+
+`libhorus` (`include/libhorus.h`, `userspace/libhorus.c`) holds only what more than one
+freestanding program needed: byte-wise memory operations, the string helpers, console output
+via fd 1, a bounded busy-wait, and `ipc_call_retry`.
+
+**It is a library, not an authority.** It declares nothing that needs a capability to
+implement — no file I/O, no allocator beyond the `malloc.o` already linked into every binary.
+Anything that would need authority belongs behind a capability, not behind a function call, and
+adding an entry point here that took authority from ambient state rather than from a slot the
+caller names would be a defect rather than a feature.
+
+**`ipc_call_retry` is the part that is not a convenience.** §7 states the IPC retry contract:
+retry on `ipc_transient()` only, and bound even that. The earlier form,
+`while (r < 0) spin_delay();`, retried `SYS_ERR_PERM` forever — turning a clean capability
+refusal into an unkillable silent hang, which is finding **[G-8]** signature C. Two programs
+had independently re-derived the correct loop, comment and all; a third would have been written
+from memory by whoever wrote the next server. Encoding the contract once is the difference
+between a rule and a habit, and `smoke-libhorus` is the first executable witness that the
+property holds — falsified by `LIBHORUS_RETRY_ANY=1`, under which a denied call never returns.
+
+### Adding a userspace program
+
+Two steps, and the split between them is deliberate.
+
+**1. The build — one line.**
+
+```make
+$(eval $(call USERPROG,myserver))
+```
+
+That declares `userspace/myserver.c` → `userspace/myserver.pie.elf`, links `libhorus` and
+`malloc`, and adds it to `USERPROGS`. Before this each program carried a hand-written stanza,
+which is why several had drifted into being subtly different from one another.
+
+**2. The authority — by hand, in `init.c`, on purpose.**
+
+There is no macro for capability delegation and there should not be. Which authority a program
+receives is *the* security decision this system exists to make explicit; a macro that guessed
+would be a macro that granted. Follow `launch_fs_server()`: spawn suspended, `SYS_CAP_GRANT`
+each capability the child needs from `init`'s own holdings — never a direct kernel install —
+and resume **last**, so the child cannot run before it holds what it needs.
+
+Grant the narrowest rights that work. A client of a service gets a WRITE-only endpoint
+capability, so it can send to the server but can never receive its traffic or forge its
+replies; that asymmetry is what **[C-1]** established and it is load-bearing.
+
+Then add a `smoke-<name>` gate that asserts a marker from ring 3, and — if the program is a
+witness for a security property — a control arm that reproduces the defect it witnesses, so the
+gate can be shown to fail (§2 of `CONTRIBUTING.md`).
+
 ## 11. Storage and the encrypted object store
 
 The kernel exposes an **object store**, not a filesystem: allocate/free inodes, read/write

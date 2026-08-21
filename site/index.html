@@ -1713,6 +1713,16 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               more than one CPU before, so nothing had ever asked.
             </p>
             <p>
+              <strong>Wider than first recorded, 21 August 2026.</strong> That 40% was measured
+              against a spawn-and-reap stress workload, and the finding was written as though
+              that workload were the whole of it. It is not: the same leak — a claim left behind
+              by a core that then went idle — turned up in the <em>ordinary boot</em>, with no
+              test workload at all, at about one boot in 120. The mechanism is unchanged and the
+              rate is far lower, but the blast radius is the normal path rather than a stress
+              driver. Its gate stays merge-blocking: a red run there is a reproduction worth
+              keeping, not a flake worth re-running.
+            </p>
+            <p>
               The cause of one component was a single shared variable. When a task replaces its
               own image, the kernel hands the interrupt path a note saying "re-enter this task
               through the fresh context just built for it". That note was <em>one global</em>,

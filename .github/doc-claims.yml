@@ -182,3 +182,12 @@ forbidden:
       and the console-server document moved to docs/design/, since it describes what
       was built rather than a proposal. Corrected 2026-08-21.
 
+  - pattern: '^\| after \| 30 \| \*\*0\*\* \|$'
+    reason: >-
+      TESTS.md presented "after: 30 runs / 0 failures" as establishing the
+      scheduler claim fix. Thirty boots has ~26% power against a 1%-per-boot
+      event, so it established only that the ~50% impersonation false positive
+      had stopped. A sample size stated without its detection power is a claim
+      about absence that the sample cannot support. Corrected 2026-08-21, when
+      the invariant fired again in the default boot workload.
+

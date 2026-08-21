@@ -514,6 +514,14 @@ void smp_bringup(void) {
      * client's line to serial natively (CONSOLE_SELFTEST: PASS). First J5 cutover
      * milestone; see docs/design/console-server.md. */
     console_selftest();
+#elif defined(LIBHORUS_SELFTEST)
+    /* Gated: a ring-3 task drives libhorus's own conformance suite -- the bounds
+     * and termination guarantees its callers depend on, and the one that is a
+     * security property rather than a convenience: ipc_call_retry must return a
+     * PERMANENT refusal rather than spin on it (finding G-8 signature C). Prints
+     * LIBHORUS_SELFTEST: PASS from ring 3. Falsified by LIBHORUS_RETRY_ANY=1 and
+     * LIBHORUS_STRNCPY_UNTERMINATED=1. */
+    { extern void libhorus_selftest(void); libhorus_selftest(); }
 #elif defined(RECVBLOCK_SELFTEST)
     /* Gated: a ring-3 server waits on an empty endpoint with SYS_IPC_RECV_BLOCK
      * while a client dawdles before each request; the server proves it made

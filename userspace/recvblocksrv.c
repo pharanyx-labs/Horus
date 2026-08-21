@@ -30,11 +30,11 @@
  */
 
 #include "syscall.h"
+#include "libhorus.h"
 
 #define RB_MESSAGES 4
 #define RB_PAYLOAD  16
 
-static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
 
 static void fail(const char *what) {
     kput("RECVBLOCK_SELFTEST: FAIL ");

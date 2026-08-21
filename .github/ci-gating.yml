@@ -100,6 +100,10 @@ required:
   # index of the control arms, and an arm nobody can find is one nobody
   # re-runs -- so a silent omission there quietly retires a falsification.
   - defect-flags-documented
+  # Gating. Every freestanding userspace program links libhorus, so this is
+  # the one gate that covers all four servers' shared runtime at once -- and
+  # it carries the only executable witness for the IPC refusal contract.
+  - libhorus
   - syscall-coverage
   - ksp-guard
   - defect-flags

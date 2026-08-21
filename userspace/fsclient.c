@@ -9,27 +9,17 @@
 
 #include "syscall.h"
 #include "fs_proto.h"
+#include "libhorus.h"
 
-/* Console output goes through SYS_WRITE (fd 1); SYS_PRINT is not dispatched. */
-static void put(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
-static void umemcpy(void *d, const void *s, unsigned n) { uint8_t *a = d; const uint8_t *b = s; while (n--) *a++ = *b++; }
-static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
-static unsigned uslen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
-static int ueq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
-static void ucpy(char *d, const char *s, unsigned n) { unsigned i = 0; for (; i + 1 < n && s[i]; i++) d[i] = s[i]; d[i] = 0; }
-
-static void put_int(int v) {
-    char b[12]; int i = 0; unsigned u = (v < 0) ? (put("-"), (unsigned)(-v)) : (unsigned)v;
-    if (u == 0) { put("0"); return; }
-    char t[12]; int n = 0; while (u) { t[n++] = '0' + (u % 10); u /= 10; }
-    while (n) b[i++] = t[--n]; b[i] = 0; put(b);
-}
-static void fail(const char *stage) { put("FS_SELFTEST: FAIL "); put(stage); put("\n"); sys_exit(); }
-static void fail2(const char *stage, int v) { put("FS_SELFTEST: FAIL "); put(stage); put("="); put_int(v); put("\n"); sys_exit(); }
+/* kput/kput_int come from libhorus. This file's own copies are gone -- and the
+ * kput_int here had a real bug the shared one does not: `(unsigned)(-v)` negates
+ * a signed int, which is undefined for INT_MIN. Reachable, since v is an IPC rc
+ * a server chooses. */
+static void fail(const char *stage) { kput("FS_SELFTEST: FAIL "); kput(stage); kput("\n"); sys_exit(); }
+static void fail2(const char *stage, int v) { kput("FS_SELFTEST: FAIL "); kput(stage); kput("="); kput_int(v); kput("\n"); sys_exit(); }
 
 /* Busy-wait in ring 3 between non-blocking IPC polls so the timer preempts us
  * and runs the server (cooperative yield() cannot switch two ring-3 tasks). */
-static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { } }
 
 /* One request/reply round-trip via blocking IPC (sys_ipc_call); returns rc.
  * Using ipc_call (not send + poll-recv on the shared FS_EP_REP) is what makes
@@ -39,23 +29,21 @@ static void spin_delay(void) { for (volatile unsigned i = 0; i < 40000u; i++) { 
  * (request mailbox momentarily full — another client's request is in flight). */
 static int rpc(struct fs_request *rq, struct fs_response *rp) {
     rq->magic = FS_PROTO_MAGIC;
-    int r;
-    /* Retry ONLY the transient code, and bound even that. The previous form was
-     * `while (r < 0) spin_delay();`, which retries SYS_ERR_PERM -- "you hold no
-     * capability for this endpoint" -- forever. See the IPC retry contract in
-     * syscall.h: that is finding G-8 signature C, and it turned a clean
-     * authorisation refusal into an unkillable silent hang. */
-    unsigned tries = 0;
-    while ((r = sys_ipc_call(CAPSLOT_FS_EP, 0, rq, sizeof(*rq), rp)) < 0) {
-        if (!ipc_transient(r)) {
-            put("FS_SELFTEST: FAIL ipc-refused rc="); put_int(r); put("\n");
-            return r;                       /* permanent: report, never spin */
-        }
-        if (++tries > 2000000u) {           /* transient, but not forever */
-            put("FS_SELFTEST: FAIL ipc-retry-exhausted\n");
-            return -103;
-        }
-        spin_delay();
+    /* Retry ONLY the transient code, and bound even that -- the contract in
+     * syscall.h, implemented once in libhorus's ipc_call_retry rather than
+     * re-derived per program. The previous form was `while (r < 0)
+     * spin_delay();`, which retried SYS_ERR_PERM -- "you hold no capability for
+     * this endpoint" -- forever: finding G-8 signature C, a clean authorisation
+     * refusal turned into an unkillable silent hang. The reporting stays here
+     * because the marker strings are this selftest's, not the library's. */
+    int r = ipc_call_retry(CAPSLOT_FS_EP, 0, rq, sizeof(*rq), rp);
+    if (r == IPC_ERR_RETRY_EXHAUSTED) {
+        kput("FS_SELFTEST: FAIL ipc-retry-exhausted\n");
+        return r;
+    }
+    if (r < 0) {
+        kput("FS_SELFTEST: FAIL ipc-refused rc="); kput_int(r); kput("\n");
+        return r;                           /* permanent: report, never spin */
     }
     if (rp->magic != FS_PROTO_MAGIC) return -102;
     return rp->rc;
@@ -90,11 +78,11 @@ static int fs_connect_retry(void) {
  * this task last authenticated as — never anything placed in the request. */
 static struct fs_request  pq;
 static struct fs_response pp;
-static void pfail(const char *s) { put("PERM_SELFTEST: FAIL "); put(s); put("\n"); sys_exit(); }
+static void pfail(const char *s) { kput("PERM_SELFTEST: FAIL "); kput(s); kput("\n"); sys_exit(); }
 
 static int p_make(uint32_t dir, const char *name, int is_dir) {
     umemset(&pq, 0, sizeof(pq)); pq.op = is_dir ? FS_OP_MKDIR : FS_OP_CREATE;
-    pq.dir_ino = dir; ucpy(pq.name, name, FS_NAME_MAX);
+    pq.dir_ino = dir; ustrncpy(pq.name, name, FS_NAME_MAX);
     if (rpc(&pq, &pp) != 0) return -1;
     return (int)pp.ino;
 }
@@ -144,7 +132,7 @@ void _start(void) {
      * difference between working and hanging forever. Must be retried — see
      * fs_connect_retry. */
     if (fs_connect_retry() != 0) {
-        put("FS_SELFTEST: FAIL connect (fs_server never registered)\n");
+        kput("FS_SELFTEST: FAIL connect (fs_server never registered)\n");
         sys_exit();
     }
 
@@ -172,7 +160,7 @@ void _start(void) {
             for (;;) {
                 int alive = 0;
                 for (int id = 1; id < 64; id++)
-                    if (sys_get_task_info(id, &ti) == 0 && ti.state != 0 && ueq(ti.name, "fsclient")) alive++;
+                    if (sys_get_task_info(id, &ti) == 0 && ti.state != 0 && ustreq(ti.name, "fsclient")) alive++;
                 if (alive <= 1) break;   /* only the coordinator remains */
                 for (int d = 0; d < 40; d++) spin_delay();
             }
@@ -182,15 +170,15 @@ void _start(void) {
              * value. */
             for (unsigned i = 1; i <= NWORK; i++) {
                 char fn[8]; fn[0]='w'; fn[1]=(char)('0'+i); fn[2]=0;
-                umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ucpy(rq.name, fn, FS_NAME_MAX);
-                if (rpc(&rq, &rp) != 0) { put("CONC_SELFTEST: FAIL vlookup\n"); sys_exit(); }
+                umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ustrncpy(rq.name, fn, FS_NAME_MAX);
+                if (rpc(&rq, &rp) != 0) { kput("CONC_SELFTEST: FAIL vlookup\n"); sys_exit(); }
                 uint32_t vino = rp.ino;
                 umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = vino; rq.offset = 0; rq.len = 16;
-                if (rpc(&rq, &rp) != 16) { put("CONC_SELFTEST: FAIL vread\n"); sys_exit(); }
+                if (rpc(&rq, &rp) != 16) { kput("CONC_SELFTEST: FAIL vread\n"); sys_exit(); }
                 for (int b = 0; b < 16; b++)
-                    if (rp.data[b] != (uint8_t)(0xA0u + i)) { put("CONC_SELFTEST: FAIL vcontent\n"); sys_exit(); }
+                    if (rp.data[b] != (uint8_t)(0xA0u + i)) { kput("CONC_SELFTEST: FAIL vcontent\n"); sys_exit(); }
             }
-            put("CONC_SELFTEST: PASS\n");
+            kput("CONC_SELFTEST: PASS\n");
             sys_exit();
         }
 
@@ -198,21 +186,21 @@ void _start(void) {
          * distinct bytes. A mis-routed read reply yields another worker's bytes. */
         char fn[8]; fn[0]='w'; fn[1]=(char)('0'+role); fn[2]=0;
         uint8_t want = (uint8_t)(0xA0u + role);
-        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = 0; ucpy(rq.name, fn, FS_NAME_MAX);
+        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = 0; ustrncpy(rq.name, fn, FS_NAME_MAX);
         (void)rpc(&rq, &rp);                                  /* ok if it already exists */
-        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ucpy(rq.name, fn, FS_NAME_MAX);
-        if (rpc(&rq, &rp) != 0) { put("CONC_SELFTEST: FAIL lookup\n"); sys_exit(); }
+        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ustrncpy(rq.name, fn, FS_NAME_MAX);
+        if (rpc(&rq, &rp) != 0) { kput("CONC_SELFTEST: FAIL lookup\n"); sys_exit(); }
         uint32_t ino = rp.ino;
 
         for (unsigned k = 0; k < ITERS; k++) {
             umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_WRITE; rq.ino = ino; rq.offset = 0; rq.len = 16;
             for (int b = 0; b < 16; b++) rq.data[b] = want;
-            if (rpc(&rq, &rp) != 16) { put("CONC_SELFTEST: FAIL write\n"); sys_exit(); }
+            if (rpc(&rq, &rp) != 16) { kput("CONC_SELFTEST: FAIL write\n"); sys_exit(); }
 
             umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = ino; rq.offset = 0; rq.len = 16;
-            if (rpc(&rq, &rp) != 16) { put("CONC_SELFTEST: FAIL readlen\n"); sys_exit(); }
+            if (rpc(&rq, &rp) != 16) { kput("CONC_SELFTEST: FAIL readlen\n"); sys_exit(); }
             for (int b = 0; b < 16; b++)
-                if (rp.data[b] != want) { put("CONC_SELFTEST: FAIL crosstalk\n"); sys_exit(); }
+                if (rp.data[b] != want) { kput("CONC_SELFTEST: FAIL crosstalk\n"); sys_exit(); }
         }
         sys_exit();
     }
@@ -230,27 +218,27 @@ void _start(void) {
         unsigned    clen     = uslen(content);
 
         umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
-        ucpy(rq.name, sentinel, FS_NAME_MAX);
+        ustrncpy(rq.name, sentinel, FS_NAME_MAX);
         if (rpc(&rq, &rp) == 0) {
             uint32_t fino = rp.ino;                     /* later boot: verify */
             umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = fino;
             rq.offset = 0; rq.len = clen;
             int rr = rpc(&rq, &rp);
-            if (rr != (int)clen) { put("PERSIST_SELFTEST: FAIL read-len\n"); sys_exit(); }
+            if (rr != (int)clen) { kput("PERSIST_SELFTEST: FAIL read-len\n"); sys_exit(); }
             for (unsigned i = 0; i < clen; i++)
-                if (rp.data[i] != (uint8_t)content[i]) { put("PERSIST_SELFTEST: FAIL cmp\n"); sys_exit(); }
-            put("PERSIST_SELFTEST: PASS\n");
+                if (rp.data[i] != (uint8_t)content[i]) { kput("PERSIST_SELFTEST: FAIL cmp\n"); sys_exit(); }
+            kput("PERSIST_SELFTEST: PASS\n");
             sys_exit();
         }
         /* first boot: create + write the sentinel, then report WROTE */
         umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = 0;
-        ucpy(rq.name, sentinel, FS_NAME_MAX);
-        if (rpc(&rq, &rp) != 0) { put("PERSIST_SELFTEST: FAIL create\n"); sys_exit(); }
+        ustrncpy(rq.name, sentinel, FS_NAME_MAX);
+        if (rpc(&rq, &rp) != 0) { kput("PERSIST_SELFTEST: FAIL create\n"); sys_exit(); }
         uint32_t fino = rp.ino;
         umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_WRITE; rq.ino = fino;
         rq.offset = 0; rq.len = clen; umemcpy(rq.data, content, clen);
-        if (rpc(&rq, &rp) != (int)clen) { put("PERSIST_SELFTEST: FAIL write\n"); sys_exit(); }
-        put("PERSIST_SELFTEST: WROTE\n");
+        if (rpc(&rq, &rp) != (int)clen) { kput("PERSIST_SELFTEST: FAIL write\n"); sys_exit(); }
+        kput("PERSIST_SELFTEST: WROTE\n");
         sys_exit();
     }
 #endif
@@ -303,17 +291,17 @@ void _start(void) {
     if (!content_is("mydata", 6))                    pfail("root-content");
     if (p_chown((uint32_t)m_ino, 0, 0) != 0)         pfail("root-chown");
 
-    put("PERM_SELFTEST: PASS\n");
+    kput("PERM_SELFTEST: PASS\n");
     sys_exit();
 #endif
 
     /* mkdir /docs */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_MKDIR; rq.dir_ino = 0; ucpy(rq.name, "docs", FS_NAME_MAX);
+    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_MKDIR; rq.dir_ino = 0; ustrncpy(rq.name, "docs", FS_NAME_MAX);
     if (rpc(&rq, &rp) != 0) fail("mkdir");
     uint32_t dino = rp.ino;
 
     /* create /docs/hello.txt */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = dino; ucpy(rq.name, "hello.txt", FS_NAME_MAX);
+    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
     if (rpc(&rq, &rp) != 0) fail("create");
     uint32_t fino = rp.ino;
 
@@ -337,19 +325,19 @@ void _start(void) {
     /* readdir /docs -> hello.txt */
     umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READDIR; rq.dir_ino = dino; rq.offset = 0;
     if (rpc(&rq, &rp) != 0) fail("readdir");
-    if (!ueq(rp.name, "hello.txt")) fail("readdir-name");
+    if (!ustreq(rp.name, "hello.txt")) fail("readdir-name");
 
     /* lookup returns the same inode */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = dino; ucpy(rq.name, "hello.txt", FS_NAME_MAX);
+    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
     if (rpc(&rq, &rp) != 0) fail("lookup");
     if (rp.ino != fino) fail("lookup-ino");
 
     /* delete, then lookup must miss */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_DELETE; rq.dir_ino = dino; ucpy(rq.name, "hello.txt", FS_NAME_MAX);
+    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_DELETE; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
     if (rpc(&rq, &rp) != 0) fail("delete");
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = dino; ucpy(rq.name, "hello.txt", FS_NAME_MAX);
+    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
     if (rpc(&rq, &rp) != SYS_ERR_NOENT) fail("delete-verify");
 
-    put("FS_SELFTEST: PASS\n");
+    kput("FS_SELFTEST: PASS\n");
     sys_exit();
 }

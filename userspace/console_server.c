@@ -18,6 +18,7 @@
 
 #include "syscall.h"
 #include "console_proto.h"
+#include "libhorus.h"
 
 /* How many times to retry the startup SYS_IOPORT_GRANT while init finishes
  * endowing us with CAP_IO_DEVICE (see _start). Each attempt yields, so this is a
@@ -139,8 +140,6 @@ static void con_write_raw(const uint8_t *data, unsigned len) {
 }
 
 /* ---- helpers --------------------------------------------------------------- */
-static void kput(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
-static void umemset(void *d, int v, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)v; }
 
 #ifdef CONSOLE_ISOLATION_TEST
 /* Blast-radius proof (Phase 6 close-out). The console driver used to run in ring 0,

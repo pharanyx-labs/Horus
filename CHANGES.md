@@ -32,6 +32,20 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   delegation stays hand-written in `init.c` on purpose: a macro that guessed would be a macro
   that granted.
 
+### Changed
+
+- **[G-9]'s scope is wider than recorded.** The scheduler claim leak was documented against
+  `PROC_SELFTEST` at `-smp 4` (~40% of boots, always task 3). On 2026-08-21 the same shape
+  appeared in the **default boot** — `init` spawning the shell, task 4, on an idled CPU — at
+  1 boot in 120. A control on the preceding commit was 0 in 270; the difference is not
+  significant (Fisher p ≈ 0.31) and is recorded rather than concluded.
+- **`smoke-sched-invariants-stress`'s green runs never established what they were read as.**
+  Thirty boots has ~26% power against a 1%-per-boot event. `TESTS.md` now states the power
+  beside the sample size. The gate stays **required**: unlike `smoke-kstack-park`, which is
+  advisory because it reddens for a defect it does not test, this gate tests the claim
+  invariant and what it caught was a claim leak. A red here is a [G-9] reproduction to
+  capture, not a flake to re-run.
+
 ### Fixed
 
 - `fsclient.c`'s `put_int` negated a signed `int` (`(unsigned)(-v)`), which is undefined for

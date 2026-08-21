@@ -1187,6 +1187,8 @@ obscure fault inside the ISR epilogue — a banner naming the stub and nothing a
 value came from — into a line that names the value, the task and the CPU. What produces `-7` is
 still unknown, and that is what remains of **[G-9]**.
 
+**Widened 2026-08-21.** The same claim leak was observed in the **default boot** workload (task 4, the shell, on an idled CPU) at 1 boot in 120 — not only in `PROC_SELFTEST` at `-smp 4`, which is how this finding had been scoped. A control on the preceding commit was 0 in 270, but the difference is not significant (Fisher exact, p ≈ 0.31). See [`investigations/G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md).
+
 An earlier measurement of this fix reported 0 claim panics in 20 boots. It was taken with
 diagnostic scaffolding that scanned every task slot on every ISR exit, and the perturbation hid
 both residues; the table above is the unscaffolded run and is the one to trust. Recorded because

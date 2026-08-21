@@ -348,10 +348,51 @@ not a flag, and is itself checked: a CPU reaching **ring 3** at non-zero depth m
 `enter()` lost its `exit()`, and panics. An exemption mechanism with no balance check is a
 hole in the shape of the thing being checked.
 
-| Build | Runs (pinned, 2 host cores) | Failures |
-|---|---|---|
-| before | 20 | **10** |
-| after | 30 | **0** |
+| Build | Runs (pinned, 2 host cores) | Failures | What that establishes |
+|---|---|---|---|
+| before | 20 | **10** | ~50%: the impersonation false positive, unambiguously |
+| after | 30 | **0** | the false positive is gone — **and nothing about a rare event** |
+
+**That second row was read as more than it says, and this is the correction.** Thirty boots has
+about a **26% chance** of observing a defect that occurs on 1% of boots, so a clean 30/30 was
+never evidence of absence at that rate. It established what it was built to establish — that the
+~50% impersonation false positive had stopped — and nothing beyond it.
+
+### 2026-08-21: the claim invariant fired again, and it is not the old false positive
+
+On the CI run for `615b384`, one boot in 30 panicked:
+
+```
+PANIC: stale scheduler claim at preempt_on_tick: task 4 claimed by cpu 1
+       but that cpu was running 0 (persisted across two audits; observed by cpu 3)
+```
+
+**This is the inverse of the 2026-08-09 shape and cannot have the same explanation.** That one
+read `task 1 claimed by cpu N but that cpu was running 4` — `init` claimed while the CPU
+legitimately impersonated the child it was spawning. Here it is **task 4** that is claimed, by a
+CPU running **0** — nothing. An idle CPU is not impersonating anyone, so `percpu_real_task[]`
+has nothing to say about it. The claim is genuinely stale: this is a leak, and it is
+**[G-9]**'s shape exactly — a claim left behind by a CPU that then went idle.
+
+Measured either side of the commit it appeared on, pinned, same host:
+
+| Tree | Boots | Failures | Rate |
+|---|---|---|---|
+| `615b384` (with `libhorus`) | 120 | 1 | 0.83% |
+| `2d27ec7` (before `libhorus`) | 270 | 0 | 0% |
+
+**The difference is not significant** (Fisher exact, p ≈ 0.31), and it cannot currently be
+resolved: one event does not carry a confidence interval worth quoting. `libhorus` is a ring-3
+library and cannot create kernel scheduler state, but it did resize four server binaries, which
+moves timing — so "pre-existing and under-sampled" and "the same defect, made marginally easier
+to hit" both fit the data. Recorded rather than concluded.
+
+**A red here is a [G-9] reproduction, not a flake.** `smoke-sched-invariants` stays **required**
+deliberately. It is not `smoke-kstack-park`, which is advisory because it reddens for a defect
+it does *not* test; this gate tests the claim invariant and what it caught *was* a claim leak.
+The gate is working. Before re-running it, **save `stress-first-failure.log`** — every boot that
+reproduces this is a datapoint, and collecting them is how **[G-8]** was closed. Re-running
+first and looking second is the reflex that costs the evidence.
 
 Falsified in both directions rather than merely observed to pass:
 

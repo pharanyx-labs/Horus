@@ -52,6 +52,84 @@ LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none
 RUST_TARGET ?= x86_64-unknown-none
 
 
+# ---- defect-flag provenance -------------------------------------------------
+#
+# Two problems, one mechanism.
+#
+# (1) A -D flag is NOT a prerequisite of an object file. `make FLAG=1` then
+#     `make` without `clean` leaves every unchanged .c compiled WITH the flag,
+#     and the build says nothing. On 2026-08-20 that produced a measurement
+#     campaign whose kernel still carried KSP_GUARD_INJECT: the [G-9] guard
+#     "fired" in 2 of 3 boots with the injected constant, which for a few minutes
+#     looked like a reproduction of the very defect being hunted. It was caught
+#     because -7 is implausibly exact and 67% is implausibly high -- i.e. by
+#     luck, not by method.
+#
+# (2) A serial transcript did not say which flags produced it, so a log could not
+#     be audited after the fact. Every measurement in this project is read off
+#     the wire, which makes that a hole in the evidence rather than a nicety.
+#
+# So: the whole kernel CFLAGS string is stamped into .build-flags, every object
+# depends on it, and a change forces a rebuild -- covering ALL flags, not just
+# the defect ones. And the active defect flags are compiled in as a string the
+# kernel prints at boot, so a transcript is self-describing.
+#
+# DEFECT_FLAGS is the list from docs/BUILDING.md's "Defect-reproducing builds"
+# table. Adding a control arm means adding it here in the same commit, exactly
+# as CLAUDE.md already requires for that table.
+DEFECT_FLAGS = \
+	IRQ_LEGACY_GLOBAL_LOCK USER_HEAP_HIGH_BASE \
+	KFAULT_INJECT KFAULT_LEGACY_PRINTLN \
+	KSTACK_RELEASE_EARLY KSTACK_RACE_WIDEN KSTACK0_SHARED_PARK KSTACK0_PARK_TRACE \
+	RESUME_GUARD_FLOOR_ONLY RESUME_GUARD_BSS_ONLY RESUME_GUARD_DISABLE \
+	RESUME_GUARD_LEGACY_FATAL RESUME_RSP_INJECT RESUME_RSP_INJECT_PRECLAIM \
+	CR3_RECLAIM_UNGUARDED EXEC_REENTER_GLOBAL \
+	SPAWN_OWNER_UNCHECKED SPAWN_STAGE_UNSERIALISED SPAWN_STAGE_WIDEN SPAWN_STAGE_TRACE \
+	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
+	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT SYSCALL_COVERAGE
+
+# Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
+# listed separately: its defect arm is the value 1 (a single-slot endpoint, the
+# pre-[I-5] shape), and any other value is an ordinary build.
+# Deferred (`=`, not `:=`): the flag variables get their `?= 0` defaults further
+# down this file, so an immediate expansion here would evaluate them before they
+# exist. Command-line settings are visible either way; deferring is what makes an
+# in-file default correct too.
+DEFECT_ACTIVE = $(strip \
+	$(foreach f,$(DEFECT_FLAGS),$(if $(filter 1,$($(f))),$(f))) \
+	$(if $(filter 1,$(EP_QUEUE_SLOTS)),EP_QUEUE_SLOTS))
+DEFECT_ACTIVE_STR = $(if $(DEFECT_ACTIVE),$(DEFECT_ACTIVE),none)
+CFLAGS += -DDEFECT_FLAGS_STR='"$(DEFECT_ACTIVE_STR)"'
+
+# `all` stays the default goal. This block introduces the first explicit targets
+# in the file, and in make the FIRST target wins by default -- without this,
+# plain `make` silently stopped building the kernel and only printed a flag list.
+# Everything downstream (make iso, make smoke, CI) still worked, because those
+# name their targets, which is exactly why it would have gone unnoticed.
+.DEFAULT_GOAL := all
+
+# What flags would this build carry? Answers without building anything, so a
+# measurement script can record the configuration it is about to boot.
+.PHONY: print-defect-flags
+print-defect-flags:
+	@echo "$(DEFECT_ACTIVE_STR)"
+
+# A -D flag is not a prerequisite of an object file, so `make FLAG=1` followed by
+# `make` leaves stale objects compiled with the flag and says nothing. Stamping
+# the flag strings into a file that every object depends on makes any change to
+# them a rebuild. The whole CFLAGS/ASFLAGS strings are stamped, not just the
+# defect list -- the failure is generic and so is the fix.
+#
+# Rewritten only when the content differs, so it does not itself force a rebuild
+# on every invocation.
+.build-flags: FORCE
+	@printf '%s\n%s\n' '$(CFLAGS)' '$(ASFLAGS)' > $@.tmp; \
+	 cmp -s $@.tmp $@ || mv $@.tmp $@; \
+	 rm -f $@.tmp
+.PHONY: FORCE
+FORCE:
+
+
 OBJS = src/boot/multiboot.o \
        src/kernel/terminal.o \
        src/kernel/main.o \
@@ -955,6 +1033,17 @@ endif
 
 OBJS += src/kernel/lowlevel64.o
 
+# Every object rebuilds when the flag strings change. See .build-flags above.
+#
+# BUILD_FLAGS_UNSTAMPED=1 removes that dependency -- the pre-2026-08-21 build, in
+# which a -D flag was invisible to make. Not a build option, a control arm:
+# `smoke-defect-flags-rebuild-control` builds it and REQUIRES the stale flag to
+# survive a flagless rebuild, which is the defect this mechanism exists to stop.
+BUILD_FLAGS_UNSTAMPED ?= 0
+ifneq ($(BUILD_FLAGS_UNSTAMPED),1)
+$(OBJS): .build-flags
+endif
+
 all: kernel.elf
 
 RUST_ENABLED := 1
@@ -1443,7 +1532,7 @@ userspace-clean:
 smoke-aspace:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ASPACE_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory ASPACE_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ASPACE_SELFTEST: PASS' \
 		FAIL_MARKER='ASPACE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1456,7 +1545,7 @@ smoke-aspace:
 smoke-nzcow:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='NZCOW_SELFTEST: PASS' \
 		FAIL_MARKER='NZCOW_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1464,7 +1553,7 @@ smoke-nzcow:
 smoke-wx:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WX_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory WX_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='WX_SELFTEST: PASS' \
 		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1476,7 +1565,7 @@ smoke-wx:
 smoke-wx-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WX_SELFTEST=1 SMP=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory WX_SELFTEST=1 SMP=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='WX_SELFTEST: PASS' \
 		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1484,7 +1573,7 @@ smoke-wx-smp:
 smoke-cpu:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CPU_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory CPU_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CPU_SELFTEST: PASS' \
 		FAIL_MARKER='CPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1498,7 +1587,7 @@ smoke-cpu:
 smoke-percpu:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERCPU_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory PERCPU_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='PERCPU_SELFTEST: PASS' \
 		FAIL_MARKER='PERCPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1513,7 +1602,7 @@ smoke-percpu:
 smoke-flush:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FLUSH_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory FLUSH_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='FLUSH_SELFTEST: PASS' \
 		FAIL_MARKER='FLUSH_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1535,7 +1624,7 @@ smoke-smt:
 smoke-stackguard:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STACKGUARD_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory STACKGUARD_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='STACKGUARD_SELFTEST: PASS' \
 		FAIL_MARKER='STACKGUARD_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1546,14 +1635,14 @@ smoke-stackguard:
 smoke-elf:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ELF_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory ELF_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ELF_SELFTEST: PASS' \
 		FAIL_MARKER='ELF_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
 smoke-elf64:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ELF64_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory ELF64_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='ELF64_SELFTEST: PASS' \
 		FAIL_MARKER='ELF64_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1563,7 +1652,7 @@ smoke-elf64:
 smoke-aslr:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ASLR_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory ASLR_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='ASLR_SELFTEST: PASS' \
 		FAIL_MARKER='ASLR_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1574,7 +1663,7 @@ smoke-aslr:
 smoke-preempt:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PREEMPT_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory PREEMPT_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PREEMPT_SELFTEST: PASS' \
 		FAIL_MARKER='PREEMPT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1585,7 +1674,7 @@ smoke-preempt:
 smoke-signal:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SIGNAL_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory SIGNAL_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='SIGNAL_SELFTEST: PASS' \
 		FAIL_MARKER='SIGNAL_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1594,7 +1683,7 @@ smoke-signal:
 smoke-tsd:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TSD_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory TSD_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='TSD_SELFTEST: PASS' \
 		FAIL_MARKER='TSD_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1604,7 +1693,7 @@ smoke-tsd:
 smoke-e820:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory E820_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory E820_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='E820_SELFTEST: PASS' \
 		FAIL_MARKER='E820_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1630,7 +1719,7 @@ endif
 smoke-fs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 boot.iso
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
 		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
@@ -1643,7 +1732,7 @@ smoke-fs:
 smoke-init-fs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory INIT_FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory INIT_FS_SELFTEST=1 boot.iso
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
 		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
@@ -1662,7 +1751,7 @@ PERSIST_TIMEOUT ?= 300
 smoke-fs-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso
 	@dd if=/dev/zero of=persist.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[persist] boot 1/2 — write sentinel to a fresh encrypted disk"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
@@ -1683,7 +1772,7 @@ smoke-fs-persist:
 smoke-fs-perms:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERM_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PERM_SELFTEST: PASS' \
 		FAIL_MARKER='PERM_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1698,7 +1787,7 @@ smoke-fs-perms:
 smoke-fs-wal:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso
 	@dd if=/dev/zero of=wal.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal] boot 1/2 — commit a write, then crash before applying it"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
@@ -1752,7 +1841,7 @@ check-gating:
 smoke-fs-wal-flush:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso
 	@dd if=/dev/zero of=wal-flush.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush] every FLUSH CACHE fails with EIO; the journal must refuse to commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush.img \
@@ -1769,7 +1858,7 @@ smoke-fs-wal-flush:
 smoke-fs-wal-flush-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso
 	@dd if=/dev/zero of=wal-flush-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush-control] barriers compiled out: the refusal must NOT appear"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush-control.img \
@@ -1793,7 +1882,7 @@ smoke-fs-wal-flush-control:
 smoke-fs-wal-order:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso
 	@dd if=/dev/zero of=wal-order.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@rm -f wal-order.trace
 	@echo "[wal-order] tracing IDE commands through one journal commit"
@@ -1812,7 +1901,7 @@ smoke-fs-wal-order:
 smoke-fs-wal-order-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso
 	@dd if=/dev/zero of=wal-order-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@rm -f wal-order-control.trace
 	@echo "[wal-order-control] barriers compiled out: the ordering check must REJECT this"
@@ -1844,7 +1933,7 @@ CONC_TIMEOUT ?= 120
 smoke-fs-conc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONC_SELFTEST=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory CONC_SELFTEST=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso
 	@SMOKE_TIMEOUT=$(CONC_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONC_SELFTEST: PASS' \
 		FAIL_MARKER='CONC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1869,7 +1958,7 @@ smoke-newlib-tamper:
 smoke-newlib:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
 		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1886,7 +1975,7 @@ smoke-newlib:
 smoke-captest:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -1927,6 +2016,55 @@ smoke-klog-forge:
 # tested. The FAIL marker must be PRESENT -- deterministically, on every boot,
 # since nothing here is racy. If this arm ever goes green, the gate above is
 # passing for a reason other than the one it claims.
+# ---- defect-flag provenance -------------------------------------------------
+# Every boot states which defect-reproducing flags built it. A clean kernel must
+# say so POSITIVELY: an absent line is ambiguous between "clean", "the reporting
+# was removed" and "the boot died early", and only one of those is good news.
+.PHONY: smoke-defect-flags
+smoke-defect-flags:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEFECT FLAGS: none' \
+		FAIL_MARKER='DEFECT FLAGS: unknown' tools/smoke_test.sh boot.iso
+
+# The same kernel built WITH a defect arm must name it. Without this, the gate
+# above is satisfied by a kernel that prints "none" unconditionally.
+.PHONY: smoke-defect-flags-control
+smoke-defect-flags-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KSP_GUARD_INJECT=1
+	@$(MAKE) --no-print-directory KSP_GUARD_INJECT=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh boot.iso
+
+# THE FOOTGUN ITSELF. Build with an injection, then rebuild WITHOUT `clean` and
+# without the flag -- exactly the sequence that produced a false [G-9]
+# "reproduction" on 2026-08-20. The kernel must come out clean.
+.PHONY: smoke-defect-flags-rebuild
+smoke-defect-flags-rebuild:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KSP_GUARD_INJECT=1
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEFECT FLAGS: none' \
+		FAIL_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh boot.iso
+
+# Control arm for it: BUILD_FLAGS_UNSTAMPED=1 drops the dependency, so the
+# flagless rebuild recompiles nothing and the injected kernel survives. The stale
+# flag must be REPORTED -- the announcement is compiled into the same stale
+# object set, so it stays truthful about what is actually in the image.
+.PHONY: smoke-defect-flags-rebuild-control
+smoke-defect-flags-rebuild-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory BUILD_FLAGS_UNSTAMPED=1 KSP_GUARD_INJECT=1
+	@$(MAKE) --no-print-directory BUILD_FLAGS_UNSTAMPED=1
+	@$(MAKE) --no-print-directory BUILD_FLAGS_UNSTAMPED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh boot.iso
+
 # ---- [G-9]: a bogus resume %rsp is refused where it is produced -------------
 # The producer-side half of the resume guard. KSP_GUARD_INJECT=1 forges -7 -- the
 # exact value [G-9] was seen to hand back -- in task_exit_switch, the producer the
@@ -2132,7 +2270,7 @@ smoke-term:
 smoke-pipe:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PIPE_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PIPE_SELFTEST: PASS' \
 		FAIL_MARKER='PIPE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2140,7 +2278,7 @@ smoke-pipe:
 smoke-fs-large:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory BIGFILE_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory BIGFILE_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='BIGFILE_SELFTEST: PASS' \
 		FAIL_MARKER='BIGFILE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2153,7 +2291,7 @@ SMP_CPUS ?= 4
 smoke-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2164,7 +2302,7 @@ smoke-smp:
 smoke-proc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
 	@# Require the LAST marker proctest prints. The '+signal' marker is emitted by
 	@# sigtarget partway through; requiring it let the harness kill QEMU before the
 	@# closing spawn-suspend witness ever ran, so that check was dead code. The
@@ -2180,7 +2318,7 @@ smoke-proc:
 smoke-notify:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NOTIFY_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory NOTIFY_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NOTIFY_SELFTEST: PASS' \
 		FAIL_MARKER='NOTIFY_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2193,7 +2331,7 @@ smoke-notify:
 smoke-mapphys:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory MAPPHYS_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory MAPPHYS_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='MAPPHYS_SELFTEST: PASS' \
 		FAIL_MARKER='MAPPHYS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2206,7 +2344,7 @@ smoke-mapphys:
 smoke-ioport:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IOPORT_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory IOPORT_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='IOPORT_SELFTEST: PASS' \
 		FAIL_MARKER='IOPORT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2219,7 +2357,7 @@ smoke-ioport:
 smoke-irq:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IRQ_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory IRQ_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='IRQ_SELFTEST: PASS' \
 		FAIL_MARKER='IRQ_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2232,7 +2370,7 @@ smoke-irq:
 smoke-console:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
 		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2243,7 +2381,7 @@ smoke-console:
 smoke-console-isolation:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONSOLE_ISOLATION_TEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory CONSOLE_ISOLATION_TEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_ISOLATION: PASS' \
 		FAIL_MARKER='CONSOLE_ISOLATION: FAIL' tools/smoke_test.sh boot.iso
 
@@ -2254,7 +2392,7 @@ smoke-console-isolation:
 smoke-cow:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COW_SELFTEST=1
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory COW_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COW_SELFTEST: PASS' \
 		FAIL_MARKER='COW_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 

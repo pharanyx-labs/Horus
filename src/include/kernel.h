@@ -1446,6 +1446,15 @@ int  exec_reenter_take(void);
 char console_getc(void);
 void console_putc(char c);
 void console_puts(const char *s);
+/* Set by the Makefile from DEFECT_ACTIVE: the space-separated list of
+ * defect-reproducing flags this kernel was built with, or "none". Printed at
+ * boot so a serial transcript is self-describing -- see main.c. The fallback
+ * exists so a hand-rolled compile still builds, and says "unknown" rather than
+ * lying about being clean. */
+#ifndef DEFECT_FLAGS_STR
+#define DEFECT_FLAGS_STR "unknown"
+#endif
+
 void println(const char *s);
 void print(const char *s);
 /* The ring-3 console write path (SYS_WRITE fd 1). `may_klog` is the caller's

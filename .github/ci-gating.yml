@@ -97,6 +97,7 @@ required:
   - syscall-abi
   - syscall-coverage
   - ksp-guard
+  - defect-flags
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy

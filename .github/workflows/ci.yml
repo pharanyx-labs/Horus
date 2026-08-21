@@ -1335,6 +1335,38 @@ jobs:
       - name: Remove the owner check and require the foreign image to be SPAWNED
         run: make smoke-spawn-owner-control
 
+  defect-flags:
+    name: "Every boot states which defect flags built it (and a flag change forces a rebuild)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # A clean kernel must say so POSITIVELY. An absent line is ambiguous
+      # between "clean", "the reporting was removed" and "the boot died early".
+      - name: A clean build reports no defect flags
+        run: make smoke-defect-flags
+      # Without this, the gate above is satisfied by a kernel that prints "none"
+      # unconditionally.
+      - name: An injected build names the flag it carries
+        run: make smoke-defect-flags-control
+      # THE FOOTGUN: build with an injection, rebuild WITHOUT clean and without
+      # the flag. On 2026-08-20 that sequence produced a kernel still carrying
+      # KSP_GUARD_INJECT and a false [G-9] "reproduction" at 2 boots in 3.
+      - name: A flagless rebuild after an injected one comes out clean
+        run: make smoke-defect-flags-rebuild
+      # And the arm that proves the stamp is what does it.
+      - name: Drop the stamp dependency and require the stale flag to SURVIVE
+        run: make smoke-defect-flags-rebuild-control
+
   ksp-guard:
     name: "A bogus resume %rsp is refused where it is produced (G-9)"
     runs-on: ubuntu-latest

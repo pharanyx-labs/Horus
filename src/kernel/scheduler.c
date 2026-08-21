@@ -157,6 +157,12 @@ int task_running_cpu[MAX_TASKS];
  * demand — and is what `make smoke-kstack-race-control` builds. */
 volatile uint64_t g_kstack_inflight = 0;
 
+#ifdef CLAIM_TRACE
+#define CLAIM_NOTE(t, c, s_) claim_note((t), (c), (s_))
+#else
+#define CLAIM_NOTE(t, c, s_) ((void)0)
+#endif
+
 /* Task this CPU still has to unwind off, or -1. Written only by the owning CPU.
  * The functions that manage it live below sched_raw_lock(). */
 static int percpu_deferred_release[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
@@ -962,12 +968,59 @@ static void sched_raw_lock(void) {
 }
 static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked); }
 
+#ifdef CLAIM_TRACE
+/* Provenance: which site last CLAIMED each task, and from which CPU. Additive --
+ * it records beside the existing assignment rather than replacing it, so it
+ * cannot change the behaviour it is measuring. The [G-9] exec component was
+ * cracked by asking "what last touched it?" rather than by reasoning about which
+ * path could; this asks the same question of the residual leak. */
+static const char *g_claim_site[MAX_TASKS];
+static int         g_claim_site_cpu[MAX_TASKS];
+static void claim_note(int t, int c, const char *site) {
+    if (t > 0 && t < MAX_TASKS) { g_claim_site[t] = site; g_claim_site_cpu[t] = c; }
+}
+static int sched_running_on(int c);   /* defined with the claim auditor below */
+/* Instrument, not a defect arm. Nothing here changes behaviour; it reports.
+ *
+ * percpu_deferred_release[] is ONE slot per CPU, and sched_mark_kstack_inflight
+ * overwrites it unconditionally. If a CPU ever defers a second release before its
+ * ISR epilogue has consumed the first, the FIRST task's claim is orphaned: no
+ * epilogue will ever clear task_running_cpu[] for it, and -- worse for diagnosis
+ * -- sched_assert_claims' deferred-window exemption stops covering it, so the leak
+ * surfaces ~10ms later at an audit that names the wrong site entirely.
+ *
+ * That is precisely the shape of the residual [G-9] signature: a task claimed by a
+ * CPU which by then is running something else, or nothing. This says so at the
+ * instant the overwrite happens, naming both tasks, instead of leaving the audit
+ * to find the corpse and guess. Same role SPAWN_STAGE_TRACE plays for the staging
+ * window: a reachability instrument, so that "it never happens" can be a
+ * measurement rather than an assumption. */
+static void claim_trace_defer(int cpu, int t)
+{
+    int prev = percpu_deferred_release[cpu];
+    if (prev < 0 || prev == t) return;
+    panic_begin();
+    panic_str("\nCLAIMTRACE: cpu "); panic_dec(cpu);
+    panic_str(" defers task "); panic_dec(t);
+    panic_str(" while task "); panic_dec(prev);
+    panic_str(" is still deferred -- orphaning it (prev claim=");
+    panic_dec(task_running_cpu[prev]);
+    panic_str(" prev state="); panic_dec(tasks[prev].state);
+    panic_str(" running="); panic_dec(sched_running_on(cpu));
+    panic_str(")\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+#endif
+
 /* Record that this CPU is still executing ISR C frames on task `t`'s kernel
  * stack, so a second CPU entering an ISR for `t` is detected rather than silently
  * writing over them. Caller holds sched_raw_lock. */
 static void sched_mark_kstack_inflight(int cpu, int t)
 {
     if (cpu < 0 || cpu >= MAX_CPUS || t <= 0 || t >= MAX_TASKS) return;
+#ifdef CLAIM_TRACE
+    claim_trace_defer(cpu, t);
+#endif
     percpu_deferred_release[cpu] = t;
     __sync_fetch_and_or(&g_kstack_inflight, 1ULL << t);
 }
@@ -1008,8 +1061,39 @@ void sched_release_deferred(void)
     percpu_deferred_release[cpu] = -1;
     __sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
     sched_raw_lock();
-    if (t > 0 && t < MAX_TASKS && task_running_cpu[t] == cpu)
-        task_running_cpu[t] = -1;
+    if (t > 0 && t < MAX_TASKS) {
+        if (task_running_cpu[t] == cpu) {
+            task_running_cpu[t] = -1;
+        }
+#ifdef CLAIM_TRACE
+        else if (task_running_cpu[t] >= 0) {
+            /* THE ORPHANING EVENT, caught in the act.
+             *
+             * This CPU owed a release for task t and has now reached the point
+             * where it is provably off t's stack -- but the claim names a
+             * DIFFERENT cpu, so the `== cpu` test declines and the release is
+             * silently dropped. Nothing else will ever pay it: no other CPU has a
+             * deferred slot naming t, and every selection loop skips a claimed
+             * task, so t is unschedulable by every CPU including its holder.
+             *
+             * The audit finds the corpse ~10ms later at preempt_on_tick and names
+             * that site, which is why every [G-9] report has pointed at the
+             * scheduler tick rather than here. This says it at the instant it
+             * happens and names the holder. */
+            panic_begin();
+            panic_str("\nCLAIMTRACE: declined release -- cpu "); panic_dec(cpu);
+            panic_str(" owed task "); panic_dec(t);
+            panic_str(" but it is claimed by cpu "); panic_dec(task_running_cpu[t]);
+            panic_str(" (state="); panic_dec(tasks[t].state);
+            panic_str(" runnable_ctx="); panic_dec(tasks[t].runnable_ctx);
+            panic_str(" last claimed by ");
+            panic_str(g_claim_site[t] ? g_claim_site[t] : "(unrecorded)");
+            panic_str(" on cpu "); panic_dec(g_claim_site_cpu[t]);
+            panic_str(") -- ORPHANED\n");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+#endif
+    }
     sched_raw_unlock();
 }
 
@@ -1199,6 +1283,16 @@ static void sched_claim_panic(const char *what, const char *where,
     panic_str(" (persisted across two audits; observed by cpu ");
     panic_dec(this_cpu());
     panic_str(")\n");
+#ifdef CLAIM_TRACE
+    panic_str("  last claimed by: ");
+    panic_str(g_claim_site[t] ? g_claim_site[t] : "(never recorded)");
+    panic_str(" on cpu "); panic_dec(g_claim_site_cpu[t]);
+    panic_str("\n  task state="); panic_dec(tasks[t].state);
+    panic_str(" runnable_ctx="); panic_dec(tasks[t].runnable_ctx);
+    panic_str(" deferred_on_holder="); panic_dec(percpu_deferred_release[c]);
+    panic_str(" impersonating="); panic_dec(percpu_impersonating[c]);
+    panic_str("\n");
+#endif
     for (;;) __asm__ volatile ("cli; hlt");
 }
 
@@ -1489,6 +1583,40 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (ring3 && cpu >= 0 && cpu < MAX_CPUS && percpu_impersonating[cpu] != 0)
         sched_bracket_panic("preempt_on_tick", cpu, percpu_impersonating[cpu],
                             percpu_real_task[cpu]);
+
+    /* ---- A CPU IN RING 3 OWES NO DEFERRED RELEASE --------------------------
+     *
+     * The only way to reach ring 3 is through an epilogue, and every epilogue
+     * must call sched_release_deferred(). So observing ring 3 with
+     * percpu_deferred_release[] still set means some path reached user mode
+     * without paying its debt -- and that task's claim is now stuck forever,
+     * making it unschedulable by every CPU.
+     *
+     * This is stated as an invariant rather than left to the audit below because
+     * the audit CANNOT see it: sched_assert_claims() deliberately exempts a task
+     * whose claim is held by a CPU whose deferred slot names it, on the correct
+     * reasoning that such a claim is mid-handover rather than leaked. An orphaned
+     * debt therefore hides inside the very exemption that makes the auditor
+     * honest, and surfaces ~10ms later at a site that had nothing to do with it.
+     *
+     * It exists because exactly this happened: sched_enter_user() carried a second
+     * hand-written copy of the ISR epilogue that omitted the release call. The fix
+     * is one line; this is what makes a third copy impossible to add quietly. Same
+     * argument as the impersonation bracket immediately above -- an exemption
+     * mechanism with no balance check is a hole in the shape of the thing being
+     * checked. */
+    if (ring3 && cpu >= 0 && cpu < MAX_CPUS && percpu_deferred_release[cpu] >= 0) {
+        int owed = percpu_deferred_release[cpu];
+        panic_begin();
+        panic_str("\nPANIC: ring 3 reached with a deferred release outstanding"
+                  " at preempt_on_tick: cpu ");
+        panic_dec(cpu);
+        panic_str(" owes task "); panic_dec(owed);
+        panic_str(" (claimed by cpu "); panic_dec(task_running_cpu[owed]);
+        panic_str(", state "); panic_dec(tasks[owed].state);
+        panic_str(") -- an epilogue skipped sched_release_deferred\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
 #endif
     /* ---- Never switch a CPU away from a live ring-0 context -----------------
      *
@@ -1545,8 +1673,10 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 
     /* Defensively claim the task we are currently running, so another CPU cannot
      * grab a task that was launched onto this CPU outside the timer path. */
-    if (cur > 0 && cur < MAX_TASKS && task_running_cpu[cur] < 0)
+    if (cur > 0 && cur < MAX_TASKS && task_running_cpu[cur] < 0) {
         task_running_cpu[cur] = cpu;
+        CLAIM_NOTE(cur, cpu, "preempt_on_tick/defensive");
+    }
 
     /* Deliver any signal queued for the task running here before it resumes —
      * the SMP twin of the non-SMP branch above. Without this, a signal sent
@@ -1579,6 +1709,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     }
 
     task_running_cpu[next] = cpu;
+    CLAIM_NOTE(next, cpu, "preempt_on_tick/next");
     smp_cpus_ran_tasks |= (1u << cpu);
     switch_cr3(tasks[next].cr3);
     uint64_t kstop = task_kstack_top(next);
@@ -1699,6 +1830,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     }
 
     task_running_cpu[next] = cpu;
+    CLAIM_NOTE(next, cpu, "block_or_yield/next");
     switch_cr3(tasks[next].cr3);
     uint64_t kstop = task_kstack_top(next);
     set_tss_kernel_stack(kstop);
@@ -1845,7 +1977,37 @@ void __attribute__((noreturn)) sched_enter_user(int tid) {
 #ifdef SMP
     sched_raw_lock();
     int cpu = this_cpu();
+#ifdef CLAIM_TRACE
+    /* Is this path EVER reached with a release still owed? sched_enter_user
+     * iretqs from its own inlined epilogue, which does not call
+     * sched_release_deferred -- so a pending release here is orphaned, and with
+     * it the g_kstack_inflight bit. Lead #1 of the [G-9] investigation dismissed
+     * this path as "boot-time on the BSP, where no deferred release is ever
+     * pending". This asks the machine instead of the argument. */
+    /* The FIRST probe here asked whether a deferred debt was pending; it never
+     * fired, which was the right answer to the wrong question. The claim this
+     * path orphans is not a deferred one -- it is the live claim on whatever this
+     * CPU was ALREADY running, which sched_enter_user never releases before
+     * claiming `tid` and moving percpu_current_task[] onto it. */
+    {
+        int prev = percpu_current_task[cpu];
+        if (prev > 0 && prev < MAX_TASKS && prev != tid &&
+            tasks[prev].state != 0 && task_running_cpu[prev] == cpu) {
+            panic_begin();
+            panic_str("\nCLAIMTRACE: sched_enter_user(task "); panic_dec(tid);
+            panic_str(") on cpu "); panic_dec(cpu);
+            panic_str(" ORPHANS task "); panic_dec(prev);
+            panic_str(" (still claimed by this cpu, state=");
+            panic_dec(tasks[prev].state);
+            panic_str(", last claimed by ");
+            panic_str(g_claim_site[prev] ? g_claim_site[prev] : "(unrecorded)");
+            panic_str(")\n");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+    }
+#endif
     task_running_cpu[tid] = cpu;
+    CLAIM_NOTE(tid, cpu, "sched_enter_user");
 #endif
     switch_cr3(tasks[tid].cr3);
     uint64_t kstop = task_kstack_top(tid);
@@ -1866,10 +2028,36 @@ void __attribute__((noreturn)) sched_enter_user(int tid) {
 #endif
 
     /* Mirror isr_common_stub64's epilogue: load the saved frame as %rsp first
-     * (before clobbering any GPRs with segment selectors), set user data
-     * segments, pop GPRs, skip int_no/err_code, iretq into ring 3. */
+     * (before clobbering any GPRs with segment selectors), release any deferred
+     * claim, set user data segments, pop GPRs, skip int_no/err_code, iretq into
+     * ring 3.
+     *
+     * ---- WHY THE sched_release_deferred CALL IS HERE, AND WHY IT WAS MISSING --
+     *
+     * This is the SECOND copy of the ISR epilogue in this kernel, and until
+     * 2026-08-21 it mirrored the register half and silently dropped the release.
+     * Every other way to reach ring 3 goes through isr_common_stub64, which calls
+     * sched_release_deferred() immediately after loading the incoming %rsp; this
+     * path did not, so a CPU arriving here while still owing a release iretq'd to
+     * ring 3 with the debt outstanding. Nothing would ever pay it: the owed task
+     * kept task_running_cpu[] pointing at a CPU that had moved on, every selection
+     * loop skipped it as claimed, and it became unschedulable by every CPU
+     * including the holder -- the exact shape of the residual [G-9] leak. Its
+     * g_kstack_inflight bit leaked with it, which is worse than the claim, because
+     * a stuck bit makes the [G-8] detector report a collision that is not
+     * happening.
+     *
+     * Position matches the stub exactly: after the incoming %rsp is loaded, before
+     * the segment loads and the pops. The callee's frame lands in the same unused
+     * region below the incoming trap frame that the stub relies on, interrupts are
+     * off, and every register the SysV clobbers is about to be reloaded by the
+     * pops below -- %ax is set AFTER the call for that reason.
+     *
+     * Two copies of one sequence is what allowed this; the assertion in
+     * preempt_on_tick is what stops a third from drifting again. */
     __asm__ volatile (
         "mov %0, %%rsp\n\t"
+        "call sched_release_deferred\n\t"
         "mov $0x33, %%ax\n\t"
         "mov %%ax, %%ds\n\t"
         "mov %%ax, %%es\n\t"
@@ -2083,6 +2271,7 @@ uint64_t task_exit_switch(int dead) {
     }
 #ifdef SMP
     task_running_cpu[next] = cpu;
+    CLAIM_NOTE(next, cpu, "task_exit_switch/next");
     /* `dead` has no claim left to defer -- task_teardown dropped it and no
      * selection loop looks at a task in state 0 -- but this CPU is still unwinding
      * off its kernel stack, and the SLOT is now free for init to respawn into.
@@ -2156,6 +2345,7 @@ uint64_t exec_reenter_switch(int t) {
     }
 #endif
     task_running_cpu[t] = cpu;
+    CLAIM_NOTE(t, cpu, "exec_reenter_switch");
 #endif
     switch_cr3(tasks[t].cr3);
     uint64_t kstop = task_kstack_top(t);

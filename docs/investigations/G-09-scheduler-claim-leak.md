@@ -18,8 +18,11 @@ PANIC: stale scheduler claim at preempt_on_tick: task 3 claimed by cpu 2
        but that cpu was running 0 (persisted across two audits; observed by cpu 1)
 ```
 
-Always task 3 — the driver that spawns and reaps — and always a CPU that has gone idle while
-still holding the claim. "Persisted across two audits" is the two-strike guard, so it is a leak
+Always task 3 — the driver that spawns and reaps — and, *in the 2026-08-17 captures*, a CPU that
+had gone idle while still holding the claim. **That last clause did not generalise**: the
+2026-08-21 captures below all show the holder running another live task, not idling, which is
+what moved the search off the deferred-release machinery. Read it as one observed shape rather
+than the finding's definition. "Persisted across two audits" is the two-strike guard, so it is a leak
 and not a mid-flight snapshot.
 
 > ### Scope, widened 2026-08-21: this is not confined to `PROC_SELFTEST`
@@ -91,6 +94,71 @@ which is what turned the search from the write path to the scheduler.
 **Next step:** find which path leaves a CPU idle holding a claim. `sched_enter_user()` is worth
 looking at first — it has its own inline `iretq` epilogue and so bypasses `isr_common_stub64`,
 and with it `sched_release_deferred()`. Offered as a lead with its check named, not a diagnosis.
+
+#### 2026-08-21: a reproduction, a corrected signature, and four leads killed
+
+**Still open.** What changed is that it is now cheap to reproduce and the recorded signature was
+wrong in a way that had been sending the search to the wrong machinery.
+
+**A reproduction, at last.** `PROC_SELFTEST` at `-smp 4` reproduces on **2–4% of boots**, captured
+per-boot rather than by hand. Three campaigns: 2/60, 3/80, 1/80. Earlier work put this at
+"eighteen boots across three builds, by hand"; it is now one loop.
+
+**The signature is not what every document says.** Everything above — and `LIMITATIONS.md`,
+and `TESTS.md` — describes a claim held by a CPU that has *gone idle*. Every capture shows the
+holder **running another live task**:
+
+```
+PANIC: stale scheduler claim at preempt_on_tick: task 3 claimed by cpu 3
+       but that cpu was running 1 (persisted across two audits; observed by cpu 2)
+  last claimed by: preempt_on_tick/next on cpu 3
+  task state=1 runnable_ctx=1 deferred_on_holder=-1 impersonating=0
+```
+
+Three facts follow, and together they move the search:
+
+1. the claim was taken as an **incoming** task by `preempt_on_tick`, which is legitimate;
+2. the holder owes **no deferred release** (`deferred_on_holder=-1`), so the epilogue ran and
+   paid its debt;
+3. **no impersonation** is involved, so the 2026-08-09 `percpu_real_task[]` machinery is not it.
+
+So the leak is **not in the deferred-release path** — which is where the two previous fixes went.
+Something moves a CPU off a claimed task without any release running.
+
+**Four leads killed by instruments, not arguments** (`CLAIM_TRACE=1`, zero hits across 220 boots):
+
+| Lead | Instrument | Result |
+|---|---|---|
+| `percpu_deferred_release[]` is one slot, overwritten unconditionally | report the overwrite | **never fired** |
+| `sched_enter_user()` reached owing a release | report a pending debt there | **never fired** |
+| `sched_release_deferred()` declines when the claim names another CPU | report the decline | **never fired** |
+| The SYSCALL fast path skips the epilogue | read `EFER.SCE` | unreachable by design — `SCE` is never set |
+
+Also verified rather than assumed: `get_current_task()` is per-CPU, so `ipc_caller` always names
+the CPU's own task; both AP park sites leave `percpu_current_task` zero; and `ksp_refuse()` halts
+loudly rather than leaking.
+
+**One real defect found and fixed, and it is not this leak.** `sched_enter_user()` carried a
+second hand-written copy of the ISR epilogue that omitted `call sched_release_deferred`. Any CPU
+reaching ring 3 through it while owing a release orphaned that claim *and* leaked the task's
+`g_kstack_inflight` bit — which is worse than the claim, because a stuck bit makes the **[G-8]**
+detector report a collision that is not happening. The probes prove the path is not taken in this
+workload, so this is latent rather than the observed leak; it is fixed because it is wrong, not
+because it explains anything.
+
+**The structural half, which is the durable part.** A new invariant — *a CPU in ring 3 owes no
+deferred release* — is asserted in `preempt_on_tick` under `SCHED_INVARIANTS`. It exists because
+`sched_assert_claims()` **structurally cannot** catch an unpaid debt: it deliberately exempts a
+task whose holder's deferred slot names it, on the correct reasoning that such a claim is
+mid-handover. An orphaned debt therefore hides inside the exemption that keeps the auditor
+honest, and surfaces ~10ms later at a site that had nothing to do with it — which is why every
+report for this finding has named `preempt_on_tick`. Gated by `make smoke-claim-release`,
+falsified by `CLAIM_RELEASE_SKIP=1` (fires, naming the owed task; silent 0 in 30 without it).
+
+**What the next session should do first.** Give the *release* side the provenance the claim side
+now has: record which site last dropped each claim. The claim side alone cannot distinguish
+"never released" from "released, then re-taken by a path that should not have" — and that
+distinction is the remaining question.
 
 #### Narrowed 2026-08-17: the exec hand-off component, fixed and falsified
 

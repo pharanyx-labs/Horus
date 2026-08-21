@@ -51,9 +51,10 @@ GitHub App with `Administration: read` — the permission a workflow token canno
 reported `live ruleset 19007209 : 73 required contexts, matches`, where the run 24 hours
 earlier had failed on the absent secrets. What keeps **[C-6]** open is now only the other half —
 reconciliation is manual and lags by one merge — so it narrows again rather than closing. The
-remaining open findings — the `tasks[]` table (**[I-7]**) and claims that leak and kernel stacks
-that collide on the spawn/reap path under SMP (**[G-9]**, narrowed twice on 2026-08-17: its exec
-hand-off and page-table components are fixed and falsified, ~7% of boots still fail) — are in
+remaining open findings — the `tasks[]` table (**[I-7]**) and the `tasks[]` table alone now that
+**[G-9]** closed on 2026-08-21 (its last component was the claim auditor clearing its own
+exemption before the release it exempts — a false positive of the checker, not a leak; 9/200 → 0/200
+boots, mechanism proven 8/10 against 0/10 with the window widened in both arms) — are in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). **[G-10]** closed on 2026-08-18: the spawn/exec
 path's remaining process-wide state is serialised, and the two globals that could wire a child's
 stdio from the wrong parent's cspace are parameters, so that inheritance is now unexpressible

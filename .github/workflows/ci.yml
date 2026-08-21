@@ -1440,6 +1440,31 @@ jobs:
       - name: Refuse an orphan control arm, or a gate nobody runs
         run: python3 tools/check_gate_pairs.py
 
+  defer-exemption:
+    name: "The claim audit's exemption outlives the release it exempts (G-9; control arm proves it)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # percpu_deferred_release[] IS the auditor's exemption. Clearing it before
+      # the lock that drops the claim leaves a window in which the task is
+      # claimed, un-exempt and mid-release -- and an audit landing there reports a
+      # leak that is not one. The window is widened in BOTH arms so the pair is
+      # deterministic rather than a soak.
+      - name: The widened window is silent with the exemption held
+        run: make smoke-defer-exemption
+      - name: Control arm — clear the exemption early and the audit accuses
+        run: make smoke-defer-exemption-control
+
   switch-commit:
     name: "A refused switch leaves no claim behind (G-9 root cause; control arm proves it)"
     runs-on: ubuntu-latest

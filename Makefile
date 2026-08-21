@@ -88,7 +88,7 @@ DEFECT_FLAGS = \
 	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
-	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY
+	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -635,6 +635,28 @@ endif
 # callers park the CPU and the task it just claimed is orphaned forever. Pair with
 # KSP_GUARD_INJECT=1 to make it deterministic.
 SWITCH_COMMIT_EARLY ?= 0
+ifeq ($(SWITCH_COMMIT_EARLY),1)
+CFLAGS  += -DSWITCH_COMMIT_EARLY
+ASFLAGS += -DSWITCH_COMMIT_EARLY
+endif
+
+# DEFER_CLEAR_EARLY=1 restores the pre-fix order in sched_release_deferred: drop
+# the auditor's exemption (percpu_deferred_release[]) BEFORE taking the lock that
+# drops the claim, leaving the task claimed, un-exempt and mid-release for the
+# width of a lock acquisition.
+DEFER_CLEAR_EARLY ?= 0
+ifeq ($(DEFER_CLEAR_EARLY),1)
+CFLAGS  += -DDEFER_CLEAR_EARLY
+ASFLAGS += -DDEFER_CLEAR_EARLY
+endif
+
+# DEFER_WINDOW_WIDEN=1 is not a defect -- it stretches that window so the pair is
+# deterministic. Set in BOTH arms when measuring, like KSTACK_RACE_WIDEN.
+DEFER_WINDOW_WIDEN ?= 0
+ifeq ($(DEFER_WINDOW_WIDEN),1)
+CFLAGS  += -DDEFER_WINDOW_WIDEN
+ASFLAGS += -DDEFER_WINDOW_WIDEN
+endif
 ifeq ($(SWITCH_COMMIT_EARLY),1)
 CFLAGS  += -DSWITCH_COMMIT_EARLY
 ASFLAGS += -DSWITCH_COMMIT_EARLY
@@ -3416,6 +3438,56 @@ smoke-exec-reenter-control:
 # to finish, because under this artificial injection every resume value is forged
 # bogus, so each CPU refuses in turn and the session stalls -- which is the
 # residual behaviour the fix trades for, and is expected here.
+# ---- The auditor's exemption must outlive the release ------------------------
+#
+# percpu_deferred_release[] is not just a CPU's to-do note: sched_assert_claims()
+# uses it as the EXEMPTION that says "this claim is mid-handover, not leaked".
+# sched_release_deferred() used to clear it BEFORE taking the lock that drops the
+# claim, so for the width of a lock acquisition the task was claimed, un-exempt
+# and mid-release -- and an audit landing there reported a leak that was not one.
+# That is the residual [G-9], and it was the CHECKER, not the scheduler.
+#
+# DEFER_WINDOW_WIDEN stretches that window, so the pair is deterministic where the
+# natural event sits at ~4.5% with variance wide enough that 200-boot arms could
+# not tell 4.5% from 6.5% (measured: baseline ran 2/50 then 9/200). Set in BOTH
+# arms -- that is what makes it a measurement, as with KSTACK_RACE_WIDEN.
+#
+#   widened + pre-fix order : 8 of 10 boots panic
+#   widened + fixed order   : 0 of 10          (Fisher p ~ 0.0007)
+#   natural rate            : 9/200 -> 0/200   (Fisher p ~ 0.0036)
+DEFER_EXEMPTION_BOOTS ?= 8
+.PHONY: smoke-defer-exemption
+smoke-defer-exemption:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 boot.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: suspend OK' \
+		FAIL_MARKER='stale scheduler claim' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm. Same widening, exemption cleared early: the audit must accuse.
+# Reproduces in 8 boots of 10, so this tries up to DEFER_EXEMPTION_BOOTS and
+# stops at the first reproduction -- never assert a probabilistic event from one
+# boot, which is the mistake `smoke-kstack-race-control` records costing two red
+# mains on 2026-08-19.
+.PHONY: smoke-defer-exemption-control
+smoke-defer-exemption-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 DEFER_CLEAR_EARLY=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 DEFER_CLEAR_EARLY=1 boot.iso
+	@n=0; hit=0; \
+	while [ $$n -lt $(DEFER_EXEMPTION_BOOTS) ]; do \
+	    n=$$((n+1)); \
+	    if SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso 2>&1 \
+	         | grep -q 'stale scheduler claim'; then \
+	        echo "[defer] reproduced on boot $$n of $(DEFER_EXEMPTION_BOOTS)"; hit=1; break; \
+	    fi; \
+	done; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "DEFER CONTROL: FAIL - the pre-fix order did not reproduce in $$n boots"; exit 1; \
+	fi
+
 .PHONY: smoke-switch-commit
 smoke-switch-commit:
 	@$(MAKE) --no-print-directory clean

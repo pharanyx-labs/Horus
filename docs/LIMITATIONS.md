@@ -657,8 +657,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **83** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **85** across the three, producing **88** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **84** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **86** across the three, producing **89** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -689,7 +689,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **84 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **85 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands
@@ -1070,9 +1070,10 @@ state is as good a target as any. Measured on the ship config the gate actually 
 | before either fix | 20 | 9 (~45%) |
 | after both | 30 | **2** (~7%) |
 
-**What is still open in [G-9]** is that last ~7%, and it is a different shape again — a bogus
-resume `%rsp` handed back by the dispatcher, with the claim invariant broken in the *unclaimed
-running task* direction:
+**What was still open in [G-9]** was that last ~7%, and it took three more components to close
+— two real defects and, finally, a fault in the checker itself. It presented as a bogus resume
+`%rsp` handed back by the dispatcher, with the claim invariant broken in the *unclaimed running
+task* direction:
 
 ```
 PAGE FAULT at 0xfffffffffffffff1 err=0x2(not-present,write,supervisor) task=1 'argtest'
@@ -1185,7 +1186,19 @@ guard beside it.
 **This does not fix the ~7%.** The guard is a detector: closing its blind spot converts an
 obscure fault inside the ISR epilogue — a banner naming the stub and nothing about where the
 value came from — into a line that names the value, the task and the CPU. What produces `-7` is
-still unknown, and that is what remains of **[G-9]**.
+still unknown at the time, and that was what remained of **[G-9]** until 2026-08-21.
+
+**[G-9] CLOSED 2026-08-21.** Three further components, in order of discovery: `sched_enter_user()`
+carried a second copy of the ISR epilogue that omitted `sched_release_deferred` (latent);
+`task_exit_switch()` committed a switch before validating the resume value, and `ksp_refuse()`
+returns `0`, which is also that function's legal "nothing runnable, caller parks" return, so a
+refusal orphaned the claim it had just taken; and — the last and largest — the claim auditor's own
+exemption, `percpu_deferred_release[]`, was cleared *before* the lock that drops the claim, so an
+audit landing in that window accused a release that was in flight. **That final component was a
+false positive of the checker, not a scheduler defect.** Natural rate 9 in 200 boots → 0 in 200
+(Fisher p = 0.0036); mechanism proven deterministically, 8/10 against 0/10 with the window widened
+in both arms (p ≈ 0.0007). Full account in
+[`investigations/G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md).
 
 **Widened 2026-08-21.** The same claim leak was observed in the **default boot** workload (task 4, the shell, on an idled CPU) at 1 boot in 120 — not only in `PROC_SELFTEST` at `-smp 4`, which is how this finding had been scoped. A control on the preceding commit was 0 in 270, but the difference is not significant (Fisher exact, p ≈ 0.31). See [`investigations/G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md).
 

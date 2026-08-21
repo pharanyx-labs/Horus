@@ -657,8 +657,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **78** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **80** across the three, producing **83** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **79** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **81** across the three, producing **84** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -689,7 +689,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **79 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **80 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands

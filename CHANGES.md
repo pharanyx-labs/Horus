@@ -8,6 +8,41 @@ Horus has not yet reached a versioned release. Changes below reflect the state o
 
 ## Unreleased
 
+### Added — the coverage question, applied to the gates themselves
+
+Three separate things went green for the wrong reason on 2026-08-20/21: 38 smoke targets that
+were correct only because nothing recompiled, a default goal that stopped building the kernel
+unnoticed, and a guard that "fired" on its own injected constant. The obvious next question is
+which *gates* pass by accident rather than by test.
+
+**Measured first, and the answer was better than feared.** Of 92 smoke targets, all 15 control
+arms are invoked by CI, and every gate asserts something positive — either a `REQUIRE_MARKER`
+or `smoke_test.sh`'s default condition, the ring-3 shell banner. So the sweeping version of this
+concern was wrong, and no manifest of 63 hand-written excuses was needed.
+
+**One genuine gap, and it was mine.** `smoke-ksp-guard-control` had **no positive
+counterpart**: an arm proving the resume-`%rsp` guard *could* fire, with nothing asking whether
+it stayed silent on a legal value. That is precisely the missing direction which let the
+consumer-side resume guard ship a bound that rejected the IST stacks and reddened ten CI gates
+at once — a lesson `smoke-resume-guard-ist` exists to record, and which I repeated three days
+later.
+
+`smoke-ksp-guard` now boots the **default** workload, where every resume value is legal, and
+requires `SCHED BOGUS KSP` to be absent. Falsified by `KSP_GUARD_ALWAYS=1`, which makes
+`ksp_is_bogus()` reject everything: the guard then fires on a legitimate address and the gate
+goes red. Deliberately not the `PROC_SELFTEST` workload — that still trips [G-9] on ~1–2% of
+boots and would make this intermittently red for an unrelated reason.
+
+**And the structure is now checked.** `tools/check_gate_pairs.py` (required job `gate-pairs`)
+enforces four rules, each violated at least once in this tree: a control arm must extend a base
+gate that exists; a control arm must be invoked by CI; a gate must be invoked or excused in
+`.github/gate-exceptions.yml` with a reason; an exception must name a real target and give one.
+Falsified all four ways.
+
+Two gates are excused, both superseded by a stronger form CI already runs:
+`smoke-sched-invariants` (by its `-stress` variant, which repeats the build rather than
+invoking it) and `smoke-console-smp-stress` (the many-boot form of a gate CI runs once).
+
 ### Added — a build now says which defect flags made it, and a flag change forces a rebuild
 
 **A `-D` flag is not a prerequisite of an object file.** `make FLAG=1` followed by `make`

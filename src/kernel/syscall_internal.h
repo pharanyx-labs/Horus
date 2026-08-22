@@ -148,9 +148,15 @@ void h_spawn_image(struct interrupt_frame64 *r);
 void h_spawn_arg(struct interrupt_frame64 *r);
 void h_get_argv(struct interrupt_frame64 *r);
 /* syscall_fs.c */
+#ifdef RAMFS_SLOT3_GATE
 void h_fs_list(struct interrupt_frame64 *r);
+#endif
+#ifdef RAMFS_SLOT3_GATE
 void h_open(struct interrupt_frame64 *r);
+#endif
+#ifdef RAMFS_SLOT3_GATE
 void h_ramfs_create(struct interrupt_frame64 *r);
+#endif
 void h_block_read(struct interrupt_frame64 *r);
 void h_block_write(struct interrupt_frame64 *r);
 void h_register_fs_server(struct interrupt_frame64 *r);

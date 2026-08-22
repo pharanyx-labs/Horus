@@ -1321,15 +1321,24 @@ into the in-kernel ramfs authorised on cspace slot 3 with `SC_ANYTYPE`, which th
 `CAP_FRAME` in every task satisfies (**[H-3]**).
 
 A ring-3 task runs as the ordinary uid-1000 account with no capability anyone delegated to it,
-and asserts four refusals: it cannot open the file `kusers.c` writes the user database into,
-cannot read bytes out of any ramfs fd, cannot create a file, and cannot list the store. The
-harness changes a password before spawning it — the ordinary self-service operation any account
-may perform on itself — because that is what puts the database into the ramfs at all.
+and asserts four refusals: it cannot open a file in the store, cannot read bytes out of
+any ramfs fd, cannot create a file, and cannot list the contents.
+
+**The first check used to target the user database and no longer can.** `kusers.c`'s save/load
+pair was deleted on 2026-08-22 as code that had never run (`LIMITATIONS.md` §2.6), so nothing
+writes `"passwd"` any more and a check against it would pass **trivially in both arms** — a
+required gate silently measuring nothing. It targets a seeded demo file instead. **S28 is
+unchanged**: the property was never about what sat behind the gates.
+
+**The control arm also has to rebuild the store, not just the gates.** Restoring the four
+slot-3 entries onto an *empty* ramfs reproduced only **2 of 4** doors — open and read had
+nothing to find — which is what an arm looks like when it half-measures and still reports
+success. It builds `ramfs_init()` (seeding included) so all four fire.
 
 | Arm | Asserts | Result |
 |---|---|---|
 | `smoke-passwd-probe` | `PASSWDPROBE: PASS` present, no `FAIL` | passes; all four return `SYS_ERR_NOSYS` |
-| `smoke-passwd-probe-control` (`RAMFS_SLOT3_GATE=1`) | `FAIL opened-the-user-database` present | passes; all **4 of 4 doors open**, and `smoke-passwd-probe` goes red under the same flag |
+| `smoke-passwd-probe-control` (`RAMFS_SLOT3_GATE=1`) | `FAIL opened-a-ramfs-file` present | passes; all **4 of 4 doors open**, and `smoke-passwd-probe` goes red under the same flag |
 
 **The control arm reads out more than the base arm asks about**, which is why it prints what it
 finds rather than only whether it succeeded: it recovered 24, 64 and 32 bytes from three

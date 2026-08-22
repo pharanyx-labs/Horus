@@ -27,6 +27,31 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **The user-database persistence path had never run, and is deleted.** ~90 lines in
+  `src/kernel/kusers.c` — `users_save_to_ramfs`, `users_load_from_ramfs`, `users_persist` and
+  its four call sites, plus the integrity tag over them — removed as code that could not have
+  worked, for three independent reasons any one of which was fatal: `ramfs_write` took no
+  offset so only the last of four writes survived; nothing persisted the ramfs and the load ran
+  at boot against a zeroed `.bss` table, so it opened nothing every boot since it was written;
+  and **password hashes are boot-local by construction** — `kernel_pepper` is fresh random every
+  boot and feeds both the set and the verify, so a stored hash can never verify in the next
+  boot whatever it is stored in. The honest state is now written down: accounts are seeded from
+  constants each boot and last until reboot (`docs/LIMITATIONS.md` §2.6).
+- **The in-kernel ramfs left the ship build with it.** Its ring-3 surface went with **[H-3]**
+  and the user database was its last real consumer, so it is now compiled only under
+  `RAMFS_SLOT3_GATE` — the control arm that restores those four gates and needs something
+  behind them. Measured: **`.bss` −36,864 bytes, `.text` −4,096**. `main.c` calls
+  `storage_init()` directly rather than `ramfs_init()`, which was a misnamed wrapper around it
+  plus two demo files.
+- **A required gate would have quietly stopped measuring.** `smoke-passwd-probe-control`
+  asserted on the probe opening the *user database* file; with that path deleted nothing writes
+  it and the check would have passed **trivially in both arms**. Retargeted to a seeded file.
+  Separately, restoring the four slot-3 gates onto an *empty* store reproduced only **2 of 4**
+  doors — open and read had nothing to find — so the control build now rebuilds `ramfs_init()`
+  with its seeding. Both were caught by running the arm rather than by reasoning about it.
+  **S28 is unchanged**: the property was never about what sat behind the gates.
+
+
 - **[H-3] Four paths into the in-kernel ramfs were gated on the [C-1] decoy, and one of them
   is where the user database lives.** `SYS_OPEN`, syscall 15 (ramfs create), syscall 16 (ramfs
   list) and `SYS_READ`'s `fd >= 3` branch all authorised on cspace slot 3 with `SC_ANYTYPE` —

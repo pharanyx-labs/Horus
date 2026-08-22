@@ -99,107 +99,36 @@ static int verify_user_password(const char *name, const char *password) {
     return (u && eq) ? 1 : 0;
 }
 
-#define USERDB_MAGIC 0x55534442
-#define USERDB_TAG_LEN 32
-
-/* Integrity tag over the user database = HMAC-SHA256(kernel_pepper, records).
- * Replaces the previous custom ARX construction. Valid records are serialized
- * in slot order into a fixed scratch buffer (matching the on-disk layout) and
- * authenticated as a single message. */
-static void compute_userdb_tag(uint8_t *tag_out) {
-    static uint8_t scratch[MAX_USERS * sizeof(struct user_account)];
-    size_t off = 0;
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (!users[i].valid) continue;
-        const uint8_t *rec = (const uint8_t *)&users[i];
-        for (size_t j = 0; j < sizeof(struct user_account); j++) {
-            scratch[off + j] = rec[j];
-        }
-        off += sizeof(struct user_account);
-    }
-    rust_hmac_sha256(kernel_pepper, sizeof(kernel_pepper), scratch, off, tag_out);
-}
-
-static int userdb_tag_valid(const uint8_t *tag_on_disk) {
-    uint8_t computed[USERDB_TAG_LEN];
-    compute_userdb_tag(computed);
-    return rust_ct_eq(computed, tag_on_disk, USERDB_TAG_LEN);
-}
-
-static void users_save_to_ramfs(void) {
-    int fd = ramfs_open("passwd",0);
-    if (fd < 0) {
-        fd = ramfs_create("passwd",0);
-        if (fd < 0) return;
-    }
-
-    uint32_t magic = USERDB_MAGIC;
-    uint32_t count = 0;
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (users[i].valid) count++;
-    }
-
-    ramfs_write(fd, &magic, sizeof(magic));
-    ramfs_write(fd, &count, sizeof(count));
-
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (users[i].valid) {
-            ramfs_write(fd, &users[i], sizeof(struct user_account));
-        }
-    }
-
-    uint8_t tag[USERDB_TAG_LEN];
-    compute_userdb_tag(tag);
-    ramfs_write(fd, tag, USERDB_TAG_LEN);
-}
-
-static void users_persist(void) {
-    users_save_to_ramfs();
-}
-
-static void users_load_from_ramfs(void) {
-    int fd = ramfs_open("passwd",0);
-    if (fd < 0) return;
-
-    uint32_t magic = 0;
-    uint32_t count = 0;
-    if (ramfs_read(fd, &magic, sizeof(magic)) != sizeof(magic) ||
-        magic != USERDB_MAGIC) {
-        return;
-    }
-    if (ramfs_read(fd, &count, sizeof(count)) != sizeof(count) ||
-        count > MAX_USERS) {
-        return;
-    }
-
-    for (int i = 0; i < MAX_USERS; i++) users[i].valid = 0;
-    user_count = 0;
-
-    for (uint32_t i = 0; i < count; i++) {
-        struct user_account tmp;
-        if (ramfs_read(fd, &tmp, sizeof(tmp)) == sizeof(tmp)) {
-            int slot = -1;
-            for (int j = 0; j < MAX_USERS; j++) {
-                if (!users[j].valid) { slot = j; break; }
-                if (users[j].uid == tmp.uid) { slot = j; break; }
-            }
-            if (slot >= 0) {
-                users[slot] = tmp;
-                users[slot].valid = 1;
-                user_count++;
-                if (tmp.uid >= next_uid) next_uid = tmp.uid + 1;
-            }
-        }
-    }
-
-    uint8_t tag_on_disk[USERDB_TAG_LEN];
-    if (ramfs_read(fd, tag_on_disk, USERDB_TAG_LEN) != USERDB_TAG_LEN ||
-        !userdb_tag_valid(tag_on_disk)) {
-        for (int i = 0; i < MAX_USERS; i++) users[i].valid = 0;
-        user_count = 0;
-        next_uid = 1000;
-    }
-}
+/* ---- The user database does not persist, and the mechanism that claimed to ----
+ *
+ * Deleted 2026-08-22: USERDB_MAGIC/TAG_LEN, compute_userdb_tag, userdb_tag_valid,
+ * users_save_to_ramfs, users_load_from_ramfs, users_persist. Roughly ninety lines
+ * that had never once done anything, for three independent reasons:
+ *
+ *   1. ramfs_write took no offset -- it memcpy'd to data[0] and set size = len on
+ *      every call -- so of the four writes the save made, only the last survived.
+ *      ramfs_read had no position either, so the load's sequential reads were
+ *      equally broken.
+ *   2. Nothing persisted the ramfs. ramfs_files[] is .bss; it dies at reboot. And
+ *      users_load_from_ramfs was called exactly once, from users_init, at boot,
+ *      when that table is still zeroed -- so it opened nothing and returned
+ *      immediately, every boot, forever.
+ *   3. Password hashes are BOOT-LOCAL by construction. kernel_pepper is fresh
+ *      random every boot and feeds both strong_password_hash at set time and at
+ *      verify time, so a hash from one boot cannot verify in the next whatever it
+ *      is stored in. compute_userdb_tag MAC'd under the same pepper, so even a
+ *      correctly written file could never have validated across a reboot.
+ *
+ * Any one of those alone made it dead; all three were present. Deleting is the
+ * honest state -- accounts are seeded from the constants below on every boot and
+ * useradd/userdel/passwd last until reboot. docs/LIMITATIONS.md 2.6 says so.
+ *
+ * Making it real is a separate change and it is the pepper that decides it, not
+ * the storage: the pepper has to survive the reboot for a stored hash to mean
+ * anything, which is why the plan is to TPM-seal it under PolicyPCR(8,9) exactly
+ * as storage.c already seals the volume KEK. Note fs_superblock.kek_salt, which
+ * excludes the pepper with the comment "must be reproducible across reboots from
+ * the same pwd" -- the same conclusion, reached earlier, one field away. */
 
 void users_init(void) {
     for (int i = 0; i < MAX_USERS; i++) {
@@ -239,11 +168,13 @@ void users_init(void) {
     set_user_password(1000, "password");
     user_count = 2;
 
-    users_load_from_ramfs();
-
-    /* Find the "user" account in whichever state the database is in after
-     * users_load_from_ramfs: it may have been loaded with a changed password,
-     * or may not exist yet (first boot, or ramfs tampered and cleared). */
+    /* The load that used to sit here is gone with the rest of the path (see the
+     * note above): it ran at exactly this point on every boot, against a .bss
+     * table that is zeroed at exactly this point on every boot, and returned
+     * without opening anything. The block below was written to cope with
+     * whatever state it left the database in; that state is now simply the
+     * seeded one, and the block is kept because it is still the thing that
+     * guarantees the "user" account exists. */
     int dev_idx = -1;
     for (int ii = 0; ii < MAX_USERS; ii++) {
         if (users[ii].valid && kstrcmp(users[ii].name, "user") == 0) { dev_idx = ii; break; }
@@ -266,7 +197,6 @@ void users_init(void) {
             /* Pass uid 1000, not the slot index — set_user_password searches by
              * uid, not by position, so passing dev_idx would silently fail. */
             set_user_password(1000, "password");
-            users_persist();
         }
     }
     /* The old code had an unconditional set_user_password("password") here that
@@ -345,7 +275,8 @@ int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial
             users[i].valid = 1;
             user_count++;
             if (uid >= next_uid) next_uid = uid + 1;
-            users_persist();
+            /* No persist call: the account lives until reboot. The audit entry
+             * below is the only durable record that it was ever created. */
             audit_log(AUDIT_USER_MGMT, uid, 0, "useradd");
             return 0;
         }
@@ -361,7 +292,6 @@ int do_userdel(uint32_t uid) {
         if (users[i].valid && users[i].uid == uid) {
             users[i].valid = 0;
             user_count--;
-            users_persist();
             return 0;
         }
     }
@@ -376,7 +306,6 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
 
     int rc = set_user_password(target_uid, new_password);
     if (rc != 0) return rc;
-    users_persist();
 
     /* If the user is changing their own password, re-wrap disk_key with the
      * new KEK so storage_unlock(new_password) succeeds on the next boot.

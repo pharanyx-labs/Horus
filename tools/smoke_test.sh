@@ -100,6 +100,7 @@ QEMU_PID=""
 TRACE_FILE=""   # declared before the EXIT trap so cleanup() is safe under set -u
 QMP_SOCK=""
 cleanup() {
+    [ "${SMOKE_TPM_STARTED:-0}" = 1 ] && swtpm_stop
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
     [ -n "$QEMU_PID" ] && wait "$QEMU_PID" 2>/dev/null
     # Keep a caller-supplied log: SMOKE_LOG means the caller intends to read it
@@ -205,12 +206,33 @@ elif [ -n "${SMP_CPUS:-}" ]; then
     SMP_ARG="-smp $SMP_CPUS"
 fi
 
+# ---- TPM=1: boot under an emulated TPM -------------------------------------
+#
+# Any gate can now ask for a TPM, rather than measured-boot living in a separate
+# harness. That is what a two-boot sealing test needs (KEEP_TPMSTATE carries the
+# same TPM across both boots) without a third copy of this QEMU command line.
+#
+# SWTPM_REQUIRED=1 turns "swtpm is not installed" from a silent skip into an
+# error -- see tools/swtpm_lib.sh for why that mattered.
+TPM_ARG=""
+if [ "${TPM:-0}" = 1 ]; then
+    . "$(dirname "$0")/swtpm_lib.sh"
+    if swtpm_available; then
+        swtpm_start "${KEEP_TPMSTATE:-}" || exit 1
+        TPM_ARG=$(swtpm_qemu_args)
+        SMOKE_TPM_STARTED=1
+    else
+        echo "SMOKE SKIP: TPM=1 requested but swtpm is not installed" >&2
+        exit 0
+    fi
+fi
+
 qemu-system-x86_64 \
     -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel tcg \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -net none \
-    $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG \
+    $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 

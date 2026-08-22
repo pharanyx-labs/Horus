@@ -128,6 +128,27 @@ invoke these directly — the `make smoke-*` targets build and run them for you.
 `PERM_SELFTEST`, `SPAWN_OWNER_SELFTEST` (the **[G-11]** staged-image ownership witness), and
 others.
 
+### Booting with a TPM
+
+`make run` boots **with an emulated TPM when `swtpm` is installed** and without one otherwise.
+The measured-boot path — PCR 8/9, and the sealed volume KEK — is the configuration the security
+properties are stated over, so it is the one you get by default. `NO_TPM=1 make run` forces the
+plain boot; the fallback is what a machine without a TPM gets and should not be a path nobody
+ever exercises deliberately. `make run-plain` and `make run-tpm` name the two explicitly.
+
+Any smoke gate can boot with a TPM by passing `TPM=1` to `tools/smoke_test.sh`, which routes
+through the same `tools/swtpm_lib.sh` the measured-boot gates use. `KEEP_TPMSTATE=<dir>` carries
+one TPM across two boots, which is what a sealing test needs.
+
+**`SWTPM_REQUIRED=1` makes a missing `swtpm` an error rather than a skip**, and CI sets it on
+all four TPM jobs. Without it those gates print `SKIP` and **exit 0** — so `smoke-tpm-seal`, a
+required merge-gating job carrying **S11** and **S12**, could report success while measuring
+nothing at all. CI has in fact been installing swtpm all along (verified against a real run's
+log: the measured PCRs are there and they match the host-computed manifest), so this was latent
+rather than live — but a renamed package or a changed runner image would have turned four
+security gates into green no-ops with no signal. Locally the skip stays, because blocking a
+developer without swtpm buys nothing.
+
 ### Defect-reproducing builds (control arms)
 
 A handful of flags exist to rebuild a defect on purpose, so that the gate for its fix has a

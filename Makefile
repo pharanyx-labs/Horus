@@ -89,7 +89,7 @@ DEFECT_FLAGS = \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
-	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED
+	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED RAMFS_SLOT3_GATE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -677,6 +677,31 @@ endif
 # halves of what shared memory has to mean: it SEES the first task's bytes, and
 # it CANNOT obtain a writable mapping. Prints FRAMETEST: PASS <n> checks from
 # ring 3. Gated off the ship kernel.
+# RAMFS_SLOT3_GATE=1 restores the four pre-2026-08-22 gates into the in-kernel
+# ramfs -- SYS_OPEN, 15 (create), 16 (list) and SYS_READ's fd>=3 branch -- each
+# of which authorised on cspace slot 3 with SC_ANYTYPE. Slot 3 holds the legacy
+# CAP_FRAME create_task installs in every task, so all four were satisfied by a
+# capability nobody asked for and everybody has: [C-1]'s shape, on the last
+# gates still wearing it. Behind them sits the file kusers.c writes the user
+# database into.
+RAMFS_SLOT3_GATE ?= 0
+ifeq ($(RAMFS_SLOT3_GATE),1)
+CFLAGS  += -DRAMFS_SLOT3_GATE
+ASFLAGS += -DRAMFS_SLOT3_GATE
+endif
+
+# PASSWD_PROBE=1 embeds a ring-3 task that runs as the ordinary uid-1000 account
+# with no capability anyone delegated to it, and asserts all four doors into the
+# in-kernel ramfs are shut: it cannot open the user database, read bytes out of
+# any ramfs fd, create a file, or list the contents. Prints
+# PASSWDPROBE: PASS <n> checks from ring 3.
+PASSWD_PROBE ?= 0
+ifeq ($(PASSWD_PROBE),1)
+CFLAGS  += -DPASSWD_PROBE
+ASFLAGS += -DPASSWD_PROBE
+PASSWD_PROBE_DEP = userspace/passwdprobe.bin
+endif
+
 FRAME_SELFTEST ?= 0
 ifeq ($(FRAME_SELFTEST),1)
 CFLAGS  += -DFRAME_SELFTEST
@@ -1252,7 +1277,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1687,7 +1712,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -3625,6 +3650,31 @@ smoke-claim-release-control:
 # which is what tools/check_gate_pairs.py asks of every gate that has a control
 # arm: an arm that injects a defect and looks for the check firing measures false
 # NEGATIVES only, and a predicate that rejects everything satisfies all of them.
+# ---- The in-kernel ramfs is not reachable from ring 3 ----------------------
+.PHONY: smoke-passwd-probe
+smoke-passwd-probe:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PASSWDPROBE: PASS' \
+		FAIL_MARKER='PASSWDPROBE: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm. RAMFS_SLOT3_GATE=1 restores the four slot-3 gates; an ordinary
+# uid-1000 task with no delegated capability then opens the user database file,
+# reads bytes out of it, creates a file and lists the store. The FAIL marker
+# must be PRESENT.
+.PHONY: smoke-passwd-probe-control
+smoke-passwd-probe-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 RAMFS_SLOT3_GATE=1
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 RAMFS_SLOT3_GATE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PASSWDPROBE: FAIL opened-the-user-database' \
+		tools/smoke_test.sh boot.iso
+	@echo "PASSWD PROBE CONTROL: PASS - slot-3 gated, an ordinary user reads the store"
+
 .PHONY: smoke-frame
 smoke-frame:
 	@$(MAKE) --no-print-directory clean

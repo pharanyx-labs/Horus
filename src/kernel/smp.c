@@ -522,6 +522,8 @@ void smp_bringup(void) {
      * LIBHORUS_SELFTEST: PASS from ring 3. Falsified by LIBHORUS_RETRY_ANY=1 and
      * LIBHORUS_STRNCPY_UNTERMINATED=1. */
     { extern void libhorus_selftest(void); libhorus_selftest(); }
+#elif defined(PASSWD_PROBE)
+    { extern void passwd_probe_selftest(void); passwd_probe_selftest(); }
 #elif defined(FRAME_SELFTEST)
     /* Gated: two ring-3 tasks around one page of physical memory (roadmap 2.1).
      * One retypes a KOBJ_FRAME out of its CAP_UNTYPED, maps it, and asserts every

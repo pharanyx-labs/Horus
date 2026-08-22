@@ -37,7 +37,20 @@ performs its own check; the reason is noted per entry in `src/kernel/syscall.c`.
 - A compile-time assertion ties the table size to the highest syscall number, so adding a
   syscall without its entry is a build failure.
 
-> ### Frame capabilities and shared memory
+> ### Retired: the in-kernel ramfs surface
+
+`SYS_OPEN` (13), syscall 15 (ramfs create), syscall 16 (ramfs list) and `SYS_READ` for
+`fd >= 3` were **removed on 2026-08-22** (finding **[H-3]**) and now fail closed at
+`SYS_ERR_NOSYS`, exactly as syscalls 38–45 do.
+
+All four authorised on cspace slot 3 with `SC_ANYTYPE`. Slot 3 holds the legacy `CAP_FRAME`
+that `create_task` installs in every task, so the gate was satisfied by a capability nobody
+asked for and everybody has — **[C-1]**'s shape, on the last four gates still wearing it.
+The in-kernel ramfs itself remains, used internally by `src/kernel/kusers.c`; what was removed
+is the ring-3 door, not the store. Filesystem access from ring 3 is the `fs_server` IPC
+protocol (`include/fs_proto.h`) and nothing else.
+
+## Frame capabilities and shared memory
 
 | # | Name | Arguments | Authorisation *(as checked)* |
 |---|---|---|---|

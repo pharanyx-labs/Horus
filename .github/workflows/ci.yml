@@ -1617,7 +1617,7 @@ jobs:
         run: make smoke-klog-forge-abi-control
 
   smoke-kstack-park:
-    name: A dying task's CPU parks on its own kernel stack (S20 park path; ADVISORY -- open finding G-9)
+    name: A dying task's CPU parks on its own kernel stack (S20 park path)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # ADVISORY, NOT GATING -- see finding G-9 in TESTS.md.

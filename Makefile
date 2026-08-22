@@ -3199,37 +3199,76 @@ smoke-kstack-park:
 # proctest's output (see the note on the arm above) -- here that is harmless, and
 # the smoke harness's exit status is deliberately not the assertion for the same
 # reason.
+#
+# ---- WHY THIS ARM BOOTS MORE THAN ONCE -------------------------------------
+#
+# A SHARED park needs two CPUs to reach the park path in the same boot, and how
+# many get there is a property of the schedule, not of the build. Measured
+# 2026-08-22 over 12 boots at -smp 4: reproduced in 9, and every one of the three
+# misses recorded exactly ONE park in the whole boot -- so a shared stack was not
+# merely unobserved, it was impossible in that boot. 75% per boot means a
+# single-boot assertion reports a false red one run in four.
+#
+# It asserted from one boot until 2026-08-22 and got away with it while the job
+# was advisory. Promoting it to merge-gating (#190) made that a ~25% chance of
+# reddening `main` per run, and it duly failed on the first unrelated PR to run
+# against it. This is the same lesson KSTACK_RACE_CONTROL_BOOTS already carries
+# four hundred lines up -- "never assert a probabilistic event from one boot",
+# which reddened `main` twice on 2026-08-19 -- applied to the arm next door that
+# did not get it at the time.
+#
+# Nothing is weakened. The assertion is still that the defect MUST reproduce; it
+# is drawn from a large enough sample to mean it. At 75% per boot a clean sweep
+# of 8 is 0.25^8, about one run in 65000, so a red here remains evidence that the
+# widened window or the detector has decayed rather than noise.
+KSTACK_PARK_CONTROL_BOOTS ?= 8
+
 .PHONY: smoke-kstack-park-control
 smoke-kstack-park-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1 boot.iso
-	@log=$$(mktemp); rc=0; \
-	SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
-	    REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
-	    tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
-	: "captured, and deliberately NOT the assertion: this arm halts a CPU on"; \
-	: "purpose, so whether the self-test still finishes is a property of the"; \
-	: "schedule. The assertion is the shared park stack below. rc=$$rc"; \
-	cpus=$$(grep -ha PARKTRACE "$$log" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
-	dup=$$(grep -ha PARKTRACE "$$log" \
-	       | sed -n 's/.*cpu=\([0-9]*\) rsp=\([^ ]*\).*/\2 \1/p' \
-	       | sort -u | awk '{c[$$1]++} END {for (r in c) if (c[r] > 1) print r}'); \
-	if [ -z "$$dup" ]; then \
-	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce."; \
-	    echo "  This arm carries reachability for BOTH park arms: a stack shared by two"; \
-	    echo "  CPUs cannot happen unless the path is entered on two CPUs. If this stops"; \
-	    echo "  reproducing, the workload has stopped killing tasks on more than one CPU"; \
-	    echo "  and smoke-kstack-park is no longer proving anything either."; \
-	    echo "  CPUs seen parking: $$cpus."; \
-	    grep -ha PARKTRACE "$$log" | sed 's/^/  /' | head -20; rm -f "$$log"; exit 1; \
+	@log=$$(mktemp); hit=0; n=0; rc=0; dup=""; \
+	while [ $$n -lt $(KSTACK_PARK_CONTROL_BOOTS) ]; do \
+	    n=$$((n+1)); rc=0; \
+	    SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    : "captured, and deliberately NOT the assertion: this arm halts a CPU on"; \
+	    : "purpose, so whether the self-test still finishes is a property of the"; \
+	    : "schedule. The assertion is the shared park stack below. rc=$$rc"; \
+	    dup=$$(grep -ha PARKTRACE "$$log" \
+	           | sed -n 's/.*cpu=\([0-9]*\) rsp=\([^ ]*\).*/\2 \1/p' \
+	           | sort -u | awk '{c[$$1]++} END {for (r in c) if (c[r] > 1) print r}'); \
+	    : "The kernel's OWN detector is the other, stronger witness, and it has to"; \
+	    : "count: sched_note_park HALTS the machine the moment it sees the second"; \
+	    : "CPU, so on those boots the second PARKTRACE line is never printed and"; \
+	    : "the duplicate-rsp test above sees only one. Requiring two trace lines"; \
+	    : "therefore MISSES exactly the boots where the defect fired hardest --"; \
+	    : "observed 2026-08-22, a boot whose log carried the PANIC and was still"; \
+	    : "scored as a miss. Either signal is the same event."; \
+	    if [ -z "$$dup" ] && grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
+	        dup=$$(grep -ha '$(KSTACK_PARK_RE)' "$$log" \
+	               | sed -n 's/.*rsp=\([^ ]*\).*/\1 (from the kernel panic)/p' | head -1); \
+	    fi; \
+	    if [ -n "$$dup" ]; then hit=$$n; break; fi; \
+	    echo "  boot $$n/$(KSTACK_PARK_CONTROL_BOOTS): $$(grep -hac PARKTRACE "$$log") park(s), none shared"; \
+	done; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce in"; \
+	    echo "  $(KSTACK_PARK_CONTROL_BOOTS) boots. It reproduced 9 of 12 when this arm was"; \
+	    echo "  measured, so a clean sweep of 8 is about one run in 65000 by chance."; \
+	    echo "  Either the widened window or the PARKTRACE detector has decayed, or the"; \
+	    echo "  workload stopped killing enough tasks to park two CPUs in one boot."; \
+	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
-	echo "  park stack $$dup used by more than one CPU"; \
+	cpus=$$(grep -ha PARKTRACE "$$log" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
+	echo "  shared park stack(s): $$dup   (distinct CPUs parking: $$cpus)"; \
 	if grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
 	    grep -a -A 3 '$(KSTACK_PARK_RE)' "$$log" | head -4 | sed 's/^/  /'; \
 	fi; \
 	rm -f "$$log"; \
-	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must"
+	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must (boot $$hit of $(KSTACK_PARK_CONTROL_BOOTS))"
 
 # ---- [G-9], exec hand-off component: the re-entry belongs to the CPU that armed it
 #

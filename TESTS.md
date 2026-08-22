@@ -1169,6 +1169,24 @@ when written and is not any more.)
 
 ## The claim audit's exemption outlives the release it exempts — [G-9] closed
 
+> **A regression this gate caught the day after, and what it costs to skip one.**
+> The [G-9] fix shipped in #188 also moved the `g_kstack_inflight` clear inside the
+> scheduler lock — which the property it was establishing never required. Under
+> `KSTACK_RACE_WIDEN`'s 200,000-iteration spin the wider critical section pushed the
+> session past its 90-second budget, and `smoke-kstack-race` — a **required** gate —
+> went red on `main`. It reproduced deterministically, so it was not a flake.
+>
+> The gates for [G-9] and the core smoke set were run before that merge.
+> `smoke-kstack-race` was not, despite the change being inside
+> `sched_release_deferred()` — which *is* the [G-8] deferred-release machinery that
+> gate exists to exercise. **Editing a function means running the gate named after
+> its finding**, not only the gate named after the finding you are working on.
+>
+> The fix is to narrow the critical section to what the property needs: the
+> exemption must outlive the claim release; the bit clear was never part of that.
+> Verified by the control arm still reproducing on boot 1, which is what says the
+> narrower lock did not quietly weaken the fix.
+
 **`smoke-defer-exemption`, required job `defer-exemption`.** `percpu_deferred_release[]` is not
 just a CPU's note of work owed — `sched_assert_claims()` uses it as the **exemption** that says a
 claim is mid-handover rather than leaked. `sched_release_deferred()` cleared it *before* taking

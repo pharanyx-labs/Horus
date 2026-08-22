@@ -14,6 +14,17 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Fixed
+
+- **`smoke-kstack-race` went red on `main` after the [G-9] fix, and it was a real
+  regression rather than a flake.** That fix needed one property — the claim auditor's
+  exemption must outlive the claim release — but it also moved the `g_kstack_inflight`
+  clear inside the scheduler lock, which the property never required. Under
+  `KSTACK_RACE_WIDEN` the wider critical section pushed the session past its 90-second
+  budget and it never reached the login prompt. The bit now clears outside the lock as it
+  always did; the control arm still reproduces on boot 1, so the narrower lock did not
+  weaken the fix.
+
 ### Added
 
 - **`libhorus`, the shared runtime for freestanding userspace** (`include/libhorus.h`,

@@ -1715,22 +1715,26 @@ jobs:
   smoke-kstack-park:
     name: A dying task's CPU parks on its own kernel stack (S20 park path)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # ADVISORY, NOT GATING -- see finding G-9 in TESTS.md.
+    # Backstop, not a budget. The control arm may boot up to
+    # KSTACK_PARK_CONTROL_ATTEMPTS (24) times when KSTACK0_PARK_TRACE keeps killing
+    # the workload (~40% of boots, and it is the instrument doing it -- see the
+    # Makefile); boots that die are the fast ones (~6s on the runner that reddened
+    # 9476799), but a run of mostly-conclusive boots is not.
+    timeout-minutes: 75
+    # MERGE-GATING since #190, and able to say so since this comment was written.
     #
-    # The property it checks is real and the control arm reproduces the defect on
-    # demand. What is not sound is the WORKLOAD: PROC_SELFTEST at -smp 4 trips a
-    # pre-existing scheduler claim leak on ~40% of boots (9/20 at -smp 4 against
-    # 0/20 at -smp 1; 8/20 report "stale scheduler claim at preempt_on_tick" under
-    # SCHED_INVARIANTS; the pre-#162 release timing gives 10/20, so it is not
-    # caused by the G-8 fixes). This gate was the first thing ever to run that
-    # workload at -smp 4, which is why the leak surfaced here.
+    # It carried `continue-on-error: true` while it was advisory ([G-9], now
+    # closed). #190 promoted it by editing .github/ci-gating.yml and the ruleset,
+    # and touched no workflow; #191 rewrote the job NAME one line above to delete
+    # the word ADVISORY from the published context, and left the line below it
+    # alone. So for the whole of that window GitHub required a context that
+    # reported SUCCESS however the steps exited, and the ruleset audit -- which
+    # compares NAMES -- had nothing to notice.
     #
-    # A required check that reddens for a defect it does not test teaches the
-    # re-run reflex, which is the habit this repo blames for smoke-console-smp
-    # surviving months of CI. Promote it in the same commit that closes G-9, and
-    # quote a rate.
-    continue-on-error: true
+    # It was not idle. This job failed on `main` at 9476799 (the control arm did
+    # not reproduce in 8 boots) inside a run GitHub reported green, and on
+    # a59667ab before that. `tools/check_ci_gating.py` now refuses the
+    # combination outright, so a required job cannot be made unfailable again.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU

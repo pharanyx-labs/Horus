@@ -16,6 +16,55 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **`smoke-kstack-park` was a required check that could not fail, and it was failing.** The job
+  carried job-level `continue-on-error: true` from its advisory days. #190 promoted it by editing
+  `.github/ci-gating.yml` and the ruleset and touched no workflow; #191 then rewrote the job
+  *name* one line above the mask to delete the word ADVISORY from the published context, and left
+  the mask. GitHub publishes a `continue-on-error` job's check run as SUCCESS however its steps
+  exited, so for that whole window the ruleset required a context that could only ever be green.
+  It was not idle: the job **failed on `main` at 9476799**, and on `a59667ab` before it, inside
+  runs GitHub reported green — and `ruleset-audit` could not notice, because it compares context
+  *names* and a masked job publishes the right name with the wrong verdict. The mask is gone, and
+  `tools/check_ci_gating.py` now **refuses any `required:` job carrying job-level
+  `continue-on-error`**, so the combination cannot be reassembled. Step-level `continue-on-error`
+  is untouched and still allowed — that is how the `security` job keeps its scanners advisory
+  without becoming unfailable itself. **Falsified both ways**: against the tree as it stood the
+  new rule names `smoke-kstack-park` and exits 1; with the mask removed it exits 0, and the
+  `security` job's four step-level exemptions pass unremarked.
+
+- **The control arm's misses were the instrument, not the schedule — and `KSTACK0_PARK_TRACE`
+  turns out to cost ~40% of boots.** `smoke-kstack-park-control` failed on `main` at 9476799 with
+  8 misses in 8 boots. #193 had set that budget on the reading that a miss meant one park in the
+  whole boot, so `the collision was impossible there` — and from that treated boots as independent
+  draws. They are not: those boots ended in `KERNEL FATAL EXCEPTION` and `PROC_SELFTEST: FAIL` —
+  the workload **died** before a second CPU could park. Measured on the *fixed* kernel, same
+  workload and host, `-smp 4`, 20 boots each: **8 of 20 died with `KSTACK0_PARK_TRACE=1` and 0 of
+  20 without it** (Fisher one-sided p = 0.0016). The trace writes through `kfault_*` straight to
+  COM1 from interrupt context 5–10 times a boot, and that is enough to kill the run. So the ~40%
+  "pre-existing scheduler claim leak" the job's own comment cited as the reason it could not be
+  required (9/20 at `-smp 4`) was a measurement of the **instrumented** build all along, and
+  [G-9]'s closure is not in question — the uninstrumented build is 0 for 20 here, consistent with
+  the 0-in-200 that promoted the gate.
+  - The arm now treats a boot the workload died in as **inconclusive**: named, tallied, and
+    re-booted rather than counted. `KSTACK_PARK_CONTROL_BOOTS` (8) counts boots that *ran to
+    completion*; `KSTACK_PARK_CONTROL_ATTEMPTS` (24) caps the total. Exhausting the attempts is a
+    red with **different wording**, because a run that could not measure must not read like one
+    that measured and found nothing. Nothing is weakened: the assertion is still that the defect
+    MUST reproduce, and of the boots that complete it reproduced **10 out of 10**.
+  - **A wrong fix was tried first and is recorded because it nearly shipped.** Counting "parked,
+    then the kernel died" as a third witness looks sound — the base arm requires the fixed build
+    to complete the same workload, so the pair appears to differ by exactly that. Falsifying it
+    against the fixed build produced boots of 6, 10 and 8 parks and then one park and a
+    `KERNEL FATAL EXCEPTION`: the identical shape, with no shared park anywhere in the build. A
+    witness that fires on the fixed build is not a witness.
+  - **Falsified in the other direction, in the target's exact form**: with `KSTACK0_SHARED_PARK=1`
+    removed from `smoke-kstack-park-control` and nothing else changed, the arm ran 8 conclusive
+    boots (6 parks each, no shared stack) and went red on the "did NOT reproduce" branch rather
+    than the "could not measure" one.
+  - `docs/ROADMAP.md` listed **four** exemptions beside a count that said three: `smoke-kstack-park`
+    stayed in that list for eleven days after #190 promoted it. A count and a list that disagree are
+    two claims, and `doc-claims` can only check the one that is a number.
+
 - **An external security audit was checked against the tree, and two residuals it surfaced are
   now documented** (`docs/LIMITATIONS.md` §2.8, §2.9). Ten of its twelve findings duplicate
   existing `[C-5]`, `[C-6]`, `[I-7]` or §5.4 entries and are left where they are rather than
@@ -121,14 +170,16 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   been merge-gating for one day when it reddened an unrelated PR. A *shared* park needs two
   CPUs to reach the park path in the same boot, which is a property of the schedule rather than
   of the build: measured 2026-08-22 it reproduces **9 boots in 12** on a feature branch and
-  **10 in 12** on unmodified `main`, and every miss recorded exactly one park in the whole boot
-  — the collision was impossible there, not merely unobserved. So a one-boot assertion is
+  **10 in 12** on unmodified `main`. (This entry originally added "and every miss recorded
+  exactly one park in the whole boot — `the collision was impossible there`, not merely
+  unobserved". That reading was wrong, and the entry below corrects it.) So a one-boot assertion is
   about 25% red. It now boots up to `KSTACK_PARK_CONTROL_BOOTS` (8) times and stops at the
   first reproduction, which is the shape `smoke-kstack-race-control` has carried since
   2026-08-19 for exactly this reason ("never assert a probabilistic event from one boot"); the
   arm next door simply never got it. Nothing is weakened — the assertion is still that the
-  defect MUST reproduce, drawn from a sample large enough to mean it. At 75%/boot a clean sweep
-  of 8 is ~1 run in 65000. **Falsified in the other direction**: against the *fixed* park path
+  defect MUST reproduce, drawn from a sample large enough to mean it. (It also claimed
+  "at 75%/boot a clean sweep of 8 is `~1 run in 65000`" — an independence argument the entry
+  below withdraws.) **Falsified in the other direction**: against the *fixed* park path
   with tracing on, 8 boots produced 32 parks and no shared stack, so the loop still goes red
   when the defect is absent rather than being a way to pass.
 - **That arm also scored its own strongest reproductions as misses.** It gated on duplicated

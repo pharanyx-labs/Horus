@@ -74,6 +74,11 @@ counts:
         pattern: 'That intended set is \*\*(\d+) required contexts'
       - file: docs/ROADMAP.md
         pattern: 'The intended set is \*\*(\d+) required, \d+ exempted\*\*'
+      # site/index.html said 73 here for as long as the count had been 89. It was
+      # the only statement of this number that nothing derived, which is exactly
+      # why it was the one that rotted -- and it is the PUBLIC one.
+      - file: site/index.html
+        pattern: 'intended set is (\d+) gating and \d+ exempted'
 
   - id: advisory
     describe: contexts exempted with a written reason
@@ -85,6 +90,9 @@ counts:
         pattern: '\*\*\d+ required contexts and (\d+) reasoned exemptions\*\*'
       - file: docs/ROADMAP.md
         pattern: '\*\*\d+ required, (\d+) exempted\*\*'
+      - file: site/index.html
+        pattern: 'intended set is \d+ gating and (\d+) exempted'
+
 
   - id: smoke_targets
     describe: "smoke-* targets in the Makefile"
@@ -261,3 +269,25 @@ forbidden:
       where it was free: the context was not yet in the ruleset, so no
       demotion-then-promotion was needed. Corrected 2026-08-22.
 
+  - pattern: 'ADVISORY, NOT GATING'
+    reason: >-
+      smoke-kstack-park's job in ci.yml carried this header, and a job-level
+      continue-on-error under it, for the whole window after #190 promoted the job
+      to required -- so GitHub required a context that reported SUCCESS however the
+      steps exited. Corrected 2026-08-22; tools/check_ci_gating.py now refuses the
+      combination, so the phrasing cannot come back attached to a required job.
+
+  - pattern: 'the collision was impossible there'
+    reason: >-
+      How #193 read the control arm's misses: one park in the boot, so two CPUs
+      could not have shared a stack. Those boots had DIED -- KERNEL FATAL EXCEPTION
+      and PROC_SELFTEST: FAIL -- so the path was never exercised to the end. The
+      difference matters because "impossible" invited treating the boots as
+      independent draws. Corrected 2026-08-22.
+
+  - pattern: 'run in 65000'
+    reason: >-
+      The independence argument built on the reading above: at 75% per boot a clean
+      sweep of 8 is 0.25^8. The misses share a cause whose rate is set by the host's
+      timing, so they are not independent -- the same arm went 8 for 8 on a CI
+      runner. Withdrawn 2026-08-22; a bigger N cannot fix a biased sample.

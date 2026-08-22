@@ -986,10 +986,18 @@ endif
 # reachability of that path was measured rather than assumed (0 parks per healthy
 # session; 5-8 per boot on a task-killing workload).
 #
-# NEVER BUILD THIS INTO A GATE THAT MATCHES AN EXACT STRING ON SERIAL. It emits
-# through kfault_*, which writes bytes straight to COM1 and bypasses console
-# ownership -- correct for a panic, and a SECOND CONCURRENT WRITER during a live
-# session (finding #126's hazard). It corrupts whatever ring-3 is printing:
+# NEVER BUILD THIS INTO A GATE THAT MATCHES AN EXACT STRING ON SERIAL, AND DO NOT
+# ASSUME IT IS PASSIVE. It emits through kfault_*, which writes bytes straight to
+# COM1 and bypasses console ownership -- correct for a panic, and a SECOND
+# CONCURRENT WRITER during a live session (finding #126's hazard).
+#
+# It corrupts whatever ring-3 is printing, AND it perturbs the run enough to kill
+# it: on the fixed kernel at -smp 4, 20 boots each, PROC_SELFTEST died 8 times
+# with this flag and 0 times without it (2026-08-22; Fisher one-sided p = 0.0016).
+# Any measurement taken in this configuration is a measurement of an instrumented
+# system -- the ~40% "pre-existing claim leak" the park job's own comment carried
+# for days was exactly that, 9/20 on a build with this flag in it. First the
+# corruption:
 #
 #   PARKTRACE cpu=3 rsp=0xffffffff806ff0PROC_SELFTEST: PASS exit+kill+spawn
 #
@@ -3256,6 +3264,13 @@ smoke-kstack-race-control:
 # stack, and the collision report is absent. Without the "was it entered" check a
 # kernel that simply never parks would score a green gate.
 KSTACK_PARK_RE = PANIC: two CPUs parking on one kernel stack
+# A boot that ends here did not run the workload to the end, so it never got the
+# chance to park a second CPU. It is INCONCLUSIVE for the control arm, not a
+# miss -- see the note above smoke-kstack-park-control. It is caused by this
+# arm's own instrument (KSTACK0_PARK_TRACE, measured below) and happens on the
+# FIXED build too, which is why it may never be read as evidence FOR the defect
+# either.
+KSTACK_PARK_TRUNC_RE = PROC_SELFTEST: FAIL
 # The task-killing self-test under -smp 4 needs well past the 40s default: it
 # reaches `altstack OK` and then times out mid-suspend. Measured, not guessed --
 # three gate runs failed on exactly that before the budget was raised.
@@ -3288,6 +3303,15 @@ KSTACK_PARK_TIMEOUT ?= 180
 # six green samples; at a 40% failure rate the chance of that is ~5%, which is what
 # sampling six times instead of measuring buys you. This file's own rule --
 # "a single green run says nothing" -- applied to the gate rather than the kernel.
+#
+# There is a SECOND reason, found 2026-08-22 and worse than the first: the trace
+# does not merely corrupt the marker, it kills the workload. Same fixed kernel,
+# same host, -smp 4, 20 boots each -- 8 of 20 died with KSTACK0_PARK_TRACE=1
+# against 0 of 20 without it (Fisher one-sided p = 0.0016). This arm asserts that
+# the self-test COMPLETES, so building the trace would have handed it a ~40%
+# false-red on top of the marker corruption. The control arm cannot avoid the
+# trace -- its assertion is the trace -- and pays for it by treating a boot the
+# workload died in as inconclusive rather than as a miss.
 #
 # So reachability moves to the control arm, which is where it belongs and where
 # smoke-resume-guard already puts it. That arm requires a park stack shared between
@@ -3335,9 +3359,7 @@ smoke-kstack-park:
 #
 # A SHARED park needs two CPUs to reach the park path in the same boot, and how
 # many get there is a property of the schedule, not of the build. Measured
-# 2026-08-22 over 12 boots at -smp 4: reproduced in 9, and every one of the three
-# misses recorded exactly ONE park in the whole boot -- so a shared stack was not
-# merely unobserved, it was impossible in that boot. 75% per boot means a
+# 2026-08-22 over 12 boots at -smp 4: reproduced in 9. 75% per boot means a
 # single-boot assertion reports a false red one run in four.
 #
 # It asserted from one boot until 2026-08-22 and got away with it while the job
@@ -3348,19 +3370,92 @@ smoke-kstack-park:
 # which reddened `main` twice on 2026-08-19 -- applied to the arm next door that
 # did not get it at the time.
 #
-# Nothing is weakened. The assertion is still that the defect MUST reproduce; it
-# is drawn from a large enough sample to mean it. At 75% per boot a clean sweep
-# of 8 is 0.25^8, about one run in 65000, so a red here remains evidence that the
-# widened window or the detector has decayed rather than noise.
+# ---- WHY 8 BOOTS WAS NOT ENOUGH EITHER, AND WHAT ACTUALLY FIXES IT -----------
+#
+# That measurement read the three misses as "exactly ONE park in the whole boot,
+# so a shared stack was impossible in that boot" -- the workload simply did not
+# kill enough tasks -- and from there treated the boots as INDEPENDENT: 0.25^8 is
+# one run in 65000, so a clean sweep had to mean decay rather than noise.
+#
+# The independence was the error, and `main` proved it on 9476799: 8 misses out of
+# 8, in a run GitHub reported green because the job could not fail (see ci.yml).
+# Re-measured 12 boots locally on the same commit: 10 reproduced, and BOTH misses
+# had the same shape as all eight of CI's -- one park traced, then
+# `KERNEL FATAL EXCEPTION` and `PROC_SELFTEST: FAIL`. The workload DIED. It did not
+# decline to kill tasks; it never got to the end.
+#
+# ---- AND IT IS THIS ARM'S OWN INSTRUMENT DOING IT ---------------------------
+#
+# Measured 2026-08-22 on the FIXED kernel, same workload, same host, -smp 4,
+# 20 boots each:
+#
+#     PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1   ->  8 of 20 boots died
+#     PROC_SELFTEST=1                        ->  0 of 20 boots died
+#
+# Fisher one-sided p = 0.0016. KSTACK0_PARK_TRACE writes through kfault_* straight
+# to COM1 from interrupt context, 5-10 times a boot; that is enough to kill the
+# workload on ~40% of boots. It is not the shared park -- the fixed build does it
+# -- and it is not a [G-9] residual in anything shipped: the uninstrumented build
+# is 0 for 20 here, consistent with the 0-in-200 that promoted this gate.
+#
+# Two things follow. The rate is a property of the HOST'S TIMING, which is the
+# correlated cause that destroys independence and is why a CI runner turned
+# "one run in 65000" into 8 for 8. And the ~40% the pre-promotion job comment
+# attributed to the workload ("a pre-existing scheduler claim leak on ~40% of
+# boots, 9/20 at -smp 4 against 0/20 at -smp 1") was measured on the INSTRUMENTED
+# build: 9/20 then, 8/20 now. The instrument was in the room the whole time.
+# A bigger N cannot fix a biased sample.
+#
+# ---- AND WHY THE OBVIOUS FIX IS WRONG ----------------------------------------
+#
+# The tempting move is to count "parked, then the kernel died" as a third witness:
+# the defect corrupted a live stack and the machine fell over, which is the defect
+# reproducing at full strength, and the base arm requires the FIXED build to
+# complete this same workload -- so the pair looks like it differs by exactly that.
+#
+# It does not. Falsified 2026-08-22 by running that predicate against the fixed
+# build with KSTACK0_PARK_TRACE=1: boots of 6, 10 and 8 parks and then, on the
+# fourth, ONE park and a `KERNEL FATAL EXCEPTION`. Identical shape, no shared park
+# anywhere in the build -- and then 8 of 20 on the same build, below. The crash is
+# the instrument, not this defect, and a witness that fires on the fixed build is
+# not a witness. It went in and came straight back out; this paragraph is what it
+# left behind.
+#
+# ---- WHAT IS CORRECT -----------------------------------------------------------
+#
+# A boot the workload died in is INCONCLUSIVE. It is not evidence against the
+# defect (the path was never exercised to the end) and it is not evidence for it
+# (the fixed build dies the same way). So it is not counted in either direction:
+# the loop names it, keeps a tally, and boots again, up to
+# KSTACK_PARK_CONTROL_ATTEMPTS. The N of 8 now counts boots that RAN TO COMPLETION.
+#
+# This is worth what it costs because conclusive boots are not a coin flip at all:
+# of the 12 boots measured on 2026-08-22, all 10 that completed reproduced the
+# shared park -- 10 for 10. The schedule-dependence the 8-boot budget was bought to
+# cover lives almost entirely in whether the boot survives, and that is precisely
+# the part that is now measured instead of gambled on.
+#
+# Exhausting the attempts is a RED, and a differently-worded one: a run that could
+# not measure must not be able to look like a run that measured and found the
+# defect. Fail closed, and say which failure it was.
 KSTACK_PARK_CONTROL_BOOTS ?= 8
+# Hard cap on total boots, inconclusive ones included, so a host where the trace
+# kills nearly every boot fails in bounded time instead of looping. A conclusive
+# boot reproduced the defect 10 times out of 10, so one is enough and the cap only
+# has to outlast the truncation: at the 40% measured here that is 0.4^24, and even
+# at the 8-in-8 a CI runner managed it is 0.63^24 on the 95% lower bound. A run
+# that needs more than 24 has a rate worth writing down before it has a bigger
+# number.
+KSTACK_PARK_CONTROL_ATTEMPTS ?= 24
 
 .PHONY: smoke-kstack-park-control
 smoke-kstack-park-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1 boot.iso
-	@log=$$(mktemp); hit=0; n=0; rc=0; dup=""; \
-	while [ $$n -lt $(KSTACK_PARK_CONTROL_BOOTS) ]; do \
+	@log=$$(mktemp); hit=0; n=0; good=0; bad=0; rc=0; dup=""; \
+	while [ $$n -lt $(KSTACK_PARK_CONTROL_ATTEMPTS) ] \
+	      && [ $$good -lt $(KSTACK_PARK_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); rc=0; \
 	    SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
@@ -3383,14 +3478,34 @@ smoke-kstack-park-control:
 	               | sed -n 's/.*rsp=\([^ ]*\).*/\1 (from the kernel panic)/p' | head -1); \
 	    fi; \
 	    if [ -n "$$dup" ]; then hit=$$n; break; fi; \
-	    echo "  boot $$n/$(KSTACK_PARK_CONTROL_BOOTS): $$(grep -hac PARKTRACE "$$log") park(s), none shared"; \
+	    : "A boot that died in the workload never reached the end of the path, so"; \
+	    : "it says nothing about whether two CPUs would have shared a stack. Count"; \
+	    : "it, name it, and do NOT spend a boot of the budget on it -- but never"; \
+	    : "read it as evidence FOR the defect: the fixed build does it too."; \
+	    if grep -qa '$(KSTACK_PARK_TRUNC_RE)' "$$log"; then \
+	        bad=$$((bad+1)); \
+	        echo "  attempt $$n: INCONCLUSIVE, the workload died after $$(grep -hac PARKTRACE "$$log") park(s) -- not counted"; \
+	    else \
+	        good=$$((good+1)); \
+	        echo "  boot $$good/$(KSTACK_PARK_CONTROL_BOOTS): $$(grep -hac PARKTRACE "$$log") park(s), none shared"; \
+	    fi; \
 	done; \
+	if [ $$hit -eq 0 ] && [ $$good -lt $(KSTACK_PARK_CONTROL_BOOTS) ]; then \
+	    echo "KSTACK PARK CONTROL: FAIL - could not MEASURE the shared park."; \
+	    echo "  $$bad of $$n attempts died in the workload before the park path could be"; \
+	    echo "  entered on two CPUs, leaving $$good conclusive boot(s) of the"; \
+	    echo "  $(KSTACK_PARK_CONTROL_BOOTS) wanted. KSTACK0_PARK_TRACE does that to ~40% of boots"; \
+	    echo "  on the FIXED kernel too, so it is the instrument and not this defect --"; \
+	    echo "  but an arm that cannot measure fails closed rather than passing."; \
+	    echo "  Raise KSTACK_PARK_CONTROL_ATTEMPTS only with a rate to justify it."; \
+	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
 	if [ $$hit -eq 0 ]; then \
 	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce in"; \
-	    echo "  $(KSTACK_PARK_CONTROL_BOOTS) boots. It reproduced 9 of 12 when this arm was"; \
-	    echo "  measured, so a clean sweep of 8 is about one run in 65000 by chance."; \
-	    echo "  Either the widened window or the PARKTRACE detector has decayed, or the"; \
-	    echo "  workload stopped killing enough tasks to park two CPUs in one boot."; \
+	    echo "  $$good boots that ran to completion ($$bad more died and were not counted)."; \
+	    echo "  EVERY conclusive boot reproduced it when this arm was measured -- 10 of 10"; \
+	    echo "  on 2026-08-22 -- so a clean sweep of $$good is evidence that the shared park"; \
+	    echo "  has stopped being restored or the PARKTRACE detector has decayed, not noise."; \
 	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
 	cpus=$$(grep -ha PARKTRACE "$$log" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \

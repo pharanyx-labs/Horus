@@ -16,6 +16,27 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **An external security audit was checked against the tree, and two residuals it surfaced are
+  now documented** (`docs/LIMITATIONS.md` §2.8, §2.9). Ten of its twelve findings duplicate
+  existing `[C-5]`, `[C-6]`, `[I-7]` or §5.4 entries and are left where they are rather than
+  filed twice.
+  - **§2.8** — `RngState::fill()` does not test `seeded`, so the CSPRNG is safe by the order of
+    two calls in `kernel_main` rather than by the function that could enforce it. **The audit
+    overstated this**: its recommended fix ("panic or refuse output until `seeded=true`")
+    already exists in `entropy_init()`, which halts if unseeded, and runs at `main.c:420`
+    against a first consumer at `:471` — so the claimed weak ASLR/canaries/nonces are not
+    reachable. What remains is the same shape as #192's frame refcount: a safety property held
+    up by a fact nobody enforces.
+  - **§2.9** — the kernel proceeds without a TPM, so S11/S12 do not apply rather than failing
+    closed. The CI half closed in #197; the kernel half is a design question and is recorded as
+    one.
+- **§2.6's fix design is corrected.** It described TPM-sealing the password pepper; that was
+  superseded on 2026-08-22 in favour of putting the user table inside the AEAD object store,
+  where the already-sealed volume key protects the hashes and **the pepper stops needing to
+  survive the reboot at all**. Smaller, stronger, and it works without a TPM — which the sealed
+  pepper did not, on the common case.
+
+
 - **`smoke-kstack-park` promoted from advisory to merge-gating**, one merge after [G-9] closed —
   the shape its own exemption asked for ("promote it in the same commit that closes [G-9], and
   quote a rate"). The rate: the `PROC_SELFTEST -smp 4` workload it boots ran **0 failures in 200

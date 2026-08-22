@@ -48,6 +48,7 @@ qemu.log
 *.dump
 serial.log
 debug.log
+audit/
 
 # Editor temporaries
 *~

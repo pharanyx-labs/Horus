@@ -1542,6 +1542,40 @@ jobs:
       - name: Control arm — ustrncpy must always terminate
         run: make smoke-libhorus-strncpy-control
 
+  frame:
+    name: "A frame capability names an object, and a delegate maps only what it holds"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Both directions in one target: one task retypes a frame out of its
+      # CAP_UNTYPED, maps it and asserts every refusal the map path owes, then
+      # delegates a READ-only copy; the other sees the shared bytes and cannot
+      # obtain a writable mapping. A gate that only refuses is satisfied by a
+      # kernel that refuses everything.
+      - name: Frame capabilities from ring 3
+        run: make smoke-frame
+      # The one the whole design turns on. Every task is born holding a CAP_FRAME
+      # in slot 3 -- the capability that made [C-1] reachable -- so if the object
+      # were a physical address rather than a table index, any task would map
+      # physical 0x400000 into ring 3 on the first boot.
+      - name: Control arm — the legacy slot-3 CAP_FRAME must map nothing
+        run: make smoke-frame-index-control
+      # Delegation must reduce. Aimed at the cap_lookup rights floor rather than
+      # at the have & want intersection, because given the floor the intersection
+      # is redundant and an arm against it could not fail.
+      - name: Control arm — a READ-only delegate must not obtain a writable mapping
+        run: make smoke-frame-rights-control
+
   defect-flags-documented:
     name: "Every defect flag has a row in the table that claims to list them all"
     runs-on: ubuntu-latest

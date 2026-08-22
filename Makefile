@@ -88,7 +88,8 @@ DEFECT_FLAGS = \
 	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
-	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN
+	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
+	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -153,6 +154,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/selftest.o \
        src/kernel/syscall_ipc.o \
        src/kernel/syscall_hw.o \
+       src/kernel/syscall_vm.o \
        src/kernel/ramfs.o \
        src/kernel/storage.o \
        src/kernel/crypto.o \
@@ -664,6 +666,47 @@ endif
 ifeq ($(CLAIM_RELEASE_SKIP),1)
 CFLAGS  += -DCLAIM_RELEASE_SKIP
 ASFLAGS += -DCLAIM_RELEASE_SKIP
+endif
+
+# FRAME_SELFTEST=1 embeds the ring-3 witness for frame capabilities (roadmap
+# 2.1). Two tasks: one holds a CAP_UNTYPED, retypes a KOBJ_FRAME out of it, maps
+# it, and asserts every refusal the map path owes -- the legacy slot-3 CAP_FRAME
+# every task is born with, W|X together, a kernel-half address, a misaligned one,
+# a double map, an unmap of a page it never mapped. It then mints a READ-only
+# copy of the frame capability, delegates it, and the second task proves both
+# halves of what shared memory has to mean: it SEES the first task's bytes, and
+# it CANNOT obtain a writable mapping. Prints FRAMETEST: PASS <n> checks from
+# ring 3. Gated off the ship kernel.
+FRAME_SELFTEST ?= 0
+ifeq ($(FRAME_SELFTEST),1)
+CFLAGS  += -DFRAME_SELFTEST
+ASFLAGS += -DFRAME_SELFTEST
+FRAME_SELFTEST_DEP = userspace/frametest.bin userspace/framepeer.bin
+endif
+
+# FRAME_INDEX_UNCHECKED=1 is the falsifying arm for the frame-index bound: it
+# makes CAP_FRAME.object a PHYSICAL ADDRESS that is mapped directly, which is the
+# shortcut a frame-mapping syscall invites and which the index exists to refuse.
+# It is reachable on the first boot from a capability the kernel hands out
+# itself -- slot 3's legacy CAP_FRAME, object USER_AREA_BASE -- so under this arm
+# any task maps physical 0x400000 into ring 3. See src/kernel/untyped.c.
+FRAME_INDEX_UNCHECKED ?= 0
+ifeq ($(FRAME_INDEX_UNCHECKED),1)
+CFLAGS  += -DFRAME_INDEX_UNCHECKED
+ASFLAGS += -DFRAME_INDEX_UNCHECKED
+endif
+
+# FRAME_RIGHTS_UNCHECKED=1 is the falsifying arm for the rights floor on
+# SYS_MAP_FRAME: cap_lookup is asked for no rights at all, so any live CAP_FRAME
+# satisfies it and the PTE is built from the request. Delegation then stops
+# reducing -- a READ-only frame capability maps writable and the delegate's write
+# lands. It targets the floor rather than the `have & want` intersection
+# deliberately: given the floor the intersection is arithmetically redundant, so
+# an arm against it could not fail. See the note in src/kernel/syscall_vm.c.
+FRAME_RIGHTS_UNCHECKED ?= 0
+ifeq ($(FRAME_RIGHTS_UNCHECKED),1)
+CFLAGS  += -DFRAME_RIGHTS_UNCHECKED
+ASFLAGS += -DFRAME_RIGHTS_UNCHECKED
 endif
 
 LIBHORUS_SELFTEST ?= 0
@@ -1209,7 +1252,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1644,7 +1687,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -3572,6 +3615,58 @@ smoke-claim-release-control:
 	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		EXPECT_FAULT='ring 3 reached with a deferred release outstanding' \
 		tools/smoke_test.sh boot.iso
+
+# ---- Frame capabilities (roadmap 2.1, finding F-2.1) ------------------------
+#
+# The base gate. Two ring-3 tasks and one physical page: one retypes a KOBJ_FRAME
+# out of its CAP_UNTYPED, maps it, asserts every refusal the map path owes, then
+# mints a READ-only copy and delegates it; the other proves it sees the shared
+# bytes and cannot obtain a writable mapping. Both directions in one target,
+# which is what tools/check_gate_pairs.py asks of every gate that has a control
+# arm: an arm that injects a defect and looks for the check firing measures false
+# NEGATIVES only, and a predicate that rejects everything satisfies all of them.
+.PHONY: smoke-frame
+smoke-frame:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: PASS' \
+		FAIL_MARKER='FRAMETEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 1 -- the index bound. FRAME_INDEX_UNCHECKED=1 makes
+# CAP_FRAME.object a physical address that is mapped directly, which is the
+# shortcut a frame-mapping syscall invites. It is reachable from a capability the
+# kernel hands out itself: every task is born holding a CAP_FRAME in slot 3 whose
+# object is USER_AREA_BASE, so under this arm any task maps physical 0x400000
+# into ring 3. The FAIL marker must be PRESENT.
+.PHONY: smoke-frame-index-control
+smoke-frame-index-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INDEX_UNCHECKED=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INDEX_UNCHECKED=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: FAIL legacy-cap-mapped' \
+		tools/smoke_test.sh boot.iso
+	@echo "FRAME INDEX CONTROL: PASS - unchecked, the legacy slot-3 CAP_FRAME maps"
+
+# Control arm 2 -- the rights floor. FRAME_RIGHTS_UNCHECKED=1 asks cap_lookup for
+# no rights at all, so any live CAP_FRAME satisfies it and the PTE is built from
+# the request: a READ-only delegate obtains a writable mapping and its write
+# lands. Aimed at the FLOOR rather than at the `have & want` intersection on
+# purpose -- given the floor the intersection is arithmetically redundant, so an
+# arm against it could not fail, and a control arm that cannot fail measures
+# nothing. The FAIL marker must be PRESENT.
+.PHONY: smoke-frame-rights-control
+smoke-frame-rights-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_RIGHTS_UNCHECKED=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_RIGHTS_UNCHECKED=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: FAIL readonly-delegate-wrote' \
+		tools/smoke_test.sh boot.iso
+	@echo "FRAME RIGHTS CONTROL: PASS - unchecked, a READ-only delegate writes"
 
 .PHONY: smoke-libhorus
 smoke-libhorus:

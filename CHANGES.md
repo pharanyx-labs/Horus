@@ -58,8 +58,59 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   budget and it never reached the login prompt. The bit now clears outside the lock as it
   always did; the control arm still reproduces on boot 1, so the narrower lock did not
   weaken the fix.
+- **The legacy `CAP_FRAME` in slot 3 was a decoy waiting to become a defect.** Every task is
+  born holding one — `READ|WRITE|EXEC`, object `USER_AREA_BASE`, identical in every task — and
+  it is the capability that made **[C-1]** reachable when the dispatch table gated IPC on slot
+  3. Giving `CAP_FRAME` a meaning put it back in play: under the obvious design, where
+  `capability_t.object` holds a physical address, `SYS_MAP_FRAME(3, ...)` maps physical
+  `0x400000` into ring 3 on the first boot from a capability the kernel hands out itself. A
+  frame capability therefore names an **index** into a table the kernel populates, so the
+  decoy is refused by a bound rather than by an allowlist. `FRAME_INDEX_UNCHECKED=1` is that
+  kernel, and it reproduces on every boot. The decoy is kept rather than deleted: `captest`
+  needs it for six C-1 regression checks, and it is now the negative test vector for the map
+  path as well.
+- **A mapped frame could have been returned to the free page stack, and was not, by luck.** An
+  untyped-arena page sits inside `[USER_PHYS_BASE, pool ceiling)` and so has a refcount slot,
+  and `free_user_table` releases every present leaf of a dying task's page tables. Nothing
+  stopped a mapped frame's bytes being handed out as an anonymous page while the untyped region
+  still owned them, except that a never-allocated arena page sits at count 0 and
+  `rust_page_ref_dec` fails closed on an already-zero frame — a value nobody set on purpose
+  holding up a safety property. The untyped region now takes a permanent reference of its own,
+  every mapping adds one, and the count can never reach 0. It also gives the object GC its
+  liveness test: above 1 means a live PTE somewhere, and a frame with one is not collectable.
+- **`untyped_bump` aligned the region-relative watermark, not the address it returned.** Correct
+  only while every region base happened to be a multiple of `KOBJ_ALIGN` (64), which nothing
+  requires; at `KOBJ_FRAME`'s `PAGE_SIZE` alignment it stops being true the moment a region
+  starts anywhere but a page boundary, and a misaligned "frame" would be truncated down onto
+  whatever object shares its page — cross-object aliasing that reads as data corruption rather
+  than as a permission error. It now pads the absolute arena address, and alignment is per
+  object class.
+- **A stale ABI comment claimed `SYS_DMESG` was root-only.** `include/syscall.h` documented it
+  as `ROOT ONLY (uid==0)` while the dispatch table has gated it on `CAP_KERNEL_LOG` + READ
+  since **[I-1]**; `docs/SYSCALLS.md` already said so correctly. It was the last surviving
+  ambient-uid-0 claim in the tree, in the header every userspace program includes, contradicting
+  **S18**.
 
 ### Added
+
+- **Frame capabilities and capability-mediated shared memory** (roadmap 2.1, finding
+  **[F-2.1]**). `KOBJ_FRAME` is retyped out of a `CAP_UNTYPED` by the existing `SYS_RETYPE`,
+  so a page of shared memory is paid for by untyped authority somebody holds rather than
+  conjured by a syscall. `SYS_MAP_FRAME(frame_slot, vaddr, rights)` and `SYS_UNMAP_FRAME` map
+  it into the caller's own address space; the PTE is built from `cap->rights & requested`, so
+  a mapping can never carry authority the capability does not. Two mutually distrusting tasks
+  share one physical page at two virtual addresses, and a `READ`-only delegate can see the
+  bytes and not write them. `SECURITY.md` **S26** and **S27**.
+- **`SYS_CAP_MINT` is reachable from ring 3.** Syscall 4 has been in the dispatch table since
+  the beginning as an unnamed numeric literal, and nothing in userspace could call it: it was
+  absent from `include/syscall.h` entirely. That mattered more than it looked, because
+  `SYS_CAP_GRANT` passes `CAP_RIGHT_ALL` unconditionally — so **ring 3 had no way to reduce
+  rights at all**, and "delegation may only ever reduce" was a property of the kernel's
+  internals that no userspace program could exercise or witness. Sharing a page read-only is
+  now mint-then-grant. Syscalls 4/8/9 are named constants in both headers now rather than
+  literals in the table.
+- **`smoke-frame`** (required job `frame`), with control arms `FRAME_INDEX_UNCHECKED=1` and
+  `FRAME_RIGHTS_UNCHECKED=1`. Two ring-3 tasks, 22 checks, 3 boots in 3 on every arm.
 
 - **`libhorus`, the shared runtime for freestanding userspace** (`include/libhorus.h`,
   `userspace/libhorus.a`). Replaces 22 hand-copied definitions across 7 files. Linked as an

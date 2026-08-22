@@ -724,7 +724,7 @@ The dependencies are real, and taking them out of order means building twice.
 | # | Item | Why here |
 |---|---|---|
 | 1 | **`libhorus`** — a freestanding mini-libc and a program template (part of 2.5) | Touches no security surface at all, and every later step multiplies its cost by every new server it adds |
-| 2 | **2.1** Frame capabilities, shared memory, `mmap` | Kernel work, and the continuation of "make the object model true". Prerequisite for real `fork`, shared buffers, and dynamic linking |
+| 2 | **2.1** Frame capabilities, shared memory, `mmap` — *frame capabilities landed 2026-08-22; `mmap` and multi-page regions have not* | Kernel work, and the continuation of "make the object model true". Prerequisite for real `fork`, shared buffers, and dynamic linking |
 | 3 | **2.4** VFS and a mount table | Needs `libhorus`. Gives step 4 the `/dev` and `/proc` namespaces it wants |
 | 4 | **2.3** Process and session model | Needs 1–3. This is what makes the shell a shell |
 
@@ -746,12 +746,49 @@ against, and they are sequenced last for exactly that reason — they begin once
 the object model real virtual-memory objects to name.
 
 
-### 2.1 ⬜ Virtual memory objects and shared memory — **[F-2.1]**
+### 2.1 ◧ Virtual memory objects and shared memory — **[F-2.1]** — *frames landed 2026-08-22*
 
-Frame capabilities backed by real pool frames; `SYS_MAP_FRAME(frame_cap, vaddr, rights)` and
-unmapping. Gives genuine shared memory between mutually distrusting tasks, with rights that
-narrow on delegation. Prerequisite for `mmap`, a windowing system, zero-copy network buffers,
-and real `fork`.
+**Delivered: the frame object and the map path.** `KOBJ_FRAME` is retyped out of a
+`CAP_UNTYPED` by the existing `SYS_RETYPE`, so a page of shared memory is paid for by untyped
+authority somebody holds rather than conjured by a syscall — the continuation of 0.3 rather
+than a parallel allocator. `SYS_MAP_FRAME(frame_slot, vaddr, rights)` and `SYS_UNMAP_FRAME`
+map it into the caller's own address space, and `SYS_CAP_MINT` (syscall 4, in the dispatch
+table since the beginning as an unnamed numeric entry and unreachable from ring 3 until now)
+is how a holder narrows a copy before delegating it. Two mutually distrusting tasks share one
+physical page at two virtual addresses, and the rights on the delegated copy bound what each
+one's PTE may say. `SECURITY.md` **S26** and **S27**; witness `make smoke-frame`.
+
+**What made this more than plumbing was the capability already called `CAP_FRAME`.** Every
+task is born holding one in slot 3, `READ|WRITE|EXEC`, object `USER_AREA_BASE` — a decoy that
+named a fixed window and authorised nothing, and the same capability that made **[C-1]**
+reachable when the dispatch table gated IPC on slot 3. Giving `CAP_FRAME` a meaning put it
+back in play: had `object` been a physical address, `SYS_MAP_FRAME(3, ...)` would have mapped
+physical `0x400000` into ring 3 on the first boot, from a capability the kernel hands out
+itself. So `object` is an **index** into a table the kernel populates, and the decoy is
+refused by a bound rather than by an allowlist. `FRAME_INDEX_UNCHECKED=1` restores the address
+form and the decoy maps on every boot, 3 in 3 — the arm is what makes that refusal a
+measurement.
+
+The rights arm is aimed at the `cap_lookup` floor rather than at the `have & want`
+intersection, and that correction is worth recording: given the floor, the intersection is
+arithmetically redundant at every reachable call, so the arm this section was first written
+with **could not fail**. It would have shipped as a table row in `CLAUDE.md` claiming a
+measurement nothing took.
+
+**Still open, and what each needs:**
+
+- `mmap` and multi-page regions. Today a capability names exactly one 4 KiB frame and the
+  caller names the address. A region object wants a length, and a length wants a policy for
+  partial failure part-way through a run.
+- Copy-on-write over a shared frame. `cow_break_pte` already exists for anonymous pages; a
+  frame is refcounted the same way, so this is mostly about what a COW break means for a
+  capability two tasks hold.
+- Reclaiming a frame's bytes. Bump allocation means a destroyed frame's page is not reusable
+  until its untyped region is revoked and reset — see `docs/LIMITATIONS.md`. That is the
+  deliberate seL4 trade, not an oversight, but the region reset it depends on is not written.
+- `MAX_DYN_FRAMES` (256) bounds how many frames the kernel can NAME at once. The untyped
+  region bounds how many an authority can create, and only the second is a security property,
+  but the first is a ceiling a real workload will meet before the second.
 
 ### 2.2 ⬜ Time, timers, and a monotonic clock — **[F-2.6]**
 
@@ -907,7 +944,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **86 required, 3 exempted** (86 jobs, 89 contexts — re-derive it with
+  The intended set is **87 required, 3 exempted** (87 jobs, 90 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
@@ -1018,7 +1055,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 101 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 20 of them control arms that must reproduce a defect |
+| ✅ | 104 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 22 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

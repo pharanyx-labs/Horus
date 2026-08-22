@@ -1686,6 +1686,86 @@ void libhorus_selftest(void) {
 }
 #endif /* LIBHORUS_SELFTEST */
 
+#ifdef FRAME_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Frame-capability self-test (FRAME_SELFTEST builds only) ----------------
+ *
+ * Roadmap 2.1 / finding F-2.1. Stands up two ring-3 tasks around one page of
+ * physical memory: frametest holds a CAP_UNTYPED and does the creating, mapping
+ * and delegating; framepeer holds nothing except the READ-only capability
+ * frametest mints and grants it, and proves both halves of what shared memory
+ * has to mean -- it sees the bytes, and it cannot write them.
+ *
+ * WHAT IS ENDOWED, AND WHAT IS DELIBERATELY NOT.
+ *
+ * frametest gets exactly one capability beyond what a spawn gives it: the
+ * CAP_UNTYPED over the user-facing region, from root slot 17. That is what pays
+ * for the frame, and endowing it is the whole point -- a frame must be
+ * attributable to untyped authority somebody holds, not conjured by a syscall.
+ *
+ * framepeer gets NOTHING. Every capability it ends up with came from frametest
+ * across SYS_CAP_GRANT, which is the only way it can have got them. If the test
+ * endowed the peer directly, the delegation under test would be scaffolding
+ * rather than the mechanism, and the READ-only check would prove nothing about
+ * minting.
+ *
+ * frametest also gets a CAP_TCB naming the peer, because SYS_CAP_GRANT and
+ * SYS_TASK_RESUME both authorise on "a CAP_TCB to the target, or CAP_USER
+ * admin" -- a task may only push capabilities DOWN into a child it supervises.
+ * The first draft of this harness set tasks[pid].uid = 0 instead, on the pattern
+ * the older self-tests use, and both operations were refused: since [H-1] uid 0
+ * is not admin anywhere, `admin` means holding a CAP_USER. That refusal is the
+ * S18 property working, so the endowment is the supervisor capability the design
+ * actually intends rather than a way around it. Deliberately NOT a CAP_USER:
+ * that would hand the test user-management authority to obtain a resume.
+ *
+ * SUSPENSION. The peer is spawned and then explicitly held back, so frametest
+ * finishes its own refusal checks and grants before the peer runs at all. The
+ * peer additionally waits for its capability with a BOUNDED retry, so this
+ * ordering is belt-and-braces rather than a thing correctness rests on -- an
+ * unbounded wait would turn a failed grant into a hang, which is the failure
+ * mode finding G-8 signature C is about.
+ *
+ * The peer prints the pair's marker. Entry into ring 3 does not return. */
+#define FRAMETEST_SLOT_PEER_TCB 29   /* must match userspace/frametest.c */
+void frame_selftest(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_frametest_bin_start[], embedded_frametest_bin_end[];
+    extern uint8_t embedded_framepeer_bin_start[], embedded_framepeer_bin_end[];
+
+    print("FRAME_SELFTEST: begin\n");
+
+    int peer = fs_spawn_embedded(embedded_framepeer_bin_start,
+                                 embedded_framepeer_bin_end, "framepeer");
+    if (peer <= 0) { print("FRAMETEST: FAIL spawn-peer\n"); for (;;) asm volatile("hlt"); }
+
+    int pid = fs_spawn_embedded(embedded_frametest_bin_start,
+                                embedded_frametest_bin_end, "frametest");
+    if (pid <= 0) { print("FRAMETEST: FAIL spawn-parent\n"); for (;;) asm volatile("hlt"); }
+
+    tasks[pid].spawn_arg = (uint64_t)peer;  /* how frametest names its delegate */
+    if (cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0) {
+        print("FRAMETEST: FAIL endow-untyped\n"); for (;;) asm volatile("hlt");
+    }
+    /* Root slot 0 is the CAP_TCB template (CAP_RIGHT_ALL); the object is
+     * rewritten to the peer's task id, which is what makes it a capability for
+     * THAT child rather than for task 0. */
+    if (cap_install_from_root(pid, FRAMETEST_SLOT_PEER_TCB, 0, (uint32_t)peer) != 0) {
+        print("FRAMETEST: FAIL endow-peer-tcb\n"); for (;;) asm volatile("hlt");
+    }
+
+    selftest_resume_all();
+    /* ...then hold the peer back again. resume_all is a blunt instrument that
+     * wakes every spawned task; the peer must not observe its slot before the
+     * grant lands, or the check that the grant WORKED would be racing the check
+     * that an ungranted slot is refused. frametest resumes it explicitly. */
+    tasks[peer].runnable_ctx = 0;
+
+    sched_enable_preemption();
+    sched_enter_user(pid);
+}
+#endif /* FRAME_SELFTEST */
+
 #ifdef RECVBLOCK_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Blocking IPC receive self-test (RECVBLOCK_SELFTEST builds only) --------
@@ -1788,7 +1868,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

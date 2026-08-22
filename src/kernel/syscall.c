@@ -344,6 +344,18 @@ static void h_read(struct interrupt_frame64 *r) {
         if (copy_to_user(buf, line, got + 1) != 0) r->rax = (uint32_t)SYS_ERR_FAULT;
         else r->rax = got;
     } else if (fd >= 3) {
+        /* Retired 2026-08-22 with the ramfs dispatch entries above, and for the
+         * same reason: `cap_lookup(3, CAP_RIGHT_READ)` is satisfied by the
+         * legacy CAP_FRAME every task is born holding, so this branch handed
+         * the in-kernel ramfs to any caller. It is the one that mattered most
+         * of the four, because it is the one that MOVES BYTES -- the others
+         * name and create; this one reads out.
+         *
+         * Left as a live branch under the control arm rather than deleted
+         * outright, because the fd >= 3 range is where a real file descriptor
+         * table will land when one exists, and a reviewer arriving then should
+         * find the reason this door was shut rather than an empty else. */
+#ifdef RAMFS_SLOT3_GATE
         struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
         if (!c) { r->rax = -1; return; }
         char kbuf[256];
@@ -355,6 +367,9 @@ static void h_read(struct interrupt_frame64 *r) {
         } else {
             r->rax = n;
         }
+#else
+        r->rax = (uint32_t)SYS_ERR_NOSYS;
+#endif
     } else {
         r->rax = -1;
     }
@@ -1075,10 +1090,32 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SBRK]                     = { h_sbrk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, bounds-checked */
     [SYS_WRITE]                    = { h_write,                   SC_NONE, 0, SC_ANYTYPE }, /* ambient console (fd 1) */
     [SYS_READ]                     = { h_read,                    SC_NONE, 0, SC_ANYTYPE }, /* fd 0 ambient; fd>=3 slot-3 READ in handler */
+    /* ---- The in-kernel ramfs surface, retired 2026-08-22 ------------------
+     *
+     * SYS_OPEN, 15 (ramfs create) and 16 (ramfs list) used to read
+     * `{ handler, 3, CAP_RIGHT_READ|WRITE, SC_ANYTYPE }`. Slot 3 holds the
+     * legacy CAP_FRAME that create_task installs in EVERY task, with
+     * READ|WRITE|EXEC, and SC_ANYTYPE accepts any type -- so all three were
+     * satisfied by a capability nobody asked for and everybody has. That is
+     * [C-1]'s shape, and these were the last three gates still wearing it.
+     *
+     * They are removed rather than re-gated, following syscalls 38-45: the
+     * ramfs is an in-kernel toy superseded by fs_server, no ring-3 program in
+     * this tree calls any of them, and an ABI kept alive for nobody is surface
+     * with no owner. The ramfs itself stays -- kusers.c uses it internally for
+     * the user database -- so what closes is the door, not the room.
+     *
+     * Absent entries fail closed at SYS_ERR_NOSYS by table dispatch. Under
+     * RAMFS_SLOT3_GATE=1 they come back exactly as they were, which is what
+     * makes `make smoke-passwd-probe` a measurement. */
+#ifdef RAMFS_SLOT3_GATE
     [SYS_OPEN]                     = { h_open,                    3, CAP_RIGHT_READ, SC_ANYTYPE },
+#endif
     [14]                           = { h_exec,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+#ifdef RAMFS_SLOT3_GATE
     [15]                           = { h_ramfs_create,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [16]                           = { h_fs_list,                 3, CAP_RIGHT_READ, SC_ANYTYPE },
+#endif
     [SYS_WAIT]                     = { h_wait,                    SC_NONE, 0, SC_ANYTYPE },
     [SYS_GET_TASK_INFO]            = { h_task_info,               SC_NONE, 0, SC_ANYTYPE }, /* self, or admin/audit in handler */
     [SYS_EXEC]                     = { h_run,                     3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },

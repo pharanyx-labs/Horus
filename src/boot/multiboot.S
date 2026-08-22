@@ -759,6 +759,15 @@ embedded_libhorustest_bin_start:
 embedded_libhorustest_bin_end:
 #endif
 
+#ifdef PASSWD_PROBE
+.align 16
+.global embedded_passwdprobe_bin_start
+embedded_passwdprobe_bin_start:
+.incbin "userspace/passwdprobe.bin"
+.global embedded_passwdprobe_bin_end
+embedded_passwdprobe_bin_end:
+#endif
+
 #ifdef FRAME_SELFTEST
 /* Frame-capability pair (roadmap 2.1): one task retypes a KOBJ_FRAME out of its
  * CAP_UNTYPED and delegates a READ-only copy; the other proves it sees the

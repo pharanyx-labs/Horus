@@ -1542,6 +1542,32 @@ jobs:
       - name: Control arm — ustrncpy must always terminate
         run: make smoke-libhorus-strncpy-control
 
+  passwd-probe:
+    name: "The in-kernel ramfs is unreachable from ring 3 (H-3)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Four doors, one probe: an ordinary uid-1000 task with no delegated
+      # capability must not open the user-database file, read any ramfs fd,
+      # create a file, or list the store.
+      - name: An unprivileged task is refused the in-kernel ramfs
+        run: make smoke-passwd-probe
+      # Restores the four slot-3 gates. Without this arm the gate above passes
+      # identically against a kernel that never had the syscalls at all, which
+      # is not the property being claimed.
+      - name: Control arm — slot-3 gated, the store is readable
+        run: make smoke-passwd-probe-control
+
   frame:
     name: "A frame capability names an object, and a delegate maps only what it holds"
     runs-on: ubuntu-latest

@@ -1561,6 +1561,32 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
         <ul class="findings">
           <li>
+            <h3><span class="id">H-3</span>Four gates were satisfied by a capability everyone holds</h3>
+            <p>
+              Fixed 2026-08-22, and worth reading as a pattern rather than a bug. Every task in
+              Horus is born holding a capability in slot 3 that names a fixed memory window and
+              authorises nothing. Four ways into the kernel's internal filesystem &mdash;
+              including the file the user database is written to &mdash; checked for
+              <em>a capability in slot 3, of any type</em>. Every task passed. A gate everyone
+              passes is not a gate.
+            </p>
+            <p>
+              It survived two previous sweeps for ambient authority, and the reason is the
+              interesting part: both looked for gates that were <em>missing</em>. These were
+              present and vacuous, which is a different shape and matches neither search. The
+              project's own limitations page carried a table calling itself the complete list of
+              ungated paths; it listed the four gated on nothing and missed the four gated on
+              something equivalent to nothing.
+            </p>
+            <p>
+              What it exposed was less than it looks: the 32 bytes recoverable from the user
+              database file are an integrity tag, not the password hashes, because a
+              <em>second</em> bug means only the last of four writes to that file survives. The
+              hashes were one bug-fix away from being world-readable. The four doors are now
+              removed outright rather than re-gated.
+            </p>
+          </li>
+          <li>
             <h3><span class="id">C-5</span>No independent review</h3>
             <p>
               Horus is maintained by one person, and recent pull requests merged with zero

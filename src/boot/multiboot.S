@@ -759,6 +759,23 @@ embedded_libhorustest_bin_start:
 embedded_libhorustest_bin_end:
 #endif
 
+#ifdef VFS_SELFTEST
+/* Roadmap 2.4: a second filesystem server holding nothing but its own endpoint,
+ * and the client that mounts both it and fs_server into one namespace. */
+.align 16
+.global embedded_dev_server_bin_start
+embedded_dev_server_bin_start:
+.incbin "userspace/dev_server.bin"
+.global embedded_dev_server_bin_end
+embedded_dev_server_bin_end:
+.align 16
+.global embedded_vfstest_bin_start
+embedded_vfstest_bin_start:
+.incbin "userspace/vfstest.bin"
+.global embedded_vfstest_bin_end
+embedded_vfstest_bin_end:
+#endif
+
 #ifdef PASSWD_PROBE
 .align 16
 .global embedded_passwdprobe_bin_start

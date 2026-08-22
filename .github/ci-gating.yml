@@ -114,6 +114,10 @@ required:
   # database, and they survived two prior ambient-authority sweeps because both
   # looked for gates that were ABSENT rather than vacuous.
   - passwd-probe
+  # Gating. It carries S29 -- reaching a mounted subtree takes the capability
+  # for that mount, not the path -- and the routing half, where the failure mode
+  # is the WRONG SERVER ANSWERING rather than an error.
+  - vfs
   # Gating. It guards the class that produced [G-9]: a claim orphaned because a
   # path reached ring 3 without paying its deferred release. The periodic audit
   # structurally cannot catch that, so this is the only check that can.

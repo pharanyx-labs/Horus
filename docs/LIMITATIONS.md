@@ -680,6 +680,39 @@ Left unfixed deliberately: repairing the write path would make the database genu
 which is a change to user-account semantics and wants its own gate. It is recorded here so that
 whoever does it knows **[H-3]** is what stands between that fix and a disclosure.
 
+### 2.7 The VFS namespace is a name, not an enforcement boundary
+
+*Added 2026-08-22 with roadmap 2.4.*
+
+`userspace/hvfs.c` is a per-task mount table: a path prefix maps to a cspace slot holding that
+filesystem server's endpoint capability, and crossing a mount point means sending on a different
+slot. There is no VFS server, deliberately — one would have to hold a capability to every
+backing filesystem, which is the monolithic trust 2.4 exists to avoid.
+
+**What that enforces:** a task holding no capability for a mount cannot reach that subtree,
+whatever path it writes. `hvfs_mount` refuses a slot holding no usable capability, and an empty
+or wrong-type slot fails the kernel's IPC gate. That is `SECURITY.md` **S29**.
+
+**What it does not:** a task that *does* hold a server's capability reaches **all** of that
+server, regardless of where — or whether — it is mounted. Mounting `dev_server` at `/dev` does
+not confine it to `/dev`; it only decides which server a `/dev/...` path is addressed to.
+Confinement is the server's job (`fs_server` is a reference monitor over the kernel-attested
+uid). A caller that reads a mount table and concludes a path is unreachable has concluded the
+wrong thing.
+
+Three smaller consequences of the same design:
+
+- The table is per-task `.bss`, so no task can install a mount into another's namespace — and
+  equally, a child inherits nothing. Namespace inheritance across `spawn` is roadmap 2.3.
+- `HVFS_MAX_MOUNTS` is 4. It bounds how many mounts a task can NAME, which is not a security
+  property; the capabilities it holds are.
+- **`hvfs` has no users in the ship build yet.** `posix.c`, `shell.c` and `fsclient.c` still
+  carry their own private walkers, which have already drifted (only one handles `..`). `hvfs`
+  is an archive member, so unused means unlinked and it costs no bytes — but a library nobody
+  calls is surface with no owner, and the migration is the next piece of work rather than an
+  optional tidy-up. `posix.c` additionally needs a link-path decision reversed: it is on the
+  newlib path, where `libhorus.a` is deliberately not linked.
+
 ---
 
 ## 3. Scale and performance limitations
@@ -792,8 +825,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **86** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **88** across the three, producing **91** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **87** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **89** across the three, producing **92** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -824,7 +857,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **88 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **89 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

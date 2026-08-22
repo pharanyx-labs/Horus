@@ -1202,9 +1202,17 @@ void sched_release_deferred(void)
     percpu_deferred_release[cpu] = -1;
 #endif
     REL_LOG(t, cpu, "defer-CONSUME");
+
+    /* The inflight bit clears OUTSIDE the lock, as it always did. Only the
+     * exemption had to move, and moving this as well widened the critical
+     * section for no reason -- which reddened `smoke-kstack-race` on 2026-08-22:
+     * under KSTACK_RACE_WIDEN the extra hold pushed the session past its 90s
+     * budget and it never reached the login prompt. The property this function
+     * had to gain is that the EXEMPTION outlives the CLAIM RELEASE; nothing about
+     * it required serialising the bit too. */
+    __sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
     DEFER_WIDEN();
     sched_raw_lock();
-    __sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
     if (t > 0 && t < MAX_TASKS) {
         /* Record what the branch below actually sees. Inference has now been
          * wrong twice about this value; log it rather than deduce it. */

@@ -1352,7 +1352,25 @@ endif
 # module-free (GPLv3-clean) boot; the plain `boot.iso` / release target stays
 # module-free regardless.
 RUN_MODULES ?= 1
+# `make run` boots WITH an emulated TPM when swtpm is installed, and without one
+# otherwise. The measured-boot path (PCR 8/9, and the sealed volume KEK) is the
+# configuration the security properties are stated over, so booting it by default
+# means the system you actually run is the one the documentation describes --
+# rather than the no-TPM fallback that every log used to show.
+#
+# NO_TPM=1 forces the plain boot: the fallback needs to stay easy to reach,
+# because it is what a machine without a TPM gets and it should not be a path
+# nobody ever exercises deliberately.
 run: kernel.elf
+	@if command -v swtpm >/dev/null 2>&1 && [ "$(NO_TPM)" != 1 ]; then \
+	    echo "[run] swtpm found -- booting with an emulated TPM (NO_TPM=1 to skip)"; \
+	    $(MAKE) --no-print-directory run-tpm; \
+	 else \
+	    $(MAKE) --no-print-directory run-plain; \
+	 fi
+
+.PHONY: run-plain
+run-plain: kernel.elf
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) TCC_MODULE=$(RUN_MODULES) boot.iso
 	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \

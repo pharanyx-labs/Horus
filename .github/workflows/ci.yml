@@ -396,6 +396,8 @@ jobs:
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       - name: Boot under an emulated TPM; assert PCR[8]/PCR[9] equal the host recomputation
+        env:
+          SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
         run: make smoke-tpm
 
   smoke-tpm-tamper:
@@ -418,6 +420,8 @@ jobs:
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       - name: Corrupt one module payload; assert it is refused AND the measured PCRs diverge
+        env:
+          SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
         run: make smoke-tpm-tamper
 
   smoke-tpm-seal-roundtrip:
@@ -440,6 +444,8 @@ jobs:
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       - name: Seal a secret under PolicyPCR(8,9), unseal it, and prove it is denied after a PCR change
+        env:
+          SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
         run: make smoke-tpm-seal-roundtrip
 
   smoke-tpm-seal:
@@ -462,6 +468,8 @@ jobs:
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       - name: Format the vdisk in TPM mode, unlock it, then require a changed PCR to leave it locked
+        env:
+          SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
         run: make smoke-tpm-seal
 
   smoke-coreutils-shell:

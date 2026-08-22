@@ -17,7 +17,12 @@ ISO=${1:?usage: smoke_tpm.sh <iso> [manifest.h]}
 MANIFEST=${2:-src/kernel/boot_module_manifest.h}
 HERE=$(dirname "$0")
 
-if ! command -v swtpm >/dev/null 2>&1; then
+# Routed through swtpm_lib.sh rather than checked inline: under SWTPM_REQUIRED=1
+# a missing swtpm must be an ERROR, and an inline `exit 0` here would swallow
+# that before run_with_swtpm.sh ever saw the flag. It did exactly that when this
+# was first written, and the end-to-end falsification is what found it.
+. "$HERE/swtpm_lib.sh"
+if ! swtpm_available; then
     echo "SMOKE-TPM SKIP: swtpm not installed"; exit 0
 fi
 

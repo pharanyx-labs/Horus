@@ -943,6 +943,20 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
+**Since 2026-08-22 it also refuses a `required:` job that carries job-level
+`continue-on-error: true`** — a gate that cannot fail. GitHub publishes such a job's check run as
+SUCCESS however its steps exited, so the ruleset's requirement is satisfied by a job that failed
+outright, and the classification this file exists to make explicit is undone one directory away.
+`smoke-kstack-park` was in exactly that state for the whole window between its promotion and this
+rule: #190 promoted it by editing `.github/ci-gating.yml` and the ruleset and touched no workflow,
+and #191 then rewrote the job *name* one line above the mask to delete the word ADVISORY from the
+published context — while leaving the mask. It was not idle. The job **failed on `main` at
+9476799**, and on `a59667ab` before that, inside runs GitHub reported green. Nothing could have
+noticed: `ruleset-audit` compares context *names*, and a masked job publishes the right name with
+the wrong verdict. Step-level `continue-on-error` is untouched and still allowed — it lets one
+step be advisory while the job's own status still reports the truth, which is how the `security`
+job keeps its scanners advisory without becoming unfailable itself.
+
 That intended set is **89 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1002,8 +1016,9 @@ evidence: reading a ruleset needs `Administration: read`, which no workflow toke
 
 It failed loudly rather than skipping for every day it was unconfigured, which is why the
 transition is legible at all — an audit that skips when unconfigured is a check that cannot
-fail, and this repository has been bitten by that twice already (`make test`'s `|| true`, and
-the scanner-presence step before #154).
+fail, and this repository has been bitten by that three times now (`make test`'s `|| true`, the
+scanner-presence step before #154, and `smoke-kstack-park`'s job-level `continue-on-error`
+above, which is the first of the three to have been *required* while it was unfailable).
 
 **What keeps [C-6] open is now only the second half.** `--sync-ruleset` writes the ruleset and
 needs an admin token, so a PR that adds a gating job leaves the ruleset one context behind until

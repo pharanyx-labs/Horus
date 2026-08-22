@@ -980,17 +980,17 @@ Ordered as in the audit's §7.5.
   The intended set is **89 required, 3 exempted** (89 jobs, 92 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
-  `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
-  (its workload trips **[G-9]**, found 2026-08-17). `smoke-fs-wal` was an
-  exemption until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
-  `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted with
-  it. **Three of the four are properties of the test itself; `smoke-kstack-park` is the one
-  exemption that stands for an open defect**, and it stays until [G-9] is closed rather than
-  merely narrowed — its workload still fails **2 boots in 30** (~7%) after [G-9]'s exec
-  component and [G-10]'s page-table half both landed on 2026-08-17, and the residue is the
-  bogus resume `%rsp` this gate does not test. (An earlier revision of this paragraph claimed no exemption stood for an open
-  defect while listing `smoke-kstack-park` in the same sentence; the count and the claim had
-  drifted apart, which is the failure this section is supposed to catch.) The count rose to 71 and
+  and `ruleset-audit` (schedule-only, so it never runs on a pull request).
+  `smoke-fs-wal` was an exemption until **[I-11]** was fixed on 2026-08-16 and it was promoted
+  back; `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted
+  with it; `smoke-kstack-park` until **[G-9]** closed on 2026-08-21, promoted in #190 the day
+  after. **All three that remain are properties of the test itself, and no exemption now stands
+  for an open defect.** (Two earlier revisions of this paragraph got this wrong in opposite
+  directions: one claimed no exemption stood for an open defect while listing
+  `smoke-kstack-park` in the same sentence, and its replacement kept listing that gate as a
+  fourth exemption for eleven days after #190 promoted it, beside a count that said three. A
+  count and a list that disagree are two claims, and `doc-claims` can only check the one that is
+  a number.) The count rose to 71 and
   then 72 on 2026-08-17 with `smoke-exec-reenter` and `smoke-cr3-reclaim`, the gates for
   [G-9]'s exec component and [G-10]'s page-table use-after-free, each with a control arm. The
   promotions are

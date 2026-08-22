@@ -1686,6 +1686,80 @@ void libhorus_selftest(void) {
 }
 #endif /* LIBHORUS_SELFTEST */
 
+#ifdef VFS_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- VFS mount-table self-test (VFS_SELFTEST builds only) -------------------
+ *
+ * Roadmap 2.4. Stands up a SECOND filesystem server and a client that mounts
+ * both into one namespace, because a mount table with one mount cannot
+ * demonstrate anything: every path resolves to the same server, so "longest
+ * prefix wins" and "the capability decides, not the path" are both
+ * unfalsifiable.
+ *
+ * ENDPOINTS. dev_server serves on CON_EP_REQ, reusing root slots 11 (READ|WRITE,
+ * the listen right) and 12 (WRITE only, the client). Nothing console-related
+ * runs in this build, so it is simply a spare endpoint with a ready-made
+ * asymmetric capability pair -- the same trade recvblock_selftest makes and for
+ * the same reason: changing the primordial capability table to test something
+ * that is not about the primordial capability table is a poor trade.
+ *
+ * The production path is different and deliberately not exercised here: init
+ * will retype an endpoint out of its own CAP_UNTYPED and mint the client copy
+ * with SYS_CAP_MINT. That needs init to hold a CAP_UNTYPED, which it does not
+ * today, and widening the delegation root's authority belongs in its own commit
+ * rather than riding along inside a test harness.
+ *
+ * WHAT vfstest IS AND IS NOT GIVEN. It gets the WRITE-only client capability for
+ * dev_server (slot 21) and the ordinary fs client capability, and NOTHING in
+ * slot 30 -- which is what makes "a mount needs a capability, not a prefix"
+ * checkable from ring 3. Entry into ring 3 does not return. */
+void vfs_selftest(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_dev_server_bin_start[], embedded_dev_server_bin_end[];
+    extern uint8_t embedded_vfstest_bin_start[], embedded_vfstest_bin_end[];
+
+    extern uint8_t embedded_fsserver_bin_start[], embedded_fsserver_bin_end[];
+
+    print("VFS_SELFTEST: begin\n");
+
+    /* The ROOT mount's server. Endowed exactly as fs_selftest endows it -- the
+     * listen endpoint, the CAP_USER that gates registration, the object store,
+     * and the boot-module surface. It is here to be the OTHER server: the whole
+     * point of the mount table is that two paths reach two different tasks, and
+     * with one server that is unfalsifiable. */
+    int fss = fs_spawn_embedded(embedded_fsserver_bin_start,
+                                embedded_fsserver_bin_end, "fs_server");
+    if (fss <= 0) { print("VFSTEST: FAIL spawn-fs-server\n"); for (;;) asm volatile("hlt"); }
+    tasks[fss].uid = 0;
+    cap_install_from_root(fss, CAPSLOT_FS_LISTEN,   13, FS_EP_REQ);
+    cap_install_from_root(fss, 6, 6, 0);                      /* CAP_USER, registration */
+    cap_install_from_root(fss, CAPSLOT_AUDIT,        9, 0);   /* CAP_ENCRYPTED_STORAGE  */
+    cap_install_from_root(fss, CAPSLOT_BOOT_MODULE, 16, 0);   /* CAP_BOOT_MODULE        */
+
+    int dev = fs_spawn_embedded(embedded_dev_server_bin_start,
+                                embedded_dev_server_bin_end, "dev_server");
+    if (dev <= 0) { print("VFSTEST: FAIL spawn-dev-server\n"); for (;;) asm volatile("hlt"); }
+    /* The listen right, and to nobody else: only dev_server can dequeue requests
+     * on this endpoint and answer them with SYS_IPC_REPLY_TO. */
+    cap_install_from_root(dev, CAPSLOT_FS_LISTEN, 11, CON_EP_REQ);
+
+    int cli = fs_spawn_embedded(embedded_vfstest_bin_start,
+                                embedded_vfstest_bin_end, "vfstest");
+    if (cli <= 0) { print("VFSTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+    cap_install_from_root(cli, 21, 12, CON_EP_REQ);   /* /dev client: WRITE only */
+    /* Slot 30 is left EMPTY on purpose -- it is the uncapable slot vfstest
+     * mounts against to prove a prefix alone installs nothing. */
+
+    /* fs_server first: it must REGISTER before vfstest's sys_connect_fs_server
+     * can succeed, and it blocks on an empty endpoint once it has. The switch
+     * that follows runs dev_server, then the client. vfstest retries the connect
+     * with a bound, so this ordering is belt-and-braces rather than relied on. */
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(fss);
+}
+#endif /* VFS_SELFTEST */
+
 #ifdef PASSWD_PROBE
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* Spawn one ring-3 task endowed with NOTHING and let it try to read the user
@@ -1908,7 +1982,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

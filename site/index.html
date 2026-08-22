@@ -1426,7 +1426,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities and capability-mediated shared memory landed; no <code>mmap</code>, no multi-page regions, no real <code>fork</code></th><td class="t-note">smoke-frame</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">A VFS, mount points, multiple filesystem servers</th><td class="t-note">roadmap 2.4</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong> — a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Networking — no drivers, no stack, no sockets</th><td class="t-note">roadmap 2.6</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, IOMMU, USB, sound, graphics beyond VGA text</th><td class="t-note">—</td></tr>

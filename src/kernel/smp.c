@@ -522,6 +522,12 @@ void smp_bringup(void) {
      * LIBHORUS_SELFTEST: PASS from ring 3. Falsified by LIBHORUS_RETRY_ANY=1 and
      * LIBHORUS_STRNCPY_UNTERMINATED=1. */
     { extern void libhorus_selftest(void); libhorus_selftest(); }
+#elif defined(VFS_SELFTEST)
+    /* Gated: a second filesystem server (holding nothing but its own endpoint)
+     * and a client that mounts it at /dev alongside fs_server at / -- roadmap
+     * 2.4. Asserts which server each path reaches, and that reaching a mount
+     * took a capability rather than a prefix. VFSTEST: PASS <n> checks. */
+    { extern void vfs_selftest(void); vfs_selftest(); }
 #elif defined(PASSWD_PROBE)
     { extern void passwd_probe_selftest(void); passwd_probe_selftest(); }
 #elif defined(FRAME_SELFTEST)

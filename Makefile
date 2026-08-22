@@ -89,7 +89,8 @@ DEFECT_FLAGS = \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
-	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED RAMFS_SLOT3_GATE
+	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED RAMFS_SLOT3_GATE \
+	VFS_FIRST_MATCH VFS_MOUNT_UNGATED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -684,6 +685,30 @@ endif
 # capability nobody asked for and everybody has: [C-1]'s shape, on the last
 # gates still wearing it. Behind them sits the file kusers.c writes the user
 # database into.
+# VFS_SELFTEST=1 embeds dev_server (a second filesystem server, holding nothing
+# but its own endpoint) and vfstest, which mounts fs_server at "/" and
+# dev_server at "/dev" and asserts which server each path reaches. A mount table
+# with one mount cannot demonstrate anything, so the second server IS the test.
+VFS_SELFTEST ?= 0
+ifeq ($(VFS_SELFTEST),1)
+CFLAGS  += -DVFS_SELFTEST
+ASFLAGS += -DVFS_SELFTEST
+VFS_SELFTEST_DEP = userspace/dev_server.bin userspace/vfstest.bin
+endif
+
+# VFS_FIRST_MATCH=1 makes hvfs_resolve return the first matching mount instead
+# of the longest-prefix one. "/" matches every path, so with it installed first
+# EVERY /dev path is addressed to the root filesystem -- which has an inode 0 of
+# its own and therefore ANSWERS ABOUT A DIFFERENT OBJECT rather than failing.
+# Wrong-server-answered, not permission-denied, which is why the witness checks
+# which server replied. USERSPACE only (hvfs is a ring-3 library).
+VFS_FIRST_MATCH ?= 0
+
+# VFS_MOUNT_UNGATED=1 removes hvfs_mount's probe, so a prefix string alone
+# installs a mount over a slot holding no capability. Every path under it is
+# then addressed to nothing, one failed operation at a time. USERSPACE only.
+VFS_MOUNT_UNGATED ?= 0
+
 RAMFS_SLOT3_GATE ?= 0
 ifeq ($(RAMFS_SLOT3_GATE),1)
 CFLAGS  += -DRAMFS_SLOT3_GATE
@@ -1277,7 +1302,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1456,6 +1481,15 @@ endif
 ifeq ($(LIBHORUS_STRNCPY_UNTERMINATED),1)
 USERSPACE_CFLAGS += -DLIBHORUS_STRNCPY_UNTERMINATED
 endif
+# The two hvfs control arms are ring-3 for the same reason and need the same
+# top-level placement: hvfs is a userspace library, and inside another flag's
+# ifeq these would silently build the fixed code.
+ifeq ($(VFS_FIRST_MATCH),1)
+USERSPACE_CFLAGS += -DVFS_FIRST_MATCH
+endif
+ifeq ($(VFS_MOUNT_UNGATED),1)
+USERSPACE_CFLAGS += -DVFS_MOUNT_UNGATED
+endif
 
 userspace/%.o: userspace/%.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
@@ -1490,9 +1524,15 @@ MALLOC_OBJ = userspace/malloc.o
 # NOT added to the newlib link rules. Those programs have a real libc, and
 # giving them a second memcpy under a different name would be an ambiguity
 # waiting to be resolved wrongly.
+#
+# hvfs.o is a SEPARATE member rather than part of libhorus.o, and that is the
+# same measurement again: a program that resolves no path (captest, klogtest,
+# framepeer) must not carry the mount table and the walker. Two members means
+# ld extracts each only when something references it.
 LIBHORUS_LIB = userspace/libhorus.a
-$(LIBHORUS_LIB): userspace/libhorus.o
-	$(AR) rcs $@ $<
+LIBHORUS_OBJS = userspace/libhorus.o userspace/hvfs.o
+$(LIBHORUS_LIB): $(LIBHORUS_OBJS)
+	$(AR) rcs $@ $(LIBHORUS_OBJS)
 
 userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ) $(LIBHORUS_LIB)
@@ -1712,7 +1752,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -3650,6 +3690,49 @@ smoke-claim-release-control:
 # which is what tools/check_gate_pairs.py asks of every gate that has a control
 # arm: an arm that injects a defect and looks for the check firing measures false
 # NEGATIVES only, and a predicate that rejects everything satisfies all of them.
+# ---- The VFS mount table (roadmap 2.4) -------------------------------------
+#
+# Two servers, two mounts, one namespace. Both directions in one target: the
+# positive half reads zeros through /dev/zero and keeps /bin on the root mount,
+# the adversarial half asserts a mount needs a capability and that longest
+# prefix wins.
+.PHONY: smoke-vfs
+smoke-vfs:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='VFSTEST: PASS' \
+		FAIL_MARKER='VFSTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 1 -- routing. VFS_FIRST_MATCH=1 returns the first matching mount,
+# and "/" matches everything, so /dev/zero is addressed to the root filesystem.
+# It does not fail: that server has an inode 0 of its own and answers about a
+# different object. The FAIL marker must be PRESENT.
+.PHONY: smoke-vfs-prefix-control
+smoke-vfs-prefix-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_FIRST_MATCH=1
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_FIRST_MATCH=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='VFSTEST: FAIL wrong-server-answered' \
+		tools/smoke_test.sh boot.iso
+	@echo "VFS PREFIX CONTROL: PASS - first match sends /dev/zero to the wrong server"
+
+# Control arm 2 -- the mount gate. VFS_MOUNT_UNGATED=1 removes hvfs_mount's
+# probe, so a prefix string alone installs a mount over a slot holding no
+# capability. The FAIL marker must be PRESENT.
+.PHONY: smoke-vfs-mount-control
+smoke-vfs-mount-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_MOUNT_UNGATED=1
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_MOUNT_UNGATED=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='VFSTEST: FAIL mounted-without-a-capability' \
+		tools/smoke_test.sh boot.iso
+	@echo "VFS MOUNT CONTROL: PASS - a prefix alone installs a mount"
+
 # ---- The in-kernel ramfs is not reachable from ring 3 ----------------------
 .PHONY: smoke-passwd-probe
 smoke-passwd-probe:

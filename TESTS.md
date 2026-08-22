@@ -388,8 +388,9 @@ moves timing — so "pre-existing and under-sampled" and "the same defect, made 
 to hit" both fit the data. Recorded rather than concluded.
 
 **A red here is a [G-9] reproduction, not a flake.** `smoke-sched-invariants` stays **required**
-deliberately. It is not `smoke-kstack-park`, which is advisory because it reddens for a defect
-it does *not* test; this gate tests the claim invariant and what it caught *was* a claim leak.
+deliberately. It is not `smoke-kstack-park` as that gate stood until 2026-08-22, when it was advisory because
+it reddened for a defect it does *not* test; this gate tests the claim invariant and what it
+caught *was* a claim leak.
 The gate is working. Before re-running it, **save `stress-first-failure.log`** — every boot that
 reproduces this is a datapoint, and collecting them is how **[G-8]** was closed. Re-running
 first and looking second is the reflex that costs the evidence.
@@ -1125,15 +1126,20 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **85 required contexts and 4 reasoned exemptions** — read off
+The intended set is **86 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` (its workload trips **[G-9]**). `smoke-fs-wal` was a third until **[I-11]** was fixed and it was
 promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]** was closed on
 2026-08-17, and it was promoted in the same commit. Three of the four are properties of the test
-itself; `smoke-kstack-park` is the one exemption that stands for an **open defect**, and it stays
-until the rest of **[G-9]** is closed rather than merely narrowed. The promotions are backed
+itself; `smoke-kstack-park` was the one exemption that stood for an **open defect**, and it was
+**promoted on 2026-08-22**, one merge after **[G-9]** closed. Its workload ran 0 failures in 200
+boots after the fix (95% upper bound 1.49%) against ~45% before [G-9]'s exec and page-table
+components and ~7% after them; the gate itself passed 5 of 5 in its exact form, which at a 7%
+rate is only ~70% power and is corroboration rather than the evidence. **No exemption now stands
+for an open defect** — the three that remain (`fuzz`, `kani`, `ruleset-audit`) are properties of
+those tests. The promotions are backed
 by measurement, not optimism: across 18 CI runs sampled on 2026-08-16, **64 of 66 jobs had zero
 failures over 1152 job-executions**; the only two that ever failed are `security` (2/18, both
 deliberate, during #154) and `smoke-session-smp-soak` (1/18, which was [G-8] at its documented

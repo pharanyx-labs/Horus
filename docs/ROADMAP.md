@@ -700,8 +700,9 @@ concurrent spawners is a property of the OS this roadmap is building, not of the
 **[G-9] closed 2026-08-21**, so what kept this ◧ is gone: the residue was three further
 components, the last of which was the claim auditor clearing its own exemption before the release
 it exempts — a false positive of the checker rather than a leak. Natural rate 9/200 → 0/200,
-mechanism proven 8/10 against 0/10 with the window widened in both arms. `smoke-kstack-park` can
-now be promoted; that promotion lags this merge by one, as [C-6] describes. Also unchanged: a task can be `state == 0` and
+mechanism proven 8/10 against 0/10 with the window widened in both arms. `smoke-kstack-park` was
+promoted on 2026-08-22, one merge later as [C-6] describes, with its workload measured at 0
+failures in 200 boots. **No CI exemption now stands for an open defect.** Also unchanged: a task can be `state == 0` and
 still executing in ring 3 on another core — the CR3 guard makes that memory-safe without making
 it sensible, and the slot allocator still reuses such a slot immediately.
 
@@ -906,7 +907,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **85 required, 4 exempted** (86 jobs, 89 contexts — re-derive it with
+  The intended set is **86 required, 3 exempted** (86 jobs, 89 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`

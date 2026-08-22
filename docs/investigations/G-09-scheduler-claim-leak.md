@@ -368,7 +368,8 @@ re-earns: *the arm you measure must be the arm you ship.*
   interrupt on a CR3 that does not map the LAPIC. That is an address space reachable before its
   kernel half was built, which points at **[G-10]**, not at the scheduler.
 
-`smoke-kstack-park` therefore **stays advisory**. Promoting it on a partial fix would restore a
+`smoke-kstack-park` therefore **stayed advisory** until [G-9] closed; it was promoted on
+2026-08-22. Promoting it on a partial fix would have restored a
 required gate that still reddens on 2 boots in 30 (~7%) for something it does not test.
 
 ---

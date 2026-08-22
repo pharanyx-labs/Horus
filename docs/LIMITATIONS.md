@@ -691,17 +691,29 @@ of which was fatal:
    integrity tag was MAC'd under the same pepper, so even a correctly written file could never
    have validated across a reboot.
 
-**Reason 3 is the one that matters for fixing it**, and it is a property of the hash rather
-than of the storage: persisting the database is not sufficient and not even meaningful while
-the pepper is per-boot. The intended fix is to TPM-seal the pepper under `PolicyPCR(8,9)`,
-reusing what `storage.c` already does for the volume KEK — so a stolen disk yields hashes that
-cannot be attacked offline without also defeating measured boot. Note that
-`fs_superblock.kek_salt` already excludes the pepper, with the comment *"must be reproducible
-across reboots from the same pwd"*: the same conclusion, reached earlier, one field away.
+**Reason 3 is the one that shapes the fix**, and it is a property of the hash rather than of
+the storage: persisting the database is not sufficient, or even meaningful, while the pepper is
+per-boot.
 
-On a machine with no TPM — which is the default QEMU boot — there is no sealed pepper and
-accounts will still not persist. That fallback is where the property weakens and it will be
-stated here rather than implied when the fix lands.
+**The agreed design puts the table inside the AEAD object store.** The hashes are then
+protected at rest by the volume key that is already sealed under `PolicyPCR(8,9)`, so a stolen
+disk yields nothing to attack offline — and **the pepper stops needing to survive the reboot at
+all**, because encryption is doing the job the pepper was being asked to do. That is smaller
+and stronger than sealing a second secret, and it works on a machine with no TPM, which the
+alternative did not.
+
+*An earlier revision of this section proposed TPM-sealing the pepper under the same policy.
+That was superseded on 2026-08-22: it added a parallel protection mechanism where the existing
+sealed KEK already covered the data, and it delivered nothing without a TPM — the common case.
+The observation that prompted it still stands, and is why the pepper cannot simply be persisted
+in the clear: `fs_superblock.kek_salt` already excludes the pepper, commented "must be
+reproducible across reboots from the same pwd" — the same conclusion, reached earlier, one
+field away.*
+
+The cost of the chosen design is an ordering change: `verify_password` currently runs **before**
+`storage_unlock`, and hashes inside the store invert that to unlock-then-identify. That is
+sound — `storage_unlock` authenticates, since the AEAD unwrap of `disk_key` fails on a wrong
+password — but it interacts with the single-password limitation immediately below.
 
 **A related limitation, orthogonal and pre-existing:** only one password can unlock the volume.
 The KEK derives from a password plus `kek_salt`, fixed when the volume was formatted, so a
@@ -741,6 +753,51 @@ Three smaller consequences of the same design:
   calls is surface with no owner, and the migration is the next piece of work rather than an
   optional tidy-up. `posix.c` additionally needs a link-path decision reversed: it is on the
   newlib path, where `libhorus.a` is deliberately not linked.
+
+### 2.8 The CSPRNG is safe by boot ordering, not by construction
+
+*Added 2026-08-22 from an external audit (its F-5), after checking the claim against the tree.*
+
+`RngState::fill()` (`rust/src/rng.rs`) does not test `self.seeded`. It will produce keystream
+from whatever key is present — and the initial key is, in the file's own words, *"non-secret
+startup constants"*, with a comment that the pool *"MUST be reseeded from hardware entropy
+before its output is relied upon"*. That MUST is not enforced where the output is produced.
+
+**It is not reachable, and the audit overstated it.** The finding claimed weak ASLR, canaries
+and nonces from early use, and recommended *"panic or refuse output until `seeded=true`"* — a
+fix that already exists one layer up. `entropy_init()` (`src/kernel/crypto.c`) gathers entropy,
+then tests `rust_rng_is_seeded()` and **halts the machine** if it is false, with a comment
+giving the same reasoning. It runs at `src/kernel/main.c:420`; the first consumer,
+`aslr_init_seed()`, is at `:471`.
+
+So what remains is narrower and worth recording rather than fixing in a hurry: a safety
+property held up by **the order of two calls in `kernel_main`** instead of by the function that
+could enforce it. That is the same shape as the frame-refcount hazard in #192, where a mapped
+frame was kept out of the free page stack only by a refcount nobody had set on purpose. Making
+`fill()` refuse when unseeded is small, costs nothing on the hot path, and is falsifiable by a
+control arm that calls the RNG before `entropy_init()`.
+
+### 2.9 Measured boot degrades silently in the kernel when no TPM is present
+
+*Added 2026-08-22 from the same audit (its F-9), and partly overtaken by #197.*
+
+`tpm_present()` returns false and boot proceeds: PCRs are not extended, and the volume key is
+never sealed. Nothing fails, so on hardware without a TPM — or under QEMU without swtpm, which
+is the default — **the measured-boot properties (S11, S12) simply do not apply** rather than
+failing closed. The boot log says `tpm: no TPM present, measured boot skipped`, which is honest
+but easy to read past.
+
+**The CI half of this is closed.** Until 2026-08-22 the four TPM gates *also* degraded quietly:
+they printed `SKIP` and exited 0 when swtpm was absent, so `smoke-tpm-seal` — a required
+merge-gating job carrying S11 and S12 — could report success while measuring nothing.
+`SWTPM_REQUIRED=1` now makes that an error and CI sets it (#197). `make run` also boots with a
+TPM when swtpm is installed, so the configuration the security properties are stated over is
+the one you get by default.
+
+**The kernel half is a design question, not a defect.** A fail-closed mode — refuse to unlock
+the volume at all without a measured boot — is expressible and would suit a deployment that
+requires it, but it would make the kernel unbootable on a TPM-less machine, which is the
+opposite of what a research prototype wants by default. Recorded so the choice is deliberate.
 
 ---
 

@@ -27,6 +27,30 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **Four TPM gates could report success while measuring nothing.** `tools/smoke_tpm.sh` and
+  `tools/run_with_swtpm.sh` both `exit 0` when `swtpm` is absent — so `smoke-tpm`,
+  `smoke-tpm-tamper`, `smoke-tpm-seal-roundtrip` and `smoke-tpm-seal` (a **required**
+  merge-gating job carrying **S11** and **S12**) printed `SKIP` and passed. `SWTPM_REQUIRED=1`
+  now makes that an error, and CI sets it on all four. Locally the skip stays, because blocking
+  a developer without swtpm buys nothing. **CI had in fact been installing swtpm all along** —
+  verified against a real run's log, where the measured PCRs are present and match the
+  host-computed manifest — so this was latent rather than live; a renamed package or a changed
+  runner image would have been enough. Falsified in a genuinely swtpm-less environment (a
+  `PATH` stripped of it): skip and exit 0 without the flag, hard failure with it. **The
+  end-to-end arm is what caught the first fix being incomplete** — `smoke_tpm.sh`'s own inline
+  guard swallowed the flag before the shared code ever saw it.
+
+### Added
+
+- **`tools/swtpm_lib.sh`** — the swtpm lifecycle in one place (state dir, daemon, socket wait,
+  teardown), shared by `run_with_swtpm.sh`, `smoke_tpm.sh` and `smoke_test.sh`'s new `TPM=1`
+  mode. Any gate can now boot under an emulated TPM without a second copy of the QEMU command
+  line; `KEEP_TPMSTATE` carries one TPM across two boots for sealing tests.
+- **`make run` boots with a TPM when `swtpm` is present**, so the system you actually run is the
+  measured-boot one the security properties are stated over. `NO_TPM=1` or `make run-plain`
+  forces the fallback, which should stay easy to reach deliberately rather than by accident.
+
+
 - **The user-database persistence path had never run, and is deleted.** ~90 lines in
   `src/kernel/kusers.c` — `users_save_to_ramfs`, `users_load_from_ramfs`, `users_persist` and
   its four call sites, plus the integrity tag over them — removed as code that could not have

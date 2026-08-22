@@ -91,7 +91,7 @@ boot is tested by tampering and asserting the PCRs diverge.
 Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 84 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 85 of its 89 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 86 of its 89 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is

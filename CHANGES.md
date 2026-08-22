@@ -14,6 +14,17 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Changed
+
+- **`smoke-kstack-park` promoted from advisory to merge-gating**, one merge after [G-9] closed —
+  the shape its own exemption asked for ("promote it in the same commit that closes [G-9], and
+  quote a rate"). The rate: the `PROC_SELFTEST -smp 4` workload it boots ran **0 failures in 200
+  boots** after the fix (95% upper bound 1.49%), against ~45% before [G-9]'s exec and page-table
+  components and ~7% after them; the gate itself passed 5 of 5 in its exact form, which at a 7%
+  rate is ~70% power and is corroboration rather than evidence. **No CI exemption now stands for
+  an open defect** — the three that remain (`fuzz`, `kani`, `ruleset-audit`) are properties of
+  those tests, not of the tree.
+
 ### Fixed
 
 - **`smoke-kstack-race` went red on `main` after the [G-9] fix, and it was a real

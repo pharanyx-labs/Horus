@@ -18,15 +18,21 @@
  * slot 3, and these four were the last gates still satisfied by it. A gate
  * every task passes is not a gate.
  *
- * WHAT WAS BEHIND IT. kusers.c persists the user database into that ramfs as
- * the file "passwd" (users_save_to_ramfs), and each record carries salt[16]
+ * WHAT WAS BEHIND IT, AND WHY IT NO LONGER IS. kusers.c used to write the user
+ * database into this ramfs as the file "passwd", every record carrying salt[16]
  * and pass_hash[32]. This probe read that file as an ordinary user and got 32
- * bytes -- NOT the hashes, because ramfs_write takes no offset and rewrites
- * from byte 0 on every call, so only the last of the four writes survives and
- * the file holds the HMAC tag alone. The hashes were one bug-fix away from
- * being world-readable: repair the write path and the open gate hands them out.
- * That second defect is recorded in docs/LIMITATIONS.md; closing this gate is
- * what keeps it a correctness bug rather than a disclosure.
+ * bytes -- not the hashes, because ramfs_write took no offset and only the last
+ * of four writes survived. The hashes were one bug-fix away from being
+ * world-readable.
+ *
+ * That whole path was deleted on 2026-08-22: it had never worked, and could not
+ * have, because the password pepper is re-randomised every boot so a stored hash
+ * can never verify in the next boot. So the data behind these gates is gone and
+ * the probe now opens an ordinary seeded file instead.
+ *
+ * The gate stays, and S28 is unchanged, because the property was never about
+ * what happened to be stored there: a gate satisfied by a capability every task
+ * already holds is not a gate, whatever sits behind it.
  *
  * Falsified by RAMFS_SLOT3_GATE=1, which restores the four slot-3 gates.
  */
@@ -50,13 +56,21 @@ static void check(int ok, const char *what) {
 void _start(void) {
     kputln("PASSWDPROBE: begin (uid 1000, no capabilities beyond a fresh task's)");
 
-    /* The user database file exists: the harness changed a password before
-     * spawning this task, which is the ordinary self-service operation any
-     * account may perform on itself. This probe holds no right that made it
-     * happen, and asks only to READ the result. */
-    int fd = sys_open("passwd");
-    kput("PASSWDPROBE: sys_open(\"passwd\") -> "); kput_int(fd); kputln("");
-    check(fd < 0, "opened-the-user-database");
+    /* Open a file the store is seeded with.
+     *
+     * This used to open "passwd", the file kusers.c wrote the user database
+     * into -- and that was the sharper demonstration. It is deliberately no
+     * longer available: the user-database save/load pair was deleted
+     * 2026-08-22 as code that had never run (see kusers.c), so nothing writes
+     * "passwd" any more and a check against it would pass TRIVIALLY IN BOTH
+     * ARMS -- a required gate silently measuring nothing.
+     *
+     * So it targets a file the control build's ramfs_init actually seeds. The
+     * property under test is unchanged and was never about the file's contents:
+     * an unendowed ring-3 task must not reach the in-kernel store at all. */
+    int fd = sys_open("hello.txt");
+    kput("PASSWDPROBE: sys_open(\"hello.txt\") -> "); kput_int(fd); kputln("");
+    check(fd < 0, "opened-a-ramfs-file");
 
     /* fd numbering is `3 + index`, so sweep the range directly rather than
      * letting a refusal on open hide an open door on read. */

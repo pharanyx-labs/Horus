@@ -433,8 +433,25 @@ void kernel_main(uint32_t mb_info) {
     storage_tpm_kek_selftest();
 #endif
 #ifndef MINIMAL_SECURE
-    ramfs_init();   /* -> storage_init(): probes for an ATA disk (persistent) and
-                     * falls back to the ephemeral RAM vdisk when none is present */
+    /* Storage: probes for an ATA disk (persistent) and falls back to the
+     * ephemeral RAM vdisk when none is present.
+     *
+     * This used to read `ramfs_init()`, which called storage_init() and then
+     * seeded two demo files into an in-kernel toy filesystem. Only the first half
+     * was ever load-bearing. The ramfs's last real consumer was the user database,
+     * whose save/load pair had never worked (see kusers.c), and its ring-3 surface
+     * was retired with [H-3] -- so the toy is gone from the ship build and what
+     * remains is the call that always mattered.
+     *
+     * The control arm rebuilds the old world in full, seeded demo files and all:
+     * an arm that restores the four ring-3 gates onto an EMPTY store measures
+     * only two of the four doors, because open and read have nothing to find.
+     * Observed doing exactly that on 2026-08-22 before this #ifdef existed. */
+#ifdef RAMFS_SLOT3_GATE
+    ramfs_init();   /* -> storage_init(), then seeds the demo files */
+#else
+    storage_init();
+#endif
 #endif
     scheduler_init();
 #ifdef ASPACE_SELFTEST

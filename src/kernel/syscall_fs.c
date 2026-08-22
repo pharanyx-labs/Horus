@@ -10,6 +10,11 @@
  * below is unrelated — it lists the small in-memory ramfs (syscall 16) that
  * still backs the sealed user database. */
 
+#ifdef RAMFS_SLOT3_GATE
+/* Retired from the ship build with [H-3] (the dispatch entry) and with the
+ * deletion of the user database's save/load pair (its last real consumer). The
+ * body survives only for smoke-passwd-probe-control, which restores the four
+ * slot-3 gates and needs something behind them. */
 void h_fs_list(struct interrupt_frame64 *r) {
     void *user_buf = (void*)(addr_t)r->rbx;
     size_t max_len = r->rcx;
@@ -26,6 +31,7 @@ void h_fs_list(struct interrupt_frame64 *r) {
     if (copy_to_user(user_buf, kbuf, n+1) == 0) r->rax = n;
     else r->rax = -1;
 }
+#endif /* RAMFS_SLOT3_GATE */
 
 /* SYS_EXIT (2): terminate the calling task. Teardown runs here; the switch away
  * from the now-dead caller is done in interrupt_handler64, which detects
@@ -297,6 +303,7 @@ void h_fs_stat(struct interrupt_frame64 *r) {
 
 /* SYS_YIELD (0). */
 
+#ifdef RAMFS_SLOT3_GATE
 void h_open(struct interrupt_frame64 *r) {
     char path[64];
     if (copy_from_user(path, (void*)(addr_t)r->rbx, 63) != 0) {
@@ -315,6 +322,7 @@ void h_ramfs_create(struct interrupt_frame64 *r) {
     name[31] = 0;
     r->rax = ramfs_create(name, 0);
 }
+#endif /* RAMFS_SLOT3_GATE */
 
 /* SYS_SPAWN (28): slot-3 WRITE|EXEC enforced by the table.
  * ebx = userspace pointer to a null-terminated binary name, or 0.

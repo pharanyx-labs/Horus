@@ -156,7 +156,6 @@ OBJS = src/boot/multiboot.o \
        src/kernel/syscall_ipc.o \
        src/kernel/syscall_hw.o \
        src/kernel/syscall_vm.o \
-       src/kernel/ramfs.o \
        src/kernel/storage.o \
        src/kernel/crypto.o \
        src/kernel/tpm.o \
@@ -713,6 +712,12 @@ RAMFS_SLOT3_GATE ?= 0
 ifeq ($(RAMFS_SLOT3_GATE),1)
 CFLAGS  += -DRAMFS_SLOT3_GATE
 ASFLAGS += -DRAMFS_SLOT3_GATE
+# The in-kernel ramfs is built ONLY for this control arm. Its ring-3 surface was
+# retired with [H-3] and its last real consumer -- the user database save/load
+# pair -- was deleted 2026-08-22 as code that had never run, so nothing in the
+# ship build references it. It survives here because the arm restores those four
+# gates and a gate needs something behind it to be worth restoring.
+OBJS += src/kernel/ramfs.o
 endif
 
 # PASSWD_PROBE=1 embeds a ring-3 task that runs as the ordinary uid-1000 account
@@ -3744,17 +3749,18 @@ smoke-passwd-probe:
 		FAIL_MARKER='PASSWDPROBE: FAIL' \
 		tools/smoke_test.sh boot.iso
 
-# Control arm. RAMFS_SLOT3_GATE=1 restores the four slot-3 gates; an ordinary
-# uid-1000 task with no delegated capability then opens the user database file,
-# reads bytes out of it, creates a file and lists the store. The FAIL marker
-# must be PRESENT.
+# Control arm. RAMFS_SLOT3_GATE=1 restores the four slot-3 gates AND rebuilds the
+# in-kernel ramfs they lead to (it is out of the ship build entirely since its
+# last consumer was deleted); an ordinary uid-1000 task with no delegated
+# capability then opens a seeded file, reads bytes out of it, creates a file and
+# lists the store. The FAIL marker must be PRESENT.
 .PHONY: smoke-passwd-probe-control
 smoke-passwd-probe-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1 RAMFS_SLOT3_GATE=1
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1 RAMFS_SLOT3_GATE=1 boot.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='PASSWDPROBE: FAIL opened-the-user-database' \
+		REQUIRE_MARKER='PASSWDPROBE: FAIL opened-a-ramfs-file' \
 		tools/smoke_test.sh boot.iso
 	@echo "PASSWD PROBE CONTROL: PASS - slot-3 gated, an ordinary user reads the store"
 

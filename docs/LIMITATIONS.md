@@ -293,6 +293,14 @@ PASSWDPROBE: fs_list -> 38 ... store contains: hello.txt
 PASSWDPROBE: FAIL 4 of 4 doors open
 ```
 
+> *Corrected 2026-08-22: the user database is no longer behind these gates at all. The
+> save/load pair that put it there was deleted as code that had never run (§2.6), so what the
+> control arm now reaches is an ordinary seeded demo file. **[H-3]** and **S28** are unchanged —
+> the property was never about what happened to be stored there, and a gate satisfied by a
+> capability every task already holds is not a gate whatever sits behind it. The probe's first
+> check was retargeted accordingly; against `"passwd"` it would now pass trivially in both arms,
+> which is a required gate measuring nothing.*
+
 **What it did NOT disclose, and why that is luck rather than design.** `users_save_to_ramfs`
 writes the database as `"passwd"`, and every record carries `salt[16]` and `pass_hash[32]` —
 the complete input to an offline dictionary attack against every account including root. Those
@@ -658,27 +666,48 @@ kernel can **name** at once. The untyped region bounds how many a given authorit
 **create**, and only the second is a security property — but the first is what a real workload
 meets first.
 
-### 2.6 `ramfs_write` ignores position, so the user database has never persisted
+### 2.6 User accounts do not survive a reboot
 
-*Found 2026-08-22 alongside **[H-3]**; not fixed here.*
+*Restated 2026-08-22. This section previously read "`ramfs_write` ignores position, so the user
+database has never persisted", which was true and was only one of three reasons.*
 
-`ramfs_write` (`src/kernel/ramfs.c:89`) takes no offset. It `memcpy`s to `data[0]` and sets
-`size = len` on every call. `users_save_to_ramfs` issues four sequential writes — magic, count,
-each account record, then the HMAC tag — so **only the last survives**, and the file holds 32
-bytes of tag and nothing else.
+`users_init` seeds `root` and `user` from compile-time constants on every boot. `useradd`,
+`userdel` and `passwd` take effect immediately and are gone at the next power cycle. The audit
+log is the only durable record that an account ever existed.
 
-Three consequences, none of them security-critical now that **[H-3]** is closed, all of them
-real:
+The mechanism that was supposed to prevent this — `users_save_to_ramfs` / `users_load_from_ramfs`
+— was **deleted on 2026-08-22 as code that had never run**. Three independent reasons, any one
+of which was fatal:
 
-- The user database has never actually persisted. `users_load_from_ramfs` cannot find a header
-  it recognises, so it always falls through to the seeded defaults.
-- The tamper-evident `userdb_tag_valid` check therefore guards a record that is never loaded.
-- `ramfs_create` records `owner_uid` and **nothing ever reads it**, so the field has never been
-  an access control of any kind.
+1. `ramfs_write` took no offset: it wrote to `data[0]` and set `size = len` on every call, so
+   of the four writes the save made only the last survived. `ramfs_read` had no position
+   either, so the load's sequential reads were equally broken.
+2. Nothing persisted the ramfs — `ramfs_files[]` is `.bss` — and `users_load_from_ramfs` was
+   called exactly once, from `users_init`, at boot, when that table is still zeroed. It opened
+   nothing and returned immediately, every boot, since it was written.
+3. **Password hashes are boot-local by construction.** `kernel_pepper` is fresh random bytes
+   every boot and feeds `strong_password_hash` both when a password is set and when it is
+   verified, so a hash from one boot cannot verify in the next *whatever it is stored in*. The
+   integrity tag was MAC'd under the same pepper, so even a correctly written file could never
+   have validated across a reboot.
 
-Left unfixed deliberately: repairing the write path would make the database genuinely persist,
-which is a change to user-account semantics and wants its own gate. It is recorded here so that
-whoever does it knows **[H-3]** is what stands between that fix and a disclosure.
+**Reason 3 is the one that matters for fixing it**, and it is a property of the hash rather
+than of the storage: persisting the database is not sufficient and not even meaningful while
+the pepper is per-boot. The intended fix is to TPM-seal the pepper under `PolicyPCR(8,9)`,
+reusing what `storage.c` already does for the volume KEK — so a stolen disk yields hashes that
+cannot be attacked offline without also defeating measured boot. Note that
+`fs_superblock.kek_salt` already excludes the pepper, with the comment *"must be reproducible
+across reboots from the same pwd"*: the same conclusion, reached earlier, one field away.
+
+On a machine with no TPM — which is the default QEMU boot — there is no sealed pepper and
+accounts will still not persist. That fallback is where the property weakens and it will be
+stated here rather than implied when the fix lands.
+
+**A related limitation, orthogonal and pre-existing:** only one password can unlock the volume.
+The KEK derives from a password plus `kek_salt`, fixed when the volume was formatted, so a
+second user's login calls `storage_unlock` and its return value is discarded
+(`src/kernel/kusers.c`). Multi-user volume access needs LUKS-style keyslots and is its own
+change.
 
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 

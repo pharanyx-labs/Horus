@@ -1620,9 +1620,22 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 73 gating and 4 exempted, and the promotions are backed by
+              intended set is 89 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
+            </p>
+            <p>
+              <strong>A required check can also be required and unable to fail.</strong> One of
+              them was, for as long as it took to notice. A job kept from its advisory days the
+              one line that tells GitHub to report it green whatever its steps did; the change
+              that promoted it edited the decision file and the ruleset and never opened the
+              workflow, and a later change rewrote that job's <em>name</em> one line above to
+              delete the word ADVISORY — and left the line. It was not idle: the job failed twice
+              on the main branch inside runs reported green, and the daily ruleset audit could not
+              see it, because that audit compares the <em>names</em> of checks and a masked job
+              publishes the right name with the wrong verdict. Since 2026-08-22 the classifier
+              refuses the combination outright, so a gate cannot be required and unfailable at the
+              same time.
             </p>
             <p>
               The ruleset was synced toward that set on 2026-08-16, from <strong>22 required

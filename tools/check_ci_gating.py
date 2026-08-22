@@ -85,6 +85,22 @@ def load_jobs(path):
     return out
 
 
+def load_job_masks(path):
+    """Map job id -> its JOB-LEVEL `continue-on-error` value (absent => None).
+
+    Job-level `continue-on-error: true` makes GitHub publish the check run as
+    SUCCESS however the steps exited, so a branch ruleset that requires the
+    context is satisfied by a job that failed every step. Step-level
+    `continue-on-error` is a different thing and stays allowed: it lets one step
+    inside a job be advisory while the job's own status still reports the truth,
+    which is how the `security` job keeps its scanners advisory without becoming
+    unfailable itself.
+    """
+    doc = yaml.safe_load(open(path))
+    return {jid: (spec or {}).get("continue-on-error")
+            for jid, spec in doc["jobs"].items()}
+
+
 def read_ruleset():
     raw = subprocess.run(["gh", "api", RULESET], capture_output=True,
                          text=True, check=True).stdout
@@ -160,13 +176,14 @@ def main():
                          "gh token). Prints the promotions and demotions first.")
     args = ap.parse_args()
 
-    jobs = {}
+    jobs, masks = {}, {}
     for wf in WORKFLOWS:
         for jid, contexts in load_jobs(wf).items():
             if jid in jobs:
                 sys.exit(f"check_ci_gating: job id '{jid}' is defined in more than "
                          f"one workflow; ids must be unique across {WORKFLOWS}")
             jobs[jid] = contexts
+        masks.update(load_job_masks(wf))
     gating = yaml.safe_load(open(GATING_YML)) or {}
     advisory = gating.get("advisory") or {}
     required_ids = set(gating.get("required") or [])
@@ -232,6 +249,31 @@ def main():
                     f"job '{jid}' has a {len(ctx)}-character name; GitHub "
                     f"truncates a status-check context at {CONTEXT_MAX}, so the "
                     f"ruleset can never match it. Shorten the name.")
+
+    # A REQUIRED job that carries job-level `continue-on-error: true` is a gate
+    # that cannot fail. GitHub reports the check run as SUCCESS regardless of how
+    # the steps exited, so the ruleset's requirement is satisfied by a job whose
+    # every step failed -- and the classification this file exists to make
+    # explicit is silently undone one directory away.
+    #
+    # This is not hypothetical. `smoke-kstack-park` was promoted to required in
+    # #190, which edited .github/ci-gating.yml and did not touch ci.yml; the
+    # `continue-on-error: true` it carried while it was advisory stayed. #191 then
+    # rewrote the job NAME one line above it to delete the word ADVISORY and left
+    # the line itself in place. From the promotion until this check existed the
+    # job could not fail a merge, and it duly failed on `main` (9476799, the
+    # control arm not reproducing in 8 boots) inside a run GitHub reported green.
+    #
+    # Deliberately job-level only: see load_job_masks.
+    for jid in sorted(required_ids):
+        if jid not in jobs:
+            continue
+        if masks.get(jid) not in (None, False):
+            problems.append(
+                f"required job '{jid}' carries job-level continue-on-error "
+                f"({masks[jid]!r}), so its status check reports success however "
+                f"it exits -- a required gate that cannot fail. Remove it, or "
+                f"move the job to advisory: with a reason")
 
     # An entry naming a job that no longer exists is how this file would rot into
     # fiction, so it is an error rather than a warning.

@@ -27,6 +27,29 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **`smoke-kstack-park-control` asserted a probabilistic event from a single boot**, and had
+  been merge-gating for one day when it reddened an unrelated PR. A *shared* park needs two
+  CPUs to reach the park path in the same boot, which is a property of the schedule rather than
+  of the build: measured 2026-08-22 it reproduces **9 boots in 12** on a feature branch and
+  **10 in 12** on unmodified `main`, and every miss recorded exactly one park in the whole boot
+  — the collision was impossible there, not merely unobserved. So a one-boot assertion is
+  about 25% red. It now boots up to `KSTACK_PARK_CONTROL_BOOTS` (8) times and stops at the
+  first reproduction, which is the shape `smoke-kstack-race-control` has carried since
+  2026-08-19 for exactly this reason ("never assert a probabilistic event from one boot"); the
+  arm next door simply never got it. Nothing is weakened — the assertion is still that the
+  defect MUST reproduce, drawn from a sample large enough to mean it. At 75%/boot a clean sweep
+  of 8 is ~1 run in 65000. **Falsified in the other direction**: against the *fixed* park path
+  with tracing on, 8 boots produced 32 parks and no shared stack, so the loop still goes red
+  when the defect is absent rather than being a way to pass.
+- **That arm also scored its own strongest reproductions as misses.** It gated on duplicated
+  `PARKTRACE` lines and deliberately excluded the kernel's collision PANIC, on the grounds that
+  the PANIC needs both CPUs parked at the same instant. But `sched_note_park` *halts* the
+  machine on detecting the second CPU, so on precisely those boots the second `PARKTRACE` line
+  is never printed and the duplicate test sees one. Observed on 2026-08-22: a boot whose log
+  carried `PANIC: two CPUs parking on one kernel stack` was scored as no reproduction. Either
+  signal now counts; the PANIC cannot be a false positive, because it is the kernel observing
+  the exact event asserted.
+
 - **`smoke-kstack-race` went red on `main` after the [G-9] fix, and it was a real
   regression rather than a flake.** That fix needed one property — the claim auditor's
   exemption must outlive the claim release — but it also moved the `g_kstack_inflight`

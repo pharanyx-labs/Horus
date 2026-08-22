@@ -1686,6 +1686,46 @@ void libhorus_selftest(void) {
 }
 #endif /* LIBHORUS_SELFTEST */
 
+#ifdef PASSWD_PROBE
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* Spawn one ring-3 task endowed with NOTHING and let it try to read the user
+ * database. uid 0 is set only to show it is irrelevant -- the path under test
+ * consults no uid. */
+void passwd_probe_selftest(void) {
+    extern uint8_t embedded_passwdprobe_bin_start[], embedded_passwdprobe_bin_end[];
+    extern int do_passwd(uint32_t target_uid, const char *new_password);
+    print("PASSWD_PROBE: begin\n");
+
+    /* Establish the ORDINARY precondition, in kernel context so the probe's own
+     * timing is not dominated by Argon2: somebody has changed a password in
+     * this boot. That is the only thing that puts the user database into the
+     * ramfs -- users_init only ever LOADS from it, and nothing persists the
+     * ramfs to disk, so before the first change the file does not exist.
+     *
+     * This is not privilege the probe is being lent. do_passwd permits a user
+     * to change their OWN password with no admin right at all, so any account
+     * on the system can reach this state unaided; doing it here just keeps the
+     * expensive hash off the path under test. */
+    if (do_passwd(0, "rootpass2") != 0) {
+        print("PASSWDPROBE: FAIL could not establish the precondition\n");
+        for (;;) asm volatile("hlt");
+    }
+    print("PASSWD_PROBE: a password was changed; the database is now in the ramfs\n");
+    int t = fs_spawn_embedded(embedded_passwdprobe_bin_start,
+                              embedded_passwdprobe_bin_end, "passwdprobe");
+    if (t <= 0) { print("PASSWDPROBE: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    /* uid 1000, the ordinary "user" account -- NOT root. The point is that no
+     * privilege of any kind is needed, so giving the probe uid 0 would weaken
+     * the demonstration rather than strengthen it. It is endowed with no
+     * capability at all beyond what create_task hands every task. */
+    tasks[t].uid = 1000;
+    tasks[t].gid = 100;
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(t);
+}
+#endif /* PASSWD_PROBE */
+
 #ifdef FRAME_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Frame-capability self-test (FRAME_SELFTEST builds only) ----------------
@@ -1868,7 +1908,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

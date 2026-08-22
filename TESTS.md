@@ -1071,10 +1071,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **85** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **86** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **87** jobs, **90** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **88** jobs, **91** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1126,7 +1126,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **87 required contexts and 3 reasoned exemptions** — read off
+The intended set is **88 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1285,6 +1285,33 @@ third drifting.
 ---
 
 ## The shared userspace runtime
+
+### `smoke-passwd-probe` — the in-kernel ramfs is unreachable from ring 3
+
+Roadmap 2.4's first gate, and it exists because of what orienting on 2.4 turned up: four paths
+into the in-kernel ramfs authorised on cspace slot 3 with `SC_ANYTYPE`, which the legacy
+`CAP_FRAME` in every task satisfies (**[H-3]**).
+
+A ring-3 task runs as the ordinary uid-1000 account with no capability anyone delegated to it,
+and asserts four refusals: it cannot open the file `kusers.c` writes the user database into,
+cannot read bytes out of any ramfs fd, cannot create a file, and cannot list the store. The
+harness changes a password before spawning it — the ordinary self-service operation any account
+may perform on itself — because that is what puts the database into the ramfs at all.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-passwd-probe` | `PASSWDPROBE: PASS` present, no `FAIL` | passes; all four return `SYS_ERR_NOSYS` |
+| `smoke-passwd-probe-control` (`RAMFS_SLOT3_GATE=1`) | `FAIL opened-the-user-database` present | passes; all **4 of 4 doors open**, and `smoke-passwd-probe` goes red under the same flag |
+
+**The control arm reads out more than the base arm asks about**, which is why it prints what it
+finds rather than only whether it succeeded: it recovered 24, 64 and 32 bytes from three
+separate ramfs files and enumerated the store. A gate whose control arm only answers yes/no
+would have reported one open door instead of four.
+
+**What the finding did not disclose, and why that is luck.** The 32 bytes from the
+user-database file are the trailing HMAC tag, not the `salt[16]` + `pass_hash[32]` records,
+because `ramfs_write` takes no offset and rewrites from byte 0 on every call
+(`docs/LIMITATIONS.md` §2.6). The hashes were one bug-fix away from being world-readable.
 
 ### `smoke-frame` — a frame capability names an object, and a delegate maps only what it holds
 

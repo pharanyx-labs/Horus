@@ -124,7 +124,7 @@ uncovered:
   SYS_READ: >-
     fd 0 refuses under console_hw_owned() for the same reason as SYS_GET_LINE, and neither workload drives an fd>=3 ramfs read
   SYS_OPEN: >-
-    ramfs open; the shell uses the fs_server IPC path instead
+    RETIRED 2026-08-22 ([H-3]). Its dispatch entry now exists only under RAMFS_SLOT3_GATE=1, so in the ship build the syscall fails closed at SYS_ERR_NOSYS and no workload can enter the handler. NOTE the derivation counts it anyway: _syscalls_implemented reads the table as TEXT and does not evaluate the preprocessor, so a conditionally-compiled entry still counts toward `implemented`. That overstates the ship build by three (SYS_OPEN, 15, 16) and is the same class of blind spot as the bare-numeric-literal one recorded above -- worth fixing in the deriver rather than papering over per entry
   SYS_EXEC: >-
     MEASURED 2026-08-20: NOT entered by any of PROC_SELFTEST, SIGNAL_SELFTEST, PREEMPT_SELFTEST, IRQ_SELFTEST or IRQ_POLICY_AUDIT. No build in this tree is known to reach it
   SYS_IPC_REPLY: >-

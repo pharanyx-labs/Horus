@@ -186,6 +186,14 @@ forbidden:
       The `|| true` on `make test` was removed 2026-08-16; the exit status is
       real. Any document describing it as still swallowed is stale.
 
+  - pattern: 'The complete residual list, so that nobody has to take the absolute phrasing on trust'
+    reason: >-
+      That table listed four paths gated on NOTHING and missed four gated on a
+      capability equivalent to nothing -- SYS_OPEN, ramfs create/list and
+      SYS_READ fd>=3, all on cspace slot 3 with SC_ANYTYPE ([H-3], 2026-08-22).
+      A list that calls itself complete must have been derived from the dispatch
+      table, not read off it by eye. Reworded rather than re-asserted.
+
   - pattern: 'ROOT ONLY \(uid==0\)'
     reason: >-
       SYS_DMESG has been gated on CAP_KERNEL_LOG + READ since [I-1]; the

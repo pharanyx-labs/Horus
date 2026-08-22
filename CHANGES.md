@@ -27,6 +27,26 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **[H-3] Four paths into the in-kernel ramfs were gated on the [C-1] decoy, and one of them
+  is where the user database lives.** `SYS_OPEN`, syscall 15 (ramfs create), syscall 16 (ramfs
+  list) and `SYS_READ`'s `fd >= 3` branch all authorised on cspace slot 3 with `SC_ANYTYPE` —
+  and slot 3 holds the legacy `CAP_FRAME` that `create_task` installs in every task, with
+  `READ|WRITE|EXEC`, asked for by nobody. A gate every task passes is not a gate. These were
+  the last four still wearing the shape that made **[C-1]** reachable, and they survived
+  **[I-1]** and **[H-1]** because those swept for authority derived from *identity*, and
+  survived §1.6's own sweep because that looked for gates that were *absent*. A gate that is
+  present and vacuous matches neither search. Demonstrated from ring 3 as the ordinary uid-1000
+  account holding no delegated capability: opened the user-database file, read bytes out of
+  three ramfs files, created a file, listed the store. **Retired rather than re-gated**,
+  following syscalls 38–45 — the ramfs is a toy superseded by `fs_server`, nothing in ring 3
+  calls any of them, and an ABI kept alive for nobody is surface with no owner. `SECURITY.md`
+  **S28**; witness `make smoke-passwd-probe`, falsified by `RAMFS_SLOT3_GATE=1`.
+- **`docs/LIMITATIONS.md` §1.6's "complete residual list" was not complete.** It named the four
+  paths gated on *nothing* and missed the four gated on a capability *equivalent to* nothing.
+  Corrected, with the generalisation written down: "ungated" and "gated on something every task
+  holds" are the same security property and were being counted differently.
+
+
 - **`smoke-kstack-park-control` asserted a probabilistic event from a single boot**, and had
   been merge-gating for one day when it reddened an unrelated PR. A *shared* park needs two
   CPUs to reach the park path in the same boot, which is a property of the schedule rather than

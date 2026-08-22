@@ -186,7 +186,9 @@ runs that control arm and fails if the tests pass against it.
 
 **[I-1]** and **[H-1]** removed authority derived from *identity*. They did not remove
 authority derived from *nothing*, and README and the website have both stated the stronger
-claim. The complete residual list, so that nobody has to take the absolute phrasing on trust:
+claim. The residual paths, so that nobody has to take the absolute phrasing on trust — and
+note what this list is derived from, because that is what it got wrong: it enumerates gates
+that are **absent**, and a gate can also be **present and vacuous**. See §1.6a:
 
 | Path | Gate | Assessment |
 |---|---|---|
@@ -194,6 +196,14 @@ claim. The complete residual list, so that nobody has to take the absolute phras
 | `SYS_WRITE` fd 1 → `klog` | `CAP_KERNEL_LOG` + `CAP_RIGHT_WRITE` | **Fixed 2026-08-20** — **[H-2]**, below |
 | `SYS_READ` fd 0 / `SYS_GET_LINE` | none, but both refuse once `console_hw_owned()` | Correctly mitigated; the guard is present and deliberate |
 | `SYS_SYSINFO` | none | A version string. Acceptable, and marked ambient in `SYSCALLS.md` |
+| `SYS_OPEN`, `15` (ramfs create), `16` (ramfs list), `SYS_READ` fd ≥ 3 | cspace slot 3, `SC_ANYTYPE` | **Missing from this table until 2026-08-22, and the omission is the point** — see **[H-3]** below. Slot 3 holds the legacy `CAP_FRAME` every task is born with, so all four were gated on nothing. **Fixed 2026-08-22**: retired |
+
+> *This table was headed "the complete residual list" from 2026-08-20 and was not complete: it
+> named the four paths gated on **nothing** and missed the four gated on a capability that is
+> **equivalent to nothing**, which is a harder thing to see and the reason the audit that
+> produced this section looked for the first shape only. The lesson generalises past the four
+> rows: **"ungated" and "gated on something every task holds" are the same security property
+> and were being counted differently.***
 
 **[H-2]** was the one with teeth, and it was an asymmetry rather than an oversight in
 isolation: the *read* side of the kernel log was converted to require `CAP_KERNEL_LOG` under
@@ -246,6 +256,67 @@ still advancing the ring would lose the marker.
 > capability. The capability turned out to be the cheap one too — the gate is four lines —
 > because the rights that make it fail closed were already minted correctly in 2026-07-27's
 > root cnode and nobody had asked what they implied.*
+
+### 1.6a ~~Four paths into the in-kernel ramfs were gated on the [C-1] decoy~~ — **[H-3] FIXED 2026-08-22**
+
+*Found 2026-08-22 while orienting on roadmap 2.4, not by an audit.*
+
+Four paths authorised on cspace **slot 3** with `SC_ANYTYPE`:
+
+```c
+[SYS_OPEN] = { h_open,         3, CAP_RIGHT_READ,  SC_ANYTYPE }
+[15]       = { h_ramfs_create, 3, CAP_RIGHT_WRITE, SC_ANYTYPE }
+[16]       = { h_fs_list,      3, CAP_RIGHT_READ,  SC_ANYTYPE }
+h_read, fd >= 3:  cap_lookup(3, CAP_RIGHT_READ)   /* inline, same decoy */
+```
+
+Slot 3 holds the `CAP_FRAME` that `create_task` installs in **every** task —
+`READ|WRITE|EXEC`, naming a fixed window, asked for by nobody — and `SC_ANYTYPE` accepts any
+type. So all four were satisfied by a capability nobody requested and everybody has. This is
+**[C-1]**'s shape exactly: the pre-C-1 dispatch table gated IPC on slot 3 for the same reason,
+and these were the last four gates still wearing it. They survived **[I-1]** and **[H-1]**
+because both of those swept for authority derived from *identity*, and survived §1.6's own
+sweep because that looked for gates that were *absent*. A gate that is present and vacuous
+matches neither search.
+
+**Demonstrated, not inferred.** A ring-3 task running as the ordinary uid-1000 account, holding
+no capability anyone delegated to it, opened the file `kusers.c` writes the user database into,
+read bytes out of three separate ramfs files, created a file of its own, and listed the store:
+
+```
+PASSWDPROBE: sys_open("passwd") -> 5
+PASSWDPROBE: sys_read(fd=3) returned 24 bytes
+PASSWDPROBE: sys_read(fd=4) returned 64 bytes
+PASSWDPROBE: sys_read(fd=5) returned 32 bytes
+PASSWDPROBE: ramfs_create -> 6
+PASSWDPROBE: fs_list -> 38 ... store contains: hello.txt
+PASSWDPROBE: FAIL 4 of 4 doors open
+```
+
+**What it did NOT disclose, and why that is luck rather than design.** `users_save_to_ramfs`
+writes the database as `"passwd"`, and every record carries `salt[16]` and `pass_hash[32]` —
+the complete input to an offline dictionary attack against every account including root. Those
+32 bytes the probe read are **not** the hashes: they are the trailing HMAC tag, because
+`ramfs_write` (§2.6 below) takes no offset and rewrites from byte 0 on every call, so only the
+last of the four writes survives. **The password hashes were one bug-fix away from being
+world-readable** — repair the write path and this open gate hands them out. That is the whole
+argument for closing the gate rather than treating the ramfs as harmless.
+
+#### The fix
+
+The three dispatch entries and the `fd >= 3` branch are **retired**, not re-gated, following
+syscalls 38–45: the in-kernel ramfs is a toy superseded by `fs_server`, no ring-3 program in
+this tree calls any of them, and an ABI kept alive for nobody is surface with no owner. An
+absent table entry fails closed at `SYS_ERR_NOSYS` by dispatch. The ramfs itself stays —
+`kusers.c` uses it internally — so what closed is the door, not the room.
+
+This is the opposite choice from **[H-2]**, where the authority was kept *expressible* and
+granted to nobody. The difference is that `CAP_KERNEL_LOG` names something a future userspace
+logger will want; nothing will ever want a second in-kernel filesystem while `fs_server` exists.
+
+Witness `make smoke-passwd-probe` — the probe above, asserting all four doors shut, 4 checks.
+Falsified by `RAMFS_SLOT3_GATE=1` (`make smoke-passwd-probe-control`), which restores the four
+gates verbatim and reproduces all four openings on every boot.
 
 ### 1.7 ~~Two syscall wrappers truncated their buffer pointer to 32 bits~~ — **FIXED 2026-08-20** — issue #176
 
@@ -587,6 +658,28 @@ kernel can **name** at once. The untyped region bounds how many a given authorit
 **create**, and only the second is a security property — but the first is what a real workload
 meets first.
 
+### 2.6 `ramfs_write` ignores position, so the user database has never persisted
+
+*Found 2026-08-22 alongside **[H-3]**; not fixed here.*
+
+`ramfs_write` (`src/kernel/ramfs.c:89`) takes no offset. It `memcpy`s to `data[0]` and sets
+`size = len` on every call. `users_save_to_ramfs` issues four sequential writes — magic, count,
+each account record, then the HMAC tag — so **only the last survives**, and the file holds 32
+bytes of tag and nothing else.
+
+Three consequences, none of them security-critical now that **[H-3]** is closed, all of them
+real:
+
+- The user database has never actually persisted. `users_load_from_ramfs` cannot find a header
+  it recognises, so it always falls through to the seeded defaults.
+- The tamper-evident `userdb_tag_valid` check therefore guards a record that is never loaded.
+- `ramfs_create` records `owner_uid` and **nothing ever reads it**, so the field has never been
+  an access control of any kind.
+
+Left unfixed deliberately: repairing the write path would make the database genuinely persist,
+which is a change to user-account semantics and wants its own gate. It is recorded here so that
+whoever does it knows **[H-3]** is what stands between that fix and a disclosure.
+
 ---
 
 ## 3. Scale and performance limitations
@@ -699,8 +792,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **85** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **87** across the three, producing **90** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **86** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **88** across the three, producing **91** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -731,7 +824,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **87 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **88 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

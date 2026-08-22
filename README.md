@@ -88,10 +88,10 @@ a syscall number without adding its table entry.
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
 boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 84 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 85 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 86 of its 89 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 87 of its 90 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
@@ -132,8 +132,8 @@ per item.
 | Subsystem | State |
 |---|---|
 | **Boot** | Multiboot2 via GRUB, higher-half 64-bit kernel at `KERNEL_VMA`, physical pool sized from the E820 map |
-| **Memory** | Per-task 4-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X, unmapped stack guard pages, 30-bit userspace ASLR |
-| **Capabilities** | 16 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop |
+| **Memory** | Per-task 4-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X, unmapped stack guard pages, 30-bit userspace ASLR, frame capabilities with capability-mediated shared memory |
+| **Capabilities** | 16 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop; kernel objects — cspaces, endpoints, notifications and memory frames — retyped out of untyped memory a task must hold authority over |
 | **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
 | **SMP** | Default on; ACPI MADT enumeration, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
 | **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, a blocking receive that sleeps on an empty queue, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
@@ -143,6 +143,13 @@ per item.
 | **Boot integrity** | SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 8 and 9; vdisk KEK sealed under `PolicyPCR` |
 | **Userspace** | newlib libc, a shell with pipelines, GNU coreutils, TCC |
 | **Security core** | `no_std` Rust: ELF parsing and relocation, capability algebra, ChaCha20 CSPRNG, BLAKE2b/SHA-256, AEAD, Argon2 |
+
+**Memory is shared by capability.** A page of shared memory is a `KOBJ_FRAME` retyped out of
+an untyped region the creator holds authority over, named by a `CAP_FRAME`, and mapped with
+`SYS_MAP_FRAME` into the caller's own address space. Two mutually distrusting tasks reach the
+same physical page at two virtual addresses of their own choosing, and the PTE each one gets
+is bounded by the rights on the capability it holds — so "you may read this page but not write
+it" is expressible, and is what `smoke-frame` asserts on every boot.
 
 **IPC is capability-addressed.** Every IPC syscall takes a cspace slot; the kernel derives
 the endpoint or notification from the capability there, checking its type, the right for the
@@ -289,7 +296,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 84 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 85 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

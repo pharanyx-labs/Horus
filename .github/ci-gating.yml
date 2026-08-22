@@ -104,6 +104,11 @@ required:
   # the one gate that covers all four servers' shared runtime at once -- and
   # it carries the only executable witness for the IPC refusal contract.
   - libhorus
+  # Gating. It carries S26 and S27, and the arm that matters is not the feature
+  # but the trap: CAP_FRAME existed as a decoy in slot 3 of every task long
+  # before it meant anything, and it is the same capability that made [C-1]
+  # reachable. This is the check that it maps nothing.
+  - frame
   # Gating. It guards the class that produced [G-9]: a claim orphaned because a
   # path reached ring 3 without paying its deferred release. The periodic audit
   # structurally cannot catch that, so this is the only check that can.

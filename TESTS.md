@@ -879,7 +879,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `gate-pairs` | **The coverage question applied to the gates themselves.** `tools/check_gate_pairs.py` enforces four structural rules, each violated at least once in this tree: a control arm must extend a base gate that exists; a control arm must actually be invoked by CI; a gate must be invoked or listed in `.github/gate-exceptions.yml` with a reason; and an exception must name a real target and give one. Source analysis, no build. Falsified all four ways — orphan arm, unrun arm, stale exception, empty reason. It was written because `smoke-ksp-guard-control` had **no positive counterpart**: an arm proving the guard *could* fire, with nothing asking whether it stayed silent on a legal value. |
 | `smoke-ksp-guard` | The **false-positive** arm for the producer-side resume-`%rsp` guard, and the direction whose absence is a known way to ship a regression. Every other arm on this guard injects a bogus value and asks whether it fires — they measure false *negatives*, and a predicate that rejected every stack pointer would satisfy all of them. This boots the **default** workload, where every resume value is legal, and requires `SCHED BOGUS KSP` to be **absent**. Falsified by `KSP_GUARD_ALWAYS=1`, which makes `ksp_is_bogus()` reject everything: the guard then fires on a legitimate address (`ipc_block_switch task=2 ksp=0xffffffff8020cf40`) and the gate goes red. The default workload rather than `PROC_SELFTEST` on purpose — the latter still trips [G-9] on ~1–2% of boots and would make this intermittently red for an unrelated reason. |
 | `smoke-ksp-guard-control` | **[G-9]**, producer side. All four switch functions (`preempt_on_tick`, `ipc_block_switch`, `sched_yield_switch`, `task_exit_switch`) end in the same three lines — take `tasks[next].saved_ksp`, drop the lock, return it — and every selection loop above them required that value to be merely **non-zero**. Each now validates it **against the page tables** (`kern_addr_present`), not an address range: `per_task_kstacks`, `ap_idle_stacks` and `ap_ist` all live inside `[__bss_start, __bss_end)` and their guards are armed by being made *absent*, so a pointer sitting in a guard page passes every range test in the tree. Both the value and the byte 8 below it are checked, since that is where the epilogue pushes. On failure it names the producing function and returns 0, so the caller parks instead of `iretq`-ing onto it. `KSP_GUARD_INJECT=1` forges `-7` and requires `SCHED BOGUS KSP from task_exit_switch` on the wire. **A detector, not a fix** — across 57 pinned boots containing a live reproduction it did not fire once, which is what rules those four producers out. |
-| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` — the scripted ring-3 session, the conformance suite, and the boot-modules session — and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **51 of 76** implemented syscalls. It does not demand 76 of 76; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all — that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
+| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` — the scripted ring-3 session, the conformance suite, and the boot-modules session — and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **51 of 81** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all — that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
 | `syscall-abi` | **Issue #176**, property **S24**. `tools/check_syscall_abi.py` parses `include/syscall.h` and requires every pointer argument of every inline wrapper to reach `syscall()`/`syscall6()` full-width. Source analysis, no build, no QEMU — which is the point: a runtime gate only covers the syscalls some probe happens to call, and this covers all 46 pointer arguments including wrappers nothing calls yet. Falsified two ways: narrowing one wrapper's pointer (names the wrapper), and narrowing `SYSCALL_UPTR`'s own default definition — the obvious way to defeat a per-wrapper check, so it is checked separately. |
 | `smoke-klog-forge-abi-control` | Control arm for the above at runtime. `SYSCALL_PTR_TRUNC32=1` restores the truncating wrappers; the probe's buffer is a static, so it is above 4 GiB and gets truncated, and `KLOGTEST: FAIL setup dmesg rc=-14` must come back. Measured **3 boots in 3**. This arm is also what stops `smoke-klog-forge` from quietly losing half its coverage: if the probe's buffer ever moves back to the stack the truncation becomes a no-op, this arm goes green, and the failure is visible instead of silent. |
 | `smoke-klog-forge-control` | Control arm. `KLOG_WRITE_UNGATED=1` restores the unconditional `klog_append` on the ring-3 write path; `KLOGTEST: FAIL forged+evicted` must come back, and `smoke-klog-forge` must go red under the same flag. Measured **3 boots in 3** — one boot is enough because the defect is not a race. **Both halves are evaluated before either is reported**, which is what makes this arm exercise both branches rather than only the first in source order. That matters: a fix that merely rate-limited ring-3 appends would keep the marker and still leak the forgery, and one that dropped the bytes while still advancing the ring would lose the marker, so an assertion on either half alone passes a half-fix. |
@@ -1071,10 +1071,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **84** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **85** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **86** jobs, **89** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **87** jobs, **90** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1126,7 +1126,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **86 required contexts and 3 reasoned exemptions** — read off
+The intended set is **87 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1285,6 +1285,54 @@ third drifting.
 ---
 
 ## The shared userspace runtime
+
+### `smoke-frame` — a frame capability names an object, and a delegate maps only what it holds
+
+Roadmap 2.1's gate. Two ring-3 tasks and one physical page: `frametest` holds a `CAP_UNTYPED`,
+retypes a `KOBJ_FRAME` out of it, maps it, and asserts every refusal the map path owes;
+`framepeer` holds **nothing** except the `READ`-only capability `frametest` mints and grants
+it, and proves both halves of what shared memory has to mean.
+
+**The check the whole design turns on is the decoy.** Every task in this system is born
+holding a `CAP_FRAME` in slot 3 — `READ|WRITE|EXEC`, object `USER_AREA_BASE`, installed by
+`create_task`, identical in every task, asked for by nobody. It is the capability that made
+**[C-1]** reachable when the dispatch table gated IPC on slot 3. Giving `CAP_FRAME` a meaning
+put it back in play, so `frametest` calls `SYS_MAP_FRAME` on slot 3 on every boot and requires
+a refusal. It is refused because a frame capability names an **index** into a table the kernel
+populates and `USER_AREA_BASE` is not one — a bound, not an allowlist.
+
+**Both directions in one target.** A gate that only ever refuses is satisfied by a kernel that
+refuses everything, which is what `tools/check_gate_pairs.py` exists to reject, so the legal
+path is exercised too: the frame is mapped, written, read back, and then read by the *other
+task at a different virtual address*.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-frame` | `FRAMETEST: PASS` present, `FRAMETEST: FAIL` absent | passes, **3 boots in 3**; 17 parent checks + 5 peer checks, read off the wire |
+| `smoke-frame-index-control` (`FRAME_INDEX_UNCHECKED=1`) | `FRAMETEST: FAIL legacy-cap-mapped` present | passes, **3 boots in 3**; `smoke-frame` goes red under the same flag |
+| `smoke-frame-rights-control` (`FRAME_RIGHTS_UNCHECKED=1`) | `FRAMETEST: FAIL readonly-delegate-wrote` present | passes, **3 boots in 3**; `smoke-frame` goes red under the same flag |
+
+Three boots rather than a rate over hundreds, and that is a claim about the defects rather
+than about the effort: neither arm is a race. Both are deterministic properties of a build,
+observed identically on every boot, so the sample size that matters here is 1 and 3 is
+corroboration. Contrast `smoke-kstack-park`, where the underlying event is probabilistic and a
+single green boot says nothing.
+
+**The index arm reproduces the defect in its realistic form, not by deleting a check.** The
+shortcut a frame-mapping syscall invites is to put the physical address in
+`capability_t.object` and map it — one field, no table, no resolver — so that is what
+`FRAME_INDEX_UNCHECKED=1` builds. Simply removing the range test would have made
+`dyn_frames[0x400000 - 1]` a wild read that faults, and the arm would have measured the bounds
+check crashing rather than the authority being wrong.
+
+**The rights arm had to be re-aimed, and the first version could not have failed.** It was
+written against the `have & want` intersection in `frame_pte_flags`: build the PTE from `want`
+alone and see whether a `READ`-only delegate can write. It cannot, and neither can it under
+the fix — because `cap_lookup(slot, rights)` has already refused unless the capability holds
+at least every right requested, so `have & want == want` at every reachable call and the two
+builds produce the same PTE. The arm now removes the **floor** instead, which is the thing
+that actually decides. Recorded here because a control arm that cannot fail is indistinguishable
+from one that works until somebody tries to make it fire.
 
 ### `smoke-libhorus` — libhorus keeps its bounds, and refuses rather than spins
 

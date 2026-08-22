@@ -105,13 +105,35 @@ counts:
     derive: syscalls_covered
     occurrences:
       - file: SECURITY.md
-        pattern: '\*\*(\d+) of 76\*\*'
+        pattern: 'Currently \*\*(\d+) of \d+\*\* — the property'
       - file: TESTS.md
-        pattern: '\*\*(\d+) of 76\*\*'
+        pattern: 'Currently \*\*(\d+) of \d+\*\* implemented syscalls'
       - file: docs/LIMITATIONS.md
-        pattern: '\*\*(\d+) of 76\*\*'
+        pattern: 'gated since: \*\*(\d+) of \d+\*\* implemented syscalls'
       - file: site/index.html
-        pattern: '<strong>(\d+) of 76</strong>'
+        pattern: '<strong>(\d+) of \d+</strong> system calls'
+
+  # The DENOMINATOR of the four ratios above, which until 2026-08-22 was the
+  # literal `76` inside each of their patterns -- so the number every one of
+  # those sentences states was the one thing here that nothing checked. It was
+  # wrong when it was noticed: three syscalls with real handlers sat in the
+  # dispatch table as bare numeric literals (`[4]`, `[8]`, `[9]`), and the
+  # derivation reads `[SYS_NAME] = { handler`, so it could not see them. A claim
+  # whose denominator is hardcoded in its own checker is not a checked claim.
+  - id: syscalls_implemented
+    describe: dispatch-table entries with a real handler
+    derive: syscalls_implemented
+    occurrences:
+      - file: SECURITY.md
+        pattern: 'classifies all (\d+) implemented syscalls'
+      - file: SECURITY.md
+        pattern: 'Currently \*\*\d+ of (\d+)\*\* — the property'
+      - file: TESTS.md
+        pattern: 'Currently \*\*\d+ of (\d+)\*\* implemented syscalls'
+      - file: docs/LIMITATIONS.md
+        pattern: 'gated since: \*\*\d+ of (\d+)\*\* implemented syscalls'
+      - file: site/index.html
+        pattern: '<strong>\d+ of (\d+)</strong> system calls'
 
   - id: captest_checks
     describe: check() assertions in userspace/captest.c
@@ -163,6 +185,30 @@ forbidden:
     reason: >-
       The `|| true` on `make test` was removed 2026-08-16; the exit status is
       real. Any document describing it as still swallowed is stale.
+
+  - pattern: 'ROOT ONLY \(uid==0\)'
+    reason: >-
+      SYS_DMESG has been gated on CAP_KERNEL_LOG + READ since [I-1]; the
+      dispatch table is the truth and docs/SYSCALLS.md already said so. This
+      phrasing survived in include/syscall.h -- the header every userspace
+      program includes -- as the last ambient-uid-0 claim in the tree,
+      contradicting S18. Corrected 2026-08-22. No syscall in this system is
+      authorised by the caller's uid.
+
+  - pattern: 'demand 76 of 76|require 76 of 76|of 76\*\* implemented syscalls'
+    reason: >-
+      The implemented-syscall count was 76 only because three syscalls with real
+      handlers were bare numeric literals in the dispatch table and the
+      derivation could not see them. It is 81, and the denominator is a declared
+      claim now rather than a constant inside its own checker. Corrected
+      2026-08-22.
+
+  - pattern: 'receive still polls an empty queue instead of blocking'
+    reason: >-
+      SYS_IPC_RECV_BLOCK landed with roadmap 1.3 and sleeps on an empty queue;
+      smoke-recvblock proves it made exactly one receive syscall per message.
+      site/index.html still called it Partial on that ground. Corrected
+      2026-08-22.
 
   - pattern: 'host-side scratch code; built by no target and run by no workflow'
     reason: >-

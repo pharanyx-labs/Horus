@@ -37,7 +37,47 @@ performs its own check; the reason is noted per entry in `src/kernel/syscall.c`.
 - A compile-time assertion ties the table size to the highest syscall number, so adding a
   syscall without its entry is a build failure.
 
-> ### IPC arguments are cspace slots, not object indices
+> ### Frame capabilities and shared memory
+
+| # | Name | Arguments | Authorisation *(as checked)* |
+|---|---|---|---|
+| 4 | `SYS_CAP_MINT` | `dest_slot`, `src_slot`, `rights` | holding the source; `cap_mint` masks to `rights & src->rights` |
+| 95 | `SYS_MAP_FRAME` | `frame_slot`, `vaddr`, `rights` | `CAP_FRAME` at `frame_slot`, holding at least `rights` |
+| 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights |
+
+Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and
+here the alternative is not hypothetical: **every task is born holding a `CAP_FRAME` in slot
+3**, so a table entry reading `{ h_map_frame, CAPSLOT_FRAME, CAP_RIGHT_WRITE, CAP_FRAME }`
+would have type-checked, passed for every task in the system, and authorised nothing.
+
+**A `CAP_FRAME` names an index, not an address.** `capability_t.object` is an index into the
+frame table `SYS_RETYPE` populates, checked against `[DYN_FRAME_BASE, FRAME_INDEX_MAX)`. The
+shortcut — put the physical address in `object` and map it — would have been reachable on the
+first boot through that slot-3 capability, whose object is `USER_AREA_BASE`: it would ask the
+kernel to map physical `0x400000` into ring 3. The index makes that refusal a bound rather
+than an allowlist somebody remembered to write. See `SECURITY.md` **S26**.
+
+`SYS_MAP_FRAME` builds the PTE from `cap->rights & rights`, so a mapping can never carry
+authority the capability does not (**S27**). It refuses, without mapping anything: a
+capability of the wrong type or a dead frame index (`SYS_ERR_PERM` / `SYS_ERR_INVAL`), an
+address that is zero, misaligned, or in the kernel half (`SYS_ERR_INVAL`), an empty rights
+request (`SYS_ERR_INVAL` — x86-64 has no read-disable bit, so it names no mapping the hardware
+can express), `WRITE` and `EXEC` together (`SYS_ERR_INVAL`, W^X), and an address that is
+already mapped (`SYS_ERR_EXIST` — silently replacing a live PTE would drop that page's
+reference with nobody releasing it).
+
+`SYS_UNMAP_FRAME` requires the capability as well as the address, and the PTE at `vaddr` must
+name *that* capability's frame. Without it, an address-only unmap would let any task punch a
+hole in its own image, stack, or heap — pages it holds no frame capability for.
+
+**`SYS_CAP_MINT` is the only rights-reducing operation ring 3 has.** `SYS_CAP_GRANT` copies
+the source's rights whole (it passes `CAP_RIGHT_ALL` and `cap_grant_into` masks to the
+source), so sharing a page read-only is mint-then-grant: narrow a copy in your own cspace,
+then delegate the narrowed slot. Syscall 4 is not new — it has been in the dispatch table
+since the beginning as an unnamed numeric entry — but roadmap 2.1 is the first time anything
+in ring 3 could call it, so it was unnameable from `include/syscall.h` until then.
+
+## IPC arguments are cspace slots, not object indices
 >
 > Every IPC syscall's first argument is a **cspace slot**. The kernel resolves it through
 > `ipc_ep_from_slot` / `ipc_notif_from_slot`, checking the capability's type, the right for
@@ -222,9 +262,14 @@ both are `SC_NONE` in the dispatch table. A fixed table slot would repeat findin
 gating on a capability every task happens to hold while never consulting the one that names
 the resource.
 
-`kobj_type` is `KOBJ_ENDPOINT` (2) or `KOBJ_NOTIFICATION` (3). `KOBJ_CNODE` (1) is allocatable
-by the kernel but **refused to ring 3**: no capability type names a CNode and no syscall
-installs one as a task's cspace, so minting one would be authority with no defined meaning.
+`kobj_type` is `KOBJ_ENDPOINT` (2), `KOBJ_NOTIFICATION` (3) or `KOBJ_FRAME` (4). `KOBJ_CNODE`
+(1) is allocatable by the kernel but **refused to ring 3**: no capability type names a CNode
+and no syscall installs one as a task's cspace, so minting one would be authority with no
+defined meaning.
+
+`KOBJ_FRAME` is one `PAGE_SIZE` page, aligned to a page rather than to `KOBJ_ALIGN` because it
+is installed in a PTE. Its capability is a `CAP_FRAME`, and see "Frame capabilities" below for
+what one names and why it is not a physical address.
 
 `SYS_RETYPE` returns the number of objects created — which may be fewer than `count` if the
 region runs out — or a negative error. It refuses outright, without consuming any of the

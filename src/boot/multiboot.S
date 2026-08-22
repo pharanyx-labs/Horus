@@ -759,6 +759,24 @@ embedded_libhorustest_bin_start:
 embedded_libhorustest_bin_end:
 #endif
 
+#ifdef FRAME_SELFTEST
+/* Frame-capability pair (roadmap 2.1): one task retypes a KOBJ_FRAME out of its
+ * CAP_UNTYPED and delegates a READ-only copy; the other proves it sees the
+ * shared bytes and cannot obtain a writable mapping from a READ capability. */
+.align 16
+.global embedded_frametest_bin_start
+embedded_frametest_bin_start:
+.incbin "userspace/frametest.bin"
+.global embedded_frametest_bin_end
+embedded_frametest_bin_end:
+.align 16
+.global embedded_framepeer_bin_start
+embedded_framepeer_bin_start:
+.incbin "userspace/framepeer.bin"
+.global embedded_framepeer_bin_end
+embedded_framepeer_bin_end:
+#endif
+
 #ifdef RECVBLOCK_SELFTEST
 /* PIE blocking-receive pair (roadmap 1.3): a server that waits with
  * SYS_IPC_RECV_BLOCK and a client that delays before each request, so the

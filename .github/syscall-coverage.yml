@@ -22,8 +22,8 @@
 #   - a syscall listed `uncovered` IS entered (the reason has gone stale and it
 #     should be promoted).
 #
-# This does not demand 76 of 76. It demands that the number be decided rather
-# than drifting, and that every gap be written down.
+# This does not demand every syscall be covered. It demands that the number be
+# decided rather than drifting, and that every gap be written down.
 #
 # The `uncovered` reasons say why the TRACKED WORKLOADS do not reach each one.
 #
@@ -99,6 +99,26 @@ covered:
   - SYS_IPC_RECV_BLOCK
 
 uncovered:
+  # ---- The five added on 2026-08-22 (roadmap 2.1) -------------------------
+  #
+  # Three of these are not new syscalls. SYS_CAP_MINT, SYS_CAP_TRANSFER and
+  # SYS_CAP_MOVE have had handlers since the beginning, but their dispatch-table
+  # entries were bare numeric literals -- `[4]`, `[8]`, `[9]` -- and this file's
+  # checker derives "implemented" from `[SYS_NAME] = { handler`. So all three
+  # were invisible to it: handlers nothing classified, nothing measured, and no
+  # question this file could fail on. That is the [C-6] shape applied to itself,
+  # and it is why the implemented count moved 76 -> 81 in a change that added two
+  # syscalls. Naming them in the table is what made them countable.
+  SYS_CAP_MINT: >-
+    MEASURED 2026-08-22: not entered by any tracked workload. Narrowing a capability's rights before delegating it was unreachable from ring 3 until roadmap 2.1 named this syscall in include/syscall.h, so no program in a tracked image calls it yet; FRAME_SELFTEST does, via frametest's READ-only mint (make smoke-frame)
+  SYS_CAP_TRANSFER: >-
+    MEASURED 2026-08-22: not entered by any tracked workload, and by no build known in this tree. Delegation between tasks goes through SYS_CAP_GRANT, which is capability-authorised on the target; nothing calls this one
+  SYS_CAP_MOVE: >-
+    MEASURED 2026-08-22: not entered by any tracked workload, and by no build known in this tree. Same reason as SYS_CAP_TRANSFER
+  SYS_MAP_FRAME: >-
+    MEASURED 2026-08-22: not entered by the tracked workloads -- no program in a tracked image holds a CAP_UNTYPED to retype a frame from. Entered by FRAME_SELFTEST, which is its gate (make smoke-frame, plus both control arms). Not promoted to `covered` for the same cost reason as the six confirmed above: `covered` means a TRACKED arm enters it, and adding a fourth workload here is a full kernel build plus a boot on every run
+  SYS_UNMAP_FRAME: >-
+    MEASURED 2026-08-22: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME. Entered by FRAME_SELFTEST, where framepeer withdraws its own mapping and is then refused the second attempt
   SYS_GET_LINE: >-
     kernel-side console input; fails closed once console_server owns the UART, so a live session never reaches it
   SYS_READ: >-

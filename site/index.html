@@ -1398,7 +1398,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability-addressed IPC</strong> — every syscall names a capability slot</th><td class="t-note">smoke-captest</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">One-shot reply capabilities (<code>CAP_REPLY</code>)</th><td class="t-note">smoke-captest</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Endpoints as bounded FIFO queues (4 slots, fixed at compile time)</th><td class="t-note">smoke-fs-conc</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Untyped memory and retyping</strong> — cspaces, endpoints, notifications</th><td class="t-note">smoke-captest</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Untyped memory and retyping</strong> — cspaces, endpoints, notifications, memory frames</th><td class="t-note">smoke-captest · smoke-frame</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Preemptive scheduling, timer-driven, in ring 3</th><td class="t-note">smoke-preempt</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>SMP on by default</strong> — MADT enumeration, AP bringup, TLB-shootdown IPIs</th><td class="t-note">smoke-smp</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMT siblings parked; microarchitectural flush between distrusting tasks</th><td class="t-note">smoke-smt · smoke-flush</td></tr>
@@ -1417,14 +1417,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Reproducible builds</strong> — <code>kernel.elf</code> byte-for-byte deterministic; the ISO is not, and the reason is grub's, not ours</th><td class="t-note">required CI check</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot interrupt policy recorded and gated at five named milestones</th><td class="t-note">smoke-irq-policy</td></tr>
 
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">IPC receive — queues and reply capabilities landed, but receive still polls an empty queue instead of blocking</th><td class="t-note">roadmap 1.3</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">IPC receive — bounded queues, one-shot reply capabilities, and a receive that sleeps on an empty queue rather than polling it</th><td class="t-note">smoke-recvblock</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle — retyped objects are destroyed; well-known service objects and <code>tasks[]</code> are still static</th><td class="t-note">roadmap 0.3</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Crash-atomic filesystem — write-ahead journal, mount-time fsck, and ATA <code>FLUSH CACHE</code> barriers bracketing the commit record</th><td class="t-note">smoke-fs-wal-flush · smoke-fs-wal-order</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Copy-on-write — zero-page and generic breaks both tested; the only producer is the demand pager</th><td class="t-note">smoke-cow · smoke-nzcow</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Copy-on-write — zero-page and generic breaks both tested; the only producer is the demand pager, and nothing breaks COW over a shared frame yet</th><td class="t-note">smoke-cow · smoke-nzcow</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Process control — spawn, exec, kill, wait, signals with mask and altstack; no <code>fork</code>, no job control</th><td class="t-note">smoke-proc</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling — a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Virtual-memory objects — frame capabilities, shared memory, <code>mmap</code>, real <code>fork</code></th><td class="t-note">roadmap 2.1</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities and capability-mediated shared memory landed; no <code>mmap</code>, no multi-page regions, no real <code>fork</code></th><td class="t-note">smoke-frame</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">A VFS, mount points, multiple filesystem servers</th><td class="t-note">roadmap 2.4</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
@@ -1884,7 +1884,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>51 of 76</strong> system calls have their handler actually executed by the
+              <strong>51 of 81</strong> system calls have their handler actually executed by the
               two workloads this project tracks — a scripted end-to-end session, and the
               permission conformance suite. The other 25 are each listed with a written reason.
             </p>

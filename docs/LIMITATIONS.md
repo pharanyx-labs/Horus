@@ -33,7 +33,9 @@ bounds-checked against the array size and nothing else.
 The `object` field of `CAP_ENDPOINT` — the field that names *which* endpoint — is read only
 by `SYS_REGISTER_FS_SERVER` and `SYS_CONNECT_FS_SERVER`. It is never consulted on an IPC
 operation. The dispatch table authorises IPC on cspace slot 3 with `SC_ANYTYPE`, and
-`create_task` gives every task a `CAP_FRAME` in slot 3.
+`create_task` gives every task a `CAP_FRAME` in slot 3. *(That capability still exists. Since
+roadmap 2.1 gave `CAP_FRAME` a meaning it is a live decoy rather than an inert one, and
+`smoke-frame` asserts on every boot that it maps nothing — see §2.5 and `SECURITY.md` S26.)*
 
 **Therefore any unprivileged ring-3 program can:**
 
@@ -290,7 +292,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **51 of 76** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **51 of 81** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 25 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -302,7 +304,7 @@ assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. 
 were named by the suite; neither handler had ever executed.
 
 `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift in either
-direction, so the number cannot quietly fall. It deliberately does not require 76 of 76 —
+direction, so the number cannot quietly fall. It deliberately does not require all of them —
 that would be a large body of test-writing disguised as a gate. Property **S25**.
 
 **Two of the 33 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
@@ -524,14 +526,31 @@ Witnesses: `make smoke-fs-wal-flush` (issued and checked) and `make smoke-fs-wal
 reference-counted or destroyed", which stopped being true when **[I-7]** landed and was never
 revised.*
 
-A **retyped** endpoint or notification — one carved from untyped memory, at an index at or
-above `DYN_EP_BASE` / `DYN_NOTIF_BASE` — is destroyed when no capability names it any more.
+A **retyped** endpoint, notification or frame — one carved from untyped memory, at an index at
+or above `DYN_EP_BASE` / `DYN_NOTIF_BASE` / `DYN_FRAME_BASE` — is destroyed when no capability
+names it any more.
 That is computed by mark-and-sweep over the capability graph (`src/kernel/untyped.c:306-400`)
 rather than by reference counting, on the reasoning that reachability derived from the same
 graph the security argument is stated over cannot disagree with it. The sweep's imprecision is
 deliberately biased toward leaking: a capability whose lineage generation was bumped still
 marks its object, because the opposite bias — treating a slot as empty while a holder can
 still resolve it — is a use-after-free reachable from ring 3.
+
+A **frame** carries one extra condition, because a PTE is a second, capability-free path to
+the same bytes: a task that maps a frame and then drops its capability still reads and writes
+the page. So a frame is collectable only when no capability names it *and* nothing has it
+mapped, which the refcount answers directly — the untyped region holds one permanent
+reference, every mapping adds one, so a count above 1 means a live PTE somewhere. Refusing
+leaks the index until the last holder unmaps or dies; teardown walks the page tables and drops
+the references, so the next sweep collects it. Same direction of imprecision as above.
+
+That permanent reference is also what keeps a frame out of the free page stack. An arena page
+sits inside `[USER_PHYS_BASE, pool ceiling)` and therefore has a refcount slot, and
+`free_user_table` releases every present leaf of a dying task's page tables — so without a
+reference of its own, a mapped frame's bytes would be handed out as an anonymous page while
+the untyped region still owned them. Before roadmap 2.1 that was avoided only because a
+never-allocated arena page sits at count 0 and `rust_page_ref_dec` fails closed on an
+already-zero frame: a value nobody set on purpose holding up a safety property.
 
 What has no lifecycle is the **static shim** below those bases: the well-known service
 endpoints and the per-task reply endpoints are named by the boot protocol rather than by any
@@ -542,8 +561,31 @@ bytes — the arena is a monotonic bump allocator, so only the *name* is reclaim
 ### 2.4 Copy-on-write is implemented but narrow
 
 COW works for the shared zero page and for the generic non-zero case (both tested). There is
-no `fork` — the only COW producer is the demand pager. Full `fork` semantics need the frame
-capabilities described in the roadmap.
+no `fork` — the only COW producer is the demand pager. Frame capabilities landed 2026-08-22
+(roadmap 2.1), so the object `fork` needs now exists, but nothing breaks COW over a *shared*
+frame yet: what a COW break means for a page two tasks hold capabilities for is an open
+question, not an implemented one.
+
+### 2.5 A frame's bytes are not reclaimable until its untyped region is reset
+
+*Added 2026-08-22 with roadmap 2.1.*
+
+A `KOBJ_FRAME` is bump-allocated out of an untyped region like every other kernel object, so
+destroying it reclaims the **name** and not the page. The bytes come back only when the
+untyped capability is revoked and the region's watermark resets — and that reset is not
+written yet, so in the tree as it stands a frame's page is consumed for the life of the boot.
+
+This is the seL4 trade taken deliberately rather than an oversight, and the alternative was
+considered and rejected: a free list lets an object's bytes be handed straight back out and
+retyped as a *different* class while a stale capability still names the old address, which is
+type-confusion-through-reuse. A monotonic watermark makes that moment structurally impossible.
+The cost is that a long-running workload that creates and destroys many frames exhausts its
+region rather than recycling it, and `SYS_UNTYPED_INFO` is how a task observes that coming.
+
+A second, smaller ceiling sits above it: `MAX_DYN_FRAMES` (256) bounds how many frames the
+kernel can **name** at once. The untyped region bounds how many a given authority can
+**create**, and only the second is a security property — but the first is what a real workload
+meets first.
 
 ---
 
@@ -657,8 +699,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **84** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **86** across the three, producing **89** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **85** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **87** across the three, producing **90** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -689,7 +731,7 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **86 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **87 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

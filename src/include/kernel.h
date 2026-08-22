@@ -541,7 +541,48 @@ struct notification *notification_by_index(uint32_t idx);
 #define KOBJ_CNODE              1    /* CNODE_SIZE capability slots (a cspace)  */
 #define KOBJ_ENDPOINT           2    /* struct endpoint                          */
 #define KOBJ_NOTIFICATION       3    /* struct notification                      */
-#define KOBJ_TYPE_MAX           3
+#define KOBJ_FRAME              4    /* one PAGE_SIZE frame, mappable into ring 3 */
+#define KOBJ_TYPE_MAX           4
+
+/* ---- Frame objects (roadmap 2.1, audit finding F-2.1) ---------------------
+ *
+ * A frame is one PAGE_SIZE-aligned page carved out of an untyped region, named
+ * by a CAP_FRAME, and mapped into a task's address space by SYS_MAP_FRAME. It
+ * is what makes shared memory between mutually distrusting tasks expressible:
+ * both hold a capability for the same frame index, and the rights each holds
+ * decide what its own PTE is allowed to say.
+ *
+ * WHY THE OBJECT IS AN INDEX AND NOT A PHYSICAL ADDRESS. It would be shorter to
+ * put the frame's physical address straight in capability_t.object and map it.
+ * That is exactly the shape of the C-1 defect, and it would have been reachable
+ * on day one: EVERY task is born holding a CAP_FRAME in slot 3 whose object is
+ * USER_AREA_BASE (see create_task), a legacy cap that names a virtual window
+ * and authorises nothing. Under an address-valued object, passing slot 3 to
+ * SYS_MAP_FRAME would ask the kernel to map physical 0x400000 -- low memory,
+ * below the pool -- into ring 3, and the only thing standing between that and a
+ * kernel-memory disclosure would be an allowlist somebody remembered to write.
+ *
+ * An index instead makes the refusal a BOUND, checked against a table the
+ * kernel populates: 0x400000 is four orders of magnitude past FRAME_INDEX_MAX,
+ * so the legacy cap is refused by arithmetic rather than by an allowlist. The
+ * base is 1 rather than 0 for the same reason a fresh endpoint does not claim
+ * task 0 as its sender: a zeroed capability must not resolve to a real object.
+ *
+ * frametest checks that refusal on every boot, and FRAME_INDEX_UNCHECKED=1
+ * removes the bound so the legacy cap resolves -- which is what makes the check
+ * a test rather than an assertion. */
+#define MAX_DYN_FRAMES         256
+#define DYN_FRAME_BASE         1
+#define FRAME_INDEX_MAX        (DYN_FRAME_BASE + MAX_DYN_FRAMES)
+
+/* The arena page backing frame index `idx`, or NULL if `idx` names no live
+ * frame. The single resolver: nothing indexes the frame table directly. */
+void *frame_by_index(uint32_t idx);
+
+/* Physical address of the page `frame_by_index` returned, for the map path.
+ * Returns 0 for a dead or out-of-range index -- and 0 is not a frame, so a
+ * caller that forgets to check still fails closed. */
+uint64_t frame_phys_by_index(uint32_t idx);
 
 /* How many untyped regions the kernel can describe. Small by design: this bounds
  * the DESCRIPTORS, not the memory they govern — one descriptor can name an
@@ -724,6 +765,14 @@ void users_init(void);
 #define SYS_BLOCK_WRITE  48
 #define SYS_REGISTER_FS_SERVER 49
 #define SYS_CONNECT_FS_SERVER  50
+/* Capability-algebra syscalls. 4/8/9 predate the SYS_* naming and lived in the
+ * dispatch table as bare numeric literals; they are named here because roadmap
+ * 2.1 made SYS_CAP_MINT reachable from ring 3, and a syscall userspace can call
+ * should not be a magic number on the kernel side. Authority for all four is
+ * enforced inside the cap_* primitives, not by a dispatch-table slot. */
+#define SYS_CAP_MINT            4
+#define SYS_CAP_TRANSFER        8
+#define SYS_CAP_MOVE            9
 #define SYS_CAP_REVOKE         51
 #define SYS_AUDIT_DIGEST       52
 #define SYS_PREEMPT_TRACE      53   /* PREEMPT_SELFTEST builds only; NOSYS otherwise */
@@ -764,6 +813,8 @@ void users_init(void);
 #define SYS_STDIO_INFO         87   /* () -> bit0: stdin is a pipe (slot 8); bit1: stdout is a pipe (slot 9); read by posix_init */
 #define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
+#define SYS_MAP_FRAME          95   /* (frame_slot, vaddr, rights) -> 0; map the KOBJ_FRAME named by a CAP_FRAME into the caller's own address space (roadmap 2.1). Authority is the capability the caller names, resolved in syscall_vm.c. */
+#define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE must name this capability's own frame. */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ), same class as dmesg. */
@@ -1913,6 +1964,25 @@ void create_user_pagedir(uint32_t task_id);
  * Returns 0 on success, negative on failure (bad task / no address space /
  * refused VA). */
 int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys, uint64_t writable);
+
+/* ---- Frame mapping (roadmap 2.1) ------------------------------------------
+ * Map / unmap one untyped-carved KOBJ_FRAME in task `task_id`'s own address
+ * space. `eff_rights` is the EFFECTIVE rights word -- the SYS_MAP_FRAME handler
+ * has already intersected the capability's rights with what the caller asked
+ * for, so the authority decision is made once, where the capability is, and is
+ * never re-derived here. Turning it into PTE bits is paging.c's half, because
+ * paging.c is the only file that defines them. Return 0 on success, -2 if
+ * something is already mapped at `vaddr`, negative otherwise. */
+int user_map_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t phys, uint32_t eff_rights);
+int user_unmap_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t expect_phys);
+
+/* The untyped region's own permanent reference over an arena page, so that a
+ * dying task's page-table walk can never return frame bytes to the free page
+ * stack. See the KOBJ_FRAME arm of kobj_alloc (untyped.c) for the full why. */
+void     frame_pin_refcount(uint64_t phys_addr);
+void     frame_unpin_refcount(uint64_t phys_addr);
+uint32_t frame_map_refcount(uint64_t phys_addr);   /* 1 + mappings; >1 == mapped */
+
 uint32_t get_free_user_pages(void);   /* paging.c — free frames in the user pool */
 /* Set the runtime physical-pool size (frames), clamped to
  * [PHYS_POOL_MIN_PAGES, USER_PHYS_PAGES]. Must be called before paging_init,

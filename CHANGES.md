@@ -113,6 +113,25 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A VFS mount table and one path walker** (roadmap 2.4, finding **[F-2.2]**).
+  `userspace/hvfs.c` maps a path prefix to the cspace slot holding that filesystem server's
+  endpoint capability, so crossing a mount point is choosing a different slot. **It is a
+  library, not a server, and that is the security decision**: a VFS server would have to hold a
+  capability to every backing filesystem, making it the most privileged task in ring 3 and a
+  single point whose compromise is a compromise of every mount — the monolithic trust 2.4
+  exists to avoid. `SECURITY.md` **S29**. Longest-prefix match, `..` pinned at the mount root,
+  and a mount refused unless the slot holds a usable capability.
+- **`dev_server`**, a second filesystem server serving `/dev/null` and `/dev/zero` over the
+  existing `fs_proto`. What matters is what it does **not** hold: one capability, the listen end
+  of its own endpoint — no `CAP_ENCRYPTED_STORAGE`, no `CAP_BOOT_MODULE`, no `CAP_USER`. A
+  filesystem server that structurally cannot touch the encrypted store, mounted in the same
+  namespace as one that can. A single server owning both necessarily holds both sets.
+- **`smoke-vfs`** (required job `vfs`), 14 checks, with control arms `VFS_FIRST_MATCH=1` and
+  `VFS_MOUNT_UNGATED=1`. Routing is asserted by **which server answered**: under first-match
+  `/dev/zero` reaches the root filesystem, which has an inode 0 of its own and so answers about
+  a different object rather than failing.
+
+
 - **Frame capabilities and capability-mediated shared memory** (roadmap 2.1, finding
   **[F-2.1]**). `KOBJ_FRAME` is retyped out of a `CAP_UNTYPED` by the existing `SYS_RETYPE`,
   so a page of shared memory is paid for by untyped authority somebody holds rather than

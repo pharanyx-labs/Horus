@@ -134,4 +134,81 @@ void spin_delay(void);
 int ipc_call_retry(int ep_slot, uint32_t badge,
                    const void *req, unsigned req_len, void *rep);
 
+/* ---- hvfs: the mount table and path walker (roadmap 2.4) --------------- */
+
+/* Horus has no VFS server, and that is a security decision rather than an
+ * omission: one would have to hold a capability to every backing filesystem,
+ * making it the most privileged task in ring 3 and a single point whose
+ * compromise is a compromise of every mount. The namespace lives in each client
+ * instead, over the capabilities that client already holds, so crossing a mount
+ * point is choosing a different endpoint slot and there is no intermediary to
+ * compromise.
+ *
+ * READ THIS BEFORE TRUSTING A PATH. A mount prefix is a NAME, not a boundary.
+ * A task holding no capability for a mount cannot reach that subtree whatever
+ * path it writes (SECURITY.md S29) -- but a task that DOES hold a server's
+ * capability reaches all of that server, mounted or not. Confinement is the
+ * server's job; the table only decides which server a path is addressed to.
+ *
+ * The table is per-task, so no task can install a mount into another's
+ * namespace. Inheritance across spawn is roadmap 2.3 and does not exist. */
+
+#define HVFS_MAX_MOUNTS   4    /* bounded, fixed .bss, per task            */
+#define HVFS_PREFIX_MAX  31    /* longest mount prefix, NUL not counted    */
+#define HVFS_MAX_DEPTH   16    /* path components; matches the old walkers */
+
+#define HVFS_ERR_INVAL  (-1)   /* bad prefix, bad path, malformed reply    */
+#define HVFS_ERR_NOCAP  (-2)   /* the slot holds no usable capability      */
+#define HVFS_ERR_EXIST  (-3)   /* something is already mounted there       */
+#define HVFS_ERR_NOMEM  (-4)   /* HVFS_MAX_MOUNTS reached                  */
+
+struct fs_request;
+struct fs_response;
+
+struct hvfs_mount {
+    const char *prefix;    /* borrowed, not copied: callers pass literals */
+    unsigned    plen;
+    int         ep_slot;   /* cspace slot holding this mount's CAP_ENDPOINT */
+    uint32_t    root_ino;  /* the inode a path under `prefix` starts from   */
+    int         in_use;
+};
+
+/* Install a mount. Refuses a non-absolute or overlong prefix, a duplicate, a
+ * full table, and -- the gate -- a slot holding no usable capability, probed
+ * with the weakest legal request rather than by asking the kernel what is in
+ * the slot. Returns 0 or a negative HVFS_ERR_*. */
+int hvfs_mount(const char *prefix, int ep_slot, uint32_t root_ino);
+
+/* LONGEST-prefix match, so "/dev/zero" reaches the /dev mount and not the "/"
+ * one that also matches. First-match would address it to the root filesystem,
+ * which has an inode 0 of its own and therefore ANSWERS ABOUT A DIFFERENT
+ * OBJECT rather than failing. Returns NULL if nothing covers the path. */
+const struct hvfs_mount *hvfs_resolve(const char *path);
+
+/* One request/reply on a mount's endpoint. Fills in the protocol magic and
+ * validates the reply's. Returns the server's rc, or a negative HVFS_ERR_*. */
+int hvfs_rpc(int ep_slot, struct fs_request *rq, struct fs_response *rp);
+
+/* THE path walker -- the single copy, replacing the three private ones that
+ * used to live in posix.c, shell.c and fsclient.c.
+ *
+ * Resolves `path` (absolute, or relative to cwd_ino on cwd_slot) and reports
+ * which mount answered. Contract, unchanged from the walkers it replaces:
+ *    0  -> resolved; *out_ino is the object
+ *    1  -> everything but the last component resolved; *out_ino is the PARENT
+ *          and out_name is the final component (so a caller can create it)
+ *   -1  -> bad path, or an intermediate component missing
+ * out_name needs FS_NAME_MAX bytes. ".." is pinned at the mount root. */
+int hvfs_walk(const char *path, uint32_t cwd_ino, int cwd_slot,
+              int *out_slot, uint32_t *out_ino, char *out_name);
+
+/* As hvfs_walk, but stops before the LAST component and reports the directory
+ * that holds it, without looking the leaf up. open(O_CREAT), mkdir, unlink and
+ * rename all need the parent whether or not the leaf exists. Returns 0 with
+ * *out_ino = the parent and out_name = the final component, or -1. A path with
+ * no final component ("/" or all slashes) yields an empty out_name, which the
+ * caller must reject. */
+int hvfs_walk_parent(const char *path, uint32_t cwd_ino, int cwd_slot,
+                     int *out_slot, uint32_t *out_ino, char *out_name);
+
 #endif /* LIBHORUS_H */

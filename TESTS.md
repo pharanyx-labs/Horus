@@ -1071,10 +1071,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **86** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **87** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **88** jobs, **91** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **89** jobs, **92** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1126,7 +1126,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **88 required contexts and 3 reasoned exemptions** — read off
+The intended set is **89 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1285,6 +1285,34 @@ third drifting.
 ---
 
 ## The shared userspace runtime
+
+### `smoke-vfs` — two servers, two mounts, one namespace
+
+Roadmap 2.4's gate. `fs_server` is mounted at `/` and `dev_server` at `/dev`, and the assertions
+are about **which server a path reaches** and **what it took to reach it**.
+
+`dev_server` exists to be the other server. A mount table with one mount is unfalsifiable —
+every path resolves to the same task, so "longest prefix wins" and "the capability decides, not
+the path" cannot fail. It holds exactly one capability, the listen end of its own endpoint: no
+object store, no boot modules, no user database. That asymmetry is the point of a per-mount VFS
+and is not expressible in a monolithic one.
+
+**Routing is checked by which server answered, not by a return code.** Under first-match the
+`/` mount also matches `/dev/zero`, and the root filesystem has an inode 0 of its own — so it
+does not fail, it answers about a different object. A return-code check would call that success.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-vfs` | `VFSTEST: PASS`, no `FAIL` | **14 checks**, read off the wire |
+| `smoke-vfs-prefix-control` (`VFS_FIRST_MATCH=1`) | `FAIL wrong-server-answered` present | 4 checks fail — routing, inode, and `..` all break together |
+| `smoke-vfs-mount-control` (`VFS_MOUNT_UNGATED=1`) | `FAIL mounted-without-a-capability` present | exactly 1 check fails — the arm is aimed at one property and hits one |
+
+Both arms are deterministic properties of a build, not races, so three boots is corroboration
+rather than evidence and one is the sample size that matters.
+
+**The positive direction is in the same target** (`tools/check_gate_pairs.py` requires it): the
+suite reads zeros through `/dev/zero`, keeps `/bin` on the root mount, and confirms `/devices`
+does **not** match the `/dev` prefix — a plain string compare would route it to the wrong server.
 
 ### `smoke-passwd-probe` — the in-kernel ramfs is unreachable from ring 3
 

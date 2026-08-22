@@ -725,7 +725,7 @@ The dependencies are real, and taking them out of order means building twice.
 |---|---|---|
 | 1 | **`libhorus`** — a freestanding mini-libc and a program template (part of 2.5) | Touches no security surface at all, and every later step multiplies its cost by every new server it adds |
 | 2 | **2.1** Frame capabilities, shared memory, `mmap` — *frame capabilities landed 2026-08-22; `mmap` and multi-page regions have not* | Kernel work, and the continuation of "make the object model true". Prerequisite for real `fork`, shared buffers, and dynamic linking |
-| 3 | **2.4** VFS and a mount table | Needs `libhorus`. Gives step 4 the `/dev` and `/proc` namespaces it wants |
+| 3 | **2.4** VFS and a mount table — *namespace landed 2026-08-22; the client migration has not* | Needs `libhorus`. Gives step 4 the `/dev` and `/proc` namespaces it wants |
 | 4 | **2.3** Process and session model | Needs 1–3. This is what makes the shell a shell |
 
 **Step 1 first, because the freestanding half of userspace has no shared runtime.** There are
@@ -800,11 +800,44 @@ Prerequisite for IPC timeouts, anything real-time, and sane userspace scheduling
 Real `fork`/`exec` semantics, process groups, job control, and a `/proc`-equivalent served
 over IPC. Needed before the shell can become a usable OS interface.
 
-### 2.4 ⬜ A VFS layer above `fs_server` — **[F-2.2]**
+### 2.4 ◧ A VFS layer above `fs_server` — **[F-2.2]** — *the namespace landed 2026-08-22*
 
-Mount points, multiple filesystem servers, and a device-file namespace. Each server holds
-only the object-store capabilities for its own subtree — per-mount isolation that a
-monolithic VFS structurally cannot provide.
+**Delivered: the mount table, the walker, and a second server.** `userspace/hvfs.c` is a
+per-task mount table and **one** path walker, in `libhorus.a`; `userspace/dev_server.c` is a
+second filesystem server speaking the existing `fs_proto`. `smoke-vfs` mounts `fs_server` at
+`/` and `dev_server` at `/dev` and asserts which server each path reaches. `SECURITY.md` **S29**.
+
+**The VFS is a library, not a server, and that is the security decision.** A VFS server would
+have to hold a capability to every backing filesystem, making it the most privileged task in
+ring 3 and a single point whose compromise is a compromise of every mount — the monolithic
+trust this item exists to avoid. `dev_server` is the demonstration of the alternative: it holds
+**one** capability, the listen end of its own endpoint. No object store, no boot modules, no
+user database. A single server owning both `/` and `/dev` necessarily holds both sets.
+
+**What the mount table does not do**, stated because a VFS that looked like it enforced a
+boundary it does not is worse than one that never claimed to: the prefix is a **name**. A task
+holding a server's capability reaches all of that server wherever it is mounted. Authority is
+the capability; the prefix is how you spell it. See `docs/LIMITATIONS.md` §2.7.
+
+**Still open, and what each needs:**
+
+- **The three clients still carry their own walkers.** `posix.c`, `shell.c` and `fsclient.c`
+  each have a private copy, and they have already drifted — only one handles `..`. That
+  duplication is what `hvfs` exists to remove, and until they migrate **`hvfs` has no users in
+  the ship build**: it is an archive member, so unused means unlinked and it costs nothing, but
+  a library nobody calls is surface with no owner. This is the next PR.
+- **`posix.c` needs a link-path decision first.** It is on the newlib path, where the Makefile
+  deliberately does not link `libhorus.a` ("a second memcpy under a different name would be an
+  ambiguity waiting to be resolved wrongly"). The concern may not apply — `hvfs`'s dependencies
+  are all `u`-prefixed, so nothing collides — but reversing a documented decision wants its own
+  measurement rather than being a side effect.
+- **`init` cannot provision a mount yet.** It holds no `CAP_UNTYPED`, so it cannot retype an
+  endpoint for a new server; the gate uses root-cnode endpoint capabilities instead. Giving the
+  delegation root that authority is a real widening and belongs in its own commit.
+- `dev_server` is gated behind `VFS_SELFTEST=1` rather than shipped: adding a server to every
+  image changes the default system, which is a separate decision from proving the VFS works.
+- Mount and unmount as syscalls, `/proc`, and namespace inheritance across `spawn` — the last
+  is roadmap 2.3.
 
 ### 2.5 ◧ Dynamic linking and a shared libc — **[F-2.5]**
 
@@ -944,7 +977,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **88 required, 3 exempted** (88 jobs, 91 contexts — re-derive it with
+  The intended set is **89 required, 3 exempted** (89 jobs, 92 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   `ruleset-audit` (schedule-only, so it never runs on a pull request) and `smoke-kstack-park`
@@ -1055,7 +1088,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 106 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 23 of them control arms that must reproduce a defect |
+| ✅ | 109 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 25 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

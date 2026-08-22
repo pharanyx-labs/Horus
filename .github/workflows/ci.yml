@@ -1542,6 +1542,34 @@ jobs:
       - name: Control arm — ustrncpy must always terminate
         run: make smoke-libhorus-strncpy-control
 
+  vfs:
+    name: "Two filesystem servers, two mounts, one namespace (2.4)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Both directions in one target: reads zeros through /dev/zero and keeps
+      # /bin on the root mount, and asserts a mount needs a capability.
+      - name: The VFS mount table from ring 3
+        run: make smoke-vfs
+      # Routing. Under first-match /dev/zero reaches the root filesystem, which
+      # has an inode 0 of its own -- so it ANSWERS about a different object
+      # rather than failing, which is why the check is which server replied.
+      - name: Control arm — longest prefix must win
+        run: make smoke-vfs-prefix-control
+      # The mount gate: a prefix string alone must not install a mount.
+      - name: Control arm — a mount needs a capability, not a name
+        run: make smoke-vfs-mount-control
+
   passwd-probe:
     name: "The in-kernel ramfs is unreachable from ring 3 (H-3)"
     runs-on: ubuntu-latest

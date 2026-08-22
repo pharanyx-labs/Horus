@@ -1046,7 +1046,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 95
+#define SYSCALL_TABLE_SIZE 97
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1066,12 +1066,12 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT]                     = { h_exit,                    SC_NONE, 0, SC_ANYTYPE }, /* self-terminate */
     [SYS_KILL]                     = { h_kill,                    SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB/admin in handler */
     [SYS_GET_LINE]                 = { h_get_line,                SC_NONE, 0, SC_ANYTYPE }, /* slot 8 or 3 READ (fallback in handler) */
-    [4]                            = { h_cap_mint,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_mint */
+    [SYS_CAP_MINT]                 = { h_cap_mint,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_mint */
     [5]                            = { h_clear,                   3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [6]                            = { h_sysinfo,                 SC_NONE, 0, SC_ANYTYPE }, /* ambient version string */
     [7]                            = { h_debug_exec,              SC_NONE, 0, SC_ANYTYPE }, /* DEBUG_SHELL only */
-    [8]                            = { h_cap_transfer,            SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_transfer */
-    [9]                            = { h_cap_move,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_move */
+    [SYS_CAP_TRANSFER]             = { h_cap_transfer,            SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_transfer */
+    [SYS_CAP_MOVE]                 = { h_cap_move,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_move */
     [SYS_SBRK]                     = { h_sbrk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, bounds-checked */
     [SYS_WRITE]                    = { h_write,                   SC_NONE, 0, SC_ANYTYPE }, /* ambient console (fd 1) */
     [SYS_READ]                     = { h_read,                    SC_NONE, 0, SC_ANYTYPE }, /* fd 0 ambient; fd>=3 slot-3 READ in handler */
@@ -1209,18 +1209,31 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * caller waited on, which waiting already entitled it to observe. No
      * cross-task disclosure, so no capability to gate on. */
     [SYS_TASK_EXIT_INFO]          = { h_task_exit_info,          SC_NONE, 0, SC_ANYTYPE },
+    /* Frame capabilities (roadmap 2.1). MUST stay SC_NONE, for a reason that is
+     * live rather than theoretical here: every task is born holding a CAP_FRAME
+     * in slot 3, so an entry naming CAPSLOT_FRAME/CAP_FRAME would type-check,
+     * read like a real gate, and pass for every task in the system. The
+     * authorising capability is the one the caller names in its first argument;
+     * syscall_vm.c does the lookup, the type test and the index bound. Same rule
+     * and same reason as SYS_RETYPE above.
+     *
+     * (The narrowing half of delegation is SYS_CAP_MINT, which already existed
+     * as the unnamed entry [4] above; roadmap 2.1 gave it a name rather than a
+     * second implementation.) */
+    [SYS_MAP_FRAME]               = { h_map_frame,               SC_NONE, 0, SC_ANYTYPE },
+    [SYS_UNMAP_FRAME]             = { h_unmap_frame,             SC_NONE, 0, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_IPC_RECV_BLOCK is currently the highest syscall number. Adding a higher one
+ * SYS_UNMAP_FRAME is currently the highest syscall number. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_IPC_RECV_BLOCK + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNMAP_FRAME + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

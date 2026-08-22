@@ -97,6 +97,15 @@ struct audit_event {
 #define SYS_BLOCK_WRITE  48
 #define SYS_REGISTER_FS_SERVER 49
 #define SYS_CONNECT_FS_SERVER  50
+/* Capability-algebra syscalls. 4/8/9 predate the SYS_* naming and lived in the
+ * dispatch table as bare numeric literals until roadmap 2.1 needed to CALL one
+ * from ring 3: SYS_CAP_MINT is how a task narrows a capability's rights before
+ * delegating it, which is the operation the whole "delegation may only reduce"
+ * invariant is stated over, and it was unnameable from userspace. Authority for
+ * all four is enforced inside the cap_* primitives, not by a table slot. */
+#define SYS_CAP_MINT            4   /* (dest_slot, src_slot, rights) -> 0; copy within the CALLER's own cspace with rights masked to (rights & the source's). Cannot widen. */
+#define SYS_CAP_TRANSFER        8   /* (dest_slot, src_slot) -> 0 */
+#define SYS_CAP_MOVE            9   /* (dest_slot, src_slot) -> 0 */
 #define SYS_CAP_REVOKE         51
 #define SYS_AUDIT_DIGEST       52
 #define SYS_PREEMPT_TRACE      53   /* PREEMPT_SELFTEST builds only; NOSYS otherwise */
@@ -145,9 +154,11 @@ struct audit_event {
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
-#define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
+#define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died. Self-scoped (no capability): waiting already entitled the caller to observe it. */
 #define SYS_IPC_RECV_BLOCK     94   /* (ep_slot, buf, max) -> len; like SYS_IPC_RECV but SLEEPS on an empty queue instead of returning IPC_AGAIN. CAP_ENDPOINT + READ, same gate. */
+#define SYS_MAP_FRAME          95   /* (frame_slot, vaddr, rights) -> 0; map the KOBJ_FRAME named by a CAP_FRAME into the caller's own address space. PTE bits come from (cap rights & rights); W|X together is refused. */
+#define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE at vaddr must name this capability's own frame. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -433,6 +444,18 @@ static inline int sys_console_owned(void) {
  * A task is born with exactly one endpoint capability: its own private reply
  * endpoint. Everything else arrives by delegation (SYS_CAP_GRANT from a
  * supervisor, propagation at spawn, or SYS_CONNECT_FS_SERVER). */
+/* Capability rights, mirroring src/include/kernel.h. These are ABI in the same
+ * sense the CAPSLOT_* numbers are: the kernel compares against these exact bits,
+ * so the two lists must not drift. Ring 3 needs them because SYS_CAP_MINT and
+ * SYS_MAP_FRAME both take a rights word. */
+#define CAP_RIGHT_READ          (1u << 0)
+#define CAP_RIGHT_WRITE         (1u << 1)
+#define CAP_RIGHT_EXEC          (1u << 2)
+#define CAP_RIGHT_GRANT         (1u << 3)
+#define CAP_RIGHT_MINT          (1u << 4)
+#define CAP_RIGHT_REVOKE        (1u << 5)
+#define CAP_RIGHT_AUDIT_WRITE   (1u << 6)
+
 #define CAPSLOT_TCB         0    /* CAP_TCB on self                            */
 #define CAPSLOT_FRAME       3    /* CAP_FRAME for the task's image window      */
 #define CAPSLOT_REPLY_EP    4    /* CAP_ENDPOINT: this task's PRIVATE reply ep */
@@ -468,6 +491,7 @@ static inline int sys_console_owned(void) {
 #define KOBJ_CNODE          1    /* a cspace; not retypable from ring 3 yet    */
 #define KOBJ_ENDPOINT       2    /* struct endpoint  -> CAP_ENDPOINT           */
 #define KOBJ_NOTIFICATION   3    /* struct notification -> CAP_NOTIFICATION    */
+#define KOBJ_FRAME          4    /* one 4 KiB page      -> CAP_FRAME           */
 
 /* MUST stay byte-identical to struct untyped_info in src/include/kernel.h — the
  * kernel fills this layout and copies it out across copy_to_user. */
@@ -494,6 +518,46 @@ static inline int sys_retype(int untyped_slot, int kobj_type, int count, int des
 static inline int sys_untyped_info(int untyped_slot, struct untyped_info *out) {
     return (int)syscall(SYS_UNTYPED_INFO, (uint32_t)untyped_slot,
                         (uint64_t)(uintptr_t)out, 0);
+}
+
+/* ---- Frame capabilities and shared memory (roadmap 2.1) -------------------
+ *
+ * A frame is retyped out of untyped memory like any other object
+ * (sys_retype(untyped_slot, KOBJ_FRAME, 1, dest)), which leaves a CAP_FRAME in
+ * `dest`. Mapping it is what turns that capability into memory.
+ *
+ * Sharing a page with another task is therefore three existing steps and no new
+ * concept: narrow a copy of the capability to the rights that task should have
+ * (sys_cap_mint), hand it over (sys_cap_grant), and let it map the frame at an
+ * address of its own choosing. The rights it maps with can never exceed the
+ * rights on the capability it was given. */
+
+/* Copy the capability in `src_slot` to `dest_slot` of the caller's OWN cspace,
+ * with rights masked down to (rights & the source's rights). Cannot widen: a
+ * request for a right the source lacks yields a capability without it, not an
+ * error, exactly as the capability algebra defines delegation. */
+static inline int sys_cap_mint(int dest_slot, int src_slot, unsigned int rights) {
+    return (int)syscall(SYS_CAP_MINT, (uint32_t)dest_slot, (uint32_t)src_slot,
+                        (uint32_t)rights);
+}
+
+/* Map the frame named by the CAP_FRAME in `frame_slot` at `vaddr`, which must be
+ * page-aligned, non-zero, and in the user half. `rights` is any combination of
+ * CAP_RIGHT_READ / WRITE / EXEC; WRITE and EXEC together are refused (W^X).
+ * Returns 0, SYS_ERR_EXIST if something is already mapped at `vaddr`, or another
+ * negative SYS_ERR_*. */
+static inline int sys_map_frame(int frame_slot, unsigned long vaddr,
+                                unsigned int rights) {
+    return (int)syscall(SYS_MAP_FRAME, (uint32_t)frame_slot,
+                        (uint64_t)vaddr, (uint32_t)rights);
+}
+
+/* Remove the mapping of this capability's frame at `vaddr`. The capability is
+ * required as well as the address: it is what confines the unmap to a page the
+ * caller was entitled to map, rather than to any address it happens to have. */
+static inline int sys_unmap_frame(int frame_slot, unsigned long vaddr) {
+    return (int)syscall(SYS_UNMAP_FRAME, (uint32_t)frame_slot,
+                        (uint64_t)vaddr, 0);
 }
 
 /* ---- roadmap 1.1 interrupt-policy audit readout ----------------------------

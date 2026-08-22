@@ -203,6 +203,15 @@ remain as a compatibility shim for the well-known service objects the boot proto
 index; `endpoint_by_index` / `notification_by_index` are the single resolvers, and both return
 `NULL` for a destroyed object so IPC fails closed on a stale capability.
 
+`KOBJ_FRAME` (roadmap 2.1) joined them on 2026-08-22 and has **no static shim at all** —
+frames were never a `.bss` array, so every valid frame index is one this allocator handed out
+and both ends of the range are a refusal. It is also the only class whose alignment is a
+correctness requirement rather than a cache-line preference: a frame is installed in a PTE,
+whose address field *is* the page number, so `kobj_align` returns `PAGE_SIZE` for it and
+`untyped_bump` pads the **absolute** arena address rather than the region-relative watermark.
+Rounding the offset alone was correct only while every region base happened to be a multiple
+of 64.
+
 `tasks[]` is not yet migrated: a TCB is reachable from the scheduler's hot path and from every
 trap frame. `KOBJ_CNODE` is allocatable by the kernel but refused to ring 3 — no capability
 type names a CNode and no syscall installs one as a task's cspace, so minting one would be
@@ -895,6 +904,28 @@ and a sweep organised by syscall rather than by object will keep finding this sh
 `SC_NONE` in the dispatch table. This paragraph claimed "*Closed*" for nineteen days while it
 was not. Administrative authority over the user database is now possession of `CAP_USER` and
 nothing else. See `LIMITATIONS.md` §1.2 for why the conformance suite could not have caught it.
+
+**`CAP_FRAME` named a fixed window and authorised nothing.** *Closed 2026-08-22* (roadmap 2.1,
+finding **[F-2.1]** — no new G-number: this is that finding's kernel half, not a separate
+gap). `CAP_FRAME` existed from the beginning as a decoy: every
+task was born holding one in slot 3, `READ|WRITE|EXEC`, object `USER_AREA_BASE`, identical in
+every task and consulted by no syscall. It is the capability that made **[C-1]** reachable —
+the pre-C-1 dispatch table gated IPC on slot 3, so a capability everyone happened to hold
+became universal IPC authority.
+
+Giving it a meaning is roadmap 2.1, and the decoy is why the shape of the fix matters more
+than the feature. A `CAP_FRAME` names a frame **index** into a table `SYS_RETYPE` populates,
+not a physical address, so the slot-3 capability is refused by a bound. Had `object` been an
+address — the shorter design, one field and no resolver — `SYS_MAP_FRAME(3, ...)` would have
+mapped physical `0x400000` into ring 3 on the first boot, from a capability the kernel hands
+out itself, and the only thing between that and a kernel-memory disclosure would have been an
+allowlist somebody remembered to write. `FRAME_INDEX_UNCHECKED=1` is that kernel, and
+`smoke-frame` fails under it on every boot.
+
+The decoy is deliberately **kept**, not deleted: `captest` uses it in six C-1 regression checks
+as "a live capability that is not an endpoint", and `smoke-frame` now uses it as the negative
+test vector for the map path. A trap that is asserted against on every boot is worth more than
+one that was quietly removed.
 
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are

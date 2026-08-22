@@ -44,9 +44,11 @@
  * removes the 512 KiB static cspace_pool from `.bss`. Endpoints and
  * notifications are retypable from ring 3 into an index range above the static
  * tables, which remain as a compatibility shim for the well-known service
- * objects the boot protocol names by index. tasks[] is not migrated: a TCB is
- * reachable from the scheduler's hot path and from every trap frame, so moving
- * it is its own change with its own tests.
+ * objects the boot protocol names by index. Frames (roadmap 2.1) are retypable
+ * too and have no static table at all -- they were never a `.bss` array, so
+ * every valid frame index is one this file handed out. tasks[] is not migrated:
+ * a TCB is reachable from the scheduler's hot path and from every trap frame, so
+ * moving it is its own change with its own tests.
  */
 #include "kernel.h"
 #include "errno.h"
@@ -56,7 +58,7 @@ uint8_t *g_untyped_arena = 0;
 
 struct untyped untypeds[MAX_UNTYPED];
 
-/* Descriptor for one retyped endpoint / notification. These ARE `.bss`, and
+/* Descriptor for one retyped endpoint / notification / frame. These ARE `.bss`, and
  * deliberately so: what they cost is one pointer per addressable object, while
  * the objects themselves — the part that actually scales — live in untyped
  * memory. The array bounds how many retyped objects the kernel can NAME; the
@@ -68,6 +70,9 @@ struct kobj_slot {
 };
 static struct kobj_slot dyn_eps[MAX_DYN_ENDPOINTS];
 static struct kobj_slot dyn_notifs[MAX_DYN_NOTIFICATIONS];
+/* Frames (roadmap 2.1). Indexed by (object - DYN_FRAME_BASE), same shape as the
+ * two above; `mem` points at a PAGE_SIZE-aligned page in the arena. */
+static struct kobj_slot dyn_frames[MAX_DYN_FRAMES];
 
 /* ------------------------------------------------------------------------- *
  *  Locking.
@@ -143,8 +148,20 @@ static uint64_t kobj_size(uint32_t kobj_type) {
         case KOBJ_CNODE:        return (uint64_t)CNODE_SIZE * sizeof(capability_t);
         case KOBJ_ENDPOINT:     return sizeof(struct endpoint);
         case KOBJ_NOTIFICATION: return sizeof(struct notification);
+        case KOBJ_FRAME:        return PAGE_SIZE;
         default:                return 0;
     }
+}
+
+/* Alignment is per class, not global, because KOBJ_FRAME's is a correctness
+ * requirement rather than the cache-line preference the other classes get: a
+ * frame is installed in a PTE, and a PTE's address field IS the page number, so
+ * a 64-byte-aligned "frame" would either be truncated down onto whatever object
+ * shares its page or refused at map time -- and the first of those is a
+ * cross-object aliasing bug that would look like data corruption, not like a
+ * permission error. Demanding it here means the map path never has to. */
+static uint64_t kobj_align(uint32_t kobj_type) {
+    return (kobj_type == KOBJ_FRAME) ? (uint64_t)PAGE_SIZE : (uint64_t)KOBJ_ALIGN;
 }
 
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
@@ -158,13 +175,34 @@ static void zero_bytes(uint8_t *p, uint64_t n) {
  * cannot satisfy the request -- which is the whole point: this is where a task's
  * kernel-memory budget is enforced, so it must fail cleanly rather than borrow
  * from anywhere else. */
-static void *untyped_bump(struct untyped *u, uint64_t bytes) {
+static void *untyped_bump(struct untyped *u, uint64_t bytes, uint64_t align) {
     if (!u->in_use || !g_untyped_arena) return 0;
-    uint64_t start = align_up(u->watermark, KOBJ_ALIGN);
-    /* Overflow-safe headroom test: compare remaining against need, never
-     * start+bytes against size (which can wrap on a crafted count). */
-    if (start >= u->size)             return 0;
-    if (bytes > u->size - start)      return 0;
+    /* The masks below are the power-of-two form. Both callers pass a constant
+     * that satisfies it, so this is a guard against a future third one rather
+     * than against anything reachable today -- and refusing is the fail-closed
+     * answer to "an alignment I cannot honour". */
+    if (align == 0 || (align & (align - 1))) return 0;
+
+    /* Align the ABSOLUTE arena address, not the region-relative watermark.
+     * Rounding the offset alone is what the 64-byte-only version did, and it was
+     * correct only because every region base happened to be a multiple of 64.
+     * Nothing requires that, and at PAGE_SIZE it stops being true the moment a
+     * region starts anywhere but a page boundary -- so the padding is computed
+     * from the address the caller will actually receive. */
+    uint64_t abs_base = (uint64_t)(g_untyped_arena + u->base);
+    uint64_t start    = u->watermark;
+
+    /* Overflow-safe headroom test throughout: compare what REMAINS against what
+     * is needed, never start+bytes against size (which can wrap on a crafted
+     * count). The padding is spent out of the same remainder. */
+    if (start >= u->size) return 0;
+    uint64_t room = u->size - start;
+    uint64_t pad  = (align - ((abs_base + start) & (align - 1))) & (align - 1);
+    if (pad > room)   return 0;
+    start += pad;
+    room  -= pad;
+    if (bytes > room) return 0;
+
     u->watermark = start + bytes;
     uint8_t *p = g_untyped_arena + u->base + start;
     zero_bytes(p, bytes);
@@ -187,6 +225,12 @@ static int dyn_notif_alloc_index(void) {
     return -1;
 }
 
+static int dyn_frame_alloc_index(void) {
+    for (int i = 0; i < MAX_DYN_FRAMES; i++)
+        if (!dyn_frames[i].mem) return i;
+    return -1;
+}
+
 struct endpoint *endpoint_by_index(uint32_t idx) {
     if (idx < MAX_ENDPOINTS) return &endpoints[idx];
     if (idx >= EP_INDEX_MAX)  return 0;
@@ -199,12 +243,50 @@ struct notification *notification_by_index(uint32_t idx) {
     return (struct notification *)dyn_notifs[idx - DYN_NOTIF_BASE].mem;
 }
 
+/* Unlike endpoints and notifications there is no static frame table to fall back
+ * to: frames were never a `.bss` array, so every valid index is a retyped one
+ * and BOTH ends of the range are a refusal. That is what the map path leans on
+ * to reject the legacy slot-3 CAP_FRAME, whose object is a virtual address that
+ * lands nowhere near [DYN_FRAME_BASE, FRAME_INDEX_MAX). */
+void *frame_by_index(uint32_t idx) {
+    if (idx < DYN_FRAME_BASE || idx >= FRAME_INDEX_MAX) return 0;
+    return dyn_frames[idx - DYN_FRAME_BASE].mem;
+}
+
+/* The arena is a linear PHYS_KVA window (kernel.h), so the inverse of PHYS_KVA
+ * is a subtraction. Returns 0 -- never a frame -- for a dead or out-of-range
+ * index, so a caller that skips the NULL check still fails closed. */
+uint64_t frame_phys_by_index(uint32_t idx) {
+#ifdef FRAME_INDEX_UNCHECKED
+    /* The control arm, and it reproduces the defect in its realistic form rather
+     * than by deleting a bounds check. The shortcut a frame-mapping syscall
+     * invites is to put the PHYSICAL ADDRESS in capability_t.object and map it:
+     * one field, no table, no resolver. This is that kernel.
+     *
+     * It is reachable on the first boot, because every task is born holding a
+     * CAP_FRAME in slot 3 whose object is USER_AREA_BASE. Under this arm,
+     * SYS_MAP_FRAME(3, ...) maps physical 0x400000 -- low memory, below the pool
+     * -- into ring 3, from a capability the kernel handed out itself.
+     *
+     * Simply removing the range test from frame_by_index would NOT reproduce it:
+     * dyn_frames[0x400000 - 1] is a wild read that faults, so the arm would
+     * measure the bounds check crashing rather than the authority being wrong. */
+    return (uint64_t)idx;
+#else
+    void *mem = frame_by_index(idx);
+    if (!mem) return 0;
+    return (uint64_t)mem - PHYS_KVA_BASE;
+#endif
+}
+
 uint32_t kobj_live_count(uint32_t kobj_type) {
     uint32_t n = 0;
     if (kobj_type == KOBJ_ENDPOINT) {
         for (int i = 0; i < MAX_DYN_ENDPOINTS; i++) if (dyn_eps[i].mem) n++;
     } else if (kobj_type == KOBJ_NOTIFICATION) {
         for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++) if (dyn_notifs[i].mem) n++;
+    } else if (kobj_type == KOBJ_FRAME) {
+        for (int i = 0; i < MAX_DYN_FRAMES; i++) if (dyn_frames[i].mem) n++;
     }
     return n;
 }
@@ -231,9 +313,12 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
     } else if (kobj_type == KOBJ_NOTIFICATION) {
         idx = dyn_notif_alloc_index();
         if (idx < 0) { ut_unlock(); return 0; }
+    } else if (kobj_type == KOBJ_FRAME) {
+        idx = dyn_frame_alloc_index();
+        if (idx < 0) { ut_unlock(); return 0; }
     }
 
-    void *mem = untyped_bump(u, need);
+    void *mem = untyped_bump(u, need, kobj_align(kobj_type));
     if (!mem) { ut_unlock(); return 0; }
 
     if (kobj_type == KOBJ_ENDPOINT) {
@@ -258,6 +343,41 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
         dyn_notifs[idx].mem     = mem;
         dyn_notifs[idx].untyped = untyped_index;
         if (out_index) *out_index = DYN_NOTIF_BASE + (uint32_t)idx;
+    } else if (kobj_type == KOBJ_FRAME) {
+        /* ---- The permanent reference, and why it is not an optimisation ----
+         *
+         * A frame is arena memory INSIDE [USER_PHYS_BASE, pool ceiling), so it
+         * has a slot in the same page_refcounts[] table the anonymous-page
+         * allocator uses. That matters because free_user_table (paging.c) walks
+         * a dying task's page tables and calls user_leaf_release on every
+         * present leaf -- and user_leaf_release pushes a frame onto the FREE
+         * PAGE STACK when its count reaches zero. A mapped frame whose count
+         * fell to zero would therefore be handed out as an anonymous page while
+         * the untyped region still owns those bytes: pool corruption, reachable
+         * by mapping a frame and letting the task die.
+         *
+         * That does not happen today, but only because a never-allocated arena
+         * page sits at count 0 and rust_page_ref_dec fails closed on an
+         * already-zero frame. That is a value nobody set on purpose holding up a
+         * safety property, which is the shape this project treats as a defect
+         * rather than a margin.
+         *
+         * So the region takes a reference of its own, here, once, and never
+         * releases it. Every map adds one and every unmap or teardown removes
+         * one, so the count is (1 + mappings) and can never reach 0 -- the
+         * release path is unreachable for arena frames by arithmetic instead of
+         * by accident. It also gives the GC its liveness test for free: a count
+         * above 1 means somebody still has this frame mapped.
+         *
+         * (There is no untyped-region reset in the tree yet. When one lands it
+         * must clear these pins as it resets the watermark, or the second carve
+         * of the same page would pin it twice; frame_unpin_refcount exists for
+         * that caller and is why the pin is a named operation rather than an
+         * inline store.) */
+        frame_pin_refcount((uint64_t)mem - PHYS_KVA_BASE);
+        dyn_frames[idx].mem     = mem;
+        dyn_frames[idx].untyped = untyped_index;
+        if (out_index) *out_index = DYN_FRAME_BASE + (uint32_t)idx;
     } else {
         /* KOBJ_CNODE: no object index -- a cspace is reached through the owning
          * task's tcb, not by index. */
@@ -305,7 +425,8 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
  * actually nulled), never destroy an object something can still name. The
  * opposite bias — treating a slot as empty when a holder could still resolve
  * it — would be a use-after-free reachable from ring 3. */
-static void mark_cap(const capability_t *c, uint8_t *ep_marks, uint8_t *nt_marks) {
+static void mark_cap(const capability_t *c, uint8_t *ep_marks, uint8_t *nt_marks,
+                     uint8_t *fr_marks) {
     if (c->serial == 0) return;   /* empty slot */
     if (c->type == CAP_ENDPOINT) {
         if (c->object >= DYN_EP_BASE && c->object < EP_INDEX_MAX)
@@ -313,6 +434,13 @@ static void mark_cap(const capability_t *c, uint8_t *ep_marks, uint8_t *nt_marks
     } else if (c->type == CAP_NOTIFICATION) {
         if (c->object >= DYN_NOTIF_BASE && c->object < NOTIF_INDEX_MAX)
             nt_marks[c->object - DYN_NOTIF_BASE] = 1;
+    } else if (c->type == CAP_FRAME) {
+        /* The legacy slot-3 CAP_FRAME every task is born with lands here on every
+         * sweep. Its object is USER_AREA_BASE, far outside the index range, so it
+         * marks nothing -- the same bound that stops it mapping anything stops it
+         * keeping a frame alive. */
+        if (c->object >= DYN_FRAME_BASE && c->object < FRAME_INDEX_MAX)
+            fr_marks[c->object - DYN_FRAME_BASE] = 1;
     }
 }
 
@@ -320,20 +448,23 @@ static void mark_cap(const capability_t *c, uint8_t *ep_marks, uint8_t *nt_marks
  * retyped object some capability names. ONE pass, not one per object: the naive
  * "is this object named?" form is O(objects x tasks x cspace), which at a full
  * index table is millions of reads on every revoke and every task exit. */
-static void mark_reachable(uint8_t *ep_marks, uint8_t *nt_marks) {
+static void mark_reachable(uint8_t *ep_marks, uint8_t *nt_marks, uint8_t *fr_marks) {
     for (int i = 0; i < MAX_DYN_ENDPOINTS; i++)     ep_marks[i] = 0;
     for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++) nt_marks[i] = 0;
+    for (int i = 0; i < MAX_DYN_FRAMES; i++)        fr_marks[i] = 0;
 
     for (int t = 0; t < MAX_TASKS; t++) {
         if (tasks[t].state == 0 || !tasks[t].cspace) continue;
         uint32_t sz = tasks[t].cspace_size ? tasks[t].cspace_size : CNODE_SIZE;
         if (sz > CNODE_SIZE) sz = CNODE_SIZE;
-        for (uint32_t s = 0; s < sz; s++) mark_cap(&tasks[t].cspace[s], ep_marks, nt_marks);
+        for (uint32_t s = 0; s < sz; s++)
+            mark_cap(&tasks[t].cspace[s], ep_marks, nt_marks, fr_marks);
     }
     /* The kernel root cnode is not any task's cspace; sweep it too, so a
      * kernel-held capability keeps its object alive. */
     const capability_t *root = cap_root_cnode_ref();
-    for (uint32_t s = 0; s < CNODE_SIZE; s++) mark_cap(&root[s], ep_marks, nt_marks);
+    for (uint32_t s = 0; s < CNODE_SIZE; s++)
+        mark_cap(&root[s], ep_marks, nt_marks, fr_marks);
 }
 
 /* Release an endpoint's storage index. The bytes stay consumed in the untyped
@@ -374,20 +505,61 @@ static void destroy_dyn_notification(int i) {
     dyn_notifs[i].mem = 0;
 }
 
+/* Release a frame's index, if nothing has it mapped.
+ *
+ * ---- WHY THIS ONE CAN REFUSE, AND THE OTHER TWO CANNOT --------------------
+ *
+ * For an endpoint, "no capability names it" is the whole liveness question: the
+ * only way to reach one is through a capability, so a swept endpoint is
+ * genuinely unreachable and the in-flight-pointer case is covered by the bump
+ * discipline (a dropped message, never a use-after-free -- see the header).
+ *
+ * A frame is different in kind, because a PTE is a second, capability-free path
+ * to the same bytes. A task that maps a frame and then drops its capability
+ * still has the page in its address space and keeps reading and writing it. So
+ * "unreachable" is `no capability AND no mapping`, and the mapping half is what
+ * frame_map_refcount answers: the region's pin is 1, every mapping is one more,
+ * so anything above 1 means a live PTE somewhere.
+ *
+ * Refusing leaks the index until the last holder unmaps or dies -- teardown
+ * walks the page tables and drops the references, so the next sweep collects it.
+ * That is the safe direction of imprecision, in the same sense as mark_cap's:
+ * the cost of refusing is a name held longer than necessary, and the cost of
+ * proceeding would be the region reset handing those bytes to a fresh object
+ * while another task's PTE still points at them. */
+static void destroy_dyn_frame(int i) {
+    uint8_t *pg = (uint8_t *)dyn_frames[i].mem;
+    if (!pg) return;
+    uint64_t phys = (uint64_t)pg - PHYS_KVA_BASE;
+    if (frame_map_refcount(phys) > 1) return;   /* still mapped: not collectable */
+
+    /* Scrub before releasing the name, for the reason destroy_dyn_endpoint
+     * scrubs: the bytes outlive the object under bump allocation, and a frame's
+     * bytes are whatever userspace last put in them. */
+    zero_bytes(pg, PAGE_SIZE);
+    frame_unpin_refcount(phys);
+    if (dyn_frames[i].untyped < MAX_UNTYPED && untypeds[dyn_frames[i].untyped].objects > 0)
+        untypeds[dyn_frames[i].untyped].objects--;
+    dyn_frames[i].mem = 0;
+}
+
 /* Mark bitmaps. Static rather than on the stack: kobj_gc runs from
  * task_teardown, which is reached from the page-fault handler on a kernel stack
  * that has no room for half a KiB of scratch. Safe as statics because every
  * caller holds the untyped lock across the whole mark-and-sweep. */
 static uint8_t gc_ep_marks[MAX_DYN_ENDPOINTS];
 static uint8_t gc_nt_marks[MAX_DYN_NOTIFICATIONS];
+static uint8_t gc_fr_marks[MAX_DYN_FRAMES];
 
 void kobj_gc(void) {
     ut_lock();
-    mark_reachable(gc_ep_marks, gc_nt_marks);
+    mark_reachable(gc_ep_marks, gc_nt_marks, gc_fr_marks);
     for (int i = 0; i < MAX_DYN_ENDPOINTS; i++)
         if (dyn_eps[i].mem && !gc_ep_marks[i]) destroy_dyn_endpoint(i);
     for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++)
         if (dyn_notifs[i].mem && !gc_nt_marks[i]) destroy_dyn_notification(i);
+    for (int i = 0; i < MAX_DYN_FRAMES; i++)
+        if (dyn_frames[i].mem && !gc_fr_marks[i]) destroy_dyn_frame(i);
     ut_unlock();
 }
 
@@ -474,7 +646,8 @@ int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
      * capability type naming it and no syscall that installs one as a task's
      * cspace, so minting one here would hand out authority with no defined
      * meaning -- refuse until there is something to refuse it FOR. */
-    if (kobj_type != KOBJ_ENDPOINT && kobj_type != KOBJ_NOTIFICATION)
+    if (kobj_type != KOBJ_ENDPOINT && kobj_type != KOBJ_NOTIFICATION &&
+        kobj_type != KOBJ_FRAME)
         return SYS_ERR_INVAL;
 
     if (count == 0) return SYS_ERR_INVAL;
@@ -486,7 +659,9 @@ int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
     if (count > CNODE_SIZE)               return SYS_ERR_RANGE;
     if (dest_slot > CNODE_SIZE - count)   return SYS_ERR_RANGE;
 
-    uint32_t cap_type = (kobj_type == KOBJ_ENDPOINT) ? CAP_ENDPOINT : CAP_NOTIFICATION;
+    uint32_t cap_type = (kobj_type == KOBJ_ENDPOINT)     ? CAP_ENDPOINT :
+                        (kobj_type == KOBJ_NOTIFICATION) ? CAP_NOTIFICATION :
+                                                           CAP_FRAME;
     /* A freshly retyped object is the creator's alone: full rights, including
      * REVOKE, because the holder is the only one who can have delegated any copy
      * of it. Narrowing on delegation is the grantee's problem, and cap_mint
@@ -507,8 +682,10 @@ int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
             ut_lock();
             if (kobj_type == KOBJ_ENDPOINT)
                 destroy_dyn_endpoint((int)(obj_index - DYN_EP_BASE));
-            else
+            else if (kobj_type == KOBJ_NOTIFICATION)
                 destroy_dyn_notification((int)(obj_index - DYN_NOTIF_BASE));
+            else
+                destroy_dyn_frame((int)(obj_index - DYN_FRAME_BASE));
             ut_unlock();
             break;
         }

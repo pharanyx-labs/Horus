@@ -176,6 +176,56 @@ int page_ref_dec(uint32_t phys_addr) {
     return 0;
 }
 
+/* ---- Frame pinning (roadmap 2.1) ------------------------------------------
+ *
+ * A KOBJ_FRAME is a page of the untyped arena, which lives inside the physical
+ * pool and therefore has a refcount slot -- but it was never handed out by
+ * alloc_user_physical_page, so nothing ever set that slot. These three give the
+ * untyped allocator an explicit reference of its own over such a page, so that
+ * user_leaf_release can never take the count to zero and return arena bytes to
+ * the free page stack. The full argument is at the KOBJ_FRAME arm of
+ * kobj_alloc (untyped.c), where the pin is taken.
+ *
+ * Deliberately NOT expressed as page_ref_inc/page_ref_dec calls at the untyped
+ * end, even though that is all they do: the pin and a mapping's reference have
+ * different lifetimes and different owners, and naming them the same would make
+ * a future "this inc looks redundant" edit look safe.
+ *
+ * LOCKING. These run under the untyped lock, not page_lock, and that is sound
+ * rather than overlooked: the pin is taken at creation and dropped at
+ * destruction, and at both moments the frame is exclusively owned. At creation
+ * nothing can name it yet -- no capability exists and no PTE points at it. At
+ * destruction the GC has just established that no capability names it and
+ * nothing has it mapped, and the bytes are never re-carved (the watermark only
+ * moves forward), so no second writer to this index can appear. Only the
+ * mapping's own inc/dec races anything, and those run under page_lock in
+ * user_map_frame_page / user_unmap_frame_page where the PTE is written. */
+void frame_pin_refcount(uint64_t phys_addr) {
+    int idx = (int)((phys_addr - USER_PHYS_BASE) / PAGE_SIZE);
+    if (idx >= 0 && idx < USER_PHYS_PAGES && page_refcounts[idx] == 0)
+        page_refcounts[idx] = 1;
+}
+
+/* Drop the region's own reference. Only an untyped-region reset may call this,
+ * and only once it has established that no mapping remains -- see the comment
+ * at the pin. Unused today; the reset it exists for is not written yet. */
+void frame_unpin_refcount(uint64_t phys_addr) {
+    int idx = (int)((phys_addr - USER_PHYS_BASE) / PAGE_SIZE);
+    if (idx >= 0 && idx < USER_PHYS_PAGES && page_refcounts[idx] == 1)
+        page_refcounts[idx] = 0;
+}
+
+/* How many references a pool page carries. For a pinned frame this is
+ * 1 + (mappings), so `> 1` is exactly "somebody still has it mapped" -- which is
+ * what the object GC tests before destroying a frame descriptor. Returns 0 for
+ * an out-of-range address, so an unknown page reads as unmapped, and the GC's
+ * refusal is driven by a positive answer rather than by the absence of one. */
+uint32_t frame_map_refcount(uint64_t phys_addr) {
+    int idx = (int)((phys_addr - USER_PHYS_BASE) / PAGE_SIZE);
+    if (idx < 0 || idx >= USER_PHYS_PAGES) return 0;
+    return page_refcounts[idx];
+}
+
 void ensure_lapic_mapped(uint64_t *root);
 
 /* ---- Which address space each CPU currently has loaded --------------------
@@ -927,6 +977,92 @@ int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
     if (rc == 0)
         __asm__ volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
     return rc;
+}
+
+/* ---- Frame mapping (roadmap 2.1, finding F-2.1) ---------------------------
+ *
+ * Map one untyped-carved frame `phys` at `vaddr` in task `task_id`'s own
+ * address space with the caller-built `flags`.
+ *
+ * WHAT THIS FUNCTION DELIBERATELY DOES NOT DO is decide the rights. `eff_rights`
+ * has already been intersected with the capability's own rights by h_map_frame
+ * (syscall_vm.c), because the authority question -- what may this caller's
+ * capability permit -- belongs where the capability is. What is left here is the
+ * translation into PTE bits, which belongs here because this is the only file
+ * that defines them. Neither half can be moved to the other side without taking
+ * something out of scope that it needs.
+ *
+ * The reference is taken BEFORE the PTE is installed and released again if the
+ * install fails, so there is no window in which a live PTE exists without the
+ * count that protects its frame from user_leaf_release.
+ *
+ * The invlpg is on the running CPU, and that is sufficient for the same reason
+ * it is in user_map_device_page: SYS_MAP_FRAME only ever maps into the CALLER's
+ * own address space, so the mapping takes effect on the CPU that returns to the
+ * caller. A stale not-present entry cached on another CPU cannot be reached
+ * without that CPU first loading this CR3, which reloads the TLB anyway. */
+int user_map_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
+                        uint32_t eff_rights) {
+    if (task_id >= MAX_TASKS) return -1;
+    uint64_t pml4_phys = tasks[task_id].cr3;
+    if (pml4_phys == 0) return -1;   /* task 0 / kernel address space: never a target */
+
+    /* PAGE_USER unconditionally: a frame is mapped for ring 3 or not at all.
+     * READ is implied by presence -- x86-64 has no read-disable bit -- which is
+     * why an empty rights request is refused by the caller rather than arriving
+     * here as a present-but-unreadable page the hardware cannot express. */
+    uint64_t flags = PAGE_PRESENT | PAGE_USER;
+    if (eff_rights & CAP_RIGHT_WRITE)  flags |= PAGE_WRITE;
+    if (!(eff_rights & CAP_RIGHT_EXEC)) flags |= PAGE_NX;
+
+    spin_lock(&page_lock);
+    /* Refuse to map over anything already present. Silently replacing a live PTE
+     * would drop that page's reference without anyone releasing it -- a leak if
+     * it was an anonymous page, and a frame whose pin no longer matches its
+     * mappings if it was another frame. Making the caller unmap first keeps the
+     * count and the page tables in agreement by construction. */
+    uint64_t *slot = user_pte_slot((uint64_t *)PHYS_KVA(pml4_phys), vaddr);
+    if (!slot) { spin_unlock(&page_lock); return -1; }
+    if (*slot & PAGE_PRESENT) { spin_unlock(&page_lock); return -2; }
+
+    page_ref_inc((uint32_t)phys);
+    *slot = phys | flags;
+    spin_unlock(&page_lock);
+
+    __asm__ volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
+    return 0;
+}
+
+/* Tear down a frame mapping the caller installed. `expect_phys` is the frame the
+ * caller's capability names; the PTE must currently point at exactly that.
+ *
+ * Checking the address rather than trusting `vaddr` is the whole authorisation
+ * of this syscall: without it, "unmap 0x401000" would let any task punch a hole
+ * in its own image, its stack, or a COW page it shares -- addresses it holds no
+ * frame capability for at all. Requiring the PTE to name the capability's own
+ * frame makes the operation reach exactly what the caller was entitled to map. */
+int user_unmap_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t expect_phys) {
+    if (task_id >= MAX_TASKS) return -1;
+    uint64_t pml4_phys = tasks[task_id].cr3;
+    if (pml4_phys == 0) return -1;
+
+    spin_lock(&page_lock);
+    uint64_t *slot = user_pte_slot((uint64_t *)PHYS_KVA(pml4_phys), vaddr);
+    if (!slot || !(*slot & PAGE_PRESENT)) { spin_unlock(&page_lock); return -1; }
+    if ((*slot & PTE_ADDR_MASK) != (expect_phys & PTE_ADDR_MASK)) {
+        spin_unlock(&page_lock); return -2;
+    }
+    *slot = 0;
+    /* Release AFTER the PTE is gone: while the entry is live the reference is
+     * what keeps the frame out of the free page stack, so dropping it first
+     * would open exactly the window this ordering exists to close. The count
+     * never reaches 0 here anyway -- the region's pin is below it -- so
+     * page_ref_dec's return is deliberately ignored rather than used to free. */
+    page_ref_dec((uint32_t)expect_phys);
+    spin_unlock(&page_lock);
+
+    __asm__ volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
+    return 0;
 }
 
 void create_user_pagedir(uint32_t task_id) {

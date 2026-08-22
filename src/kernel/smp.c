@@ -522,6 +522,16 @@ void smp_bringup(void) {
      * LIBHORUS_SELFTEST: PASS from ring 3. Falsified by LIBHORUS_RETRY_ANY=1 and
      * LIBHORUS_STRNCPY_UNTERMINATED=1. */
     { extern void libhorus_selftest(void); libhorus_selftest(); }
+#elif defined(FRAME_SELFTEST)
+    /* Gated: two ring-3 tasks around one page of physical memory (roadmap 2.1).
+     * One retypes a KOBJ_FRAME out of its CAP_UNTYPED, maps it, and asserts every
+     * refusal the map path owes -- most importantly that the legacy CAP_FRAME
+     * every task is born holding in slot 3 maps nothing. It then mints a
+     * READ-only copy and delegates it, and the second task proves it can see the
+     * first's bytes and cannot obtain a writable mapping. Prints
+     * FRAMETEST: PASS <n> checks from ring 3. Falsified by
+     * FRAME_INDEX_UNCHECKED=1 and FRAME_RIGHTS_UNCHECKED=1. */
+    { extern void frame_selftest(void); frame_selftest(); }
 #elif defined(RECVBLOCK_SELFTEST)
     /* Gated: a ring-3 server waits on an empty endpoint with SYS_IPC_RECV_BLOCK
      * while a client dawdles before each request; the server proves it made

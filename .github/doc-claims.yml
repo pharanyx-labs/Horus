@@ -199,3 +199,11 @@ forbidden:
       the deferred-release machinery two fixes had already targeted. Corrected
       2026-08-21; the idle shape was one observation, not the definition.
 
+  - pattern: 'S20 park path; ADVISORY'
+    reason: >-
+      smoke-kstack-park's job name carried "ADVISORY -- open finding G-9" in the
+      status-check context itself. Both halves went false on 2026-08-21 when [G-9]
+      closed and 2026-08-22 when the gate was promoted. Renamed in the one window
+      where it was free: the context was not yet in the ruleset, so no
+      demotion-then-promotion was needed. Corrected 2026-08-22.
+

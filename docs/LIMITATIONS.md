@@ -689,11 +689,11 @@ the `ci-gating` job fails the build if any job is in neither, in both, or names 
 longer exists. There is deliberately no default, because defaulting is the defect. It caught
 CodeQL sitting unclassified on its first run.
 
-That intended set is **85 required contexts and 4 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **86 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
-`smoke-kstack-park` (its workload trips **[G-9]**, §5.2d — the one exemption that again stands
-for an open defect rather than a property of the test). `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
+`smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on
+2026-08-22 and **no exemption now stands for an open defect**. `smoke-fs-wal` was a third until [I-11] was fixed on 2026-08-16 and it
 was promoted back, and `smoke-session-smp-soak` a fourth until [G-8] was closed on 2026-08-17
 and it was promoted with it — the last exemption in this repo that stood for an open defect
 rather than for a property of the test itself. The
@@ -995,9 +995,11 @@ Without `SCHED_INVARIANTS` the failures present as a mix, which is why the check
 over 25 boots, 10 passed, 7 took a supervisor `#PF` (instruction fetch at `rip=0x2/0x12/0x82`,
 i.e. a return through a corrupted pointer), 5 stalled with no marker, and 3 tripped the canary.
 
-**Consequence for CI.** `smoke-kstack-park` is **advisory**, not gating: the S20 park property
-it checks is sound and its control arm still reproduces the park defect on demand, but requiring
-a workload that reddens for an unrelated defect teaches the re-run reflex. It **stays advisory**
+**Consequence for CI, now historical.** `smoke-kstack-park` **was advisory**, not gating: the S20
+park property it checks is sound and its control arm still reproduces the park defect on demand,
+but requiring a workload that reddened for an unrelated defect teaches the re-run reflex. It was
+promoted to **required on 2026-08-22**, one merge after [G-9] closed, with its workload measured at
+0 failures in 200 boots. It **stayed advisory**
 after the 2026-08-17 narrowing below and the 2026-08-18 close of [G-10] — the workload still
 fails **2 boots in 30** (~7%), for a reason that is still not what the gate tests. Promote it in
 the same commit that closes the rest of **[G-9]**, and quote a rate.

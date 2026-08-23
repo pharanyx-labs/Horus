@@ -851,8 +851,12 @@ static void serial_init(void) {
 /* Program PIT channel 0 for a fixed periodic tick so the preemptive scheduler
  * has a deterministic quantum instead of the undefined power-on reload value.
  * 1193182 Hz / 11932 ~= 100 Hz => a 10 ms time slice. Mode 3 (square wave),
- * lobyte/hibyte access. */
-#define PIT_TICK_HZ 100
+ * lobyte/hibyte access.
+ *
+ * PIT_TICK_HZ moved to src/include/kernel.h on 2026-08-24: SYS_CLOCK_GETTIME
+ * converts the tick count to seconds with it, so a local #define here would be
+ * the same constant written down twice -- and the clock would silently report
+ * the wrong time if only one of them changed. */
 void pit_init(void) {
     uint32_t divisor = 1193182u / PIT_TICK_HZ;
     if (divisor > 0xFFFF) divisor = 0xFFFF;

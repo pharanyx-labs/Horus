@@ -16,6 +16,32 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A monotonic clock, at the resolution `CR4.TSD` allows (roadmap 2.2, S34).**
+  `SYS_CLOCK_GETTIME` reports time since boot from the PIT tick counter — 10 ms — rather than
+  from the TSC. That is a security decision, not a hardware limit: `CR4.TSD` is set precisely to
+  deny ring 3 the cycle-accurate timer that cache and covert-channel attacks between mutually
+  distrusting tasks lean on, and a nanosecond clock behind a syscall would hand it back through
+  the front door. It is not a claim of side-channel safety — the TSD comment already says the
+  mitigation is partial, and a counting loop still builds a finer timer — only a refusal to
+  supply one.
+
+  **The control arm's "defect" is that it is better.** `CLOCK_TSC_RESOLUTION=1` reports real
+  microseconds off the calibrated TSC: more accurate, more useful, and it undoes TSD. That is the
+  arm worth having, because the tempting mistake here does not look like one.
+
+  No wall clock: every id but `HORUS_CLOCK_MONOTONIC` is refused rather than approximated, since
+  nothing here reads an RTC and answering `CLOCK_REALTIME` with uptime would be a number shaped
+  like a date with nothing behind it. Ambient by design — a coarse count of time since boot is not
+  authority over an object.
+
+  `system_ticks` is 64-bit now. At 100 Hz a `uint32_t` wraps after ~497 days, which was
+  irrelevant while nothing read it as a clock and a defect the moment something did: a monotonic
+  clock that goes backwards makes every timeout built on it fire early or never. One counter, not
+  two, so they cannot drift; `get_system_ticks()` still returns the low 32 bits for the callers
+  that only compare small deltas. `PIT_TICK_HZ` moved to `kernel.h` for the same reason — the
+  clock converts ticks to seconds with it, and the same constant in two files is a clock that
+  silently lies when one of them changes.
+
 - **Miri over the security core, and it found UB in the tests (roadmap 3.8, S33).** 80 `unsafe`
   blocks live in `rust/src`, every one at the boundary where the C kernel hands in a pointer, and
   nothing had ever checked them for undefined behaviour. `cargo miri test` now runs on every pull

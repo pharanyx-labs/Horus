@@ -790,10 +790,28 @@ measurement nothing took.
   region bounds how many an authority can create, and only the second is a security property,
   but the first is a ceiling a real workload will meet before the second.
 
-### 2.2 ⬜ Time, timers, and a monotonic clock — **[F-2.6]**
+### 2.2 ◧ Time, timers, and a monotonic clock — **[F-2.6]** — *the clock landed 2026-08-24*
 
-`SYS_CLOCK_GETTIME`, per-task timers as notification sources, tickless operation.
-Prerequisite for IPC timeouts, anything real-time, and sane userspace scheduling.
+**Delivered: `SYS_CLOCK_GETTIME`**, monotonic time since boot, `SECURITY.md` **S34**.
+
+**Its resolution is a security decision, not a hardware limit.** `CR4.TSD` denies ring 3 RDTSC
+specifically to remove the cycle-accurate timer that cache and covert-channel attacks lean on.
+A nanosecond clock behind a syscall gives that back through the front door — so the clock is
+derived from the PIT tick counter (10 ms) rather than the TSC, and the control arm for it,
+`CLOCK_TSC_RESOLUTION=1`, is a *better* clock: real microseconds, more accurate, and it undoes
+TSD. That is the arm worth having, because the tempting mistake here is an improvement.
+
+There is no wall clock: nothing reads an RTC and nothing attests one, so every clock id but
+`HORUS_CLOCK_MONOTONIC` is refused rather than approximated.
+
+**Still open, and the larger half:**
+
+- **Per-task timers as notification sources.** The point of a clock is `SYS_IPC_CALL` with a
+  timeout, and that needs the timer interrupt to be able to deliver a badge to a waiting task —
+  which is a scheduler change, not a clock one.
+- **Tickless operation.** The PIT runs at a fixed 100 Hz whether or not anything needs it.
+- **A libc `clock_gettime`.** The ABI is POSIX-shaped (`sec`/`nsec`) so newlib can sit on it,
+  but nothing is wired yet.
 
 ### 2.3 ⬜ Process and session model — **[F-2.4]**
 
@@ -1171,7 +1189,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 118 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 32 of them control arms that must reproduce a defect |
+| ✅ | 119 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 33 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

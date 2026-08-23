@@ -831,12 +831,51 @@ void users_init(void);
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
 #define SYS_MAP_FRAME          95   /* (frame_slot, vaddr, rights) -> 0; map the KOBJ_FRAME named by a CAP_FRAME into the caller's own address space (roadmap 2.1). Authority is the capability the caller names, resolved in syscall_vm.c. */
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE must name this capability's own frame. */
+#define SYS_CLOCK_GETTIME      98   /* (clock_id, struct horus_timespec*) -> 0; monotonic time since boot (roadmap 2.2). No capability: coarse by design, see the struct. */
 #define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. Reports type/rights/serial/badge/generation and whether the slot is occupied; see struct cap_info for what it deliberately does not report. */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ), same class as dmesg. */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died (finding G-8). Self-scoped: no capability, waiting already entitled the caller to observe it. */
 #define SYS_IPC_RECV_BLOCK     94   /* (ep_slot, buf, max) -> len; blocking SYS_IPC_RECV (roadmap 1.3). CAP_ENDPOINT + READ, enforced per-slot in the handler like every other IPC syscall. */
+
+/* ---- roadmap 2.2: a monotonic clock ---------------------------------------
+ *
+ * Time since boot, and ONLY since boot. There is no wall clock here: nothing
+ * reads an RTC and nothing attests one, so a `CLOCK_REALTIME` would be a number
+ * with the shape of a date and no claim behind it. `SYS_CLOCK_GETTIME` refuses
+ * every clock id but `HORUS_CLOCK_MONOTONIC`, fail-closed like any other
+ * unknown case.
+ *
+ * RESOLUTION IS 10 ms, AND THAT IS A SECURITY DECISION RATHER THAN A LIMITATION
+ * OF THE HARDWARE. `cpu_enable_protections` sets CR4.TSD precisely so ring 3
+ * cannot execute RDTSC: it removes "the cycle-accurate timer that cache/covert-
+ * channel attacks between mutually distrusting ring-3 tasks lean on"
+ * (src/kernel/crypto.c). Handing back a nanosecond clock through a syscall
+ * would give that timer back through the front door. So this is derived from
+ * the PIT tick counter at PIT_TICK_HZ, not from the TSC, and `nsec` is always a
+ * multiple of 10,000,000.
+ *
+ * That is not a claim of side-channel safety. The TSD comment already says the
+ * mitigation is partial -- a counting thread still builds a finer timer -- and
+ * this changes nothing about that. It declines to make it easy.
+ *
+ * `sec`/`nsec` rather than a plain millisecond count so the shape matches
+ * POSIX `clock_gettime`, which is what a libc will want to sit on. */
+/* The PIT channel-0 tick rate: the scheduler's quantum AND the clock's
+ * resolution, which is why it lives here rather than in idt.c. 100 Hz = 10 ms.
+ * `1000000000 / PIT_TICK_HZ` must be exact, or nsec loses time every tick. */
+#define PIT_TICK_HZ 100
+_Static_assert(1000000000u % PIT_TICK_HZ == 0,
+               "PIT_TICK_HZ must divide 1e9 exactly, or the clock drifts");
+
+#define HORUS_CLOCK_MONOTONIC 1
+
+struct horus_timespec {
+    uint64_t sec;
+    uint32_t nsec;      /* always a multiple of 10,000,000 -- see above */
+    uint32_t reserved;  /* pad to 16 bytes; zeroed */
+};
 
 /* ---- roadmap 3.6: reading the capability graph out, in band ---------------
  *
@@ -1568,6 +1607,9 @@ void print(const char *s);
 void print_from_user(const char *s, int may_klog);
 /* Linux-style timestamped boot/kernel-log helpers (terminal.c). */
 void kmsg_clock_init(void);         /* calibrate the TSC boot clock; call once, early */
+#ifdef CLOCK_TSC_RESOLUTION
+uint64_t kmsg_uptime_us(void);      /* control arm only -- see terminal.c */
+#endif
 void kmsg_begin(void);              /* emit just the "[    S.uuuuuu] " prefix */
 void kmsg(const char *s);           /* emit a whole "[    S.mmm] s" line */
 uint32_t klog_copy(char *dst, uint32_t offset, uint32_t max); /* snapshot the kernel log ring from `offset`; backs SYS_DMESG */
@@ -1583,7 +1625,8 @@ void print_decimal(uint64_t v);
 void print_hrule(uint8_t color);
 void set_text_colour(uint8_t color);
 uint64_t read_tsc(void);
-uint32_t get_system_ticks(void);
+uint32_t get_system_ticks(void);   /* low 32 bits; for small-delta callers  */
+uint64_t get_system_ticks64(void); /* full count; the clock's source (2.2)  */
 void outb(uint16_t port, uint8_t val);
 uint8_t inb(uint16_t port);
 void secure_zero(void *p, size_t n);

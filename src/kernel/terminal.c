@@ -577,6 +577,16 @@ void kmsg_clock_init(void) {
     boot_tsc0 = rd_tsc();
 }
 
+#ifdef CLOCK_TSC_RESOLUTION
+/* Microseconds since boot from the calibrated TSC. Exists ONLY for the
+ * CLOCK_TSC_RESOLUTION control arm (roadmap 2.2): it is the cycle-accurate
+ * clock SYS_CLOCK_GETTIME deliberately does not expose, so it is compiled out
+ * of every ordinary build rather than sitting there waiting to be called. */
+uint64_t kmsg_uptime_us(void) {
+    return tsc_per_us ? (rd_tsc() - boot_tsc0) / tsc_per_us : 0;
+}
+#endif
+
 /* `kmsg_begin()` emits just the "[    S.uuuuuu] " prefix (for lines that then
  * print interpolated values); `kmsg()` emits a whole "[ts] msg" line. */
 void kmsg_begin(void) {

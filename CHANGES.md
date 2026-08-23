@@ -34,6 +34,14 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   like a date with nothing behind it. Ambient by design — a coarse count of time since boot is not
   authority over an object.
 
+  **The control arm caught my own mistake, and one checker could not.** The clock's dispatch
+  entry first landed inside the `#else` branch of `CAP_ENUMERATE_UNGATED`, so that build had no
+  clock at all and captest failed on `clock-monotonic-refused` rather than on the door the arm
+  aims at. `smoke-captest-capenum-control` went red, which is exactly its job. What did *not*
+  catch it is the syscall-coverage deriver: it models the **ship** build, where the entry is
+  present and correct, so a syscall accidentally scoped to a defect arm's `#else` is invisible
+  to it. Recorded next to the entry.
+
   `system_ticks` is 64-bit now. At 100 Hz a `uint32_t` wraps after ~497 days, which was
   irrelevant while nothing read it as a clock and a defect the moment something did: a monotonic
   clock that goes backwards makes every timeout built on it fire early or never. One counter, not

@@ -1442,11 +1442,20 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_CAP_ENUMERATE]           = { h_cap_enumerate,           SC_NONE, 0, SC_ANYTYPE },
 #else
     [SYS_CAP_ENUMERATE]           = { h_cap_enumerate,           CAPSLOT_DEBUG, CAP_RIGHT_READ, CAP_DEBUG },
-    /* No capability: a coarse count of time since boot is not authority over an
+#endif
+    /* OUTSIDE the CAP_ENUMERATE_UNGATED arm, and it was not on the first try:
+     * appended to the #else branch, this entry existed only in ordinary builds,
+     * so the control-arm kernel had no clock at all and captest failed on
+     * `clock-monotonic-refused` instead of the door it was aiming at. The arm
+     * caught it, which is what arms are for -- but note what did NOT: the
+     * coverage deriver models the SHIP build, where the entry is present and
+     * correct, so a syscall accidentally scoped to a defect arm's #else is
+     * invisible to it.
+     *
+     * No capability: a coarse count of time since boot is not authority over an
      * object, and its resolution is chosen so it does not restore what CR4.TSD
      * takes away. See h_clock_gettime. */
     [SYS_CLOCK_GETTIME]           = { h_clock_gettime,           SC_NONE, 0, SC_ANYTYPE },
-#endif
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so

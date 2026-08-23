@@ -136,6 +136,13 @@ required:
   # subset that finishes -- eleven harnesses, about three minutes of solver --
   # with no continue-on-error, and refuses a proof that is in neither list.
   - kani-bounded
+  # Gating. The only check in this tree that looks for undefined behaviour, and
+  # the unsafe it exists for is the C FFI boundary in the security core -- 80
+  # unsafe blocks, every one of them where the kernel hands in a pointer. Its
+  # first run found UB in three places (all of them in the tests, which had been
+  # modelling their own caller wrongly), which is the argument for running it on
+  # every PR rather than by hand.
+  - miri
   # Gating. It guards the class that produced [G-9]: a claim orphaned because a
   # path reached ring 3 without paying its deferred release. The periodic audit
   # structurally cannot catch that, so this is the only check that can.

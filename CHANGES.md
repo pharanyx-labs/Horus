@@ -16,6 +16,31 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **Miri over the security core, and it found UB in the tests (roadmap 3.8, S33).** 80 `unsafe`
+  blocks live in `rust/src`, every one at the boundary where the C kernel hands in a pointer, and
+  nothing had ever checked them for undefined behaviour. `cargo miri test` now runs on every pull
+  request — 77 tests, ~2 minutes, required, no `continue-on-error`.
+
+  **Three UB sites on the first run, all of them in the harness rather than the library.** A test
+  would take `x.as_mut_ptr()`, store it in a `CSpaceDesc`, then reach the same array a second way
+  — another `as_mut_ptr()`, or a direct `table[6] = ...` — and the second access retags the array,
+  invalidating the pointer the first had already handed to the code under test. The next write
+  through it is UB. Sixteen tests in `capability.rs` had that shape, plus
+  `memory::refcount_trust_boundary`. Fixed by hoisting one pointer per array and using it
+  throughout, which is what the C caller actually does: it holds ONE `struct capability *` and
+  passes it twice — one provenance used twice, not two Rust borrows.
+
+  **The library was not at fault, and that was established rather than assumed.** The first fix
+  written was a library change: `rust_cap_revoke_global` rewritten to avoid `&mut`, with a
+  confident comment about why the aliasing made it necessary. Reverting **only** that change and
+  re-running Miri left it clean — so the change fixed nothing, its comment asserted something the
+  measurement disproved, and it is not in this commit. Ablate before believing your own fix.
+
+  `.github/miri-scope.yml` classifies every test module as run-or-excused, the job derives its
+  `--skip` flags from that file (one list, not two), and `tools/check_miri_scope.py` is falsified
+  three ways: a rotted skip entry, an excuse under eight words, and a new module — which defaults
+  to RUN, the safe direction, so nothing can be silently skipped.
+
 - **Two Kani proofs were excused from gating for a reason nobody had measured.** #205 put the
   two ELF validators in `manual` on the grounds that they are "corroboration, not the only
   witness" and that one was "the more expensive of the two". Measured the same day: **2 seconds

@@ -1,0 +1,39 @@
+# Which Rust test modules Miri runs, and which it does not.
+#
+# Miri interprets the crate and checks for undefined behaviour — out-of-bounds,
+# invalid pointer use, and the aliasing rules (Stacked Borrows) that raw-pointer
+# FFI code is easiest to break. That is exactly what `rust/src` is: 80 `unsafe`
+# blocks across capability.rs (48), lib.rs (12), rng.rs (11) and memory.rs (9),
+# every one of them at the boundary where the C kernel hands in a pointer.
+#
+# The first run found UB in three places — all of them in the TESTS rather than
+# the library. A test would take `x.as_mut_ptr()`, store it, then reach the same
+# array a second way (another `as_mut_ptr()`, or a direct `table[6] = ...`),
+# which retags and invalidates the first pointer. The C kernel holds ONE pointer
+# and passes it twice, so the harness was modelling its own caller wrongly. Fixed
+# by hoisting one pointer per array; see CHANGES.md.
+#
+# EVERY module under rust/src that defines tests must be run by Miri or listed
+# below with a reason. `tools/check_miri_scope.py` (the required `miri` job)
+# fails the build otherwise, and the job builds its `--skip` flags FROM this
+# file — so the manifest and the command cannot drift apart.
+#
+# Measured 2026-08-24, Kani's pinned nightly + the miri component: 77 tests,
+# 114 s of interpreter time.
+
+# Not run under Miri, with a reason.
+skip:
+  argon2: >-
+    Memory-hard by construction: Argon2id fills and re-reads a large block array
+    on purpose, and an interpreter pays for every access. It did not finish in
+    ten minutes; the rest of the suite finishes in two. It is also the module
+    with the least raw-pointer surface (one `unsafe`), so the cost buys the least.
+  sha256: >-
+    Pure block arithmetic over fixed-size arrays, no raw pointers and no unsafe.
+    Miri would verify indexing the compiler already bounds-checks, at interpreter
+    speed, and the RFC test vectors already pin the behaviour.
+  blake2b: >-
+    As sha256: fixed-size arrays, no unsafe, covered by published test vectors.
+  aead: >-
+    ChaCha20-Poly1305 over slices, no raw pointers. Its tampering tests are about
+    tag rejection, which is arithmetic rather than memory behaviour.

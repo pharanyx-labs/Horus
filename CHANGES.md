@@ -16,6 +16,29 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **The syscall-coverage deriver described a kernel that has never booted, in both directions.**
+  It read the dispatch table as flat text, so `SYS_OPEN`, `SYS_PREEMPT_TRACE` and
+  `SYS_IRQ_POLICY_INFO` — compiled only under a defect arm or a selftest flag — counted as
+  shipped; and it matched only `[SYS_NAME]`, so **seven entries written as bare numbers were
+  invisible**, five of them live in the ship build. The count was 81; the ship build has 83.
+  `scan_table` evaluates the preprocessor now, guarded entries are declared under a new
+  `conditional:` section **with the flag that guards each** (so a syscall silently re-entering
+  the shipped surface fails the build), and a bare numeric index is refused outright. The seven
+  entries are named — `SYS_YIELD` kept a name the table did not use; `SYS_CLEAR`, `SYS_SYSINFO`,
+  `SYS_DEBUG_EXEC`, `SYS_EXEC_LEGACY`, `SYS_RAMFS_CREATE`, `SYS_RAMFS_LIST` are new symbols for
+  unchanged numbers. `check_doc_claims.py` imports the deriver instead of keeping a second copy
+  of the regex, which had inherited both blind spots.
+  **Falsified seven ways, one arm per new rule** — and the seventh arm did not fire on its first
+  attempt, because it mutated an `#ifdef` earlier in the file than the table and so tested
+  nothing. It was rerun against the table region, where it does.
+  **What the newly-visible entries turned out to be**: four live handlers with **no userspace
+  wrapper anywhere in the tree**, reachable only by issuing the raw number — recorded in
+  `docs/LIMITATIONS.md` §2.10 rather than deleted, because removing a syscall is an ABI decision
+  and this commit is about being able to see them.
+  The blind spot had been written down in prose beside `SYS_OPEN` since 2026-08-22 — **naming the
+  wrong three**, since two of the three it named were bare numerics the regex never matched. An
+  unenforced note is worth exactly that much.
+
 - **The CSPRNG was safe by boot ordering, not by construction; now it refuses (S30).**
   `RngState::fill` never consulted `seeded`. Asked for output before `entropy_init()` it would
   have run ChaCha20 under the hardcoded startup key in `RngState::new()` — a **published**

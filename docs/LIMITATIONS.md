@@ -371,7 +371,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **51 of 81** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **52 of 83** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 25 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -806,6 +806,34 @@ the one you get by default.
 the volume at all without a measured boot — is expressible and would suit a deployment that
 requires it, but it would make the kernel unbootable on a TPM-less machine, which is the
 opposite of what a research prototype wants by default. Recorded so the choice is deliberate.
+
+### 2.10 Four live syscalls have no caller anywhere in this tree
+
+*Found 2026-08-23, while teaching the coverage deriver to evaluate the preprocessor.*
+
+`SYS_CLEAR` (5), `SYS_SYSINFO` (6), `SYS_DEBUG_EXEC` (7) and `SYS_EXEC_LEGACY` (14) are
+dispatch entries with real handlers in the ship build, and **no userspace wrapper exists for
+any of them** — not in `include/syscall.h`, not in any program under `userspace/`. They are
+reachable only by issuing the raw number, which any ring-3 task can do.
+
+They were invisible for as long as they were: written as bare `[5]`-style indices, they did not
+match the `[SYS_NAME]` pattern every coverage rule is built on, so nothing classified them,
+nothing measured them, and nothing could fail on them. All four are now named, declared
+`uncovered` with what was measured, and a bare numeric index is refused by
+`tools/check_syscall_coverage.py`.
+
+**What they are.** `SYS_CLEAR` clears the kernel VGA text buffer, which `console_server` has
+owned since it took the framebuffer. `SYS_SYSINFO` returns a version string. `SYS_EXEC_LEGACY`
+is the pre-ELF `(load_base, entry_offset)` exec, superseded by `SYS_EXEC` / `SYS_EXEC_NAMED`
+and the Rust load planner. `SYS_DEBUG_EXEC` copies 127 bytes from ring 3 and, **under
+`DEBUG_SHELL` only**, hands them to `process_user_command` with `SC_NONE` — no capability at
+all. That is the "extra syscall surface" a `DEBUG_SHELL=1` build is already documented to
+carry (`CLAUDE.md` §6); in the ship build it copies the string and returns −1.
+
+**Not deleted here, deliberately.** Removing a syscall is an ABI decision with a discipline of
+its own — the number has to join the reserved set the way 38–45 did, so it cannot be recycled
+into something else. This entry exists so the choice is taken rather than inherited. Until it
+is, the surface is at least named, classified and measured on every CI run.
 
 ---
 

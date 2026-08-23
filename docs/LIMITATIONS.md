@@ -371,7 +371,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **52 of 83** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **52 of 79** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 25 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -829,7 +829,7 @@ proves the refusal fires, not that a real on-disk volume reaches it. That remain
 S11/S12 still do not apply to a boot without a TPM. What changed is that a deployment can now
 make them apply or refuse to run.
 
-### 2.10 Four live syscalls have no caller anywhere in this tree
+### 2.10 ~~Four live syscalls have no caller anywhere in this tree~~ — CLOSED 2026-08-23
 
 *Found 2026-08-23, while teaching the coverage deriver to evaluate the preprocessor.*
 
@@ -852,10 +852,24 @@ and the Rust load planner. `SYS_DEBUG_EXEC` copies 127 bytes from ring 3 and, **
 all. That is the "extra syscall surface" a `DEBUG_SHELL=1` build is already documented to
 carry (`CLAUDE.md` §6); in the ship build it copies the string and returns −1.
 
-**Not deleted here, deliberately.** Removing a syscall is an ABI decision with a discipline of
-its own — the number has to join the reserved set the way 38–45 did, so it cannot be recycled
-into something else. This entry exists so the choice is taken rather than inherited. Until it
-is, the surface is at least named, classified and measured on every CI run.
+**Deleted the next day, once the decision had been taken deliberately rather than inherited.**
+All four dispatch entries are gone; the numbers are reserved as 38–45 are, and `SYS_DEBUG_EXEC`
+survives only in a `DEBUG_SHELL=1` build.
+
+**What tipped it from tidy-up to security fix** was reading `SYS_EXEC_LEGACY`'s table row.
+`{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` — cspace slot 3, the legacy
+`CAP_FRAME` every task is born holding — on a syscall that **creates a task**. That is exactly
+the shape **[H-3]** closed on four other doors, and it sat directly beneath the comment
+explaining that shape. Measured before removal: `passwdprobe`, uid 1000 with no delegated
+capability, called syscall 14 and was handed task id 2.
+
+The task it made had no identity: `create_task` assigns `state` and never `uid`/`gid`, so it
+carried whatever the slot held — 0 on a fresh slot, the previous occupant's uid on a reused one.
+Since **S18** uid 0 confers no kernel authority, but `fs_server` enforces file permissions
+against the kernel-attested uid (**S13**/**S14**).
+
+Witness `make smoke-passwd-probe` (8 checks), falsified by
+`make smoke-passwd-probe-legacy-control`.
 
 ---
 

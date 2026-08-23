@@ -71,6 +71,22 @@ conditional:
     flag: RAMFS_SLOT3_GATE
     reason: >-
       RETIRED 2026-08-22 ([H-3]), syscall 16. As SYS_RAMFS_CREATE -- it enumerated the store the user database was written into. Named 2026-08-23
+  SYS_EXEC_LEGACY:
+    flag: LEGACY_SYSCALLS_PRESENT
+    reason: >-
+      RETIRED 2026-08-23. Syscall 14 created a TASK, authorised on cspace slot 3 with SC_ANYTYPE -- the legacy CAP_FRAME every task is born holding, which is [H-3]'s shape on a door that sweep could not see, because the entry was written `[14]` and matched none of the `[SYS_NAME]` patterns. Measured before removal: passwdprobe, uid 1000 with no delegated capability, called it and was handed task id 2. create_task assigns no uid, so the task it made had no identity of its own
+  SYS_CLEAR:
+    flag: LEGACY_SYSCALLS_PRESENT
+    reason: >-
+      RETIRED 2026-08-23. Syscall 5 cleared the kernel VGA text buffer, which console_server has owned since it took the framebuffer. No userspace wrapper existed anywhere in the tree
+  SYS_SYSINFO:
+    flag: LEGACY_SYSCALLS_PRESENT
+    reason: >-
+      RETIRED 2026-08-23. Syscall 6 returned a version string, with no userspace wrapper anywhere in the tree -- reachable only by issuing the raw number
+  SYS_DEBUG_EXEC:
+    flag: DEBUG_SHELL || LEGACY_SYSCALLS_PRESENT
+    reason: >-
+      Syscall 7 hands 127 ring-3 bytes to the in-kernel debug shell with SC_NONE, no capability at all. That is the extra surface a DEBUG_SHELL build is documented to carry, so since 2026-08-23 the ENTRY exists only in such a build; before that it was unconditional and only the handler body was guarded, so the ship kernel dispatched it, copied from the user, and returned -1
   SYS_PREEMPT_TRACE:
     flag: PREEMPT_SELFTEST
     reason: >-
@@ -135,14 +151,6 @@ covered:
   - SYS_IPC_RECV_BLOCK
 
 uncovered:
-  SYS_CLEAR: >-
-    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 5, named on that date -- it was a bare `[5]` and this manifest could not see it. It clears the kernel VGA text buffer directly; a live session's `clear` goes through console_server, which owns the framebuffer, so nothing in ring 3 calls it. NO USERSPACE WRAPPER EXISTS for it anywhere in the tree
-  SYS_SYSINFO: >-
-    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 6, named on that date. A kernel version/build readout with NO USERSPACE WRAPPER anywhere in the tree -- reachable only by issuing the raw number
-  SYS_DEBUG_EXEC: >-
-    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 7, named on that date. Under DEBUG_SHELL it hands a 127-byte ring-3 string to process_user_command with SC_NONE -- no capability -- which is the "extra syscall surface" a DEBUG_SHELL=1 build is documented to carry; in the ship build it copies the string and returns -1. NO USERSPACE WRAPPER anywhere in the tree
-  SYS_EXEC_LEGACY: >-
-    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 14, named on that date. The pre-ELF (load_base, entry_offset) exec, superseded by SYS_EXEC/SYS_EXEC_NAMED and the Rust load planner. NO USERSPACE WRAPPER anywhere in the tree
   # ---- The five added on 2026-08-22 (roadmap 2.1) -------------------------
   #
   # Three of these are not new syscalls. SYS_CAP_MINT, SYS_CAP_TRANSFER and

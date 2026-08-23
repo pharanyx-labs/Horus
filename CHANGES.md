@@ -16,6 +16,36 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A fifth door of [H-3]'s shape: syscall 14 created a task for any caller.** `SYS_EXEC_LEGACY`
+  read `{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` — cspace slot 3, the legacy
+  `CAP_FRAME` `create_task` installs in *every* task, any type — on a syscall that **creates a
+  task**. Measured before removal: `passwdprobe`, running as uid 1000 and holding no delegated
+  capability, called it and was handed task id 2. The task it made had no identity of its own —
+  `create_task` assigns `state` and never `uid`/`gid`, so a new task carried whatever the slot
+  held: 0 on a never-used slot, the previous occupant's uid on a reused one. Since **S18** uid 0
+  confers no kernel authority, but `fs_server` enforces file permissions against the
+  kernel-attested uid (**S13**/**S14**).
+
+  **It survived the [H-3] sweep because it was invisible to it.** The dispatch entry was written
+  `[14]`, a bare number, matching none of the `[SYS_NAME]` patterns that sweep, the coverage
+  manifest and every audit grep are built on — and it sat *directly beneath* the comment block
+  explaining that a slot-3 gate is not a gate. Naming it in #201 is what made it findable; this
+  commit removes it, along with `SYS_CLEAR` (5) and `SYS_SYSINFO` (6), which had no caller
+  anywhere in the tree either. `SYS_DEBUG_EXEC` (7) survives only in a `DEBUG_SHELL=1` build —
+  before this its *entry* was unconditional and only the handler body was guarded, so the ship
+  kernel dispatched it, copied 127 bytes from the caller, and returned −1.
+
+  Numbers reserved as 38–45 are. Witness `make smoke-passwd-probe` (8 checks), falsified by
+  `make smoke-passwd-probe-legacy-control` (`LEGACY_SYSCALLS_PRESENT=1`), where the probe is
+  handed a task id again. Ship-build dispatch entries: 83 → 79.
+
+  **The coverage checker refused this commit's own first draft**, which is what it is for:
+  `#if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)` is a form `scan_table` could not
+  evaluate, so it failed closed rather than guessing. It now evaluates `||` and `&&` over
+  `defined()` terms, records the whole condition in the manifest (so a guard that gains or loses a
+  term fails the build), and **refuses a mixed `||`/`&&` expression** rather than assuming a
+  precedence. Falsified both ways.
+
 - **Measured boot can be required, and then an unmeasured boot does not proceed
   (`MEASURED_BOOT_REQUIRED=1`).** #197 fixed the CI half — `SWTPM_REQUIRED=1` stopped four gates
   passing without measuring — but the kernel still booted happily with no TPM: PCRs unextended,

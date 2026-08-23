@@ -2215,6 +2215,17 @@ jobs:
         run: tools/build_newlib.sh
       - name: Boot NEWLIB_SELFTEST kernel and assert the newlib libc port over the POSIX fd layer works
         run: make smoke-newlib
+      # Roadmap 2.4's witness. The base gate above now asserts "." and ".." in
+      # paths passed to open() -- the migration's whole point, since a libc
+      # program never goes through the shell's string normaliser. These two arms
+      # prove those assertions can fail, and fail SEPARATELY.
+      - name: Control arm — posix.c's private walker resolved neither "." nor ".."
+        run: make smoke-newlib-walk-control
+      # Aimed at a branch that shipped dead in #195: ".." asked fs_server for a
+      # ".." entry, and fs_server creates none. The pinned case returns before
+      # the lookup, which is why the only existing ".." test passed over it.
+      - name: Control arm — asking the server for ".." finds nothing, because nothing creates it
+        run: make smoke-newlib-dotdot-control
 
   reproducible:
     name: Verify reproducible kernel build

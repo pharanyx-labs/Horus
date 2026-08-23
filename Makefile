@@ -91,7 +91,8 @@ DEFECT_FLAGS = \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED RAMFS_SLOT3_GATE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
-	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY
+	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
+	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -524,6 +525,18 @@ endif
 # key. Unlike every other flag in this list it is not a -D: the defect lives in
 # Rust, so it must reach cargo. It IS stamped into DEFECT FLAGS all the same --
 # a transcript that does not name it is a transcript nobody can audit.
+# POSIX_LEGACY_WALK=1 restores posix.c's private path walker, the pre-2026-08-23
+# copy that resolved neither "." nor ".." -- it looked both up as literal
+# directory entries, which fs_server never creates. `make smoke-newlib` must go
+# red under it.
+POSIX_LEGACY_WALK ?= 0
+
+# HVFS_DOTDOT_SERVER=1 restores hvfs's original ".." branch, which asked the
+# SERVER to look up a ".." entry. fs_server creates none, so the branch could
+# only ever return NOENT: it was dead code from #195 until 2026-08-23, and the
+# only test touching ".." used the pinned case, which returns before it.
+HVFS_DOTDOT_SERVER ?= 0
+
 RNG_UNSEEDED_LEGACY ?= 0
 ifeq ($(RNG_UNSEEDED_LEGACY),1)
 CFLAGS += -DRNG_UNSEEDED_LEGACY
@@ -1555,6 +1568,13 @@ endif
 ifeq ($(VFS_MOUNT_UNGATED),1)
 USERSPACE_CFLAGS += -DVFS_MOUNT_UNGATED
 endif
+# The two migration arms (roadmap 2.4), ring-3 and top-level for the same reason.
+ifeq ($(POSIX_LEGACY_WALK),1)
+USERSPACE_CFLAGS += -DPOSIX_LEGACY_WALK
+endif
+ifeq ($(HVFS_DOTDOT_SERVER),1)
+USERSPACE_CFLAGS += -DHVFS_DOTDOT_SERVER
+endif
 
 userspace/%.o: userspace/%.c
 	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
@@ -1586,9 +1606,23 @@ MALLOC_OBJ = userspace/malloc.o
 # ld resolves archives in order, and an archive listed first sees no undefined
 # symbols yet and contributes nothing.
 #
-# NOT added to the newlib link rules. Those programs have a real libc, and
-# giving them a second memcpy under a different name would be an ambiguity
-# waiting to be resolved wrongly.
+# ADDED to the newlib link rules on 2026-08-23, reversing the note that stood
+# here. It said: not added, because those programs have a real libc and a second
+# memcpy under a different name is an ambiguity waiting to be resolved wrongly.
+#
+# What changed is what needs it. posix.c -- the libc glue every newlib program
+# links -- carried its own path walker, one of the three the hvfs namespace was
+# written to replace, and hvfs.o is the member that replaces it. The ambiguity
+# the note feared does not arise: nothing in libhorus.o is named `memcpy`. The
+# symbols are `umemcpy`, `umemset`, `ustrncpy` (which hvfs.o references),
+# `uslen`, `ustreq`, `kput*`, `spin_delay*` and `ipc_call_retry`, none of which
+# collide with anything in libc, and the linker resolves each exactly once.
+#
+# It costs the ~200 bytes of libhorus.o in a newlib binary, and buys one walker
+# instead of three. The alternative -- giving hvfs.o private static copies of
+# three helpers -- would have cost the audited ones: `ustrncpy`'s termination is
+# what LIBHORUS_STRNCPY_UNTERMINATED falsifies, and a private copy would not be
+# covered by that arm.
 #
 # hvfs.o is a SEPARATE member rather than part of libhorus.o, and that is the
 # same measurement again: a program that resolves no path (captest, klogtest,
@@ -1660,11 +1694,11 @@ userspace/hello_newlib.o: userspace/hello_newlib.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
 
 userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
-                                userspace/malloc.o userspace/pie.ld
+                                userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
 	    userspace/crt0.o userspace/hello_newlib.o userspace/newlib_glue.o \
 	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
-	    -L$(NEWLIB_LIB) -lc
+	    $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
 userspace/hello_newlib.bin: userspace/hello_newlib.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "hello_newlib"
@@ -1675,11 +1709,11 @@ userspace/termtest.o: userspace/termtest.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
 
 userspace/termtest.pie.elf: userspace/termtest.o $(NEWLIB_GLUE_OBJS) \
-                            userspace/malloc.o userspace/pie.ld
+                            userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
 	    userspace/crt0.o userspace/termtest.o userspace/newlib_glue.o \
 	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
-	    -L$(NEWLIB_LIB) -lc
+	    $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
 userspace/termtest.bin: userspace/termtest.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "termtest"
@@ -1725,11 +1759,11 @@ $(COREUTILS_DIR)/%.o: $(COREUTILS_DIR)/%.c $(NEWLIB_LIB)/libc.a
 	    -Wno-implicit-fallthrough -Wno-return-type -c $< -o $@
 
 userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
-                               $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
+                               $(NEWLIB_GLUE_OBJS) userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
 	    userspace/crt0.o $< $(COREUTILS_PORT_OBJS) \
 	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
-	    userspace/malloc.o -L$(NEWLIB_LIB) -lc
+	    userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
 # The header's embedded name is what spawn-by-name matches, so it is the plain
 # utility name ("cat"), not the coreutils_ file prefix.
@@ -1761,11 +1795,11 @@ $(TCC_DIR)/build/horus_glue.o: $(TCC_DIR)/port/horus_glue.c $(NEWLIB_LIB)/libc.a
 	@mkdir -p $(TCC_DIR)/build
 	$(CC) $(TCC_CFLAGS) $(TCC_DEFS) -c $< -o $@
 
-userspace/tcc.pie.elf: $(TCC_OBJS) $(NEWLIB_GLUE_OBJS) userspace/malloc.o userspace/pie.ld
+userspace/tcc.pie.elf: $(TCC_OBJS) $(NEWLIB_GLUE_OBJS) userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
 	    userspace/crt0.o $(TCC_OBJS) \
 	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
-	    userspace/malloc.o -L$(NEWLIB_LIB) -lc
+	    userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
 userspace/tcc.bin: userspace/tcc.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "tcc"
@@ -2293,6 +2327,36 @@ smoke-newlib:
 	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
 		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# ---- roadmap 2.4: the libc walks paths through hvfs -------------------------
+# Both arms assert on hello_newlib's "." / ".." checks, which are the migration's
+# witness: they are the paths a libc program passes to open(), and they are what
+# a private walker got wrong.
+#
+# Control arm 1 -- the walker itself. POSIX_LEGACY_WALK=1 restores posix.c's
+# private copy, which resolved neither "." nor "..".
+.PHONY: smoke-newlib-walk-control
+smoke-newlib-walk-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 POSIX_LEGACY_WALK=1
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 POSIX_LEGACY_WALK=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NEWLIB_SELFTEST: FAIL dot-here' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 2 -- the ".." branch hvfs shipped with. HVFS_DOTDOT_SERVER=1 asks
+# the server for a ".." entry it never creates, so the pinned case still works
+# and the descending case does not. The marker is specifically dotdot-back: an
+# arm that reddened the whole suite would not show that this branch, and only
+# this branch, was dead.
+.PHONY: smoke-newlib-dotdot-control
+smoke-newlib-dotdot-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 HVFS_DOTDOT_SERVER=1
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 HVFS_DOTDOT_SERVER=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NEWLIB_SELFTEST: FAIL dotdot-back' \
+		tools/smoke_test.sh boot.iso
 
 # Build with the vendored GNU coreutils utilities and run them at boot as ring-3
 # tasks. The required marker is produced by UPSTREAM's own code path -- echo

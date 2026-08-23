@@ -1657,6 +1657,13 @@ jobs:
       # is not the property being claimed.
       - name: Control arm — slot-3 gated, the store is readable
         run: make smoke-passwd-probe-control
+      # The fifth door, found 2026-08-23. SYS_EXEC_LEGACY (14) creates a TASK on
+      # the same slot-3 authority, and the [H-3] sweep could not see it because
+      # the dispatch entry was a bare `[14]`. Under this arm the uid-1000 probe
+      # calls it and is handed a task id, which is what it did against the tree
+      # as it then stood.
+      - name: Control arm — the retired legacy syscalls, including the one that spawns a task
+        run: make smoke-passwd-probe-legacy-control
 
   frame:
     name: "A frame capability names an object, and a delegate maps only what it holds"

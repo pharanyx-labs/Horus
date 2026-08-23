@@ -93,7 +93,8 @@ DEFECT_FLAGS = \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
-	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE
+	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
+	LEGACY_SYSCALLS_PRESENT
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -536,6 +537,16 @@ endif
 # expected to boot on TPM-less machines (docs/LIMITATIONS.md 2.9); it is in this
 # list because a transcript taken under it describes a different machine, which
 # is exactly what DEFECT FLAGS exists to record.
+# LEGACY_SYSCALLS_PRESENT=1 restores the four dispatch entries retired on
+# 2026-08-23: SYS_CLEAR (5), SYS_SYSINFO (6), SYS_DEBUG_EXEC (7) and
+# SYS_EXEC_LEGACY (14). The last one is the reason the flag exists -- it creates
+# a TASK, authorised on cspace slot 3, which is the legacy CAP_FRAME every task
+# is born holding. `make smoke-passwd-probe` must go red under it.
+LEGACY_SYSCALLS_PRESENT ?= 0
+ifeq ($(LEGACY_SYSCALLS_PRESENT),1)
+CFLAGS += -DLEGACY_SYSCALLS_PRESENT
+endif
+
 MEASURED_BOOT_REQUIRED ?= 0
 ifeq ($(MEASURED_BOOT_REQUIRED),1)
 CFLAGS += -DMEASURED_BOOT_REQUIRED
@@ -4104,6 +4115,20 @@ smoke-passwd-probe:
 # last consumer was deleted); an ordinary uid-1000 task with no delegated
 # capability then opens a seeded file, reads bytes out of it, creates a file and
 # lists the store. The FAIL marker must be PRESENT.
+# Control arm 2 for the same probe: the four legacy dispatch entries restored.
+# The one that matters is SYS_EXEC_LEGACY -- under this flag the uid-1000 probe
+# calls syscall 14 and is handed a task id, which is what it did on 2026-08-23
+# against the tree as it then stood. The FAIL marker names that specific door,
+# so an arm that reddened the probe for any other reason would not satisfy it.
+.PHONY: smoke-passwd-probe-legacy-control
+smoke-passwd-probe-legacy-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PASSWDPROBE: FAIL legacy-exec-spawned-a-task' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-passwd-probe-control
 smoke-passwd-probe-control:
 	@$(MAKE) --no-print-directory clean

@@ -1413,6 +1413,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP/SMAP in CR4, kernel W^X swept, CSPRNG-reseeded stack canary, <code>CR4.TSD</code></th><td class="t-note">smoke-cpu · smoke-wx · smoke-stackguard</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The CSPRNG refuses to emit keystream before it is seeded — a draw from an unseeded pool halts the kernel rather than returning a stream derived from a published constant</th><td class="t-note">smoke-rng-seed</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Per-task VFS namespace — the shell and the libc resolve every path through one walker, over the capabilities each task already holds</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Four syscalls with no caller anywhere in the tree retired — including one that created a task on the capability every task already holds</th><td class="t-note">smoke-passwd-probe</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">newlib libc, shell pipelines over in-kernel pipes, eleven coreutils, TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Programs and man pages loaded from the filesystem as boot modules</th><td class="t-note">smoke-modules</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Forward-secure audit log — history before a compromise cannot be rewritten</th><td class="t-note">cargo test</td></tr>
@@ -1925,7 +1926,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>52 of 83</strong> system calls have their handler actually executed by the
+              <strong>52 of 79</strong> system calls have their handler actually executed by the
               two workloads this project tracks — a scripted end-to-end session, and the
               permission conformance suite. The other 25 are each listed with a written reason.
             </p>

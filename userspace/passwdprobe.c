@@ -39,8 +39,10 @@
 #include "syscall.h"
 #include "libhorus.h"
 
-#define SYS_RAMFS_CREATE 15
-#define SYS_FS_LIST      16
+/* Syscalls 15 and 16 were spelled out here as bare numbers because the header
+ * had no names for them. #201 named them (SYS_RAMFS_CREATE, SYS_RAMFS_LIST), so
+ * the local defines are gone -- two names for one number is the drift that made
+ * a fifth door invisible in the first place. */
 
 static int checks;
 static int failures;
@@ -89,7 +91,7 @@ void _start(void) {
     check(crc < 0, "created-a-file-in-the-in-kernel-ramfs");
 
     static char listing[128];
-    int lrc = (int)syscall(SYS_FS_LIST, (uint64_t)(uintptr_t)listing,
+    int lrc = (int)syscall(SYS_RAMFS_LIST, (uint64_t)(uintptr_t)listing,
                            (uint32_t)sizeof(listing), 0);
     kput("PASSWDPROBE: fs_list -> "); kput_int(lrc); kputln("");
     if (lrc > 0) {
@@ -101,14 +103,45 @@ void _start(void) {
     }
     check(lrc <= 0, "listed-the-in-kernel-ramfs");
 
+    /* ---- the fifth door: syscall 14 CREATES A TASK -------------------------
+     *
+     * SYS_EXEC_LEGACY was `{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC,
+     * SC_ANYTYPE }` -- the same slot-3 shape as the four gates above, on a
+     * syscall that makes a task rather than opening a file. Measured from this
+     * very probe on 2026-08-23, before it was removed: it returned task id 2,
+     * to a uid-1000 caller holding no delegated capability.
+     *
+     * It escaped the [H-3] sweep because the dispatch entry was written `[14]`,
+     * a bare number matching none of the `[SYS_NAME]` patterns the coverage
+     * manifest and every audit grep use. Named in #201; removed here.
+     *
+     * The other three are the same class with less reach -- no wrapper anywhere
+     * in the tree, reachable only by raw number. SYS_DEBUG_EXEC survives in a
+     * DEBUG_SHELL build, which is documented dev-only surface, and is absent
+     * from the ship kernel like the rest. */
+    check((int)syscall(SYS_EXEC_LEGACY, 0x400000u, 0u, 0) == SYS_ERR_NOSYS,
+          "legacy-exec-spawned-a-task");
+    check((int)syscall(SYS_CLEAR, 0, 0, 0) == SYS_ERR_NOSYS,
+          "legacy-clear-present-in-ship-kernel");
+    {
+        static char vbuf[64];
+        check((int)syscall(SYS_SYSINFO, (uint64_t)(uintptr_t)vbuf, 0, 0) == SYS_ERR_NOSYS,
+              "legacy-sysinfo-present-in-ship-kernel");
+    }
+    {
+        static char cmd[8] = "help";
+        check((int)syscall(SYS_DEBUG_EXEC, (uint64_t)(uintptr_t)cmd, 0, 0) == SYS_ERR_NOSYS,
+              "debug-exec-present-in-ship-kernel");
+    }
+
     if (failures) {
         kput("PASSWDPROBE: FAIL ");
         kput_int(failures);
-        kputln(" of 4 doors open");
+        kputln(" of 8 doors open");
     } else {
         kput("PASSWDPROBE: PASS ");
         kput_int(checks);
-        kputln(" checks - the in-kernel ramfs is unreachable from ring 3");
+        kputln(" checks - the in-kernel ramfs and the legacy syscalls are unreachable from ring 3");
     }
     for (;;) sys_yield();
 }

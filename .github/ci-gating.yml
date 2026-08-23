@@ -129,6 +129,13 @@ required:
   # WITH a TPM still boots under it, which is the half a refusal-only gate
   # cannot distinguish from a kernel that halts always.
   - measured-boot-required
+  # Gating, and the first Kani job that can fail anything. The `kani` job below
+  # stays advisory and manual: it is workflow_dispatch-only AND carries
+  # continue-on-error on both steps, so for as long as it has existed none of
+  # the capability-algebra proofs could have reddened a build. This one runs the
+  # subset that finishes -- eleven harnesses, about three minutes of solver --
+  # with no continue-on-error, and refuses a proof that is in neither list.
+  - kani-bounded
   # Gating. It guards the class that produced [G-9]: a claim orphaned because a
   # path reached ring 3 without paying its deferred release. The periodic audit
   # structurally cannot catch that, so this is the only check that can.

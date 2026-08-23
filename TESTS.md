@@ -876,6 +876,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-klog-forge` | **[H-2]**, property **S23**. A ring-3 task cannot forge entries into the kernel message ring, nor evict what is already there. One boot with `KLOG_FORGE_SELFTEST=1`: the kernel seeds a marker into `klog` immediately before ring-3 entry, and a probe endowed with `CAP_KERNEL_LOG` pushes 28800 bytes of a distinctive pattern through `SYS_WRITE` fd 1 — more than the 16 KiB ring holds — then reads the ring back through `SYS_DMESG` and requires the pattern **absent** and the marker **present**. Deterministic; nothing here is racy. **The probe is endowed on purpose.** Its capability carries `CAP_RIGHT_READ` and nothing else, because `root_cnode[15]` mints it that way and delegation may only narrow — so it can read the ring to check its own work and is still refused the direction it was not given. A bare task would have proved that a task holding *no* capability cannot write, which is a weaker claim than the one the finding makes. |
 | `smoke-rng-seed` | Property **S30**. The CSPRNG refuses to emit keystream from a pool that has never been reseeded from real entropy. Both arms build with `RNG_UNSEEDED_PROBE=1`, which asks for 16 bytes immediately before `entropy_init()`. Asserts the refusal **and** a boot that still reaches the shell banner, in one run: a `fill()` that refuses everything satisfies the first half and dies on the second. Until 2026-08-23 the property held only by boot ordering — `entropy_init` runs before the first consumer — which is a fact about one call site rather than anything the RNG enforced. |
 | `smoke-rng-seed-control` | Control arm. `RNG_UNSEEDED_LEGACY=1` passes a **cargo feature** down rather than a `-D`, compiling the `!self.seeded` check out of `RngState::fill`; `RNGPROBE: SERVED unseeded keystream` must come back, 3 boots in 3, and `smoke-rng-seed` goes red under the same flag. Paired with the Rust arm in the `rust` job, where `rng_refuses_before_seeding` must fail and `rng_serves_after_seeding` must not. |
+| `kani-bounded` | **The first Kani job that can fail anything.** Eleven harnesses over the capability algebra, run with no `continue-on-error`, plus `check_kani_harnesses.py` refusing a proof classified as neither gating nor excused. The advisory `kani` job it sits beside is `workflow_dispatch`-only *and* `continue-on-error` on every step — thirteen proofs that could not redden a build, which is `smoke-kstack-park`'s shape applied to formal verification. 319 s measured end to end; the four excused harnesses are named with reasons in `.github/kani-harnesses.yml`. |
 | `smoke-passwd-probe` (2026-08-23) | **Eight checks now, not four.** The probe — uid 1000, no delegated capability — also asserts that the four syscalls retired that day fail closed at `SYS_ERR_NOSYS`. The one that matters is `SYS_EXEC_LEGACY` (14): it **created a task**, authorised on cspace slot 3, and this probe was handed task id 2 by it before it was removed. |
 | `smoke-passwd-probe-legacy-control` | `LEGACY_SYSCALLS_PRESENT=1` restores all four entries. The required marker is `FAIL legacy-exec-spawned-a-task` specifically, so an arm that reddened the probe for any other reason would not satisfy it — the same discipline as the two `smoke-newlib` arms failing at different markers. |
 | `smoke-measured-boot-required` | **The kernel half of `docs/LIMITATIONS.md` §2.9.** `MEASURED_BOOT_REQUIRED=1` makes an unavailable measured boot fatal. The base arm boots that build **under swtpm** and requires `tpm: measured boot OK` — because a gate that only checked the refusal is passed by a kernel that halts on every boot, which is the same shape as the `KSP_GUARD_ALWAYS` mutation. |
@@ -1080,10 +1081,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **89** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **90** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **91** jobs, **94** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **92** jobs, **95** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1135,7 +1136,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **91 required contexts and 3 reasoned exemptions** — read off
+The intended set is **92 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and

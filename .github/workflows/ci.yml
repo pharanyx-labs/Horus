@@ -2513,6 +2513,46 @@ jobs:
             cargo +nightly fuzz run "$t" -- -max_total_time=30 -rss_limit_mb=4096 || true
           done
 
+  kani-bounded:
+    name: "Formal verification of the capability algebra (the proofs that finish)"
+    runs-on: ubuntu-latest
+    # The eleven gating harnesses take 319s end to end, measured — about three
+    # minutes of that is solver time (nearly all of it in the two revocation
+    # proofs) and the rest is one rebuild per invocation. The 45-minute bound is
+    # a backstop against a harness that has become pathological, not a budget.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install PyYAML
+        run: pip install --user pyyaml
+      # Cheap, no toolchain needed, and it is the half that catches a NEW proof
+      # nobody wired up -- so it runs before the expensive install.
+      - name: Every Kani proof is classified as gating or excused
+        run: python3 tools/check_kani_harnesses.py
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      # No continue-on-error, and that is the entire point of this job. The
+      # `kani` job below has carried it on every step since it was written, so
+      # thirteen proofs of the capability algebra could not have failed a build.
+      - name: Verify the gating harnesses
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          # Newline-separated and read line by line rather than $(...) word
+          # splitting: the same loop written for a space-separated string is
+          # correct in bash and silently passes ELEVEN NAMES AS ONE ARGUMENT in
+          # zsh, which does not word-split unquoted expansions. It cost a
+          # confusing local run on 2026-08-23; a CI step that only works in one
+          # shell is a trap for whoever runs it by hand.
+          python3 -c "import yaml;print('\n'.join(yaml.safe_load(open('../.github/kani-harnesses.yml'))['gating']))" > /tmp/gating.txt
+          while IFS= read -r h; do
+            [ -n "$h" ] || continue
+            echo "== $h =="
+            cargo kani --harness "$h"
+          done < /tmp/gating.txt
+
   # Advisory job: Kani bounded model checking of the capability engine's
   # authority invariants (rust/src/capability.rs #[cfg(kani)] harnesses; see
   # rust/KANI.md). Non-gating by design — Kani is a heavy separate toolchain

@@ -912,12 +912,34 @@ provisioned as executables. Adversarially tested: `smoke-modules-tamper`.
 
 Proves revocation hits exactly the target's derivation subtree.
 
-### 3.5 ⬜ Extend proofs to the full capability algebra — **[F-3.1]**
+### 3.5 ◧ Extend proofs to the full capability algebra — **[F-3.1]** — *lookup and grant proved, and gating, 2026-08-23*
 
-Prove: mint never widens rights; grant preserves the derivation tree; lookup refuses
-type-mismatched capabilities; and — once 0.1 lands — that IPC authority implies a held
-endpoint capability naming that endpoint. Model-check the existing TLA+ specifications
-(`cap_algebra.tla`, `paging_isolation.tla`) **in CI** rather than merely committing them.
+**Delivered.** Seven new Kani harnesses over `rust_cap_lookup` and `rust_cap_grant_into`:
+lookup succeeds **exactly when** the capability holds every requested right (an equivalence, so
+a lookup that refused too much fails it too), never resolves an empty slot or an out-of-range
+one; grant yields exactly `requested & source`, records the grantor as the grantee's parent
+with a fresh derived serial, refuses an invalid source **without writing anything**, and is
+bounded by the destination cspace. Each was falsified by mutating the property it claims.
+
+**And they run now, which they did not.** The `kani` job is `workflow_dispatch`-only *and*
+carries `continue-on-error: true` on both steps — so for as long as it has existed, none of
+these proofs could have failed a build. `.github/kani-harnesses.yml` classifies every harness
+as gating or excused-with-a-reason, `tools/check_kani_harnesses.py` refuses one in neither, and
+the new required `kani-bounded` job runs the eleven that finish (**319 s**, measured) with no
+`continue-on-error`. The four excused are the serial-keyed lineage pair and the two ELF
+validators; a full `cargo kani` exceeded GitHub's 6-hour ceiling, which is why the answer is a
+named subset rather than "run everything".
+
+**Still open, and what each needs:**
+
+- **Type confusion at lookup.** `rust_cap_lookup` does not check `typ`; the C `cap_lookup`
+  does, against a caller-supplied expected type. Proving "lookup refuses a type-mismatched
+  capability" means moving that test into the Rust side or modelling the C one — a change to
+  the FFI contract, not a new harness, so it belongs in its own commit.
+- **IPC authority implies a held endpoint capability naming that endpoint.** 0.1 landed, so
+  this is now expressible; it needs a model of `ipc_ep_from_slot` on the Rust side.
+- **The TLA+ specifications (`cap_algebra.tla`, `paging_isolation.tla`) are still only
+  committed, not model-checked in CI.** TLC is a second toolchain (a JVM) on top of Kani's.
 
 ### 3.6 ⬜ A debug/observability capability — **[F-3.2]**
 
@@ -989,7 +1011,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **91 required, 3 exempted** (91 jobs, 94 contexts — re-derive it with
+  The intended set is **92 required, 3 exempted** (92 jobs, 95 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).

@@ -2518,6 +2518,49 @@ jobs:
             cargo +nightly fuzz run "$t" -- -max_total_time=30 -rss_limit_mb=4096 || true
           done
 
+  miri:
+    name: "Undefined-behaviour check of the security core (Miri)"
+    runs-on: ubuntu-latest
+    # Two minutes of interpreter time, measured. The bound is a backstop against
+    # a test that has become pathological under Miri, not a budget.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install PyYAML
+        run: pip install --user pyyaml
+      # Source-only and instant, and it is the half that catches a NEW module
+      # nobody classified -- so it runs before the toolchain install.
+      - name: Every test module is run under Miri or excused with a reason
+        run: python3 tools/check_miri_scope.py
+      # A pinned nightly rather than a floating one: Miri ships as a rustup
+      # component and is occasionally absent for a given date, so a floating
+      # nightly turns "is there UB" into "did today's nightly build a component",
+      # which is a different question and not one that should redden a merge.
+      # This is the same nightly Kani pins, which keeps one toolchain in the
+      # cache rather than two.
+      - name: Install the pinned nightly and Miri
+        run: |
+          # One --component per component: `--component miri rust-src` reads
+          # `rust-src` as a second TOOLCHAIN name and fails with "invalid
+          # toolchain name". Reproduced locally after CI caught it, which is the
+          # only reason this line is written the long way.
+          rustup toolchain install nightly-2025-11-21 --profile minimal \
+            --component miri --component rust-src
+      # No continue-on-error. Miri is the only check in this tree that looks for
+      # undefined behaviour, and the `unsafe` it exists for is the C FFI boundary
+      # in the security core.
+      #
+      # The --skip flags come FROM the manifest, so the scope and the command
+      # cannot drift apart: there is only one list.
+      - name: Interpret the security core and check for UB
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          skips=$(python3 ../tools/check_miri_scope.py --print-skip-args)
+          echo "skipping: ${skips:-<nothing>}"
+          # shellcheck disable=SC2086
+          cargo +nightly-2025-11-21 miri test -- $skips
+
   kani-bounded:
     name: "Formal verification of the capability algebra (the proofs that finish)"
     runs-on: ubuntu-latest

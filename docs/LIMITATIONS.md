@@ -983,8 +983,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **90** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **92** across the three, producing **95** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **91** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **93** across the three, producing **96** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1029,7 +1029,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **92 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **93 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

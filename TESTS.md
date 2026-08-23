@@ -878,6 +878,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-rng-seed-control` | Control arm. `RNG_UNSEEDED_LEGACY=1` passes a **cargo feature** down rather than a `-D`, compiling the `!self.seeded` check out of `RngState::fill`; `RNGPROBE: SERVED unseeded keystream` must come back, 3 boots in 3, and `smoke-rng-seed` goes red under the same flag. Paired with the Rust arm in the `rust` job, where `rng_refuses_before_seeding` must fail and `rng_serves_after_seeding` must not. |
 | `smoke-session` (2026-08-23) | **Roadmap 3.6's positive half.** The scripted session runs `capview` and requires the shell's **own** `debug` capability with `r-----` rights — not merely that something printed. "No capabilities anywhere" is exactly what a broken readout looks like, and the read-only rights are part of the claim: `CAP_DEBUG` observes and cannot be widened into anything that writes. |
 | `smoke-captest-capenum-control` | `CAP_ENUMERATE_UNGATED=1` removes `SYS_CAP_ENUMERATE`'s declared capability, so the central gate admits everyone and captest — which holds no `CAP_DEBUG` — reads another task's cspace. Aimed at the **gate**, because the handler contains no authority check at all: the table is the gate, so an arm weakening something inside the handler would be testing code that does not exist. |
+| `miri` | **The only check here that looks for undefined behaviour.** `cargo miri test` interprets the security core and checks out-of-bounds access, invalid pointer use, and the Stacked Borrows aliasing rules — which is what raw-pointer FFI breaks. 77 tests, ~2 minutes, no `continue-on-error`. Four crypto modules are excused in `.github/miri-scope.yml` (argon2 is memory-hard by construction and does not finish under an interpreter; the other three have no `unsafe` at all), and `tools/check_miri_scope.py` fails the build on a module that is neither run nor excused. **The job derives its `--skip` flags from that manifest**, so the scope and the command are one list rather than two that can drift. |
 | `kani-bounded` | **The first Kani job that can fail anything.** Eleven harnesses over the capability algebra, run with no `continue-on-error`, plus `check_kani_harnesses.py` refusing a proof classified as neither gating nor excused. The advisory `kani` job it sits beside is `workflow_dispatch`-only *and* `continue-on-error` on every step — thirteen proofs that could not redden a build, which is `smoke-kstack-park`'s shape applied to formal verification. 319 s measured end to end; the four excused harnesses are named with reasons in `.github/kani-harnesses.yml`. |
 | `smoke-passwd-probe` (2026-08-23) | **Eight checks now, not four.** The probe — uid 1000, no delegated capability — also asserts that the four syscalls retired that day fail closed at `SYS_ERR_NOSYS`. The one that matters is `SYS_EXEC_LEGACY` (14): it **created a task**, authorised on cspace slot 3, and this probe was handed task id 2 by it before it was removed. |
 | `smoke-passwd-probe-legacy-control` | `LEGACY_SYSCALLS_PRESENT=1` restores all four entries. The required marker is `FAIL legacy-exec-spawned-a-task` specifically, so an arm that reddened the probe for any other reason would not satisfy it — the same discipline as the two `smoke-newlib` arms failing at different markers. |
@@ -1083,10 +1084,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **90** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **91** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **92** jobs, **95** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **93** jobs, **96** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1138,7 +1139,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **92 required contexts and 3 reasoned exemptions** — read off
+The intended set is **93 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and

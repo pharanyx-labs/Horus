@@ -787,8 +787,6 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     let ts = target.serial;
     let to = target.object;
 
-    // Null the target itself and account for it. The system-wide sweep below
-    // will skip it (already null), so it is never double-counted.
     nullify(target);
     if !target_caps_in_use.is_null() && *target_caps_in_use > 0 {
         *target_caps_in_use -= 1;
@@ -916,16 +914,18 @@ mod tests {
         let mut ciu_b = 1u32;
 
         unsafe {
+            let a_ptr = a.as_mut_ptr();
+            let b_ptr = b.as_mut_ptr();
             // Precondition: B's derived cap is currently usable.
-            assert!(!rust_cap_lookup(b.as_mut_ptr(), 16, 7, 0x1).is_null());
+            assert!(!rust_cap_lookup(b_ptr, 16, 7, 0x1).is_null());
 
             let spaces = [
-                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_a) },
-                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_b) },
+                CSpaceDesc { caps: a_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_b) },
             ];
 
             let ok = rust_cap_revoke_global(
-                a.as_mut_ptr(),
+                a_ptr,
                 16,
                 4,
                 addr_of_mut!(ciu_a),
@@ -937,12 +937,12 @@ mod tests {
 
             // Parent revoked in task A.
             assert_eq!(a[4].typ, CAP_NULL);
-            assert!(rust_cap_lookup(a.as_mut_ptr(), 16, 4, 0x1).is_null());
+            assert!(rust_cap_lookup(a_ptr, 16, 4, 0x1).is_null());
 
             // Derived copy in the OTHER task's cspace is gone — the core fix.
             assert_eq!(b[7].typ, CAP_NULL,
                 "derived capability in another task must be revoked system-wide");
-            assert!(rust_cap_lookup(b.as_mut_ptr(), 16, 7, 0x1).is_null());
+            assert!(rust_cap_lookup(b_ptr, 16, 7, 0x1).is_null());
 
             // Serial generations bumped: a detached copy carrying the parent's
             // OR the derived child's pre-revoke generation now fails the check,
@@ -969,14 +969,16 @@ mod tests {
         let mut ciu_a = 1u32;
         let mut ciu_b = 1u32;
         unsafe {
+            let a_ptr = a.as_mut_ptr();
+            let b_ptr = b.as_mut_ptr();
             let spaces = [
-                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_a) },
-                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_b) },
+                CSpaceDesc { caps: a_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_b) },
             ];
             let ok = rust_cap_revoke_global(
-                a.as_mut_ptr(), 16, 4, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut());
+                a_ptr, 16, 4, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut());
             assert!(ok);
-            assert!(!rust_cap_lookup(b.as_mut_ptr(), 16, 7, 0x1).is_null(),
+            assert!(!rust_cap_lookup(b_ptr, 16, 7, 0x1).is_null(),
                 "unrelated capability must not be revoked");
             assert_eq!(ciu_b, 1);
         }
@@ -1130,10 +1132,12 @@ mod tests {
             assert!(!rust_cap_revoke(cs.as_mut_ptr(), 16, 2, core::ptr::null_mut()));
             assert_eq!(cs[2].serial, 0xC0DE0002, "primordial cap must be untouched");
 
-            // System-wide revoke refuses too, and performs no sweep.
-            let spaces = [CSpaceDesc { caps: cs.as_mut_ptr(), size: 16, caps_in_use: core::ptr::null_mut() }];
+            // System-wide revoke refuses too, and performs no sweep. One
+            // `as_mut_ptr()`, reused -- see test_caps_in_use_never_underflows.
+            let cs_ptr = cs.as_mut_ptr();
+            let spaces = [CSpaceDesc { caps: cs_ptr, size: 16, caps_in_use: core::ptr::null_mut() }];
             assert!(!rust_cap_revoke_global(
-                cs.as_mut_ptr(), 16, 2, core::ptr::null_mut(),
+                cs_ptr, 16, 2, core::ptr::null_mut(),
                 spaces.as_ptr(), 1, core::ptr::null_mut()));
             assert_eq!(cs[2].typ, 9);
             assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 2, 0x1).is_null(),
@@ -1351,9 +1355,18 @@ mod tests {
         cs[5] = cap(1, 0x03, 0xB700, 0x5700, 0x9700, 0);
         let mut ciu = 0u32; // deliberately understated relative to the two caps present
         unsafe {
-            let spaces = [CSpaceDesc { caps: cs.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu) }];
+            // ONE `as_mut_ptr()`, reused. Two calls is how this test read until
+            // 2026-08-24, and each one retags `cs` afresh -- so the second
+            // invalidated the pointer the first had already stored in `spaces`,
+            // and the sweep's write through it was UB before any library code
+            // ran. Miri named it; the C kernel does not do this (it passes one
+            // `struct capability *` twice, which is one provenance, not two
+            // borrows), so the defect was in the harness rather than in the
+            // path it exercises. Taking the pointer once models what C does.
+            let cs_ptr = cs.as_mut_ptr();
+            let spaces = [CSpaceDesc { caps: cs_ptr, size: 16, caps_in_use: addr_of_mut!(ciu) }];
             assert!(rust_cap_revoke_global(
-                cs.as_mut_ptr(), 16, 4, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut()));
+                cs_ptr, 16, 4, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut()));
             assert_eq!(cs[4].typ, CAP_NULL);
             assert_eq!(cs[5].typ, CAP_NULL, "the same-object derived copy is swept too");
             assert_eq!(ciu, 0, "caps_in_use must saturate at 0, never wrap to u32::MAX");
@@ -1433,17 +1446,19 @@ mod tests {
         let mut ciu_g = 1u32;
         let mut ciu_e = 0u32; // grantee accounting starts at 0; the C caller bumps it
         unsafe {
+            let grantee_ptr = grantee.as_mut_ptr();
+            let grantor_ptr = grantor.as_mut_ptr();
             assert!(rust_cap_grant_into(
-                &grantor[5] as *const Capability, grantee.as_mut_ptr(), 16, 6, !0u32, &mut next));
+                &grantor[5] as *const Capability, grantee_ptr, 16, 6, !0u32, &mut next));
             ciu_e += 1; // mirror the C caller's was-null increment
-            assert!(!rust_cap_lookup(grantee.as_mut_ptr(), 16, 6, 0x1).is_null());
+            assert!(!rust_cap_lookup(grantee_ptr, 16, 6, 0x1).is_null());
 
             let spaces = [
-                CSpaceDesc { caps: grantor.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_g) },
-                CSpaceDesc { caps: grantee.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_e) },
+                CSpaceDesc { caps: grantor_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_g) },
+                CSpaceDesc { caps: grantee_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_e) },
             ];
             assert!(rust_cap_revoke_global(
-                grantor.as_mut_ptr(), 16, 5, addr_of_mut!(ciu_g), spaces.as_ptr(), 2, &mut next));
+                grantor_ptr, 16, 5, addr_of_mut!(ciu_g), spaces.as_ptr(), 2, &mut next));
             assert_eq!(grantor[5].typ, CAP_NULL);
             assert_eq!(grantee[6].typ, CAP_NULL, "the delegated copy is revoked with its grantor");
             assert_eq!(ciu_e, 0, "grantee accounting decremented for the swept copy");
@@ -1469,13 +1484,15 @@ mod tests {
         let mut ciu_g = 2u32;
         let mut ciu_c = 1u32;
         unsafe {
+            let child_space_ptr = child_space.as_mut_ptr();
+            let grantor_ptr = grantor.as_mut_ptr();
             let spaces = [
-                CSpaceDesc { caps: grantor.as_mut_ptr(),     size: 16, caps_in_use: addr_of_mut!(ciu_g) },
-                CSpaceDesc { caps: child_space.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_c) },
+                CSpaceDesc { caps: grantor_ptr,     size: 16, caps_in_use: addr_of_mut!(ciu_g) },
+                CSpaceDesc { caps: child_space_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_c) },
             ];
             // Revoke the DELEGATED CHILD (child_space slot 6) — not the parent.
             assert!(rust_cap_revoke_global(
-                child_space.as_mut_ptr(), 16, 6, addr_of_mut!(ciu_c),
+                child_space_ptr, 16, 6, addr_of_mut!(ciu_c),
                 spaces.as_ptr(), 2, core::ptr::null_mut()));
 
             // The child is gone...
@@ -1485,9 +1502,9 @@ mod tests {
             // and still usable (the crux of audit A1).
             assert_eq!(grantor[4].typ, 3, "revoking a child must not revoke its parent (A1)");
             assert_eq!(grantor[5].typ, 3, "revoking a child must not revoke a sibling (A1)");
-            assert!(!rust_cap_lookup(grantor.as_mut_ptr(), 16, 4, 0x1).is_null(),
+            assert!(!rust_cap_lookup(grantor_ptr, 16, 4, 0x1).is_null(),
                 "parent stays usable after a child is revoked");
-            assert!(!rust_cap_lookup(grantor.as_mut_ptr(), 16, 5, 0x1).is_null(),
+            assert!(!rust_cap_lookup(grantor_ptr, 16, 5, 0x1).is_null(),
                 "sibling stays usable after a child is revoked");
             assert_eq!(ciu_g, 2, "grantor accounting unchanged");
         }
@@ -1509,15 +1526,17 @@ mod tests {
         let mut ciu_a = 1u32;
         let mut ciu_b = 1u32;
         unsafe {
+            let a_ptr = a.as_mut_ptr();
+            let b_ptr = b.as_mut_ptr();
             let spaces = [
-                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_a) },
-                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_b) },
+                CSpaceDesc { caps: a_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_b) },
             ];
             assert!(rust_cap_revoke_global(
-                a.as_mut_ptr(), 16, 5, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut()));
+                a_ptr, 16, 5, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut()));
             assert_eq!(a[5].typ, CAP_NULL, "the revoked cap is gone");
             assert_eq!(b[5].typ, 3, "an independent same-object cap must survive (A1)");
-            assert!(!rust_cap_lookup(b.as_mut_ptr(), 16, 5, 0x1).is_null(),
+            assert!(!rust_cap_lookup(b_ptr, 16, 5, 0x1).is_null(),
                 "the independent same-object cap stays usable");
             assert_eq!(ciu_b, 1, "the other task's accounting is untouched");
         }
@@ -1586,12 +1605,14 @@ mod tests {
         let mut ciu_a = 256u32;
         let mut ciu_b = 256u32;
         unsafe {
+            let a_ptr = a.as_mut_ptr();
+            let b_ptr = b.as_mut_ptr();
             let descs = [
-                CSpaceDesc { caps: a.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_a) },
-                CSpaceDesc { caps: b.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_b) },
+                CSpaceDesc { caps: a_ptr, size: 256, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b_ptr, size: 256, caps_in_use: addr_of_mut!(ciu_b) },
             ];
             assert!(rust_cap_revoke_global(
-                a.as_mut_ptr(), 256, 0, addr_of_mut!(ciu_a),
+                a_ptr, 256, 0, addr_of_mut!(ciu_a),
                 descs.as_ptr(), 2, core::ptr::null_mut()));
 
             // Every descendant, at every depth, is gone.
@@ -1614,9 +1635,9 @@ mod tests {
             assert_eq!(b[254].typ, 3, "an independent same-object cap must survive");
             assert_eq!(b[254].serial, PEER_SERIAL, "and keep its identity");
             assert_eq!(b[255].typ, 3, "so must a cap derived from it");
-            assert!(!rust_cap_lookup(b.as_mut_ptr(), 256, 254, 0x1).is_null(),
+            assert!(!rust_cap_lookup(b_ptr, 256, 254, 0x1).is_null(),
                 "the independent peer stays usable after the revoke");
-            assert!(!rust_cap_lookup(b.as_mut_ptr(), 256, 255, 0x1).is_null(),
+            assert!(!rust_cap_lookup(b_ptr, 256, 255, 0x1).is_null(),
                 "and so does its child");
         }
     }
@@ -1657,12 +1678,14 @@ mod tests {
         let mut ciu_a = 256u32;
         let mut ciu_b = 47u32;
         unsafe {
+            let a_ptr = a.as_mut_ptr();
+            let b_ptr = b.as_mut_ptr();
             let descs = [
-                CSpaceDesc { caps: a.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_a) },
-                CSpaceDesc { caps: b.as_mut_ptr(), size: 256, caps_in_use: addr_of_mut!(ciu_b) },
+                CSpaceDesc { caps: a_ptr, size: 256, caps_in_use: addr_of_mut!(ciu_a) },
+                CSpaceDesc { caps: b_ptr, size: 256, caps_in_use: addr_of_mut!(ciu_b) },
             ];
             assert!(rust_cap_revoke_global(
-                a.as_mut_ptr(), 256, 0, addr_of_mut!(ciu_a),
+                a_ptr, 256, 0, addr_of_mut!(ciu_a),
                 descs.as_ptr(), 2, core::ptr::null_mut()));
 
             for (i, c) in a.iter().enumerate() {
@@ -1699,9 +1722,11 @@ mod tests {
         let mut ciu_x = 1u32;
         let mut next = 0x7_0000u32;
         unsafe {
+            let other_ptr = other.as_mut_ptr();
+            let owner_ptr = owner.as_mut_ptr();
             // Derive a child from the parent (production mint): fresh serial,
             // stamped generation (0 while the serial's slot is pristine).
-            assert!(rust_cap_mint(owner.as_mut_ptr(), 16, 5, 4, 0x3, &mut next, 0));
+            assert!(rust_cap_mint(owner_ptr, 16, 5, 4, 0x3, &mut next, 0));
             let child = owner[5];
             assert_eq!(child.generation, 0, "a pristine child is gen 0, as in production");
             // A caller snapshots the child for a later revalidate-at-use.
@@ -1711,11 +1736,11 @@ mod tests {
 
             // System-wide revoke of the PARENT (the reachable SYS_CAP_REVOKE path).
             let spaces = [
-                CSpaceDesc { caps: owner.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_o) },
-                CSpaceDesc { caps: other.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ciu_x) },
+                CSpaceDesc { caps: owner_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_o) },
+                CSpaceDesc { caps: other_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_x) },
             ];
             assert!(rust_cap_revoke_global(
-                owner.as_mut_ptr(), 16, 4, addr_of_mut!(ciu_o), spaces.as_ptr(), 2, &mut next));
+                owner_ptr, 16, 4, addr_of_mut!(ciu_o), spaces.as_ptr(), 2, &mut next));
 
             // (a) The gen-0 child's detached snapshot now fails revalidation —
             // the hole finding 3.3 identified is closed, even for a gen-0 cap.
@@ -1726,7 +1751,7 @@ mod tests {
             // (b) The independent same-object capability (different serial) is
             // untouched and still usable — the fix does not over-revoke (A1).
             assert_eq!(other[9].typ, 3, "an independent same-object cap must survive");
-            assert!(!rust_cap_lookup(other.as_mut_ptr(), 16, 9, 0x1).is_null(),
+            assert!(!rust_cap_lookup(other_ptr, 16, 9, 0x1).is_null(),
                 "the independent same-object cap stays valid (serial-keyed, not object-keyed)");
             assert_eq!(ciu_x, 1, "the other task's accounting is untouched");
         }

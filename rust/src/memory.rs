@@ -185,12 +185,21 @@ mod tests {
             assert_eq!(rust_page_ref_dec(phys_of(5), ptr, N), 0);
             // Decrementing a zero refcount is reported (-2), never underflowed.
             assert_eq!(rust_page_ref_dec(phys_of(5), ptr, N), -2);
-            assert_eq!(table[5], 0);
+            assert_eq!(*ptr.add(5), 0);
 
             // inc saturates at u16::MAX rather than wrapping to a bogus 0.
-            table[6] = u16::MAX;
+            //
+            // Read and written through `ptr`, not through `table[..]`. Touching
+            // the array directly retags it, which invalidates the raw pointer
+            // taken earlier -- and the next FFI call then reads through a tag
+            // that no longer exists. Miri named that on 2026-08-24; it is a
+            // property of THIS HARNESS, not of the code under test, since the C
+            // kernel holds one pointer to its refcount table and never reaches
+            // the memory another way. Using one provenance throughout models
+            // the caller the FFI actually has.
+            *ptr.add(6) = u16::MAX;
             assert_eq!(rust_page_ref_inc(phys_of(6), ptr, N), u16::MAX);
-            assert_eq!(table[6], u16::MAX, "saturated count persists in the table");
+            assert_eq!(*ptr.add(6), u16::MAX, "saturated count persists in the table");
         }
     }
 

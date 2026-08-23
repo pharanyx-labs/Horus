@@ -982,10 +982,31 @@ between the two headers.
 Record syscall and IPC traces under QEMU and replay them, making SMP race reproduction
 tractable and turning intermittent CI failures into artifacts.
 
-### 3.8 ⬜ KASLR, CFI, and sanitizers — **[F-3.5]**
+### 3.8 ◧ KASLR, CFI, and sanitizers — **[F-3.5]** — *the sanitizer third landed 2026-08-24*
 
-Kernel address-space randomisation, control-flow integrity on indirect calls in the C
-kernel, and a sanitizer pass over the Rust core in CI.
+**Delivered: Miri over the Rust core, on every pull request.** `SECURITY.md` **S33**. It is a
+UB interpreter rather than a sanitizer strictly speaking, and it is the stronger tool for this
+crate: 80 `unsafe` blocks, all of them at the C FFI boundary, where the failure mode is aliasing
+and provenance rather than the overflow a sanitizer catches. 77 tests, ~2 minutes, four crypto
+modules excused with reasons in `.github/miri-scope.yml`.
+
+**The first run found UB in three places — all in the tests.** A test would take
+`x.as_mut_ptr()`, store it, then reach the same array a second way; the second access retags and
+invalidates the first pointer. The C kernel holds one pointer and passes it twice, so the
+harness was modelling its own caller wrongly. Established by **ablation**: the library "fix"
+written first was reverted, Miri stayed clean, and the change was dropped rather than shipped
+with a justification the measurement disproved.
+
+**Still open:**
+
+- **KASLR for the kernel image.** Ring-3 ASLR exists (`src/kernel/aslr.c`, 30 bits, rejection
+  sampled); the kernel's own image base is fixed by the linker script and the high-half
+  relocation.
+- **CFI on indirect calls in the C kernel.** The dispatch table is the obvious target. gcc's
+  `-fcf-protection` gives CET/IBT, which is a different and weaker property than
+  `-fsanitize=cfi`; that one wants clang and LTO, i.e. a second toolchain.
+- **A sanitizer pass proper** (ASan/UBSan) over the C kernel, which needs a freestanding
+  runtime; Miri covers the Rust half only.
 
 ### 3.9 ⬜ Virtualisation hooks (VT-x) — **[F-3.4]**
 
@@ -1039,7 +1060,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **92 required, 3 exempted** (92 jobs, 95 contexts — re-derive it with
+  The intended set is **93 required, 3 exempted** (93 jobs, 96 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).

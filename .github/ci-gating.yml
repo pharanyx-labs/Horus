@@ -123,6 +123,12 @@ required:
   # consumer -- and an ordering fact is exactly what a refactor moves. This is
   # the check that asks the RNG itself.
   - rng-seed
+  # Gating. S11/S12 are claims about a measurement, and until 2026-08-23 a boot
+  # that took no measurement said so in a log line and carried on. This job
+  # checks the opt-in policy that makes it fatal -- including that a machine
+  # WITH a TPM still boots under it, which is the half a refusal-only gate
+  # cannot distinguish from a kernel that halts always.
+  - measured-boot-required
   # Gating. It guards the class that produced [G-9]: a claim orphaned because a
   # path reached ring 3 without paying its deferred release. The periodic audit
   # structurally cannot catch that, so this is the only check that can.

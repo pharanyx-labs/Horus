@@ -92,7 +92,8 @@ DEFECT_FLAGS = \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED RAMFS_SLOT3_GATE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
-	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER
+	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
+	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -529,6 +530,26 @@ endif
 # copy that resolved neither "." nor ".." -- it looked both up as literal
 # directory entries, which fs_server never creates. `make smoke-newlib` must go
 # red under it.
+# MEASURED_BOOT_REQUIRED=1 is a POLICY flag, not a defect arm: it makes an
+# unavailable measured boot fatal instead of a log line, and refuses to unlock a
+# persistent volume that was never sealed. Off by default because this kernel is
+# expected to boot on TPM-less machines (docs/LIMITATIONS.md 2.9); it is in this
+# list because a transcript taken under it describes a different machine, which
+# is exactly what DEFECT FLAGS exists to record.
+MEASURED_BOOT_REQUIRED ?= 0
+ifeq ($(MEASURED_BOOT_REQUIRED),1)
+CFLAGS += -DMEASURED_BOOT_REQUIRED
+endif
+
+# MEASURED_VOLUME_EXEMPT_NONE=1 removes the ephemeral-vdisk exemption from the
+# rule above, so the sealed-volume refusal is reached on an ordinary boot. It is
+# how that refusal is falsified: the exemption is the flag's one hole, and an arm
+# that cannot enter the branch cannot show it fires.
+MEASURED_VOLUME_EXEMPT_NONE ?= 0
+ifeq ($(MEASURED_VOLUME_EXEMPT_NONE),1)
+CFLAGS += -DMEASURED_VOLUME_EXEMPT_NONE
+endif
+
 POSIX_LEGACY_WALK ?= 0
 
 # HVFS_DOTDOT_SERVER=1 restores hvfs's original ".." branch, which asked the
@@ -2685,6 +2706,59 @@ smoke-tpm-seal:
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_KEK_SELFTEST=1 boot.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TPM_KEK_SELFTEST: PASS' \
 		FAIL_MARKER='TPM_KEK_SELFTEST: FAIL' \
+		tools/run_with_swtpm.sh boot.iso
+
+# ---- fail-closed measured boot (docs/LIMITATIONS.md 2.9) --------------------
+# The kernel used to boot happily with no TPM: PCRs unextended, volume key never
+# sealed, S11 and S12 simply not applying rather than failing closed. #197 fixed
+# the CI half (SWTPM_REQUIRED=1 stops four gates passing without measuring); this
+# is the kernel half, as a policy a deployment opts into.
+#
+# BASE ARM: the policy must not break a machine that satisfies it. Build with
+# MEASURED_BOOT_REQUIRED=1, boot under the emulated TPM, and require the boot to
+# reach `tpm: measured boot OK` -- a gate that only checked the refusal would be
+# passed by a kernel that halts on every boot.
+.PHONY: smoke-measured-boot-required
+smoke-measured-boot-required:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 boot.iso
+	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='tpm: measured boot OK' \
+		FAIL_MARKER='PANIC: measured boot required' \
+		tools/run_with_swtpm.sh boot.iso
+
+# CONTROL ARM 1: the same kernel with NO TPM -- which is what an ordinary
+# `tools/smoke_test.sh` run gives, since QEMU has no TPM unless swtpm is wired in.
+# It must halt, not proceed. This is the exact case 2.9 described.
+#
+# EXPECT_FAULT, not REQUIRE_MARKER: the refusal says PANIC, which is in the
+# harness's FAULT_RE on purpose (a refusal must redden CI rather than scroll
+# past), so a marker assertion would lose to the fault verdict before it was
+# evaluated. EXPECT_FAULT inverts that verdict for the NAMED fault only -- any
+# other fault still fails the arm, which is what stops this passing on an
+# unrelated crash.
+.PHONY: smoke-measured-boot-required-control
+smoke-measured-boot-required-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_FAULT='PANIC: measured boot required but unavailable (no TPM present)' \
+		tools/smoke_test.sh boot.iso
+
+# CONTROL ARM 2: the volume half. A never-sealed volume unlocks on the password
+# alone, which is the downgrade the policy exists to refuse -- but the default
+# boot runs on the EPHEMERAL vdisk, which is exempt by design (RAM-only, one
+# boot, key discarded). MEASURED_VOLUME_EXEMPT_NONE=1 removes the exemption so
+# the refusal is reached on an ordinary boot, under a TPM that is present and
+# measuring. Without this arm the branch would ship unexecuted.
+.PHONY: smoke-measured-boot-required-volume-control
+smoke-measured-boot-required-volume-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_EXEMPT_NONE=1
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_EXEMPT_NONE=1 boot.iso
+	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_FAULT='PANIC: measured boot required but the volume is not sealed' \
 		tools/run_with_swtpm.sh boot.iso
 
 .PHONY: smoke-modules

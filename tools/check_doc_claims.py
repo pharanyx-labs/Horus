@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Reused rather than reimplemented: a second copy of the context-expansion rules
 # would be one more thing to drift, and drift is the subject.
 from check_ci_gating import load_jobs, WORKFLOWS, CI_YML, GATING_YML  # noqa: E402
+from check_syscall_coverage import implemented  # noqa: E402
 
 CLAIMS_YML = ".github/doc-claims.yml"
 # The development log is a frozen record of what was written on the day it was
@@ -93,19 +94,19 @@ def _inside_quotes(line, idx):
 
 
 SYSCALL_COVERAGE_YML = ".github/syscall-coverage.yml"
-SYSCALL_TABLE_SRC = "src/kernel/syscall.c"
 
 
 def _syscalls_implemented():
-    """Entries in the dispatch table with a real handler (not NULL)."""
-    src = Path(SYSCALL_TABLE_SRC).read_text()
-    tbl = src[src.index("static const syscall_desc_t syscall_table["):]
-    tbl = tbl[: tbl.index("\n};")]
-    return len([
-        1 for _, h in re.findall(
-            r"\[\s*(SYS_[A-Z0-9_]+)\s*\]\s*=\s*\{\s*([A-Za-z0-9_]+)", tbl)
-        if h not in ("0", "NULL")
-    ])
+    """Entries in the dispatch table with a real handler, in the SHIP build.
+
+    Imported rather than reimplemented. This was a second copy of the regex, and
+    it inherited both of the original's blind spots: it read the table as flat
+    text, so three entries that exist only under a defect arm or a selftest flag
+    counted as shipped, and it matched only `[SYS_NAME]`, so seven entries
+    written as bare numbers were invisible. Two copies of a derivation are two
+    things to drift, and drift is this file's whole subject.
+    """
+    return len(implemented())
 
 
 def derive():

@@ -719,6 +719,21 @@ void users_init(void);
 #define SYS_PRINT           1
 #define SYS_EXIT            2
 #define SYS_GET_LINE        3
+/* Named 2026-08-23. These six dispatch entries were written as bare numeric
+ * indices — `[5]`, `[6]`, `[7]`, `[14]`, `[15]`, `[16]` — and the coverage
+ * deriver reads the table for `[SYS_NAME]`, so it could not see them: five live
+ * handlers in the ship build that no coverage rule could name, classify or
+ * require evidence for. Exactly the hole SECURITY.md S25 records for
+ * SYS_CAP_MINT/TRANSFER/MOVE, in the same table, still open next door. The
+ * numbers are unchanged — this is a naming change, not an ABI change — and
+ * `tools/check_syscall_coverage.py` now refuses a bare numeric entry outright so
+ * the hole cannot reopen. */
+#define SYS_CLEAR           5   /* clear the screen; slot-3 WRITE */
+#define SYS_SYSINFO         6   /* kernel version/build readout   */
+#define SYS_DEBUG_EXEC      7   /* DEBUG_SHELL only; -1 otherwise */
+#define SYS_EXEC_LEGACY     14  /* pre-ELF (load_base, entry) exec */
+#define SYS_RAMFS_CREATE    15  /* RAMFS_SLOT3_GATE only ([H-3])  */
+#define SYS_RAMFS_LIST      16  /* RAMFS_SLOT3_GATE only ([H-3])  */
 #define SYS_SBRK            10
 #define SYS_WRITE           11
 #define SYS_READ            12

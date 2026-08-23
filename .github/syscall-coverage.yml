@@ -45,7 +45,43 @@
 # buys exactly one. Promoting them is a follow-up to closing [G-9], and the
 # measurements above are what that follow-up should start from.
 
+# Compiled only under a flag, so no tracked workload can enter them and neither
+# `covered` nor `uncovered` can describe them. Declaring them here is what keeps
+# them countable: the checker requires every guarded entry to appear, with the
+# flag that guards it, and fails if one becomes unconditional -- a syscall
+# re-entering the shipped surface is a change in attack surface, not a
+# documentation detail.
+#
+# Until 2026-08-23 the deriver read the table as flat TEXT, so all of these
+# counted toward `implemented` and described a build nobody has ever booted. The
+# note that recorded that blind spot lived next to SYS_OPEN and named the wrong
+# three -- 15 and 16 were bare numeric entries the regex never matched at all, so
+# the overstatement was SYS_OPEN, SYS_PREEMPT_TRACE and SYS_IRQ_POLICY_INFO. An
+# unenforced note is worth exactly that much, which is why this is a rule now.
+conditional:
+  SYS_OPEN:
+    flag: RAMFS_SLOT3_GATE
+    reason: >-
+      RETIRED 2026-08-22 ([H-3]). In the ship build the syscall fails closed at SYS_ERR_NOSYS; the entry comes back only under the defect arm, which is what makes `make smoke-passwd-probe-control` a measurement
+  SYS_RAMFS_CREATE:
+    flag: RAMFS_SLOT3_GATE
+    reason: >-
+      RETIRED 2026-08-22 ([H-3]), syscall 15. One of the four doors gated on cspace slot 3 with SC_ANYTYPE, which the legacy CAP_FRAME satisfies. Named 2026-08-23; it was a bare `[15]` and invisible to this manifest
+  SYS_RAMFS_LIST:
+    flag: RAMFS_SLOT3_GATE
+    reason: >-
+      RETIRED 2026-08-22 ([H-3]), syscall 16. As SYS_RAMFS_CREATE -- it enumerated the store the user database was written into. Named 2026-08-23
+  SYS_PREEMPT_TRACE:
+    flag: PREEMPT_SELFTEST
+    reason: >-
+      MEASURED 2026-08-20: entered by a PREEMPT_SELFTEST=1 boot, which enters exactly 1 syscall -- the worst ratio on this list. Test-only trace hook, absent from the ship kernel
+  SYS_IRQ_POLICY_INFO:
+    flag: IRQ_POLICY_AUDIT
+    reason: >-
+      MEASURED 2026-08-20: NOT entered even by an IRQ_POLICY_AUDIT=1 boot, which an earlier entry claimed would reach it. Nothing in that image calls it
+
 covered:
+  - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`
   - SYS_EXIT
   - SYS_SBRK
   - SYS_WRITE
@@ -99,6 +135,14 @@ covered:
   - SYS_IPC_RECV_BLOCK
 
 uncovered:
+  SYS_CLEAR: >-
+    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 5, named on that date -- it was a bare `[5]` and this manifest could not see it. It clears the kernel VGA text buffer directly; a live session's `clear` goes through console_server, which owns the framebuffer, so nothing in ring 3 calls it. NO USERSPACE WRAPPER EXISTS for it anywhere in the tree
+  SYS_SYSINFO: >-
+    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 6, named on that date. A kernel version/build readout with NO USERSPACE WRAPPER anywhere in the tree -- reachable only by issuing the raw number
+  SYS_DEBUG_EXEC: >-
+    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 7, named on that date. Under DEBUG_SHELL it hands a 127-byte ring-3 string to process_user_command with SC_NONE -- no capability -- which is the "extra syscall surface" a DEBUG_SHELL=1 build is documented to carry; in the ship build it copies the string and returns -1. NO USERSPACE WRAPPER anywhere in the tree
+  SYS_EXEC_LEGACY: >-
+    MEASURED 2026-08-23: not entered by any tracked workload. Syscall 14, named on that date. The pre-ELF (load_base, entry_offset) exec, superseded by SYS_EXEC/SYS_EXEC_NAMED and the Rust load planner. NO USERSPACE WRAPPER anywhere in the tree
   # ---- The five added on 2026-08-22 (roadmap 2.1) -------------------------
   #
   # Three of these are not new syscalls. SYS_CAP_MINT, SYS_CAP_TRANSFER and
@@ -123,8 +167,6 @@ uncovered:
     kernel-side console input; fails closed once console_server owns the UART, so a live session never reaches it
   SYS_READ: >-
     fd 0 refuses under console_hw_owned() for the same reason as SYS_GET_LINE, and neither workload drives an fd>=3 ramfs read
-  SYS_OPEN: >-
-    RETIRED 2026-08-22 ([H-3]). Its dispatch entry now exists only under RAMFS_SLOT3_GATE=1, so in the ship build the syscall fails closed at SYS_ERR_NOSYS and no workload can enter the handler. NOTE the derivation counts it anyway: _syscalls_implemented reads the table as TEXT and does not evaluate the preprocessor, so a conditionally-compiled entry still counts toward `implemented`. That overstates the ship build by three (SYS_OPEN, 15, 16) and is the same class of blind spot as the bare-numeric-literal one recorded above -- worth fixing in the deriver rather than papering over per entry
   SYS_EXEC: >-
     MEASURED 2026-08-20: NOT entered by any of PROC_SELFTEST, SIGNAL_SELFTEST, PREEMPT_SELFTEST, IRQ_SELFTEST or IRQ_POLICY_AUDIT. No build in this tree is known to reach it
   SYS_IPC_REPLY: >-
@@ -145,8 +187,6 @@ uncovered:
     a raw block write through the storage backend; the tracked workloads reach storage through fs_server's higher-level calls instead
   SYS_AUDIT_DIGEST: >-
     as SYS_READ_AUDIT, and one of the two wrappers issue #176 was about
-  SYS_PREEMPT_TRACE: >-
-    MEASURED 2026-08-20: entered by a PREEMPT_SELFTEST=1 boot. Not a tracked arm; that build enters exactly 1 syscall, the worst ratio on this list
   SYS_SIGACTION: >-
     MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot -- NOT by SIGNAL_SELFTEST=1, which this entry previously claimed. That build passes while entering only syscalls 0 and 11, so it never drives sigaction at all
   SYS_SIGRETURN: >-
@@ -165,7 +205,5 @@ uncovered:
     links an inode into a directory; neither workload creates a hard link
   SYS_IRQ_REGISTER: >-
     MEASURED 2026-08-20: entered by an IRQ_SELFTEST=1 boot. Not a tracked arm; that build enters 4 syscalls in total, so it buys one promotion for a full build
-  SYS_IRQ_POLICY_INFO: >-
-    MEASURED 2026-08-20: NOT entered by an IRQ_POLICY_AUDIT=1 boot, which this entry previously claimed would reach it. Nothing in that image calls it
   SYS_TASK_EXIT_INFO: >-
     MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not a tracked arm

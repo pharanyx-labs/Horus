@@ -39,7 +39,7 @@ performs its own check; the reason is noted per entry in `src/kernel/syscall.c`.
 
 > ### Retired: the in-kernel ramfs surface
 
-`SYS_OPEN` (13), syscall 15 (ramfs create), syscall 16 (ramfs list) and `SYS_READ` for
+`SYS_OPEN` (13), `SYS_RAMFS_CREATE` (15), `SYS_RAMFS_LIST` (16) and `SYS_READ` for
 `fd >= 3` were **removed on 2026-08-22** (finding **[H-3]**) and now fail closed at
 `SYS_ERR_NOSYS`, exactly as syscalls 38–45 do.
 
@@ -51,6 +51,15 @@ is the ring-3 door, not the store. Filesystem access from ring 3 is the `fs_serv
 protocol (`include/fs_proto.h`) and nothing else.
 
 ## Frame capabilities and shared memory
+
+**Seven entries were named on 2026-08-23** — `SYS_YIELD` (0, which had a name the table did
+not use), `SYS_CLEAR` (5), `SYS_SYSINFO` (6), `SYS_DEBUG_EXEC` (7), `SYS_EXEC_LEGACY` (14),
+`SYS_RAMFS_CREATE` (15) and `SYS_RAMFS_LIST` (16). The numbers are unchanged; what changed is
+that `tools/check_syscall_coverage.py` can now see them, so each one has to be classified and
+carry evidence. As bare `[5]`-style indices they were invisible to it, which is how five live
+handlers in the ship build came to have no coverage rule, no measurement and — for four of them
+— no userspace wrapper anywhere in this tree. A bare numeric index is now refused by the
+checker.
 
 | # | Name | Arguments | Authorisation *(as checked)* |
 |---|---|---|---|
@@ -135,6 +144,7 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 | 2 | `SYS_EXIT` | — | none (self) |
 | 17 | `SYS_WAIT` | `tid` | none (self) |
 | 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` |
+| 14 | `SYS_EXEC_LEGACY` | `load_base`, `entry_offset` | slot 3: WRITE\|EXEC |
 | 19 | `SYS_EXEC` | `load_base`, `entry` | slot 3: WRITE\|EXEC |
 | 20 | `SYS_GETPID` | — | none (self-authorising) |
 | 28 | `SYS_SPAWN` | — | slot 3: WRITE\|EXEC |
@@ -210,9 +220,9 @@ required `syscall-abi` job) fails the build if any wrapper narrows one. Property
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
 | 3 | `SYS_GET_LINE` | `buf` | slot 8 READ, else slot 3 READ |
-| 5 | *clear screen* | — | slot 3: WRITE |
-| 6 | *sysinfo* | `buf` (64 bytes) | none (ambient version string) |
-| 7 | *debug exec* | `cmd` | `DEBUG_SHELL` builds only |
+| 5 | `SYS_CLEAR` | — | slot 3: WRITE |
+| 6 | `SYS_SYSINFO` | `buf` (64 bytes) | none (ambient version string) |
+| 7 | `SYS_DEBUG_EXEC` | `cmd` | none (`SC_NONE`) — runs the in-kernel debug shell under `DEBUG_SHELL`, returns −1 otherwise |
 | 11 | `SYS_WRITE` | `fd`, `buf`, `len` | console: none (fd 1 = ambient). `klog`: `CAP_KERNEL_LOG` + WRITE |
 | 12 | `SYS_READ` | `fd`, `buf`, `len` | fd 0 ambient; fd ≥ 3 needs slot 3 READ |
 | 13 | `SYS_OPEN` | `name`, `flags` | slot 3: READ |

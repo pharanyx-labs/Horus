@@ -800,7 +800,7 @@ Prerequisite for IPC timeouts, anything real-time, and sane userspace scheduling
 Real `fork`/`exec` semantics, process groups, job control, and a `/proc`-equivalent served
 over IPC. Needed before the shell can become a usable OS interface.
 
-### 2.4 ◧ A VFS layer above `fs_server` — **[F-2.2]** — *the namespace landed 2026-08-22*
+### 2.4 ◧ A VFS layer above `fs_server` — **[F-2.2]** — *namespace 2026-08-22, clients migrated 2026-08-23*
 
 **Delivered: the mount table, the walker, and a second server.** `userspace/hvfs.c` is a
 per-task mount table and **one** path walker, in `libhorus.a`; `userspace/dev_server.c` is a
@@ -821,16 +821,28 @@ the capability; the prefix is how you spell it. See `docs/LIMITATIONS.md` §2.7.
 
 **Still open, and what each needs:**
 
-- **The three clients still carry their own walkers.** `posix.c`, `shell.c` and `fsclient.c`
-  each have a private copy, and they have already drifted — only one handles `..`. That
-  duplication is what `hvfs` exists to remove, and until they migrate **`hvfs` has no users in
-  the ship build**: it is an archive member, so unused means unlinked and it costs nothing, but
-  a library nobody calls is surface with no owner. This is the next PR.
-- **`posix.c` needs a link-path decision first.** It is on the newlib path, where the Makefile
-  deliberately does not link `libhorus.a` ("a second memcpy under a different name would be an
-  ambiguity waiting to be resolved wrongly"). The concern may not apply — `hvfs`'s dependencies
-  are all `u`-prefixed, so nothing collides — but reversing a documented decision wants its own
-  measurement rather than being a side effect.
+- ~~**The three clients still carry their own walkers.**~~ **Migrated 2026-08-23.** `posix.c`
+  and `shell.c` call `hvfs_walk` / `hvfs_walk_parent`; `hvfs` has users in the ship build, and
+  the shell, the libc and every coreutil resolve paths through one implementation.
+  **`fsclient.c` was not one of the three, and this entry was wrong to say so**: it has no
+  walker. It does flat single-name lookups in the root and a private `rpc()` built on
+  `ipc_call_retry` with its own selftest markers — bounded retry semantics `hvfs_rpc`
+  deliberately does not have. Migrating it would have removed the retry and the markers to
+  satisfy a sentence in this file, so the sentence is corrected instead.
+- ~~**`posix.c` needs a link-path decision first.**~~ **Taken 2026-08-23: `libhorus.a` is now
+  linked into the newlib programs.** The feared collision does not arise — nothing in
+  `libhorus.o` is named `memcpy`; the symbols are `umemcpy`, `umemset`, `ustrncpy`, `uslen`,
+  `ustreq`, `kput*`, `spin_delay*`, `ipc_call_retry`, none of which collide with libc. It costs
+  ~200 bytes per newlib binary. The alternative — private static copies inside `hvfs.o` — would
+  have cost the *audited* helpers: `ustrncpy`'s termination is what
+  `LIBHORUS_STRNCPY_UNTERMINATED` falsifies, and a private copy is outside that arm.
+- **What the migration found.** `..` did not work below a mount root at all, in any client.
+  `hvfs` resolved it by asking the server to look up a `..` **entry**, and `fs_server` creates
+  none — `dir_add` links exactly the name `mkdir` was given — so that branch returned `NOENT`
+  every time. It was dead from the day it landed in #195, and the only test touching `..` used
+  the *pinned* case, which returns before the lookup. `..` now pops the walker's own descent
+  stack: no round trip, and nothing a server asserts. Witnessed by `smoke-newlib`'s `.`/`..`
+  checks against `smoke-newlib-dotdot-control`.
 - **`init` cannot provision a mount yet.** It holds no `CAP_UNTYPED`, so it cannot retype an
   endpoint for a new server; the gate uses root-cnode endpoint capabilities instead. Giving the
   delegation root that authority is a real widening and belongs in its own commit.
@@ -1088,7 +1100,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 111 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 26 of them control arms that must reproduce a defect |
+| ✅ | 113 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 28 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

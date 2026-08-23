@@ -206,6 +206,18 @@ static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
     char comp[FS_NAME_MAX];
     int  depth = 0;
 
+    /* Inodes descended THROUGH, innermost last, so ".." can step back without
+     * asking anyone. Bounded by HVFS_MAX_DEPTH, which already bounds the walk;
+     * `mount_root` itself is never pushed, which is what pins ".." there. */
+    uint32_t desc[HVFS_MAX_DEPTH];
+    int      ndesc = 0;
+#ifndef HVFS_DOTDOT_SERVER
+    /* `mount_root` is read only by the control arm now: an empty descent stack
+     * is the same condition, computed locally. Kept assigned above so the two
+     * arms differ in one place. */
+    (void)mount_root;
+#endif
+
     while (*p) {
         unsigned clen = 0;
         while (p[clen] && p[clen] != '/') clen++;
@@ -223,16 +235,36 @@ static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
          * means something entirely different on the other side of the mount --
          * not a permission escape (the slot does not change, so it is still the
          * same server) but a silent aliasing bug, and exactly the kind a real
-         * VFS pins its mount points to prevent. */
+         * VFS pins its mount points to prevent.
+         *
+         * ".." POPS THE WALKER'S OWN STACK; it does not ask the server. Until
+         * 2026-08-23 it sent a LOOKUP for a ".." entry, and `fs_server` creates
+         * no "." or ".." dirents at all -- `dir_add` links exactly the one name
+         * mkdir was given -- so that branch could only ever return NOENT. It was
+         * dead against the only real filesystem in this tree, and nothing
+         * noticed because the one test for ".." used the PINNED case (vfstest
+         * check 9, "/dev/.."), which returns before the lookup.
+         *
+         * Popping is also the better contract for a per-client namespace: the
+         * parent of a component this walker descended through is something the
+         * walker KNOWS. Asking the server makes the answer something the server
+         * asserts, and a compromised or buggy one could answer ".." with any
+         * inode it liked -- including one the client had already been refused. */
         if (comp[0] == '.' && comp[1] == '\0') continue;
         if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {
-            if (dir_ino == mount_root) continue;         /* pinned */
+#ifdef HVFS_DOTDOT_SERVER
+            /* CONTROL ARM: the pre-2026-08-23 branch, restored. */
+            if (dir_ino == mount_root) continue;
             struct fs_request rq; struct fs_response rp;
             umemset(&rq, 0, sizeof(rq));
             rq.op = FS_OP_LOOKUP; rq.dir_ino = dir_ino;
             ustrncpy(rq.name, "..", FS_NAME_MAX);
             if (hvfs_rpc(slot, &rq, &rp) != 0) return -1;
             dir_ino = rp.ino;
+#else
+            if (ndesc == 0) continue;                    /* pinned at the root */
+            dir_ino = desc[--ndesc];
+#endif
             continue;
         }
 
@@ -246,6 +278,7 @@ static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
         if (*p != '\0') {
             /* An intermediate component must exist. */
             if (hvfs_rpc(slot, &rq, &rp) != 0) return -1;
+            if (ndesc < HVFS_MAX_DEPTH) desc[ndesc++] = dir_ino;
             dir_ino = rp.ino;
         } else {
             /* The last one may not, and the caller decides what that means --

@@ -83,7 +83,7 @@ void aslr_init_seed(void) {
  * for ABI compliance. */
 addr_t aslr_random_stack_top(addr_t top) {
     uint32_t page_off = aslr_random_offset(ASLR_MAX_STACK_RANDOM_PAGES);
-    uint32_t sub_off = (uint32_t)(rust_rng_u64() & 0xFF0u); /* up to ~4080, 16-aligned */
+    uint32_t sub_off = (uint32_t)(secure_random_u64() & 0xFF0u); /* up to ~4080, 16-aligned */
     addr_t t = top - (addr_t)(page_off + sub_off);
     return t & ~((addr_t)0xF);
 }

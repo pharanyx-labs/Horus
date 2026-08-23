@@ -2144,8 +2144,11 @@ void     rust_auth_global_on_failure(uint64_t now);
 void     rust_auth_global_on_success(void);
 /* ChaCha20 CSPRNG */
 void     rust_rng_add_entropy(const uint8_t *data, size_t len);
-void     rust_rng_fill(uint8_t *out, size_t len);
-uint64_t rust_rng_u64(void);
+/* Both return false rather than serving output from an unseeded pool; every
+ * caller must check. Use the secure_random_* wrappers below, which halt on a
+ * refusal instead of leaving that decision to each call site. */
+bool     rust_rng_fill(uint8_t *out, size_t len);
+bool     rust_rng_u64_checked(uint64_t *out);
 bool     rust_rng_is_seeded(void);
 bool     rust_rdrand_u64(uint64_t *out);
 
@@ -2154,6 +2157,10 @@ int  cpu_has_rdrand(void);
 void entropy_init(void);            /* gather hardware/timing entropy, seed CSPRNG */
 void entropy_add_sample(uint64_t s);/* mix an opportunistic entropy sample */
 void secure_random_bytes(void *out, size_t n);
+uint64_t secure_random_u64(void);   /* one CSPRNG draw; halts if unseeded */
+#ifdef RNG_UNSEEDED_PROBE
+void rng_unseeded_probe(void);      /* [defect arm] see make smoke-rng-seed */
+#endif
 /* The compile-time stack-guard value, before stack_protector_init() swaps it for
  * a CSPRNG draw. Single source of truth: crypto.c initialises __stack_chk_guard
  * to this, and the STACKGUARD_SELFTEST asserts the live guard is NO LONGER this

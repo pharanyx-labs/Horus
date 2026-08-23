@@ -417,6 +417,14 @@ void kernel_main(uint32_t mb_info) {
      * ones actually in force. Boot continues; make smoke-wx asserts on it. */
     wx_selftest();
 #endif   /* SMEP/SMAP — must follow feature detection */
+#ifdef RNG_UNSEEDED_PROBE
+    /* [defect arm] Deliberately BEFORE the seed, which is the whole point: it
+     * asks the CSPRNG for output at the one moment the pool is still the
+     * hardcoded startup state. Boot continues either way; make smoke-rng-seed
+     * asserts the refusal and smoke-rng-seed-control asserts that the legacy
+     * Rust arm serves keystream instead. */
+    rng_unseeded_probe();
+#endif
     entropy_init();
     /* Must follow entropy_init (needs the CSPRNG) and must run from a frame
      * that never returns — kernel_main is both. See stack_protector_init. */

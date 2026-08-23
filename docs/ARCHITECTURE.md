@@ -119,7 +119,7 @@ property, belongs in Rust.
 | `capability.rs` | The capability algebra: lookup, mint, grant, transfer, subtree revocation, lineage generations |
 | `lib.rs` | ELF header/phdr validation, load planning, i386 and x86-64 relocation |
 | `crypto.rs`, `aead.rs`, `sha256.rs`, `blake2b.rs`, `argon2.rs` | Cryptographic primitives |
-| `rng.rs` | ChaCha20 fast-key-erasure CSPRNG with RDRAND health checking |
+| `rng.rs` | ChaCha20 fast-key-erasure CSPRNG with RDRAND health checking. `fill` refuses — returning false, zeroing the caller's buffer — while the pool is unseeded, so the property is the RNG's rather than the boot order's (S30) |
 | `memory.rs` | Pointer and range validation predicates |
 | `audit.rs` | Forward-secure audit log |
 | `auth.rs`, `ps.rs` | Authentication and process-listing helpers |
@@ -345,7 +345,10 @@ without SMAP, and it makes a user pointer aimed at kernel memory structurally im
 satisfy rather than merely trapped.
 
 **ASLR.** Image base, heap base, and stack top are randomised with 30 bits of entropy from
-the kernel CSPRNG, rejection-sampled rather than reduced modulo.
+the kernel CSPRNG, rejection-sampled rather than reduced modulo. Every draw goes through
+`secure_random_bytes` / `secure_random_u64`, which halt if the pool refuses: an unseeded pool
+would hand back a stream derived from a published constant, and predictable ASLR presented as
+real ASLR is worse than a kernel that does not boot (S30).
 
 ---
 

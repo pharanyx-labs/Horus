@@ -1411,6 +1411,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot-module SHA-256 manifest embedded in the kernel image</th><td class="t-note">smoke-modules-tamper</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">ELF parsing and relocation in memory-safe Rust, under W^X, randomised base</th><td class="t-note">smoke-elf · smoke-elf64</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP/SMAP in CR4, kernel W^X swept, CSPRNG-reseeded stack canary, <code>CR4.TSD</code></th><td class="t-note">smoke-cpu · smoke-wx · smoke-stackguard</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The CSPRNG refuses to emit keystream before it is seeded — a draw from an unseeded pool halts the kernel rather than returning a stream derived from a published constant</th><td class="t-note">smoke-rng-seed</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">newlib libc, shell pipelines over in-kernel pipes, eleven coreutils, TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Programs and man pages loaded from the filesystem as boot modules</th><td class="t-note">smoke-modules</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Forward-secure audit log — history before a compromise cannot be rewritten</th><td class="t-note">cargo test</td></tr>
@@ -1620,7 +1621,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 89 gating and 3 exempted, and the promotions are backed by
+              intended set is 90 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

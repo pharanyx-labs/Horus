@@ -754,28 +754,36 @@ Three smaller consequences of the same design:
   optional tidy-up. `posix.c` additionally needs a link-path decision reversed: it is on the
   newlib path, where `libhorus.a` is deliberately not linked.
 
-### 2.8 The CSPRNG is safe by boot ordering, not by construction
+### 2.8 ~~The CSPRNG is safe by boot ordering, not by construction~~ — CLOSED 2026-08-23
 
-*Added 2026-08-22 from an external audit (its F-5), after checking the claim against the tree.*
+*Added 2026-08-22 from an external audit (its F-5), after checking the claim against the tree.
+Closed 2026-08-23; the section is kept because what was recorded here was right and the shape
+recurs.*
 
-`RngState::fill()` (`rust/src/rng.rs`) does not test `self.seeded`. It will produce keystream
-from whatever key is present — and the initial key is, in the file's own words, *"non-secret
+`RngState::fill()` (`rust/src/rng.rs`) did not test `self.seeded`. It would produce keystream
+from whatever key was present — and the initial key is, in the file's own words, *"non-secret
 startup constants"*, with a comment that the pool *"MUST be reseeded from hardware entropy
-before its output is relied upon"*. That MUST is not enforced where the output is produced.
+before its output is relied upon"*. That MUST was not enforced where the output is produced.
 
-**It is not reachable, and the audit overstated it.** The finding claimed weak ASLR, canaries
-and nonces from early use, and recommended *"panic or refuse output until `seeded=true`"* — a
-fix that already exists one layer up. `entropy_init()` (`src/kernel/crypto.c`) gathers entropy,
-then tests `rust_rng_is_seeded()` and **halts the machine** if it is false, with a comment
-giving the same reasoning. It runs at `src/kernel/main.c:420`; the first consumer,
-`aslr_init_seed()`, is at `:471`.
+**It was never reachable, and the audit overstated it.** The finding claimed weak ASLR,
+canaries and nonces from early use, and recommended *"panic or refuse output until
+`seeded=true`"* — a fix that already existed one layer up. `entropy_init()`
+(`src/kernel/crypto.c`) gathers entropy, then tests `rust_rng_is_seeded()` and **halts the
+machine** if it is false. It runs in `kernel_main` before the first consumer, `aslr_init_seed()`.
 
-So what remains is narrower and worth recording rather than fixing in a hurry: a safety
-property held up by **the order of two calls in `kernel_main`** instead of by the function that
-could enforce it. That is the same shape as the frame-refcount hazard in #192, where a mapped
-frame was kept out of the free page stack only by a refcount nobody had set on purpose. Making
-`fill()` refuse when unseeded is small, costs nothing on the hot path, and is falsifiable by a
-control arm that calls the RNG before `entropy_init()`.
+What remained was narrower: a safety property held up by **the order of two calls in
+`kernel_main`** instead of by the function that could enforce it — the same shape as the
+frame-refcount hazard in #192, where a mapped frame was kept out of the free page stack only by
+a refcount nobody had set on purpose.
+
+**Closed.** `fill()` now returns false and zeroes the caller's buffer while unseeded (S30), and
+the two C wrappers halt on a refusal. `rust_rng_u64()` went with it: returning a `uint64_t`, it
+had nowhere to put a refusal, so it is `rust_rng_u64_checked(uint64_t *)` behind
+`secure_random_u64()`. Witness `make smoke-rng-seed`, falsified by `smoke-rng-seed-control`
+(`RNG_UNSEEDED_LEGACY=1`) and by `cargo test --features rng_unseeded_legacy`. The audit's own
+recommendation is the one thing not taken: a panic inside `no_std` Rust reaches a
+`#[panic_handler]` that is `loop {}`, so it would have hung the machine silently where the C
+side halts with a `PANIC:` line the smoke harness already treats as fatal.
 
 ### 2.9 Measured boot degrades silently in the kernel when no TPM is present
 
@@ -911,8 +919,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **87** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **89** across the three, producing **92** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **88** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **90** across the three, producing **93** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -957,7 +965,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **89 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **90 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

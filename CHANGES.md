@@ -16,6 +16,30 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **The CSPRNG was safe by boot ordering, not by construction; now it refuses (S30).**
+  `RngState::fill` never consulted `seeded`. Asked for output before `entropy_init()` it would
+  have run ChaCha20 under the hardcoded startup key in `RngState::new()` — a **published**
+  constant, because the build is reproducible — and returned it as randomness. Nothing reached
+  it: `entropy_init()` runs before the first consumer and halts if the pool did not take. That
+  is an ordering fact about one call site, not a property of the RNG, and it is what a refactor
+  moves; the same shape as the frame refcount in #192. `fill` now returns false and zeroes the
+  caller's buffer while unseeded, and `rust_rng_u64()` — which returned a `uint64_t` and so had
+  **nowhere to put a refusal** — became `rust_rng_u64_checked(uint64_t *)`, wrapped by
+  `secure_random_u64()`. Both C wrappers halt on a refusal, the way `entropy_init` already did.
+  **No live defect and no finding ID**; the point is that the claim is now the RNG's own.
+  **Falsified three ways**: `smoke-rng-seed-control` (`RNG_UNSEEDED_LEGACY=1`, the check
+  compiled out) serves keystream to a probe placed before the seed, 3 boots in 3, and reddens
+  the base gate; `cargo test --features rng_unseeded_legacy` fails `rng_refuses_before_seeding`
+  and only that test; and an `if true` mutation making `fill` refuse *everything* reddens the
+  base gate on its boot half, which is also the only execution of the C halt path.
+
+- **The Rust staticlib named five of its fifteen source files as prerequisites.** Editing
+  `rng.rs`, `aead.rs`, `ps.rs` or nine others rebuilt nothing and the kernel linked the previous
+  `libhorus_shell.a` — a measurement taken against source the binary does not contain, the same
+  family as the `-D` flags that survived a flagless rebuild. It is `$(wildcard rust/src/*.rs)`
+  now, plus `.build-flags`, so a cargo *feature* change re-runs cargo too. Found while adding
+  the arm above, whose control build would otherwise have been measured on a stale library.
+
 - **`smoke-kstack-park` was a required check that could not fail, and it was failing.** The job
   carried job-level `continue-on-error: true` from its advisory days. #190 promoted it by editing
   `.github/ci-gating.yml` and the ruleset and touched no workflow; #191 then rewrote the job
@@ -69,13 +93,16 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   now documented** (`docs/LIMITATIONS.md` §2.8, §2.9). Ten of its twelve findings duplicate
   existing `[C-5]`, `[C-6]`, `[I-7]` or §5.4 entries and are left where they are rather than
   filed twice.
-  - **§2.8** — `RngState::fill()` does not test `seeded`, so the CSPRNG is safe by the order of
+  - **§2.8** — `RngState::fill()` did not test `seeded`, so the CSPRNG was safe by the order of
     two calls in `kernel_main` rather than by the function that could enforce it. **The audit
     overstated this**: its recommended fix ("panic or refuse output until `seeded=true`")
-    already exists in `entropy_init()`, which halts if unseeded, and runs at `main.c:420`
-    against a first consumer at `:471` — so the claimed weak ASLR/canaries/nonces are not
-    reachable. What remains is the same shape as #192's frame refcount: a safety property held
-    up by a fact nobody enforces.
+    already existed in `entropy_init()`, which halts if unseeded and runs before the first
+    consumer — so the claimed weak ASLR/canaries/nonces were not reachable. What remained was
+    the same shape as #192's frame refcount: a safety property held up by a fact nobody
+    enforces. **Closed 2026-08-23 (S30) — see the entry at the top of this section.** Recorded
+    in the past tense the day it closed, because §2.8 open here and closed in
+    `docs/LIMITATIONS.md` is one finding carrying two statuses, which is the drift these
+    entries exist to prevent.
   - **§2.9** — the kernel proceeds without a TPM, so S11/S12 do not apply rather than failing
     closed. The CI half closed in #197; the kernel half is a design question and is recorded as
     one.

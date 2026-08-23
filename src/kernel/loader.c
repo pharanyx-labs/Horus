@@ -657,7 +657,7 @@ void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stac
     spawn_entropy ^= (uint64_t)get_system_ticks() << 11;
     spawn_entropy ^= (uint64_t)get_current_task();
     spawn_entropy ^= read_tsc();
-    spawn_entropy ^= rust_rng_u64();
+    spawn_entropy ^= secure_random_u64();
 
     aslr_mix_entropy(spawn_entropy);
 

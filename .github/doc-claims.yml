@@ -159,6 +159,14 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: '`RngState::fill\(\)` does not test'
+    reason: >-
+      Since 2026-08-23 it does: fill() returns false and zeroes the caller's
+      buffer while the pool is unseeded (S30, witness make smoke-rng-seed).
+      docs/LIMITATIONS.md §2.8 is closed and CHANGES.md restates it in the past
+      tense. Asserting it in the present tense again would be one finding with
+      two statuses in two files.
+
   - pattern: 'build twice from clean and diff'
     reason: >-
       make reproducible-build builds ONCE and records .build.sha. The

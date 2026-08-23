@@ -148,6 +148,7 @@ static void h_get_line(struct interrupt_frame64 *r) {
 }
 
 /* SYS_GET_SYSINFO (6): copy a zero-padded version string to the caller. */
+#ifdef LEGACY_SYSCALLS_PRESENT
 static void h_sysinfo(struct interrupt_frame64 *r) {
     const char *info = "Horus v0.4 | per-task paging + cspaces | Rust validators";
     /* Copy a zero-padded fixed-size buffer rather than 64 bytes straight
@@ -163,6 +164,7 @@ static void h_sysinfo(struct interrupt_frame64 *r) {
         r->rax = -1;
     }
 }
+#endif /* LEGACY_SYSCALLS_PRESENT */
 
 /* SYS_SBRK (10): increment the program break by `increment` bytes.
  * Returns the OLD break (pointer to start of newly allocated region) on
@@ -377,6 +379,7 @@ static void h_read(struct interrupt_frame64 *r) {
 
 /* SYS_EXEC (14): create a task at an already-loaded image.
  * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
+#ifdef LEGACY_SYSCALLS_PRESENT
 static void h_exec(struct interrupt_frame64 *r) {
     uint32_t load_base = r->rbx;
     uint32_t entry_offset = r->rcx;
@@ -419,6 +422,7 @@ static void h_exec(struct interrupt_frame64 *r) {
 
     r->rax = new_id;
 }
+#endif /* LEGACY_SYSCALLS_PRESENT */
 
 /* SYS_FS_LIST (16): list ramfs entries, honouring the caller's buffer size.
  * Capability (slot 3, READ) is enforced centrally by the dispatch table. */
@@ -770,12 +774,15 @@ static void h_cap_grant(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+#ifdef LEGACY_SYSCALLS_PRESENT
 /* clear screen (5): slot-3 WRITE enforced by the table. */
 static void h_clear(struct interrupt_frame64 *r) {
     clear_screen();
     r->rax = 0;
 }
+#endif /* LEGACY_SYSCALLS_PRESENT */
 
+#if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)
 /* debug command exec (7): only meaningful under DEBUG_SHELL. */
 static void h_debug_exec(struct interrupt_frame64 *r) {
     char cmd[128];
@@ -790,6 +797,7 @@ static void h_debug_exec(struct interrupt_frame64 *r) {
     r->rax = -1;
 #endif
 }
+#endif /* DEBUG_SHELL || LEGACY_SYSCALLS_PRESENT */
 
 /* ramfs open (13): slot-3 READ enforced by the table. */
 
@@ -1082,9 +1090,30 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_KILL]                     = { h_kill,                    SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB/admin in handler */
     [SYS_GET_LINE]                 = { h_get_line,                SC_NONE, 0, SC_ANYTYPE }, /* slot 8 or 3 READ (fallback in handler) */
     [SYS_CAP_MINT]                 = { h_cap_mint,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_mint */
+    /* SYS_CLEAR (5) cleared the kernel VGA text buffer, which console_server
+     * has owned since it took the framebuffer. No userspace wrapper exists
+     * for it anywhere in this tree; a live session's `clear` goes through the
+     * server. Removed 2026-08-23. */
+#ifdef LEGACY_SYSCALLS_PRESENT
     [SYS_CLEAR]                    = { h_clear,                   3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+#endif
+    /* SYS_SYSINFO (6) returned a version string, with no wrapper anywhere in
+     * the tree -- reachable only by issuing the raw number. Removed
+     * 2026-08-23; a version readout that nothing reads is surface, not a
+     * feature. */
+#ifdef LEGACY_SYSCALLS_PRESENT
     [SYS_SYSINFO]                  = { h_sysinfo,                 SC_NONE, 0, SC_ANYTYPE }, /* ambient version string */
+#endif
+    /* SYS_DEBUG_EXEC (7) hands a 127-byte ring-3 string to the in-kernel
+     * debug shell with SC_NONE -- no capability at all. That is the "extra
+     * syscall surface" a DEBUG_SHELL=1 build is documented to carry, so the
+     * entry now exists only in such a build; the ship kernel fails closed at
+     * SYS_ERR_NOSYS. Before 2026-08-23 the ENTRY was unconditional and only
+     * the handler's body was guarded, so the ship kernel dispatched it, did a
+     * user copy, and returned -1 -- a syscall doing work for nobody. */
+#if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)
     [SYS_DEBUG_EXEC]               = { h_debug_exec,              SC_NONE, 0, SC_ANYTYPE }, /* DEBUG_SHELL only */
+#endif
     [SYS_CAP_TRANSFER]             = { h_cap_transfer,            SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_transfer */
     [SYS_CAP_MOVE]                 = { h_cap_move,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_move */
     [SYS_SBRK]                     = { h_sbrk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, bounds-checked */
@@ -1111,7 +1140,32 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #ifdef RAMFS_SLOT3_GATE
     [SYS_OPEN]                     = { h_open,                    3, CAP_RIGHT_READ, SC_ANYTYPE },
 #endif
+    /* SYS_EXEC_LEGACY (14) was a FOURTH door of exactly the shape described
+     * above, and it sat directly beneath this comment for the whole of [H-3].
+     * `{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` -- slot 3, the
+     * legacy CAP_FRAME every task is born holding, any type. It creates a TASK.
+     *
+     * Measured on 2026-08-23 before removing it: `passwdprobe`, running as uid
+     * 1000 and holding no delegated capability, called syscall 14 and got back
+     * task id 2. Not an argument about reachability -- a task, on the wire.
+     *
+     * And the task it makes has no identity of its own: create_task assigns
+     * `state`, never `uid` or `gid`, so a new task carries whatever the slot
+     * held -- 0 on a never-used slot (.bss), the previous occupant's uid on a
+     * reused one. Every legitimate spawn path sets the child's identity from
+     * its parent; this one predates all of them. Since S18, uid 0 confers no
+     * KERNEL authority -- but fs_server enforces file permissions against the
+     * kernel-attested uid (S13/S14), so a uid-0 task holds root's access to the
+     * filesystem, and a reused slot is identity confusion in the other
+     * direction.
+     *
+     * The [H-3] sweep did not miss it through carelessness: this entry was
+     * written `[14]`, a bare number, so it matched none of the `[SYS_NAME]`
+     * patterns the coverage manifest and every audit grep are built on. It was
+     * named in #201 and removed here. */
+#ifdef LEGACY_SYSCALLS_PRESENT
     [SYS_EXEC_LEGACY]              = { h_exec,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+#endif
 #ifdef RAMFS_SLOT3_GATE
     [SYS_RAMFS_CREATE]             = { h_ramfs_create,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
     [SYS_RAMFS_LIST]               = { h_fs_list,                 3, CAP_RIGHT_READ, SC_ANYTYPE },

@@ -37,6 +37,33 @@ performs its own check; the reason is noted per entry in `src/kernel/syscall.c`.
 - A compile-time assertion ties the table size to the highest syscall number, so adding a
   syscall without its entry is a build failure.
 
+> ### Retired: four syscalls with no caller anywhere in the tree
+>
+> `SYS_CLEAR` (5), `SYS_SYSINFO` (6), `SYS_DEBUG_EXEC` (7) and `SYS_EXEC_LEGACY` (14) were
+> **removed on 2026-08-23** and now fail closed at `SYS_ERR_NOSYS`, their numbers reserved the
+> way 38–45 are. None had a wrapper in `include/syscall.h` or a caller in any program under
+> `userspace/`: they were reachable only by issuing the raw number, which any ring-3 task can do.
+>
+> **`SYS_EXEC_LEGACY` is why this is a security change and not a tidy-up.** It read
+> `{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` — cspace slot 3, the legacy
+> `CAP_FRAME` `create_task` installs in every task, any type — and it **creates a task**. That is
+> exactly the shape **[H-3]** closed on four other doors, and it sat directly beneath the comment
+> explaining that shape for the whole of that finding. Measured before removal: `passwdprobe`,
+> running as uid 1000 and holding no delegated capability, called syscall 14 and was handed task
+> id 2.
+>
+> The task it made had no identity of its own — `create_task` assigns `state` and never `uid` or
+> `gid`, so a new task carried whatever the slot held: 0 on a never-used slot, the previous
+> occupant's uid on a reused one. Since **S18** uid 0 confers no *kernel* authority, but
+> `fs_server` enforces file permissions against the kernel-attested uid (**S13**/**S14**).
+>
+> `SYS_DEBUG_EXEC` survives in a `DEBUG_SHELL=1` build, which is documented development-only
+> surface. Before this change its *entry* was unconditional and only the handler body was
+> guarded, so the ship kernel dispatched it, copied 127 bytes from the caller, and returned −1.
+>
+> Witness `make smoke-passwd-probe` (8 checks), falsified by
+> `make smoke-passwd-probe-legacy-control` (`LEGACY_SYSCALLS_PRESENT=1`).
+
 > ### Retired: the in-kernel ramfs surface
 
 `SYS_OPEN` (13), `SYS_RAMFS_CREATE` (15), `SYS_RAMFS_LIST` (16) and `SYS_READ` for
@@ -144,7 +171,6 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 | 2 | `SYS_EXIT` | — | none (self) |
 | 17 | `SYS_WAIT` | `tid` | none (self) |
 | 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` |
-| 14 | `SYS_EXEC_LEGACY` | `load_base`, `entry_offset` | slot 3: WRITE\|EXEC |
 | 19 | `SYS_EXEC` | `load_base`, `entry` | slot 3: WRITE\|EXEC |
 | 20 | `SYS_GETPID` | — | none (self-authorising) |
 | 28 | `SYS_SPAWN` | — | slot 3: WRITE\|EXEC |
@@ -220,9 +246,7 @@ required `syscall-abi` job) fails the build if any wrapper narrows one. Property
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
 | 3 | `SYS_GET_LINE` | `buf` | slot 8 READ, else slot 3 READ |
-| 5 | `SYS_CLEAR` | — | slot 3: WRITE |
-| 6 | `SYS_SYSINFO` | `buf` (64 bytes) | none (ambient version string) |
-| 7 | `SYS_DEBUG_EXEC` | `cmd` | none (`SC_NONE`) — runs the in-kernel debug shell under `DEBUG_SHELL`, returns −1 otherwise |
+| 7 | `SYS_DEBUG_EXEC` | `cmd` | none (`SC_NONE`) — **`DEBUG_SHELL` builds only**; absent from the ship kernel since 2026-08-23 |
 | 11 | `SYS_WRITE` | `fd`, `buf`, `len` | console: none (fd 1 = ambient). `klog`: `CAP_KERNEL_LOG` + WRITE |
 | 12 | `SYS_READ` | `fd`, `buf`, `len` | fd 0 ambient; fd ≥ 3 needs slot 3 READ |
 | 13 | `SYS_OPEN` | `name`, `flags` | slot 3: READ |

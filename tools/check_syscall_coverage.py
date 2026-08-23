@@ -39,7 +39,44 @@ SHIP_MACROS = frozenset()
 _ENTRY = re.compile(r"\[\s*([A-Za-z0-9_]+)\s*\]\s*=\s*\{\s*([A-Za-z0-9_]+)")
 _IFDEF = re.compile(r"#\s*ifdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
 _IFNDEF = re.compile(r"#\s*ifndef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
-_IF_DEFINED = re.compile(r"#\s*if\s+(!)?\s*defined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$")
+_TERM = re.compile(r"^(!)?\s*defined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)$")
+
+
+def _eval_if(expr, defined):
+    """Evaluate a `#if` expression built from defined() terms.
+
+    Supports one operator across the whole expression -- all `||` or all `&&` --
+    over `defined(X)` and `!defined(X)`. Mixing them raises rather than guessing
+    a precedence, which is the same fail-closed rule as an unknown directive:
+    a wrong answer here silently mis-describes which syscalls a build dispatches.
+
+    Returns (live, condition), where `condition` is the canonical text recorded
+    in the manifest -- "DEBUG_SHELL || LEGACY_SYSCALLS_PRESENT" -- so a guard
+    that gains or loses a term fails the build instead of passing quietly.
+    """
+    has_or, has_and = "||" in expr, "&&" in expr
+    if has_or and has_and:
+        raise TableError(
+            f"mixed || and && in a dispatch-table guard: {expr!r} -- split it, "
+            f"or teach _eval_if a precedence deliberately"
+        )
+    parts = [x.strip() for x in expr.split("||" if has_or else "&&")]
+    live, names = [], []
+    for part in parts:
+        m = _TERM.match(part)
+        if not m:
+            raise TableError(
+                f"unsupported term in a dispatch-table guard: {part!r} -- only "
+                f"defined(X) and !defined(X) are evaluated"
+            )
+        neg, name = m.group(1), m.group(2)
+        names.append(("!" if neg else "") + name)
+        live.append((name not in defined) if neg else (name in defined))
+    ok = any(live) if has_or else all(live)
+    return ok, (" || " if has_or else " && ").join(names)
+
+
+_IF = re.compile(r"#\s*if\s+(.+?)\s*$")
 
 
 def _table_lines():
@@ -81,11 +118,10 @@ def scan_table(defined=SHIP_MACROS):
             if m:
                 stack.append((m.group(1) not in defined, m.group(1)))
                 continue
-            m = _IF_DEFINED.match(line)
+            m = _IF.match(line)
             if m:
-                neg, flag = m.group(1), m.group(2)
-                live = (flag in defined) if not neg else (flag not in defined)
-                stack.append((live, flag))
+                live, cond = _eval_if(m.group(1), defined)
+                stack.append((live, cond))
                 continue
             if re.match(r"#\s*else\s*$", line):
                 if not stack:

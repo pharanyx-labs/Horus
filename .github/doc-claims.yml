@@ -159,6 +159,15 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'overstates the ship build by three'
+    reason: >-
+      The 2026-08-22 note beside SYS_OPEN named SYS_OPEN, 15 and 16, but 15 and
+      16 were bare numeric entries the deriver never matched at all -- so the
+      overstatement was SYS_OPEN, SYS_PREEMPT_TRACE and SYS_IRQ_POLICY_INFO, and
+      the deriver was UNDERcounting five others at the same time. Fixed
+      2026-08-23: scan_table evaluates the preprocessor and refuses a bare
+      numeric index, so neither direction can recur.
+
   - pattern: '`RngState::fill\(\)` does not test'
     reason: >-
       Since 2026-08-23 it does: fill() returns false and zeroes the caller's

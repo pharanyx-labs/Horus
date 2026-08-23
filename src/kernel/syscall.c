@@ -1077,14 +1077,14 @@ typedef struct {
  *  argument-dependent check in the handler (block uid==0, register-fs ep slot).
  * ------------------------------------------------------------------------- */
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
-    [0]                            = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
+    [SYS_YIELD]                    = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
     [SYS_EXIT]                     = { h_exit,                    SC_NONE, 0, SC_ANYTYPE }, /* self-terminate */
     [SYS_KILL]                     = { h_kill,                    SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB/admin in handler */
     [SYS_GET_LINE]                 = { h_get_line,                SC_NONE, 0, SC_ANYTYPE }, /* slot 8 or 3 READ (fallback in handler) */
     [SYS_CAP_MINT]                 = { h_cap_mint,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_mint */
-    [5]                            = { h_clear,                   3, CAP_RIGHT_WRITE, SC_ANYTYPE },
-    [6]                            = { h_sysinfo,                 SC_NONE, 0, SC_ANYTYPE }, /* ambient version string */
-    [7]                            = { h_debug_exec,              SC_NONE, 0, SC_ANYTYPE }, /* DEBUG_SHELL only */
+    [SYS_CLEAR]                    = { h_clear,                   3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_SYSINFO]                  = { h_sysinfo,                 SC_NONE, 0, SC_ANYTYPE }, /* ambient version string */
+    [SYS_DEBUG_EXEC]               = { h_debug_exec,              SC_NONE, 0, SC_ANYTYPE }, /* DEBUG_SHELL only */
     [SYS_CAP_TRANSFER]             = { h_cap_transfer,            SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_transfer */
     [SYS_CAP_MOVE]                 = { h_cap_move,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_move */
     [SYS_SBRK]                     = { h_sbrk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, bounds-checked */
@@ -1111,10 +1111,10 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #ifdef RAMFS_SLOT3_GATE
     [SYS_OPEN]                     = { h_open,                    3, CAP_RIGHT_READ, SC_ANYTYPE },
 #endif
-    [14]                           = { h_exec,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_EXEC_LEGACY]              = { h_exec,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
 #ifdef RAMFS_SLOT3_GATE
-    [15]                           = { h_ramfs_create,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
-    [16]                           = { h_fs_list,                 3, CAP_RIGHT_READ, SC_ANYTYPE },
+    [SYS_RAMFS_CREATE]             = { h_ramfs_create,            3, CAP_RIGHT_WRITE, SC_ANYTYPE },
+    [SYS_RAMFS_LIST]               = { h_fs_list,                 3, CAP_RIGHT_READ, SC_ANYTYPE },
 #endif
     [SYS_WAIT]                     = { h_wait,                    SC_NONE, 0, SC_ANYTYPE },
     [SYS_GET_TASK_INFO]            = { h_task_info,               SC_NONE, 0, SC_ANYTYPE }, /* self, or admin/audit in handler */

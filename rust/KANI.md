@@ -14,6 +14,13 @@ The harnesses live under `#[cfg(kani)]` in `capability.rs` and `lib.rs` and are 
 | `revoke_root_nulls_every_descendant` | The completeness half: revoking the root nulls both the child and the grandchild, for every distinct serial triple. Together the two pin revocation to exactly the target's subtree — no ancestors, all descendants. |
 | `revoke_invalidates_recorded_generation` | **Finding 3.3.** For every serial, a capability that recorded the current lineage generation fails `lineage_check` after that serial is revoked (its generation bumped) — the use-after-revoke backstop actually rejects a stale snapshot. |
 | `revoke_does_not_touch_a_distinct_lineage_cell` | The precision half: bumping one serial's generation leaves a *distinct* (non-colliding) serial's recorded generation still valid, so revocation does not spuriously invalidate an unrelated lineage. |
+| `lookup_grants_exactly_the_rights_held` | **Roadmap 3.5.** For every (held, requested) rights pair, `rust_cap_lookup` succeeds **exactly when** the capability holds every requested right. Stated as an equivalence, not an implication, so a lookup that refused too much fails it too — "never grants what it should not" is satisfied by a predicate that always returns null. |
+| `lookup_never_returns_an_empty_slot` | For every rights value, including the degenerate `required_rights == 0` that a "does it hold these" check answers vacuously, an empty slot never satisfies a lookup. |
+| `lookup_refuses_every_out_of_range_slot` | For every slot index past the cspace, lookup refuses rather than reading whatever follows the cspace in memory. |
+| `grant_never_escalates_rights` | For every (source, requested) pair, `rust_cap_grant_into` yields exactly `requested & source` — the same algebra as mint, on the operation that hands authority to a **different task**. |
+| `grant_records_its_parent_and_takes_a_fresh_serial` | For every source serial, the grantee records the grantor as parent (`badge = src.serial`) and takes a fresh derived serial of its own — what makes a later revoke of the grantor sweep the grantee, and what keeps the derivation graph a tree. |
+| `grant_from_an_invalid_source_refuses_and_writes_nothing` | Authority cannot be fabricated: granting from an empty source, or one with the lookup-invalid serial 0, refuses **and leaves the destination untouched**. |
+| `grant_refuses_every_out_of_range_slot` | For every slot index, grant is bounded by the destination cspace. |
 | *(two ELF validators in `lib.rs`)* | The ELF header / load-plan validators reject malformed inputs without out-of-bounds access, over the whole input space. |
 
 Kani also discharges the implicit memory-safety checks on these paths (no overflow, no invalid/null/out-of-bounds dereference) and the loop-unwinding assertions for the revocation closure — several hundred checks, all passing.
@@ -30,6 +37,29 @@ cargo kani setup                 # one-time: downloads the CBMC/Kani bundle
 cd rust && cargo kani            # runs every #[kani::proof] harness
 cargo kani --harness mint_never_escalates_rights   # or a single one
 ```
+
+**Which of these gate a merge is written down in `.github/kani-harnesses.yml`**, and
+`tools/check_kani_harnesses.py` (the required `kani-bounded` job) fails the build if a proof
+is in neither list. Eleven gate; four are excused with a reason, and run only in the manual
+`kani` job.
+
+That split exists because **none of them used to run at all**. The `kani` job is
+`workflow_dispatch`-only *and* carries `continue-on-error: true` on both steps, so for as long
+as it has existed no capability-algebra proof could have reddened a build — the same shape as
+`smoke-kstack-park`, which was required and unfailable at once. A full `cargo kani` really is
+too slow to gate (it exceeded GitHub's 6-hour ceiling), so the answer is to run the subset that
+finishes and say out loud which ones do not.
+
+Measured 2026-08-23, Kani 0.67.0: the gating list takes **319 s** end to end. Per-harness solver
+time sums to about three minutes; the difference is one rebuild per `cargo kani --harness`
+invocation.
+
+**Falsify a proof before trusting it.** Every proof added on 2026-08-23 was checked by mutating
+the property it claims — weakening lookup's rights test to "any overlap", dropping grant's
+`& src.rights`, removing a bound, zeroing the recorded parent — and confirming the harness
+reports `VERIFICATION:- FAILED`. One mutation appeared not to be caught and the *mutation* was
+wrong: a first-occurrence string replace hit `rust_cap_mint`, 77 lines above the intended
+`rust_cap_grant_into`. Aimed correctly, the proof failed as it should.
 
 Expected tail:
 

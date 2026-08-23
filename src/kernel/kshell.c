@@ -421,6 +421,12 @@ void spawn_initial_userspace_init(void) {
          * kernel log to the shell and the boot-module surface to fs_server. */
         cap_install_from_root(pid, CAPSLOT_KERNEL_LOG,  15, 0);  /* root[15] = CAP_KERNEL_LOG  */
         cap_install_from_root(pid, CAPSLOT_BOOT_MODULE, 16, 0);  /* root[16] = CAP_BOOT_MODULE */
+        /* CAP_DEBUG (root[18], roadmap 3.6): observation, and only that. init
+         * delegates it to the shell, which is what `ps` now runs on -- see
+         * launch_shell in userspace/init.c. It replaces a CAP_AUDIT grant that
+         * also carried the authority to rotate the audit chain's keys and read
+         * the log, neither of which the shell ever used. */
+        cap_install_from_root(pid, CAPSLOT_DEBUG, 18, 0);        /* root[18] = CAP_DEBUG */
         /* CAP_IO_DEVICE (root[10]): init delegates this to the console_server it
          * launches (userspace/init.c), so that server can own the console hardware
          * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy. */

@@ -16,6 +16,53 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **Two Kani proofs were excused from gating for a reason nobody had measured.** #205 put the
+  two ELF validators in `manual` on the grounds that they are "corroboration, not the only
+  witness" and that one was "the more expensive of the two". Measured the same day: **2 seconds
+  each**. Both gate now, and the excuses that stood in for a measurement are recorded as such.
+  The two revocation lineage proofs beside them were measured properly and **do not finish in
+  1500 s**, so they stay manual.
+
+  **The end-to-end figure in #205 was also misleading, in an interesting direction.** It said
+  319 s for eleven harnesses; thirteen harnesses now take **196 s**. More proofs, less time —
+  what dominates is the rebuild each `cargo kani --harness` invocation may need, not the solving.
+  Both numbers are recorded rather than one, because either alone would mislead whoever budgets
+  the job next.
+
+- **`ps` required the capability that rotates the audit chain's keys (roadmap 3.6, S32).** The
+  ad-hoc root introspection was already gone — finding I-1 replaced it with a real capability
+  check — but the capability init handed the shell for `ps` was **`CAP_AUDIT`**, which also reads
+  the audit log and rotates its keys. That is a *bundling* mistake rather than an ambient one:
+  the gate was real, it just named far more authority than the caller needed, which is why two
+  ambient-authority sweeps walked past it. `CAP_DEBUG` is observation and nothing else, minted
+  **READ-only** at the root so no delegation can widen it, and the shell now holds that instead.
+  The change **narrows** the shell.
+
+  **The capability graph is observable now**, which is the part of 3.6 that matters: the security
+  argument of this system is that graph, and until now it could be read in the source but not
+  asked of a running machine. `SYS_CAP_ENUMERATE` (97) reports one cspace slot's type, rights,
+  serial, badge and generation; the shell's `capview` walks it and prints the tree. `object` is
+  deliberately withheld — `serial` and `badge` **are** the edges, so derivation is fully visible
+  without naming what each node points at.
+
+  **Falsified** by `CAP_ENUMERATE_UNGATED=1`, which removes the declared capability so the central
+  gate admits everyone; captest — holding no `CAP_DEBUG` — then reads another task's cspace. The
+  arm is aimed at the gate rather than the handler because the handler contains no authority check
+  at all, by design. Positive half: `smoke-session` runs `capview` and requires the shell's own
+  `debug r-----` entry, since "no capabilities anywhere" is what a broken readout looks like.
+
+- **The cspace slot map was written down twice and nothing compared them.** `CAPSLOT_DEBUG` was
+  first added as **18**, which `CAPSLOT_UNTYPED` already was, so init's delegation wrote a
+  `CAP_DEBUG` into the slot it keeps its `CAP_UNTYPED` in. It presented as "the capability did not
+  arrive" — the friendly version; the unfriendly one is a capability arriving where something else
+  was expected and being used as it. `tools/check_capslots.py` refuses a duplicate number within a
+  header and a disagreement between `kernel.h` and `syscall.h`, and is falsified by both.
+
+  The syscall-coverage deriver also needed a fix this exposed: an entry written into **both** arms
+  of an `#ifdef`/`#else` — the shape a control arm takes when it changes a syscall's declared
+  capability rather than removing it — was reported as guarded *and* unclassified at once. Active
+  wins now, because the question that map answers is whether this build dispatches it.
+
 - **Seven new proofs of the capability algebra, and the first Kani job that can fail
   (roadmap 3.5, S31).** `rust_cap_lookup` and `rust_cap_grant_into` had no harnesses at all.
   Proved now, for every input: lookup succeeds **exactly when** the capability holds every

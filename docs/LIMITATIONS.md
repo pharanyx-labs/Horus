@@ -371,7 +371,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **52 of 79** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **53 of 80** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 25 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 

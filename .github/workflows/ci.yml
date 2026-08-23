@@ -352,6 +352,11 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Assert unheld capabilities, post-revoke use and bad input are all refused
         run: make smoke-captest
+      # Roadmap 3.6. Without its declared capability the central gate admits
+      # everyone and the capability graph becomes readable by any ring-3 task --
+      # including captest, which holds no CAP_DEBUG.
+      - name: Control arm — an ungated cspace readout is readable by anyone
+        run: make smoke-captest-capenum-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)
@@ -2516,10 +2521,12 @@ jobs:
   kani-bounded:
     name: "Formal verification of the capability algebra (the proofs that finish)"
     runs-on: ubuntu-latest
-    # The eleven gating harnesses take 319s end to end, measured — about three
-    # minutes of that is solver time (nearly all of it in the two revocation
-    # proofs) and the rest is one rebuild per invocation. The 45-minute bound is
-    # a backstop against a harness that has become pathological, not a budget.
+    # Measured twice on 2026-08-23: 319 s for eleven harnesses cold, 196 s for
+    # thirteen warm. More proofs in less time, because what dominates is the
+    # rebuild each `cargo kani --harness` invocation may need rather than the
+    # solving -- so neither figure alone is a budget. Solver time itself is about
+    # three minutes, nearly all of it the two revocation proofs. The 45-minute
+    # bound is a backstop against a harness that has become pathological.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -2529,6 +2536,12 @@ jobs:
       # nobody wired up -- so it runs before the expensive install.
       - name: Every Kani proof is classified as gating or excused
         run: python3 tools/check_kani_harnesses.py
+      # Cheap and source-only, so it rides along here rather than paying for its
+      # own runner. The cspace slot map is written down twice -- kernel.h and
+      # syscall.h -- and nothing compared them until a new CAPSLOT_DEBUG was
+      # added as 18, which CAPSLOT_UNTYPED already was.
+      - name: The cspace slot map is consistent across both headers
+        run: python3 tools/check_capslots.py
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier

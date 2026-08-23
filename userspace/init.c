@@ -199,9 +199,18 @@ static int launch_shell(void) {
      * it explicitly means it can be withdrawn from the shell without changing who
      * the shell is — which an identity check could never do. */
     if (sys_cap_grant(sh, INIT_KERNEL_LOG, CAPSLOT_KERNEL_LOG) != 0) return -5;
-    /* `ps` reads other tasks' info, which now requires a real capability rather
-     * than uid 0 (finding I-1). CAP_AUDIT is the read-only introspection right. */
-    if (sys_cap_grant(sh, CAPSLOT_AUDIT, CAPSLOT_AUDIT) != 0) return -6;
+    /* `ps` and `capview` read other tasks' info, which requires a real capability
+     * rather than uid 0 (finding I-1). Until 2026-08-23 that capability was
+     * CAP_AUDIT -- which ALSO rotates the audit chain's keys and reads the log,
+     * neither of which the shell ever called. The gate was real; it just named
+     * far more authority than the caller needed, which is a bundling mistake and
+     * survives an ambient-authority sweep untouched.
+     *
+     * CAP_DEBUG (roadmap 3.6) is observation and nothing else, minted READ-only
+     * at the root so no delegation can widen it. Swapping the grant NARROWS the
+     * shell: `ps` still works, and the shell can no longer touch the audit log.
+     * `smoke-session` runs `ps`, so the narrowing is gated rather than asserted. */
+    if (sys_cap_grant(sh, CAPSLOT_DEBUG, CAPSLOT_DEBUG) != 0) return -6;
     /* `useradd` / `userdel`. Until 2026-08-15 these worked because
      * current_user_is_admin() in the kernel accepted uid 0 as an alternative to
      * holding CAP_USER — the last ambient gate from finding I-1, missed because

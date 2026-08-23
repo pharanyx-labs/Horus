@@ -379,6 +379,26 @@ def run():
         s.send("dmesg"); s.expect("mem: physical pool", STEP_TIMEOUT)
         step("dmesg prints the kernel boot log for root")
 
+        # --- 4c. capview prints the capability graph (roadmap 3.6) -------
+        #
+        # The security argument of this system is the capability graph, and
+        # until 3.6 it could be read in the source but not asked of a running
+        # machine. This is the positive half of that gate: the shell holds
+        # CAP_DEBUG, so it can read the graph.
+        #
+        # Assert on the shell's OWN debug capability specifically -- `debug`
+        # with `r-----` rights -- rather than on any output at all. A capview
+        # that printed a header and nothing else would satisfy a looser check,
+        # and "no capabilities anywhere" is exactly what a broken readout looks
+        # like. The read-only rights are part of the claim: CAP_DEBUG observes
+        # and cannot be widened into anything that writes.
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("capview"); s.expect("debug", STEP_TIMEOUT)
+        if "r-----" not in s.buf:
+            raise SessionFail("capview printed a debug capability without "
+                              "read-only rights -- CAP_DEBUG must not carry more")
+        step("capview prints the capability graph, including the shell's own CAP_DEBUG")
+
         # --- 5. log out and log back in as a standard user ---------------
         s.send("logout"); s.expect("Logging out", STEP_TIMEOUT)
         s.expect("horus login:", STEP_TIMEOUT)

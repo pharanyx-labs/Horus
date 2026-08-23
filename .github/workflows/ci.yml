@@ -114,6 +114,27 @@ jobs:
           grep -q 'test_revoke_large_subtree_is_exact_and_spares_independent_peers \.\.\. FAILED' /tmp/legacy.log
           grep -q 'test_revoke_deep_chain_is_fully_closed \.\.\. FAILED' /tmp/legacy.log
           echo "control arm reproduces [I-3]: both exactness tests fail, as required"
+      # Same shape for the CSPRNG seed gate (S30). Exactly one test must fail:
+      # `rng_serves_after_seeding` is the other direction and passing it under
+      # the defect is the point -- an arm that broke every RNG test would prove
+      # nothing about the seed check specifically.
+      - name: Falsify the seed gate against the legacy unseeded control arm
+        run: |
+          status=0
+          cargo test --manifest-path rust/Cargo.toml --release \
+            --features=rng_unseeded_legacy > /tmp/rngseed.log 2>&1 || status=$?
+          cat /tmp/rngseed.log
+          if [ "$status" -eq 0 ]; then
+            echo "::error::rng_refuses_before_seeding PASSED against a fill() with no seed check -- it no longer witnesses S30"
+            exit 1
+          fi
+          grep -q 'rng_refuses_before_seeding \.\.\. FAILED' /tmp/rngseed.log
+          grep -q 'rng_serves_after_seeding \.\.\. ok' /tmp/rngseed.log
+          echo "control arm reproduces the unseeded draw, and only that test fails"
+      - name: Clippy the seed-gate control arm
+        run: |
+          cargo clippy --manifest-path rust/Cargo.toml --release --all-targets \
+            --features=rng_unseeded_legacy -- -D warnings
       # The control arm must also stay clippy-clean, or it rots into something
       # nobody can build and the falsification quietly stops being runnable.
       - name: Clippy the control arm
@@ -1637,6 +1658,36 @@ jobs:
       # is redundant and an arm against it could not fail.
       - name: Control arm — a READ-only delegate must not obtain a writable mapping
         run: make smoke-frame-rights-control
+
+  rng-seed:
+    name: "The CSPRNG refuses to emit keystream before it is seeded"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Both directions in one boot: the probe asks the pool for output before
+      # entropy_init() and must be refused, AND the boot must still reach the
+      # ring-3 shell banner afterwards. Without the second half the gate is
+      # passed by a fill() that refuses everything -- which is not hypothetical,
+      # it is what `if true` in place of `if !self.seeded` produces, and that
+      # mutation was run against this target and does go red (kernel PANIC from
+      # stack_protector_init).
+      - name: An unseeded pool is refused, and a seeded one still serves
+        run: make smoke-rng-seed
+      # The falsifying arm: the cargo feature compiles the check out, the same
+      # probe receives ChaCha20 keystream under the published startup key, and
+      # the base gate above goes red against this build.
+      - name: Control arm — without the check, the unseeded pool serves keystream
+        run: make smoke-rng-seed-control
 
   defect-flags-documented:
     name: "Every defect flag has a row in the table that claims to list them all"

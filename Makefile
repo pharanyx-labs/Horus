@@ -90,7 +90,8 @@ DEFECT_FLAGS = \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED RAMFS_SLOT3_GATE \
-	VFS_FIRST_MATCH VFS_MOUNT_UNGATED
+	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
+	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -508,6 +509,27 @@ KSP_GUARD_INJECT ?= 0
 ifeq ($(KSP_GUARD_INJECT),1)
 CFLAGS += -DKSP_GUARD_INJECT
 endif
+
+# RNG_UNSEEDED_PROBE=1 asks the CSPRNG for output before entropy_init() and
+# reports on the wire whether it was refused -- the instrument for the seed gate
+# (S30), not a defect in itself. Both arms of `make smoke-rng-seed` set it.
+RNG_UNSEEDED_PROBE ?= 0
+ifeq ($(RNG_UNSEEDED_PROBE),1)
+CFLAGS += -DRNG_UNSEEDED_PROBE
+endif
+
+# RNG_UNSEEDED_LEGACY=1 is the defect: it passes the `rng_unseeded_legacy` cargo
+# feature down to the Rust staticlib, compiling the `!self.seeded` check out of
+# RngState::fill so an unseeded pool serves keystream under the published startup
+# key. Unlike every other flag in this list it is not a -D: the defect lives in
+# Rust, so it must reach cargo. It IS stamped into DEFECT FLAGS all the same --
+# a transcript that does not name it is a transcript nobody can audit.
+RNG_UNSEEDED_LEGACY ?= 0
+ifeq ($(RNG_UNSEEDED_LEGACY),1)
+CFLAGS += -DRNG_UNSEEDED_LEGACY
+RUST_FEATURES := rng_unseeded_legacy
+endif
+RUST_FEATURE_ARGS = $(if $(RUST_FEATURES),--features $(RUST_FEATURES))
 
 # KSP_GUARD_ALWAYS=1 makes ksp_is_bogus() reject EVERY stack pointer -- the
 # false-positive mutation that every inject-and-look arm would happily pass.
@@ -1267,7 +1289,7 @@ RUST_LIB := rust/target/$(RUST_TARGET)/release/libhorus_shell.a
 
 .PHONY: rust
 rust:
-	@cargo build --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET)
+	@cargo build --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET) $(RUST_FEATURE_ARGS)
 	@test -f $(RUST_LIB) || (echo "ERROR: $(RUST_LIB) missing"; exit 1)
 
 with-rust:
@@ -1349,8 +1371,20 @@ src/kernel/ata.o: src/kernel/ata.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 ifeq ($(RUST_ENABLED),1)
-$(RUST_LIB): rust/src/lib.rs rust/Cargo.toml rust/src/capability.rs rust/src/crypto.rs rust/src/memory.rs
-	@cargo build --locked --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET) || cargo build --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET)
+# Every .rs, not a hand-maintained subset: this list named five files out of the
+# crate's fifteen, so editing rng.rs (or aead.rs, or ps.rs) rebuilt nothing and
+# the kernel linked the previous staticlib. Same failure as the -D flags that
+# survived a flagless rebuild -- a measurement taken against a source file the
+# binary does not contain. Found while adding the seed gate, whose control arm
+# would have been measured on a stale library.
+#
+# .build-flags is a prerequisite for the same reason the objects have it: a cargo
+# FEATURE is not a file either, so `make RNG_UNSEEDED_LEGACY=1` followed by a
+# plain `make` would leave the defective staticlib linked into a build whose
+# every .c was recompiled without the flag. The flag is stamped into CFLAGS
+# precisely so that this file changes and cargo re-runs.
+$(RUST_LIB): rust/Cargo.toml .build-flags $(wildcard rust/src/*.rs)
+	@cargo build --locked --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET) $(RUST_FEATURE_ARGS) || cargo build --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET) $(RUST_FEATURE_ARGS)
 	@test -f $(RUST_LIB) || (echo "ERROR: $(RUST_LIB) missing"; exit 1)
 endif
 
@@ -2402,6 +2436,51 @@ smoke-ksp-guard-control:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
+		tools/smoke_test.sh boot.iso
+
+# ---- CSPRNG seed gate (S30) ------------------------------------------------
+# RngState::fill refuses to emit keystream from a pool that has never been
+# reseeded from real entropy. Until 2026-08-23 it did not look: the property was
+# held up by boot ordering (entropy_init runs before the first consumer and halts
+# if the pool did not take), which is a fact about one call site rather than
+# anything the RNG enforced.
+#
+# Both arms build with RNG_UNSEEDED_PROBE=1, which asks the pool for 16 bytes
+# immediately before entropy_init() and prints what it got. The probe reports
+# rather than halts, so both arms boot on and the gate reads its answer off the
+# wire in the same shape.
+#
+# The base arm asserts BOTH directions in one boot, deliberately without
+# MARKER_ONLY: the refusal marker must appear, AND the boot must still reach the
+# ring-3 shell banner. A gate that only checked the refusal would be passed by a
+# fill() that refuses everything -- the KSP_GUARD_ALWAYS mutation, one aisle over
+# in this file.
+.PHONY: smoke-rng-seed
+smoke-rng-seed:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1
+	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		REQUIRE_MARKER='RNGPROBE: REFUSED unseeded request' \
+		FAIL_MARKER='RNGPROBE: SERVED unseeded keystream' \
+		tools/smoke_test.sh boot.iso
+
+# The falsifying arm. RNG_UNSEEDED_LEGACY=1 passes the `rng_unseeded_legacy`
+# cargo feature down, compiling the check out of RngState::fill; the same probe
+# then receives ChaCha20 keystream under the published startup key and cannot
+# tell it from randomness. Deterministic straight-line boot code, so a single
+# boot settles it -- unlike the [G-8] arms, there is no race here to sample.
+#
+# MARKER_ONLY, unlike the base arm: this build's whole ASLR and stack-guard story
+# is drawn from an unseeded pool, and what happens to the session afterwards is
+# not what is being measured.
+.PHONY: smoke-rng-seed-control
+smoke-rng-seed-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 RNG_UNSEEDED_LEGACY=1
+	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 RNG_UNSEEDED_LEGACY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='RNGPROBE: SERVED unseeded keystream' \
 		tools/smoke_test.sh boot.iso
 
 # ---- syscall handler-entry coverage ----------------------------------------

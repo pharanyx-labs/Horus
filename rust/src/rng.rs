@@ -119,7 +119,33 @@ impl RngState {
     }
 
     /// Fill `out` with keystream, then rekey (fast key erasure).
-    fn fill(&mut self, out: &mut [u8]) {
+    ///
+    /// Returns false, having zeroed `out`, when the pool has never been reseeded
+    /// from real entropy. Until 2026-08-23 this method did not consult `seeded`
+    /// at all: asked early it would have emitted ChaCha20 keystream under the
+    /// hardcoded startup key in `RngState::new()` -- a published constant, since
+    /// the build is reproducible -- and the caller could not have told that from
+    /// real randomness. Nothing reached it: `entropy_init()` runs before the
+    /// first consumer and halts if the pool did not take. That is an ordering
+    /// fact about one call site, not a property of the RNG, and it is the same
+    /// shape as the frame refcount in #192 -- a safety claim held up by
+    /// something nobody enforces. The gate is here now, so the claim is the
+    /// RNG's own.
+    ///
+    /// Zeroing rather than leaving `out` untouched is deliberate: a caller that
+    /// ignores the return gets an obviously-wrong constant instead of plausible
+    /// keystream. Both C callers check (`secure_random_bytes`,
+    /// `secure_random_u64` in `src/kernel/crypto.c`) and halt.
+    fn fill(&mut self, out: &mut [u8]) -> bool {
+        // CONTROL ARM: `rng_unseeded_legacy` compiles the gate out, restoring the
+        // pre-2026-08-23 method. `rng_refuses_before_seeding` MUST fail under it.
+        #[cfg(not(feature = "rng_unseeded_legacy"))]
+        if !self.seeded {
+            for b in out.iter_mut() {
+                *b = 0;
+            }
+            return false;
+        }
         let mut counter: u32 = 0;
         let mut produced = 0usize;
         while produced < out.len() {
@@ -132,6 +158,7 @@ impl RngState {
         // Rekey: overwrite the key with fresh keystream for forward secrecy.
         let ks = chacha20_block(&self.key, counter, &self.nonce);
         self.key.copy_from_slice(&ks[..32]);
+        true
     }
 }
 
@@ -260,21 +287,44 @@ pub unsafe extern "C" fn rust_rng_add_entropy(data: *const u8, len: usize) {
 }
 
 /// Fill `len` bytes of `out` with CSPRNG output.
+///
+/// Returns false and writes nothing usable if the pool is unseeded (`out` is
+/// zeroed) or the arguments are degenerate. The caller MUST check: on the kernel
+/// side that is `secure_random_bytes`, which halts.
+///
+/// # Safety
+/// `out` must be null or point to `len` writable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn rust_rng_fill(out: *mut u8, len: usize) {
+pub unsafe extern "C" fn rust_rng_fill(out: *mut u8, len: usize) -> bool {
     if out.is_null() || len == 0 {
-        return;
+        return false;
     }
     let s = core::slice::from_raw_parts_mut(out, len);
-    with_rng(|r| r.fill(s));
+    with_rng(|r| r.fill(s))
 }
 
-/// Return one random u64 from the CSPRNG.
+/// Write one random u64 to `*out`. Returns false — leaving `*out` zero — if the
+/// pool is unseeded.
+///
+/// This replaced a `rust_rng_u64() -> u64`, which had nowhere to put a refusal:
+/// every value including zero is a legal draw, so an unseeded pool was
+/// indistinguishable from a seeded one at the ABI. A path that cannot report a
+/// refusal cannot fail closed, so it is gone rather than gated.
+///
+/// # Safety
+/// `out` must be null or point to a writable `u64`.
 #[no_mangle]
-pub unsafe extern "C" fn rust_rng_u64() -> u64 {
+pub unsafe extern "C" fn rust_rng_u64_checked(out: *mut u64) -> bool {
+    if out.is_null() {
+        return false;
+    }
     let mut b = [0u8; 8];
-    with_rng(|r| r.fill(&mut b));
-    u64::from_le_bytes(b)
+    if !with_rng(|r| r.fill(&mut b)) {
+        *out = 0;
+        return false;
+    }
+    *out = u64::from_le_bytes(b);
+    true
 }
 
 /// Report whether the pool has been reseeded from real entropy at least once.
@@ -320,19 +370,54 @@ d083e8a2503c4e",
         );
     }
 
+    // The seed gate, tested on a LOCAL pool rather than the global one: the
+    // global is shared by every test in this binary and cargo runs them in
+    // parallel threads, so "is it seeded yet" is not a question that has a
+    // stable answer there. A fresh RngState is exactly the boot-time state.
+    #[test]
+    fn rng_refuses_before_seeding() {
+        let mut st = RngState::new();
+        let mut out = [0xA5u8; 32];
+        assert!(
+            !st.fill(&mut out),
+            "unseeded pool served keystream from the hardcoded startup key"
+        );
+        assert_eq!(
+            out, [0u8; 32],
+            "a refusal must not leave startup keystream in the caller's buffer"
+        );
+    }
+
+    #[test]
+    fn rng_serves_after_seeding() {
+        // The other direction: the gate must not reject a legal request. A
+        // predicate that refuses everything passes the test above.
+        let mut st = RngState::new();
+        st.add_entropy(b"hardware entropy would go here");
+        let mut out = [0u8; 32];
+        assert!(st.fill(&mut out), "seeded pool refused a legal request");
+        assert_ne!(out, [0u8; 32]);
+    }
+
     #[test]
     fn rng_changes_and_reseed_effective() {
+        // Seed first: since 2026-08-23 an unseeded pool refuses, so without this
+        // the two fills below would both be the zeroed refusal and "they differ"
+        // would be testing nothing. The seed gate itself is
+        // `rng_refuses_before_seeding`.
+        super::with_rng(|r| r.add_entropy(b"reseed-effective test seed"));
+
         // Two consecutive fills must differ (rekeying advances state).
         let mut a = [0u8; 32];
         let mut b = [0u8; 32];
-        super::with_rng(|r| r.fill(&mut a));
-        super::with_rng(|r| r.fill(&mut b));
+        assert!(super::with_rng(|r| r.fill(&mut a)));
+        assert!(super::with_rng(|r| r.fill(&mut b)));
         assert_ne!(a, b);
 
         // Adding entropy must change subsequent output.
         super::with_rng(|r| r.add_entropy(b"some entropy bytes"));
         let mut c = [0u8; 32];
-        super::with_rng(|r| r.fill(&mut c));
+        assert!(super::with_rng(|r| r.fill(&mut c)));
         assert_ne!(b, c);
         assert!(super::with_rng(|r| r.seeded));
     }

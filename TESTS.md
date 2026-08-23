@@ -874,6 +874,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-cr3-reclaim-control` | Control arm. `CR3_RECLAIM_UNGUARDED=1` restores the unconditional free; the free-in-use report must come back. Only 3 boots are needed because it is deterministic — measured 20 in 20 — which is also why the pair asserts different markers: the free-in-use happens every boot while the fault it causes lands on ~20%, so gating this arm on the fault would be flaky for no gain. |
 | `smoke-spawn-owner` | **[G-11]**, property **S21**. A staged program image is spawnable only by the task that armed it. One boot with `SPAWN_OWNER_SELFTEST=1`: the self-test forges a foreign owner on a legitimately staged image and requires `do_spawn` to refuse it, then re-arms honestly and requires the spawn to succeed. Deterministic — the concurrent half of roadmap 1.7 is not reachable in any bootable workload (see the G-10 section), and this gate is about the rule rather than the race. Control arm `SPAWN_OWNER_UNCHECKED=1` (`make smoke-spawn-owner-control`) removes the refusal and spawns the foreign image on every boot. |
 | `smoke-klog-forge` | **[H-2]**, property **S23**. A ring-3 task cannot forge entries into the kernel message ring, nor evict what is already there. One boot with `KLOG_FORGE_SELFTEST=1`: the kernel seeds a marker into `klog` immediately before ring-3 entry, and a probe endowed with `CAP_KERNEL_LOG` pushes 28800 bytes of a distinctive pattern through `SYS_WRITE` fd 1 — more than the 16 KiB ring holds — then reads the ring back through `SYS_DMESG` and requires the pattern **absent** and the marker **present**. Deterministic; nothing here is racy. **The probe is endowed on purpose.** Its capability carries `CAP_RIGHT_READ` and nothing else, because `root_cnode[15]` mints it that way and delegation may only narrow — so it can read the ring to check its own work and is still refused the direction it was not given. A bare task would have proved that a task holding *no* capability cannot write, which is a weaker claim than the one the finding makes. |
+| `smoke-rng-seed` | Property **S30**. The CSPRNG refuses to emit keystream from a pool that has never been reseeded from real entropy. Both arms build with `RNG_UNSEEDED_PROBE=1`, which asks for 16 bytes immediately before `entropy_init()`. Asserts the refusal **and** a boot that still reaches the shell banner, in one run: a `fill()` that refuses everything satisfies the first half and dies on the second. Until 2026-08-23 the property held only by boot ordering — `entropy_init` runs before the first consumer — which is a fact about one call site rather than anything the RNG enforced. |
+| `smoke-rng-seed-control` | Control arm. `RNG_UNSEEDED_LEGACY=1` passes a **cargo feature** down rather than a `-D`, compiling the `!self.seeded` check out of `RngState::fill`; `RNGPROBE: SERVED unseeded keystream` must come back, 3 boots in 3, and `smoke-rng-seed` goes red under the same flag. Paired with the Rust arm in the `rust` job, where `rng_refuses_before_seeding` must fail and `rng_serves_after_seeding` must not. |
 | `smoke-defect-flags` / `-control` | **Build provenance.** Every boot prints `DEFECT FLAGS: <list>` or `DEFECT FLAGS: none`, compiled in from the Makefile's `DEFECT_FLAGS` list. It prints **unconditionally**, including the clean case: an absent line is ambiguous between "clean", "the reporting was removed" and "the boot died early", and only one of those is good news. The control arm builds with `KSP_GUARD_INJECT=1` and requires the flag to be named — without it, a kernel that printed `none` unconditionally would satisfy the gate. |
 | `smoke-defect-flags-rebuild` / `-control` | **The footgun itself.** A `-D` flag is not a prerequisite of an object file, so `make FLAG=1` then `make` leaves every unchanged `.c` compiled with the flag and says nothing. On 2026-08-20 that gave a [G-9] measurement campaign a kernel still carrying `KSP_GUARD_INJECT`: the guard "fired" in 2 boots of 3 with the injected constant, which briefly read as a reproduction of the defect being hunted. It was caught because `-7` is implausibly exact and 67% implausibly high — by luck, not method. The gate builds injected, rebuilds **without** `clean` or the flag, and requires `none`. `BUILD_FLAGS_UNSTAMPED=1` drops the `.build-flags` dependency and requires the stale flag to **survive**, which is what proves the stamp is doing the work. |
 | `gate-pairs` | **The coverage question applied to the gates themselves.** `tools/check_gate_pairs.py` enforces four structural rules, each violated at least once in this tree: a control arm must extend a base gate that exists; a control arm must actually be invoked by CI; a gate must be invoked or listed in `.github/gate-exceptions.yml` with a reason; and an exception must name a real target and give one. Source analysis, no build. Falsified all four ways — orphan arm, unrun arm, stale exception, empty reason. It was written because `smoke-ksp-guard-control` had **no positive counterpart**: an arm proving the guard *could* fire, with nothing asking whether it stayed silent on a legal value. |
@@ -1071,10 +1073,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **87** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **88** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **89** jobs, **92** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **90** jobs, **93** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1126,7 +1128,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **89 required contexts and 3 reasoned exemptions** — read off
+The intended set is **90 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1349,6 +1351,62 @@ would have reported one open door instead of four.
 user-database file are the trailing HMAC tag, not the `salt[16]` + `pass_hash[32]` records,
 because `ramfs_write` takes no offset and rewrites from byte 0 on every call
 (`docs/LIMITATIONS.md` §2.6). The hashes were one bug-fix away from being world-readable.
+
+### `smoke-rng-seed` — the CSPRNG refuses to emit keystream before it is seeded
+
+Property **S30**. `RngState::fill` (`rust/src/rng.rs`) returns false and zeroes the caller's
+buffer while `seeded` is false. Before 2026-08-23 it did not look at `seeded` at all: asked
+early it would have run ChaCha20 under the hardcoded startup key in `RngState::new()` — a
+constant that is **published**, because the build is reproducible — and handed the result back
+as randomness.
+
+**Nothing reached it, and that is the finding.** `entropy_init()` runs at `src/kernel/main.c`
+before the first consumer and halts if the pool did not take, so the property held. But it
+held as an ordering fact about one call site, not as anything the RNG enforced, and an
+ordering fact is precisely what a refactor moves. Same shape as the frame refcount in #192:
+a safety claim propped up by something nobody checks. There was no live defect here and there
+is no finding ID; the gate exists so that the claim is the RNG's own.
+
+**The instrument.** Both arms build with `RNG_UNSEEDED_PROBE=1`, which asks the pool for 16
+bytes immediately before `entropy_init()` and prints which of three things happened —
+`SERVED unseeded keystream`, `REFUSED unseeded request`, or `REFUSED but modified the buffer`.
+The probe calls the FFI directly rather than `secure_random_bytes`, so it can *report* a
+refusal instead of halting on one; both arms then read their answer off the wire in the same
+shape. The pool really is untouched at that point: `entropy_add_sample` is the only other path
+into `add_entropy` and it currently has no callers.
+
+**Both directions in one boot, deliberately without `MARKER_ONLY`.** The base arm requires the
+refusal marker **and** a boot that still reaches the ring-3 shell banner. Without the second
+half the gate is passed by a `fill()` that refuses everything — which is not hypothetical: the
+`if !self.seeded` → `if true` mutation was run against this target and it goes red, on
+`PANIC: CSPRNG refused secure_random_bytes` from `stack_protector_init`, the first consumer
+after the seed. That same run is also the only execution of the C-side halt path, which is
+otherwise unreachable by design.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-rng-seed` | `RNGPROBE: REFUSED unseeded request` present, `SERVED` absent, shell banner reached | passes, **3 boots in 3** |
+| `smoke-rng-seed-control` (`RNG_UNSEEDED_LEGACY=1`) | `RNGPROBE: SERVED unseeded keystream` present | passes, **3 boots in 3**; `smoke-rng-seed` goes red under the same flag |
+| `cargo test --features rng_unseeded_legacy` | `rng_refuses_before_seeding` **FAILED**, `rng_serves_after_seeding` **ok** | as required; the `rust` job asserts both lines, so an arm that broke every RNG test would not pass for it |
+
+Three boots rather than a rate, and as with `smoke-frame` that is a claim about the defect
+rather than about the effort: this is a deterministic property of a build, observed identically
+on every boot, so the sample size that matters is 1 and 3 is corroboration.
+
+**The control arm is a cargo feature, not a `-D`.** The defect lives in Rust, so
+`RNG_UNSEEDED_LEGACY=1` turns into `cargo --features rng_unseeded_legacy`. It is stamped into
+`DEFECT FLAGS` all the same — a transcript that does not name it is one nobody can audit — and
+the staticlib gained `.build-flags` as a prerequisite so that flipping the feature re-runs
+cargo. That prerequisite list also stopped naming five of the crate's source files by hand:
+it did not include `rng.rs`, so editing this very file rebuilt nothing and the kernel linked
+the previous library. The control arm would have been measured against source the binary did
+not contain.
+
+**Why the FFI changed shape.** `rust_rng_u64()` returned a `uint64_t` with no way to signal a
+refusal — every value including zero is a legal draw — so neither of its callers (`loader.c`
+spawn entropy, `aslr.c` stack jitter) could have failed closed even if it wanted to. It is now
+`rust_rng_u64_checked(uint64_t *)`, wrapped by `secure_random_u64()`, which halts. A path that
+cannot report a refusal is not gated by adding a check upstream of it.
 
 ### `smoke-frame` — a frame capability names an object, and a delegate maps only what it holds
 

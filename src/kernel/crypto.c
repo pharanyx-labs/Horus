@@ -436,7 +436,64 @@ void entropy_add_sample(uint64_t s) {
     rust_rng_add_entropy(b, sizeof(b));
 }
 
+/* The CSPRNG refused: it has never been reseeded from real entropy, so every
+ * byte it could hand back is derived from the published startup constant in
+ * RngState::new(). There is no degraded mode to fall back to -- a weak key, a
+ * weak nonce and a predictable ASLR offset are each worse than not booting -- so
+ * this ends the same way entropy_init's own check does. "PANIC" is in the smoke
+ * harness's FAULT_RE, so a refusal anywhere turns CI red rather than scrolling
+ * past.
+ *
+ * Unreachable in a correct boot: entropy_init() runs at main.c:420 and halts if
+ * the pool did not take, before the first consumer. That ordering is why the
+ * Rust side went four months without the check at all; it is a fact about one
+ * call site, not a property of the RNG, and this is what a violation of it now
+ * costs. Reachable on demand via RNG_UNSEEDED_PROBE -- see rng_unseeded_probe. */
+static void __attribute__((noreturn)) rng_refused(const char *site) {
+    print("PANIC: CSPRNG refused ");
+    print(site);
+    print(": asked for output before seeding; halting\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
 void secure_random_bytes(void *out, size_t n) {
     if (!out || n == 0) return;
-    rust_rng_fill((uint8_t *)out, n);
+    if (!rust_rng_fill((uint8_t *)out, n)) rng_refused("secure_random_bytes");
 }
+
+/* One draw, for the callers that want a word rather than a buffer. Exists
+ * because the FFI it replaced (rust_rng_u64) returned the value with no way to
+ * signal a refusal: an unseeded pool and a seeded one were indistinguishable at
+ * the ABI, so neither caller could have failed closed even if it wanted to. */
+uint64_t secure_random_u64(void) {
+    uint64_t v = 0;
+    if (!rust_rng_u64_checked(&v)) rng_refused("secure_random_u64");
+    return v;
+}
+
+#ifdef RNG_UNSEEDED_PROBE
+/* [defect arm] Asks the pool for output BEFORE entropy_init(), from main.c, and
+ * reports which of the three things happened. It calls the FFI directly rather
+ * than secure_random_bytes so that it can report a refusal instead of halting on
+ * one -- the point is to make the outcome legible on the wire in both arms of
+ * `make smoke-rng-seed`, not to prove that a halt halts.
+ *
+ * Nothing seeds the pool before this runs: entropy_add_sample is the only other
+ * path into add_entropy and it currently has no callers, so the state here is
+ * exactly RngState::new(). */
+void rng_unseeded_probe(void) {
+    uint8_t b[16];
+    for (size_t i = 0; i < sizeof(b); i++) b[i] = 0xA5;
+
+    bool served = rust_rng_fill(b, sizeof(b));
+
+    uint8_t any = 0;
+    for (size_t i = 0; i < sizeof(b); i++) any |= b[i];
+
+    if (served)     print("RNGPROBE: SERVED unseeded keystream\n");
+    else if (any)   print("RNGPROBE: REFUSED but modified the buffer\n");
+    else            print("RNGPROBE: REFUSED unseeded request\n");
+
+    secure_zero(b, sizeof(b));
+}
+#endif

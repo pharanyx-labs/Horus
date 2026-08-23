@@ -241,6 +241,28 @@ tree passed a stack buffer.
 Wrappers now pass pointers through `SYSCALL_UPTR()`, and `tools/check_syscall_abi.py` (the
 required `syscall-abi` job) fails the build if any wrapper narrows one. Property **S24**.
 
+## Observation (roadmap 3.6)
+
+| # | Name | Arguments | Authorisation *(as checked)* |
+|---|---|---|---|
+| 97 | `SYS_CAP_ENUMERATE` | `tid`, `slot`, `struct cap_info *` | `CAP_DEBUG` at `CAPSLOT_DEBUG` (19), READ |
+
+Reads one slot of one task's cspace: type, rights, serial, badge, generation, and whether the
+slot is occupied. The shell's `capview` walks it and prints the capability graph.
+
+**`object` is deliberately not reported.** For most types it is an index into a kernel table —
+a frame-table index since **[F-2.1]**, an endpoint index, a task id — but "most" is not a
+security argument, and the legacy `CAP_FRAME` in slot 3 still carries `USER_AREA_BASE`, an
+address. Withholding it costs the graph nothing that matters: `serial` and `badge` **are** the
+edges, so derivation is fully visible without naming what each node points at. Same reasoning
+suppresses `cr3` and another task's `eip` (finding **[I-4]**).
+
+**A dead task reports every slot empty rather than an error**, so a caller cannot use this as a
+task-existence oracle it was not otherwise granted.
+
+`CAP_DEBUG` is minted **READ-only** in the root cnode. Rights only ever narrow, so no delegate
+can hold a `CAP_DEBUG` that writes — observation is not control.
+
 ## Console and basic I/O
 
 | # | Name | Arguments | Authorisation |

@@ -94,7 +94,7 @@ DEFECT_FLAGS = \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
-	LEGACY_SYSCALLS_PRESENT
+	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -542,6 +542,14 @@ endif
 # SYS_EXEC_LEGACY (14). The last one is the reason the flag exists -- it creates
 # a TASK, authorised on cspace slot 3, which is the legacy CAP_FRAME every task
 # is born holding. `make smoke-passwd-probe` must go red under it.
+# CAP_ENUMERATE_UNGATED=1 removes SYS_CAP_ENUMERATE's declared capability, so
+# the central gate admits every caller and the capability graph becomes readable
+# by any ring-3 task. `make smoke-captest` must go red under it (roadmap 3.6).
+CAP_ENUMERATE_UNGATED ?= 0
+ifeq ($(CAP_ENUMERATE_UNGATED),1)
+CFLAGS += -DCAP_ENUMERATE_UNGATED
+endif
+
 LEGACY_SYSCALLS_PRESENT ?= 0
 ifeq ($(LEGACY_SYSCALLS_PRESENT),1)
 CFLAGS += -DLEGACY_SYSCALLS_PRESENT
@@ -2399,6 +2407,20 @@ smoke-newlib-dotdot-control:
 # Build with the gated capability/syscall conformance test and require its
 # marker. The checks are overwhelmingly negative -- a kernel that granted
 # everything would fail this, which a "does the call work" test would not catch.
+# Control arm for the capability-graph readout (roadmap 3.6). Without the
+# declared capability the central gate admits everyone, and captest -- which
+# holds no CAP_DEBUG -- reads another task's cspace. The FAIL marker names that
+# specific check, so an arm reddening captest for any other reason does not
+# satisfy it.
+.PHONY: smoke-captest-capenum-control
+smoke-captest-capenum-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_ENUMERATE_UNGATED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_ENUMERATE_UNGATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL cap-enumerate-without-cap-debug' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest
 smoke-captest:
 	@$(MAKE) --no-print-directory clean

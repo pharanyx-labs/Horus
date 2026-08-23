@@ -159,6 +159,16 @@ def scan_table(defined=SHIP_MACROS):
             guarded[index] = next(flag for ok, flag in reversed(stack) if not ok)
     if stack:
         raise TableError("unterminated conditional in the dispatch table")
+    # An entry written into BOTH arms of an #ifdef/#else -- the shape a control
+    # arm takes when it changes a syscall's declared capability rather than
+    # removing it -- is ACTIVE in this build, and was also seen in the dead arm.
+    # Active wins: the question this map answers is "does this build dispatch
+    # it", and it does. Without this the entry is reported as guarded AND
+    # unclassified at once, which is how SYS_CAP_ENUMERATE's own control arm
+    # first failed the checker on 2026-08-23.
+    for name in list(guarded):
+        if name in active:
+            del guarded[name]
     return active, guarded
 
 

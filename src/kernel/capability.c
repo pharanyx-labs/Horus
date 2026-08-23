@@ -225,6 +225,18 @@ void cap_init(void) {
     root_cnode[17].serial = 0xC0DE0011U;
     root_cnode[17].generation = 0;
 
+    /* CAP_DEBUG (roadmap 3.6): observation, and nothing else. READ-only at the
+     * root, so no delegation can widen it -- rights only ever narrow, so a
+     * primordial that never held WRITE cannot produce a descendant that does.
+     * init delegates it to the shell, which is what lets `ps` and `capview`
+     * work without the CAP_AUDIT that also rotates the audit chain's keys. */
+    root_cnode[18].type   = CAP_DEBUG;
+    root_cnode[18].rights = CAP_RIGHT_READ;
+    root_cnode[18].object = 0;
+    root_cnode[18].badge  = 0;
+    root_cnode[18].serial = 0xC0DE0012U;
+    root_cnode[18].generation = 0;
+
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;

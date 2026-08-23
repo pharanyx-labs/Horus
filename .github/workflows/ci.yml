@@ -2540,7 +2540,12 @@ jobs:
       # cache rather than two.
       - name: Install the pinned nightly and Miri
         run: |
-          rustup toolchain install nightly-2025-11-21 --profile minimal --component miri rust-src
+          # One --component per component: `--component miri rust-src` reads
+          # `rust-src` as a second TOOLCHAIN name and fails with "invalid
+          # toolchain name". Reproduced locally after CI caught it, which is the
+          # only reason this line is written the long way.
+          rustup toolchain install nightly-2025-11-21 --profile minimal \
+            --component miri --component rust-src
       # No continue-on-error. Miri is the only check in this tree that looks for
       # undefined behaviour, and the `unsafe` it exists for is the C FFI boundary
       # in the security core.

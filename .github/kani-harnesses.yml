@@ -1,0 +1,59 @@
+# Which Kani proofs gate a merge, which do not, and why.
+#
+# EVERY `#[kani::proof]` harness in rust/src must appear in exactly one of the
+# two lists below. `tools/check_kani_harnesses.py` fails the build if any is in
+# neither, or in both, or names a harness that no longer exists — so adding a
+# proof forces the "does this run?" question at review time instead of silently
+# answering it.
+#
+# This exists because the answer had been "no" for every harness. The `kani` job
+# was `workflow_dispatch`-only AND carried `continue-on-error: true` on both of
+# its steps: it never ran on a pull request, and could not have failed one if it
+# had. Thirteen proofs of the capability algebra, none of them load-bearing —
+# the same shape as [C-6] (a required list nothing checked) and as
+# `smoke-kstack-park` (a gate that could not fail), applied to formal
+# verification.
+#
+# The full run really is too slow to gate: a whole `cargo kani` exceeded
+# GitHub's 6-hour job ceiling and stalled the pipeline, which is why it was
+# demoted in the first place. The answer is not "run everything" but "run the
+# ones that finish, and say out loud which ones do not".
+#
+# Times below are per-harness SOLVER time, measured on 2026-08-23 on the
+# maintainer's machine with Kani 0.67.0. They sum to about three minutes — but
+# the gating list run end to end, the way the job runs it, takes **319 seconds**,
+# because each `cargo kani --harness` invocation rebuilds. Quote the 319, not the
+# sum: the difference is the kind of gap that turns a "three-minute job" into a
+# timeout nobody predicted.
+
+# Merge-gating: run on every pull request by the `kani-bounded` job.
+gating:
+  - serial_never_reserved_or_zero                            # 0s
+  - mint_never_escalates_rights                              # 1s
+  - lookup_grants_exactly_the_rights_held                    # 0s
+  - lookup_never_returns_an_empty_slot                       # 1s
+  - lookup_refuses_every_out_of_range_slot                   # 1s
+  - grant_never_escalates_rights                             # 1s
+  - grant_records_its_parent_and_takes_a_fresh_serial        # 0s
+  - grant_from_an_invalid_source_refuses_and_writes_nothing  # 1s
+  - grant_refuses_every_out_of_range_slot                    # 1s
+  - revoke_descendant_never_nulls_ancestors                  # 66s
+  - revoke_root_nulls_every_descendant                       # 120s
+
+# Not gating, with a reason. These run in the manual `kani` job.
+manual:
+  revoke_invalidates_recorded_generation: >-
+    Serial-keyed lineage proof: it ranges over the whole serial space against the
+    LINEAGE_GEN table, which builds a large SAT instance. Together with the one
+    below this pair is what pushed a full `cargo kani` past GitHub's 6-hour job
+    ceiling. Still verified on demand.
+  revoke_does_not_touch_a_distinct_lineage_cell: >-
+    The precision half of the same lineage pair, and the same cost for the same
+    reason: two independent symbolic serials indexing the same table.
+  elf_header_validation_is_sound: >-
+    Lives in lib.rs over the ELF header validator rather than the capability
+    algebra. The load path already has a gating fuzz target and unit tests over
+    adversarial inputs; the proof is corroboration, not the only witness.
+  elf_load_plan_is_sound: >-
+    As above, for the load planner. Symbolic phdr contents make it the more
+    expensive of the two.

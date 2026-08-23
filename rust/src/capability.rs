@@ -1838,6 +1838,185 @@ mod kani_proofs {
         assert!(cs[2].typ == CAP_NULL, "the revoked capability itself must be nulled");
     }
 
+    /// ROADMAP 3.5: lookup refuses any request for rights the capability does
+    /// not hold, for EVERY (held, requested) pair -- 2^64 combinations, where
+    /// the unit tests sample a handful.
+    ///
+    /// This is the monotonicity the whole capability graph rests on: every gate
+    /// in the kernel is `cap_lookup(slot, needed)`, so if lookup could ever
+    /// return a capability missing a requested right, every gate above it would
+    /// be decorative. The property is stated as an equivalence, not an
+    /// implication, so a lookup that refused too MUCH would fail it too -- a
+    /// predicate that returns null always satisfies "never grants what it should
+    /// not", and that mutation is what killed the resume-guard's first shape.
+    #[kani::proof]
+    fn lookup_grants_exactly_the_rights_held() {
+        let held: u32 = kani::any();
+        let want: u32 = kani::any();
+
+        let mut cs = [Capability {
+            typ: 1, rights: held, object: 0, badge: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0,
+        }; 1];
+
+        let got = unsafe { rust_cap_lookup(cs.as_mut_ptr(), 1, 0, want) };
+        let sufficient = (held & want) == want;
+        assert!(
+            got.is_null() != sufficient,
+            "lookup must succeed exactly when the capability holds every requested right"
+        );
+    }
+
+    /// ROADMAP 3.5: an EMPTY slot is never a capability, whatever is asked of
+    /// it -- including the degenerate `required_rights == 0`, which is the case
+    /// a "does it hold these rights" check answers vacuously. A caller asking
+    /// for no particular rights is asking "is there a capability here", and a
+    /// null slot must answer no.
+    #[kani::proof]
+    fn lookup_never_returns_an_empty_slot() {
+        let want: u32 = kani::any();
+        let rights: u32 = kani::any();
+        let mut cs = [Capability {
+            typ: CAP_NULL, rights, object: 0, badge: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0,
+        }; 1];
+        assert!(
+            unsafe { rust_cap_lookup(cs.as_mut_ptr(), 1, 0, want) }.is_null(),
+            "an empty slot must never satisfy a lookup"
+        );
+    }
+
+    /// ROADMAP 3.5: lookup is bounded by the cspace it is given, for every slot
+    /// index -- including ones past `cspace_size` and past `CNODE_SIZE`. An
+    /// out-of-range slot is a read of whatever follows the cspace in memory,
+    /// which is how a "capability" gets fabricated out of adjacent kernel state.
+    #[kani::proof]
+    fn lookup_refuses_every_out_of_range_slot() {
+        let slot: u32 = kani::any();
+        kani::assume(slot >= 4);   // the array below is 4 entries
+
+        let mut cs = [Capability {
+            typ: 1, rights: !0u32, object: 0, badge: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0,
+        }; 4];
+        assert!(
+            unsafe { rust_cap_lookup(cs.as_mut_ptr(), 4, slot, 0) }.is_null(),
+            "a slot outside the cspace must never resolve"
+        );
+    }
+
+    /// ROADMAP 3.5: GRANT never widens, for every (source rights, requested)
+    /// pair. Grant is the cross-cspace delegation path -- the one that hands
+    /// authority to a DIFFERENT task -- so this is the same algebraic property
+    /// as `mint_never_escalates_rights`, on the operation where a mistake leaves
+    /// the extra authority in someone else's hands.
+    #[kani::proof]
+    fn grant_never_escalates_rights() {
+        let src_rights: u32 = kani::any();
+        let req_rights: u32 = kani::any();
+
+        let src = Capability {
+            typ: 1, rights: src_rights, object: 7, badge: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0,
+        };
+        let mut dest = [Capability {
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+        }; 8];
+        let mut next: u32 = MIN_DERIVED_SERIAL;
+
+        let ok = unsafe {
+            rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 8, 5,
+                                req_rights, &mut next as *mut u32)
+        };
+        assert!(ok, "granting a live capability into an in-range slot must succeed");
+        assert!(dest[5].rights & !src_rights == 0, "granted rights must be a subset of the source's");
+        assert!(dest[5].rights == (req_rights & src_rights), "granted rights must be requested AND source");
+    }
+
+    /// ROADMAP 3.5: GRANT keeps the derivation tree well-formed, for every
+    /// source serial. The grantee records the grantor as its parent and takes a
+    /// fresh serial of its own, which is what makes a later revoke of the
+    /// grantor sweep the grantee -- and what stops the graph acquiring a cycle,
+    /// since a fresh serial is strictly above the primordial floor and cannot
+    /// equal a parent that already exists.
+    #[kani::proof]
+    fn grant_records_its_parent_and_takes_a_fresh_serial() {
+        let parent_serial: u32 = kani::any();
+        kani::assume(parent_serial != 0);
+
+        let src = Capability {
+            typ: 3, rights: 0x3f, object: 9, badge: 0,
+            serial: parent_serial, generation: 0,
+        };
+        let mut dest = [Capability {
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+        }; 4];
+        let mut next: u32 = kani::any();
+
+        let ok = unsafe {
+            rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 4, 2,
+                                !0u32, &mut next as *mut u32)
+        };
+        assert!(ok);
+        assert!(dest[2].badge == parent_serial, "the grantee must record its grantor as parent");
+        assert!(dest[2].serial >= MIN_DERIVED_SERIAL, "the grantee's serial must be a derived one");
+        assert!(dest[2].serial != 0, "a serial-0 capability is invalid at lookup");
+        assert!(dest[2].object == src.object, "grant must name the same object");
+        assert!(dest[2].typ == src.typ, "grant must not change the capability's type");
+    }
+
+    /// ROADMAP 3.5: authority cannot be fabricated from nothing. Granting from
+    /// an EMPTY source, or one whose serial is 0 (the lookup-invalid state a
+    /// revoked slot is left in), must refuse and must leave the destination
+    /// untouched -- for every rights value the caller asks for.
+    #[kani::proof]
+    fn grant_from_an_invalid_source_refuses_and_writes_nothing() {
+        let req_rights: u32 = kani::any();
+        let typ: u32 = kani::any();
+        let serial: u32 = kani::any();
+        // Either the source is empty, or its serial is the invalid 0.
+        kani::assume(typ == CAP_NULL || serial == 0);
+
+        let src = Capability { typ, rights: !0u32, object: 1, badge: 0, serial, generation: 0 };
+        let mut dest = [Capability {
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+        }; 2];
+        let mut next: u32 = MIN_DERIVED_SERIAL;
+
+        let ok = unsafe {
+            rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 2, 1,
+                                req_rights, &mut next as *mut u32)
+        };
+        assert!(!ok, "grant from an invalid source must refuse");
+        assert!(dest[1].typ == CAP_NULL, "a refused grant must write nothing");
+        assert!(dest[1].rights == 0, "a refused grant must leave no rights behind");
+    }
+
+    /// ROADMAP 3.5: grant is bounded by the destination cspace, for every slot
+    /// index. Same class as the lookup bound: an out-of-range write is a write
+    /// into whatever follows the grantee's cspace.
+    #[kani::proof]
+    fn grant_refuses_every_out_of_range_slot() {
+        let slot: u32 = kani::any();
+        kani::assume(slot >= 4);
+
+        let src = Capability {
+            typ: 1, rights: !0u32, object: 0, badge: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0,
+        };
+        let mut dest = [Capability {
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+        }; 4];
+        let mut next: u32 = MIN_DERIVED_SERIAL;
+        assert!(
+            !unsafe {
+                rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 4, slot,
+                                    !0u32, &mut next as *mut u32)
+            },
+            "a grant outside the destination cspace must refuse"
+        );
+    }
+
     /// The other half: revocation is COMPLETE downward. Revoking the root of a
     /// derivation chain nulls every descendant — the child and the grandchild —
     /// for every distinct serial triple, so no derived authority can outlive its

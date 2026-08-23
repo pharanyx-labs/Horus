@@ -16,6 +16,34 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **Seven new proofs of the capability algebra, and the first Kani job that can fail
+  (roadmap 3.5, S31).** `rust_cap_lookup` and `rust_cap_grant_into` had no harnesses at all.
+  Proved now, for every input: lookup succeeds **exactly when** the capability holds every
+  requested right — an equivalence, so a lookup that refused too much fails it too, which is the
+  mutation a one-directional property misses — and never resolves an empty or out-of-range slot;
+  grant yields exactly `requested & source`, records its grantor as the grantee's parent with a
+  fresh derived serial, refuses an invalid source **without writing anything**, and is bounded by
+  the destination cspace.
+
+  **The proofs did not gate anything, and had not since they were written.** The `kani` job is
+  `workflow_dispatch`-only *and* carries `continue-on-error: true` on both of its steps: it never
+  ran on a pull request and could not have failed one. Thirteen proofs of the capability algebra,
+  none load-bearing — the `smoke-kstack-park` shape (required and unfailable at once) applied to
+  formal verification. `.github/kani-harnesses.yml` now classifies every harness, the new required
+  `kani-bounded` job runs the eleven that finish (**319 s**, measured end to end — the per-harness
+  solver times sum to about three minutes, and the gap is one rebuild per invocation), and
+  `tools/check_kani_harnesses.py` fails the build on a proof in neither list. Four are excused with
+  reasons: the serial-keyed lineage pair and the two ELF validators, which is what pushed a full
+  `cargo kani` past GitHub's 6-hour ceiling.
+
+  **Every new proof was falsified by mutation** — weakening lookup's rights test to "any overlap",
+  dropping grant's `& src.rights`, zeroing the recorded parent, removing a bound — and confirmed to
+  report `VERIFICATION:- FAILED`. One mutation looked uncaught and **the mutation was wrong**: a
+  first-occurrence string replace hit `rust_cap_mint`, 77 lines above the intended
+  `rust_cap_grant_into`. That is the second time in one day that trap produced a falsely reassuring
+  arm; aimed correctly, the proof failed as it should. The checker itself was falsified four ways,
+  one per rule.
+
 - **A fifth door of [H-3]'s shape: syscall 14 created a task for any caller.** `SYS_EXEC_LEGACY`
   read `{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` — cspace slot 3, the legacy
   `CAP_FRAME` `create_task` installs in *every* task, any type — on a syscall that **creates a

@@ -747,12 +747,20 @@ Three smaller consequences of the same design:
   equally, a child inherits nothing. Namespace inheritance across `spawn` is roadmap 2.3.
 - `HVFS_MAX_MOUNTS` is 4. It bounds how many mounts a task can NAME, which is not a security
   property; the capabilities it holds are.
-- **`hvfs` has no users in the ship build yet.** `posix.c`, `shell.c` and `fsclient.c` still
-  carry their own private walkers, which have already drifted (only one handles `..`). `hvfs`
-  is an archive member, so unused means unlinked and it costs no bytes — but a library nobody
-  calls is surface with no owner, and the migration is the next piece of work rather than an
-  optional tidy-up. `posix.c` additionally needs a link-path decision reversed: it is on the
-  newlib path, where `libhorus.a` is deliberately not linked.
+- ~~**`hvfs` has no users in the ship build yet.**~~ **Migrated 2026-08-23.** `posix.c` and
+  `shell.c` resolve paths through `hvfs_walk` / `hvfs_walk_parent`, so the shell, the libc and
+  every coreutil share one walker. `libhorus.a` is linked into the newlib programs to make that
+  possible; the collision the Makefile note feared does not arise, since nothing in `libhorus.o`
+  is named `memcpy`.
+
+  **This entry was wrong about `fsclient.c`**, which never had a walker: it does flat
+  single-name lookups in the root, over a private `rpc()` with bounded retry and its own
+  selftest markers that `hvfs_rpc` deliberately does not provide. It is left alone.
+
+  **What the migration found** is recorded in `docs/ROADMAP.md` §2.4: `..` did not work below a
+  mount root in any client, because `hvfs` asked the server for a `..` *entry* and `fs_server`
+  creates none. Dead from #195 until 2026-08-23, and invisible because the only test for `..`
+  used the pinned case, which returns before the lookup.
 
 ### 2.8 ~~The CSPRNG is safe by boot ordering, not by construction~~ — CLOSED 2026-08-23
 

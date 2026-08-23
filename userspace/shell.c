@@ -2,6 +2,7 @@
 #include "fs_proto.h"
 #include "console_proto.h"
 #include "malloc.h"
+#include "libhorus.h"   /* hvfs: the mount table and the one path walker */
 
 /* Wipe a password buffer so it does not outlive its use on the stack. Volatile,
  * because the plain `for (i) buf[i] = 0` this replaces is a dead store to a
@@ -143,6 +144,10 @@ static int fss_connect(void) {
     int rc = sys_connect_fs_server(fss_ep_slot, CAP_R_W);
     if (rc == 0) {
         fss_connected = 1;
+        /* One mount, "/" on the endpoint just minted. hvfs_mount probes the
+         * slot, so it must follow the connect; it is idempotent-by-refusal
+         * (HVFS_ERR_EXIST) if this runs twice. */
+        (void)hvfs_mount("/", CAPSLOT_FS_EP, 0u);
         return 0;
     }
     return -1;
@@ -246,25 +251,35 @@ static int sh_normalize(const char *arg, char *out) {
 }
 
 /* Walk an absolute path from the root; every component must resolve to a
- * directory. Returns the final inode, or (uint32_t)-1 on any failure. */
+ * directory. Returns the final inode, or (uint32_t)-1 on any failure.
+ *
+ * `hvfs_walk` does the walking since 2026-08-23 -- this was one of the three
+ * private walkers the namespace library was written to replace, and the one
+ * whose divergence was visible: it resolved "." and ".." only because sh_norm
+ * had already rewritten them out of the STRING, so every caller that reached it
+ * without that pass (and posix.c's open/stat/rename, which never had one) fed
+ * ".." to the server as a literal name. The library resolves them itself, and
+ * pins ".." at the mount root.
+ *
+ * The type check stays here rather than moving into the library: "must be a
+ * directory" is this caller's requirement, not a property of path resolution,
+ * and hvfs_walk deliberately resolves a path to whatever object it names. */
 static uint32_t sh_walk_abs_dir(const char *abspath) {
-    uint32_t ino = 0;                 /* root */
-    const char *p = abspath;
-    while (*p == '/') p++;
-    while (*p) {
-        char comp[FS_NAME_MAX];
-        int  c = 0;
-        while (*p && *p != '/' && c < FS_NAME_MAX - 1) comp[c++] = *p++;
-        comp[c] = '\0';
-        while (*p == '/') p++;
-        if (c == 0) continue;
-        struct fs_request  rq = {0};
-        struct fs_response rp;
-        rq.op = FS_OP_LOOKUP; rq.dir_ino = ino; fss_strcpy(rq.name, comp);
-        if (fss_call(&rq, &rp) < 0 || rp.rc < 0) return (uint32_t)-1;
-        if (rp.type != FS_TYPE_DIR) return (uint32_t)-1;
-        ino = rp.ino;
-    }
+    if (fss_connect() != 0) return (uint32_t)-1;
+
+    int      slot;
+    uint32_t ino;
+    char     leaf[FS_NAME_MAX];
+    if (hvfs_walk(abspath, 0u, CAPSLOT_FS_EP, &slot, &ino, leaf) != 0)
+        return (uint32_t)-1;
+
+    /* Confirm the object is a directory. The walker reports what the path
+     * names; a file named /bin would otherwise be handed back as one. */
+    struct fs_request  rq = {0};
+    struct fs_response rp;
+    rq.op = FS_OP_STAT; rq.ino = ino;
+    if (hvfs_rpc(slot, &rq, &rp) != 0)  return (uint32_t)-1;
+    if (rp.type != FS_TYPE_DIR)         return (uint32_t)-1;
     return ino;
 }
 

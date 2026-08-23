@@ -16,6 +16,31 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **`hvfs` has users: the libc and the shell walk paths through it (roadmap 2.4).** `posix.c`
+  and `shell.c` carried private copies of the walker the namespace library was written to
+  replace, and the copies had drifted — the shell resolved `.` and `..` only because it rewrote
+  the *string* first, which no libc program goes through, so `open("/a/../a/f")` from any
+  newlib program failed with `ENOENT`. Both now call `hvfs_walk` / `hvfs_walk_parent`, and
+  `libhorus.a` is linked into the newlib programs to make that possible: the Makefile note
+  refusing that link feared "a second memcpy under a different name", and nothing in
+  `libhorus.o` is named `memcpy` (the symbols are `u`- and `k`-prefixed). ~200 bytes per binary,
+  one walker instead of two. The reversed decision is recorded where the old note stood.
+
+  **`fsclient.c` was never one of the three walkers**, and three documents said it was. It has
+  no walker: flat single-name lookups over a private `rpc()` whose bounded retry and selftest
+  markers `hvfs_rpc` deliberately lacks. Corrected rather than migrated — changing working code
+  to make a sentence true is the wrong direction.
+
+  **And `..` did not work below a mount root in any client.** `hvfs` resolved it by asking the
+  server to look up a `..` **entry**; `fs_server` creates none, so the branch returned `NOENT`
+  every time. Dead from the day it landed in #195, invisible because the only test touching
+  `..` used the *pinned* case, which returns before the lookup. It now pops the walker's own
+  descent stack — no round trip, and not something a server can lie about.
+  **Falsified two ways**, each aimed at one defect: `POSIX_LEGACY_WALK=1` (the private walker)
+  reddens `smoke-newlib` at `FAIL dot-here`, and `HVFS_DOTDOT_SERVER=1` (the shipped `..`
+  branch) reddens it at `FAIL dotdot-back` — specifically that marker, since `.` still resolves
+  under it and only the descending `..` does not.
+
 - **The syscall-coverage deriver described a kernel that has never booted, in both directions.**
   It read the dispatch table as flat text, so `SYS_OPEN`, `SYS_PREEMPT_TRACE` and
   `SYS_IRQ_POLICY_INFO` — compiled only under a defect arm or a selftest flag — counted as

@@ -167,6 +167,43 @@ int main(int argc, char **argv, char **envp) {
         errno = 0;
         if (unlink("/nope/x") != -1 || errno != ENOENT) { printf("NEWLIB_SELFTEST: FAIL unlink-badpath\n"); return 1; }
 
+        /* --- "." and ".." through the libc, which is the migration's whole
+         * point (roadmap 2.4). Until 2026-08-23 posix.c walked paths with its
+         * own copy of the walker, and that copy handled neither: it looked "."
+         * and ".." up as literal directory entries, and `fs_server` creates no
+         * such entries -- `dir_add` links exactly the name mkdir was given -- so
+         * every path containing one failed with ENOENT. The shell appeared to
+         * support them only because it rewrote the STRING before walking, which
+         * is a different code path that no libc program goes through.
+         *
+         * These four assertions are the witness for that. Under
+         * POSIX_LEGACY_WALK=1 (the private walker restored) they fail; under
+         * HVFS_DOTDOT_SERVER=1 (".." asked of the server, as hvfs shipped it in
+         * #195) the ".." ones fail, because the entry it asks for does not
+         * exist. */
+        if (mkdir("/dotdir", 0755) != 0)  { printf("NEWLIB_SELFTEST: FAIL dot-mkdir\n");   return 1; }
+        int dfd = open("/dotdir/f", O_CREAT | O_RDWR, 0644);
+        if (dfd < 0)                      { printf("NEWLIB_SELFTEST: FAIL dot-create\n");  return 1; }
+        close(dfd);
+
+        /* "." is this directory. */
+        if (open("/./dotdir/f", O_RDONLY) < 0) { printf("NEWLIB_SELFTEST: FAIL dot-here\n"); return 1; }
+
+        /* ".." steps back out of a directory the walker descended through. */
+        if (open("/dotdir/../dotdir/f", O_RDONLY) < 0) { printf("NEWLIB_SELFTEST: FAIL dotdot-back\n"); return 1; }
+
+        /* ".." is PINNED at the mount root: it resolves to the root rather than
+         * erroring, and cannot address anything above it. */
+        if (open("/../dotdir/f", O_RDONLY) < 0) { printf("NEWLIB_SELFTEST: FAIL dotdot-pinned\n"); return 1; }
+
+        /* And it is still a path, not a wildcard: a missing name under a
+         * ".."-containing prefix must still be ENOENT rather than resolving to
+         * the directory itself. */
+        errno = 0;
+        if (open("/dotdir/../dotdir/absent", O_RDONLY) >= 0 || errno != ENOENT) {
+            printf("NEWLIB_SELFTEST: FAIL dotdot-absent\n"); return 1;
+        }
+
         printf("fs open/write/stat/unlink OK\n");
     }
 

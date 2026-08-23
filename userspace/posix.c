@@ -25,6 +25,7 @@
 #include "../include/console_proto.h"
 #include <sys/termios.h>
 #include "fs_proto.h"
+#include "libhorus.h"   /* hvfs: the mount table and the one path walker */
 
 /* ----- internal helpers ----------------------------------------------- */
 
@@ -145,148 +146,93 @@ static char     g_cwd_path[POSIX_PATH_MAX] = "/";
 
 #define MAX_PATH_DEPTH 16
 
-/* Walk `path` component-by-component from the root inode (0).
+/* Path resolution is `hvfs_walk` (userspace/hvfs.c), not a copy of it.
  *
- * On success: *out_ino is the resolved inode, return 0.
- * On "last component not found": *out_ino is the PARENT inode and
- *   *out_name is the last component name, return 1.
- * On any other error: return -1.
+ * Until 2026-08-23 this file carried its own `path_walk` and `path_parent`,
+ * shell.c carried `sh_walk_abs_dir`, and fsclient.c looked names up by hand.
+ * Three walkers, one protocol, and they had already drifted: only the shell's
+ * caller resolved ".." at all, and it did so by rewriting the STRING before
+ * walking, so a ".." arriving through open(), stat() or rename() -- which is
+ * every path a libc program passes -- was looked up as a literal component
+ * name. The kernel-side namespace landed in #195 with nothing calling it; this
+ * is that migration, and the drift is the argument for it.
  *
- * out_name must point to a buffer of at least FS_NAME_MAX bytes.
+ * The contract is unchanged, which is why the call sites below did not move:
+ * 0 = resolved, 1 = everything but the leaf resolved (*out_ino is the parent),
+ * -1 = bad path or a missing intermediate.
+ *
+ * The mount is installed in posix_init: "/" on CAPSLOT_FS_EP, root inode 0.
+ * That is the whole namespace a newlib program starts with -- one entry, the
+ * filesystem it was already talking to. A program that needs a second mount
+ * calls hvfs_mount itself, over a capability it already holds.
  */
-static int path_walk(const char *path,
-                     uint32_t   *out_ino,
-                     char       *out_name) {
+#ifdef POSIX_LEGACY_WALK
+/* CONTROL ARM: the private walker as it stood until 2026-08-23, restored.
+ *
+ * It is a faithful copy, not a weakened one -- which is the point. It resolves
+ * neither "." nor "..": both are looked up as literal directory entries, and
+ * `fs_server` creates no such entries, so every libc path containing one fails
+ * with ENOENT. `make smoke-newlib` must go red under this flag. */
+#define LEGACY_MAX_PATH_DEPTH 16
+static int legacy_walk(const char *path, uint32_t *out_ino, char *out_name,
+                       int want_parent) {
     if (!path || path[0] == '\0') return -1;
-
-    /* Absolute paths start at the root; relative paths start at the cwd. */
     uint32_t dir_ino = (path[0] == '/') ? 0u : g_cwd_ino;
     const char *p = path;
-    if (*p == '/') p++;            /* skip leading slash */
-
+    if (*p == '/') p++;
     char comp[FS_NAME_MAX];
     int  depth = 0;
-
     out_name[0] = '\0';
-
     while (*p) {
-        /* Extract next component. */
         uint32_t clen = 0;
         while (p[clen] && p[clen] != '/') clen++;
-
-        if (clen == 0)          { p++; continue; }  /* double slash */
-        if (clen >= FS_NAME_MAX) return -1;          /* component too long */
-        if (++depth > MAX_PATH_DEPTH) return -1;
-
+        if (clen == 0)           { p++; continue; }
+        if (clen >= FS_NAME_MAX) return -1;
+        if (++depth > LEGACY_MAX_PATH_DEPTH) return -1;
         _umemcpy(comp, p, clen);
         comp[clen] = '\0';
         p += clen;
         if (*p == '/') p++;
-
-        /* If more path follows, we must look this up now. */
+        struct fs_request rq;
+        struct fs_response rp;
+        _umemset(&rq, 0, sizeof(rq));
+        rq.op      = FS_OP_LOOKUP;
+        rq.dir_ino = dir_ino;
+        _umemcpy(rq.name, comp, clen + 1u);
         if (*p != '\0') {
-            struct fs_request rq;
-            struct fs_response rp;
-            _umemset(&rq, 0, sizeof(rq));
-            rq.op      = FS_OP_LOOKUP;
-            rq.dir_ino = dir_ino;
-            _umemcpy(rq.name, comp, clen + 1u);
-
-            int rc = fss_rpc(&rq, &rp);
-            if (rc != 0) return -1;   /* intermediate component missing */
+            if (fss_rpc(&rq, &rp) != 0) return -1;
             dir_ino = rp.ino;
         } else {
-            /* Last component: copy name out so the caller can CREATE if needed. */
             _umemcpy(out_name, comp, clen + 1u);
-
-            /* Try to look it up. */
-            struct fs_request rq;
-            struct fs_response rp;
-            _umemset(&rq, 0, sizeof(rq));
-            rq.op      = FS_OP_LOOKUP;
-            rq.dir_ino = dir_ino;
-            _umemcpy(rq.name, comp, clen + 1u);
-
-            int rc = fss_rpc(&rq, &rp);
-            if (rc == 0) {
-                *out_ino = rp.ino;
-                return 0;            /* found */
-            }
-            /* Not found — let caller decide (create or error). */
-            *out_ino = dir_ino;      /* return parent on not-found */
+            if (want_parent) { *out_ino = dir_ino; return 0; }
+            if (fss_rpc(&rq, &rp) == 0) { *out_ino = rp.ino; return 0; }
+            *out_ino = dir_ino;
             return 1;
         }
     }
-
-    /* Reached here only if path was all slashes → root */
     *out_ino = dir_ino;
     out_name[0] = '\0';
     return 0;
 }
+#endif
 
-/* Resolve the PARENT directory of `path` and copy the final path component
- * into out_name (a buffer of at least FS_NAME_MAX bytes). Intermediate
- * components are looked up; the final one is NOT (so this works whether or not
- * the final component exists). Uses the same component/slash semantics as
- * path_walk.
- *
- * On success: *out_ino is the parent inode, out_name is the final component,
- *   return 0. A path with no final component ("/" or all slashes) yields an
- *   empty out_name — the caller must reject that.
- * On error (bad path, component too long, too deep, missing intermediate):
- *   return -1.
- */
-static int path_parent(const char *path,
-                       uint32_t   *out_ino,
-                       char       *out_name) {
-    if (!path || path[0] == '\0') return -1;
+static int path_walk(const char *path, uint32_t *out_ino, char *out_name) {
+#ifdef POSIX_LEGACY_WALK
+    return legacy_walk(path, out_ino, out_name, 0);
+#else
+    int slot;
+    return hvfs_walk(path, g_cwd_ino, CAPSLOT_FS_EP, &slot, out_ino, out_name);
+#endif
+}
 
-    /* Absolute paths start at the root; relative paths start at the cwd. */
-    uint32_t dir_ino = (path[0] == '/') ? 0u : g_cwd_ino;
-    const char *p = path;
-    if (*p == '/') p++;            /* skip leading slash */
-
-    char comp[FS_NAME_MAX];
-    int  depth = 0;
-
-    out_name[0] = '\0';
-
-    while (*p) {
-        uint32_t clen = 0;
-        while (p[clen] && p[clen] != '/') clen++;
-
-        if (clen == 0)          { p++; continue; }   /* double slash */
-        if (clen >= FS_NAME_MAX) return -1;           /* component too long */
-        if (++depth > MAX_PATH_DEPTH) return -1;
-
-        _umemcpy(comp, p, clen);
-        comp[clen] = '\0';
-        p += clen;
-        if (*p == '/') p++;
-
-        if (*p != '\0') {
-            /* Intermediate component: look it up and descend. */
-            struct fs_request rq;
-            struct fs_response rp;
-            _umemset(&rq, 0, sizeof(rq));
-            rq.op      = FS_OP_LOOKUP;
-            rq.dir_ino = dir_ino;
-            _umemcpy(rq.name, comp, clen + 1u);
-
-            if (fss_rpc(&rq, &rp) != 0) return -1;   /* missing intermediate */
-            dir_ino = rp.ino;
-        } else {
-            /* Final component: hand back the parent and the name. */
-            _umemcpy(out_name, comp, clen + 1u);
-            *out_ino = dir_ino;
-            return 0;
-        }
-    }
-
-    /* Path was all slashes → root, no final component. */
-    *out_ino = dir_ino;
-    out_name[0] = '\0';
-    return 0;
+static int path_parent(const char *path, uint32_t *out_ino, char *out_name) {
+#ifdef POSIX_LEGACY_WALK
+    return legacy_walk(path, out_ino, out_name, 1);
+#else
+    int slot;
+    return hvfs_walk_parent(path, g_cwd_ino, CAPSLOT_FS_EP, &slot, out_ino,
+                            out_name);
+#endif
 }
 
 /* ----- public API ------------------------------------------------------- */
@@ -307,6 +253,16 @@ void posix_init(void) {
     int sio = sys_stdio_info();
     if (sio & 0x1) { g_fdt[0].type = FD_PIPE; g_fdt[0].ino = STDIN_PIPE_SLOT;  g_fdt[0].flags = O_RDONLY; }
     if (sio & 0x2) { g_fdt[1].type = FD_PIPE; g_fdt[1].ino = STDOUT_PIPE_SLOT; g_fdt[1].flags = O_WRONLY; }
+
+    /* The namespace this process starts with: one mount, "/" on the fs_server
+     * endpoint. fs_connect() first, because hvfs_mount PROBES the slot with the
+     * weakest legal request and refuses one holding no usable capability -- so
+     * mounting before the connect would be refused for the right reason at the
+     * wrong time. A refusal here is not fatal and is not silently ignored
+     * either: every path operation then fails at hvfs_resolve with nothing
+     * mounted, which is the same fail-closed answer as a missing endpoint. */
+    fs_connect();
+    (void)hvfs_mount("/", CAPSLOT_FS_EP, 0u);
 
     g_inited = 1;
 }

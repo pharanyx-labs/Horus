@@ -793,7 +793,7 @@ recommendation is the one thing not taken: a panic inside `no_std` Rust reaches 
 `#[panic_handler]` that is `loop {}`, so it would have hung the machine silently where the C
 side halts with a `PANIC:` line the smoke harness already treats as fatal.
 
-### 2.9 Measured boot degrades silently in the kernel when no TPM is present
+### 2.9 Measured boot degrades silently in the kernel when no TPM is present — *policy added 2026-08-23*
 
 *Added 2026-08-22 from the same audit (its F-9), and partly overtaken by #197.*
 
@@ -810,10 +810,24 @@ merge-gating job carrying S11 and S12 — could report success while measuring n
 TPM when swtpm is installed, so the configuration the security properties are stated over is
 the one you get by default.
 
-**The kernel half is a design question, not a defect.** A fail-closed mode — refuse to unlock
-the volume at all without a measured boot — is expressible and would suit a deployment that
-requires it, but it would make the kernel unbootable on a TPM-less machine, which is the
-opposite of what a research prototype wants by default. Recorded so the choice is deliberate.
+**The kernel half is now an opt-in policy — `MEASURED_BOOT_REQUIRED=1`, 2026-08-23.** It was
+recorded here as a design question rather than a defect, and the answer taken is the one this
+section argued for: the default still boots on a TPM-less machine, because that is what a
+research prototype needs, and a deployment that requires measurement builds with the flag. Under
+it, an unavailable measured boot halts (no TPM, locality, transport, or PCR readback), and a
+**persistent** volume that was never sealed is refused rather than unlocked on its password.
+
+**The ephemeral vdisk is exempt, and that is the policy's one hole.** It is RAM-only, formatted
+fresh each boot with a full-entropy key that is discarded at power-off, and never written where
+a later boot could read it — there is nothing for a measurement to protect. Because the default
+boot runs on exactly that volume, the refusal branch is unreachable in an ordinary run, which is
+why `MEASURED_VOLUME_EXEMPT_NONE=1` exists: it removes the exemption so the branch executes and
+can be falsified. **What is still not gated is a persistent disk under the policy** — the arm
+proves the refusal fires, not that a real on-disk volume reaches it. That remains open.
+
+**Default behaviour is unchanged**, which is deliberate: this is a flag, not a new default, and
+S11/S12 still do not apply to a boot without a TPM. What changed is that a deployment can now
+make them apply or refuse to run.
 
 ### 2.10 Four live syscalls have no caller anywhere in this tree
 
@@ -955,8 +969,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **88** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **90** across the three, producing **93** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **89** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **91** across the three, producing **94** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1001,7 +1015,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **90 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **91 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

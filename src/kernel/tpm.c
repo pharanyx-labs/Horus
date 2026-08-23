@@ -394,13 +394,42 @@ static void print_hex32(const uint8_t *b) {
     }
 }
 
+/* Measured boot did not happen. In the default build that is a fact to report:
+ * this kernel is expected to run on machines with no TPM, and `docs/LIMITATIONS.md`
+ * §2.9 says so. Under MEASURED_BOOT_REQUIRED it is fatal.
+ *
+ * The distinction the flag draws is between "the property does not apply here"
+ * and "the property applies and was not obtained". Without the flag those two
+ * are the same log line -- `tpm: no TPM present, measured boot skipped` -- which
+ * is honest and, as §2.9 put it, easy to read past. A deployment that requires
+ * measured boot needs the second case to stop the machine, because everything
+ * downstream (S11, S12, the sealed volume key) is a claim about a measurement
+ * that was never taken.
+ *
+ * Halting rather than continuing degraded is the same choice entropy_init makes
+ * about an unseeded CSPRNG, and "PANIC" is in the smoke harness's FAULT_RE, so a
+ * refusal turns CI red rather than scrolling past. */
+static void measured_boot_unavailable(const char *why) {
+#ifdef MEASURED_BOOT_REQUIRED
+    kmsg_begin();
+    print("PANIC: measured boot required but unavailable (");
+    print(why);
+    println("); halting");
+    for (;;) __asm__ volatile ("cli; hlt");
+#else
+    (void)why;
+#endif
+}
+
 void tpm_measured_boot(void) {
     if (!tpm_present()) {
         kmsg("tpm: no TPM present, measured boot skipped");
+        measured_boot_unavailable("no TPM present");
         return;
     }
     if (!tpm_request_locality()) {
         kmsg("tpm: measured boot FAILED (locality)");
+        measured_boot_unavailable("locality");
         return;
     }
 
@@ -411,6 +440,7 @@ void tpm_measured_boot(void) {
     if (!ok) {
         kmsg("tpm: measured boot FAILED (transport)");
         tpm_release_locality();
+        measured_boot_unavailable("transport");
         return;
     }
 
@@ -419,6 +449,7 @@ void tpm_measured_boot(void) {
         tpm_pcr_read(TPM_PCR_BOOT_MODULES,   pcr9) != 0) {
         kmsg("tpm: measured boot FAILED (readback)");
         tpm_release_locality();
+        measured_boot_unavailable("PCR readback");
         return;
     }
 

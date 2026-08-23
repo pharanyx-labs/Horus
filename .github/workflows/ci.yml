@@ -421,6 +421,39 @@ jobs:
           SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
         run: make smoke-tpm
 
+  measured-boot-required:
+    name: "Measured boot can be required, and then an unmeasured boot does not proceed"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU + swtpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86 swtpm swtpm-tools python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The policy must not break a machine that satisfies it. A gate that only
+      # checked the refusal is passed by a kernel that halts on every boot.
+      - name: A machine with a TPM still boots, and measures
+        env:
+          SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
+        run: make smoke-measured-boot-required
+      # The case docs/LIMITATIONS.md 2.9 described: no TPM, so PCRs are never
+      # extended and the volume key is never sealed. It must halt.
+      - name: Control arm — no TPM, and the boot does not proceed
+        run: make smoke-measured-boot-required-control
+      # The other half, and the one with the real downgrade in it: a volume that
+      # was never sealed unlocks on the password alone. The ephemeral vdisk is
+      # exempt by design, so this arm removes the exemption to reach the branch.
+      - name: Control arm — an unsealed volume is refused, not silently accepted
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-boot-required-volume-control
+
   smoke-tpm-tamper:
     name: Measured boot falsification (a tampered module diverges the PCRs)
     runs-on: ubuntu-latest

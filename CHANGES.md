@@ -16,6 +16,29 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **Measured boot can be required, and then an unmeasured boot does not proceed
+  (`MEASURED_BOOT_REQUIRED=1`).** #197 fixed the CI half — `SWTPM_REQUIRED=1` stopped four gates
+  passing without measuring — but the kernel still booted happily with no TPM: PCRs unextended,
+  volume key never sealed, S11/S12 simply not applying rather than failing closed. The flag makes
+  every unavailable measured boot fatal (no TPM, locality, transport, PCR readback) and refuses
+  to unlock a **persistent volume that was never sealed**. That second half is where the real
+  downgrade lived: the sealed path already fails closed when the TPM denies (S12), but nothing
+  checked the reverse, so a re-formatted password-only disk made the requirement evaporate —
+  `tpm_mode == 0` turns `apply_tpm_kek_binding` into a no-op.
+  **Default behaviour is unchanged** and deliberately so; this kernel is expected to boot on
+  TPM-less machines. The ephemeral RAM vdisk is exempt, because its key is generated this boot
+  and discarded at power-off — there is nothing for a measurement to protect — and that exemption
+  is named rather than implicit, since it makes the refusal branch unreachable on an ordinary
+  boot. `MEASURED_VOLUME_EXEMPT_NONE=1` removes it so the branch can be falsified.
+  **Three arms**: with a TPM the machine still boots and measures (a refusal-only gate is passed
+  by a kernel that halts always); without one it halts; with an unsealed volume it refuses.
+  `tools/run_with_swtpm.sh` gained `EXPECT_FAULT`, matching `smoke_test.sh` — it tested its fault
+  regex before the required marker, so on a build whose success condition IS a halt no marker
+  could ever be reached. Falsified by naming a fault that never occurs: the arm times out and
+  fails rather than accepting the halt that did happen.
+  **Still not gated**: a persistent disk under the policy. The arm proves the refusal fires, not
+  that a real on-disk volume reaches it — stated in `docs/LIMITATIONS.md` §2.9.
+
 - **`hvfs` has users: the libc and the shell walk paths through it (roadmap 2.4).** `posix.c`
   and `shell.c` carried private copies of the walker the namespace library was written to
   replace, and the copies had drifted — the shell resolved `.` and `..` only because it rewrote

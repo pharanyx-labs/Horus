@@ -1373,6 +1373,38 @@ int storage_unlock(const char *password, size_t plen)
 
     struct fs_superblock *sb = &mfs->sb;
 
+#ifdef MEASURED_BOOT_REQUIRED
+    /* A password-only volume is a DOWNGRADE when measured boot is required.
+     *
+     * The sealed path already fails closed in the other direction: a volume with
+     * tpm_mode == 1 cannot be unlocked unless the TPM releases its secret under
+     * PolicyPCR(8,9), so a tampered boot leaves it locked (S12). What nothing
+     * checked is the reverse -- a volume that was never sealed unlocks on the
+     * password alone, forever. Present a re-formatted disk to a machine that
+     * requires measured boot and the requirement evaporates, because tpm_mode 0
+     * makes apply_tpm_kek_binding a no-op.
+     *
+     * THE EPHEMERAL VDISK IS EXEMPT, and that is not a loophole: it exists only
+     * in RAM for one boot, its key is a full-entropy random value generated on
+     * this boot and discarded at power-off, and it is never written anywhere a
+     * later boot could read. Sealing a key that cannot outlive the measurement
+     * adds nothing to seal against. The exemption is the flag's ONE hole, so it
+     * is named here rather than left implicit -- and MEASURED_VOLUME_EXEMPT_NONE=1
+     * removes it, which is how the refusal below is falsified. */
+    {
+#ifdef MEASURED_VOLUME_EXEMPT_NONE
+        int exempt = 0;
+#else
+        int exempt = g_vdisk_high_entropy_kek;
+#endif
+        if (!exempt && sb->tpm_mode != 1) {
+            println("PANIC: measured boot required but the volume is not sealed "
+                    "(password-only); refusing to unlock");
+            return -9;
+        }
+    }
+#endif
+
     /* Step 1 — Derive KEK from password + stable on-disk salt (no kernel_pepper). */
     uint8_t kek[32];
     if (derive_kek(password, plen, sb->kek_salt, kek) != 0) return -3;

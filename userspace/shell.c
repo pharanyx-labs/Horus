@@ -556,6 +556,17 @@ static void print_rpad(const char *s, int width) {
     print(s);
 }
 
+/* Decimal render of a u32 into `out` (needs 12 bytes). The shell had no such
+ * helper -- `ps` builds its numbers inline with a reversal loop -- and capview
+ * needs four columns of them. */
+static void cv_u32(char *out, uint32_t v) {
+    char t[12]; int ti = 0, oi = 0;
+    if (!v) t[ti++] = '0';
+    while (v) { t[ti++] = (char)('0' + v % 10); v /= 10; }
+    while (ti) out[oi++] = t[--ti];
+    out[oi] = 0;
+}
+
 /* Render a byte count the way a person reads it: exact below 1000, then one
  * decimal place with a unit suffix ("1.2K", "403K", "2.7M"). The point is that a
  * column of these is comparable at a glance, which a column of raw byte counts
@@ -797,6 +808,24 @@ static const char *const d_spawn[] = {
     "cspace does not name.",
     0 };
 
+static const char *const d_capview[] = {
+    "Print the capability graph: for each live task, every occupied cspace slot",
+    "with its type, rights, serial and parent serial.",
+    "",
+    "The security argument of this system is that graph. Until roadmap 3.6 you",
+    "could read the code that mints and delegates but could not ask a running",
+    "machine what any task actually holds -- so this is the tool that makes the",
+    "argument checkable rather than merely stated.",
+    "",
+    "SERIAL is a capability's identity; PARENT is the serial it was derived",
+    "from, so the two columns are the nodes and edges of the derivation tree.",
+    "A PARENT of 0 is a primordial capability, minted in the root cnode.",
+    "",
+    "Needs CAP_DEBUG, which init delegates to the shell. It is observation only:",
+    "the object each capability names is deliberately NOT reported, and the",
+    "capability is minted read-only so no delegate can hold anything more.",
+    0 };
+
 static const char *const d_ps[] = {
     "List visible tasks: pid, owner, name, state, heap use, capability count",
     "and flags. Your own task is marked with '*'.",
@@ -893,6 +922,7 @@ static const struct man_page man_pages[] = {
  { "run","1","execute a program image from a file","run FILE",d_run,0,0,"spawn(1), ps(1)" },
  { "spawn","1","spawn an embedded binary","spawn [NAME]",d_spawn,0,0,"run(1), ps(1)" },
  { "ps","1","list visible tasks","ps",d_ps,0,0,"spawn(1), whoami(1)" },
+ { "capview","1","print the capability graph","capview [PID]",d_capview,0,0,"ps(1)" },
  { "mem","1","grow the heap by one page","mem",d_mem,0,0,"ps(1)" },
  { "yield","1","hand the CPU to another task","yield",d_yield,0,0,"ps(1)" },
  { "whoami","1","show your attested uid and gid","whoami",d_whoami,0,0,"id(1), sudo(1), ps(1)" },
@@ -1366,6 +1396,82 @@ static void handle_command(char *cmd) {
         } else {
             println("sbrk failed");
         }
+    } else if (strcmp(cmd, "capview") == 0 || strncmp(cmd, "capview ", 8) == 0) {
+        /* Roadmap 3.6: print the capability graph. The security argument of this
+         * system is that graph, and until now it could be read in the source but
+         * not asked of a running machine.
+         *
+         * SERIAL and PARENT are the point: a capability's serial is its identity
+         * and its badge is the serial it was derived from, so those two columns
+         * are the nodes and edges of the derivation tree. Everything else is
+         * decoration. `object` is deliberately not reported by the kernel -- see
+         * struct cap_info. */
+        static const char *const type_name[] = {
+            "null", "tcb", "notif", "endpoint", "frame", "?5", "user", "audit",
+            "console", "storage", "revoke", "blockdev", "iodev", "pipe",
+            "klog", "bootmod", "untyped", "reply", "debug",
+        };
+        int only = -1;
+        if (strncmp(cmd, "capview ", 8) == 0) {
+            const char *a = cmd + 8;
+            while (*a == ' ') a++;
+            if (*a >= '0' && *a <= '9') {
+                int v = 0;
+                while (*a >= '0' && *a <= '9') v = v * 10 + (*a++ - '0');
+                only = v;
+            }
+        }
+
+        print("  "); print_pad("PID", 5); print_pad("SLOT", 6); print_pad("TYPE", 10);
+        print_pad("RIGHTS", 8); print_rpad("SERIAL", 10);
+        print("  "); print_rpad("PARENT", 10); println("");
+
+        int shown = 0;
+        for (int t = 0; t < 16; t++) {
+            if (only >= 0 && t != only) continue;
+            struct task_info ti;
+            if (sys_get_task_info(t, &ti) != 0 || ti.state == 0) continue;
+
+            for (unsigned sl = 0; sl < CAP_ENUM_MAX_SLOT; sl++) {
+                struct cap_info ci;
+                if (sys_cap_enumerate(t, (int)sl, &ci) != 0) {
+                    /* The only expected refusal is "you hold no CAP_DEBUG", and
+                     * it is worth saying plainly: an empty table would read as a
+                     * system in which nobody holds any capability. */
+                    println("capview: refused - this task holds no CAP_DEBUG");
+                    return;
+                }
+                if (!ci.occupied) continue;
+
+                char b[12];
+                print("  ");
+                cv_u32(b, (uint32_t)t);   print_pad(b, 5);
+                cv_u32(b, sl);            print_pad(b, 6);
+                print_pad((ci.type < sizeof(type_name)/sizeof(type_name[0]))
+                          ? type_name[ci.type] : "?", 10);
+                /* Rights as letters, not a hex bitmask: a column of them is
+                 * comparable at a glance, which is the same reason `ls -l` does
+                 * not print a mode in hex. */
+                {
+                    char rts[8];
+                    rts[0] = (ci.rights & CAP_RIGHT_READ)   ? 'r' : '-';
+                    rts[1] = (ci.rights & CAP_RIGHT_WRITE)  ? 'w' : '-';
+                    rts[2] = (ci.rights & CAP_RIGHT_EXEC)   ? 'x' : '-';
+                    rts[3] = (ci.rights & CAP_RIGHT_GRANT)  ? 'g' : '-';
+                    rts[4] = (ci.rights & CAP_RIGHT_MINT)   ? 'm' : '-';
+                    rts[5] = (ci.rights & CAP_RIGHT_REVOKE) ? 'v' : '-';
+                    rts[6] = 0;
+                    print_pad(rts, 8);
+                }
+                cv_u32(b, ci.serial);     print_rpad(b, 10);
+                print("  ");
+                if (ci.badge) { cv_u32(b, ci.badge); print_rpad(b, 10); }
+                else          { print_rpad("root", 10); }
+                println("");
+                shown++;
+            }
+        }
+        if (!shown) println("capview: no capabilities visible");
     } else if (strcmp(cmd, "ps") == 0) {
         /* Same column discipline as ls -l: fixed widths via the shared padding
          * helpers rather than hand-counted spaces, which is what let the old

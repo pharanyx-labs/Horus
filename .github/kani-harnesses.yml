@@ -20,11 +20,16 @@
 # ones that finish, and say out loud which ones do not".
 #
 # Times below are per-harness SOLVER time, measured on 2026-08-23 on the
-# maintainer's machine with Kani 0.67.0. They sum to about three minutes — but
-# the gating list run end to end, the way the job runs it, takes **319 seconds**,
-# because each `cargo kani --harness` invocation rebuilds. Quote the 319, not the
-# sum: the difference is the kind of gap that turns a "three-minute job" into a
-# timeout nobody predicted.
+# maintainer's machine with Kani 0.67.0. They sum to about three minutes, and
+# nearly all of it is the two revocation proofs.
+#
+# END-TO-END WALL TIME IS NOT THAT SUM, AND IS NOT ONE NUMBER EITHER. The list
+# was measured twice the same day: **319 s** for eleven harnesses against a cold
+# target directory, and **196 s** for THIRTEEN against a warm one. More proofs,
+# less time — because what dominates is the rebuild each `cargo kani --harness`
+# invocation may or may not need, not the solving. Quoting either figure alone
+# would mislead whoever budgets this job next, so both are here. The 45-minute
+# job bound is set against the cold case with room to spare.
 
 # Merge-gating: run on every pull request by the `kani-bounded` job.
 gating:
@@ -39,21 +44,27 @@ gating:
   - grant_refuses_every_out_of_range_slot                    # 1s
   - revoke_descendant_never_nulls_ancestors                  # 66s
   - revoke_root_nulls_every_descendant                       # 120s
+  - elf_header_validation_is_sound                           # 2s
+  - elf_load_plan_is_sound                                   # 2s
 
 # Not gating, with a reason. These run in the manual `kani` job.
+#
+# The list was longer when it was written. The two ELF validators were excused on
+# 2026-08-23 with a plausible-sounding reason -- "corroboration, not the only
+# witness", and one of them "the more expensive of the two" -- and then MEASURED
+# the same day at 2 seconds each. Both gate now. The excuse was not a lie, it was
+# unmeasured, which is the failure mode this file exists to prevent one directory
+# over; a reason that cannot be checked is worth what an unenforced note is worth.
+#
+# The two below were measured properly: both TIME OUT at 1500 s.
 manual:
   revoke_invalidates_recorded_generation: >-
     Serial-keyed lineage proof: it ranges over the whole serial space against the
-    LINEAGE_GEN table, which builds a large SAT instance. Together with the one
-    below this pair is what pushed a full `cargo kani` past GitHub's 6-hour job
-    ceiling. Still verified on demand.
+    LINEAGE_GEN table, which builds a large SAT instance. MEASURED 2026-08-23: it
+    does not finish in 1500 s. Together with the one below, this pair is what
+    pushed a full `cargo kani` past GitHub's 6-hour job ceiling. Still verified on
+    demand, and a bounded version of it is worth writing.
   revoke_does_not_touch_a_distinct_lineage_cell: >-
     The precision half of the same lineage pair, and the same cost for the same
-    reason: two independent symbolic serials indexing the same table.
-  elf_header_validation_is_sound: >-
-    Lives in lib.rs over the ELF header validator rather than the capability
-    algebra. The load path already has a gating fuzz target and unit tests over
-    adversarial inputs; the proof is corroboration, not the only witness.
-  elf_load_plan_is_sound: >-
-    As above, for the load planner. Symbolic phdr contents make it the more
-    expensive of the two.
+    reason: two independent symbolic serials indexing the same table. MEASURED
+    2026-08-23: also does not finish in 1500 s.

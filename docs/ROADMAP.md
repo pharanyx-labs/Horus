@@ -941,13 +941,41 @@ named subset rather than "run everything".
 - **The TLA+ specifications (`cap_algebra.tla`, `paging_isolation.tla`) are still only
   committed, not model-checked in CI.** TLC is a second toolchain (a JVM) on top of Kani's.
 
-### 3.6 ⬜ A debug/observability capability — **[F-3.2]**
+### 3.6 ◧ A debug/observability capability — **[F-3.2]** — *CAP_DEBUG and capview landed 2026-08-23*
 
-`CAP_DEBUG` gating task introspection, a ring buffer of capability operations, and
-`SYS_CAP_ENUMERATE` backing a userspace `capview` tool. Replaces the ad-hoc root
-introspection in `SYS_GET_TASK_INFO` with an explicit, revocable authority — and makes the
-capability graph *visible*, which is essential for auditing a system whose security argument
-rests on that graph.
+**Delivered.** `CAP_DEBUG` (type 18, `CAPSLOT_DEBUG` 19) gates cross-task introspection and the
+new `SYS_CAP_ENUMERATE`, which reports one cspace slot's type, rights, serial, badge and
+generation. The shell's `capview` walks it and prints the graph. `SECURITY.md` **S32**.
+
+**The ad-hoc root introspection was already gone** (finding I-1 replaced it with a capability
+check). What this item actually found was subtler: `ps` required **`CAP_AUDIT`**, which also
+rotates the audit chain's keys and reads the log. The gate was real — this is a *bundling*
+mistake, not an ambient one, which is why two ambient-authority sweeps walked past it. The
+shell now holds `CAP_DEBUG` and nothing more for that purpose, so the change **narrows** it.
+
+`CAP_DEBUG` is minted READ-only at the root, and since rights only ever narrow, no delegate can
+hold anything that writes. `SYS_CAP_ENUMERATE` deliberately does not report `object`: `serial`
+and `badge` are the graph's nodes and edges, so derivation is fully visible without naming what
+each capability points at.
+
+**Found on the way, and now gated:** the cspace slot map is written down twice — `kernel.h` and
+`syscall.h` — and nothing compared them. `CAPSLOT_DEBUG` was first added as 18, which
+`CAPSLOT_UNTYPED` already was; the delegation then wrote a `CAP_DEBUG` into the slot init keeps
+its `CAP_UNTYPED` in. `tools/check_capslots.py` refuses a duplicate number and a disagreement
+between the two headers.
+
+**Still open, and what each needs:**
+
+- **A ring buffer of capability operations.** Mint/grant/revoke are audited (`audit_log`) but
+  not queryable as a stream; this wants its own buffer and a readout gated on the same
+  capability.
+- **`capview` is a shell builtin, not a program.** Fine for now — it needs `CAP_DEBUG`, and the
+  shell is what holds it — but a standalone `/bin/capview` would need init to delegate the
+  capability to a spawned task, which is roadmap 2.3's inheritance question.
+- **Task introspection still accepts `CAP_USER` and `CAP_AUDIT`** as well as `CAP_DEBUG`, for
+  compatibility: `fs_server` holds `CAP_AUDIT` for the object store and the user-admin path
+  holds `CAP_USER`. Narrowing `h_task_info` to `CAP_DEBUG` alone is a separate change with its
+  own blast radius.
 
 ### 3.7 ⬜ Deterministic replay harness — **[F-3.3]**
 
@@ -1122,7 +1150,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 117 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 31 of them control arms that must reproduce a defect |
+| ✅ | 118 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 32 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

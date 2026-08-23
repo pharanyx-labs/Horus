@@ -345,6 +345,7 @@ static inline int reply_ep_for_task(int tid) {
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG   (dmesg; shell)            */
 #define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE  (provisioning; fs_server) */
+#define CAPSLOT_DEBUG      19   /* CAP_DEBUG        (observation; shell/capview) */
 #define CAPSLOT_UNTYPED    18    /* CAP_UNTYPED: kernel-object memory (init)   */
 #define CAPSLOT_REPLY      21    /* CAP_REPLY: one-shot right to answer the
                                  * request just received (minted by RECV,
@@ -830,11 +831,40 @@ void users_init(void);
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
 #define SYS_MAP_FRAME          95   /* (frame_slot, vaddr, rights) -> 0; map the KOBJ_FRAME named by a CAP_FRAME into the caller's own address space (roadmap 2.1). Authority is the capability the caller names, resolved in syscall_vm.c. */
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE must name this capability's own frame. */
+#define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. Reports type/rights/serial/badge/generation and whether the slot is occupied; see struct cap_info for what it deliberately does not report. */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ), same class as dmesg. */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died (finding G-8). Self-scoped: no capability, waiting already entitled the caller to observe it. */
 #define SYS_IPC_RECV_BLOCK     94   /* (ep_slot, buf, max) -> len; blocking SYS_IPC_RECV (roadmap 1.3). CAP_ENDPOINT + READ, enforced per-slot in the handler like every other IPC syscall. */
+
+/* ---- roadmap 3.6: reading the capability graph out, in band ---------------
+ *
+ * One slot of one task's cspace. `SYS_CAP_ENUMERATE` fills this in for a caller
+ * holding CAP_DEBUG; a `capview` tool walks slot 0..CNODE_SIZE-1 over each task
+ * and prints the graph.
+ *
+ * WHAT IT DELIBERATELY DOES NOT REPORT is `object`. For most types that field is
+ * an index into a kernel table -- a frame-table index since [F-2.1], an endpoint
+ * index, a task id -- but "most" is not a security argument, and the legacy
+ * CAP_FRAME in slot 3 still carries USER_AREA_BASE, an address. Withholding it
+ * costs the graph nothing that matters: `serial` and `badge` ARE the edges, so
+ * derivation is fully visible without naming what each node points at. The same
+ * reasoning suppresses `cr3` and another task's `eip` in struct task_info
+ * (finding I-4).
+ *
+ * `occupied` rather than testing type != CAP_NULL in ring 3: the caller should
+ * not have to know the kernel's internal null encoding to walk a cspace. */
+struct cap_info {
+    uint32_t slot;        /* the slot this describes                          */
+    uint32_t occupied;    /* 0 = empty slot; 1 = a live capability            */
+    uint32_t type;        /* CAP_* type, 0 when empty                         */
+    uint32_t rights;      /* CAP_RIGHT_* bitmask                              */
+    uint32_t serial;      /* this capability's identity (a graph node)        */
+    uint32_t badge;       /* its parent's serial (a graph edge), 0 at a root  */
+    uint32_t generation;  /* lineage generation recorded at mint              */
+    uint32_t reserved;    /* pad to a 32-byte multiple                        */
+};
 
 /* ---- roadmap 1.1: reading the interrupt-policy audit out, in band ----------
  *
@@ -982,6 +1012,20 @@ struct boot_module_info {
 
 #define CAP_KERNEL_LOG          14   /* SYS_DMESG: read the kernel message ring   */
 #define CAP_BOOT_MODULE         15   /* SYS_BOOT_MODULE_INFO / _READ               */
+/* CAP_DEBUG (roadmap 3.6): authority to OBSERVE, and nothing else.
+ *
+ * It gates cross-task introspection and `SYS_CAP_ENUMERATE`, which reads out
+ * another task's capability slots. Before this, `ps` worked because init handed
+ * the shell a CAP_AUDIT -- the capability that also rotates the audit chain's
+ * keys and reads the log -- so "show me the process list" carried the authority
+ * to tamper with the record of what happened. That is a bundling mistake, not an
+ * ambient one: the gate was real, it just named far more authority than the
+ * caller needed.
+ *
+ * Deliberately READ-only in the root cnode, so no delegation can widen it into
+ * anything that writes. Observation is not control: CAP_DEBUG cannot kill,
+ * spawn, mint, revoke, or map. */
+#define CAP_DEBUG               18   /* observation only: task info, cspace readout */
 
 #define CAP_RIGHT_READ          (1u << 0)
 #define CAP_RIGHT_WRITE         (1u << 1)

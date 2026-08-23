@@ -50,9 +50,16 @@ as it has existed no capability-algebra proof could have reddened a build — th
 too slow to gate (it exceeded GitHub's 6-hour ceiling), so the answer is to run the subset that
 finishes and say out loud which ones do not.
 
-Measured 2026-08-23, Kani 0.67.0: the gating list takes **319 s** end to end. Per-harness solver
-time sums to about three minutes; the difference is one rebuild per `cargo kani --harness`
-invocation.
+Measured 2026-08-23, Kani 0.67.0, and measured **twice** because the first figure was
+misleading: **319 s** for eleven harnesses against a cold target directory, **196 s** for
+thirteen against a warm one. More proofs in less time — what dominates is the rebuild each
+`cargo kani --harness` invocation may need, not the solving. Per-harness solver time sums to
+about three minutes, nearly all of it the two revocation proofs.
+
+Two harnesses were excused from gating on 2026-08-23 with a plausible reason — the ELF
+validators, "corroboration, not the only witness", one of them "the more expensive of the two" —
+and then measured the same day at **2 seconds each**. Both gate now. The excuse was not a lie;
+it was unmeasured, which is worth exactly what an unenforced note is worth.
 
 **Falsify a proof before trusting it.** Every proof added on 2026-08-23 was checked by mutating
 the property it claims — weakening lookup's rights test to "any overlap", dropping grant's

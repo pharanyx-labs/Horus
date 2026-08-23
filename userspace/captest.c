@@ -597,6 +597,31 @@ void _start(void) {
 #endif
     }
 
+    /* ---- roadmap 3.6: reading the capability graph needs CAP_DEBUG --------
+     *
+     * captest holds no CAP_DEBUG (init delegates it to the shell, not here), so
+     * every SYS_CAP_ENUMERATE must be refused by the central gate -- including
+     * one aimed at captest's OWN cspace. That last case is the interesting one:
+     * "it is my own capability list" is exactly the argument that would make
+     * this ambient, and self-inspection is not an exemption the gate offers.
+     *
+     * The refusal is SYS_ERR_PERM, not NOSYS: the syscall exists, and saying so
+     * is fine. What is refused is the authority. */
+    {
+        struct cap_info ci;
+        check(sys_cap_enumerate(0, 0, &ci) == SYS_ERR_PERM,
+              "cap-enumerate-without-cap-debug");
+        check(sys_cap_enumerate(sys_getpid(), 3, &ci) == SYS_ERR_PERM,
+              "cap-enumerate-own-cspace-without-cap-debug");
+        /* A bad task id and a bad slot are refused by the SAME gate, before the
+         * handler validates anything -- so a caller holding no CAP_DEBUG cannot
+         * use the error code to distinguish a live task from a dead one. */
+        check(sys_cap_enumerate(9999, 0, &ci) == SYS_ERR_PERM,
+              "cap-enumerate-bad-tid-leaks-a-different-error");
+        check(sys_cap_enumerate(0, 100000, &ci) == SYS_ERR_PERM,
+              "cap-enumerate-bad-slot-leaks-a-different-error");
+    }
+
     /* ---- the BLOCKING receive carries the same authority (roadmap 1.3) ----
      *
      * SYS_IPC_RECV_BLOCK is a second way to receive, so it is a second place the

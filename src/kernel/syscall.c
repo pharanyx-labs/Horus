@@ -590,6 +590,16 @@ static void h_task_info(struct interrupt_frame64 *r) {
         c = cap_lookup(7, CAP_RIGHT_READ);
         if (c && c->type == CAP_AUDIT) is_privileged = 1;
     }
+    /* CAP_DEBUG (roadmap 3.6) is the RIGHT capability for this: observation and
+     * nothing else. The two above are accepted for compatibility -- fs_server
+     * holds CAP_AUDIT for the object store, and the user-admin path holds
+     * CAP_USER -- but a task that only needs to SEE the process list should
+     * hold neither. `ps` used to require CAP_AUDIT, which also rotates the audit
+     * chain's keys; the shell now carries CAP_DEBUG instead. */
+    if (!is_privileged) {
+        c = cap_lookup(CAPSLOT_DEBUG, CAP_RIGHT_READ);
+        if (c && c->type == CAP_DEBUG) is_privileged = 1;
+    }
     /* No root promotion (finding I-1). Cross-task introspection requires a
      * CAP_USER or CAP_AUDIT capability, checked above — being uid 0 is not
      * authority. The shell's `ps` works because init delegates it a CAP_AUDIT,
@@ -625,6 +635,61 @@ static void h_task_info(struct interrupt_frame64 *r) {
 
     if (copy_to_user(out, &info, sizeof(info)) == 0) r->rax = 0;
     else r->rax = (uint32_t)SYS_ERR_FAULT;
+}
+
+/* SYS_CAP_ENUMERATE (97): read one slot of one task's cspace (roadmap 3.6).
+ *
+ * The capability graph is the security argument of this system, and until now
+ * nothing could see it: a reviewer could read the code that mints and delegates,
+ * but not ask a running machine what any task actually holds. This makes the
+ * graph observable from ring 3, under an explicit and revocable authority.
+ *
+ * Authority is CAP_DEBUG at CAPSLOT_DEBUG with READ, enforced centrally by the
+ * dispatch table -- so the handler never repeats the check, and cannot forget
+ * to. Observation only: nothing here writes, and the root CAP_DEBUG is minted
+ * READ-only so no delegate can hold anything more.
+ *
+ * A dead or never-created task reports every slot empty rather than an error.
+ * The distinction between "task 9 holds nothing" and "there is no task 9" is
+ * one a caller can already make with SYS_GET_TASK_INFO, and answering it here
+ * too would make this syscall a task-existence oracle for a caller that holds
+ * CAP_DEBUG but was refused task info -- a combination that should not arise,
+ * but the cheaper answer is not to depend on that. */
+static void h_cap_enumerate(struct interrupt_frame64 *r) {
+    int      tid  = (int)r->rbx;
+    uint32_t slot = (uint32_t)r->rcx;
+    struct cap_info *out = (struct cap_info *)(addr_t)r->rdx;
+
+    if (tid < 0 || tid >= MAX_TASKS || slot >= CNODE_SIZE) {
+        r->rax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
+
+    struct cap_info info;
+    for (size_t z = 0; z < sizeof(info); z++) ((uint8_t *)&info)[z] = 0;
+    info.slot = slot;
+
+    /* Under cap_lock: a concurrent mint, grant or revoke on another CPU must not
+     * be read half-written. The copy_to_user happens after the unlock -- it can
+     * fault, and faulting with a kernel lock held is how a spinlock becomes a
+     * deadlock. */
+    spin_lock(&cap_lock);
+    if (tasks[tid].state != 0 && tasks[tid].cspace) {
+        struct capability *cap = &tasks[tid].cspace[slot];
+        if (cap->type != CAP_NULL) {
+            info.occupied   = 1;
+            info.type       = cap->type;
+            info.rights     = cap->rights;
+            info.serial     = cap->serial;
+            info.badge      = cap->badge;
+            info.generation = cap->generation;
+            /* `object` is deliberately not reported -- see struct cap_info. */
+        }
+    }
+    spin_unlock(&cap_lock);
+
+    r->rax = (copy_to_user(out, &info, sizeof(info)) == 0)
+           ? 0u : (uint32_t)SYS_ERR_FAULT;
 }
 
 /* SYS_RUN (19): drop the current task to ring 3 at an already-loaded image.
@@ -1069,7 +1134,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 97
+#define SYSCALL_TABLE_SIZE 98
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1313,6 +1378,17 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * second implementation.) */
     [SYS_MAP_FRAME]               = { h_map_frame,               SC_NONE, 0, SC_ANYTYPE },
     [SYS_UNMAP_FRAME]             = { h_unmap_frame,             SC_NONE, 0, SC_ANYTYPE },
+    /* Observation, gated centrally: CAP_DEBUG at CAPSLOT_DEBUG with READ. The
+     * table is the gate, so h_cap_enumerate contains no authority check at all
+     * -- which is the point of the central gate, and why a handler that repeats
+     * it is a smell rather than defence in depth. */
+#ifdef CAP_ENUMERATE_UNGATED
+    /* CONTROL ARM: the same syscall with no declared capability, so the central
+     * gate lets every caller through to the handler. captest must go red. */
+    [SYS_CAP_ENUMERATE]           = { h_cap_enumerate,           SC_NONE, 0, SC_ANYTYPE },
+#else
+    [SYS_CAP_ENUMERATE]           = { h_cap_enumerate,           CAPSLOT_DEBUG, CAP_RIGHT_READ, CAP_DEBUG },
+#endif
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -1324,7 +1400,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNMAP_FRAME + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_CAP_ENUMERATE + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

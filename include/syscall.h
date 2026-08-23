@@ -174,6 +174,7 @@ struct audit_event {
 #define SYS_IPC_RECV_BLOCK     94   /* (ep_slot, buf, max) -> len; like SYS_IPC_RECV but SLEEPS on an empty queue instead of returning IPC_AGAIN. CAP_ENDPOINT + READ, same gate. */
 #define SYS_MAP_FRAME          95   /* (frame_slot, vaddr, rights) -> 0; map the KOBJ_FRAME named by a CAP_FRAME into the caller's own address space. PTE bits come from (cap rights & rights); W|X together is refused. */
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE at vaddr must name this capability's own frame. */
+#define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -484,6 +485,7 @@ static inline int sys_console_owned(void) {
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG:  SYS_DMESG                 */
 #define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE: boot-module read surface  */
+#define CAPSLOT_DEBUG      19    /* CAP_DEBUG:       observation only          */
 #define CAPSLOT_UNTYPED    18    /* CAP_UNTYPED: kernel-object memory (init)   */
 #define CAPSLOT_REPLY      21    /* CAP_REPLY: one-shot right to answer the
                                  * request just received (minted by RECV,
@@ -573,6 +575,39 @@ static inline int sys_map_frame(int frame_slot, unsigned long vaddr,
 static inline int sys_unmap_frame(int frame_slot, unsigned long vaddr) {
     return (int)syscall(SYS_UNMAP_FRAME, (uint32_t)frame_slot,
                         (uint64_t)vaddr, 0);
+}
+
+/* ---- roadmap 3.6: reading the capability graph -----------------------------
+ *
+ * Mirrors struct cap_info in src/include/kernel.h. One slot of one task's
+ * cspace; walk slot 0..CAP_ENUM_MAX_SLOT over each task to see the whole graph.
+ *
+ * `object` is deliberately absent: `serial` and `badge` are the graph's nodes
+ * and edges, so derivation is fully visible without naming what each capability
+ * points at. Same reasoning that suppresses `cr3` and another task's `eip`.
+ */
+struct cap_info {
+    uint32_t slot;
+    uint32_t occupied;    /* 0 = empty slot, 1 = a live capability */
+    uint32_t type;
+    uint32_t rights;
+    uint32_t serial;      /* this capability's identity */
+    uint32_t badge;       /* its parent's serial; 0 at a root */
+    uint32_t generation;
+    uint32_t reserved;
+};
+
+/* The kernel's CNODE_SIZE. A caller walking a cspace needs the bound, and
+ * hard-coding 256 in each tool is how the two drift. */
+#define CAP_ENUM_MAX_SLOT 256
+
+/* Read task `tid`'s capability slot `slot`. Needs CAP_DEBUG with READ at
+ * CAPSLOT_DEBUG; without it the central gate refuses before the handler runs.
+ * A dead task reports every slot empty rather than erroring -- see the handler.
+ */
+static inline int sys_cap_enumerate(int tid, unsigned slot, struct cap_info *out) {
+    return (int)syscall(SYS_CAP_ENUMERATE, (uint32_t)tid, (uint32_t)slot,
+                        SYSCALL_UPTR(out));
 }
 
 /* ---- roadmap 1.1 interrupt-policy audit readout ----------------------------

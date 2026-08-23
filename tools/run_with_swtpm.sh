@@ -8,6 +8,14 @@
 # Env:
 #   SWTPM_TIMEOUT   seconds to wait for a marker (default 60)
 #   REQUIRE_MARKER  string that must appear on serial for success
+#   EXPECT_FAULT    string that inverts the fault verdict — the named fault is
+#                   the success condition, and any OTHER fault still fails. Same
+#                   contract as tools/smoke_test.sh, added 2026-08-23 for the
+#                   fail-closed measured-boot arms, whose success condition IS a
+#                   halt: their refusal says PANIC (deliberately, so a refusal
+#                   reddens CI rather than scrolling past), and this script tests
+#                   FAULT_RE before REQUIRE_MARKER, so the fault verdict always
+#                   won first and no marker could ever be asserted on a halt.
 #   FAIL_MARKER     string whose appearance is an immediate failure
 #   PRINT_PCR       if "1", echo the guest's `tpm: PCR8=.. PCR9=..` line
 #   KEEP_TPMSTATE   if set to a dir, reuse/persist swtpm state there instead of a
@@ -24,6 +32,7 @@ shift || true
 
 TIMEOUT="${SWTPM_TIMEOUT:-60}"
 REQUIRE_MARKER="${REQUIRE_MARKER:-}"
+EXPECT_FAULT="${EXPECT_FAULT:-}"
 FAIL_MARKER="${FAIL_MARKER:-}"
 
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
@@ -68,7 +77,15 @@ status="timeout"
 deadline=$(( $(date +%s) + TIMEOUT ))
 FAULT_RE='PANIC|panic|Kernel panic|#PF|#GP|triple fault|CPU exception'
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then status="fault"; break; fi
+    if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then
+        # Under EXPECT_FAULT only the fault we NAMED ends the run; any other one
+        # keeps going so it is reported as the wrong fault at the end rather than
+        # being accepted as the expected refusal.
+        if [ -n "$EXPECT_FAULT" ] && grep -qF "$EXPECT_FAULT" "$LOG" 2>/dev/null; then
+            status="expected_fault"; break
+        fi
+        if [ -z "$EXPECT_FAULT" ]; then status="fault"; break; fi
+    fi
     if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then status="marker_fail"; break; fi
     if [ -n "$REQUIRE_MARKER" ] && grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then status="ok"; break; fi
     sleep 1
@@ -84,7 +101,14 @@ echo "----------------------------------------------------------"
 
 case "$status" in
     ok)          echo "SWTPM PASS: marker '$REQUIRE_MARKER' observed"; exit 0 ;;
+    expected_fault)
+                 echo "SWTPM PASS: expected fault '$EXPECT_FAULT' observed"; exit 0 ;;
     marker_fail) echo "SWTPM FAIL: saw fail marker '$FAIL_MARKER'"; exit 1 ;;
     fault)       echo "SWTPM FAIL: kernel fault/panic on serial"; exit 1 ;;
-    *)           echo "SWTPM FAIL: timed out after ${TIMEOUT}s without '$REQUIRE_MARKER'"; exit 1 ;;
+    *)           if [ -n "$EXPECT_FAULT" ]; then
+                     echo "SWTPM FAIL: timed out after ${TIMEOUT}s without the expected fault '$EXPECT_FAULT'"
+                 else
+                     echo "SWTPM FAIL: timed out after ${TIMEOUT}s without '$REQUIRE_MARKER'"
+                 fi
+                 exit 1 ;;
 esac

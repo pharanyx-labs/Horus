@@ -94,7 +94,8 @@ DEFECT_FLAGS = \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
-	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION
+	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
+	TASKINFO_WIDE_AUTHORITY
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -549,6 +550,15 @@ endif
 # the calibrated TSC instead of PIT ticks -- a more accurate clock that hands
 # ring 3 back the cycle-accurate timer CR4.TSD spends a control-register bit to
 # deny (roadmap 2.2). `make smoke-captest` must go red under it.
+# TASKINFO_WIDE_AUTHORITY=1 restores the pre-2026-08-24 acceptance set for
+# SYS_GET_TASK_INFO: CAP_USER or CAP_AUDIT also answer "may I see the process
+# list" (roadmap 3.6). `make smoke-proc` must go red under it -- the witness is
+# `grantee`, which holds a granted CAP_AUDIT and no CAP_DEBUG.
+TASKINFO_WIDE_AUTHORITY ?= 0
+ifeq ($(TASKINFO_WIDE_AUTHORITY),1)
+CFLAGS += -DTASKINFO_WIDE_AUTHORITY
+endif
+
 CLOCK_TSC_RESOLUTION ?= 0
 ifeq ($(CLOCK_TSC_RESOLUTION),1)
 CFLAGS += -DCLOCK_TSC_RESOLUTION
@@ -2893,6 +2903,20 @@ smoke-smp:
 # Build with the gated process-control self-test, boot headless, and require the
 # in-kernel driver to report PASS -- runtime proof that SYS_EXIT and SYS_KILL
 # terminate tasks (a self-exiting child and a killed child both reach dead).
+# Control arm for the introspection narrowing (roadmap 3.6, second half).
+# TASKINFO_WIDE_AUTHORITY=1 lets CAP_USER or CAP_AUDIT answer "may I see the
+# process list" again. The witness is `grantee`: it holds a granted CAP_AUDIT --
+# proved live by its own SYS_READ_AUDIT check first -- and no CAP_DEBUG, so it
+# is the one task in the tree that can tell the two acceptance sets apart.
+.PHONY: smoke-proc-taskinfo-control
+smoke-proc-taskinfo-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TASKINFO_WIDE_AUTHORITY=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TASKINFO_WIDE_AUTHORITY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL grant-audit-bought-introspection' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-proc
 smoke-proc:
 	@$(MAKE) --no-print-directory clean

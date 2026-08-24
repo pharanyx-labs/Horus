@@ -287,7 +287,27 @@ void _start(void) {
      * coverage. Unconditional here, where it belongs. */
     struct task_info other;
     check(sys_get_task_info(0, &other) != 0,
-          "task-info-other-allowed-without-CAP_USER-or-CAP_AUDIT");
+          "task-info-other-allowed-without-CAP_DEBUG");
+
+    /* And the narrowing itself (roadmap 3.6, 2026-08-24): cross-task
+     * introspection now requires CAP_DEBUG *specifically*. Until then it also
+     * accepted CAP_USER -- "do you administer users" -- and CAP_AUDIT -- "do you
+     * hold the audit log's keys" -- as answers to "may I see the process list".
+     *
+     * captest is the right place to notice if that ever comes back, because it
+     * holds NEITHER: what it proves is that the refusal above is not merely the
+     * absence of one particular capability. The task-info self-read at the top
+     * of this file already proves the syscall works, so a blanket refusal cannot
+     * satisfy both. */
+    {
+        struct cap_info ci;
+        /* Belt and braces on the same property from the other side: with no
+         * CAP_DEBUG, the cspace readout that capability gates is refused too, so
+         * a future change that re-widened introspection would have to re-widen
+         * both to pass. */
+        check(sys_cap_enumerate(0, 0, &ci) == SYS_ERR_PERM,
+              "cap-enumerate-and-task-info-disagree-about-CAP_DEBUG");
+    }
 
     /* ---- 5. signals: own-task operations ----------------------------- */
 

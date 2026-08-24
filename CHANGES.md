@@ -16,6 +16,26 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **Cross-task introspection required "do you hold the audit log's keys" (roadmap 3.6, S32).**
+  `SYS_GET_TASK_INFO` accepted `CAP_USER` or `CAP_AUDIT` as well as `CAP_DEBUG` — so
+  "do you administer users" and "do you hold the audit keys" were both answers to "may I see the
+  process list". Those gates were real (finding I-1 put them there in place of an ambient uid-0
+  test), which is exactly why two ambient-authority sweeps walked past them: the failure is
+  **bundling**, not ambience. `CAP_DEBUG` alone now.
+
+  **The blast radius was real and is the interesting part.** `proctest` and `fsclient` had been
+  endowed with a real `CAP_AUDIT` *for this syscall*, so both were re-pointed at `CAP_DEBUG`. That
+  broke `PROC_SELFTEST: FAIL grant-rc` on the first build — `proctest`'s **delegation** test hands
+  a child a capability and watches it work through `SYS_READ_AUDIT`, so it genuinely needs a
+  `CAP_AUDIT` to delegate. Swapping it would have been least privilege applied to the wrong thing.
+  It holds both now, for two stated reasons.
+
+  **Witnessed by the one task that can tell the acceptance sets apart**: `grantee` holds a granted
+  `CAP_AUDIT` and no `CAP_DEBUG`. It proves that capability is live via `SYS_READ_AUDIT` first —
+  so the refusal cannot be "it holds nothing" — and reads its own info successfully, so it cannot
+  be a blanket refusal either. Falsified by `TASKINFO_WIDE_AUTHORITY=1`, under which it reads
+  another task's info again.
+
 - **A monotonic clock, at the resolution `CR4.TSD` allows (roadmap 2.2, S34).**
   `SYS_CLOCK_GETTIME` reports time since boot from the PIT tick counter — 10 ms — rather than
   from the TSC. That is a security decision, not a hardware limit: `CR4.TSD` is set precisely to

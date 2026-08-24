@@ -225,7 +225,14 @@ void scheduler_lock_release(void);
 
 struct endpoint endpoints[MAX_ENDPOINTS];
 
-uint32_t system_ticks = 0;
+/* 64-bit since 2026-08-24 (roadmap 2.2). At PIT_TICK_HZ (100 Hz) a u32 wraps
+ * after ~497 days -- irrelevant while nothing read it as a clock, and a defect
+ * the moment SYS_CLOCK_GETTIME does: a monotonic clock that goes backwards is
+ * worse than no clock, because every timeout built on it silently fires early
+ * or never. One counter rather than two, so they cannot drift; the legacy
+ * `get_system_ticks()` still returns the low 32 bits for callers that only
+ * compare small deltas. */
+uint64_t system_ticks = 0;
 
 void scheduler_init(void) {
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -908,6 +915,13 @@ void timer_handler(void) {
 }
 
 uint32_t get_system_ticks(void) {
+    /* Truncating on purpose: every existing caller compares small deltas or
+     * mixes this into entropy, and widening their arithmetic would be churn
+     * with no reader. Anything that needs a CLOCK uses get_system_ticks64. */
+    return (uint32_t)system_ticks;
+}
+
+uint64_t get_system_ticks64(void) {
     return system_ticks;
 }
 

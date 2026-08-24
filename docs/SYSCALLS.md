@@ -241,6 +241,31 @@ tree passed a stack buffer.
 Wrappers now pass pointers through `SYSCALL_UPTR()`, and `tools/check_syscall_abi.py` (the
 required `syscall-abi` job) fails the build if any wrapper narrows one. Property **S24**.
 
+## Time (roadmap 2.2)
+
+| # | Name | Arguments | Authorisation *(as checked)* |
+|---|---|---|---|
+| 98 | `SYS_CLOCK_GETTIME` | `clock_id`, `struct horus_timespec *` | none (ambient) |
+
+Monotonic time since boot. `HORUS_CLOCK_MONOTONIC` (1) is the only accepted id; anything else
+is `SYS_ERR_INVAL`. There is no wall clock in this system — nothing reads an RTC and nothing
+attests one — so `CLOCK_REALTIME` is refused rather than answered with uptime.
+
+**Resolution is 10 ms, and that is the security-relevant part.** `CR4.TSD` denies ring 3
+RDTSC to remove the cycle-accurate timer cache and covert-channel attacks lean on
+(`src/kernel/crypto.c`); a nanosecond clock behind a syscall hands it back. So the value comes
+from the PIT tick counter at `PIT_TICK_HZ`, and `nsec` is always a multiple of 10,000,000. Not
+a claim of side-channel safety — a counting loop still builds a finer timer — only a refusal to
+supply one.
+
+**Ambient on purpose.** A coarse count of time since boot is not authority over an object, and
+every task can already approximate it by counting yields; gating it would buy nothing and push
+callers toward a worse clock of their own. Same class as `SYS_GETPID`.
+
+Monotonic **by construction**: the source is a counter the timer interrupt only increments,
+64-bit since 2026-08-24 because a `uint32_t` at 100 Hz wraps after ~497 days, and a clock that
+goes backwards makes every timeout built on it fire early or never.
+
 ## Observation (roadmap 3.6)
 
 | # | Name | Arguments | Authorisation *(as checked)* |

@@ -97,6 +97,7 @@ conditional:
       MEASURED 2026-08-20: NOT entered even by an IRQ_POLICY_AUDIT=1 boot, which an earlier entry claimed would reach it. Nothing in that image calls it
 
 covered:
+  - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`
   - SYS_EXIT

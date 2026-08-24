@@ -289,25 +289,6 @@ void _start(void) {
     check(sys_get_task_info(0, &other) != 0,
           "task-info-other-allowed-without-CAP_DEBUG");
 
-    /* And the narrowing itself (roadmap 3.6, 2026-08-24): cross-task
-     * introspection now requires CAP_DEBUG *specifically*. Until then it also
-     * accepted CAP_USER -- "do you administer users" -- and CAP_AUDIT -- "do you
-     * hold the audit log's keys" -- as answers to "may I see the process list".
-     *
-     * captest is the right place to notice if that ever comes back, because it
-     * holds NEITHER: what it proves is that the refusal above is not merely the
-     * absence of one particular capability. The task-info self-read at the top
-     * of this file already proves the syscall works, so a blanket refusal cannot
-     * satisfy both. */
-    {
-        struct cap_info ci;
-        /* Belt and braces on the same property from the other side: with no
-         * CAP_DEBUG, the cspace readout that capability gates is refused too, so
-         * a future change that re-widened introspection would have to re-widen
-         * both to pass. */
-        check(sys_cap_enumerate(0, 0, &ci) == SYS_ERR_PERM,
-              "cap-enumerate-and-task-info-disagree-about-CAP_DEBUG");
-    }
 
     /* ---- 5. signals: own-task operations ----------------------------- */
 
@@ -677,6 +658,24 @@ void _start(void) {
               "cap-enumerate-bad-tid-leaks-a-different-error");
         check(sys_cap_enumerate(0, 100000, &ci) == SYS_ERR_PERM,
               "cap-enumerate-bad-slot-leaks-a-different-error");
+
+        /* The two halves of "observing needs CAP_DEBUG" agree (roadmap 3.6,
+         * second half): with none of it, neither the cspace readout above nor
+         * cross-task SYS_GET_TASK_INFO is permitted -- so re-widening
+         * introspection later would have to re-widen both to pass. The
+         * task-info self-read in section 1 already proves that syscall works,
+         * so a blanket refusal cannot satisfy both.
+         *
+         * ORDER MATTERS HERE, and it is not obvious: `fail()` calls sys_exit(),
+         * so this suite stops at its FIRST failing check, and a control arm sees
+         * only that one marker. This check fires under CAP_ENUMERATE_UNGATED too
+         * -- placed any earlier in the file it would pre-empt
+         * `cap-enumerate-without-cap-debug`, which is the marker
+         * `smoke-captest-capenum-control` names, and that arm would time out
+         * waiting for a line captest never reached. It did, on 2026-08-24. */
+        struct task_info nobody;
+        check(sys_get_task_info(0, &nobody) != 0,
+              "cap-enumerate-and-task-info-disagree-about-CAP_DEBUG");
     }
 
     /* ---- the BLOCKING receive carries the same authority (roadmap 1.3) ----

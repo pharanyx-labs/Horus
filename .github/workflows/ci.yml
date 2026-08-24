@@ -357,6 +357,13 @@ jobs:
       # including captest, which holds no CAP_DEBUG.
       - name: Control arm — an ungated cspace readout is readable by anyone
         run: make smoke-captest-capenum-control
+      # Roadmap 2.2. The tempting version of SYS_CLOCK_GETTIME reports real
+      # microseconds from the TSC -- strictly more accurate, and it undoes
+      # CR4.TSD by handing ring 3 the cycle-accurate timer that bit exists to
+      # deny. The resolution assertion is the only thing standing between the
+      # two, so it needs an arm that proves it can fire.
+      - name: Control arm — a TSC-resolution clock undoes CR4.TSD
+        run: make smoke-captest-clock-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)

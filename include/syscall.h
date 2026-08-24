@@ -175,6 +175,7 @@ struct audit_event {
 #define SYS_MAP_FRAME          95   /* (frame_slot, vaddr, rights) -> 0; map the KOBJ_FRAME named by a CAP_FRAME into the caller's own address space. PTE bits come from (cap rights & rights); W|X together is refused. */
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE at vaddr must name this capability's own frame. */
 #define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. */
+#define SYS_CLOCK_GETTIME      98   /* (clock_id, struct horus_timespec*) -> 0; monotonic time since boot (roadmap 2.2). No capability; 10 ms resolution by design. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -575,6 +576,38 @@ static inline int sys_map_frame(int frame_slot, unsigned long vaddr,
 static inline int sys_unmap_frame(int frame_slot, unsigned long vaddr) {
     return (int)syscall(SYS_UNMAP_FRAME, (uint32_t)frame_slot,
                         (uint64_t)vaddr, 0);
+}
+
+/* ---- roadmap 2.2: a monotonic clock ----------------------------------------
+ *
+ * Time since boot, and only that. There is no wall clock in this system:
+ * nothing reads an RTC and nothing attests one, so every clock id other than
+ * HORUS_CLOCK_MONOTONIC is refused rather than approximated.
+ *
+ * RESOLUTION IS 10 ms ON PURPOSE. CR4.TSD denies ring 3 RDTSC to remove the
+ * cycle-accurate timer that cache and covert-channel attacks lean on; a
+ * nanosecond clock behind a syscall would hand it back. `nsec` is therefore
+ * always a multiple of 10,000,000. That is not a claim of side-channel safety --
+ * a counting loop still builds a finer timer -- only a refusal to make it easy.
+ *
+ * Monotonic by construction: the source is a counter the timer interrupt only
+ * increments, 64-bit so it does not wrap (a u32 at 100 Hz wraps in ~497 days,
+ * and a clock that goes backwards makes every timeout fire early or never).
+ */
+#define HORUS_CLOCK_MONOTONIC 1
+
+struct horus_timespec {
+    uint64_t sec;
+    uint32_t nsec;      /* always a multiple of 10,000,000 */
+    uint32_t reserved;
+};
+
+/* Monotonic time since boot. Returns 0, or SYS_ERR_INVAL for any other clock
+ * id. No capability: a coarse count of time since boot is not authority over
+ * an object, and every task can already approximate it by counting yields. */
+static inline int sys_clock_gettime(unsigned clock_id, struct horus_timespec *out) {
+    return (int)syscall(SYS_CLOCK_GETTIME, (uint32_t)clock_id,
+                        SYSCALL_UPTR(out), 0);
 }
 
 /* ---- roadmap 3.6: reading the capability graph -----------------------------

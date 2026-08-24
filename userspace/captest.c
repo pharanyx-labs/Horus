@@ -597,6 +597,43 @@ void _start(void) {
 #endif
     }
 
+    /* ---- roadmap 2.2: the monotonic clock --------------------------------
+     *
+     * Ambient on purpose (a coarse count of time since boot is not authority
+     * over an object), so what is asserted here is the SHAPE of what it hands
+     * back rather than a refusal.
+     *
+     * The resolution check is the security-relevant one. CR4.TSD exists to deny
+     * ring 3 a cycle-accurate timer; if `nsec` ever stopped being a multiple of
+     * a PIT tick, this syscall would be handing that timer back through the
+     * front door, and nothing else in the tree would notice. */
+    {
+        struct horus_timespec a, b;
+        check(sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &a) == 0,
+              "clock-monotonic-refused");
+        check(a.nsec < 1000000000u, "clock-nsec-out-of-range");
+        check((a.nsec % 10000000u) == 0,
+              "clock-resolution-finer-than-a-pit-tick");
+        check(a.reserved == 0, "clock-reserved-field-not-zeroed");
+
+        /* Monotonic: a second read never goes backwards. Reading twice in a row
+         * is a weak test of that, and deliberately so -- a strong one would
+         * have to sleep, and there is nothing here to sleep on yet (per-task
+         * timers are the rest of roadmap 2.2). What it does catch is a clock
+         * that resets, wraps, or reads uninitialised memory. */
+        check(sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &b) == 0,
+              "clock-second-read-refused");
+        check(b.sec > a.sec || (b.sec == a.sec && b.nsec >= a.nsec),
+              "clock-went-backwards");
+
+        /* Every other clock id is refused, not approximated: there is no wall
+         * clock here, and answering with uptime would be a number shaped like a
+         * date with nothing behind it. */
+        check(sys_clock_gettime(0, &a) == SYS_ERR_INVAL, "clock-id-0-accepted");
+        check(sys_clock_gettime(2, &a) == SYS_ERR_INVAL, "clock-realtime-answered-with-uptime");
+        check(sys_clock_gettime(0xFFFFFFFFu, &a) == SYS_ERR_INVAL, "clock-bogus-id-accepted");
+    }
+
     /* ---- roadmap 3.6: reading the capability graph needs CAP_DEBUG --------
      *
      * captest holds no CAP_DEBUG (init delegates it to the shell, not here), so

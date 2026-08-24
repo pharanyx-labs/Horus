@@ -637,6 +637,60 @@ static void h_task_info(struct interrupt_frame64 *r) {
     else r->rax = (uint32_t)SYS_ERR_FAULT;
 }
 
+/* SYS_CLOCK_GETTIME (98): monotonic time since boot (roadmap 2.2).
+ *
+ * Derived from the PIT tick counter, NOT from the TSC, and that is the whole
+ * design. CR4.TSD denies ring 3 RDTSC to remove the cycle-accurate timer that
+ * cache and covert-channel attacks lean on; a nanosecond-resolution syscall
+ * would hand it straight back. So the resolution is one PIT tick -- 10 ms at
+ * PIT_TICK_HZ -- and `nsec` comes out a multiple of 10,000,000.
+ *
+ * No capability. A coarse count of time since boot is not authority over any
+ * object, and every task can already approximate it by counting yields; gating
+ * it would buy nothing and push callers toward a worse clock of their own. Self
+ * -scoped and read-only, the same class as SYS_GETPID and SYS_TASK_EXIT_INFO.
+ *
+ * Any clock id other than HORUS_CLOCK_MONOTONIC is refused rather than
+ * approximated. There is no wall clock in this system -- nothing reads an RTC,
+ * nothing attests one -- and answering CLOCK_REALTIME with uptime would be a
+ * number shaped like a date with nothing behind it.
+ *
+ * Monotonic BY CONSTRUCTION rather than by care: the source is a counter the
+ * timer interrupt only ever increments, widened to 64 bits on 2026-08-24
+ * because at 100 Hz a u32 wraps after ~497 days, and a clock that goes
+ * backwards makes every timeout built on it fire early or never. */
+static void h_clock_gettime(struct interrupt_frame64 *r) {
+    uint32_t clock_id = (uint32_t)r->rbx;
+    struct horus_timespec *out = (struct horus_timespec *)(addr_t)r->rcx;
+
+    if (clock_id != HORUS_CLOCK_MONOTONIC) {
+        r->rax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
+
+    struct horus_timespec ts;
+#ifdef CLOCK_TSC_RESOLUTION
+    /* CONTROL ARM: the obvious "better" clock -- read the TSC and report real
+     * nanoseconds. It is more accurate, more useful, and it gives ring 3 back
+     * exactly the cycle-accurate timer CR4.TSD spends a control register bit to
+     * deny. captest's resolution check must go red under it; if it does not,
+     * that check is decoration. */
+    {
+        uint64_t us = kmsg_uptime_us();
+        ts.sec  = us / 1000000u;
+        ts.nsec = (uint32_t)((us % 1000000u) * 1000u);
+    }
+#else
+    uint64_t ticks = get_system_ticks64();
+    ts.sec      = ticks / PIT_TICK_HZ;
+    ts.nsec     = (uint32_t)((ticks % PIT_TICK_HZ) * (1000000000u / PIT_TICK_HZ));
+#endif
+    ts.reserved = 0;
+
+    r->rax = (copy_to_user(out, &ts, sizeof(ts)) == 0)
+           ? 0u : (uint32_t)SYS_ERR_FAULT;
+}
+
 /* SYS_CAP_ENUMERATE (97): read one slot of one task's cspace (roadmap 3.6).
  *
  * The capability graph is the security argument of this system, and until now
@@ -1134,7 +1188,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 98
+#define SYSCALL_TABLE_SIZE 99
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1389,6 +1443,19 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #else
     [SYS_CAP_ENUMERATE]           = { h_cap_enumerate,           CAPSLOT_DEBUG, CAP_RIGHT_READ, CAP_DEBUG },
 #endif
+    /* OUTSIDE the CAP_ENUMERATE_UNGATED arm, and it was not on the first try:
+     * appended to the #else branch, this entry existed only in ordinary builds,
+     * so the control-arm kernel had no clock at all and captest failed on
+     * `clock-monotonic-refused` instead of the door it was aiming at. The arm
+     * caught it, which is what arms are for -- but note what did NOT: the
+     * coverage deriver models the SHIP build, where the entry is present and
+     * correct, so a syscall accidentally scoped to a defect arm's #else is
+     * invisible to it.
+     *
+     * No capability: a coarse count of time since boot is not authority over an
+     * object, and its resolution is chosen so it does not restore what CR4.TSD
+     * takes away. See h_clock_gettime. */
+    [SYS_CLOCK_GETTIME]           = { h_clock_gettime,           SC_NONE, 0, SC_ANYTYPE },
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -1400,7 +1467,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_CAP_ENUMERATE + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_CLOCK_GETTIME + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

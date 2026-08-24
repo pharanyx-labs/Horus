@@ -94,7 +94,7 @@ DEFECT_FLAGS = \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
-	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED
+	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -545,6 +545,15 @@ endif
 # CAP_ENUMERATE_UNGATED=1 removes SYS_CAP_ENUMERATE's declared capability, so
 # the central gate admits every caller and the capability graph becomes readable
 # by any ring-3 task. `make smoke-captest` must go red under it (roadmap 3.6).
+# CLOCK_TSC_RESOLUTION=1 makes SYS_CLOCK_GETTIME report real microseconds off
+# the calibrated TSC instead of PIT ticks -- a more accurate clock that hands
+# ring 3 back the cycle-accurate timer CR4.TSD spends a control-register bit to
+# deny (roadmap 2.2). `make smoke-captest` must go red under it.
+CLOCK_TSC_RESOLUTION ?= 0
+ifeq ($(CLOCK_TSC_RESOLUTION),1)
+CFLAGS += -DCLOCK_TSC_RESOLUTION
+endif
+
 CAP_ENUMERATE_UNGATED ?= 0
 ifeq ($(CAP_ENUMERATE_UNGATED),1)
 CFLAGS += -DCAP_ENUMERATE_UNGATED
@@ -2412,6 +2421,20 @@ smoke-newlib-dotdot-control:
 # holds no CAP_DEBUG -- reads another task's cspace. The FAIL marker names that
 # specific check, so an arm reddening captest for any other reason does not
 # satisfy it.
+# Control arm for the clock's RESOLUTION (roadmap 2.2). The tempting version of
+# this syscall reports real microseconds from the TSC: strictly more accurate,
+# strictly more useful, and it undoes CR4.TSD by handing ring 3 the
+# cycle-accurate timer that bit exists to deny. captest's
+# `clock-resolution-finer-than-a-pit-tick` check must fire.
+.PHONY: smoke-captest-clock-control
+smoke-captest-clock-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CLOCK_TSC_RESOLUTION=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CLOCK_TSC_RESOLUTION=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL clock-resolution-finer-than-a-pit-tick' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest-capenum-control
 smoke-captest-capenum-control:
 	@$(MAKE) --no-print-directory clean

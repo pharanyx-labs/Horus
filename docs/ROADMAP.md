@@ -990,10 +990,15 @@ between the two headers.
 - **`capview` is a shell builtin, not a program.** Fine for now — it needs `CAP_DEBUG`, and the
   shell is what holds it — but a standalone `/bin/capview` would need init to delegate the
   capability to a spawned task, which is roadmap 2.3's inheritance question.
-- **Task introspection still accepts `CAP_USER` and `CAP_AUDIT`** as well as `CAP_DEBUG`, for
-  compatibility: `fs_server` holds `CAP_AUDIT` for the object store and the user-admin path
-  holds `CAP_USER`. Narrowing `h_task_info` to `CAP_DEBUG` alone is a separate change with its
-  own blast radius.
+- ~~**Task introspection still accepts `CAP_USER` and `CAP_AUDIT`.**~~ **Narrowed 2026-08-24.**
+  `SYS_GET_TASK_INFO` requires `CAP_DEBUG` specifically now. The blast radius was real and is
+  worth recording: `proctest` and `fsclient` had been endowed with a real `CAP_AUDIT` *for this
+  syscall*, so both were re-pointed at `CAP_DEBUG` — and `proctest` keeps its `CAP_AUDIT` after
+  all, because its **delegation** test hands a child a capability and watches it work through
+  `SYS_READ_AUDIT`. Swapping that one would have been least privilege applied to the wrong
+  thing; `PROC_SELFTEST: FAIL grant-rc` said so on the first build. Witnessed by `grantee`, the
+  one task holding a granted `CAP_AUDIT` and no `CAP_DEBUG`, against
+  `smoke-proc-taskinfo-control`.
 
 ### 3.7 ⬜ Deterministic replay harness — **[F-3.3]**
 
@@ -1189,7 +1194,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 119 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 33 of them control arms that must reproduce a defect |
+| ✅ | 120 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 34 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

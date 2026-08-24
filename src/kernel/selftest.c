@@ -1341,7 +1341,7 @@ static int proc_spawn_embed(const uint8_t *start, const uint8_t *end, const char
 /* ---- Process-control self-test (PROC_SELFTEST builds only) -----------------
  * The kernel spawns three tasks: a "hello" child that finishes with sys_exit, a
  * "looper" child (the preemption-test payload) that loops forever, and the
- * proctest driver. The driver is granted CAP_AUDIT (to read task state) and a
+ * proctest driver. The driver is granted CAP_DEBUG (to read task state) and a
  * CAP_TCB capability to the looper (to terminate it), then dropped to ring 3. It
  * confirms the hello child exits and that it can SYS_KILL the looper via that
  * capability, printing PROC_SELFTEST: PASS. (The driver does not spawn anything
@@ -1360,13 +1360,27 @@ void proc_selftest(void) {
     int a        = proc_spawn_embed(embedded_proctest_bin_start,   embedded_proctest_bin_end,   "proc");
     if (hello_id <= 0 || loop_id <= 0 || a <= 0) { print("PROC_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
-    /* Grant the driver a real CAP_AUDIT (root slot 7) so SYS_GET_TASK_INFO can
+    /* Grant the driver a real CAP_DEBUG (root slot 18) so SYS_GET_TASK_INFO can
      * read the children's state — but NOT admin, so the kill must go through a
      * genuine CAP_TCB capability — plus a CAP_TCB to the looper child (root slot
      * 0 is the primordial TCB cap), scoped to loop_id. Both get fresh serials so
      * cap_lookup accepts them. */
     extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
-    cap_install_from_root(a, 7, 7, 0);            /* CAP_AUDIT: read task info   */
+    /* BOTH, and for two different reasons -- which is the distinction roadmap
+     * 3.6 exists to make.
+     *
+     * CAP_DEBUG (root 18) is what SYS_GET_TASK_INFO requires since 2026-08-24:
+     * observing another task's state is observation, not audit authority.
+     *
+     * CAP_AUDIT (root 7) stays because the DELEGATION test needs a real
+     * capability to hand a child and watch it work -- the grantee polls
+     * SYS_READ_AUDIT to prove the grant landed. Swapping that for CAP_DEBUG
+     * would have been least privilege applied to the wrong thing: the test is
+     * about grant, and it needs a capability with an observable effect. Doing it
+     * anyway broke `PROC_SELFTEST: FAIL grant-rc` on the first build, which is
+     * the gate noticing before CI had to. */
+    cap_install_from_root(a, CAPSLOT_DEBUG, 18, 0);  /* CAP_DEBUG: read task info  */
+    cap_install_from_root(a, 7, 7, 0);               /* CAP_AUDIT: the grant test  */
     cap_install_from_root(a, 16, 0, (uint32_t)loop_id);  /* CAP_TCB -> captest   */
     tasks[a].uid = 0;
 
@@ -2054,7 +2068,9 @@ void fs_selftest(void) {
          * uid 0, which is exactly the ambient authority that was removed. The
          * workers are deliberately NOT given it: least privilege, and it keeps
          * this harness an honest exercise of the capability model. */
-        if (i == 0) cap_install_from_root(c, CAPSLOT_AUDIT, 7, 0);   /* CAP_AUDIT */
+        /* The coordinator polls its workers' task state, which is CAP_DEBUG's
+         * job since 2026-08-24 -- it never read the audit log. */
+        if (i == 0) cap_install_from_root(c, CAPSLOT_DEBUG, 18, 0);  /* CAP_DEBUG */
     }
 #else
     int cli = fs_spawn_embedded(embedded_fsclient_bin_start, embedded_fsclient_bin_end, "fsclient");

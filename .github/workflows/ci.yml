@@ -966,6 +966,14 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot PROC_SELFTEST kernel and assert SYS_EXIT + capability-gated SYS_KILL work
         run: make smoke-proc
+      # Roadmap 3.6, second half. Cross-task introspection required CAP_DEBUG
+      # *specifically* from 2026-08-24; before that CAP_USER ("do you administer
+      # users") or CAP_AUDIT ("do you hold the audit log's keys") also answered
+      # "may I see the process list". `grantee` is the only task that can tell
+      # those apart: it holds a granted CAP_AUDIT, proved live by its own
+      # SYS_READ_AUDIT check, and no CAP_DEBUG.
+      - name: Control arm — a CAP_AUDIT must not buy cross-task introspection
+        run: make smoke-proc-taskinfo-control
 
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)

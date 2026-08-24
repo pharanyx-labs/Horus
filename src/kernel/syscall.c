@@ -583,23 +583,41 @@ static void h_task_info(struct interrupt_frame64 *r) {
         return;
     }
 
-    int is_privileged = 0;
-    struct capability *c = cap_lookup(6, CAP_RIGHT_ALL);
-    if (c && c->type == CAP_USER) is_privileged = 1;
+    /* CAP_DEBUG, and ONLY CAP_DEBUG (roadmap 3.6, second half, 2026-08-24).
+     *
+     * This accepted CAP_USER or CAP_AUDIT as well until now, which meant that
+     * "may I see the process list" was answered by "do you administer users" or
+     * "do you hold the audit log's keys". Those gates were real -- finding I-1
+     * replaced an ambient uid-0 test with them -- but they named authority far
+     * beyond what the caller needed, and an ambient-authority sweep does not
+     * find that: it looks for gates that are missing or vacuous, and these were
+     * neither.
+     *
+     * Every holder that legitimately observes now holds the capability for
+     * observing. The shell got CAP_DEBUG when it landed; `proctest` and
+     * `fsclient` were endowed with a real CAP_AUDIT *for this syscall* and are
+     * endowed with CAP_DEBUG instead (src/kernel/selftest.c). Nothing else read
+     * another task's info.
+     *
+     * A task may still read its OWN info with no capability at all -- that is
+     * the `tid != get_current_task()` test below, unchanged. */
+    struct capability *c = cap_lookup(CAPSLOT_DEBUG, CAP_RIGHT_READ);
+    int is_privileged = (c && c->type == CAP_DEBUG);
+#ifdef TASKINFO_WIDE_AUTHORITY
+    /* CONTROL ARM: the pre-2026-08-24 acceptance set. CAP_USER or CAP_AUDIT also
+     * answer "may I see the process list", which is the bundling this narrowing
+     * removed. captest holds neither, so it cannot show the widening on its own
+     * -- the arm is aimed at the SHELL, which holds CAP_USER for useradd and
+     * would regain introspection through it. */
     if (!is_privileged) {
-        c = cap_lookup(7, CAP_RIGHT_READ);
+        c = cap_lookup(6, CAP_RIGHT_ALL);
+        if (c && c->type == CAP_USER) is_privileged = 1;
+    }
+    if (!is_privileged) {
+        c = cap_lookup(CAPSLOT_AUDIT, CAP_RIGHT_READ);
         if (c && c->type == CAP_AUDIT) is_privileged = 1;
     }
-    /* CAP_DEBUG (roadmap 3.6) is the RIGHT capability for this: observation and
-     * nothing else. The two above are accepted for compatibility -- fs_server
-     * holds CAP_AUDIT for the object store, and the user-admin path holds
-     * CAP_USER -- but a task that only needs to SEE the process list should
-     * hold neither. `ps` used to require CAP_AUDIT, which also rotates the audit
-     * chain's keys; the shell now carries CAP_DEBUG instead. */
-    if (!is_privileged) {
-        c = cap_lookup(CAPSLOT_DEBUG, CAP_RIGHT_READ);
-        if (c && c->type == CAP_DEBUG) is_privileged = 1;
-    }
+#endif
     /* No root promotion (finding I-1). Cross-task introspection requires a
      * CAP_USER or CAP_AUDIT capability, checked above — being uid 0 is not
      * authority. The shell's `ps` works because init delegates it a CAP_AUDIT,

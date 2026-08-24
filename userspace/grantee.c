@@ -29,6 +29,31 @@ void _start(void) {
     }
     if (!used) { report("PROC_SELFTEST: FAIL grant-use\n"); sys_exit(); }
 
+    /* (c) A CAP_AUDIT does not buy INTROSPECTION -- roadmap 3.6's second half,
+     *     2026-08-24. Until then SYS_GET_TASK_INFO accepted CAP_USER or
+     *     CAP_AUDIT as well as CAP_DEBUG, so "do you hold the audit log's keys"
+     *     was an answer to "may I see the process list". This task is the one
+     *     place that can witness the narrowing: it holds a real, live CAP_AUDIT
+     *     -- proved by (a) immediately above, which is why the order matters --
+     *     and no CAP_DEBUG at all.
+     *
+     *     Reading our OWN info must still work: a blanket refusal would satisfy
+     *     the cross-task half and is not what was asked for. */
+    {
+        struct task_info ti;
+        int self = sys_getpid();
+        if (sys_get_task_info(self, &ti) != 0) {
+            report("PROC_SELFTEST: FAIL grant-selfinfo\n"); sys_exit();
+        }
+        for (int t = 0; t < 16; t++) {
+            if (t == self) continue;
+            if (sys_get_task_info(t, &ti) == 0) {
+                report("PROC_SELFTEST: FAIL grant-audit-bought-introspection\n");
+                sys_exit();
+            }
+        }
+    }
+
     int me = sys_getpid();
     int leaked = 0;
     for (int t = 1; t < 16; t++) {

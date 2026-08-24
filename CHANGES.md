@@ -36,6 +36,14 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   be a blanket refusal either. Falsified by `TASKINFO_WIDE_AUTHORITY=1`, under which it reads
   another task's info again.
 
+  **captest's check ORDER turned out to be load-bearing**, and nothing said so. `fail()` calls
+  `sys_exit()`, so the suite stops at its first failing check and a control arm sees exactly one
+  marker. The cross-check added here fires under `CAP_ENUMERATE_UNGATED` as well — both halves of
+  "observing needs `CAP_DEBUG`" fail there — so sitting early in the file it pre-empted
+  `cap-enumerate-without-cap-debug`, the marker `smoke-captest-capenum-control` names, and that
+  arm timed out waiting for a line captest had exited before reaching. It sits last now, with the
+  constraint written beside it: invisible unless you already know `fail()` exits.
+
 - **A monotonic clock, at the resolution `CR4.TSD` allows (roadmap 2.2, S34).**
   `SYS_CLOCK_GETTIME` reports time since boot from the PIT tick counter — 10 ms — rather than
   from the TSC. That is a security decision, not a hardware limit: `CR4.TSD` is set precisely to

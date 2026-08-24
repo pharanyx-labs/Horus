@@ -16,6 +16,31 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A sixth door of [H-3]'s shape, on console input (S28).** `SYS_GET_LINE`'s dispatch entry
+  declares `SC_NONE`, so its handler is the only gate — and that gate read
+  `cap_lookup(8, READ)` with a fallback to `cap_lookup(3, READ)`, **neither type-tested**. Slot 3
+  is the legacy `CAP_FRAME` `create_task` installs in every task. Measured before the change:
+  `captest`, holding that decoy and no `CAP_CONSOLE`, passed the check and **blocked inside the
+  console read** — not merely eligible, actually reading what the user types.
+
+  It survived because a ring-3 console server owns the UART in any live boot and
+  `console_hw_owned()` refuses first. That is a *circumstance* — the server being alive — not a
+  gate, and it is the same shape as the CSPRNG's boot ordering in #200. The `console_hw_owned()`
+  check stays: it answers "do not race the owner", and a question about racing is not an answer
+  about authority. `CAP_CONSOLE`, type-tested, no fallback.
+
+  **Found by looking for the class rather than the instance.** `cap_lookup` does not test type —
+  by design — so every caller must, and five call sites in this tree did not: two in the
+  `DEBUG_SHELL`-only kernel shell, one inside the retired `RAMFS_SLOT3_GATE` arm, and two in
+  `h_get_line`. Only the last were live.
+
+  **The arm asserts a STALL**, which the harness could not express: a task admitted to a console
+  read prints nothing, so there is no FAIL line to require, and a timeout was unconditionally a
+  failure. `tools/smoke_test.sh` gained `EXPECT_STALL`, fenced three ways — a progress marker that
+  must appear (or a kernel that never booted would satisfy it), a forbidden marker that must not,
+  and no fault. Falsified in all three directions, including that `EXPECT_STALL` without
+  `ABSENT_MARKER` is refused outright.
+
 - **Cross-task introspection required "do you hold the audit log's keys" (roadmap 3.6, S32).**
   `SYS_GET_TASK_INFO` accepted `CAP_USER` or `CAP_AUDIT` as well as `CAP_DEBUG` — so
   "do you administer users" and "do you hold the audit keys" were both answers to "may I see the

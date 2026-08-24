@@ -95,7 +95,7 @@ DEFECT_FLAGS = \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
-	TASKINFO_WIDE_AUTHORITY
+	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -554,6 +554,16 @@ endif
 # SYS_GET_TASK_INFO: CAP_USER or CAP_AUDIT also answer "may I see the process
 # list" (roadmap 3.6). `make smoke-proc` must go red under it -- the witness is
 # `grantee`, which holds a granted CAP_AUDIT and no CAP_DEBUG.
+# GETLINE_SLOT3_FALLBACK=1 restores the pre-2026-08-24 fallback in h_get_line:
+# an UNTYPED cap_lookup on slot 3, the legacy CAP_FRAME every task is born
+# holding, as an alternative to CAP_CONSOLE. `make smoke-captest` must go red
+# under it -- by TIMEOUT, because captest then reaches the console read and
+# blocks rather than printing a marker.
+GETLINE_SLOT3_FALLBACK ?= 0
+ifeq ($(GETLINE_SLOT3_FALLBACK),1)
+CFLAGS += -DGETLINE_SLOT3_FALLBACK
+endif
+
 TASKINFO_WIDE_AUTHORITY ?= 0
 ifeq ($(TASKINFO_WIDE_AUTHORITY),1)
 CFLAGS += -DTASKINFO_WIDE_AUTHORITY
@@ -2436,6 +2446,24 @@ smoke-newlib-dotdot-control:
 # strictly more useful, and it undoes CR4.TSD by handing ring 3 the
 # cycle-accurate timer that bit exists to deny. captest's
 # `clock-resolution-finer-than-a-pit-tick` check must fire.
+# Control arm for console INPUT authority. GETLINE_SLOT3_FALLBACK=1 puts back the
+# untyped slot-3 lookup, and captest -- which holds that decoy and no CAP_CONSOLE
+# -- gets past the gate into the console read and BLOCKS there.
+#
+# So this arm asserts the ABSENCE of `CAPTEST: PASS` rather than the presence of
+# a FAIL marker: a task blocked inside a syscall prints nothing at all, and there
+# is no line to require. The absence is the evidence -- captest completes in
+# well under the timeout in every other configuration, including both other arms
+# over this same binary.
+.PHONY: smoke-captest-getline-control
+smoke-captest-getline-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 GETLINE_SLOT3_FALLBACK=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 GETLINE_SLOT3_FALLBACK=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_STALL='CAPTEST: begin' \
+		ABSENT_MARKER='CAPTEST: PASS' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest-clock-control
 smoke-captest-clock-control:
 	@$(MAKE) --no-print-directory clean

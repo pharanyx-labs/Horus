@@ -4213,9 +4213,29 @@ smoke-switch-commit-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 SWITCH_COMMIT_EARLY=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 SWITCH_COMMIT_EARLY=1 boot.iso
-	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_FAULT='stale scheduler claim' \
-		tools/smoke_test.sh boot.iso
+	@n=0; hit=0; \
+	while [ $$n -lt $(SWITCH_COMMIT_CONTROL_BOOTS) ]; do \
+	    n=$$((n+1)); \
+	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+	        EXPECT_FAULT='stale scheduler claim' \
+	        tools/smoke_test.sh boot.iso 2>&1); rc=$$?; \
+	    echo "$$out" | tail -2 | sed 's/^/  /'; \
+	    if [ $$rc -eq 0 ]; then hit=$$n; break; fi; \
+	    case "$$out" in \
+	      *"timed out"*|*"exited before the banner"*) \
+	        echo "  attempt $$n/$(SWITCH_COMMIT_CONTROL_BOOTS): INCONCLUSIVE - the boot reached neither the fault nor the banner; retrying" ;; \
+	      *) \
+	        echo "SWITCH COMMIT CONTROL: FAIL - committing the switch early did NOT leave a stale claim"; \
+	        echo "  The run COMPLETED without it, which is a real miss and is not retried."; \
+	        exit 1 ;; \
+	    esac; \
+	done; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "SWITCH COMMIT CONTROL: FAIL - no attempt reproduced the defect in $(SWITCH_COMMIT_CONTROL_BOOTS) boots"; \
+	    echo "  Every attempt was inconclusive. Exhausting the loop is a FAILURE, not a pass."; \
+	    exit 1; \
+	fi; \
+	echo "SWITCH COMMIT CONTROL: PASS - observed on boot $$hit of $(SWITCH_COMMIT_CONTROL_BOOTS)"
 
 .PHONY: smoke-claim-release
 smoke-claim-release:
@@ -4233,13 +4253,53 @@ smoke-claim-release:
 # arm with no positive counterpart, and the resume-guard shipped a bound that
 # rejected the IST stacks.
 .PHONY: smoke-claim-release-control
+# ---- The two control arms that assert a SCHEDULING-DEPENDENT fault ---------
+#
+# Both boot a deliberately-broken kernel at SMP_CPUS=4 and require a specific
+# fault. Three outcomes are possible and they are NOT the same:
+#
+#   * the fault appears            -> the defect reproduced. PASS.
+#   * the run completes without it -> the defect did NOT reproduce. FAIL, at
+#                                     once, never retried: for a deterministic
+#                                     defect that is a real miss and retrying it
+#                                     would be how an N-try loop becomes a way
+#                                     of passing.
+#   * the boot never reaches either -> INCONCLUSIVE. No evidence either way, and
+#                                     until 2026-08-27 this was the ONLY way
+#                                     these arms could go red. Retried.
+#
+# Measured: 1 failure in the last 10 CI runs on main for
+# smoke-claim-release-control, with its base arm green in the same job.
+CLAIM_RELEASE_CONTROL_BOOTS ?= 3
+SWITCH_COMMIT_CONTROL_BOOTS ?= 3
+
 smoke-claim-release-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_RELEASE_SKIP=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_RELEASE_SKIP=1 boot.iso
-	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_FAULT='ring 3 reached with a deferred release outstanding' \
-		tools/smoke_test.sh boot.iso
+	@n=0; hit=0; \
+	while [ $$n -lt $(CLAIM_RELEASE_CONTROL_BOOTS) ]; do \
+	    n=$$((n+1)); \
+	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+	        EXPECT_FAULT='ring 3 reached with a deferred release outstanding' \
+	        tools/smoke_test.sh boot.iso 2>&1); rc=$$?; \
+	    echo "$$out" | tail -2 | sed 's/^/  /'; \
+	    if [ $$rc -eq 0 ]; then hit=$$n; break; fi; \
+	    case "$$out" in \
+	      *"timed out"*|*"exited before the banner"*) \
+	        echo "  attempt $$n/$(CLAIM_RELEASE_CONTROL_BOOTS): INCONCLUSIVE - the boot reached neither the fault nor the banner; retrying" ;; \
+	      *) \
+	        echo "CLAIM RELEASE CONTROL: FAIL - the skipped release did NOT trip the guard"; \
+	        echo "  The run COMPLETED without it, which is a real miss and is not retried."; \
+	        exit 1 ;; \
+	    esac; \
+	done; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "CLAIM RELEASE CONTROL: FAIL - no attempt reproduced the defect in $(CLAIM_RELEASE_CONTROL_BOOTS) boots"; \
+	    echo "  Every attempt was inconclusive. Exhausting the loop is a FAILURE, not a pass."; \
+	    exit 1; \
+	fi; \
+	echo "CLAIM RELEASE CONTROL: PASS - observed on boot $$hit of $(CLAIM_RELEASE_CONTROL_BOOTS)"
 
 # ---- Frame capabilities (roadmap 2.1, finding F-2.1) ------------------------
 #

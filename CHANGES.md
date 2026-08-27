@@ -16,6 +16,40 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **`EXPECT_FAULT` did not require the fault, so five control arms could not fail.**
+  `tools/smoke_test.sh`'s own header has always said the run *"FAILS if none does"*. The code
+  never implemented it: a build that booted cleanly to the login prompt fell through to the
+  success paths and exited 0 with the named fault nowhere on the wire. `EXPECT_FAULT`
+  **inverted** the verdict for a fault that happened; it never **required** one to happen.
+
+  Every user of it is a control arm whose whole purpose is that a reintroduced defect kills the
+  kernel before the login prompt — `smoke-claim-release-control`,
+  `smoke-switch-commit-control`, `smoke-resume-guard-negative-control` and the two
+  measured-boot-required arms. **All five passed whether or not their defect reproduced**, and
+  the only thing that could redden them was a boot too slow to reach the banner: failing on runs
+  that prove nothing and passing on runs that *disprove* the defect.
+
+  **Measured, not argued.** `smoke-claim-release-control`'s kernel rebuilt with no defect flag —
+  `DEFECT FLAGS: none` on the wire — booted to `horus login:` with the guard string absent from
+  the log entirely, and the harness printed `SMOKE PASS`.
+
+  *"A test that cannot fail is not a test"*, and this is the third time the shape has appeared:
+  `smoke-ksp-guard` shipped a control arm with no positive counterpart, the resume guard shipped
+  a bound rejecting the IST stacks, and now this. Checked over the **complete** log at the end,
+  for the same reason `ABSENT_MARKER` is.
+
+  **It was found by chasing a flake**, which is the part worth keeping. A required gate went red
+  on a PR whose kernel diff could not reach the code; measuring the arm on both branches settled
+  nothing (neither reproduced); and looking at *why the arm could go red at all* turned up an
+  arm that could not go red for the right reason.
+
+  **The three outcomes are now distinguished** for the two arms asserting a scheduling-dependent
+  fault at `SMP_CPUS=4`: the fault appearing is a PASS; a run that **completes** without it is a
+  real miss and fails **at once, never retried** — retrying a miss is how an N-try loop becomes
+  a way of passing; a boot reaching neither is INCONCLUSIVE and retried up to
+  `*_CONTROL_BOOTS` (3). The other three arms keep their single boot: deterministic defects, not
+  timing-bound. Falsified all three ways.
+
 - **`smoke-kstack-race` scored a died-in boot as a broken property.** The base arm ran one
   session and treated two very different outcomes identically: the detector firing — *two CPUs
   shared a kernel stack*, the property broken — and the session failing to complete, which at

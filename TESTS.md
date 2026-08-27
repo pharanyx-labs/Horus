@@ -903,6 +903,59 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-klog-forge-control` | Control arm. `KLOG_WRITE_UNGATED=1` restores the unconditional `klog_append` on the ring-3 write path; `KLOGTEST: FAIL forged+evicted` must come back, and `smoke-klog-forge` must go red under the same flag. Measured **3 boots in 3** — one boot is enough because the defect is not a race. **Both halves are evaluated before either is reported**, which is what makes this arm exercise both branches rather than only the first in source order. That matters: a fix that merely rate-limited ring-3 appends would keep the marker and still leak the forgery, and one that dropped the bytes while still advancing the ring would lose the marker, so an assertion on either half alone passes a half-fix. |
 | `smoke-exec-reenter` | **[G-9]**, exec component. The exec re-entry hand-off must be consumed by the CPU that armed it. Boots the `PROC_SELFTEST` workload at `-smp 4` `EXEC_REENTER_RUNS` times (default 20) and requires the `SCHED_INVARIANTS` wrong-CPU report to be **absent** from every boot; measured 0 in 30. Asserts on the marker, never on the boot's exit status — the workload still fails 2 boots in 30 (~7%) on the rest of **[G-9]**, and gating on completion would make this a detector for that rather than a witness for this property. |
 | `smoke-exec-reenter-control` | Control arm. `EXEC_REENTER_GLOBAL=1` restores the single shared `g_exec_reenter_task`; the wrong-CPU report must come back in at least one boot. Needs many boots because the theft is a race — measured 5 in 20 (~25%/boot), so a single-boot arm would report a false green three times in four. This arm carries reachability for the pair: if the theft stops reproducing with the global restored, `smoke-exec-reenter`'s green proves nothing either. |
+### `EXPECT_FAULT` did not require the fault — five control arms could not fail
+
+**Found 2026-08-27, and it is the worst class this repository has.** `tools/smoke_test.sh`'s
+header has always said `EXPECT_FAULT` makes a run *"PASS if a kernel fault containing it appears
+and FAIL if none does."* The code never implemented the second half. A build that booted cleanly
+to the login prompt fell through to the success paths and exited 0 with the named fault nowhere
+on the wire. `EXPECT_FAULT` **inverted** the verdict for a fault that happened; it never
+**required** one.
+
+Every user of it is a control arm whose entire purpose is that a reintroduced defect kills the
+kernel before the login prompt:
+
+| Arm | Defect it must reproduce |
+|---|---|
+| `smoke-claim-release-control` | `CLAIM_RELEASE_SKIP=1` — ring 3 reached owing a deferred release |
+| `smoke-switch-commit-control` | `SWITCH_COMMIT_EARLY=1` — a stale scheduler claim |
+| `smoke-resume-guard-negative-control` | the resume-`%rsp` guard rejecting an IST stack |
+| `smoke-measured-boot-required-control` | measured boot required with no TPM |
+| `smoke-measured-boot-required-volume-control` | measured boot required, volume unsealed |
+
+**All five passed whether or not their defect reproduced**, and the only thing that could redden
+them was a boot too slow to reach the banner. Exactly inverted: failing on runs that prove
+nothing, passing on runs that *disprove* the defect.
+
+**Measured when it was found**, rather than argued: `smoke-claim-release-control`'s kernel
+rebuilt with no defect flag — `DEFECT FLAGS: none` on the wire — booted to `horus login:` with
+the guard string absent from the log entirely, and the harness printed `SMOKE PASS`.
+
+`EXPECT_FAULT` is now checked over the **complete** log at the end, for the same reason
+`ABSENT_MARKER` is: in the poll loop it would only ever mean "has not appeared yet".
+
+**And the three outcomes are now distinguished**, which is what the CI flake that led here was
+really about. For the two arms that assert a *scheduling-dependent* fault at `SMP_CPUS=4`:
+
+| Outcome | Means | Now |
+|---|---|---|
+| the fault appears | defect reproduced | PASS |
+| the run **completes** without it | defect did **not** reproduce | FAIL at once — **never retried** |
+| the boot reaches neither | no evidence either way | INCONCLUSIVE, retried up to `*_CONTROL_BOOTS` (3) |
+
+Retrying a real miss is how an N-try loop becomes a way of passing, so it is not retried. The
+other three arms keep their single boot: their defects are deterministic and not timing-bound.
+
+**Falsified in all three directions**, against real builds:
+
+| Direction | Result |
+|---|---|
+| defect present | PASS on boot 1 of 3 |
+| defect **absent** (`DEFECT FLAGS: none`) | FAIL on attempt 1 — *"never appeared, and the run completed"*, not retried |
+| every attempt inconclusive (`SMOKE_TIMEOUT=1`) | FAIL — *"Exhausting the loop is a FAILURE, not a pass"* |
+
+All five arms still reproduce their own defects after the change.
+
 ### `smoke-kstack-race` — a died-in boot is inconclusive, not a miss
 
 **Until 2026-08-27 the base arm conflated two outcomes**, and only one of them is about the

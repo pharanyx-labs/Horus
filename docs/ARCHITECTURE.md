@@ -993,6 +993,22 @@ convention. An index would be **[C-1]**'s shape, and it would make the call an
 **object-existence oracle** — a task holding nothing could walk indices and learn which frames
 are live, and how large, across every task in the system.
 
+**And a kernel object's page is never copied out from under it** (**S38**). The arena sits
+inside `[USER_PHYS_BASE, pool ceiling)` and therefore shares `page_refcounts[]` with the
+anonymous allocator, so the generic page machinery will operate on an arena page perfectly
+happily. `cow_break_pte` refuses one. The reason is not tidiness: its shared branch allocates
+from the *anonymous* pool, so a frame holder would end up with a private writable page no
+untyped region paid for — ambient resource, in a kernel whose object model exists to say that
+memory is created by exercising authority — and the PTE would be repointed at a page no
+capability names, detaching the mapping from the object while the frame's pin arithmetic went
+on claiming otherwise.
+
+Nothing reaches it today. The guard is here because what prevents it is two *circumstances* —
+`user_map_frame_page` never sets `PAGE_COW`, and the page-fault validator admits only image,
+heap and stack — and neither is a statement about frames. That is the shape **S28** and **S30**
+turned out to have: a property held by the behaviour of some other function until someone
+changed it. `fork` is the function that would change it.
+
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
 carved from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an

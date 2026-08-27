@@ -1029,6 +1029,14 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot NZCOW_SELFTEST kernel and assert the generic (non-zero) COW break copies a shared frame and upgrades the sole owner in place, with correct refcounts
         run: make smoke-nzcow
+      # Roadmap 2.1's "what does a COW break mean for a capability two tasks
+      # hold": it means two things the kernel must not do, so it does not happen.
+      # Unguarded, the shared branch allocates from the ANONYMOUS pool — a frame
+      # holder gets a private writable page no untyped region paid for — and the
+      # PTE is repointed at memory no capability names, so the mapping stops
+      # being the object. Nothing reaches it today, and only by circumstance.
+      - name: Control arm — a kernel object's page must never be COW-broken
+        run: make smoke-nzcow-arena-control
 
   smoke-aslr:
     name: QEMU image-base ASLR self-test (headless)

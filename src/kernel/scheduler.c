@@ -404,7 +404,7 @@ create_user_pagedir(id);
      * not a crash. Reclaiming cspaces needs that fallback removed first; it is
      * not blocking the memory model this change is about. */
     if (!tasks[id].cspace) {
-        void *cn = kobj_alloc(UNTYPED_KERNEL, KOBJ_CNODE, 0);
+        void *cn = kobj_alloc(UNTYPED_KERNEL, KOBJ_CNODE, 0, 0);
         if (!cn) {
             /* The kernel reserve is sized for MAX_TASKS cspaces by construction
              * (untyped_init), so this is unreachable rather than a resource

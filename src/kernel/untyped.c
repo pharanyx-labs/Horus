@@ -67,6 +67,13 @@ struct untyped untypeds[MAX_UNTYPED];
 struct kobj_slot {
     void    *mem;        /* into the arena; NULL == this index holds no object */
     uint32_t untyped;    /* the region it was carved from (for accounting)     */
+    /* FRAMES ONLY: how many contiguous pages this object spans (roadmap 2.1).
+     * Endpoints and notifications leave it 0 and never read it; the field is
+     * shared rather than given its own parallel array because a parallel array
+     * is one more thing that can fall out of step with dyn_frames[] -- and a
+     * length that disagrees with the object it describes is a map path walking
+     * off the end of an allocation. */
+    uint32_t pages;
 };
 static struct kobj_slot dyn_eps[MAX_DYN_ENDPOINTS];
 static struct kobj_slot dyn_notifs[MAX_DYN_NOTIFICATIONS];
@@ -143,12 +150,17 @@ static inline void ut_unlock(void) { spin_unlock(&untyped_lock); }
  * cannot turn into a cross-object timing signal under SMP. */
 #define KOBJ_ALIGN 64
 
-static uint64_t kobj_size(uint32_t kobj_type) {
+static uint64_t kobj_size(uint32_t kobj_type, uint32_t pages) {
     switch (kobj_type) {
         case KOBJ_CNODE:        return (uint64_t)CNODE_SIZE * sizeof(capability_t);
         case KOBJ_ENDPOINT:     return sizeof(struct endpoint);
         case KOBJ_NOTIFICATION: return sizeof(struct notification);
-        case KOBJ_FRAME:        return PAGE_SIZE;
+        /* The only class with a caller-chosen size. Bounded by the caller
+         * (untyped_retype) before it gets here, and bounded AGAIN here, because
+         * this function is also reachable from kobj_alloc's other caller and a
+         * size that is checked in only one of two paths is checked in neither. */
+        case KOBJ_FRAME:        return (pages == 0 || pages > MAX_FRAME_PAGES)
+                                           ? 0 : (uint64_t)pages * PAGE_SIZE;
         default:                return 0;
     }
 }
@@ -256,6 +268,18 @@ void *frame_by_index(uint32_t idx) {
 /* The arena is a linear PHYS_KVA window (kernel.h), so the inverse of PHYS_KVA
  * is a subtraction. Returns 0 -- never a frame -- for a dead or out-of-range
  * index, so a caller that skips the NULL check still fails closed. */
+/* How many contiguous pages frame `idx` spans. 0 for a dead or out-of-range
+ * index, so a caller that skips the check gets a zero-length run rather than a
+ * wild one. Deliberately NOT folded into frame_phys_by_index's return: the
+ * physical base and the length are two facts, and a caller that wants only the
+ * base should not be able to take it while ignoring the length. */
+uint32_t frame_pages_by_index(uint32_t idx) {
+    if (idx < DYN_FRAME_BASE || idx >= FRAME_INDEX_MAX) return 0;
+    int i = (int)(idx - DYN_FRAME_BASE);
+    if (!dyn_frames[i].mem) return 0;
+    return dyn_frames[i].pages ? dyn_frames[i].pages : 1;
+}
+
 uint64_t frame_phys_by_index(uint32_t idx) {
 #ifdef FRAME_INDEX_UNCHECKED
     /* The control arm, and it reproduces the defect in its realistic form rather
@@ -295,9 +319,17 @@ uint32_t kobj_live_count(uint32_t kobj_type) {
  *  Allocation.
  * ------------------------------------------------------------------------- */
 
-void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index) {
+void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
+                 uint32_t *out_index) {
     if (untyped_index >= MAX_UNTYPED) return 0;
-    uint64_t need = kobj_size(kobj_type);
+    /* `pages` is meaningful for KOBJ_FRAME alone. Normalising 0 to 1 here is
+     * what keeps every existing caller and every existing retype correct without
+     * touching them; a NON-zero length on a class that has no length is refused
+     * by untyped_retype rather than ignored, because silently dropping an
+     * argument the caller passed is how an ABI grows a meaning nobody agreed. */
+    if (kobj_type != KOBJ_FRAME) pages = 1;
+    else if (pages == 0)         pages = 1;
+    uint64_t need = kobj_size(kobj_type, pages);
     if (need == 0) return 0;
 
     ut_lock();
@@ -374,9 +406,18 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
          * of the same page would pin it twice; frame_unpin_refcount exists for
          * that caller and is why the pin is a named operation rather than an
          * inline store.) */
-        frame_pin_refcount((uint64_t)mem - PHYS_KVA_BASE);
+        /* EVERY page of the run, not just the first. The pin is what keeps the
+         * release path arithmetically unreachable for arena pages, and an
+         * unpinned page in the middle of a frame is exactly the page
+         * free_user_table would push onto the free stack when the task dies --
+         * so a run pinned only at its head is the pool corruption above,
+         * relocated to page 1. */
+        uint64_t base_phys = (uint64_t)mem - PHYS_KVA_BASE;
+        for (uint32_t pg = 0; pg < pages; pg++)
+            frame_pin_refcount(base_phys + (uint64_t)pg * PAGE_SIZE);
         dyn_frames[idx].mem     = mem;
         dyn_frames[idx].untyped = untyped_index;
+        dyn_frames[idx].pages   = pages;
         if (out_index) *out_index = DYN_FRAME_BASE + (uint32_t)idx;
     } else {
         /* KOBJ_CNODE: no object index -- a cspace is reached through the owning
@@ -530,17 +571,30 @@ static void destroy_dyn_notification(int i) {
 static void destroy_dyn_frame(int i) {
     uint8_t *pg = (uint8_t *)dyn_frames[i].mem;
     if (!pg) return;
-    uint64_t phys = (uint64_t)pg - PHYS_KVA_BASE;
-    if (frame_map_refcount(phys) > 1) return;   /* still mapped: not collectable */
+    uint64_t phys  = (uint64_t)pg - PHYS_KVA_BASE;
+    uint32_t pages = dyn_frames[i].pages ? dyn_frames[i].pages : 1;
+
+    /* ANY page still mapped keeps the whole run alive. Map and unmap are
+     * whole-object operations, so in practice the counts move together and
+     * testing the head would give the same answer -- but "in practice" is doing
+     * the work in that sentence, and the cost of asking about every page is a
+     * loop bounded by 64. Collecting a run because its first page happened to be
+     * free would scrub bytes another task is reading. */
+    for (uint32_t k = 0; k < pages; k++)
+        if (frame_map_refcount(phys + (uint64_t)k * PAGE_SIZE) > 1) return;
 
     /* Scrub before releasing the name, for the reason destroy_dyn_endpoint
      * scrubs: the bytes outlive the object under bump allocation, and a frame's
-     * bytes are whatever userspace last put in them. */
-    zero_bytes(pg, PAGE_SIZE);
-    frame_unpin_refcount(phys);
+     * bytes are whatever userspace last put in them. All of them -- a run
+     * scrubbed only at its head leaves the rest of a buffer readable by whoever
+     * the arena hands those bytes to next. */
+    zero_bytes(pg, (uint64_t)pages * PAGE_SIZE);
+    for (uint32_t k = 0; k < pages; k++)
+        frame_unpin_refcount(phys + (uint64_t)k * PAGE_SIZE);
     if (dyn_frames[i].untyped < MAX_UNTYPED && untypeds[dyn_frames[i].untyped].objects > 0)
         untypeds[dyn_frames[i].untyped].objects--;
-    dyn_frames[i].mem = 0;
+    dyn_frames[i].mem   = 0;
+    dyn_frames[i].pages = 0;
 }
 
 /* Mark bitmaps. Static rather than on the stack: kobj_gc runs from
@@ -636,7 +690,7 @@ static int untyped_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out)
 }
 
 int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
-                   uint32_t dest_slot) {
+                   uint32_t pages, uint32_t dest_slot) {
     uint32_t u = 0;
     if (untyped_from_slot(untyped_slot, CAP_RIGHT_WRITE, &u) != 0)
         return SYS_ERR_PERM;
@@ -651,6 +705,18 @@ int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
         return SYS_ERR_INVAL;
 
     if (count == 0) return SYS_ERR_INVAL;
+
+    /* THE LENGTH, and it is refused rather than ignored on a class that has
+     * none. A caller passing pages=8 for an endpoint has a wrong model of what
+     * it is asking for, and quietly giving it one endpoint would leave that
+     * model uncorrected until it mattered. 0 means "the ordinary case", which is
+     * what every retype written before frames had a length passes. */
+    if (kobj_type != KOBJ_FRAME) {
+        if (pages != 0) return SYS_ERR_INVAL;
+    } else {
+        if (pages == 0) pages = 1;
+        if (pages > MAX_FRAME_PAGES) return SYS_ERR_RANGE;
+    }
     /* Bound the loop before touching anything: dest_slot + count must fit the
      * caller's cspace without wrapping, and the whole run must clear the
      * kernel-reserved slots. Checked up front so a partially-satisfiable request
@@ -672,7 +738,7 @@ int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
     int created = 0;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t obj_index = 0;
-        void *mem = kobj_alloc(u, kobj_type, &obj_index);
+        void *mem = kobj_alloc(u, kobj_type, pages, &obj_index);
         if (!mem) break;   /* region or name table exhausted: stop, keep what we made */
         if (!cap_install_object(dest_slot + i, cap_type, (uint64_t)obj_index, rights, 0)) {
             /* The capability could not be installed (slot ceiling, authority),

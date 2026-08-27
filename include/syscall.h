@@ -176,6 +176,10 @@ struct audit_event {
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE at vaddr must name this capability's own frame. */
 #define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. */
 #define SYS_CLOCK_GETTIME      98   /* (clock_id, struct horus_timespec*) -> 0; monotonic time since boot (roadmap 2.2). No capability; 10 ms resolution by design. */
+/* The largest frame one SYS_RETYPE may carve, in pages. Ring 3 needs it to know
+ * what it may ask for; the kernel bounds it again regardless (src/include/kernel.h). */
+#define MAX_FRAME_PAGES        64
+
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr. ALL OR NOTHING: a failure withdraws every page the call mapped, so an error leaves the address space untouched. Max 64 pages. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
@@ -510,7 +514,7 @@ static inline int sys_console_owned(void) {
 #define KOBJ_CNODE          1    /* a cspace; not retypable from ring 3 yet    */
 #define KOBJ_ENDPOINT       2    /* struct endpoint  -> CAP_ENDPOINT           */
 #define KOBJ_NOTIFICATION   3    /* struct notification -> CAP_NOTIFICATION    */
-#define KOBJ_FRAME          4    /* one 4 KiB page      -> CAP_FRAME           */
+#define KOBJ_FRAME          4    /* a run of 4 KiB pages -> CAP_FRAME          */
 
 /* MUST stay byte-identical to struct untyped_info in src/include/kernel.h — the
  * kernel fills this layout and copies it out across copy_to_user. */
@@ -530,6 +534,17 @@ struct untyped_info {
 static inline int sys_retype(int untyped_slot, int kobj_type, int count, int dest_slot) {
     return (int)syscall6(SYS_RETYPE, (uint32_t)untyped_slot, (uint32_t)kobj_type,
                          (uint32_t)count, (uint32_t)dest_slot, 0, 0);
+}
+
+/* Retype `count` frames of `pages` contiguous pages each. A separate wrapper
+ * rather than a fifth parameter on sys_retype, so that not one existing call
+ * site changes: they pass 0 for the length and get the ordinary one-page frame.
+ * `pages` is meaningful for KOBJ_FRAME alone and is REFUSED, not ignored, on any
+ * other class. Bounded by MAX_FRAME_PAGES. */
+static inline int sys_retype_sized(int untyped_slot, int count, int dest_slot,
+                                   unsigned int pages) {
+    return (int)syscall6(SYS_RETYPE, (uint32_t)untyped_slot, (uint32_t)KOBJ_FRAME,
+                         (uint32_t)count, (uint32_t)dest_slot, (uint32_t)pages, 0);
 }
 
 /* How much of the region named at `untyped_slot` (needs READ) is left. A budget

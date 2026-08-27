@@ -89,7 +89,8 @@ DEFECT_FLAGS = \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
-	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE RAMFS_SLOT3_GATE \
+	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
+	FRAME_PAGES_SAME_PHYS RAMFS_SLOT3_GATE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
@@ -892,6 +893,19 @@ FRAME_REGION_ROLLBACK_WIDE ?= 0
 ifeq ($(FRAME_REGION_ROLLBACK_WIDE),1)
 CFLAGS  += -DFRAME_REGION_ROLLBACK_WIDE
 ASFLAGS += -DFRAME_REGION_ROLLBACK_WIDE
+endif
+
+# FRAME_PAGES_SAME_PHYS=1 is the falsifying arm for the LENGTH a frame now
+# carries: map_run advances the virtual cursor and not the physical one, so every
+# page of a sized frame aliases the run's first page. It is the plausible slip --
+# one of two cursors forgotten in a loop that reads correctly -- and it does not
+# crash: the caller gets the pages it asked for, present, writable, correctly
+# righted, silently sharing one page of storage. A buffer that quietly aliases
+# itself is worse than one that fails to map, because nothing reports it.
+FRAME_PAGES_SAME_PHYS ?= 0
+ifeq ($(FRAME_PAGES_SAME_PHYS),1)
+CFLAGS  += -DFRAME_PAGES_SAME_PHYS
+ASFLAGS += -DFRAME_PAGES_SAME_PHYS
 endif
 
 LIBHORUS_SELFTEST ?= 0
@@ -4338,6 +4352,22 @@ smoke-frame-region-wide-control:
 		REQUIRE_MARKER='FRAMETEST: FAIL region-rollback-ate-blocker' \
 		tools/smoke_test.sh boot.iso
 	@echo "FRAME REGION WIDE CONTROL: PASS - a whole-range unwind eats the mapping that refused it"
+
+# Control arm 5 -- the length a frame carries. FRAME_PAGES_SAME_PHYS=1 advances
+# the virtual cursor without the physical one, so every page of a sized frame
+# aliases the first. frametest writes a distinct word per page and reads them
+# all back, which is the only way to tell a real run from an aliased one: both
+# map, both are writable, and only one of them stores what you wrote.
+# The FAIL marker must be PRESENT.
+.PHONY: smoke-frame-pages-control
+smoke-frame-pages-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_PAGES_SAME_PHYS=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_PAGES_SAME_PHYS=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: FAIL sized-pages-distinct' \
+		tools/smoke_test.sh boot.iso
+	@echo "FRAME PAGES CONTROL: PASS - a sized frame whose pages all alias page 0"
 
 .PHONY: smoke-libhorus
 smoke-libhorus:

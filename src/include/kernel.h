@@ -576,6 +576,21 @@ struct notification *notification_by_index(uint32_t idx);
 #define DYN_FRAME_BASE         1
 #define FRAME_INDEX_MAX        (DYN_FRAME_BASE + MAX_DYN_FRAMES)
 
+/* A frame names a RUN of contiguous pages, not a single page (roadmap 2.1's
+ * "region object wants a length"). One capability, one length, one contiguous
+ * physical extent -- which is what a shared buffer, and later a DMA target,
+ * actually needs. `pages == 1` is the ordinary case and is what every retype
+ * that does not ask for a length gets.
+ *
+ * The ceiling is deliberately modest. UNTYPED_ARENA_BYTES is 4 MiB TOTAL, shared
+ * with every cspace, endpoint and notification in the system, so a frame that
+ * could span the arena would be a denial-of-service against every other object
+ * class dressed up as a feature. 64 pages is 256 KiB. The untyped region a task
+ * holds is still the security bound on how much it can carve; this is the bound
+ * on how much ONE object may be, which is a different question and the one the
+ * bump allocator cares about. */
+#define MAX_FRAME_PAGES        64
+
 /* The arena page backing frame index `idx`, or NULL if `idx` names no live
  * frame. The single resolver: nothing indexes the frame table directly. */
 void *frame_by_index(uint32_t idx);
@@ -584,6 +599,12 @@ void *frame_by_index(uint32_t idx);
  * Returns 0 for a dead or out-of-range index -- and 0 is not a frame, so a
  * caller that forgets to check still fails closed. */
 uint64_t frame_phys_by_index(uint32_t idx);
+
+/* How many contiguous pages frame `idx` spans, or 0 for a dead or out-of-range
+ * index. Every caller that walks a frame's pages asks THIS rather than assuming
+ * 1 -- a map path that mapped `frame_phys_by_index(i)` and stopped would hand a
+ * caller one page of a buffer it believes is whole. */
+uint32_t frame_pages_by_index(uint32_t idx);
 
 /* How many untyped regions the kernel can describe. Small by design: this bounds
  * the DESCRIPTORS, not the memory they govern — one descriptor can name an
@@ -623,7 +644,8 @@ void untyped_init(void);
  * the object index a capability will name (a dynamic endpoint/notification
  * index; unused for KOBJ_CNODE). Kernel-internal: the syscall path goes through
  * untyped_retype(), which additionally enforces the capability. */
-void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index);
+void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
+                 uint32_t *out_index);
 
 /* The SYS_RETYPE body: carve `count` objects of `kobj_type` out of the untyped
  * region named by `untyped_slot` in the CALLER's cspace, installing a capability
@@ -631,7 +653,7 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t *out_index
  * negative SYS_ERR_*. Authority is the CAP_UNTYPED in `untyped_slot` — the slot
  * argument IS the gate, as for the IPC syscalls (finding C-1). */
 int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
-                   uint32_t dest_slot);
+                   uint32_t pages, uint32_t dest_slot);
 
 /* Fill *out for the untyped region named by `untyped_slot` in the caller's
  * cspace. Returns 0, or a negative SYS_ERR_*. */

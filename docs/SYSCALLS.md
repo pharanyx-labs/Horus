@@ -91,8 +91,8 @@ checker.
 | # | Name | Arguments | Authorisation *(as checked)* |
 |---|---|---|---|
 | 4 | `SYS_CAP_MINT` | `dest_slot`, `src_slot`, `rights` | holding the source; `cap_mint` masks to `rights & src->rights` |
-| 95 | `SYS_MAP_FRAME` | `frame_slot`, `vaddr`, `rights` | `CAP_FRAME` at `frame_slot`, holding at least `rights` |
-| 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights |
+| 95 | `SYS_MAP_FRAME` | `frame_slot`, `vaddr`, `rights` | `CAP_FRAME` at `frame_slot`, holding at least `rights`; maps the **whole run** the frame names |
+| 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights; withdraws the **whole run** |
 | 99 | `SYS_MAP_REGION` | `first_slot`, `count`, `vaddr`, `rights` | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
 
 Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and
@@ -145,10 +145,38 @@ caused the refusal is not one of them and survives — an unwind that cleared th
 which any task could invoke against a mapping it disliked by asking to map a region across it.
 Both directions are gated: `smoke-frame-region-control` and `smoke-frame-region-wide-control`.
 
-The 64-page ceiling is the rollback's record, not a statement about regions: the unwind
-remembers one physical address per page it installed, on the kernel stack. A larger region is
-the region-*object* work — a length carried in the capability — which roadmap 2.1 still lists
-as open.
+**A frame carries a LENGTH** (**S36**, roadmap 2.1's region object).
+`SYS_RETYPE(untyped_slot, KOBJ_FRAME, count, dest_slot, pages)` — `pages` is the **fifth**
+argument, in `rdi`, and `sys_retype_sized()` is the wrapper for it — carves `pages` contiguous
+pages as **one object**. `pages == 0` means one page, which is what every retype written before
+frames had a length passes, so no existing call site changed. A non-zero length on a class that
+has no length (`KOBJ_ENDPOINT`, `KOBJ_NOTIFICATION`, `KOBJ_CNODE`) is **refused**, not ignored:
+a caller asking for an 8-page endpoint has a wrong model, and quietly handing it one endpoint
+leaves that model uncorrected until it matters. `MAX_FRAME_PAGES` is 64.
+
+`SYS_MAP_FRAME` and `SYS_UNMAP_FRAME` act on the **whole run**, and the symmetry is
+load-bearing rather than tidy: the frame collector decides a run is dead by asking every page
+whether it is still mapped, and it can rely on the answer being uniform only because these two
+are the only operations that move it.
+
+`SYS_MAP_REGION` **refuses a sized frame** (`SYS_ERR_INVAL`). A run of slots maps each slot at
+the next page, so a sized frame in the middle would make the address of every later slot depend
+on the length of every earlier capability — an ABI where you cannot say where slot 5 landed
+without reading slots 0..4. Map a sized frame whole with `SYS_MAP_FRAME`; use `SYS_MAP_REGION`
+for a run of one-page capabilities.
+
+Both calls bound the **span** including its last byte. With a length, "the address is in the
+user half" stops being the same question as "the mapping is": a run starting one page below the
+limit walks past it. `user_pte_slot` refuses `pml4[256..511]` independently, so this is the
+second of two checks — it earns its place by turning a part-way failure into one refusal before
+anything is installed.
+
+The 64-page ceiling is the **arena's**, not the record's. The unwind needs no per-page state
+for a sized frame — the run is contiguous, so page *k* is `base + k` — and
+`UNTYPED_ARENA_BYTES` is 4 MiB *total*, shared with every cspace, endpoint and notification.
+A frame that could span the arena would be a denial-of-service against every other object class
+dressed as a feature. **A delegate cannot yet ask how large a frame is**; the size has to be
+communicated out of band. Roadmap 2.1 records that as the remaining gap.
 
 **`SYS_CAP_MINT` is the only rights-reducing operation ring 3 has.** `SYS_CAP_GRANT` copies
 the source's rights whole (it passes `CAP_RIGHT_ALL` and `cap_grant_into` masks to the

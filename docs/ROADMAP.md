@@ -746,7 +746,7 @@ against, and they are sequenced last for exactly that reason — they begin once
 the object model real virtual-memory objects to name.
 
 
-### 2.1 ◧ Virtual memory objects and shared memory — **[F-2.1]** — *frames landed 2026-08-22; the region map and its partial-failure policy 2026-08-27*
+### 2.1 ◧ Virtual memory objects and shared memory — **[F-2.1]** — *frames landed 2026-08-22; the region map, its partial-failure policy, and sized frames 2026-08-27*
 
 **Delivered: the frame object and the map path.** `KOBJ_FRAME` is retyped out of a
 `CAP_UNTYPED` by the existing `SYS_RETYPE`, so a page of shared memory is paid for by untyped
@@ -786,11 +786,24 @@ measurement nothing took.
   information, a partial map is a hole in a range that is discovered later as a fault. Both
   directions are falsified: `FRAME_REGION_NO_ROLLBACK=1` keeps the pages,
   `FRAME_REGION_ROLLBACK_WIDE=1` eats the mapping that refused the run.
-- **A region OBJECT still wants a length.** What landed maps a run of *single-page*
-  capabilities; the capability still names exactly one 4 KiB frame. A `KOBJ_REGION` carrying a
-  length is the remaining half, and it is what lifts the 64-page ceiling — which today is not a
-  statement about regions but about the rollback's record, one physical address per installed
-  page, held on the kernel stack.
+- ~~A region OBJECT still wants a length.~~ **Landed 2026-08-27** (`SECURITY.md` **S36**). A
+  `KOBJ_FRAME` carries one: `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest, pages)` carves a run
+  of contiguous pages as **one object**, named by **one** `CAP_FRAME`, mapped and withdrawn
+  whole. It is a *sized frame* rather than a new `KOBJ_REGION` because that is what the object
+  is — seL4 has sized frames for the same reason — and because a new object class would have
+  meant a second capability type, a second table, a second destroy path and a second GC mark,
+  all of which would have had to be kept in step with the ones that already exist.
+  **The 64-page ceiling is now the arena's, not the record's**: a run is contiguous, so the
+  unwind computes page *k* from the base and needs no per-page state at all. `MAX_FRAME_PAGES`
+  is 64 because `UNTYPED_ARENA_BYTES` is 4 MiB *total*, shared with every cspace, endpoint and
+  notification — a frame that could span the arena would be a denial-of-service against every
+  other object class dressed as a feature.
+- **A delegate cannot ask how large a frame is.** It receives a `CAP_FRAME` and knows the
+  rights, the type and the liveness, but not the length — `SYS_CAP_ENUMERATE` reports the
+  capability, not the object behind it. Nothing is unsafe (map fails closed on an occupied or
+  out-of-span range), but a sharer has to be *told* the size out of band, which is a gap in the
+  design rather than in the implementation. It wants either a `SYS_FRAME_INFO` or an extra
+  field in `struct cap_info`, and the choice between those is the actual work.
 - Copy-on-write over a shared frame. `cow_break_pte` already exists for anonymous pages; a
   frame is refcounted the same way, so this is mostly about what a COW break means for a
   capability two tasks hold.
@@ -1205,7 +1218,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 123 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 37 of them control arms that must reproduce a defect |
+| ✅ | 124 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 38 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

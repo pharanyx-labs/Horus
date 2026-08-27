@@ -16,6 +16,64 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A frame capability names a run of pages, not a page (roadmap 2.1's region object, S36).**
+  `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest, pages)` carves `pages` contiguous pages as **one
+  object**, named by **one** `CAP_FRAME`, mapped and withdrawn whole. This is the other half of
+  2.1's virtual-memory objects: yesterday's `SYS_MAP_REGION` maps a run of *capabilities*, and
+  this makes the run *one capability*.
+
+  **It is a sized frame, not a `KOBJ_REGION`.** seL4 sizes frames for the same reason, and the
+  alternative was worse on maintenance grounds rather than on vocabulary: a new object class
+  meant a second capability type, a second index table, a second destroy path and a second GC
+  mark, four things that would then have to be kept in step with the four that already exist.
+  **[H-3]** is what happens when parallel copies of one idea drift apart.
+
+  **The length is the fifth argument to `SYS_RETYPE`, not a new syscall**, so one authority gate
+  covers both shapes. `pages == 0` means one page — which is what every retype written before
+  frames had a length passes — so **not one existing call site changed**. A non-zero length on a
+  class that has none is **refused, not ignored**: a caller asking for an 8-page endpoint has a
+  wrong model, and quietly handing it one endpoint leaves that model uncorrected until it
+  matters.
+
+  **Three things the length made newly possible to get wrong**, each now enforced and the first
+  falsified. The pages must be **distinct** physical pages rather than `pages` aliases of the
+  first. The **span** must be bounded including its last byte, because an address legal for a
+  one-page frame can put a four-page run past the user half. And every page must be **pinned and
+  scrubbed** — a run pinned only at its head puts page 1 on the free page stack when the task
+  dies, and a run scrubbed only at its head leaves the rest of a buffer readable by whoever the
+  arena hands those bytes to next.
+
+  **`FRAME_PAGES_SAME_PHYS=1` is the arm, and it aims at the failure that does not announce
+  itself.** Advance the virtual cursor and forget the physical one — one of two cursors in a loop
+  that reads correctly — and nothing crashes: the caller gets exactly the pages it asked for,
+  present, writable, correctly righted, all aliasing page 0. The only way to see it is to write a
+  distinct word to each page and read them all back. `FRAMETEST: FAIL sized-pages-distinct`,
+  3 boots in 3, and `smoke-frame` goes red under it. It reddens the unmap checks too, which is
+  the defect showing rather than the test leaking: `unmap_run` withdraws page *k* by naming
+  `base + k`, and under aliasing the PTE does not hold it.
+
+  **The unwind is shared with `SYS_MAP_REGION`**, so a failure part-way *inside* one sized frame
+  and a failure part-way *across* a run of slots are the same code — and `FRAME_REGION_NO_ROLLBACK=1`
+  now reddens checks at both levels from one flag. **The 64-page ceiling stops being about the
+  rollback**: a run is contiguous, so page *k* is `base + k` and the unwind needs no per-page
+  state at all. `MAX_FRAME_PAGES` is 64 because `UNTYPED_ARENA_BYTES` is 4 MiB *total*.
+
+  **Giving a frame a length silently disarmed an existing control arm**, which CI caught and the
+  local run did not. There are now two functions turning `CAP_FRAME.object` into a fact about an
+  object, and `FRAME_INDEX_UNCHECKED=1` was written when there was one: under the arm the address
+  resolver behaved as intended and the new *length* resolver applied the bound the arm exists to
+  remove, so the legacy slot-3 capability was refused at the length check and
+  `FRAMETEST: FAIL legacy-cap-mapped` stopped appearing. The arm went red for want of a failure.
+  The property was never wrong and the base gate passed all 48 checks throughout — what broke was
+  the measurement. **When you split a function a defect flag mutates, the flag has to follow every
+  piece**, and a green base arm says nothing about whether its control arm still fires.
+
+  **Known gap, recorded rather than papered over:** a delegate cannot ask how large a frame is.
+  `SYS_CAP_ENUMERATE` reports the capability, not the object behind it, so a sharer has to be
+  told the size out of band. Nothing is unsafe — mapping fails closed on an occupied or
+  out-of-span range — but a delegated buffer is less self-describing than it should be. Roadmap
+  2.1 carries it.
+
 - **A multi-page map that reports failure now installs no page (roadmap 2.1, S35).**
   `SYS_MAP_REGION(first_slot, count, vaddr, rights)` maps `count` `CAP_FRAME`s from consecutive
   cspace slots at consecutive pages — the dual of `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest)`,

@@ -87,11 +87,81 @@ static uint32_t frame_required_rights(uint32_t want) {
 #endif
 }
 
-/* ---- ONE PAGE OF A MAP REQUEST -------------------------------------------
+/* ---- A RUN OF PAGES, MAPPED AS A UNIT ------------------------------------
  *
- * The whole per-page decision -- slot bound, rights shape, W^X, capability,
- * type, frame index, address, revalidation, effective rights -- in one place,
- * because SYS_MAP_FRAME and SYS_MAP_REGION must not be able to drift apart.
+ * `pages` contiguous physical pages from `phys` at `pages` contiguous virtual
+ * pages from `vaddr`. All-or-nothing, for the reason SYS_MAP_REGION is
+ * all-or-nothing (see its comment): a PTE is authority, so a call that reports
+ * failure must not have installed one.
+ *
+ * The unwind here is O(1) in state and not merely bounded: the run is
+ * contiguous, so page k lives at `phys + k * PAGE_SIZE` and needs no record at
+ * all. That is the whole reason a frame carries a LENGTH rather than a caller
+ * assembling one out of separate capabilities -- the same policy costs nothing
+ * to honour, and MAX_FRAME_PAGES is a bound on the arena rather than on what the
+ * kernel can remember about the run.
+ */
+static int map_run(uint32_t cur, uint64_t vaddr, uint64_t phys, uint32_t pages,
+                   uint32_t eff) {
+    for (uint32_t k = 0; k < pages; k++) {
+#ifdef FRAME_PAGES_SAME_PHYS
+        /* CONTROL ARM: advance the VIRTUAL address and not the physical one, so
+         * every page of the run aliases the frame's first page. It is the
+         * plausible slip -- one of two cursors forgotten in a loop that reads
+         * correctly -- and it is not a crash: the caller gets `pages` present,
+         * writable, correctly-righted pages that silently share one page of
+         * storage. A buffer that quietly aliases itself is worse than one that
+         * fails to map, because nothing reports it. */
+        uint64_t page_phys = phys;
+#else
+        uint64_t page_phys = phys + (uint64_t)k * PAGE_SIZE;
+#endif
+        int rc = user_map_frame_page(cur, vaddr + (uint64_t)k * PAGE_SIZE,
+                                     page_phys, eff);
+        if (rc == 0) continue;
+
+#ifndef FRAME_REGION_NO_ROLLBACK
+        /* Withdraw what this call installed, and only that: pages 0..k-1.
+         * Page k was never mapped, and whatever occupies it is not ours. */
+        for (uint32_t u = k; u-- > 0; ) {
+#ifdef FRAME_PAGES_SAME_PHYS
+            uint64_t undo_phys = phys;
+#else
+            uint64_t undo_phys = phys + (uint64_t)u * PAGE_SIZE;
+#endif
+            (void)user_unmap_frame_page(cur, vaddr + (uint64_t)u * PAGE_SIZE,
+                                        undo_phys);
+        }
+#endif
+        return (rc == -2) ? SYS_ERR_EXIST : SYS_ERR_FAULT;
+    }
+    return 0;
+}
+
+/* Withdraw a whole run. Used by SYS_UNMAP_FRAME, which is a whole-object
+ * operation: a frame is mapped as a unit and released as a unit, so nothing in
+ * this tree ever leaves half a run installed. destroy_dyn_frame relies on that
+ * -- it asks every page whether it is still mapped, and the answer is uniform
+ * because these two functions are the only things that move it. */
+static int unmap_run(uint32_t cur, uint64_t vaddr, uint64_t phys, uint32_t pages) {
+    int first_err = 0;
+    for (uint32_t k = 0; k < pages; k++) {
+        int rc = user_unmap_frame_page(cur, vaddr + (uint64_t)k * PAGE_SIZE,
+                                       phys + (uint64_t)k * PAGE_SIZE);
+        /* Keep going on a failure rather than stopping. Stopping would leave the
+         * REST of the run mapped after an unmap the caller believes happened,
+         * which is the fail-open direction; the first error is what it hears. */
+        if (rc != 0 && first_err == 0) first_err = SYS_ERR_INVAL;
+    }
+    return first_err;
+}
+
+/* ---- ONE FRAME OF A MAP REQUEST ------------------------------------------
+ *
+ * The whole per-object decision -- slot bound, rights shape, W^X, capability,
+ * type, frame index, length, address span, revalidation, effective rights -- in
+ * one place, because SYS_MAP_FRAME and SYS_MAP_REGION must not be able to drift
+ * apart.
  *
  * That is not tidiness. A region map that validated one step less than a single
  * map would be a new door of exactly the shape this file exists to close, and
@@ -100,11 +170,18 @@ static uint32_t frame_required_rights(uint32_t want) {
  * person to add a step adds it to whichever one they were looking at. [H-3] was
  * six copies of one gate, five of which nobody had revisited.
  *
- * Returns 0 or a SYS_ERR_*; on success *out_phys names the frame that was
- * mapped, which is what a caller needs in order to withdraw it again.
+ * Returns 0 or a SYS_ERR_*; on success *out_phys and *out_pages name the run
+ * that was mapped, which is what a caller needs in order to withdraw it again.
+ *
+ * `single_page_only` is set by SYS_MAP_REGION. A run of slots maps each slot at
+ * the next page, so a sized frame in the middle of one would make the address of
+ * every later slot depend on the length of every earlier capability -- an ABI
+ * where you cannot say where slot 5 landed without reading slots 0..4. Refused
+ * there, and mapped whole by SYS_MAP_FRAME instead.
  */
-static int map_one_frame_page(uint32_t slot, uint64_t vaddr, uint32_t rights,
-                              uint64_t *out_phys) {
+static int map_one_frame_object(uint32_t slot, uint64_t vaddr, uint32_t rights,
+                                int single_page_only,
+                                uint64_t *out_phys, uint32_t *out_pages) {
     if (slot >= CNODE_SIZE) return SYS_ERR_INVAL;
 
     /* At least one access right must be requested. An empty request would map a
@@ -148,8 +225,31 @@ static int map_one_frame_page(uint32_t slot, uint64_t vaddr, uint32_t rights,
     uint64_t phys = frame_phys_by_index(index);
     if (phys == 0) return SYS_ERR_INVAL;
 
-    if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0 || vaddr >= USER_HALF_LIMIT)
-        return SYS_ERR_INVAL;
+    /* THE LENGTH, asked rather than assumed. A map path that took the base and
+     * stopped would hand the caller one page of a buffer it believes is whole --
+     * and the pages beyond it would stay unmapped while the capability said
+     * otherwise, which is a fault at an address the caller has every reason to
+     * think it owns. */
+    uint32_t pages = frame_pages_by_index(index);
+    if (pages == 0 || pages > MAX_FRAME_PAGES) return SYS_ERR_INVAL;
+    if (single_page_only && pages != 1) return SYS_ERR_INVAL;
+
+    if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0) return SYS_ERR_INVAL;
+
+    /* THE SPAN, including its last byte. With a length, "the address is in the
+     * user half" is no longer the same question as "the mapping is": a run
+     * starting one page below the limit walks past it. Written as
+     * `vaddr > LIMIT - span` rather than `vaddr + span > LIMIT` so it cannot
+     * wrap past the test instead of failing it.
+     *
+     * This is the SECOND of two checks, not the only one: user_pte_slot refuses
+     * pml4[256..511] independently, so a run that got here would still be
+     * refused page by page. It earns its place by turning "the map failed
+     * part-way and unwound" into one specific SYS_ERR_INVAL before anything is
+     * installed -- and an arm against it would measure the error code, not the
+     * outcome, which is why it does not have one. */
+    uint64_t span = (uint64_t)pages * PAGE_SIZE;
+    if (vaddr > USER_HALF_LIMIT - span) return SYS_ERR_INVAL;
 
     /* Reconfirm the capability's identity before committing. A concurrent revoke
      * on another CPU between the lookup above and the map below would otherwise
@@ -167,18 +267,16 @@ static int map_one_frame_page(uint32_t slot, uint64_t vaddr, uint32_t rights,
 #else
     uint32_t eff = frame_effective_rights(have, rights);
 #endif
-    int rc = user_map_frame_page((uint32_t)cur, vaddr, phys, eff);
-    if (rc == -2) {
-        /* Something is already mapped there. A distinct code, because "that
-         * address is occupied" and "that address is not allowed" are different
-         * problems for the caller and only one of them is fixable by choosing
-         * another address. */
-        return SYS_ERR_EXIST;
-    }
-    if (rc != 0) return SYS_ERR_FAULT;
+    /* SYS_ERR_EXIST comes back from map_run when something is already mapped in
+     * the run. A distinct code, because "that address is occupied" and "that
+     * address is not allowed" are different problems for the caller and only one
+     * of them is fixable by choosing another address. */
+    int rc = map_run((uint32_t)cur, vaddr, phys, pages, eff);
+    if (rc != 0) return rc;
 
     audit_log(AUDIT_CAP_OPERATION, index, 0, "frame mapped");
-    if (out_phys) *out_phys = phys;
+    if (out_phys)  *out_phys  = phys;
+    if (out_pages) *out_pages = pages;
     return 0;
 }
 
@@ -191,8 +289,14 @@ static int map_one_frame_page(uint32_t slot, uint64_t vaddr, uint32_t rights,
  * resolved first so that a caller holding no authority learns nothing about
  * which addresses are valid. */
 void h_map_frame(struct interrupt_frame64 *r) {
-    int rc = map_one_frame_page((uint32_t)r->rbx, r->rcx, (uint32_t)r->rdx,
-                                (uint64_t *)0);
+    /* Maps the WHOLE frame -- every page of the run the capability names -- and
+     * is all-or-nothing across it. The return stays a status rather than
+     * becoming a page count, for the reason SYS_MAP_REGION's does: under
+     * all-or-nothing there is nothing to count, and a success value that used to
+     * be 0 becoming 1 would break every caller that tests `== 0`. A caller that
+     * needs the length knows it from the retype that made the frame. */
+    int rc = map_one_frame_object((uint32_t)r->rbx, r->rcx, (uint32_t)r->rdx,
+                                  0, (uint64_t *)0, (uint32_t *)0);
     r->rax = (uint32_t)rc;
 }
 
@@ -222,15 +326,27 @@ void h_unmap_frame(struct interrupt_frame64 *r) {
     if (!cap || cap->type != CAP_FRAME) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
-    uint64_t phys = frame_phys_by_index((uint32_t)cap->object);
-    if (phys == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
-
-    if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0 || vaddr >= USER_HALF_LIMIT) {
+    uint64_t phys  = frame_phys_by_index((uint32_t)cap->object);
+    uint32_t pages = frame_pages_by_index((uint32_t)cap->object);
+    if (phys == 0 || pages == 0 || pages > MAX_FRAME_PAGES) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
 
+    if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    uint64_t span = (uint64_t)pages * PAGE_SIZE;
+    if (vaddr > USER_HALF_LIMIT - span) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    /* WITHDRAWS THE WHOLE RUN. A frame is mapped as a unit, so it is released as
+     * a unit -- and that symmetry is load-bearing rather than tidy:
+     * destroy_dyn_frame decides a run is collectable by asking every page
+     * whether it is still mapped, and it can rely on the answer being uniform
+     * only because these are the sole operations that move it. A partial unmap
+     * syscall would make "is this frame still in use" a question with a
+     * different answer per page. */
     int cur = get_current_task();
-    int rc = user_unmap_frame_page((uint32_t)cur, vaddr, phys);
+    int rc = unmap_run((uint32_t)cur, vaddr, phys, pages);
     r->rax = (rc == 0) ? 0 : (uint32_t)SYS_ERR_INVAL;
 }
 
@@ -332,8 +448,8 @@ void h_map_region(struct interrupt_frame64 *r) {
     int err = 0;
 
     for (uint32_t i = 0; i < count; i++) {
-        err = map_one_frame_page(first + i, vaddr + (uint64_t)i * PAGE_SIZE,
-                                 rights, &mapped_phys[i]);
+        err = map_one_frame_object(first + i, vaddr + (uint64_t)i * PAGE_SIZE,
+                                   rights, 1, &mapped_phys[i], (uint32_t *)0);
         if (err != 0) break;
         done = i + 1;
     }

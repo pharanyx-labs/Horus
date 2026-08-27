@@ -1446,17 +1446,54 @@ task at a different virtual address*.
 
 | Arm | Asserts | Result |
 |---|---|---|
-| `smoke-frame` | `FRAMETEST: PASS` present, `FRAMETEST: FAIL` absent | passes, **3 boots in 3**; **31 parent checks** + 5 peer checks, read off the wire |
+| `smoke-frame` | `FRAMETEST: PASS` present, `FRAMETEST: FAIL` absent | passes, **3 boots in 3**; **48 parent checks** + 5 peer checks, read off the wire |
 | `smoke-frame-index-control` (`FRAME_INDEX_UNCHECKED=1`) | `FRAMETEST: FAIL legacy-cap-mapped` present | passes, **3 boots in 3**; `smoke-frame` goes red under the same flag |
 | `smoke-frame-rights-control` (`FRAME_RIGHTS_UNCHECKED=1`) | `FRAMETEST: FAIL readonly-delegate-wrote` present | passes, **3 boots in 3**; `smoke-frame` goes red under the same flag |
 | `smoke-frame-region-control` (`FRAME_REGION_NO_ROLLBACK=1`) | `FRAMETEST: FAIL region-rollback-page0` present | passes, **3 boots in 3**; fails *only* the two rollback checks; `smoke-frame` goes red under the same flag |
 | `smoke-frame-region-wide-control` (`FRAME_REGION_ROLLBACK_WIDE=1`) | `FRAMETEST: FAIL region-rollback-ate-blocker` present | passes, **3 boots in 3**; fails *only* that check; `smoke-frame` goes red under the same flag |
+| `smoke-frame-pages-control` (`FRAME_PAGES_SAME_PHYS=1`) | `FRAMETEST: FAIL sized-pages-distinct` present | passes, **3 boots in 3**; also reddens the unmap checks, which is the defect showing rather than the test leaking; `smoke-frame` goes red under the same flag |
 
 Three boots rather than a rate over hundreds, and that is a claim about the defects rather
 than about the effort: neither arm is a race. Both are deterministic properties of a build,
 observed identically on every boot, so the sample size that matters here is 1 and 3 is
 corroboration. Contrast `smoke-kstack-park`, where the underlying event is probabilistic and a
 single green boot says nothing.
+
+**A CONTROL ARM IS AS SPLIT AS THE THING IT INJECTS INTO**, and this pair proved it by going
+red. Giving a frame a length created a *second* function turning `CAP_FRAME.object` into a fact
+about an object — `frame_pages_by_index` beside `frame_phys_by_index` — and
+`FRAME_INDEX_UNCHECKED=1` was written when there was only one. Under the arm the address
+resolver returned the object as an address exactly as intended, and then the *length* resolver
+applied the bound the arm exists to remove, answered 0 for the legacy slot-3 capability, and the
+map path refused it. `FRAMETEST: FAIL legacy-cap-mapped` stopped appearing and
+`smoke-frame-index-control` went red **for want of a failure** — the arm had quietly stopped
+reproducing anything.
+
+Nothing about the property was wrong and the base gate passed all 48 checks throughout. What
+broke was the measurement, which is the harder thing to notice: a green base arm says nothing
+about whether its control arm still fires. The arm now lives in both resolvers, and the lesson
+generalises past this file — **when you split a function that a defect flag mutates, the flag
+has to follow every piece.** It was caught by CI rather than locally because the local run
+exercised the new arm and the two region arms and not the two that already existed.
+
+**A frame carries a LENGTH since 2026-08-27** (**S36**), and the arm aims at the thing that
+does not announce itself. A sized frame is a run of contiguous pages under one capability, and
+the plausible slip in mapping one is to advance the virtual cursor and forget the physical one —
+one of two cursors in a loop that reads correctly. That does not crash. The caller gets exactly
+the pages it asked for, present, writable, with the right bits, all aliasing page 0. Nothing
+reports it, so the only way to see it is to write a distinct word to each page and read them all
+back, which is what `sized-pages-distinct` does.
+
+**The arm reddens four checks, and that is correct.** `unmap_run` withdraws page *k* by naming
+`base + k`, and `user_unmap_frame_page` requires the PTE to hold exactly that physical page —
+under aliasing it does not, so the unmap fails too. Those three extra failures are downstream of
+the defect rather than a leaky test, and the distinction matters: an arm whose blast radius you
+have not accounted for is an arm you cannot use to say "only this property broke".
+
+**The unwind is SHARED between a sized frame and a run of slots**, so `FRAME_REGION_NO_ROLLBACK=1`
+reddens `region-rollback-page0` *and* `sized-rollback-page0` from one flag. One policy, one
+implementation, one arm covering both levels — which is the point of the shared helper rather
+than a coincidence worth noting once.
 
 **The region arms are a PAIR, and neither alone would settle the policy** (roadmap 2.1,
 **S35**). `SYS_MAP_REGION` is all-or-nothing: a run that fails part-way withdraws every page it

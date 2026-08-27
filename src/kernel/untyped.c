@@ -273,6 +273,25 @@ void *frame_by_index(uint32_t idx) {
  * wild one. Deliberately NOT folded into frame_phys_by_index's return: the
  * physical base and the length are two facts, and a caller that wants only the
  * base should not be able to take it while ignoring the length. */
+/* Is this physical page inside the untyped arena?
+ *
+ * The arena is the memory every kernel OBJECT is carved from -- cspaces,
+ * endpoints, notifications and frames alike -- and it sits inside
+ * [USER_PHYS_BASE, pool ceiling), so it shares the page_refcounts[] table with
+ * the anonymous page allocator. That overlap is what makes the question worth
+ * asking: the generic page machinery will operate on an arena page perfectly
+ * happily, and must not. See the guard at the top of cow_break_pte (paging.c).
+ *
+ * Deliberately the whole ARENA and not just the frame table. A cnode or an
+ * endpoint has even less business being copied out from under its object than a
+ * frame does, and a predicate that answered only about frames would be a
+ * narrower guarantee than the one the caller needs. */
+int phys_in_untyped_arena(uint64_t phys) {
+    if (!g_untyped_arena) return 0;
+    uint64_t base = (uint64_t)g_untyped_arena - PHYS_KVA_BASE;
+    return phys >= base && phys < base + (uint64_t)UNTYPED_ARENA_BYTES;
+}
+
 uint32_t frame_pages_by_index(uint32_t idx) {
 #ifdef FRAME_INDEX_UNCHECKED
     /* THE ARM HAS TO BE IN BOTH RESOLVERS, and finding that out cost a red CI

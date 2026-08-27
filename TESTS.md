@@ -689,7 +689,7 @@ caveat nobody would read at 3am.
 | `smoke-aspace` | Rebuilding a task slot repeatedly returns every physical page to the pool — a dead task's address space leaks nothing. |
 | `smoke-cow` | Copy-on-write breaks correctly for the shared zero page. |
 | `smoke-heap64` | The heap syscalls **and the pager's region gate** are 64-bit clean (**[I-2]**, roadmap 1.5). Builds `USER_HEAP_HIGH_BASE=1`, which places every heap at **8 GiB** — above the 4 GiB line, below `USER_IMAGE_ASLR_BASE` — so the truncation is *reachable* instead of latent, then runs `captest`, which calls `sbrk`/`brk` directly and writes to the page it is handed. **Control arm:** built from a tree without the fix, the same target reports `CAPTEST: FAIL (sbrk-grow-failed)`. Verified in both directions before the target existed. |
-| `smoke-nzcow` | The generic (non-zero) COW break is correct — added after a real bug in that path. |
+| `smoke-nzcow` | The generic (non-zero) COW break is correct — added after a real bug in that path. Since 2026-08-27 it also asserts the break is **refused** on a page belonging to a kernel object (**S38**); arm `smoke-nzcow-arena-control`. |
 | `smoke-stackguard` | The stack canary is re-seeded from the CSPRNG at boot and is no longer the compile-time default. |
 | `smoke-aslr` | Image, heap, and stack bases are randomised. |
 | `smoke-e820` | The physical pool is sized from the multiboot2 memory map, not a hardcoded fallback. |
@@ -1593,6 +1593,35 @@ are live, so a handler that confuses them answers about frames the asker has no 
 **Probing the range then turns a number into an oracle** for which frames exist across every
 task in the system, which is the part that makes it a security property rather than an ABI
 preference.
+
+### `smoke-nzcow-arena-control` — a kernel object's page is never copied out from under it
+
+Roadmap 2.1 asked what a copy-on-write break means for a capability two tasks hold. It means two
+things the kernel must not do, so `cow_break_pte` refuses any page inside the untyped arena
+(**S38**). The shared branch allocates from the *anonymous* pool, so a frame holder would obtain
+a private writable page no untyped region ever paid for; and the PTE would be repointed at
+memory no capability names, detaching the mapping from the object while the frame's
+`1 + mappings` pin arithmetic went on claiming otherwise.
+
+**The case uses a real `KOBJ_FRAME` at refcount 2, and the refcount is the whole point.** A
+freshly retyped frame sits at 1 — its permanent pin — and at 1 an unguarded break takes the
+*sole-owner* path: it upgrades the PTE in place and allocates nothing. That is the wrong half of
+the defect to measure. It would show a read-only mapping turning writable but not the page
+appearing outside the untyped budget, which is the half that breaks the object model. Raising
+the count to 2 first puts the arm on the branch that allocates.
+
+**Nothing in the tree reaches this path, and the gate exists for that reason rather than in
+spite of it.** Two circumstances prevent it: `user_map_frame_page` sets
+`PRESENT|USER[|WRITE][|NX]` and never `PAGE_COW`, and `rust_validate_page_fault` admits only
+image, heap and stack, so a frame mapped elsewhere never reaches the pager. **Neither is a
+statement about frames** — both are facts about other functions, which is exactly the shape
+**S28** and **S30** turned out to have when someone looked. Roadmap 2.3's `fork` is the function
+that would change it, and a frame mapped inside the heap window already passes the region gate.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-nzcow` | `NZCOW_SELFTEST: PASS` present | passes, **3 boots in 3** |
+| `smoke-nzcow-arena-control` (`COW_ARENA_UNGUARDED=1`) | `NZCOW_SELFTEST: FAIL arena-cow-broken` present | passes, **3 boots in 3**; `smoke-nzcow` goes red under the same flag |
 
 **A CONTROL ARM IS AS SPLIT AS THE THING IT INJECTS INTO**, and this pair proved it by going
 red. Giving a frame a length created a *second* function turning `CAP_FRAME.object` into a fact

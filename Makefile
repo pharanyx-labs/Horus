@@ -90,7 +90,7 @@ DEFECT_FLAGS = \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
-	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX RAMFS_SLOT3_GATE \
+	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
@@ -919,6 +919,22 @@ FRAME_INFO_BY_INDEX ?= 0
 ifeq ($(FRAME_INFO_BY_INDEX),1)
 CFLAGS  += -DFRAME_INFO_BY_INDEX
 ASFLAGS += -DFRAME_INFO_BY_INDEX
+endif
+
+# COW_ARENA_UNGUARDED=1 removes the guard at the top of cow_break_pte, so a
+# copy-on-write break on a page belonging to a kernel object proceeds. It is the
+# defect roadmap 2.1's "what does a COW break mean for a capability two tasks
+# hold" was asking about, and it is two holes at once: the shared branch
+# allocates from the ANONYMOUS pool, so a frame holder obtains a private writable
+# page no untyped region paid for -- ambient resource, which this kernel does not
+# have -- and the PTE is repointed at memory no capability names, so the mapping
+# silently stops being the object and the frame's `1 + mappings` pin arithmetic
+# stops describing reality. Nothing reaches it today; see the guard's comment for
+# why that is a circumstance rather than a property, and why the arm exists now.
+COW_ARENA_UNGUARDED ?= 0
+ifeq ($(COW_ARENA_UNGUARDED),1)
+CFLAGS  += -DCOW_ARENA_UNGUARDED
+ASFLAGS += -DCOW_ARENA_UNGUARDED
 endif
 
 LIBHORUS_SELFTEST ?= 0
@@ -2036,6 +2052,23 @@ smoke-nzcow:
 	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='NZCOW_SELFTEST: PASS' \
 		FAIL_MARKER='NZCOW_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Control arm -- the arena guard. COW_ARENA_UNGUARDED=1 lets a copy-on-write
+# break proceed on a page belonging to a kernel object. The selftest drives it
+# with a REAL KOBJ_FRAME whose refcount is 2, so the arm takes the SHARED branch:
+# a page is allocated from the anonymous pool (paid for by no untyped region),
+# the PTE is repointed away from the object, and the frame's pin drops. At
+# refcount 1 the break would only upgrade the PTE in place, which is the wrong
+# half of the defect to measure. The FAIL marker must be PRESENT.
+.PHONY: smoke-nzcow-arena-control
+smoke-nzcow-arena-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 COW_ARENA_UNGUARDED=1
+	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 COW_ARENA_UNGUARDED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NZCOW_SELFTEST: FAIL arena-cow-broken' \
+		tools/smoke_test.sh boot.iso
+	@echo "NZCOW ARENA CONTROL: PASS - unguarded, a kernel object's page is copied out from under it"
 
 .PHONY: smoke-wx
 smoke-wx:

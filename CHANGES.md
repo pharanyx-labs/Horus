@@ -16,6 +16,46 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A page belonging to a kernel object is never copied out from under it (roadmap 2.1, S38).**
+  `cow_break_pte` refuses any physical page inside the untyped arena. Roadmap 2.1 posed this as
+  *"what does a COW break mean for a capability two tasks hold"*, and the answer is that it must
+  not happen — it would be **two** holes at once.
+
+  **Resource authority.** The shared branch calls `alloc_user_physical_page()`, the *anonymous*
+  pool. A task holding a frame capability would obtain a private writable page that **no untyped
+  region ever paid for**. Roadmap 0.3's whole premise is that creating a memory-backed object is
+  an exercise of authority the capability graph describes; a COW break conjures one outside that
+  graph, which is ambient resource — and this kernel does not have ambient anything.
+
+  **Identity.** The PTE would be repointed at a page no capability names. The mapping silently
+  stops being the object, and the frame's `1 + mappings` pin arithmetic stops describing reality
+  — which is precisely what `destroy_dyn_frame` reads to decide a run is collectable. A task
+  that wants a private copy retypes its own frame from its own untyped and copies the bytes:
+  explicit, budgeted, visible in the graph.
+
+  **The guard covers the whole arena, not just frames.** A cnode or an endpoint has even less
+  business being copied out from under its object, and a predicate answering only about frames
+  would be a narrower guarantee than the caller needs. The arena sits inside
+  `[USER_PHYS_BASE, pool ceiling)` and so shares `page_refcounts[]` with the anonymous
+  allocator, which is exactly why the generic page machinery would have operated on it happily.
+
+  **NOTHING IN THE TREE REACHES THIS PATH, and that is the reason to guard it now rather than an
+  argument against.** Two things prevent it and neither is a statement about frames:
+  `user_map_frame_page` sets `PRESENT|USER[|WRITE][|NX]` and never `PAGE_COW`, and
+  `rust_validate_page_fault` admits only image, heap and stack. Both are facts about *other
+  functions* — the shape **S28** and **S30** turned out to have when someone finally looked, and
+  the shape [G-2] had for nineteen days. Roadmap 2.3's `fork` is the function that changes it,
+  and a frame mapped inside the heap window already passes the region gate today. Guarding
+  before the caller exists is the cheapest this will ever be.
+
+  **The arm is aimed at the half that matters.** `COW_ARENA_UNGUARDED=1`, witnessed by a third
+  case in `nzcow_selftest` driven with a **real** `KOBJ_FRAME` at refcount **2**. A freshly
+  retyped frame sits at 1 — its permanent pin — and at 1 an unguarded break takes the
+  *sole-owner* path: it upgrades the PTE in place and allocates nothing. That would have shown a
+  read-only mapping turning writable but not a page appearing outside the untyped budget, which
+  is the half that breaks the object model. `NZCOW_SELFTEST: FAIL arena-cow-broken`, 3 boots in
+  3, and `smoke-nzcow` goes red under the same flag.
+
 - **[G-9]'s open remainder measured: load-independent, ~2 boots in 20, and invisible to the
   gate that runs the exact build.** A CI failure looked load-induced. It is not. A 2×2 on
   `origin/main` — `{KSP_GUARD_INJECT, not}` × `{12 busy cores, idle}`, n=10 per cell, each boot

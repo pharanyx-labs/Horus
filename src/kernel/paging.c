@@ -1326,6 +1326,53 @@ static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
     uint64_t pte      = *pte_slot;
     uint64_t old_phys = pte & PTE_ADDR_MASK;
 
+#ifndef COW_ARENA_UNGUARDED
+    /* ---- A KERNEL-OBJECT PAGE IS NEVER COPIED OUT FROM UNDER ITS OBJECT ----
+     *
+     * Roadmap 2.1 asked "what does a COW break mean for a capability two tasks
+     * hold". It means two things this kernel must not do, so the answer is that
+     * it does not happen:
+     *
+     *  1. RESOURCE AUTHORITY. The shared branch below calls
+     *     alloc_user_physical_page() -- the ANONYMOUS pool. A task holding a
+     *     CAP_FRAME would obtain a private writable page that no untyped region
+     *     ever paid for. Roadmap 0.3's whole premise is that creating a
+     *     memory-backed object is an exercise of authority the capability graph
+     *     describes; a COW break over a frame conjures one outside that graph.
+     *     That is ambient resource, which this kernel does not have.
+     *
+     *  2. IDENTITY. A frame capability names one object. After a break the PTE
+     *     names a DIFFERENT physical page that no capability names -- the
+     *     mapping silently stops being the object -- and the frame's
+     *     `1 + mappings` pin arithmetic stops describing reality, which is what
+     *     destroy_dyn_frame reads to decide a run is collectable.
+     *
+     * The honest answer for a task that wants a private copy is to retype its
+     * own frame from its own untyped and copy the bytes. Explicit, budgeted,
+     * and visible in the capability graph.
+     *
+     * ---- WHY GUARD SOMETHING NOTHING CAN REACH ---------------------------
+     *
+     * No frame PTE is a COW PTE today: user_map_frame_page sets
+     * PRESENT|USER[|WRITE][|NX] and never PAGE_COW. A second circumstance helps
+     * -- rust_validate_page_fault admits only image, heap and stack, so a frame
+     * mapped elsewhere never reaches the pager at all. NEITHER IS A STATED
+     * PROPERTY ABOUT FRAMES. Both are facts about other functions, which is the
+     * shape S28 and S30 were: a gate that turned out to be a circumstance.
+     *
+     * It becomes reachable the day anything duplicates an address space and
+     * marks present user PTEs copy-on-write -- which is roadmap 2.3's `fork`,
+     * two items away -- and a frame mapped inside the heap window passes the
+     * region gate today. Adding the guard before the caller exists is the
+     * cheapest this will ever be.
+     *
+     * -4 rather than -1: distinct so the fault path and the selftest can tell
+     * "refused because the page belongs to an object" from an ordinary
+     * unmappable fault. handle_demand_page_fault propagates it, page_fault_handler
+     * treats any non-zero as unhandled, and the task dies -- fail closed. */
+    if (phys_in_untyped_arena(old_phys)) return -4;
+#endif
+
     int refs = rust_page_ref_dec((uint32_t)old_phys, page_refcounts,
                                  (uint32_t)USER_PHYS_PAGES);
 
@@ -1627,6 +1674,48 @@ void nzcow_selftest(void) {
     /* Reclaim the live frames (private copy + the now-sole-owned shared frame). */
     if (f1 != shared && f1 != 0) free_user_physical_page((uint32_t)f1);
     free_user_physical_page((uint32_t)shared);
+
+    /* (3) AN ARENA PAGE IS REFUSED. The two cases above are the machinery working;
+     * this is the machinery declining to work on memory that belongs to a kernel
+     * object. Roadmap 2.1 asked what a COW break means for a capability two tasks
+     * hold, and the answer is that it does not happen -- see the guard at the top
+     * of cow_break_pte for why a break would both conjure a page outside the
+     * untyped budget and detach a mapping from the object its capability names.
+     *
+     * Driven with a REAL KOBJ_FRAME rather than an arbitrary arena address, and
+     * with its refcount raised to 2 first, so the arm underneath this test takes
+     * the SHARED branch -- the one that allocates from the anonymous pool. At
+     * refcount 1 an unguarded break would merely upgrade the PTE in place, which
+     * is the wrong half of the defect to measure.
+     *
+     * The frame is not reclaimed: the arena is a bump allocator with no region
+     * reset (docs/LIMITATIONS.md), so a selftest build leaks one page on purpose
+     * rather than pretending it can give it back. */
+    uint32_t fidx = 0;
+    void *fmem = kobj_alloc(UNTYPED_ROOT, KOBJ_FRAME, 1, &fidx);
+    if (!fmem) {
+        print("NZCOW_SELFTEST: FAIL arena-frame-alloc\n");
+        spin_unlock(&page_lock);
+        return;
+    }
+    uint64_t fphys = (uint64_t)fmem - PHYS_KVA_BASE;
+    (void)rust_page_ref_inc((uint32_t)fphys, page_refcounts, (uint32_t)USER_PHYS_PAGES);
+
+    uint64_t fpte   = fphys | cowf;
+    uint64_t before = fpte;
+    int free_pre    = free_page_count;
+    int arena_ok    = 1;
+
+    if (cow_break_pte(&fpte, va) != -4)                 arena_ok = 0;  /* must refuse */
+    if (fpte != before)                                 arena_ok = 0;  /* PTE untouched */
+    if ((fpte & PTE_ADDR_MASK) != fphys)                arena_ok = 0;  /* still the object */
+    if (frame_map_refcount(fphys) != 2)                 arena_ok = 0;  /* pin intact */
+    if (free_page_count != free_pre)                    arena_ok = 0;  /* nothing allocated */
+
+    if (!arena_ok) {
+        print("NZCOW_SELFTEST: FAIL arena-cow-broken\n");
+        ok = 0;
+    }
 
     spin_unlock(&page_lock);
     print(ok ? "NZCOW_SELFTEST: PASS\n" : "NZCOW_SELFTEST: FAIL\n");

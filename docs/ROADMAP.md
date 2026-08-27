@@ -813,9 +813,28 @@ measurement nothing took.
   It returns a **scalar**, not a struct through a caller pointer — no user pointer means no
   pointer to truncate, and issue #176 was a wrapper that truncated one to 32 bits. A second
   field, if one is ever needed, is when to reconsider.
-- Copy-on-write over a shared frame. `cow_break_pte` already exists for anonymous pages; a
-  frame is refcounted the same way, so this is mostly about what a COW break means for a
-  capability two tasks hold.
+- ~~Copy-on-write over a shared frame.~~ **Answered 2026-08-27** (`SECURITY.md` **S38**), and
+  the answer is that it does not happen: `cow_break_pte` refuses any page inside the untyped
+  arena. The question was the right one — *what does a COW break mean for a capability two tasks
+  hold* — and it turns out to mean **two** things the kernel must not do.
+
+  **Resource authority.** The shared branch calls `alloc_user_physical_page()`, the *anonymous*
+  pool. A frame holder would obtain a private writable page that no untyped region ever paid
+  for. Roadmap 0.3's premise is that creating a memory-backed object exercises authority the
+  capability graph describes; a COW break conjures one outside that graph, which is ambient
+  resource.
+
+  **Identity.** The PTE would be repointed at a page no capability names, so the mapping stops
+  being the object, and the frame's `1 + mappings` pin arithmetic stops describing reality —
+  which is what `destroy_dyn_frame` reads to decide a run is collectable.
+
+  A task that wants a private copy retypes its own frame from its own untyped and copies the
+  bytes. Explicit, budgeted, and visible in the graph. **Nothing reaches this path today**, and
+  the guard exists precisely because the two things preventing it are *circumstances* rather
+  than properties — `user_map_frame_page` never sets `PAGE_COW`, and `rust_validate_page_fault`
+  admits only image, heap and stack. Both are facts about other functions. **2.3's `fork` is
+  what makes it reachable**, and a frame mapped inside the heap window already passes the region
+  gate. Falsified by `COW_ARENA_UNGUARDED=1`.
 - Reclaiming a frame's bytes. Bump allocation means a destroyed frame's page is not reusable
   until its untyped region is revoked and reset — see `docs/LIMITATIONS.md`. That is the
   deliberate seL4 trade, not an oversight, but the region reset it depends on is not written.
@@ -1227,7 +1246,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 125 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 39 of them control arms that must reproduce a defect |
+| ✅ | 126 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 40 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

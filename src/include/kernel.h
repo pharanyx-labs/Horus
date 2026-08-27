@@ -606,6 +606,12 @@ uint64_t frame_phys_by_index(uint32_t idx);
  * caller one page of a buffer it believes is whole. */
 uint32_t frame_pages_by_index(uint32_t idx);
 
+/* Whether `phys` is a page of the untyped arena -- the memory every kernel object
+ * is carved from. The arena lives inside the user page pool and so shares
+ * page_refcounts[] with anonymous pages, which is exactly why the generic page
+ * machinery has to be able to ask. */
+int phys_in_untyped_arena(uint64_t phys);
+
 /* How many untyped regions the kernel can describe. Small by design: this bounds
  * the DESCRIPTORS, not the memory they govern — one descriptor can name an
  * arbitrarily large region. Index 0 is the kernel's own bootstrap region and no

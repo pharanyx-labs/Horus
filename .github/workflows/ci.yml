@@ -364,6 +364,17 @@ jobs:
       # two, so it needs an arm that proves it can fire.
       - name: Control arm — a TSC-resolution clock undoes CR4.TSD
         run: make smoke-captest-clock-control
+      # Console INPUT. SYS_GET_LINE's dispatch entry is SC_NONE, so its handler
+      # is the only gate, and it accepted an untyped slot-3 lookup -- the decoy
+      # every task is born holding -- as a fallback. Measured before the fix:
+      # captest passed the check and BLOCKED inside the console read.
+      #
+      # This arm asserts a STALL, because a task admitted to that read prints
+      # nothing at all: there is no FAIL line to require, and the absence is the
+      # evidence. EXPECT_STALL fences it -- the workload must demonstrably run,
+      # and must demonstrably not finish.
+      - name: Control arm — the slot-3 decoy must not buy console input
+        run: make smoke-captest-getline-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)

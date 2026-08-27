@@ -16,6 +16,63 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A sixth door of [H-3]'s shape, on console input (S28).** `SYS_GET_LINE`'s dispatch entry
+  declares `SC_NONE`, so its handler is the only gate — and that gate read
+  `cap_lookup(8, READ)` with a fallback to `cap_lookup(3, READ)`, **neither type-tested**. Slot 3
+  is the legacy `CAP_FRAME` `create_task` installs in every task. Measured before the change:
+  `captest`, holding that decoy and no `CAP_CONSOLE`, passed the check and **blocked inside the
+  console read** — not merely eligible, actually reading what the user types.
+
+  It survived because a ring-3 console server owns the UART in any live boot and
+  `console_hw_owned()` refuses first. That is a *circumstance* — the server being alive — not a
+  gate, and it is the same shape as the CSPRNG's boot ordering in #200. The `console_hw_owned()`
+  check stays: it answers "do not race the owner", and a question about racing is not an answer
+  about authority. `CAP_CONSOLE`, type-tested, no fallback.
+
+  **Found by looking for the class rather than the instance.** `cap_lookup` does not test type —
+  by design — so every caller must, and five call sites in this tree did not: two in the
+  `DEBUG_SHELL`-only kernel shell, one inside the retired `RAMFS_SLOT3_GATE` arm, and two in
+  `h_get_line`. Only the last were live.
+
+  **The arm asserts a STALL**, which the harness could not express: a task admitted to a console
+  read prints nothing, so there is no FAIL line to require, and a timeout was unconditionally a
+  failure. `tools/smoke_test.sh` gained `EXPECT_STALL`, fenced three ways — a progress marker that
+  must appear (or a kernel that never booted would satisfy it), a forbidden marker that must not,
+  and no fault. Falsified in all three directions, including that `EXPECT_STALL` without
+  `ABSENT_MARKER` is refused outright.
+
+  **The reconciliation that entry needed and did not get.** Moving `SYS_GET_LINE`'s gate changed
+  what a test enters, and the manifest saying so — `.github/syscall-coverage.yml` — was written
+  and never committed, so the required `syscall-coverage` job held the PR red for three days on
+  exactly the drift it exists to catch: *"declared uncovered but its handler DID run"*. It is
+  `covered` now, and the reason records the distinction the whole file rests on — captest's check
+  is that a task holding no `CAP_CONSOLE` is **refused**, and a refusal decided inside the handler
+  still runs the handler. **A syscall can be covered by a test that proves it says no.**
+
+  `docs/SYSCALLS.md` was the more serious half, because it is the ABI reference and nothing
+  pointed at it. Its `SYS_GET_LINE` row still read `slot 8 READ, else slot 3 READ` — the retired
+  authority, published as current for three days after the handler stopped honouring it. Two rows
+  beside it had been stale since 2026-08-22: `SYS_READ` still documented the `fd >= 3` slot-3 path
+  and `SYS_OPEN` was still listed as available, when **[H-3]** removed both and the same file says
+  so seventy lines higher. A reference that contradicts itself is read at the row, not the essay.
+
+- **A gated numerator does not gate its own remainder (S25).** Four documents state syscall
+  handler-entry coverage as *"55 of 81"*, and `doc-claims` has checked both of those numbers since
+  2026-08-19. Three of them go on to say how many are left — and that number was written by hand,
+  read **25** in two files and **33** in a third, and was **27** in the tree. Three figures for one
+  quantity, all wrong, sitting one sentence away from a number no one could get wrong.
+
+  `site/index.html` failed the same way in prose: it credited the measurement to *"the two
+  workloads this project tracks"* when it has run over three since the boot-modules session was
+  added — on the one page a reader outside this repository ever sees. **A checked number lends its
+  credibility to the unchecked sentence beside it**, which is the mechanism, not the excuse.
+
+  `syscalls_uncovered` is now derived from the manifest and declared at all four occurrences, and
+  both retired phrasings are in `forbidden:`. Falsified four ways against the live tree: a wrong
+  number in a newly-declared occurrence fails; rewording one so its pattern matches nothing fails
+  as *"declared here but its pattern matches nothing"*; and each retired phrasing fails on
+  reintroduction, in the file it was retired from.
+
 - **Cross-task introspection required "do you hold the audit log's keys" (roadmap 3.6, S32).**
   `SYS_GET_TASK_INFO` accepted `CAP_USER` or `CAP_AUDIT` as well as `CAP_DEBUG` — so
   "do you administer users" and "do you hold the audit keys" were both answers to "may I see the

@@ -121,6 +121,24 @@ counts:
       - file: site/index.html
         pattern: '<strong>(\d+) of \d+</strong> system calls'
 
+  # The other half of those four ratios. Declared 2026-08-27, because it had
+  # drifted in a way the numerator could not: the four sentences above were
+  # gated and correct, and the sentences immediately after them said 25, 25 and
+  # 33 for one quantity whose live value was 27. Gating a numerator and leaving
+  # its remainder to be typed is gating half a claim.
+  - id: syscalls_uncovered
+    describe: "syscalls with a written reason for no handler-entry coverage (.github/syscall-coverage.yml `uncovered`)"
+    derive: syscalls_uncovered
+    occurrences:
+      - file: docs/LIMITATIONS.md
+        pattern: 'The other (\d+) are listed in `\.github/syscall-coverage\.yml`'
+      - file: docs/LIMITATIONS.md
+        pattern: 'a defect in any of those (\d+) handlers'
+      - file: docs/LIMITATIONS.md
+        pattern: '\*\*Two of the (\d+) are cheap'
+      - file: site/index.html
+        pattern: 'The other (\d+) are each'
+
   # The DENOMINATOR of the four ratios above, which until 2026-08-22 was the
   # literal `76` inside each of their patterns -- so the number every one of
   # those sentences states was the one thing here that nothing checked. It was
@@ -308,3 +326,22 @@ forbidden:
       sweep of 8 is 0.25^8. The misses share a cause whose rate is set by the host's
       timing, so they are not independent -- the same arm went 8 for 8 on a CI
       runner. Withdrawn 2026-08-22; a bigger N cannot fix a biased sample.
+
+  - pattern: 'two workloads this project tracks'
+    reason: >-
+      site/index.html described the syscall-coverage measurement as running over
+      two workloads. It has run over three since the boot-modules session was
+      added -- the number the measurement is taken from, stated wrong on the one
+      page a reader outside the repository sees. It went unnoticed because the
+      figure beside it, "54 of 81", WAS gated and WAS right: a checked number
+      lends its credibility to the unchecked sentence around it. Corrected
+      2026-08-27, and the remainder it introduces is now derived (syscalls_uncovered).
+
+  - pattern: 'slot 8 READ, else slot 3 READ'
+    reason: >-
+      docs/SYSCALLS.md stated SYS_GET_LINE's authorisation this way, and it was
+      accurate until 2026-08-24 -- an untyped cap_lookup on the legacy CAP_FRAME
+      every task is born holding, as a fallback for CAP_CONSOLE, on console INPUT
+      ([H-3]'s sixth door, S28). The handler was fixed that day and this row was
+      not, so for three days the ABI reference published the retired authority as
+      current. Corrected 2026-08-27.

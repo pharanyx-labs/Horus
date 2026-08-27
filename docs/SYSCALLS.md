@@ -292,11 +292,11 @@ can hold a `CAP_DEBUG` that writes — observation is not control.
 
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
-| 3 | `SYS_GET_LINE` | `buf` | slot 8 READ, else slot 3 READ |
+| 3 | `SYS_GET_LINE` | `buf` | `CAP_CONSOLE` at `CAPSLOT_CONSOLE` + READ, **type-tested in the handler**; no fallback |
 | 7 | `SYS_DEBUG_EXEC` | `cmd` | none (`SC_NONE`) — **`DEBUG_SHELL` builds only**; absent from the ship kernel since 2026-08-23 |
 | 11 | `SYS_WRITE` | `fd`, `buf`, `len` | console: none (fd 1 = ambient). `klog`: `CAP_KERNEL_LOG` + WRITE |
-| 12 | `SYS_READ` | `fd`, `buf`, `len` | fd 0 ambient; fd ≥ 3 needs slot 3 READ |
-| 13 | `SYS_OPEN` | `name`, `flags` | slot 3: READ |
+| 12 | `SYS_READ` | `fd`, `buf`, `len` | fd 0 ambient; **fd ≥ 3 retired 2026-08-22** (**[H-3]**) — that branch compiles only under `RAMFS_SLOT3_GATE=1` |
+| 13 | `SYS_OPEN` | `name`, `flags` | slot 3: READ — **absent from the ship kernel since 2026-08-22** (**[H-3]**); the dispatch entry compiles only under `RAMFS_SLOT3_GATE=1` |
 | 82 | `SYS_CONSOLE_OWNED` | — | none (read-only status) |
 | 88 | `SYS_DMESG` | `buf`, `offset`, `max` | `CAP_KERNEL_LOG` at `CAPSLOT_KERNEL_LOG` |
 
@@ -304,6 +304,17 @@ can hold a `CAP_DEBUG` that writes — observation is not control.
 owns the UART** (`console_hw_owned()`). A kernel-side read would race the owner and steal
 bytes from a typed line, so clients must route input through the server. The in-kernel path
 exists only for before handoff and after the owner dies.
+
+**That guard is not the authority check, and until 2026-08-24 nothing else was** (finding
+**[H-3]**'s sixth door, property **S28**). `SYS_GET_LINE`'s dispatch entry declares `SC_NONE`,
+so its handler is the only gate — and that gate read `cap_lookup(8, READ)` with a fallback to
+`cap_lookup(3, READ)`, **neither of them type-tested**. Slot 3 holds the legacy `CAP_FRAME`
+every task is born with, so the fallback was satisfied by a capability that confers no console
+authority at all, on the syscall that returns *what the user is typing* — including at a login
+prompt. It survived because `console_hw_owned()` refuses first in any live boot, which is a
+circumstance (the server happens to be alive), not a gate. The row above is now the whole
+answer: `CAP_CONSOLE`, type-tested, no fallback. `console_hw_owned()` is unchanged and stays
+where it is — "do not race the owner" was never an answer to "may I read the console".
 
 **`SYS_WRITE` fd 1 has two destinations and they are gated differently** (finding **[H-2]**,
 fixed 2026-08-20). The bytes always reach the console: a terminal write is not an authority

@@ -16,6 +16,34 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **`smoke-kstack-race` scored a died-in boot as a broken property.** The base arm ran one
+  session and treated two very different outcomes identically: the detector firing — *two CPUs
+  shared a kernel stack*, the property broken — and the session failing to complete, which at
+  `-smp 4` under a window this build **deliberately widens** so it is entered on every switch
+  says nothing about whether two CPUs shared anything. The second is the absence of evidence,
+  and it was being scored as evidence against.
+
+  **This is the third time this lesson has had to be learned in one file.**
+  `smoke-kstack-park`'s control arm scored its own strongest reproductions as misses, and the
+  repair was to call a died-in boot *inconclusive* and boot again. `KSTACK_RACE_CONTROL_BOOTS`,
+  forty lines below this target, has carried the sample-size half since 2026-08-19. The arm next
+  door got neither — and reddened a PR whose entire kernel diff was an early return in a
+  function no live session calls.
+
+  Up to `KSTACK_RACE_BOOTS` (4) attempts now, stopping at the first **completed** session.
+  **The property assertion is unchanged and is not weakened**: the detector fails the build on
+  sight, on every attempt, and no number of retries can turn a detected race into a pass.
+
+  **The fence that makes the retry honest is that all-inconclusive FAILS.** A kernel that never
+  boots must not satisfy the gate by exhausting the loop — the obvious way for a retry to become
+  a way of not testing. Inconclusive attempts are named and tallied as they go.
+
+  Falsified in all three directions, because a loop that only ever goes green is not a gate: a
+  healthy build passes on the first attempt; `KSTACK_RACE_TIMEOUT=1 KSTACK_RACE_BOOTS=2` makes
+  every attempt inconclusive and the gate **fails**; and `KSTACK_RELEASE_EARLY=1` fails on
+  **attempt 1** with *"two CPUs shared a kernel stack with the fix in place"*, never retried
+  past.
+
 - **A frame capability now describes its own object (S37).** `SYS_FRAME_PAGES(frame_slot)`
   returns how many contiguous pages the `CAP_FRAME` at that slot names. This closes the gap the
   *previous* change opened and recorded: giving a frame a length meant only the task that

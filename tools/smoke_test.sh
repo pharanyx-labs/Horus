@@ -368,6 +368,37 @@ case "$status" in
             echo "SMOKE FAIL: forbidden marker '$ABSENT_MARKER' appeared on serial"
             exit 1
         fi
+        # EXPECT_FAULT MEANS REQUIRED, AND UNTIL 2026-08-27 IT DID NOT.
+        #
+        # The header above this script has always said the run "FAILS if none
+        # does". The code did not implement it: a build that booted cleanly to
+        # the banner fell through to the success paths below and exited 0 with
+        # the named fault nowhere on the wire. EXPECT_FAULT inverted the verdict
+        # for a fault that happened; it never required one to happen.
+        #
+        # Every user of it is a CONTROL ARM whose entire purpose is that a
+        # reintroduced defect kills the kernel before the login prompt. So all
+        # five passed whether or not their defect reproduced, and the only thing
+        # that could redden them was a boot too slow to reach the banner --
+        # inverted, failing on the runs that prove nothing and passing on the
+        # ones that disprove the defect.
+        #
+        # Measured when this was found: rebuilt smoke-claim-release-control's
+        # kernel with NO defect flag (`DEFECT FLAGS: none` on the wire), booted
+        # it, watched it reach `horus login:` with the guard string absent from
+        # the log entirely -- and the harness printed SMOKE PASS.
+        #
+        # "A test that cannot fail is not a test" (CLAUDE.md §1), and this file
+        # already records what that costs: smoke-ksp-guard shipped a control arm
+        # with no positive counterpart, and the resume guard shipped a bound
+        # rejecting the IST stacks. Checked here, over the COMPLETE log, for the
+        # same reason ABSENT_MARKER is checked here rather than in the poll loop.
+        if [ -n "$EXPECT_FAULT" ] && ! grep -qF "$EXPECT_FAULT" "$LOG" 2>/dev/null; then
+            echo "SMOKE FAIL: expected fault '$EXPECT_FAULT' never appeared, and the run completed"
+            echo "  The build reached the banner without the fault this arm exists to observe."
+            echo "  For a control arm that means the reintroduced defect did NOT reproduce."
+            exit 1
+        fi
         if [ "$MARKER_ONLY" = "1" ]; then
             echo "SMOKE PASS: required marker '$REQUIRE_MARKER' observed on serial"
             exit 0

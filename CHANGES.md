@@ -16,6 +16,29 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **[G-9]'s open remainder measured: load-independent, ~2 boots in 20, and invisible to the
+  gate that runs the exact build.** A CI failure looked load-induced. It is not. A 2×2 on
+  `origin/main` — `{KSP_GUARD_INJECT, not}` × `{12 busy cores, idle}`, n=10 per cell, each boot
+  observed for a **uniform 25 s window** — gives 1/10 idle and 1/10 loaded on the clean build,
+  4/10 and 4/10 with the injection. **CPU contention changes nothing about the rate**; it
+  changes whether a gate is still observing when the violation happens.
+
+  No new finding: this is the remainder of **[G-9]**, which `docs/LIMITATIONS.md` §5.2d has
+  carried as open since 2026-08-17, and the rate agrees with the "2 in 30 of these boots" the
+  `smoke-exec-reenter` target already records. The measurement adds the load result, the
+  injection's contribution (≈4×, expected — that arm parks a CPU mid-switch, which is the shape
+  that strands a claim), and the signature on a build carrying **no defect flag at all**: a CPU
+  holding a claim on one task *while running another*, at `preempt_on_tick` and
+  `enter_cpu_idle`, persisting across two audits.
+
+  **The methodological point is the observation window.** Every one of these gates stops at its
+  `REQUIRE_MARKER` and quits QEMU, so a violation later in the same boot is invisible *by
+  construction* rather than rarely. A first attempt at this measurement used a different marker
+  and returned 6/10 for the same cell — the instrument was moving the window, which is the
+  [G-8] trace lesson in a new place. `smoke-exec-reenter` additionally discards its per-boot
+  verdict on purpose while the finding is open, and says so inline; when the remainder closes,
+  that `rc` becomes assertable and picking it up is part of closing it.
+
 - **The smoke harness threw away the diagnosis at the point of detection.** `FAIL_MARKER` is the
   specific string a gate declares as its forbidden condition; `FAULT_RE` is a blanket
   `PAGE FAULT|Exception! Vector|PANIC|Rejected by validator` every gate inherits. The blanket was

@@ -1364,6 +1364,51 @@ after the 2026-08-17 narrowing below and the 2026-08-18 close of [G-10] — the 
 fails **2 boots in 30** (~7%), for a reason that is still not what the gate tests. Promote it in
 the same commit that closes the rest of **[G-9]**, and quote a rate.
 
+#### Measured 2026-08-27: the remainder is load-INDEPENDENT, and the gates stop watching too early
+
+A 2×2 on `origin/main` — `{KSP_GUARD_INJECT, not}` × `{12 busy cores, idle}` — n=10 per cell,
+each boot observed for a **uniform 25 s window** rather than until a marker (see below for why
+that matters):
+
+| Build | Idle | 12 cores busy |
+|---|---|---|
+| `PROC_SELFTEST=1 SCHED_INVARIANTS=1` | **1/10** | **1/10** |
+| …`+ KSP_GUARD_INJECT=1` | **4/10** | **4/10** |
+
+**Load makes no difference.** That corrects the obvious hypothesis, which was also the one that
+prompted this measurement: a CI failure looked load-induced, and it is not. What CPU contention
+changes is *whether a gate is still observing when the violation happens*, not whether it
+happens. The rate on the shipped-workload build — no defect flag of any kind — is **2 in 20**,
+consistent with the "2 in 30 of these boots" the `smoke-exec-reenter` target already records.
+
+**`KSP_GUARD_INJECT` roughly quadruples it** (1/10 → 4/10), which is expected rather than
+surprising: that arm forges a bogus `%rsp` so `task_exit_switch` is refused and the CPU parks,
+and parking mid-switch is precisely the shape that strands a claim.
+
+The signature, on the clean build, is not merely an idle CPU holding a claim:
+
+```
+PANIC: unclaimed running task at preempt_on_tick:  task 1 claimed by cpu 0 but that cpu was running 3
+PANIC: unclaimed running task at enter_cpu_idle:   task 1 claimed by cpu 0 but that cpu was running 2
+```
+
+— a CPU holding a claim on one task **while running another**, persisting across two audits.
+
+**Why no gate reports it, and why that is deliberate.** `smoke-exec-reenter` runs exactly this
+build with `FAIL_MARKER='PANIC:'`, and throws the per-boot verdict away on purpose; the target
+says so in an inline note — gating on completion "would make this pair a detector for that, not
+a witness." That is a defensible choice while the finding is open, and it is recorded here so
+the two facts sit together: the rate is known, and the gate that could see it is deliberately
+looking elsewhere. **When the remainder of [G-9] closes, that `rc` becomes assertable**, and
+picking it up is part of closing it.
+
+**The measurement window is the methodological point.** Every one of these gates stops at its
+`REQUIRE_MARKER` and quits QEMU, so a violation later in the same boot is invisible *by
+construction* rather than rarely. The 2×2 above only shows a stable rate because each boot was
+observed for a fixed span instead. A first attempt at this measurement used a different marker
+and produced 6/10 for the same cell — the instrument was changing the observation window, which
+is the [G-8] trace lesson in a new place.
+
 #### Narrowed 2026-08-17: one component found, fixed, and falsified — the rest still open
 
 **[G-9] as filed was a cluster, not one defect.** One component is now closed; the remainder is

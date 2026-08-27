@@ -863,7 +863,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-resume-guard-preclaim` | The same, with the **permanent panic claim already held** — the state another CPU's fatal exception leaves behind. The report must still get out. This is the arm that witnesses the fix. |
 | `smoke-resume-guard-legacy` | Control arm for the fix: same injection and claim, with the guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket restored (`RESUME_GUARD_LEGACY_FATAL=1`). The report must **not** reach serial — the boot goes silent at the login prompt, which is the defect on demand. |
 | `smoke-resume-guard-nofloor` | Control arm for the guard: same injection, guard compiled out (`RESUME_GUARD_DISABLE=1`). The PANIC line must **not** appear; the kernel instead faults at `0x94` on `out->cs`, which is G-8's original datapoint reproduced deliberately. |
-| `smoke-kstack-race` | **S20** — a task's kernel stack is executed by at most one CPU at a time. `KSTACK_RACE_WIDEN=1` stretches the window between handing a task to another CPU and the ISR epilogue leaving that task's stack, so it is entered on essentially every switch instead of at **[G-8]**'s 2–3% per boot. With the deferred release the claim is held across the window, so nothing can take the stack: the session must complete and `PANIC: two CPUs on one kernel stack` must be **absent**. |
+| `smoke-kstack-race` | **S20** — a task's kernel stack is executed by at most one CPU at a time. `KSTACK_RACE_WIDEN=1` stretches the window between handing a task to another CPU and the ISR epilogue leaving that task's stack, so it is entered on essentially every switch instead of at **[G-8]**'s 2–3% per boot. With the deferred release the claim is held across the window, so nothing can take the stack: the session must complete and `PANIC: two CPUs on one kernel stack` must be **absent**. Since 2026-08-27 it distinguishes a **broken property** from an **inconclusive run**: up to `KSTACK_RACE_BOOTS` (4) attempts, stopping at the first completed session; a detected race fails immediately on any attempt and is never retried; all-inconclusive **fails**. |
 | `smoke-kstack-park` | **Merge-gating since #190** (advisory before that, for **[G-9]**, now closed). **S20**, park path — a CPU whose last runnable task dies parks on its **own** ring-0 stack. Boots the task-killing `PROC_SELFTEST` at `-smp 4` (a healthy session never enters the path: 0 parks in 3 boots) and asserts four things, because three of them pass vacuously alone: the self-test completes, at least two CPUs actually parked, no park stack was used by more than one CPU, and `sched_note_park()`'s report is absent. |
 | `smoke-kstack-park-control` | Control arm. Same workload with `KSTACK0_SHARED_PARK=1` restoring `tasks[0].kernel_stack_top` as the shared park target; at least one park stack must come back used by **more than one CPU**. Accepts either that or the kernel's own collision PANIC — `sched_note_park` *halts* on detecting the second CPU, so on exactly those boots the second `PARKTRACE` line never prints and a trace-only test scores the hardest reproduction as a miss. **Boots until it reproduces, up to `KSTACK_PARK_CONTROL_BOOTS` (8) boots that RAN TO COMPLETION or `KSTACK_PARK_CONTROL_ATTEMPTS` (24) attempts, whichever comes first.** A boot the workload *died* in (`PROC_SELFTEST: FAIL`) is **inconclusive**, not a miss: the park path was never exercised to the end, so it is evidence in neither direction, and it is named, tallied and re-booted rather than spent. That distinction is the whole gate: the deaths are `KSTACK0_PARK_TRACE`'s doing — 8 of 20 boots against 0 of 20 without it on the same *fixed* kernel (p = 0.0016) — so they say nothing about the park target. Exhausting the attempts is a *differently worded* red, because a run that could not measure must not read like one that measured. |
 | `smoke-resume-guard-negative` | **[G-9]** residual, detector half. The resume-`%rsp` guard must reject a *negative* bogus value. `RESUME_RSP_INJECT_VALUE=-7` forces the dispatcher to return `-7` once after the console handover; the guard's PANIC line must reach serial. Until 2026-08-18 the predicate was `rsp < 0xFFFF800000000000ULL` — a floor with no ceiling — so `-7` (`0xFFFFFFFFFFFFFFF9`) sailed over it and faulted inside the ISR epilogue instead, with a banner naming the stub and nothing about the value. The bound is now `[__bss_start, __bss_end)`, taken from the linker, because every 64-bit kernel stack is a `.bss` array. |
@@ -903,6 +903,45 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-klog-forge-control` | Control arm. `KLOG_WRITE_UNGATED=1` restores the unconditional `klog_append` on the ring-3 write path; `KLOGTEST: FAIL forged+evicted` must come back, and `smoke-klog-forge` must go red under the same flag. Measured **3 boots in 3** — one boot is enough because the defect is not a race. **Both halves are evaluated before either is reported**, which is what makes this arm exercise both branches rather than only the first in source order. That matters: a fix that merely rate-limited ring-3 appends would keep the marker and still leak the forgery, and one that dropped the bytes while still advancing the ring would lose the marker, so an assertion on either half alone passes a half-fix. |
 | `smoke-exec-reenter` | **[G-9]**, exec component. The exec re-entry hand-off must be consumed by the CPU that armed it. Boots the `PROC_SELFTEST` workload at `-smp 4` `EXEC_REENTER_RUNS` times (default 20) and requires the `SCHED_INVARIANTS` wrong-CPU report to be **absent** from every boot; measured 0 in 30. Asserts on the marker, never on the boot's exit status — the workload still fails 2 boots in 30 (~7%) on the rest of **[G-9]**, and gating on completion would make this a detector for that rather than a witness for this property. |
 | `smoke-exec-reenter-control` | Control arm. `EXEC_REENTER_GLOBAL=1` restores the single shared `g_exec_reenter_task`; the wrong-CPU report must come back in at least one boot. Needs many boots because the theft is a race — measured 5 in 20 (~25%/boot), so a single-boot arm would report a false green three times in four. This arm carries reachability for the pair: if the theft stops reproducing with the global restored, `smoke-exec-reenter`'s green proves nothing either. |
+### `smoke-kstack-race` — a died-in boot is inconclusive, not a miss
+
+**Until 2026-08-27 the base arm conflated two outcomes**, and only one of them is about the
+property:
+
+| Outcome | What it means | Was scored |
+|---|---|---|
+| `PANIC: two CPUs on one kernel stack` | the property is **broken** | FAIL — correct |
+| the session did not complete | the workload died or timed out at `-smp 4` under a window this build **deliberately widens** so it is entered on every switch | FAIL — **wrong** |
+
+The second says nothing about whether two CPUs shared a stack. It is the absence of evidence,
+and it was being scored as evidence against.
+
+**This is the third time this lesson has had to be learned in one file.**
+`smoke-kstack-park`'s control arm scored its own strongest reproductions as misses, and the
+repair was to name a died-in boot *inconclusive* and boot again. `KSTACK_RACE_CONTROL_BOOTS`,
+forty lines below this target, has carried the sample-size half since 2026-08-19. The arm next
+door got neither, and reddened a PR on 2026-08-27 whose entire kernel diff was an early return
+in a function no live session calls.
+
+**The property assertion is unchanged, and the retry does not weaken it.** The detector still
+fails the build on sight, on every attempt, and no number of retries can turn a detected race
+into a pass. What changed is that a run producing *no evidence either way* stops counting
+against the build.
+
+**The fence that makes the retry honest: if every attempt is inconclusive, the gate FAILS.** A
+kernel that never boots must not pass by exhausting the loop — that is the obvious way for a
+retry to become a way of not testing. Inconclusive attempts are named and tallied as they go, so
+a build that is merely slow to die stays visible instead of being silently absorbed.
+
+**Falsified in all three directions**, because an N-try loop that only ever goes green is not a
+gate:
+
+| Direction | Forced with | Result |
+|---|---|---|
+| a healthy build still passes | — | PASS, first attempt, no retries |
+| all attempts inconclusive must fail | `KSTACK_RACE_TIMEOUT=1 KSTACK_RACE_BOOTS=2` | FAIL — *"no attempt completed a session in 2 tries"* |
+| a detected race must fail, never be retried past | `KSTACK_RELEASE_EARLY=1` | FAIL on **attempt 1** — *"two CPUs shared a kernel stack with the fix in place"* |
+
 | `smoke-kstack-race-control` | Control arm, and the load-bearing one. Same widened window, `KSTACK_RELEASE_EARLY=1` restoring the pre-fix release site. The marker must be **present** *and* the session must not report PASS — a build that reproduced the race and still reported success would mean the harness had stopped reading the wire. Without this arm, `smoke-kstack-race` proves only that a kernel with a spin in it still boots. |
 
 **The control arm boots up to eight times, and did not always used to.** The pre-fix release

@@ -3545,24 +3545,68 @@ KSTACK_RACE_RE = PANIC: two CPUs on one kernel stack
 # nothing when the session is fast.
 KSTACK_RACE_TIMEOUT ?= 600
 
+# A BOOT THE WORKLOAD DIED IN IS INCONCLUSIVE, NOT A MISS -- and until
+# 2026-08-27 this arm scored it as a failure. Two outcomes were conflated:
+#
+#   * the detector fires -- two CPUs shared a kernel stack. The property is
+#     BROKEN. Fails immediately, on any attempt, and is never retried.
+#   * the session does not complete -- the workload died or timed out at
+#     `-smp 4` under a window this build DELIBERATELY WIDENS so it is entered on
+#     every switch. That says nothing about whether two CPUs shared a stack. It
+#     is the absence of evidence, and it was being scored as evidence against.
+#
+# This is the third time this exact lesson has had to be learned in this file.
+# `smoke-kstack-park`'s control arm scored its own strongest reproductions as
+# misses, and the repair -- recorded four hundred lines down -- was to name a
+# died-in boot inconclusive and boot again. `KSTACK_RACE_CONTROL_BOOTS`, forty
+# lines below THIS target, has carried the sample-size half since 2026-08-19.
+# The arm next door got neither, and reddened a PR on 2026-08-27 whose diff was
+# an early return in a function no live session calls.
+#
+# So: up to KSTACK_RACE_BOOTS attempts, stopping at the first COMPLETED session.
+# The property assertion is unchanged and is not weakened -- the detector still
+# fails the build on sight, on every attempt, and a retry can never turn a
+# detected race into a pass.
+#
+# THE FENCE THAT MAKES THE RETRY HONEST: if every attempt is inconclusive the
+# gate FAILS. A kernel that never boots must not pass by exhausting the loop,
+# which is the obvious way for a retry to become a way of not testing. The
+# inconclusive runs are named and tallied on the way past, so a build that is
+# merely slow to die is visible rather than silently absorbed.
+KSTACK_RACE_BOOTS ?= 4
+
 .PHONY: smoke-kstack-race
 smoke-kstack-race:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 boot.iso
 	@echo "[kstack] widened window + deferred release: the session must complete"
-	@log=$$(mktemp); rc=0; \
-	QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
-	    python3 tools/session_test.py boot.iso || rc=$$?; \
-	if grep -qa '$(KSTACK_RACE_RE)' "$$log"; then \
-	    echo "KSTACK RACE: FAIL - two CPUs shared a kernel stack with the fix in place"; \
-	    grep -a -A 6 '$(KSTACK_RACE_RE)' "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
-	fi; \
-	if [ $$rc -ne 0 ]; then \
-	    echo "KSTACK RACE: FAIL - session did not complete under the widened window (exit $$rc)"; \
+	@log=$$(mktemp); n=0; done=0; incon=0; \
+	while [ $$n -lt $(KSTACK_RACE_BOOTS) ]; do \
+	    n=$$((n+1)); rc=0; \
+	    QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
+	        python3 tools/session_test.py boot.iso || rc=$$?; \
+	    if grep -qa '$(KSTACK_RACE_RE)' "$$log"; then \
+	        echo "KSTACK RACE: FAIL - two CPUs shared a kernel stack with the fix in place (attempt $$n)"; \
+	        grep -a -A 6 '$(KSTACK_RACE_RE)' "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	    fi; \
+	    if [ $$rc -eq 0 ]; then done=$$n; break; fi; \
+	    incon=$$((incon+1)); \
+	    echo "  attempt $$n/$(KSTACK_RACE_BOOTS): INCONCLUSIVE - session did not complete (exit $$rc), no race detected either; retrying"; \
+	    tail -5 "$$log" | sed 's/^/    /'; \
+	done; \
+	if [ $$done -eq 0 ]; then \
+	    echo "KSTACK RACE: FAIL - no attempt completed a session in $(KSTACK_RACE_BOOTS) tries"; \
+	    echo "  Every attempt was inconclusive, which is NOT a pass: a kernel that never"; \
+	    echo "  boots must not satisfy this gate by exhausting the loop. Either the"; \
+	    echo "  workload is broken, or the widened window has become unsurvivable."; \
 	    tail -20 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
 	rm -f "$$log"; \
-	echo "KSTACK RACE: PASS - session completed, no shared kernel stack"
+	if [ $$incon -gt 0 ]; then \
+	    echo "KSTACK RACE: PASS - session completed on attempt $$done of $(KSTACK_RACE_BOOTS), no shared kernel stack ($$incon inconclusive)"; \
+	else \
+	    echo "KSTACK RACE: PASS - session completed, no shared kernel stack"; \
+	fi
 
 # The defect, on demand. Same widened window, pre-fix release site. Two things
 # must be true and both are checked: the detector's line must appear, AND the

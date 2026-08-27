@@ -285,6 +285,31 @@ status="timeout"
 quit_sent=0
 deadline=$(( SECONDS + TIMEOUT ))
 while [ "$SECONDS" -lt "$deadline" ]; do
+    # ---- A NAMED DETECTION OUTRANKS THE GENERIC BACKSTOP ---------------------
+    #
+    # FAIL_MARKER is the specific thing a gate exists to catch. FAULT_RE is a
+    # blanket 'PAGE FAULT|Exception! Vector|PANIC|Rejected by validator' that
+    # every gate inherits. Until 2026-08-27 the blanket was checked FIRST, so a
+    # gate that caught its own forbidden condition reported it as "kernel
+    # fault/panic on serial" -- indistinguishable from any other fault, and from
+    # a fault the workload makes on purpose.
+    #
+    # That cost a real diagnosis. smoke-switch-commit forbids 'stale scheduler
+    # claim'; run on origin/main with every core busy, 6 boots produced one
+    # `PANIC: stale scheduler claim at preempt_on_tick` and one
+    # `PANIC: unclaimed running task` -- its own marker, and its own invariant --
+    # and CI reported all of it as a generic fault. The information that the
+    # FORBIDDEN CONDITION had occurred was thrown away at the point of detection.
+    #
+    # NO VERDICT CHANGES. Both statuses exit 1; only the message differs. The one
+    # place a fault is a SUCCESS signal is EXPECT_FAULT, so that case keeps its
+    # original ordering -- there the fault is what the gate is waiting for, and
+    # no gate in this tree sets both (checked). Making the order depend on which
+    # role the fault plays is what keeps that true without forbidding the
+    # combination outright.
+    if [ -z "$EXPECT_FAULT" ] && [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then
+        status="marker_fail"; break
+    fi
     if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then
         # Under EXPECT_FAULT, only the fault we NAMED ends the run. Any other
         # fault must keep going so it is reported as the wrong one at the end
@@ -415,12 +440,26 @@ case "$status" in
     expected_fault)
         echo "SMOKE PASS: expected fault '$EXPECT_FAULT' observed on serial"
         exit 0 ;;
-    marker_fail) echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER' on serial"; exit 1 ;;
+    marker_fail)
+        echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER' on serial"
+        grep -nF "$FAIL_MARKER" "$LOG" | head -3 | sed 's/^/  /'
+        exit 1 ;;
     qmp_failed)
         echo "SMOKE FAIL: could not ask QEMU to quit over QMP after the marker"
         echo "  (WAIT_FOR_EXIT=1; the run cannot be ended deterministically -- see [I-11])"
         exit 1 ;;
-    fault)   echo "SMOKE FAIL: kernel fault/panic on serial"; exit 1 ;;
+    fault)
+        # PRINT THE LINE THAT MATCHED. This branch used to say only "kernel
+        # fault/panic on serial" and exit, which is the least useful thing it
+        # could say: FAULT_RE is four alternatives, several gates run workloads
+        # that fault ON PURPOSE, and the log is discarded when the run ends. A CI
+        # failure here was undiagnosable without reproducing it locally -- and
+        # the failure that prompted this was one that would NOT reproduce locally
+        # except under artificial load. Three lines of context is the difference
+        # between a finding and a shrug.
+        echo "SMOKE FAIL: kernel fault/panic on serial"
+        grep -nE "$FAULT_RE" "$LOG" | head -3 | sed 's/^/  /'
+        exit 1 ;;
     exited)  echo "SMOKE FAIL: QEMU exited before the banner (triple fault?)"; exit 1 ;;
     timeout)
         # The one place a timeout can be success -- and only with every fence in

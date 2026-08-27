@@ -176,6 +176,7 @@ struct audit_event {
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE at vaddr must name this capability's own frame. */
 #define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. */
 #define SYS_CLOCK_GETTIME      98   /* (clock_id, struct horus_timespec*) -> 0; monotonic time since boot (roadmap 2.2). No capability; 10 ms resolution by design. */
+#define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr. ALL OR NOTHING: a failure withdraws every page the call mapped, so an error leaves the address space untouched. Max 64 pages. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -568,6 +569,16 @@ static inline int sys_map_frame(int frame_slot, unsigned long vaddr,
                                 unsigned int rights) {
     return (int)syscall(SYS_MAP_FRAME, (uint32_t)frame_slot,
                         (uint64_t)vaddr, (uint32_t)rights);
+}
+
+/* Map `count` frames from consecutive slots at consecutive pages. Returns 0, or
+ * a negative SYS_ERR_*. There is no partial success to interpret: on an error
+ * nothing this call mapped remains mapped, which is why the return is a status
+ * rather than a count of pages. */
+static inline int sys_map_region(int first_slot, unsigned int count,
+                                 unsigned long vaddr, unsigned int rights) {
+    return (int)syscall6(SYS_MAP_REGION, (uint32_t)first_slot, (uint32_t)count,
+                         (uint64_t)vaddr, (uint32_t)rights, 0, 0);
 }
 
 /* Remove the mapping of this capability's frame at `vaddr`. The capability is

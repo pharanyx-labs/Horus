@@ -66,6 +66,7 @@ CLAIMS_YML = ".github/doc-claims.yml"
 HISTORICAL = "docs/history/"
 MAKEFILE = "Makefile"
 CAPTEST = "userspace/captest.c"
+FRAMETEST = "userspace/frametest.c"
 
 
 def _grep_count(path, pattern):
@@ -131,6 +132,13 @@ def derive():
         "smoke_targets": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*:"),
         "control_arms": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*-control[a-z0-9-]*:"),
         "captest_checks": _grep_count(CAPTEST, r"\s*check\("),
+        # frametest's parent-side checks. Declared 2026-08-27 because this exact
+        # number had already gone stale: TESTS.md said 17 while the wire said 31.
+        # Anchored to a line that STARTS with the call so the `static void
+        # check(...)` definition is not counted -- a deriver that includes the
+        # definition is off by one in a way nobody notices until the count is
+        # used to decide something.
+        "frametest_checks": _grep_count(FRAMETEST, r"^\s+check\("),
         # Syscall handler-entry coverage. Both halves are derived rather than
         # written down, because both move whenever a syscall is added or a
         # workload starts covering one -- and a coverage number that has to be

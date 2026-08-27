@@ -93,6 +93,7 @@ checker.
 | 4 | `SYS_CAP_MINT` | `dest_slot`, `src_slot`, `rights` | holding the source; `cap_mint` masks to `rights & src->rights` |
 | 95 | `SYS_MAP_FRAME` | `frame_slot`, `vaddr`, `rights` | `CAP_FRAME` at `frame_slot`, holding at least `rights` |
 | 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights |
+| 99 | `SYS_MAP_REGION` | `first_slot`, `count`, `vaddr`, `rights` | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
 
 Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and
 here the alternative is not hypothetical: **every task is born holding a `CAP_FRAME` in slot
@@ -118,6 +119,36 @@ reference with nobody releasing it).
 `SYS_UNMAP_FRAME` requires the capability as well as the address, and the PTE at `vaddr` must
 name *that* capability's frame. Without it, an address-only unmap would let any task punch a
 hole in its own image, stack, or heap — pages it holds no frame capability for.
+
+**`SYS_MAP_REGION` is all-or-nothing, and that is the ABI, not an implementation detail**
+(**S35**). It maps `count` frames from consecutive cspace slots at `count` consecutive pages
+from `vaddr` — the dual of `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest)`, which fills the run
+of slots it maps. Every per-page refusal listed for `SYS_MAP_FRAME` applies unchanged, because
+both calls share one validation function; the run itself additionally refuses `count == 0`
+(`SYS_ERR_INVAL`), `count` above 64 (`SYS_ERR_RANGE`), a slot run that leaves the cspace
+(`SYS_ERR_RANGE`), and an address run whose *last byte* is not in the user half
+(`SYS_ERR_INVAL`).
+
+**It returns 0 or an error, never a count of pages mapped.** If any page of the run fails,
+every page the call already mapped is withdrawn before it returns, so a caller holding an
+error holds the address space it started with. That is deliberately the opposite of
+`SYS_RETYPE`, which stops at the first failure, keeps what it made, and returns how many:
+retype's partial result is complete information — n objects, each named by a capability at a
+slot the caller computed — while a partial *map* is a hole in a range whose whole purpose is
+to be addressed as a range, found later as a fault with nothing left to say which call left
+it. A PTE is authority, so a partial map after a reported error hands ring 3 authority it was
+just told it did not get.
+
+The unwind withdraws **only the pages this call installed**. The pre-existing mapping that
+caused the refusal is not one of them and survives — an unwind that cleared the whole
+*requested* range would answer a refused request by destroying the mapping that refused it,
+which any task could invoke against a mapping it disliked by asking to map a region across it.
+Both directions are gated: `smoke-frame-region-control` and `smoke-frame-region-wide-control`.
+
+The 64-page ceiling is the rollback's record, not a statement about regions: the unwind
+remembers one physical address per page it installed, on the kernel stack. A larger region is
+the region-*object* work — a length carried in the capability — which roadmap 2.1 still lists
+as open.
 
 **`SYS_CAP_MINT` is the only rights-reducing operation ring 3 has.** `SYS_CAP_GRANT` copies
 the source's rights whole (it passes `CAP_RIGHT_ALL` and `cap_grant_into` masks to the

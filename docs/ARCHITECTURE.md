@@ -930,6 +930,28 @@ as "a live capability that is not an endpoint", and `smoke-frame` now uses it as
 test vector for the map path. A trap that is asserted against on every boot is worth more than
 one that was quietly removed.
 
+**Multi-page runs, and the policy a run needs.** `SYS_MAP_REGION` (2026-08-27) maps `count`
+frames from consecutive cspace slots at consecutive pages — the dual of
+`SYS_RETYPE(untyped, KOBJ_FRAME, count, dest)`, which fills the run it maps. The question that
+had to be answered before any of it was written is what happens when the run fails part-way,
+and the answer is **all-or-nothing**: every page the call installed is withdrawn, so a caller
+holding an error holds the address space it started with (`SECURITY.md` **S35**).
+
+That is the **opposite** of the policy `untyped_retype` uses one file away, on purpose. Retype
+stops at the first failure, keeps what it made, and returns the count — and the asymmetry is in
+the primitives rather than in taste. Retype's partial result is complete information: n
+objects, each named by a capability at a slot the caller computed, all of them enumerable and
+destroyable. A partial *map* is a hole in a range whose entire purpose is to be addressed as a
+range, discovered later as a fault with nothing left to say which call left it — and a PTE is
+authority, so a partial map after a reported error is authority the caller was told it did not
+get. Rollback is also exactly bounded here and is not in retype: this call knows which PTEs it
+installed, whereas unwinding a retype would mean destroying objects whose bytes the watermark
+above cannot reclaim.
+
+The per-page decision is **one function** shared with `SYS_MAP_FRAME`. A region map that
+validated one step less than a single map would be a sixth door of the **[H-3]** shape, and two
+hand-maintained copies of a nine-step check is how a door like that opens.
+
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
 carved from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an

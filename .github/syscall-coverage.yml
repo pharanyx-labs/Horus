@@ -180,6 +180,8 @@ uncovered:
     MEASURED 2026-08-22: not entered by the tracked workloads -- no program in a tracked image holds a CAP_UNTYPED to retype a frame from. Entered by FRAME_SELFTEST, which is its gate (make smoke-frame, plus both control arms). Not promoted to `covered` for the same cost reason as the six confirmed above: `covered` means a TRACKED arm enters it, and adding a fourth workload here is a full kernel build plus a boot on every run
   SYS_UNMAP_FRAME: >-
     MEASURED 2026-08-22: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME. Entered by FRAME_SELFTEST, where framepeer withdraws its own mapping and is then refused the second attempt
+  SYS_MAP_REGION: >-
+    MEASURED 2026-08-27: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME -- no program in a tracked image holds a CAP_UNTYPED to retype the run from. Entered by FRAME_SELFTEST, which is its gate (make smoke-frame, plus both control arms: smoke-frame-region-control and smoke-frame-region-wide-control). Not promoted to `covered` for the same cost reason as its neighbours: `covered` means a TRACKED arm enters it
   SYS_READ: >-
     fd 0 refuses under console_hw_owned() for the same reason as SYS_GET_LINE, and neither workload drives an fd>=3 ramfs read
   SYS_EXEC: >-

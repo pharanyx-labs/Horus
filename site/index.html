@@ -1431,7 +1431,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Process control — spawn, exec, kill, wait, signals with mask and altstack; no <code>fork</code>, no job control</th><td class="t-note">smoke-proc</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling — a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities and capability-mediated shared memory landed; no <code>mmap</code>, no multi-page regions, no real <code>fork</code></th><td class="t-note">smoke-frame</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, and multi-page mapping landed; a region is still a run of single-page capabilities, and there is no real <code>fork</code></th><td class="t-note">smoke-frame</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong> — a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
@@ -1930,9 +1930,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>55 of 81</strong> system calls have their handler actually executed by the
+              <strong>55 of 82</strong> system calls have their handler actually executed by the
               three workloads this project tracks — a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 26 are each
+              permission conformance suite, and the boot-modules session. The other 27 are each
               listed with a written reason.
             </p>
             <p>
@@ -2116,8 +2116,11 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               subtree size (I-3).
               There are no tagged releases, no signed artifacts and no SLSA provenance, so a third
               party cannot verify that a <code>boot.iso</code> came from this repository's CI
-              (I-9). Formal verification is narrow: Kani covers revocation, and the TLA+
-              specifications are committed but not model-checked in CI.
+              (I-9). Multi-page mapping is capped at 64 pages per call, which is not a statement
+              about how large a region may be but the size of the rollback's record: the call is
+              all-or-nothing, so it remembers one physical address per page it installed in order
+              to withdraw them all if any one fails. Formal verification is narrow: Kani covers
+              revocation, and the TLA+ specifications are committed but not model-checked in CI.
             </p>
           </li>
         </ul>

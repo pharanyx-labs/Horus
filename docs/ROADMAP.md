@@ -746,7 +746,7 @@ against, and they are sequenced last for exactly that reason — they begin once
 the object model real virtual-memory objects to name.
 
 
-### 2.1 ◧ Virtual memory objects and shared memory — **[F-2.1]** — *frames landed 2026-08-22*
+### 2.1 ◧ Virtual memory objects and shared memory — **[F-2.1]** — *frames landed 2026-08-22; the region map and its partial-failure policy 2026-08-27*
 
 **Delivered: the frame object and the map path.** `KOBJ_FRAME` is retyped out of a
 `CAP_UNTYPED` by the existing `SYS_RETYPE`, so a page of shared memory is paid for by untyped
@@ -777,9 +777,20 @@ measurement nothing took.
 
 **Still open, and what each needs:**
 
-- `mmap` and multi-page regions. Today a capability names exactly one 4 KiB frame and the
-  caller names the address. A region object wants a length, and a length wants a policy for
-  partial failure part-way through a run.
+- ~~A policy for partial failure part-way through a run.~~ **Settled 2026-08-27, and
+  enforced.** `SYS_MAP_REGION(first_slot, count, vaddr, rights)` maps a run of `count`
+  `CAP_FRAME`s and is **all-or-nothing**: any page that cannot be mapped withdraws every page
+  the call already mapped, so an error leaves the address space untouched (`SECURITY.md`
+  **S35**). It is deliberately the **opposite** of `SYS_RETYPE`'s prefix semantics, and the
+  asymmetry is in the primitives rather than in taste — retype's partial result is complete
+  information, a partial map is a hole in a range that is discovered later as a fault. Both
+  directions are falsified: `FRAME_REGION_NO_ROLLBACK=1` keeps the pages,
+  `FRAME_REGION_ROLLBACK_WIDE=1` eats the mapping that refused the run.
+- **A region OBJECT still wants a length.** What landed maps a run of *single-page*
+  capabilities; the capability still names exactly one 4 KiB frame. A `KOBJ_REGION` carrying a
+  length is the remaining half, and it is what lifts the 64-page ceiling — which today is not a
+  statement about regions but about the rollback's record, one physical address per installed
+  page, held on the kernel stack.
 - Copy-on-write over a shared frame. `cow_break_pte` already exists for anonymous pages; a
   frame is refcounted the same way, so this is mostly about what a COW break means for a
   capability two tasks hold.
@@ -1194,7 +1205,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 121 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 35 of them control arms that must reproduce a defect |
+| ✅ | 123 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 37 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

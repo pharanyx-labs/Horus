@@ -371,12 +371,12 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **55 of 82** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **55 of 83** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 27 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This is stated as a limitation rather than a finding because nothing here is known to be
-broken. What is known is that a defect in any of those 27 handlers would be invisible in the
+broken. What is known is that a defect in any of those 28 handlers would be invisible in the
 same way issue #176 was — and #176 is the reason the number exists at all. `captest` is a
 **refusal** suite by construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both
 assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. Both syscalls
@@ -386,7 +386,7 @@ were named by the suite; neither handler had ever executed.
 direction, so the number cannot quietly fall. It deliberately does not require all of them —
 that would be a large body of test-writing disguised as a gate. Property **S25**.
 
-**Two of the 27 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
+**Two of the 28 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
 uncovered only because `tools/session_test.py` runs no pipeline — a gap in the workload, not
 the kernel. And the `uncovered` reasons that name another build which *would* reach a syscall
 are **hypotheses this manifest has not measured**; promoting them should be a measurement, not
@@ -677,13 +677,13 @@ all-or-nothing unwind costs no per-page state for a sized frame — the run is c
 *k* is `base + k` — which is exactly why the length belongs in the object rather than in the
 caller's bookkeeping.
 
-**A delegate cannot ask how large a frame is.** It receives a `CAP_FRAME` and can read the type,
-the rights, the serial and the generation through `SYS_CAP_ENUMERATE`, but that reports the
-*capability*, not the object behind it. Nothing here is unsafe — mapping fails closed on an
-occupied or out-of-span range — but a sharer has to be told the size out of band, which makes a
-delegated buffer less self-describing than it should be. Roadmap 2.1 carries it as the remaining
-gap; it wants either a `SYS_FRAME_INFO` or a field in `struct cap_info`, and choosing between
-those is the work.
+~~**A delegate cannot ask how large a frame is.**~~ **Closed 2026-08-27** by `SYS_FRAME_PAGES`
+(**S37**). The alternative — a field in `struct cap_info`, reported by `SYS_CAP_ENUMERATE` —
+was rejected on authority grounds rather than taste: that call is gated on `CAP_DEBUG`, so a task
+would have needed a cross-task *observability* capability to learn about its **own** object, and
+`CAP_DEBUG` would have started revealing other tasks' object extents at the same time. Holding a
+capability that names the object is the entitlement to know how big it is, so the authority is
+that capability.
 
 ### 2.6 User accounts do not survive a reboot
 

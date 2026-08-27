@@ -1431,7 +1431,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Process control — spawn, exec, kill, wait, signals with mask and altstack; no <code>fork</code>, no job control</th><td class="t-note">smoke-proc</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling — a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; a delegate cannot yet ask a frame’s size, and there is no real <code>fork</code></th><td class="t-note">smoke-frame</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; no copy-on-write over a shared frame, and no real <code>fork</code></th><td class="t-note">smoke-frame</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong> — a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
@@ -1930,9 +1930,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>55 of 82</strong> system calls have their handler actually executed by the
+              <strong>55 of 83</strong> system calls have their handler actually executed by the
               three workloads this project tracks — a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 27 are each
+              permission conformance suite, and the boot-modules session. The other 28 are each
               listed with a written reason.
             </p>
             <p>
@@ -2119,8 +2119,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               (I-9). A frame spans at most 64 pages, which is the untyped arena's bound rather
               than the design's — that arena is 4 MiB in total and shared with every other kernel
               object, so a frame able to span it would be a denial-of-service against every other
-              object class dressed up as a feature. A task handed a shared frame cannot yet ask
-              how large it is; the size has to be communicated out of band. Formal verification is
+              object class dressed up as a feature. Formal verification is
               narrow: Kani covers revocation, and the TLA+ specifications are committed but not
               model-checked in CI.
             </p>

@@ -798,12 +798,21 @@ measurement nothing took.
   is 64 because `UNTYPED_ARENA_BYTES` is 4 MiB *total*, shared with every cspace, endpoint and
   notification — a frame that could span the arena would be a denial-of-service against every
   other object class dressed as a feature.
-- **A delegate cannot ask how large a frame is.** It receives a `CAP_FRAME` and knows the
-  rights, the type and the liveness, but not the length — `SYS_CAP_ENUMERATE` reports the
-  capability, not the object behind it. Nothing is unsafe (map fails closed on an occupied or
-  out-of-span range), but a sharer has to be *told* the size out of band, which is a gap in the
-  design rather than in the implementation. It wants either a `SYS_FRAME_INFO` or an extra
-  field in `struct cap_info`, and the choice between those is the actual work.
+- ~~A delegate cannot ask how large a frame is.~~ **Closed 2026-08-27** (`SECURITY.md` **S37**).
+  `SYS_FRAME_PAGES(frame_slot)` returns the length of the frame that capability names.
+
+  **The choice was between a syscall and a field in `struct cap_info`, and the field lost on
+  authority grounds.** `SYS_CAP_ENUMERATE` is gated on `CAP_DEBUG` at `CAPSLOT_DEBUG` — a
+  cross-task *observability* capability. Putting a frame's size there would have made an
+  ordinary task need a debug capability to learn about **its own** object, and would have
+  widened what `CAP_DEBUG` reveals about other tasks' objects at the same time. The capability
+  discipline gives the answer directly: the entitlement to know how big the object is comes
+  from holding a capability that names it, so the authority is that capability and the syscall
+  resolves a cspace slot.
+
+  It returns a **scalar**, not a struct through a caller pointer — no user pointer means no
+  pointer to truncate, and issue #176 was a wrapper that truncated one to 32 bits. A second
+  field, if one is ever needed, is when to reconsider.
 - Copy-on-write over a shared frame. `cow_break_pte` already exists for anonymous pages; a
   frame is refcounted the same way, so this is mostly about what a COW break means for a
   capability two tasks hold.
@@ -1218,7 +1227,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 124 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 38 of them control arms that must reproduce a defect |
+| ✅ | 125 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 39 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

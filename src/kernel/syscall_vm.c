@@ -525,3 +525,75 @@ void h_map_region(struct interrupt_frame64 *r) {
 
     r->rax = (uint32_t)err;
 }
+
+/* ---- SYS_FRAME_PAGES ------------------------------------------------------
+ *
+ * (frame_slot) -> pages, always >= 1, or a negative SYS_ERR_*.
+ *
+ * A frame carries a length (S36), and until this existed only the task that
+ * RETYPED one knew what that length was. A delegate received a CAP_FRAME and had
+ * to be told the size out of band, or discover it by trial-mapping page after
+ * page -- O(n) syscalls that pollute the address space to learn a number the
+ * kernel already has. A capability that does not describe its own object is a
+ * capability you cannot use without a side channel.
+ *
+ * ---- WHY THIS IS NOT "A SYSCALL THAT READS A CAPABILITY" -----------------
+ *
+ * framepeer.c says, and is right to: "there is no syscall that reads a
+ * capability's contents, and there should not be one." This is not one. It
+ * reports a property of the OBJECT -- how many pages it spans -- and says
+ * nothing about the capability: not its rights, not its lineage, not its badge.
+ * A holder cannot use it to discover what authority it has without exercising
+ * that authority, which is the property that sentence protects.
+ *
+ * It also discloses nothing that SYS_MAP_FRAME does not already disclose to the
+ * same holder. Mapping the frame and probing forward tells you the length; this
+ * tells you the length without the mapping. Cheaper, not wider.
+ *
+ * ---- WHY A SLOT AND NOT AN INDEX -----------------------------------------
+ *
+ * The handler needs a frame index, and the caller could just pass one -- the
+ * shortcut this whole file exists to refuse. It would be finding C-1's shape
+ * (authority read from somewhere other than the capability that names the
+ * resource) and something worse besides: an OBJECT-EXISTENCE ORACLE. A task
+ * holding no frame capability at all could walk indices and learn which frames
+ * are live and how large they are, across every task in the system. That is a
+ * side channel on other tasks' allocation behaviour, from a syscall that looks
+ * like it only reports a number. FRAME_INFO_BY_INDEX=1 is that kernel.
+ *
+ * ---- WHY NO RIGHTS FLOOR --------------------------------------------------
+ *
+ * cap_lookup(slot, 0), like SYS_UNMAP_FRAME. The size is not the contents:
+ * requiring READ would refuse a WRITE-only sharer the ability to learn how much
+ * it may write, and there is no narrower right this could ask for that means
+ * "may know how big". Holding a capability that names the object is the
+ * entitlement.
+ */
+void h_frame_pages(struct interrupt_frame64 *r) {
+    uint32_t slot = (uint32_t)r->rbx;
+
+#ifdef FRAME_INFO_BY_INDEX
+    /* CONTROL ARM: read the argument as a frame INDEX rather than as a cspace
+     * slot. No capability is consulted, so a task holding nothing learns the
+     * size of any live frame in the system and, by probing, which indices are
+     * live at all. framepeer -- which holds exactly one delegated CAP_FRAME --
+     * asks about slots it has nothing in and gets answers. */
+    uint32_t pages = frame_pages_by_index(slot);
+    r->rax = pages ? pages : (uint32_t)SYS_ERR_INVAL;
+    return;
+#else
+    if (slot >= CNODE_SIZE) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    /* Liveness AND type, both. C-1 was a live capability of the wrong type
+     * satisfying a gate that only asked for the first, and a CAP_TCB's `object`
+     * is a task id -- a small integer that would index the frame table happily. */
+    capability_t *cap = cap_lookup(slot, 0);
+    if (!cap || cap->type != CAP_FRAME) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    uint32_t pages = frame_pages_by_index((uint32_t)cap->object);
+    if (pages == 0 || pages > MAX_FRAME_PAGES) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    r->rax = pages;
+#endif
+}

@@ -92,6 +92,24 @@ void _start(void) {
         check(w[0] != ~PATTERN_A, "readonly-delegate-wrote");
     }
 
+    /* THE DELEGATE CAN ASK HOW BIG IT IS. This is the whole point of
+     * SYS_FRAME_PAGES: this task was handed a capability and nothing else, and
+     * before it existed the size of the object behind that capability was
+     * knowable only by being told out of band, or by trial-mapping forward one
+     * page at a time. */
+    check(sys_frame_pages(SLOT_FRAME) == 1, "peer-frame-pages");
+
+    /* AND ONLY ABOUT WHAT IT HOLDS. Slots 1 and 2 are unassigned in the
+     * canonical cspace map and empty in this task — while frame INDICES start at
+     * 1 and are live, because frametest retyped several before resuming us. So
+     * if the syscall ever read its argument as an index rather than a slot,
+     * these would answer, and this task would be learning the size of frames it
+     * holds no capability to. Worse than the number: probing the range turns it
+     * into an oracle for which frames exist across every task in the system.
+     * FRAME_INFO_BY_INDEX=1 is that kernel, and these are what catch it. */
+    check(sys_frame_pages(1) < 0, "peer-frame-pages-not-an-index");
+    check(sys_frame_pages(2) < 0, "peer-frame-pages-no-oracle");
+
     /* The delegate may withdraw its own mapping. Unmapping reduces what this
      * task can reach and therefore needs no right beyond holding the capability
      * -- requiring WRITE here would leave a read-only sharer unable to let go. */

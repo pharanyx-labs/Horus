@@ -97,6 +97,13 @@ conditional:
       MEASURED 2026-08-20: NOT entered even by an IRQ_POLICY_AUDIT=1 boot, which an earlier entry claimed would reach it. Nothing in that image calls it
 
 covered:
+  # Entered by captest since 2026-08-24, and the reason is the distinction this
+  # whole file rests on: the handler is ENTERED, not satisfied. SYS_GET_LINE's
+  # dispatch entry is SC_NONE, so the central gate admits every caller and the
+  # authority test lives inside h_get_line -- which means captest's check that a
+  # task holding no CAP_CONSOLE is REFUSED still runs the handler body. A
+  # syscall can be covered by a test that proves it says no.
+  - SYS_GET_LINE
   - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`
@@ -173,8 +180,6 @@ uncovered:
     MEASURED 2026-08-22: not entered by the tracked workloads -- no program in a tracked image holds a CAP_UNTYPED to retype a frame from. Entered by FRAME_SELFTEST, which is its gate (make smoke-frame, plus both control arms). Not promoted to `covered` for the same cost reason as the six confirmed above: `covered` means a TRACKED arm enters it, and adding a fourth workload here is a full kernel build plus a boot on every run
   SYS_UNMAP_FRAME: >-
     MEASURED 2026-08-22: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME. Entered by FRAME_SELFTEST, where framepeer withdraws its own mapping and is then refused the second attempt
-  SYS_GET_LINE: >-
-    kernel-side console input; fails closed once console_server owns the UART, so a live session never reaches it
   SYS_READ: >-
     fd 0 refuses under console_hw_owned() for the same reason as SYS_GET_LINE, and neither workload drives an fd>=3 ramfs read
   SYS_EXEC: >-

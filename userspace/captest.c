@@ -678,6 +678,30 @@ void _start(void) {
               "cap-enumerate-and-task-info-disagree-about-CAP_DEBUG");
     }
 
+    /* ---- console INPUT needs CAP_CONSOLE, not the slot-3 decoy -----------
+     *
+     * SYS_GET_LINE's dispatch entry declares SC_NONE, so its handler is the only
+     * gate -- and until 2026-08-24 that gate accepted an untyped slot-3 lookup as
+     * a fallback. Slot 3 is the legacy CAP_FRAME every task is born holding, so
+     * this suite qualified: measured before the fix, captest passed the check and
+     * BLOCKED inside the console read, which is a stronger statement than being
+     * merely eligible -- it was reading what the user types.
+     *
+     * The refusal must come back IMMEDIATELY, and that is the whole assertion:
+     * if the gate ever readmits this task, the call does not return a different
+     * code, it does not return at all, and this suite hangs. `smoke-captest`
+     * then fails on a timeout rather than a marker -- which is why the control
+     * arm for it asserts the ABSENCE of `CAPTEST: PASS` instead of naming a FAIL
+     * line, since a blocked task prints nothing.
+     *
+     * Placed last for the reason recorded above: this check fires under the
+     * slot-3 arm, so it must not pre-empt any other arm's marker. */
+    {
+        static char lb[8];
+        check((int)syscall(SYS_GET_LINE, (uint64_t)(uintptr_t)lb, 0, 0) == SYS_ERR_PERM,
+              "get-line-without-cap-console");
+    }
+
     /* ---- the BLOCKING receive carries the same authority (roadmap 1.3) ----
      *
      * SYS_IPC_RECV_BLOCK is a second way to receive, so it is a second place the

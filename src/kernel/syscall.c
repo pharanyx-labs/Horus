@@ -26,11 +26,43 @@ void syscall_handler64(void)
  *  shared in_kernel bookkeeping still brackets the dispatch in syscall_handler.
  * ------------------------------------------------------------------------- */
 
-/* SYS_GET_LINE (3): read a line from the console into the caller's buffer. */
+/* SYS_GET_LINE (3): read a line from the console into the caller's buffer.
+ *
+ * CAP_CONSOLE, type-tested, and NO slot-3 fallback (2026-08-24). It used to read
+ *
+ *     c = cap_lookup(8, CAP_RIGHT_READ);
+ *     if (!c) c = cap_lookup(3, CAP_RIGHT_READ);
+ *
+ * with neither lookup type-tested, and the dispatch entry declares SC_NONE --
+ * so the handler was the only gate, and slot 3 is the legacy CAP_FRAME
+ * `create_task` installs in EVERY task. A sixth door of [H-3]'s shape, on
+ * console INPUT: what the user is typing.
+ *
+ * Measured before the change rather than argued: `captest`, holding that decoy
+ * and no CAP_CONSOLE, passed the check and BLOCKED inside the console read --
+ * it did not merely qualify, it was reading.
+ *
+ * What made it survive is that it is unreachable while a ring-3 console server
+ * owns the UART, and one always does in a live boot. That is a circumstance --
+ * the server being alive -- not a gate, and it is the same "safe by ordering"
+ * shape as the CSPRNG in #200. The `console_hw_owned()` check below stays; it
+ * answers a different question (do not race the owner), and a question about
+ * racing is not an answer about authority.
+ *
+ * `cap_lookup` does not test type -- by design, it is the rights-and-liveness
+ * check -- so every caller must, and the five call sites in this tree that did
+ * not were found by looking for exactly that. */
 static void h_get_line(struct interrupt_frame64 *r) {
-    struct capability *c = cap_lookup(8, CAP_RIGHT_READ);
-    if (!c) c = cap_lookup(3, CAP_RIGHT_READ);
-    if (!c) { r->rax = -1; return; }
+    struct capability *c = cap_lookup(CAPSLOT_CONSOLE, CAP_RIGHT_READ);
+    if (!c || c->type != CAP_CONSOLE) {
+#ifdef GETLINE_SLOT3_FALLBACK
+        /* CONTROL ARM: the pre-2026-08-24 fallback, untyped, on the slot every
+         * task is born holding. captest reaches the console read under it. */
+        c = cap_lookup(3, CAP_RIGHT_READ);
+        if (!c)
+#endif
+        { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    }
 
     /* Fail closed while a ring-3 console server owns the serial UART: a kernel-side
      * read here would race the owner's read and steal bytes from a typed line. The
@@ -1225,7 +1257,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_YIELD]                    = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
     [SYS_EXIT]                     = { h_exit,                    SC_NONE, 0, SC_ANYTYPE }, /* self-terminate */
     [SYS_KILL]                     = { h_kill,                    SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB/admin in handler */
-    [SYS_GET_LINE]                 = { h_get_line,                SC_NONE, 0, SC_ANYTYPE }, /* slot 8 or 3 READ (fallback in handler) */
+    [SYS_GET_LINE]                 = { h_get_line,                SC_NONE, 0, SC_ANYTYPE }, /* CAP_CONSOLE READ, type-tested in the handler */
     [SYS_CAP_MINT]                 = { h_cap_mint,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_mint */
     /* SYS_CLEAR (5) cleared the kernel VGA text buffer, which console_server
      * has owned since it took the framebuffer. No userspace wrapper exists

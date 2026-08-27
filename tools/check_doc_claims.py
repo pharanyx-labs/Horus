@@ -141,6 +141,15 @@ def derive():
         "syscalls_covered": len(
             (yaml.safe_load(Path(SYSCALL_COVERAGE_YML).read_text()) or {}).get(
                 "covered") or []),
+        # The OTHER half of the same ratio, and the half that was not gated
+        # until 2026-08-27. Every document that states "55 of 81" goes on to
+        # say how many are left, and that second number was written by hand.
+        # It was 25 in two files and 33 in a third -- three numbers for one
+        # quantity, none of them right, and no gate could see any of them
+        # because only the numerator was declared. A ratio is two claims.
+        "syscalls_uncovered": len(
+            (yaml.safe_load(Path(SYSCALL_COVERAGE_YML).read_text()) or {}).get(
+                "uncovered") or {}),
     }
 
 

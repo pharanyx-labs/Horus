@@ -21,6 +21,22 @@
 #                        and the shell banner is NOT required — for self-tests
 #                        that intentionally never boot the shell, e.g. the
 #                        preemption test whose tasks run forever)
+#        EXPECT_STALL   (optional: a PROGRESS marker. The run must reach it and
+#                        then NOT finish -- i.e. time out. Requires ABSENT_MARKER,
+#                        which names what must never appear.
+#
+#                        This is the one mode where a timeout is a PASS, so it is
+#                        fenced: the progress marker must be present (the workload
+#                        really ran), the forbidden marker must be absent (it did
+#                        not get where it should not), and no fault may have
+#                        occurred. Without the progress requirement a kernel that
+#                        failed to boot at all would satisfy it, which is the
+#                        obvious way for this mode to become meaningless.
+#
+#                        It exists because some authority failures BLOCK rather
+#                        than return: a task admitted to a console read waits for
+#                        input and prints nothing, so there is no FAIL line for an
+#                        arm to require. The absence is the evidence.
 #        ABSENT_MARKER  (optional: a string that must NOT appear anywhere in the
 #                        log. Checked at the end, on the full log, so it is a
 #                        real assertion of absence rather than a race with
@@ -68,10 +84,19 @@ REQUIRE_MARKER="${REQUIRE_MARKER:-}"
 FAIL_MARKER="${FAIL_MARKER:-}"
 MARKER_ONLY="${MARKER_ONLY:-}"
 ABSENT_MARKER="${ABSENT_MARKER:-}"
+EXPECT_STALL="${EXPECT_STALL:-}"
 EXPECT_FAULT="${EXPECT_FAULT:-}"
 WAIT_FOR_EXIT="${WAIT_FOR_EXIT:-}"
 
 # Fail closed on a nonsensical combination rather than silently letting one win.
+if [ -n "$EXPECT_STALL" ] && [ -z "$ABSENT_MARKER" ]; then
+    echo "SMOKE FAIL: EXPECT_STALL requires ABSENT_MARKER -- a stall proves nothing" >&2
+    exit 2
+fi
+if [ -n "$EXPECT_STALL" ] && [ -n "$EXPECT_FAULT" ]; then
+    echo "SMOKE FAIL: EXPECT_STALL and EXPECT_FAULT are mutually exclusive" >&2
+    exit 2
+fi
 if [ -n "$EXPECT_FAULT" ] && [ -n "$ABSENT_MARKER" ]; then
     echo "SMOKE FAIL: EXPECT_FAULT and ABSENT_MARKER are mutually exclusive" >&2
     exit 1
@@ -367,6 +392,23 @@ case "$status" in
     fault)   echo "SMOKE FAIL: kernel fault/panic on serial"; exit 1 ;;
     exited)  echo "SMOKE FAIL: QEMU exited before the banner (triple fault?)"; exit 1 ;;
     timeout)
+        # The one place a timeout can be success -- and only with every fence in
+        # place: the workload demonstrably ran, and demonstrably did not get to
+        # where it must not.
+        if [ -n "$EXPECT_STALL" ]; then
+            if ! grep -qF "$EXPECT_STALL" "$LOG"; then
+                echo "SMOKE FAIL: timed out without ever reaching '$EXPECT_STALL' --"
+                echo "  the workload did not run, so the stall proves nothing"
+                exit 1
+            fi
+            if grep -qF "$ABSENT_MARKER" "$LOG"; then
+                echo "SMOKE FAIL: '$ABSENT_MARKER' appeared -- the run did not stall"
+                exit 1
+            fi
+            echo "SMOKE PASS: reached '$EXPECT_STALL' and then stalled, without"
+            echo "  ever printing '$ABSENT_MARKER' -- which is the expected refusal-by-block"
+            exit 0
+        fi
         if [ -n "$REQUIRE_MARKER" ] && ! grep -qF "$REQUIRE_MARKER" "$LOG"; then
             echo "SMOKE FAIL: timed out after ${TIMEOUT}s without required marker '$REQUIRE_MARKER'"
         else

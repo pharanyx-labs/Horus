@@ -16,6 +16,29 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **The smoke harness threw away the diagnosis at the point of detection.** `FAIL_MARKER` is the
+  specific string a gate declares as its forbidden condition; `FAULT_RE` is a blanket
+  `PAGE FAULT|Exception! Vector|PANIC|Rejected by validator` every gate inherits. The blanket was
+  checked **first**, and its branch printed `SMOKE FAIL: kernel fault/panic on serial` and exited
+  — no matching line, no context, log discarded.
+
+  Both halves bit one investigation. `smoke-switch-commit` forbids `stale scheduler claim`; run
+  on `origin/main` with every core busy, six boots produced one
+  `PANIC: stale scheduler claim at preempt_on_tick` — **its own marker** — and one
+  `PANIC: unclaimed running task`. CI reported all of it identically as a generic fault, so a
+  gate catching the exact condition it exists to catch was indistinguishable from the workload's
+  deliberate page fault.
+
+  **A named detection now outranks the generic backstop**, and both failure paths print the
+  matching lines. **No verdict changes**: both statuses exit 1, so only the message differs, and
+  the one place a fault is a *success* signal — `EXPECT_FAULT` — keeps its original ordering.
+  Making the order depend on which role the fault plays is what keeps that true without
+  forbidding the combination outright.
+
+  Demonstrated against the log that caused the confusion: old ordering scores it
+  `fault (generic)`, new ordering `marker_fail (named detection)`. Under load,
+  `smoke-switch-commit` now names the invariant it tripped instead of saying nothing.
+
 - **`EXPECT_FAULT` did not require the fault, so five control arms could not fail.**
   `tools/smoke_test.sh`'s own header has always said the run *"FAILS if none does"*. The code
   never implemented it: a build that booted cleanly to the login prompt fell through to the

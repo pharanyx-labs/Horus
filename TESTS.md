@@ -903,6 +903,37 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-klog-forge-control` | Control arm. `KLOG_WRITE_UNGATED=1` restores the unconditional `klog_append` on the ring-3 write path; `KLOGTEST: FAIL forged+evicted` must come back, and `smoke-klog-forge` must go red under the same flag. Measured **3 boots in 3** — one boot is enough because the defect is not a race. **Both halves are evaluated before either is reported**, which is what makes this arm exercise both branches rather than only the first in source order. That matters: a fix that merely rate-limited ring-3 appends would keep the marker and still leak the forgery, and one that dropped the bytes while still advancing the ring would lose the marker, so an assertion on either half alone passes a half-fix. |
 | `smoke-exec-reenter` | **[G-9]**, exec component. The exec re-entry hand-off must be consumed by the CPU that armed it. Boots the `PROC_SELFTEST` workload at `-smp 4` `EXEC_REENTER_RUNS` times (default 20) and requires the `SCHED_INVARIANTS` wrong-CPU report to be **absent** from every boot; measured 0 in 30. Asserts on the marker, never on the boot's exit status — the workload still fails 2 boots in 30 (~7%) on the rest of **[G-9]**, and gating on completion would make this a detector for that rather than a witness for this property. |
 | `smoke-exec-reenter-control` | Control arm. `EXEC_REENTER_GLOBAL=1` restores the single shared `g_exec_reenter_task`; the wrong-CPU report must come back in at least one boot. Needs many boots because the theft is a race — measured 5 in 20 (~25%/boot), so a single-boot arm would report a false green three times in four. This arm carries reachability for the pair: if the theft stops reproducing with the global restored, `smoke-exec-reenter`'s green proves nothing either. |
+### The harness threw away the diagnosis at the point of detection
+
+`tools/smoke_test.sh` carries two failure signals. `FAIL_MARKER` is the **specific** string a
+gate declares as its forbidden condition. `FAULT_RE` is a blanket
+`PAGE FAULT|Exception! Vector|PANIC|Rejected by validator` that every gate inherits. Until
+2026-08-27 the blanket was checked **first**, and the `fault` branch printed one line —
+`SMOKE FAIL: kernel fault/panic on serial` — and exited, discarding the log.
+
+**Both problems bit the same investigation.** `smoke-switch-commit` forbids
+`stale scheduler claim`. Run on `origin/main` with every core busy, six boots produced one
+`PANIC: stale scheduler claim at preempt_on_tick` — *its own marker* — and one
+`PANIC: unclaimed running task`. CI reported all of it as a generic fault, with no context, so
+the information that the forbidden condition had occurred was thrown away at the moment of
+detection. Diagnosing it required reproducing locally under artificial load, which is exactly
+what a CI log should have made unnecessary.
+
+Two changes, neither of which alters a verdict:
+
+- **A named detection outranks the generic backstop.** `FAIL_MARKER` is now checked before
+  `FAULT_RE`. Both statuses exit 1, so only the message differs. The one place a fault is a
+  *success* signal is `EXPECT_FAULT`, and that case keeps the original ordering — making the
+  order depend on which role the fault plays, rather than forbidding the combination.
+- **Both failure paths print the matching lines** (up to three, with line numbers). `FAULT_RE`
+  is four alternatives and several gates run workloads that fault on purpose; "a fault
+  happened" was the least useful thing the harness could say.
+
+Demonstrated on the log that caused the confusion: the old ordering scores it `fault (generic)`,
+the new one `marker_fail (named detection)`. Under load, `smoke-switch-commit` now reports
+`PANIC: unclaimed running task at preempt_on_tick: task 1 claimed by cpu 0 but that cpu was
+running -1` instead of nothing.
+
 ### `EXPECT_FAULT` did not require the fault — five control arms could not fail
 
 **Found 2026-08-27, and it is the worst class this repository has.** `tools/smoke_test.sh`'s

@@ -666,12 +666,24 @@ kernel can **name** at once. The untyped region bounds how many a given authorit
 **create**, and only the second is a security property — but the first is what a real workload
 meets first.
 
-A third, smaller still: **`SYS_MAP_REGION` maps at most 64 pages in one call.** That bound is
-not a statement about how large a region may be — it is the size of the rollback's record. The
-call is all-or-nothing (**S35**), so it remembers one physical address per page it installed in
-order to withdraw them, and that record lives on the kernel stack. Mapping more is a matter of
-calling it again; mapping more *atomically* is the region-**object** work roadmap 2.1 still
-lists as open, where a length is carried in the capability and the run has one name.
+A third, smaller still: **a frame spans at most `MAX_FRAME_PAGES` (64) pages**, and
+`SYS_MAP_REGION` maps at most 64 slots in one call. Since 2026-08-27 a `KOBJ_FRAME` carries a
+length (**S36**), so 64 pages is 256 KiB in one object under one capability.
+
+That bound is the **arena's**, not the unwind's. `UNTYPED_ARENA_BYTES` is 4 MiB *total*, shared
+with every cspace, endpoint and notification in the system, so a frame that could span the arena
+would be a denial-of-service against every other object class dressed up as a feature. The
+all-or-nothing unwind costs no per-page state for a sized frame — the run is contiguous, so page
+*k* is `base + k` — which is exactly why the length belongs in the object rather than in the
+caller's bookkeeping.
+
+**A delegate cannot ask how large a frame is.** It receives a `CAP_FRAME` and can read the type,
+the rights, the serial and the generation through `SYS_CAP_ENUMERATE`, but that reports the
+*capability*, not the object behind it. Nothing here is unsafe — mapping fails closed on an
+occupied or out-of-span range — but a sharer has to be told the size out of band, which makes a
+delegated buffer less self-describing than it should be. Roadmap 2.1 carries it as the remaining
+gap; it wants either a `SYS_FRAME_INFO` or a field in `struct cap_info`, and choosing between
+those is the work.
 
 ### 2.6 User accounts do not survive a reboot
 

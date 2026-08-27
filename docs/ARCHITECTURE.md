@@ -952,6 +952,28 @@ The per-page decision is **one function** shared with `SYS_MAP_FRAME`. A region 
 validated one step less than a single map would be a sixth door of the **[H-3]** shape, and two
 hand-maintained copies of a nine-step check is how a door like that opens.
 
+**And then the frame itself grew a length** (2026-08-27, **S36**), which is the region *object*
+2.1 asked for. A `KOBJ_FRAME` is a run of contiguous pages: one capability, one extent, mapped
+and withdrawn whole. It is a **sized frame** rather than a new `KOBJ_REGION` class — seL4 sizes
+frames for the same reason — and the choice was made on maintenance grounds as much as
+vocabulary: a new class would have meant a second capability type, a second index table, a
+second destroy path and a second GC mark, four things that would then have to be kept in step
+with the four that already exist. **[H-3]** is what happens when parallel copies of one idea
+drift.
+
+Three things the length made newly possible to get wrong, each now checked. The pages must be
+**distinct**, not `pages` aliases of the first — an aliased run maps, is writable, carries the
+correct bits and silently stores one page's worth, so nothing reports it. The **span** must be
+bounded including its last byte, because an address legal for a one-page frame can put a
+four-page run past the user half. And every page must be **pinned and scrubbed**: a run pinned
+only at its head puts page 1 on the free page stack when the task dies, and a run scrubbed only
+at its head leaves the rest of a buffer readable by whoever the arena hands those bytes to
+next.
+
+The unwind is shared with `SYS_MAP_REGION`, so a failure part-way *inside* one sized frame and
+a failure part-way *across* a run of slots are the same code and the same control arm — which
+is how `FRAME_REGION_NO_ROLLBACK=1` reddens checks at both levels from one flag.
+
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
 carved from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an

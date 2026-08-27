@@ -1344,7 +1344,7 @@ jobs:
     runs-on: ubuntu-latest
     # Two clean builds plus CR3_RECLAIM_RUNS boots and 3 control boots. The
     # control arm halts as soon as it reproduces, which is every boot.
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1699,7 +1699,7 @@ jobs:
   frame:
     name: "A frame capability names an object, and a delegate maps only what it holds"
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1742,6 +1742,12 @@ jobs:
       # region across an address you want gone.
       - name: Control arm — the unwind must not eat the mapping that refused it
         run: make smoke-frame-region-wide-control
+      # The length a frame carries (roadmap 2.1's region object). A loop that
+      # advances the virtual cursor and not the physical one hands back a buffer
+      # that silently aliases itself: present, writable, correctly righted, and
+      # storing one page's worth. Nothing reports it, so a test has to.
+      - name: Control arm — a sized frame's pages must not alias each other
+        run: make smoke-frame-pages-control
 
   rng-seed:
     name: "The CSPRNG refuses to emit keystream before it is seeded"
@@ -1855,7 +1861,7 @@ jobs:
     # the workload (~40% of boots, and it is the instrument doing it -- see the
     # Makefile); boots that die are the fast ones (~6s on the runner that reddened
     # 9476799), but a run of mostly-conclusive boots is not.
-    timeout-minutes: 75
+    timeout-minutes: 90
     # MERGE-GATING since #190, and able to say so since this comment was written.
     #
     # It carried `continue-on-error: true` while it was advisory ([G-9], now

@@ -54,12 +54,25 @@
 /* A second run that must map cleanly, for the positive half of the pair. */
 #define VA_REGION_OK 0x0000000032000000ULL
 
+/* The SIZED frame (roadmap 2.1's region object): one capability naming a run of
+ * contiguous pages. Four again, so the same middle-page blocking trick works. */
+#define VA_SIZED     0x0000000033000000ULL
+#define VA_SIZED_OK  0x0000000034000000ULL
+#define SIZED_PAGES  4
+
+/* The user (lower) canonical half, so a sized frame can be aimed at its edge.
+ * The kernel refuses pml4[256..] independently; this checks that the SPAN is
+ * tested, which is a question a one-page frame could not ask. */
+#define USER_HALF_LIMIT 0x0000800000000000ULL
+
 /* Slots this task uses. All above KERNEL_RESERVED_CAPS and clear of the
  * canonical map in syscall.h, so nothing here collides with an endowment. */
 #define SLOT_PEER_TCB  29   /* CAP_TCB naming framepeer: the supervisor right  */
 #define SLOT_FRAME     30   /* the CAP_FRAME retyped out of untyped memory     */
 #define SLOT_FRAME_RO  31   /* a READ-only mint of it, for the delegate        */
 #define SLOT_REGION    32   /* first of REGION_PAGES consecutive CAP_FRAMEs    */
+#define SLOT_SIZED     36   /* one CAP_FRAME naming SIZED_PAGES pages          */
+#define SLOT_SIZED_2   37   /* a second, for the span and rollback checks     */
 
 /* The pattern the peer must be able to see. Two words, so a peer reading a
  * zeroed page or a stale one cannot pass by coincidence. */
@@ -239,7 +252,86 @@ void _start(void) {
     check(sys_map_frame(SLOT_REGION + 2, VA_REGION + 2 * PAGE_BYTES, CAP_RIGHT_READ) < 0,
           "region-rollback-ate-blocker");
 
-    /* (13) Narrow, then delegate. sys_cap_mint is the only operation ring 3 has
+    /* (13) THE SIZED FRAME — roadmap 2.1's "region object wants a length".
+     *
+     * One capability naming a run of contiguous pages, rather than a run of
+     * capabilities each naming one. That is what a shared buffer actually is,
+     * and it is what lets the all-or-nothing unwind cost O(1) state instead of a
+     * record per page: the run is contiguous, so page k is at base + k. */
+    check(sys_retype_sized(CAPSLOT_UNTYPED, 1, SLOT_SIZED, SIZED_PAGES) == 1,
+          "retype-sized-frame");
+
+    /* The length is refused where it has no meaning, rather than ignored. A
+     * caller asking for an 8-page endpoint has a wrong model of what it is
+     * asking for, and quietly handing it one endpoint leaves that model
+     * uncorrected until it matters. */
+    check(sys_retype_sized(CAPSLOT_UNTYPED, 1, SLOT_SIZED_2, 0) == 1,
+          "sized-zero-means-one");
+    check((int)syscall6(SYS_RETYPE, CAPSLOT_UNTYPED, KOBJ_ENDPOINT, 1, 60, 4, 0) < 0,
+          "sized-length-on-endpoint");
+    check(sys_retype_sized(CAPSLOT_UNTYPED, 1, 60, MAX_FRAME_PAGES + 1) < 0,
+          "sized-over-max-pages");
+
+    /* Mapping it maps the WHOLE run, and the pages are DISTINCT. Writing one
+     * word per page and reading them all back is what separates a real run from
+     * a loop that advanced the virtual cursor and forgot the physical one --
+     * which is not a crash but a buffer that silently aliases itself, present
+     * and writable and wrong. `FRAME_PAGES_SAME_PHYS=1` is that kernel. */
+    check(sys_map_frame(SLOT_SIZED, VA_SIZED_OK, CAP_RIGHT_READ | CAP_RIGHT_WRITE) == 0,
+          "map-sized-frame");
+    {
+        volatile unsigned long long *q = (volatile unsigned long long *)VA_SIZED_OK;
+        int distinct = 1;
+        for (int i = 0; i < SIZED_PAGES; i++)
+            q[(unsigned long)i * (PAGE_BYTES / 8)] = PATTERN_B + (unsigned long long)i;
+        for (int i = 0; i < SIZED_PAGES; i++)
+            if (q[(unsigned long)i * (PAGE_BYTES / 8)] != PATTERN_B + (unsigned long long)i)
+                distinct = 0;
+        check(distinct, "sized-pages-distinct");
+    }
+
+    /* Unmapping withdraws the whole run too. Probed by mapping a single page
+     * over each address: refused while present, accepted once free. The last
+     * page is the one a head-only unmap would leave behind. */
+    check(sys_unmap_frame(SLOT_SIZED, VA_SIZED_OK) == 0, "unmap-sized-frame");
+    check(sys_map_frame(SLOT_FRAME, VA_SIZED_OK, CAP_RIGHT_READ) == 0,
+          "sized-unmap-freed-first");
+    check(sys_unmap_frame(SLOT_FRAME, VA_SIZED_OK) == 0, "sized-probe-first-restored");
+    check(sys_map_frame(SLOT_FRAME, VA_SIZED_OK + (SIZED_PAGES - 1) * PAGE_BYTES,
+                        CAP_RIGHT_READ) == 0, "sized-unmap-freed-last");
+    check(sys_unmap_frame(SLOT_FRAME, VA_SIZED_OK + (SIZED_PAGES - 1) * PAGE_BYTES) == 0,
+          "sized-probe-last-restored");
+
+    /* THE SPAN, which is a question a one-page frame could not ask. An address
+     * one page below the user-half limit is legal for a single frame and not for
+     * a four-page run: the run walks past the limit. The kernel refuses
+     * pml4[256..] independently, so this is the second of two checks — but the
+     * first is what turns "it failed part-way and unwound" into one refusal
+     * before anything is installed. */
+    check(sys_map_frame(SLOT_SIZED, USER_HALF_LIMIT - PAGE_BYTES, CAP_RIGHT_READ) < 0,
+          "sized-span-crosses-user-half");
+
+    /* A SIZED frame is refused inside a run of slots. SYS_MAP_REGION maps each
+     * slot at the next page, so a sized frame in the middle would make the
+     * address of every later slot depend on the length of every earlier
+     * capability — an ABI where you cannot say where slot 5 landed without
+     * reading slots 0..4. Mapped whole by SYS_MAP_FRAME instead. */
+    check(sys_map_region(SLOT_SIZED, 1, VA_SPARE, CAP_RIGHT_READ) < 0,
+          "sized-frame-refused-in-region");
+
+    /* And the all-or-nothing policy holds INSIDE one frame. Block the middle
+     * page of the run, map the frame, and it must install nothing — the same
+     * property SYS_MAP_REGION has across slots, from the one shared unwind.
+     * Both fail under FRAME_REGION_NO_ROLLBACK=1. */
+    check(sys_map_frame(SLOT_FRAME, VA_SIZED + 2 * PAGE_BYTES, CAP_RIGHT_READ) == 0,
+          "sized-blocker-mapped");
+    check(sys_map_frame(SLOT_SIZED, VA_SIZED, CAP_RIGHT_READ | CAP_RIGHT_WRITE) < 0,
+          "sized-partial-refused");
+    check(sys_map_frame(SLOT_SIZED_2, VA_SIZED, CAP_RIGHT_READ) == 0,
+          "sized-rollback-page0");
+    check(sys_unmap_frame(SLOT_SIZED_2, VA_SIZED) == 0, "sized-rollback-probe-undone");
+
+    /* (14) Narrow, then delegate. sys_cap_mint is the only operation ring 3 has
      * that REDUCES rights -- SYS_CAP_GRANT copies the source's rights whole -- so
      * this pair is what "delegation may only ever reduce" looks like from
      * userspace. The peer gets READ and nothing else. */

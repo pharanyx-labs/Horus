@@ -1169,16 +1169,22 @@ static void h_dmesg(struct interrupt_frame64 *r) {
 
 /* SYS_RETYPE (90): carve kernel objects out of untyped memory (roadmap 0.3).
  * Args: rbx = cspace slot of a CAP_UNTYPED, rcx = KOBJ_* class, rdx = count,
- * rsi = first destination slot. Returns the number of objects created, or a
- * negative SYS_ERR_*.
+ * rsi = first destination slot, rdi = pages per object (KOBJ_FRAME only; 0 = 1).
+ * Returns the number of objects created, or a negative SYS_ERR_*.
  *
  * SC_NONE in the dispatch table, for the same reason the IPC syscalls are: the
  * authorizing capability is the one the CALLER NAMES, so a fixed table slot
  * would authorise the wrong thing (finding C-1). untyped_retype resolves rbx
  * through cap_lookup and refuses anything that is not a CAP_UNTYPED with WRITE. */
 static void h_retype(struct interrupt_frame64 *r) {
+    /* rdi is the frame LENGTH in pages, and it is the fifth argument rather than
+     * a new syscall so that one authority gate covers both shapes. Every retype
+     * written before frames had a length passes 0 here, which normalises to the
+     * ordinary single-page object -- and a non-zero length on a class that has
+     * none is refused inside, not ignored. */
     r->rax = (uint64_t)(uint32_t)untyped_retype((uint32_t)r->rbx, (uint32_t)r->rcx,
-                                                (uint32_t)r->rdx, (uint32_t)r->rsi);
+                                                (uint32_t)r->rdx, (uint32_t)r->rdi,
+                                                (uint32_t)r->rsi);
 }
 
 /* SYS_UNTYPED_INFO (91): rbx = cspace slot of a CAP_UNTYPED (READ),

@@ -90,7 +90,7 @@ DEFECT_FLAGS = \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
-	FRAME_PAGES_SAME_PHYS RAMFS_SLOT3_GATE \
+	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX RAMFS_SLOT3_GATE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
@@ -906,6 +906,19 @@ FRAME_PAGES_SAME_PHYS ?= 0
 ifeq ($(FRAME_PAGES_SAME_PHYS),1)
 CFLAGS  += -DFRAME_PAGES_SAME_PHYS
 ASFLAGS += -DFRAME_PAGES_SAME_PHYS
+endif
+
+# FRAME_INFO_BY_INDEX=1 is the falsifying arm for SYS_FRAME_PAGES' authority:
+# the handler reads its argument as a frame INDEX rather than as a cspace slot,
+# so no capability is consulted at all. It is finding C-1's shape -- authority
+# taken from somewhere other than the capability naming the resource -- and
+# something worse besides: a task holding nothing can walk indices and learn
+# which frames are live and how large, across every task in the system. An
+# object-existence oracle out of a syscall that looks like it returns a number.
+FRAME_INFO_BY_INDEX ?= 0
+ifeq ($(FRAME_INFO_BY_INDEX),1)
+CFLAGS  += -DFRAME_INFO_BY_INDEX
+ASFLAGS += -DFRAME_INFO_BY_INDEX
 endif
 
 LIBHORUS_SELFTEST ?= 0
@@ -4368,6 +4381,22 @@ smoke-frame-pages-control:
 		REQUIRE_MARKER='FRAMETEST: FAIL sized-pages-distinct' \
 		tools/smoke_test.sh boot.iso
 	@echo "FRAME PAGES CONTROL: PASS - a sized frame whose pages all alias page 0"
+
+# Control arm 6 -- SYS_FRAME_PAGES' authority. FRAME_INFO_BY_INDEX=1 reads the
+# argument as a frame index rather than a cspace slot, so framepeer -- which
+# holds exactly one delegated CAP_FRAME and nothing else -- gets answers about
+# frames it holds no capability to. Slots 1 and 2 are empty in that task while
+# frame indices 1 and 2 are live, which is what makes the two indistinguishable
+# to a handler that confuses them. The FAIL marker must be PRESENT.
+.PHONY: smoke-frame-info-control
+smoke-frame-info-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INFO_BY_INDEX=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INFO_BY_INDEX=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: FAIL peer-frame-pages-not-an-index' \
+		tools/smoke_test.sh boot.iso
+	@echo "FRAME INFO CONTROL: PASS - a delegate reads frames it holds no capability to"
 
 .PHONY: smoke-libhorus
 smoke-libhorus:

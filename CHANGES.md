@@ -16,6 +16,50 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A frame capability now describes its own object (S37).** `SYS_FRAME_PAGES(frame_slot)`
+  returns how many contiguous pages the `CAP_FRAME` at that slot names. This closes the gap the
+  *previous* change opened and recorded: giving a frame a length meant only the task that
+  retyped one knew what that length was, so a delegate had to be told out of band or discover it
+  by trial-mapping page after page — O(n) syscalls polluting an address space to learn a number
+  the kernel already had. **A capability that does not describe its own object needs a side
+  channel.**
+
+  **The interesting decision is where the answer did NOT go.** `SYS_CAP_ENUMERATE` already
+  reports a capability's type, rights, serial and generation, and a length would have been one
+  more field. It lost on authority grounds: that call is gated on `CAP_DEBUG` at
+  `CAPSLOT_DEBUG`, a **cross-task observability** capability — so an ordinary task would have
+  needed a debug capability to learn about its **own** object, and `CAP_DEBUG` would have begun
+  revealing other tasks' object extents in the same change. The capability discipline answers it
+  directly: the entitlement to know how big the object is comes from holding a capability that
+  names it.
+
+  **It takes a cspace slot and never a frame index**, which is the security property rather than
+  a calling convention. The handler needs an index and the caller could just pass one — the
+  shortcut `syscall_vm.c` exists to refuse. That would be **[C-1]**'s shape, and something worse
+  besides: an **object-existence oracle**. A task holding no frame capability at all could walk
+  indices and learn which frames are live, and how large, across every task in the system — a
+  side channel on other tasks' allocation behaviour, out of a syscall that looks like it returns
+  a number. `FRAME_INFO_BY_INDEX=1` is that kernel; `FRAMETEST: FAIL
+  peer-frame-pages-not-an-index`, 3 boots in 3, `smoke-frame` red under it.
+
+  **The arm's marker is the DELEGATE's, and it has to be.** Asked from `frametest`, which holds
+  every frame in play, an index and a slot are hard to tell apart. Asked from `framepeer`, which
+  holds exactly one delegated `CAP_FRAME` and nothing else, they separate cleanly: slots 1 and 2
+  are unassigned in the canonical cspace map and empty in that task, while frame indices 1 and 2
+  are live because `frametest` retyped several before resuming it.
+
+  **It is not "a syscall that reads a capability"**, which `userspace/framepeer.c` argues
+  against and is right to. It reports the *object's* extent and nothing about the capability —
+  not rights, not lineage, not badge — so a holder still cannot discover what authority it has
+  without exercising it. It discloses nothing `SYS_MAP_FRAME` withholds from the same holder,
+  which could learn the same number by trial-mapping forward.
+
+  It returns a **scalar rather than filling a caller's struct**: no user pointer means no
+  pointer to truncate, and issue #176 was a wrapper that truncated one to 32 bits. No rights
+  floor (`cap_lookup(slot, 0)`, like `SYS_UNMAP_FRAME`) — the size is not the contents, and
+  requiring `READ` would refuse a `WRITE`-only sharer the ability to learn how much it may
+  write.
+
 - **A frame capability names a run of pages, not a page (roadmap 2.1's region object, S36).**
   `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest, pages)` carves `pages` contiguous pages as **one
   object**, named by **one** `CAP_FRAME`, mapped and withdrawn whole. This is the other half of

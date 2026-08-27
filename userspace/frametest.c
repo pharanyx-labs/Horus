@@ -65,6 +65,10 @@
  * tested, which is a question a one-page frame could not ask. */
 #define USER_HALF_LIMIT 0x0000800000000000ULL
 
+/* One past the last cspace slot. The kernel bounds it too; this is the ring-3
+ * side asking for a slot that cannot exist. */
+#define CNODE_SIZE_PUBLIC 256
+
 /* Slots this task uses. All above KERNEL_RESERVED_CAPS and clear of the
  * canonical map in syscall.h, so nothing here collides with an endowment. */
 #define SLOT_PEER_TCB  29   /* CAP_TCB naming framepeer: the supervisor right  */
@@ -331,7 +335,28 @@ void _start(void) {
           "sized-rollback-page0");
     check(sys_unmap_frame(SLOT_SIZED_2, VA_SIZED) == 0, "sized-rollback-probe-undone");
 
-    /* (14) Narrow, then delegate. sys_cap_mint is the only operation ring 3 has
+    /* (14) THE SIZE IS ASKABLE. A frame carries a length; until SYS_FRAME_PAGES
+     * only the task that retyped one knew what it was, so a delegate had to be
+     * told out of band or discover it by trial-mapping page after page.
+     *
+     * It reports a property of the OBJECT, not of the capability — nothing about
+     * rights, lineage or badge — so it does not become the "syscall that reads a
+     * capability" framepeer.c argues against. And it discloses nothing
+     * SYS_MAP_FRAME does not already disclose to the same holder: mapping and
+     * probing forward tells you the same number, more expensively. */
+    check(sys_frame_pages(SLOT_SIZED) == SIZED_PAGES, "frame-pages-sized");
+    check(sys_frame_pages(SLOT_FRAME) == 1, "frame-pages-single");
+    check(sys_frame_pages(SLOT_REGION) == 1, "frame-pages-region-member");
+
+    /* The authority is the capability the caller NAMES, and it is type-tested.
+     * A CAP_TCB's object is a task id — a small integer that would index the
+     * frame table perfectly happily — which is C-1's shape exactly. */
+    check(sys_frame_pages(CAPSLOT_TCB) < 0, "frame-pages-wrong-type");
+    check(sys_frame_pages(CAPSLOT_FRAME) < 0, "frame-pages-legacy-decoy");
+    check(sys_frame_pages(60) < 0, "frame-pages-empty-slot");
+    check(sys_frame_pages(CNODE_SIZE_PUBLIC) < 0, "frame-pages-slot-out-of-range");
+
+    /* (15) Narrow, then delegate. sys_cap_mint is the only operation ring 3 has
      * that REDUCES rights -- SYS_CAP_GRANT copies the source's rights whole -- so
      * this pair is what "delegation may only ever reduce" looks like from
      * userspace. The peer gets READ and nothing else. */

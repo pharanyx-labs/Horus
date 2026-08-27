@@ -181,6 +181,7 @@ struct audit_event {
 #define MAX_FRAME_PAGES        64
 
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr. ALL OR NOTHING: a failure withdraws every page the call mapped, so an error leaves the address space untouched. Max 64 pages. */
+#define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -594,6 +595,17 @@ static inline int sys_map_region(int first_slot, unsigned int count,
                                  unsigned long vaddr, unsigned int rights) {
     return (int)syscall6(SYS_MAP_REGION, (uint32_t)first_slot, (uint32_t)count,
                          (uint64_t)vaddr, (uint32_t)rights, 0, 0);
+}
+
+/* How many contiguous pages the frame at `frame_slot` spans. Returns the count
+ * (always >= 1) or a negative SYS_ERR_*.
+ *
+ * It returns a SCALAR rather than filling a caller-supplied struct, and that is
+ * deliberate: no user pointer means no pointer to truncate, and issue #176 was a
+ * wrapper that truncated one to 32 bits. A syscall that needs no buffer should
+ * not take one. */
+static inline int sys_frame_pages(int frame_slot) {
+    return (int)syscall(SYS_FRAME_PAGES, (uint32_t)frame_slot, 0, 0);
 }
 
 /* Remove the mapping of this capability's frame at `vaddr`. The capability is

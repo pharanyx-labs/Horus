@@ -94,6 +94,7 @@ checker.
 | 95 | `SYS_MAP_FRAME` | `frame_slot`, `vaddr`, `rights` | `CAP_FRAME` at `frame_slot`, holding at least `rights`; maps the **whole run** the frame names |
 | 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights; withdraws the **whole run** |
 | 99 | `SYS_MAP_REGION` | `first_slot`, `count`, `vaddr`, `rights` | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
+| 100 | `SYS_FRAME_PAGES` | `frame_slot` | `CAP_FRAME` at `frame_slot`, any rights |
 
 Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and
 here the alternative is not hypothetical: **every task is born holding a `CAP_FRAME` in slot
@@ -175,8 +176,25 @@ The 64-page ceiling is the **arena's**, not the record's. The unwind needs no pe
 for a sized frame — the run is contiguous, so page *k* is `base + k` — and
 `UNTYPED_ARENA_BYTES` is 4 MiB *total*, shared with every cspace, endpoint and notification.
 A frame that could span the arena would be a denial-of-service against every other object class
-dressed as a feature. **A delegate cannot yet ask how large a frame is**; the size has to be
-communicated out of band. Roadmap 2.1 records that as the remaining gap.
+dressed as a feature.
+
+**`SYS_FRAME_PAGES` is how a holder learns that length** (**S37**). It takes a **cspace slot**,
+resolves it through `cap_lookup`, type-tests it, and returns the count as a scalar — no buffer,
+so no pointer to truncate. It takes no rights floor: the size is not the contents, and requiring
+`READ` would refuse a `WRITE`-only sharer the ability to learn how much it may write.
+
+**It takes a slot and never a frame index**, and that is the security property rather than a
+calling convention. An index argument would be **[C-1]**'s shape — authority read from somewhere
+other than the capability naming the resource — and would additionally turn the call into an
+**object-existence oracle**: a task holding no frame capability at all could walk indices and
+learn which frames are live, and how large, across every task in the system. `FRAME_INFO_BY_INDEX=1`
+is that kernel, and `framepeer` catches it by asking about slots it holds nothing in.
+
+It is **not** "a syscall that reads a capability", which `userspace/framepeer.c` argues against
+and is right to. It reports the *object's* extent and says nothing about the capability — not
+its rights, not its lineage, not its badge — so a holder still cannot discover what authority it
+has without exercising it. And it discloses nothing `SYS_MAP_FRAME` already withholds from the
+same holder: mapping and probing forward yields the same number, more expensively.
 
 **`SYS_CAP_MINT` is the only rights-reducing operation ring 3 has.** `SYS_CAP_GRANT` copies
 the source's rights whole (it passes `CAP_RIGHT_ALL` and `cap_grant_into` masks to the

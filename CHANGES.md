@@ -58,6 +58,16 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   rollback**: a run is contiguous, so page *k* is `base + k` and the unwind needs no per-page
   state at all. `MAX_FRAME_PAGES` is 64 because `UNTYPED_ARENA_BYTES` is 4 MiB *total*.
 
+  **Giving a frame a length silently disarmed an existing control arm**, which CI caught and the
+  local run did not. There are now two functions turning `CAP_FRAME.object` into a fact about an
+  object, and `FRAME_INDEX_UNCHECKED=1` was written when there was one: under the arm the address
+  resolver behaved as intended and the new *length* resolver applied the bound the arm exists to
+  remove, so the legacy slot-3 capability was refused at the length check and
+  `FRAMETEST: FAIL legacy-cap-mapped` stopped appearing. The arm went red for want of a failure.
+  The property was never wrong and the base gate passed all 48 checks throughout — what broke was
+  the measurement. **When you split a function a defect flag mutates, the flag has to follow every
+  piece**, and a green base arm says nothing about whether its control arm still fires.
+
   **Known gap, recorded rather than papered over:** a delegate cannot ask how large a frame is.
   `SYS_CAP_ENUMERATE` reports the capability, not the object behind it, so a sharer has to be
   told the size out of band. Nothing is unsafe — mapping fails closed on an occupied or

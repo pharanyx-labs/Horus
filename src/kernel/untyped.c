@@ -274,10 +274,32 @@ void *frame_by_index(uint32_t idx) {
  * physical base and the length are two facts, and a caller that wants only the
  * base should not be able to take it while ignoring the length. */
 uint32_t frame_pages_by_index(uint32_t idx) {
+#ifdef FRAME_INDEX_UNCHECKED
+    /* THE ARM HAS TO BE IN BOTH RESOLVERS, and finding that out cost a red CI
+     * run. When a frame gained a length there were suddenly TWO functions
+     * turning a CAP_FRAME.object into a fact about an object, and the control
+     * arm lived in only one of them. frame_phys_by_index returned the object AS
+     * an address, exactly as the arm intends -- and then this function applied
+     * the bound the arm exists to remove, answered 0 for the legacy slot-3
+     * capability, and the map path refused it at the LENGTH check. The arm
+     * stopped reproducing: `FRAMETEST: FAIL legacy-cap-mapped` disappeared, and
+     * smoke-frame-index-control went red for want of a failure.
+     *
+     * That is the same hazard the shared validator in syscall_vm.c was written
+     * to avoid, met from the other side: not two copies of a GATE drifting, but
+     * a defect arm that only mutates half of what it names. A control arm is as
+     * split as the thing it injects into.
+     *
+     * Under the arm this kernel is the pre-length kernel: object is an address,
+     * an object is one page. */
+    (void)idx;
+    return 1;
+#else
     if (idx < DYN_FRAME_BASE || idx >= FRAME_INDEX_MAX) return 0;
     int i = (int)(idx - DYN_FRAME_BASE);
     if (!dyn_frames[i].mem) return 0;
     return dyn_frames[i].pages ? dyn_frames[i].pages : 1;
+#endif
 }
 
 uint64_t frame_phys_by_index(uint32_t idx) {

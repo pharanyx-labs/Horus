@@ -1459,6 +1459,23 @@ observed identically on every boot, so the sample size that matters here is 1 an
 corroboration. Contrast `smoke-kstack-park`, where the underlying event is probabilistic and a
 single green boot says nothing.
 
+**A CONTROL ARM IS AS SPLIT AS THE THING IT INJECTS INTO**, and this pair proved it by going
+red. Giving a frame a length created a *second* function turning `CAP_FRAME.object` into a fact
+about an object — `frame_pages_by_index` beside `frame_phys_by_index` — and
+`FRAME_INDEX_UNCHECKED=1` was written when there was only one. Under the arm the address
+resolver returned the object as an address exactly as intended, and then the *length* resolver
+applied the bound the arm exists to remove, answered 0 for the legacy slot-3 capability, and the
+map path refused it. `FRAMETEST: FAIL legacy-cap-mapped` stopped appearing and
+`smoke-frame-index-control` went red **for want of a failure** — the arm had quietly stopped
+reproducing anything.
+
+Nothing about the property was wrong and the base gate passed all 48 checks throughout. What
+broke was the measurement, which is the harder thing to notice: a green base arm says nothing
+about whether its control arm still fires. The arm now lives in both resolvers, and the lesson
+generalises past this file — **when you split a function that a defect flag mutates, the flag
+has to follow every piece.** It was caught by CI rather than locally because the local run
+exercised the new arm and the two region arms and not the two that already existed.
+
 **A frame carries a LENGTH since 2026-08-27** (**S36**), and the arm aims at the thing that
 does not announce itself. A sized frame is a run of contiguous pages under one capability, and
 the plausible slip in mapping one is to advance the virtual cursor and forget the physical one —

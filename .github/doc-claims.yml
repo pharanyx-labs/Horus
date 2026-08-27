@@ -161,6 +161,20 @@ counts:
       - file: site/index.html
         pattern: '<strong>\d+ of (\d+)</strong> system calls'
 
+  # frametest's parent-side checks, declared 2026-08-27 for the reason the entry
+  # above it exists: TESTS.md carried 17 while the wire said 31, and the number
+  # is quoted in SECURITY.md as the witness for S35. Read it off the wire
+  # (`FRAMETEST: parent OK <n> checks`) -- this only proves the documents agree
+  # with the source, not that the source ran.
+  - id: frametest_checks
+    describe: parent-side check() assertions in userspace/frametest.c
+    derive: frametest_checks
+    occurrences:
+      - file: TESTS.md
+        pattern: '\*\*(\d+) parent checks\*\*'
+      - file: SECURITY.md
+        pattern: '`make smoke-frame` \((\d+) parent checks\)'
+
   - id: captest_checks
     describe: check() assertions in userspace/captest.c
     derive: captest_checks

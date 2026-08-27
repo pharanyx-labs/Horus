@@ -189,6 +189,7 @@ void h_irq_register(struct interrupt_frame64 *r);
 /* syscall_vm.c — frame capabilities and shared memory (roadmap 2.1) */
 void h_map_frame(struct interrupt_frame64 *r);
 void h_unmap_frame(struct interrupt_frame64 *r);
+void h_map_region(struct interrupt_frame64 *r);
 /* pipe.c — bounded byte pipes for shell pipelines */
 void h_pipe(struct interrupt_frame64 *r);
 void h_pipe_read(struct interrupt_frame64 *r);

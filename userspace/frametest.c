@@ -43,11 +43,23 @@
 #define VA_SPARE    0x0000000030100000ULL
 #define VA_KERNEL   0xFFFF800000000000ULL   /* kernel half: must always be refused */
 
+/* The region run. Four pages, well clear of everything above. VA_REGION + 2
+ * pages is deliberately occupied before the region map is attempted, so the run
+ * fails in the MIDDLE rather than at either end -- a rollback that unwound only
+ * the first page, or only the last, would pass a run that failed at index 1. */
+#define PAGE_BYTES  0x1000ULL
+#define VA_REGION   0x0000000031000000ULL
+#define REGION_PAGES 4
+
+/* A second run that must map cleanly, for the positive half of the pair. */
+#define VA_REGION_OK 0x0000000032000000ULL
+
 /* Slots this task uses. All above KERNEL_RESERVED_CAPS and clear of the
  * canonical map in syscall.h, so nothing here collides with an endowment. */
 #define SLOT_PEER_TCB  29   /* CAP_TCB naming framepeer: the supervisor right  */
 #define SLOT_FRAME     30   /* the CAP_FRAME retyped out of untyped memory     */
 #define SLOT_FRAME_RO  31   /* a READ-only mint of it, for the delegate        */
+#define SLOT_REGION    32   /* first of REGION_PAGES consecutive CAP_FRAMEs    */
 
 /* The pattern the peer must be able to see. Two words, so a peer reading a
  * zeroed page or a stale one cannot pass by coincidence. */
@@ -139,7 +151,95 @@ void _start(void) {
      * own image or stack, pages it holds no frame capability for. */
     check(sys_unmap_frame(SLOT_FRAME, VA_SPARE) < 0, "unmap-never-mapped");
 
-    /* (12) Narrow, then delegate. sys_cap_mint is the only operation ring 3 has
+    /* (12) THE REGION, AND THE PARTIAL-FAILURE POLICY IT SETTLES (roadmap 2.1).
+     *
+     * SYS_MAP_REGION is all-or-nothing: if any page of the run cannot be mapped,
+     * every page the call already mapped is withdrawn. The argument is in
+     * src/kernel/syscall_vm.c; these are the checks that make it a measurement.
+     * Note that the policy differs from SYS_RETYPE's on purpose -- retype keeps
+     * what it made and returns a count -- so "it matches the other one" is not
+     * available as a reason, and the property has to be witnessed directly. */
+    check(sys_retype(CAPSLOT_UNTYPED, KOBJ_FRAME, REGION_PAGES, SLOT_REGION)
+              == REGION_PAGES, "retype-region-run");
+
+    /* The positive half FIRST. A kernel that refused every region map would pass
+     * every rollback check below, which is the failure mode check_gate_pairs.py
+     * exists to refuse for smoke targets and which applies just as much inside
+     * one. Write a distinct word to each page and read them all back: a run that
+     * mapped only the first page, or mapped them all onto one frame, fails. */
+    check(sys_map_region(SLOT_REGION, REGION_PAGES, VA_REGION_OK,
+                         CAP_RIGHT_READ | CAP_RIGHT_WRITE) == 0, "region-map-whole");
+    {
+        volatile unsigned long long *q = (volatile unsigned long long *)VA_REGION_OK;
+        int all = 1;
+        for (int i = 0; i < REGION_PAGES; i++)
+            q[(unsigned long)i * (PAGE_BYTES / 8)] = PATTERN_A + (unsigned long long)i;
+        for (int i = 0; i < REGION_PAGES; i++)
+            if (q[(unsigned long)i * (PAGE_BYTES / 8)] != PATTERN_A + (unsigned long long)i)
+                all = 0;
+        check(all, "region-every-page-distinct");
+    }
+
+    /* The shape of the run is refused before anything is mapped. */
+    check(sys_map_region(SLOT_REGION, 0, VA_SPARE, CAP_RIGHT_READ) < 0,
+          "region-zero-count");
+    check(sys_map_region(SLOT_REGION, 65, VA_SPARE, CAP_RIGHT_READ) < 0,
+          "region-over-max");
+    check(sys_map_region(SLOT_REGION, REGION_PAGES, VA_KERNEL, CAP_RIGHT_READ) < 0,
+          "region-kernel-half");
+    check(sys_map_region(SLOT_REGION, REGION_PAGES, VA_SPARE + 1, CAP_RIGHT_READ) < 0,
+          "region-misaligned");
+
+    /* ...and those refusals mapped nothing. VA_SPARE has been the target of every
+     * request in this program that had to fail, so if it is still free here, none
+     * of them installed anything. Probed by mapping it -- which is also the only
+     * way to ask "is this address free" without dereferencing it -- and undone
+     * immediately, because VA_SPARE's whole job is to stay empty. */
+    check(sys_map_frame(SLOT_FRAME, VA_SPARE, CAP_RIGHT_READ) == 0,
+          "refusals-mapped-nothing");
+    check(sys_unmap_frame(SLOT_FRAME, VA_SPARE) == 0, "spare-restored");
+
+    /* NOW THE PARTIAL FAILURE. Occupy the MIDDLE of the run, so it fails at page
+     * 2 of 4 -- an unwind that handled only the first page, or only the last,
+     * would pass a run that failed at either end. */
+    /* The blocker is the run's OWN page-2 frame, mapped by hand first, and that
+     * choice is what makes the over-eager-unwind arm below able to fail at all.
+     * An unwind that walks the whole REQUESTED range re-derives each frame from
+     * its slot; against a blocker from an unrelated frame it would be stopped by
+     * user_unmap_frame_page's expect_phys test on its own, the check would pass
+     * under the arm, and the arm would measure nothing -- the same trap the
+     * rights floor note in syscall_vm.c describes. Aim at the range logic, not
+     * at the guard underneath it. */
+    check(sys_map_frame(SLOT_REGION + 2, VA_REGION + 2 * PAGE_BYTES, CAP_RIGHT_READ) == 0,
+          "region-blocker-mapped");
+    check(sys_map_region(SLOT_REGION, REGION_PAGES, VA_REGION,
+                         CAP_RIGHT_READ | CAP_RIGHT_WRITE) < 0, "region-partial-refused");
+
+    /* AND IT INSTALLED NOTHING. Pages 0 and 1 were mapped before the failure at
+     * page 2, so they are exactly what the rollback exists to withdraw.
+     *
+     * Probed WITHOUT touching them. Mapping over a present page is refused (check
+     * 3), so a single-page map that SUCCEEDS here proves the address is free. The
+     * obvious alternative -- read the page and see whether it faults -- proves the
+     * same thing by killing the task, which is a detector that destroys its own
+     * evidence and reports a rollback bug as a dead workload.
+     *
+     * Under FRAME_REGION_NO_ROLLBACK=1 both of these return SYS_ERR_EXIST. */
+    check(sys_map_frame(SLOT_REGION, VA_REGION, CAP_RIGHT_READ) == 0,
+          "region-rollback-page0");
+    check(sys_map_frame(SLOT_REGION + 1, VA_REGION + PAGE_BYTES, CAP_RIGHT_READ) == 0,
+          "region-rollback-page1");
+
+    /* THE OTHER DIRECTION, and the one an over-eager unwind fails. The page that
+     * CAUSED the refusal was not installed by this call and must survive it. A
+     * rollback that cleared the whole REQUESTED range instead of the pages it
+     * actually mapped would hand ring 3 a way to destroy any mapping it dislikes
+     * by asking to map a region across it -- so this check is a security
+     * property, not tidiness. It must still be occupied. */
+    check(sys_map_frame(SLOT_REGION + 2, VA_REGION + 2 * PAGE_BYTES, CAP_RIGHT_READ) < 0,
+          "region-rollback-ate-blocker");
+
+    /* (13) Narrow, then delegate. sys_cap_mint is the only operation ring 3 has
      * that REDUCES rights -- SYS_CAP_GRANT copies the source's rights whole -- so
      * this pair is what "delegation may only ever reduce" looks like from
      * userspace. The peer gets READ and nothing else. */

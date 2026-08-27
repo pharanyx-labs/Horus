@@ -16,6 +16,63 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Changed
 
+- **A multi-page map that reports failure now installs no page (roadmap 2.1, S35).**
+  `SYS_MAP_REGION(first_slot, count, vaddr, rights)` maps `count` `CAP_FRAME`s from consecutive
+  cspace slots at consecutive pages — the dual of `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest)`,
+  which fills the run it maps. The roadmap had this item blocked on one question: *"a length
+  wants a policy for partial failure part-way through a run."* This settles it as
+  **all-or-nothing**, and enforces it.
+
+  **The answer is the opposite of the one already in the tree, and that is the interesting
+  part.** `untyped_retype` stops at the first failure, keeps what it made, and returns the
+  count. Copying that here was the obvious move and is wrong, because the asymmetry is in the
+  primitives rather than in taste. Retype's partial result is *complete information* — n
+  objects, each named by a capability at a slot the caller computed, all enumerable and
+  destroyable. A partial **map** is a hole in a range whose entire purpose is to be addressed as
+  a range: the caller does not learn about it at the call, it learns at some later instruction,
+  as a fault, with nothing left to say which call left it. And a PTE is authority, so a partial
+  map after a reported error hands ring 3 authority it was just told it did not get — fail-open,
+  in a syscall whose failure path is the whole point. Rollback is also exactly bounded here and
+  is not in retype: this call knows which PTEs it installed, while unwinding a retype would mean
+  destroying objects whose bytes the untyped watermark cannot reclaim.
+
+  **It returns 0 or an error, never "3 of 5".** Prefix semantics would put the cleanup on a
+  caller that has just been told it failed, and a caller applying the convention every other
+  syscall here uses — treat `< 0` as the failure — would silently keep pages it believes it does
+  not have.
+
+  **The unwind withdraws only the pages this call installed.** The pre-existing mapping that
+  caused the refusal is not one of them and survives. An unwind over the whole *requested* range
+  would answer a refused request by destroying the mapping that refused it, which any task could
+  aim at a mapping it disliked by asking to map a region across it.
+
+  **FALSIFIED IN BOTH DIRECTIONS, one arm per rule**, because a policy with one arm is half
+  measured. `FRAME_REGION_NO_ROLLBACK=1` (`make smoke-frame-region-control`) drops the unwind:
+  pages 0 and 1 of the four-page run stay mapped, `FRAMETEST: FAIL region-rollback-page0`, 3
+  boots in 3. `FRAME_REGION_ROLLBACK_WIDE=1` (`make smoke-frame-region-wide-control`) unwinds
+  too much: `FRAMETEST: FAIL region-rollback-ate-blocker`, 3 boots in 3. Each arm fails **only**
+  its own checks, and `smoke-frame` goes red under both.
+
+  **Two details the arms forced.** `frametest` blocks the **middle** of the run, so it fails at
+  page 2 of 4 — an unwind that handled only the first page, or only the last, would pass a run
+  that failed at either end. And the blocker is the run's **own** page-2 frame, because against
+  an unrelated frame `user_unmap_frame_page`'s `expect_phys` test would refuse the wide unmap by
+  itself: the check would pass under the arm and the arm would measure nothing. Aim at the range
+  logic, not at the guard underneath it. The rollback is then probed *without touching the
+  pages* — mapping over a present page is refused, so a single-page map that succeeds proves the
+  address is free, where a read would prove it by faulting and killing the task.
+
+  **The per-page decision is now one function**, shared with `SYS_MAP_FRAME`. A region map that
+  validated one step less than a single map would be another door of the **[H-3]** shape, and
+  two hand-maintained copies of a nine-step check is exactly how one opens.
+
+- **`frametest`'s check count is derived, and it had already gone stale.** `TESTS.md` said 17
+  parent checks; the wire says 31. `frametest_checks` joins `captest_checks` in
+  `.github/doc-claims.yml`, anchored to a line that *starts* with the call so the `static void
+  check(...)` definition is not counted — a deriver that includes its own definition is off by
+  one in a way nobody notices until the number decides something. It is quoted in `SECURITY.md`
+  as S35's witness, so both occurrences are declared.
+
 - **A sixth door of [H-3]'s shape, on console input (S28).** `SYS_GET_LINE`'s dispatch entry
   declares `SC_NONE`, so its handler is the only gate — and that gate read
   `cap_lookup(8, READ)` with a fallback to `cap_lookup(3, READ)`, **neither type-tested**. Slot 3

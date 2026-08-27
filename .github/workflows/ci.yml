@@ -1699,7 +1699,7 @@ jobs:
   frame:
     name: "A frame capability names an object, and a delegate maps only what it holds"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1729,6 +1729,19 @@ jobs:
       # is redundant and an arm against it could not fail.
       - name: Control arm — a READ-only delegate must not obtain a writable mapping
         run: make smoke-frame-rights-control
+      # The partial-failure policy for multi-page regions (roadmap 2.1). Without
+      # the unwind, a run that fails part-way keeps the pages it already mapped
+      # -- the caller is told it got no region and holds two pages of one. A PTE
+      # is authority, so that is a fail-OPEN, and it is the policy SYS_RETYPE
+      # uses deliberately, which is why it needs an arm rather than an argument.
+      - name: Control arm — a failed region map must leave no page mapped
+        run: make smoke-frame-region-control
+      # ...and the same policy from the other side. An unwind that clears the
+      # whole requested range answers a refused request by destroying the
+      # mapping that refused it -- reachable from ring 3 by asking to map a
+      # region across an address you want gone.
+      - name: Control arm — the unwind must not eat the mapping that refused it
+        run: make smoke-frame-region-wide-control
 
   rng-seed:
     name: "The CSPRNG refuses to emit keystream before it is seeded"

@@ -87,29 +87,33 @@ static uint32_t frame_required_rights(uint32_t want) {
 #endif
 }
 
-/* ---- SYS_MAP_FRAME --------------------------------------------------------
+/* ---- ONE PAGE OF A MAP REQUEST -------------------------------------------
  *
- * (frame_slot, vaddr, rights) -> 0. Map the frame named by the CAP_FRAME in
- * `frame_slot` at `vaddr` in the caller's own address space.
+ * The whole per-page decision -- slot bound, rights shape, W^X, capability,
+ * type, frame index, address, revalidation, effective rights -- in one place,
+ * because SYS_MAP_FRAME and SYS_MAP_REGION must not be able to drift apart.
  *
- * Fails closed on every irregularity, and the order matters: the capability is
- * resolved first so that a caller holding no authority learns nothing about
- * which addresses are valid. */
-void h_map_frame(struct interrupt_frame64 *r) {
-    uint32_t slot   = (uint32_t)r->rbx;
-    uint64_t vaddr  = r->rcx;
-    uint32_t rights = (uint32_t)r->rdx;
-
-    if (slot >= CNODE_SIZE) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+ * That is not tidiness. A region map that validated one step less than a single
+ * map would be a new door of exactly the shape this file exists to close, and
+ * two hand-maintained copies of a nine-step check is precisely how a door like
+ * that opens: the second copy is written by reading the first, and the next
+ * person to add a step adds it to whichever one they were looking at. [H-3] was
+ * six copies of one gate, five of which nobody had revisited.
+ *
+ * Returns 0 or a SYS_ERR_*; on success *out_phys names the frame that was
+ * mapped, which is what a caller needs in order to withdraw it again.
+ */
+static int map_one_frame_page(uint32_t slot, uint64_t vaddr, uint32_t rights,
+                              uint64_t *out_phys) {
+    if (slot >= CNODE_SIZE) return SYS_ERR_INVAL;
 
     /* At least one access right must be requested. An empty request would map a
      * present page with no meaning -- x86-64 has no read-disable bit, so "no
      * access" is not a mapping the hardware can express -- and guessing READ on
      * the caller's behalf is the kind of helpfulness that becomes an authority
      * bug. A caller bug, refused, rather than a no-op. */
-    if (!(rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_EXEC))) {
-        r->rax = (uint32_t)SYS_ERR_INVAL; return;
-    }
+    if (!(rights & (CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_EXEC)))
+        return SYS_ERR_INVAL;
 
     /* W^X, for ring 3, at the only place ring 3 can ask for both. The kernel's
      * own W^X is enforced at link and verified by smoke-wx; a frame is the first
@@ -118,18 +122,16 @@ void h_map_frame(struct interrupt_frame64 *r) {
      * outright rather than silently dropping one of the two bits: a caller that
      * asked for W|X has a wrong model of what it is doing, and a mapping that
      * quietly differs from the request is worse than an error. */
-    if ((rights & CAP_RIGHT_WRITE) && (rights & CAP_RIGHT_EXEC)) {
-        r->rax = (uint32_t)SYS_ERR_INVAL; return;
-    }
+    if ((rights & CAP_RIGHT_WRITE) && (rights & CAP_RIGHT_EXEC))
+        return SYS_ERR_INVAL;
 
     /* THE GATE. cap_lookup enforces type-agnostic liveness and the rights floor;
      * the type test is what stops a CAP_ENDPOINT or a CAP_TCB standing in for a
      * frame. Both are required -- C-1 was a live capability of the wrong type
      * satisfying a gate that only asked for liveness. */
     capability_t *cap = cap_lookup(slot, frame_required_rights(rights));
-    if (!cap || cap->type != CAP_FRAME) {
-        r->rax = (uint32_t)SYS_ERR_PERM; return;
-    }
+    if (!cap || cap->type != CAP_FRAME) return SYS_ERR_PERM;
+
     cap_snapshot_t snap = cap_snapshot(cap);
     uint32_t have  = cap->rights;
     uint32_t index = (uint32_t)cap->object;
@@ -144,19 +146,17 @@ void h_map_frame(struct interrupt_frame64 *r) {
      * 0x400000. That arm is what makes frametest's refusal check a measurement
      * rather than an assertion. */
     uint64_t phys = frame_phys_by_index(index);
-    if (phys == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (phys == 0) return SYS_ERR_INVAL;
 
-    if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0 || vaddr >= USER_HALF_LIMIT) {
-        r->rax = (uint32_t)SYS_ERR_INVAL; return;
-    }
+    if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0 || vaddr >= USER_HALF_LIMIT)
+        return SYS_ERR_INVAL;
 
     /* Reconfirm the capability's identity before committing. A concurrent revoke
      * on another CPU between the lookup above and the map below would otherwise
      * install a mapping for authority that no longer exists -- and unlike a
      * dropped IPC message, a stale PTE persists until something unmaps it. */
-    if (snap.valid && !cap_revalidate(slot, frame_required_rights(rights), &snap)) {
-        r->rax = (uint32_t)SYS_ERR_PERM; return;
-    }
+    if (snap.valid && !cap_revalidate(slot, frame_required_rights(rights), &snap))
+        return SYS_ERR_PERM;
 
     int cur = get_current_task();
 #ifdef FRAME_RIGHTS_UNCHECKED
@@ -173,12 +173,27 @@ void h_map_frame(struct interrupt_frame64 *r) {
          * address is occupied" and "that address is not allowed" are different
          * problems for the caller and only one of them is fixable by choosing
          * another address. */
-        r->rax = (uint32_t)SYS_ERR_EXIST; return;
+        return SYS_ERR_EXIST;
     }
-    if (rc != 0) { r->rax = (uint32_t)SYS_ERR_FAULT; return; }
+    if (rc != 0) return SYS_ERR_FAULT;
 
     audit_log(AUDIT_CAP_OPERATION, index, 0, "frame mapped");
-    r->rax = 0;
+    if (out_phys) *out_phys = phys;
+    return 0;
+}
+
+/* ---- SYS_MAP_FRAME --------------------------------------------------------
+ *
+ * (frame_slot, vaddr, rights) -> 0. Map the frame named by the CAP_FRAME in
+ * `frame_slot` at `vaddr` in the caller's own address space.
+ *
+ * Fails closed on every irregularity, and the order matters: the capability is
+ * resolved first so that a caller holding no authority learns nothing about
+ * which addresses are valid. */
+void h_map_frame(struct interrupt_frame64 *r) {
+    int rc = map_one_frame_page((uint32_t)r->rbx, r->rcx, (uint32_t)r->rdx,
+                                (uint64_t *)0);
+    r->rax = (uint32_t)rc;
 }
 
 /* ---- SYS_UNMAP_FRAME ------------------------------------------------------
@@ -217,4 +232,180 @@ void h_unmap_frame(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     int rc = user_unmap_frame_page((uint32_t)cur, vaddr, phys);
     r->rax = (rc == 0) ? 0 : (uint32_t)SYS_ERR_INVAL;
+}
+
+/* ---- SYS_MAP_REGION -------------------------------------------------------
+ *
+ * (first_slot, count, vaddr, rights) -> 0. Map `count` frames, named by the
+ * CAP_FRAMEs in cspace slots first_slot .. first_slot+count-1, at consecutive
+ * page-aligned addresses starting at `vaddr`.
+ *
+ * It is the exact dual of SYS_RETYPE(untyped, KOBJ_FRAME, count, dest), which
+ * fills a run of slots: this maps the run that call produced.
+ *
+ * ---- THE PARTIAL-FAILURE POLICY (roadmap 2.1's open question) -------------
+ *
+ * ALL OR NOTHING. If any page of the run cannot be mapped, every page this call
+ * already mapped is withdrawn and the call returns the failing page's error. A
+ * caller that receives an error holds exactly the address space it started with.
+ *
+ * THIS IS THE OPPOSITE OF WHAT untyped_retype DOES, deliberately, and the
+ * asymmetry is in the primitives rather than in taste. Retype stops at the first
+ * failure, keeps what it made, and returns the count. That is right there and
+ * would be wrong here:
+ *
+ *   * Retype's partial result is COMPLETE INFORMATION. n objects exist, each
+ *     named by a capability at a slot the caller computed; it can enumerate
+ *     them, use them, or destroy them. A partial MAP is a hole in an address
+ *     range whose entire purpose is to be addressed AS a range -- the caller
+ *     does not discover page 3 is absent at the call, it discovers it as a fault
+ *     at some arbitrary later instruction, with nothing left to say which call
+ *     was responsible.
+ *
+ *   * FAIL CLOSED means a call that reports failure installs no authority. A PTE
+ *     is authority -- it is the thing that lets ring 3 touch the page. Retype's
+ *     partial success installs capabilities the caller ASKED for and is told
+ *     about in the return value; a partial map after a reported error is
+ *     authority the caller was told it did not get.
+ *
+ *   * ROLLBACK IS EXACTLY BOUNDED HERE AND IS NOT IN RETYPE. This call knows
+ *     which PTEs it installed -- pages 0..done-1, at addresses it computed, each
+ *     naming a frame it resolved -- so withdrawing them cannot touch a mapping
+ *     that was already there. Unwinding a retype would mean DESTROYING objects,
+ *     and a destroyed frame's bytes are not reclaimable until its untyped region
+ *     is revoked and reset (docs/LIMITATIONS.md), so rollback there would lose
+ *     memory to buy nothing.
+ *
+ * WHY NOT A COUNT. This returns 0 or an error, never "3 of 5". Prefix semantics
+ * on a mapping call put the cleanup on a caller that has just been told it
+ * failed, and a caller applying the convention every other syscall here uses --
+ * treat < 0 as the failure -- would silently keep 3 pages it believes it does
+ * not have. The count is redundant under all-or-nothing anyway: it is `count`.
+ *
+ * WHY NOT "WHICH PAGE". The error says what went wrong, not where. Under
+ * all-or-nothing the caller's response is the same whichever page caused it, so
+ * an index would be ABI surface bought for nothing. It can still be recovered
+ * by walking the run one SYS_MAP_FRAME at a time.
+ */
+
+/* The rollback has to remember one physical address per page it installed, and
+ * that record lives on the kernel stack -- so the bound on the region is the
+ * bound on the record. 64 pages is 256 KiB, and already a quarter of the 256
+ * frames MAX_DYN_FRAMES lets the kernel NAME at once, so this is not the limit a
+ * real workload meets first. A larger region is the region-OBJECT work (a length
+ * carried in the capability, roadmap 2.1), not a bigger array here. */
+#define FRAME_REGION_MAX  64
+
+void h_map_region(struct interrupt_frame64 *r) {
+    uint32_t first  = (uint32_t)r->rbx;
+    uint32_t count  = (uint32_t)r->rcx;
+    uint64_t vaddr  = r->rdx;
+    uint32_t rights = (uint32_t)r->rsi;
+
+    /* THE SHAPE OF THE RUN IS CHECKED BEFORE ANYTHING IS TOUCHED, in
+     * untyped_retype's discipline: a request that cannot be satisfied in
+     * principle is refused outright rather than half-applied and unwound.
+     * Rollback answers a page that fails on its own merits; it is not a
+     * substitute for knowing whether the request was ever coherent. */
+    if (count == 0)                 { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (count > FRAME_REGION_MAX)   { r->rax = (uint32_t)SYS_ERR_RANGE; return; }
+    if (first >= CNODE_SIZE)        { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (first > CNODE_SIZE - count) { r->rax = (uint32_t)SYS_ERR_RANGE; return; }
+
+    /* The address run must be aligned, non-zero, and entirely inside the user
+     * half INCLUDING ITS LAST BYTE. Computing the end up front is what stops a
+     * run that starts legally and walks into the kernel half one page at a time;
+     * expressing the test as `vaddr > LIMIT - span` rather than
+     * `vaddr + span > LIMIT` is what stops it wrapping past the check instead of
+     * failing it. (count is bounded above, so span cannot overflow; the form is
+     * kept because it stays correct if that bound is ever raised.) */
+    if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    uint64_t span = (uint64_t)count * PAGE_SIZE;
+    if (vaddr > USER_HALF_LIMIT - span) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+
+    uint64_t mapped_phys[FRAME_REGION_MAX];
+    uint32_t done = 0;
+    int err = 0;
+
+    for (uint32_t i = 0; i < count; i++) {
+        err = map_one_frame_page(first + i, vaddr + (uint64_t)i * PAGE_SIZE,
+                                 rights, &mapped_phys[i]);
+        if (err != 0) break;
+        done = i + 1;
+    }
+
+    if (err == 0) { r->rax = 0; return; }
+
+#ifdef FRAME_REGION_NO_ROLLBACK
+    /* CONTROL ARM: prefix semantics -- report the failure and keep whatever was
+     * mapped before it. This is the policy the paragraph above rejects, and it
+     * is what the call would do if the unwind were simply forgotten. frametest's
+     * region-rollback checks fail under it. */
+    (void)mapped_phys; (void)done;
+#else
+    /* THE ROLLBACK. Strictly indices below the one that failed: page `done` was
+     * never mapped by this call, and whatever occupies it belongs to whoever
+     * installed it. An unwind that cleared the whole REQUESTED range would
+     * answer a refused request by destroying the mapping that refused it -- a
+     * worse outcome than the failure it is cleaning up after, and reachable from
+     * ring 3 by asking to map over an address you want gone. frametest checks
+     * both directions: the pages this call installed are withdrawn, and the page
+     * that was already there survives.
+     *
+     * Withdrawal names the frame, not just the address: user_unmap_frame_page
+     * requires the PTE to hold this exact physical page, which is why the run is
+     * recorded rather than re-derived from the capabilities. Re-deriving would
+     * read a cspace that a concurrent revoke may have emptied since -- and a
+     * rollback that cannot resolve a slot is a rollback that leaves a mapping. */
+    int cur = get_current_task();
+#ifdef FRAME_REGION_ROLLBACK_WIDE
+    /* CONTROL ARM: the OTHER way to get this wrong. Unwind the whole REQUESTED
+     * range rather than the pages actually installed, re-deriving each frame
+     * from its slot instead of from the record. It is the plausible mistake --
+     * the range is right there in the arguments, and re-deriving looks like it
+     * saves an array -- and it hands ring 3 a way to destroy a mapping it
+     * dislikes by asking to map a region across it. frametest's
+     * region-rollback-ate-blocker check fails under it. */
+    for (uint32_t i = 0; i < count; i++) {
+        capability_t *rc_cap = cap_lookup(first + i, 0);
+        uint64_t rc_phys = (rc_cap && rc_cap->type == CAP_FRAME)
+                               ? frame_phys_by_index((uint32_t)rc_cap->object) : 0;
+        if (rc_phys)
+            (void)user_unmap_frame_page((uint32_t)cur,
+                                        vaddr + (uint64_t)i * PAGE_SIZE, rc_phys);
+    }
+    (void)mapped_phys; (void)done;
+#else
+    for (uint32_t i = done; i-- > 0; ) {
+        int rc = user_unmap_frame_page((uint32_t)cur,
+                                       vaddr + (uint64_t)i * PAGE_SIZE,
+                                       mapped_phys[i]);
+        if (rc != 0) {
+            /* Unreachable, and fatal if it ever is. These PTEs were installed by
+             * this call, in this address space, which no other CPU can be
+             * running: nothing between the map and here can have altered them.
+             * If one has changed, the page tables disagree with the kernel's
+             * model of them, and the alternative to halting is returning an
+             * error while leaving ring 3 holding authority it was just told it
+             * did not get -- fail-open, in the one path written to prevent it. */
+            kfault_begin(0);
+            kfault_str("\nPANIC: frame region rollback failed vaddr=");
+            kfault_hex(vaddr + (uint64_t)i * PAGE_SIZE);
+            kfault_str(" phys=");  kfault_hex(mapped_phys[i]);
+            kfault_str(" page=");  kfault_dec(i);
+            kfault_str(" of=");    kfault_dec(count);
+            kfault_str(" task=");  kfault_task(get_current_task());
+            kfault_str("\nKERNEL FATAL REGION ROLLBACK - halting\n");
+            kfault_end(0);
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+    }
+#endif
+#endif
+
+    r->rax = (uint32_t)err;
 }

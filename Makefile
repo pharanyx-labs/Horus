@@ -89,7 +89,7 @@ DEFECT_FLAGS = \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
-	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED RAMFS_SLOT3_GATE \
+	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE RAMFS_SLOT3_GATE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
@@ -866,6 +866,32 @@ FRAME_RIGHTS_UNCHECKED ?= 0
 ifeq ($(FRAME_RIGHTS_UNCHECKED),1)
 CFLAGS  += -DFRAME_RIGHTS_UNCHECKED
 ASFLAGS += -DFRAME_RIGHTS_UNCHECKED
+endif
+
+# FRAME_REGION_NO_ROLLBACK=1 is the falsifying arm for SYS_MAP_REGION's
+# partial-failure policy: it removes the unwind, so a run that fails part-way
+# reports the failure and KEEPS the pages it had already mapped. That is prefix
+# semantics -- what untyped_retype does deliberately, and what a mapping call
+# must not do, because a PTE is authority and the caller has just been told it
+# got none. The argument is at the SYS_MAP_REGION comment in
+# src/kernel/syscall_vm.c; this arm is what stops it being only an argument.
+FRAME_REGION_NO_ROLLBACK ?= 0
+ifeq ($(FRAME_REGION_NO_ROLLBACK),1)
+CFLAGS  += -DFRAME_REGION_NO_ROLLBACK
+ASFLAGS += -DFRAME_REGION_NO_ROLLBACK
+endif
+
+# FRAME_REGION_ROLLBACK_WIDE=1 is the OTHER direction of the same policy: the
+# unwind walks the whole REQUESTED range instead of the pages actually
+# installed, re-deriving each frame from its slot. It is the plausible mistake --
+# the range is in the arguments and re-deriving looks like it saves an array --
+# and it lets ring 3 destroy a mapping it dislikes by asking to map a region
+# across it. Without an arm, "the rollback withdraws only what this call
+# installed" is a sentence rather than a property.
+FRAME_REGION_ROLLBACK_WIDE ?= 0
+ifeq ($(FRAME_REGION_ROLLBACK_WIDE),1)
+CFLAGS  += -DFRAME_REGION_ROLLBACK_WIDE
+ASFLAGS += -DFRAME_REGION_ROLLBACK_WIDE
 endif
 
 LIBHORUS_SELFTEST ?= 0
@@ -4278,6 +4304,40 @@ smoke-frame-rights-control:
 		REQUIRE_MARKER='FRAMETEST: FAIL readonly-delegate-wrote' \
 		tools/smoke_test.sh boot.iso
 	@echo "FRAME RIGHTS CONTROL: PASS - unchecked, a READ-only delegate writes"
+
+# Control arm 3 -- the partial-failure policy. FRAME_REGION_NO_ROLLBACK=1 drops
+# the unwind from SYS_MAP_REGION, so a run that fails part-way keeps the pages it
+# had already mapped: the caller is told the region was not mapped and holds two
+# pages of it. frametest maps a blocker in the MIDDLE of a four-page run, so the
+# failure is at page 2 and pages 0 and 1 are the ones left behind; it then probes
+# them by mapping over them, which is refused when they are still present.
+# The FAIL marker must be PRESENT.
+.PHONY: smoke-frame-region-control
+smoke-frame-region-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_NO_ROLLBACK=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_NO_ROLLBACK=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: FAIL region-rollback-page0' \
+		tools/smoke_test.sh boot.iso
+	@echo "FRAME REGION CONTROL: PASS - without the unwind, a failed region keeps its pages"
+
+# Control arm 4 -- the same policy from the other side. FRAME_REGION_ROLLBACK_WIDE=1
+# unwinds the whole REQUESTED range rather than the pages the call installed, so
+# the pre-existing mapping that caused the refusal is torn down by the cleanup.
+# frametest maps the blocker from the run's OWN page-2 frame precisely so this
+# arm can reach it: against an unrelated frame, user_unmap_frame_page's
+# expect_phys test would refuse the wide unmap by itself and the arm could not
+# fail. The FAIL marker must be PRESENT.
+.PHONY: smoke-frame-region-wide-control
+smoke-frame-region-wide-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_ROLLBACK_WIDE=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_ROLLBACK_WIDE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: FAIL region-rollback-ate-blocker' \
+		tools/smoke_test.sh boot.iso
+	@echo "FRAME REGION WIDE CONTROL: PASS - a whole-range unwind eats the mapping that refused it"
 
 .PHONY: smoke-libhorus
 smoke-libhorus:

@@ -190,6 +190,7 @@ void h_irq_register(struct interrupt_frame64 *r);
 void h_map_frame(struct interrupt_frame64 *r);
 void h_unmap_frame(struct interrupt_frame64 *r);
 void h_map_region(struct interrupt_frame64 *r);
+void h_frame_pages(struct interrupt_frame64 *r);
 /* pipe.c — bounded byte pipes for shell pipelines */
 void h_pipe(struct interrupt_frame64 *r);
 void h_pipe_read(struct interrupt_frame64 *r);

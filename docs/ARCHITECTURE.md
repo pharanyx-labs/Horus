@@ -974,6 +974,25 @@ The unwind is shared with `SYS_MAP_REGION`, so a failure part-way *inside* one s
 a failure part-way *across* a run of slots are the same code and the same control arm — which
 is how `FRAME_REGION_NO_ROLLBACK=1` reddens checks at both levels from one flag.
 
+**A capability that does not describe its own object needs a side channel**, which is the gap
+the length opened and `SYS_FRAME_PAGES` closed the same day (**S37**). A delegate received a
+`CAP_FRAME` and could not learn how many pages it named except by being told out of band, or by
+trial-mapping forward one page at a time.
+
+The interesting part is where the answer was *not* put. `SYS_CAP_ENUMERATE` already reports a
+capability's type, rights, serial and generation, and adding a length there would have been one
+field — but that call is gated on `CAP_DEBUG`, a cross-task **observability** capability. A task
+would then have needed a debug capability to learn about its **own** object, and `CAP_DEBUG`
+would have begun revealing other tasks' object extents in the same change. The capability
+discipline settles it: the entitlement to know how large the object is comes from holding a
+capability that names it, so the authority is that capability and the syscall resolves a cspace
+slot.
+
+It takes a slot and never an index, and that is the security property rather than a calling
+convention. An index would be **[C-1]**'s shape, and it would make the call an
+**object-existence oracle** — a task holding nothing could walk indices and learn which frames
+are live, and how large, across every task in the system.
+
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
 carved from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an

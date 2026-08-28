@@ -36,6 +36,11 @@ src/kernel/pci.c                @pharanyx-labs
 # The device-capability conformance suite, for the same reason captest.c is
 # owned: it is the evidence for S43, and every check in it is a refusal.
 userspace/devcaptest.c          @pharanyx-labs
+# netd holds a bus-mastering device capability, which on an IOMMU-less machine is
+# authority over all of physical memory. It is the first program in this tree for
+# which that is true, and a change to what it programs into a descriptor is a
+# change to where hardware writes (S44).
+userspace/netd.c                @pharanyx-labs
 src/kernel/syscall_internal.h   @pharanyx-labs
 include/syscall.h               @pharanyx-labs
 

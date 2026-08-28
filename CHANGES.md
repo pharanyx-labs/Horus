@@ -16,6 +16,60 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A network driver in ring 3 — roadmap 2.6's first half (S44).** `netd`
+  (`userspace/netd.c`) drives virtio-net over the legacy I/O BAR holding exactly two
+  capabilities: a `CAP_IO_DEVICE` naming the NIC, and one delegated untyped region it builds
+  its descriptor rings from. No console capability, no filesystem, no boot modules, nothing
+  ambient. It resets the device, negotiates one feature, publishes two queues, and completes an
+  ARP exchange with QEMU's user-mode gateway — the reply arriving through its own receive ring.
+
+  **The assertion is on the wire.** A driver that reads its own MAC back out of device config
+  has proved the BAR is mapped and nothing else; this has to transmit a frame the emulator
+  parses and receive one it generates, which exercises decode enable, bus mastering, the ring
+  layout, the bus address in every descriptor, and the used-ring protocol. Witness
+  `make smoke-net`.
+
+  Two kernel mechanisms landed with it, because a DMA mechanism with no driver is authority
+  added for nobody. **`SYS_DEVICE_ENABLE` (103)** sets the three PCI decode bits of the device
+  a capability names — I/O, memory, bus master — and *nothing else in configuration space*: the
+  offset is fixed, the value is masked to three bits, and the device is the one the capability
+  named. That narrowness is load-bearing, because the BARs are in the same 256 bytes and a
+  driver that could write them could move its own BAR onto another device's registers and make
+  **S43**'s frame check a lie. **`SYS_DMA_ADDR` (104)** reports where a named device reaches a
+  named frame and requires **both** capabilities: the answer is a physical address, disclosed
+  nowhere else in this ABI, and gating on the frame alone would hand the kernel's memory layout
+  to every task that ever retyped a page. Requiring the device makes the disclosure add
+  **nothing** — a bus-mastering device holder can already read and write all of memory through
+  it. That is the whole security argument for the call, and `DMA_ADDR_FRAME_ONLY=1` is the arm.
+
+  **What this does not establish, stated because the roadmap sentence is easy to over-read.**
+  "A network-stack compromise is contained to one address space" is **not true yet** and no
+  capability will make it true: with no IOMMU a bus-mastering device reaches all of physical
+  memory whatever its driver holds, and the descriptors directing it are written by the driver.
+  The capability decides who may turn bus mastering on and for which device — the enforceable
+  half. `docs/LIMITATIONS.md` §2.12.
+
+  **THE BUS-MASTER CONTROL ARM WAS WRITTEN FIRST AND DOES NOT EXIST.** The obvious arm for
+  `SYS_DEVICE_ENABLE` is to clear the bus-master bit; it was written, and it **passed** with the
+  bit clear. Not a flag that failed to reach the compile — the command line carried it and the
+  boot stamped `DEFECT FLAGS: NET_NO_BUSMASTER`. Not a syscall writing nothing — measured, a
+  build asking for *no* decode bits kills the register file. **QEMU does not enforce PCI
+  bus-master enable for virtio-net**, so the arm cannot fail here, and a control arm that cannot
+  fail cannot gate — the same call `SPAWN_STAGE_UNSERIALISED` got. `NET_NO_BUSMASTER` is kept
+  ungated with that reason beside it; `NET_NO_DECODE` replaced it and tests the syscall rather
+  than the emulator's opinion of one register.
+
+  A second thing the arms caught: **a bound is a failure budget, not a correctness parameter.**
+  The receive poll first ran 40 million iterations — irrelevant to a passing build, which leaves
+  at once, but a *failing* build spent the whole bound and outlived the harness's 40-second
+  budget, so `smoke-net-dma-control` reported a timeout rather than its own marker. A gate
+  failing indistinguishably from a hang is the failure mode `TESTS.md` keeps warning about.
+
+  `captest` 122 → 126 checks (both new syscalls refused to a task holding no device
+  capability), `frametest` 55 → 58 (the two-capability rule, from the side that holds frames and
+  no device). `SMOKE_NET=user` is new alongside `SMOKE_NET=1`: the authority gates need a device
+  on the bus, this one needs something at the other end of the wire.
+
 - **A device capability names a device — roadmap 2.7, and the prerequisite 2.6 was written
   against for a year (S43).** `CAP_IO_DEVICE` was a capability *type with no object*: exactly
   one existed, primordial, its `object` field permanently 0 and read by nothing, while the three

@@ -102,7 +102,8 @@ DEFECT_FLAGS = \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
-	IO_DEVICE_CAP_UNCHECKED
+	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE NET_DMA_ADDR_VIRTUAL \
+	DMA_ADDR_FRAME_ONLY
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -694,6 +695,56 @@ IO_DEVICE_IRQ_UNCHECKED ?= 0
 ifeq ($(IO_DEVICE_IRQ_UNCHECKED),1)
 CFLAGS += -DIO_DEVICE_IRQ_UNCHECKED
 endif
+
+# NET_SELFTEST=1 embeds netd and, at boot, spawns it holding exactly two
+# capabilities -- a CAP_IO_DEVICE naming the machine's NIC, and the untyped region
+# it builds its DMA rings from. It brings up virtio-net over the legacy I/O BAR
+# and completes an ARP exchange with QEMU's user-mode gateway (NETTEST: PASS).
+# Roadmap 2.6's first half; needs SMOKE_NET=user, which is what `make smoke-net`
+# passes. Gated off the ship kernel: adding a driver to every image is a separate
+# decision from proving one works.
+NET_SELFTEST ?= 0
+ifeq ($(NET_SELFTEST),1)
+CFLAGS  += -DNET_SELFTEST
+ASFLAGS += -DNET_SELFTEST
+NET_SELFTEST_DEP = userspace/netd.bin
+endif
+
+# NET_NO_BUSMASTER=1 has netd enable I/O decode but NOT bus mastering.
+#
+# NO GATE, DELIBERATELY, and the reason is a measurement: with the bit clear the
+# driver still completes the entire ARP exchange under QEMU, because the emulator
+# does not enforce PCI bus-master enable for virtio-net. The arm cannot fail here,
+# and a control arm that cannot fail cannot gate -- the same call as
+# SPAWN_STAGE_UNSERIALISED. Kept because a real NIC will not DMA without it, and
+# because the day this runs on hardware the arm becomes real. What IS observable
+# is NET_NO_DECODE, below.
+NET_NO_BUSMASTER ?= 0
+
+# NET_NO_DECODE=1 has netd ask for NO decode bits at all, so the device stops
+# answering its own I/O BAR and the register file reads back as floating bus. The
+# arm for SYS_DEVICE_ENABLE: it writes the one configuration-space register ring 3
+# can reach, and this is what shows the write lands. `make smoke-net-decode-control`
+# requires NETTEST: FAIL rx-queue-size -- the first register whose value the driver
+# checks rather than merely stores.
+NET_NO_DECODE ?= 0
+
+# DMA_ADDR_FRAME_ONLY=1 drops SYS_DMA_ADDR's device-capability requirement, so the
+# call is gated on the frame alone -- the shape it takes if the device capability
+# is read as documentation rather than as a requirement. Under it any task that
+# ever retyped a page learns the kernel's physical layout. `make
+# smoke-frame-dma-control` requires FRAMETEST: FAIL dma-addr-without-device-cap.
+DMA_ADDR_FRAME_ONLY ?= 0
+ifeq ($(DMA_ADDR_FRAME_ONLY),1)
+CFLAGS += -DDMA_ADDR_FRAME_ONLY
+endif
+
+# NET_DMA_ADDR_VIRTUAL=1 has netd program its own VIRTUAL addresses into the
+# queue-address register and its descriptors instead of the answer from
+# SYS_DMA_ADDR. Both are numbers and both look plausible; only one is where the
+# device will go. The arm for sys_dma_addr returning something the DEVICE can use.
+# `make smoke-net-dma-control` requires NETTEST: FAIL no-arp-reply.
+NET_DMA_ADDR_VIRTUAL ?= 0
 
 # IO_DEVICE_CAP_UNCHECKED=1 removes the capability lookup from iodev_from_slot
 # entirely, so every caller of a device syscall resolves to the platform device
@@ -1697,7 +1748,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1864,6 +1915,20 @@ endif
 # is where it was first written and where it silently never fired.
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
 USERSPACE_CFLAGS += -DSYSCALL_PTR_TRUNC32
+endif
+# netd's two control arms, HERE for the same reason and not one line earlier.
+# Both live in userspace/netd.c, so they are userspace flags; putting them beside
+# their `?= 0` defaults several hundred lines up would have them overwritten by
+# the `=` assignment above and never fire -- which is the exact way
+# SYSCALL_PTR_TRUNC32 was first written and silently did nothing.
+ifeq ($(NET_NO_BUSMASTER),1)
+USERSPACE_CFLAGS += -DNET_NO_BUSMASTER
+endif
+ifeq ($(NET_NO_DECODE),1)
+USERSPACE_CFLAGS += -DNET_NO_DECODE
+endif
+ifeq ($(NET_DMA_ADDR_VIRTUAL),1)
+USERSPACE_CFLAGS += -DNET_DMA_ADDR_VIRTUAL
 endif
 USERSPACE_CFLAGS_64 = $(USERSPACE_CFLAGS)
 # 32-bit, for the i386 ELF-loader self-test image ONLY (userspace/elftest.o ->
@@ -2198,7 +2263,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -3327,6 +3392,51 @@ smoke-console:
 	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
 		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# ---- A network driver in ring 3, holding one device capability --------------
+#
+# Roadmap 2.6's first half, and the demonstration the architecture exists for.
+# netd brings up virtio-net over the legacy I/O BAR and completes an ARP exchange
+# with QEMU's user-mode gateway. Its whole authority is a CAP_IO_DEVICE naming the
+# NIC plus one untyped region -- no console, no filesystem, no ambient anything.
+#
+# SMOKE_NET=user rather than 1: the authority gates need a device on the bus, this
+# one needs something at the other end of the wire.
+.PHONY: smoke-net
+smoke-net:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso
+	@SMOKE_NET=user SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NETTEST: PASS' \
+		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Control arm 1 of 2: no decode bits at all, so the device stops answering its own
+# I/O BAR. The arm for SYS_DEVICE_ENABLE -- it writes the one configuration-space
+# register ring 3 can reach, and this is what shows the write lands rather than
+# returning 0 and doing nothing.
+#
+# It is NOT the bus-master arm, which is what this started as. Measured: with bus
+# mastering clear the driver still completes the exchange, because QEMU does not
+# enforce the bit for virtio-net. See NET_NO_BUSMASTER above.
+.PHONY: smoke-net-decode-control
+smoke-net-decode-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_DECODE=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_DECODE=1 boot.iso
+	@SMOKE_NET=user SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL rx-queue-size' tools/smoke_test.sh boot.iso
+
+# Control arm 2 of 2: the driver programs its own VIRTUAL addresses where the
+# device's view belongs. Both are numbers, both look plausible, and only one is
+# where the device will go -- so this is the arm for SYS_DMA_ADDR returning an
+# address the DEVICE can use rather than one that merely exists.
+.PHONY: smoke-net-dma-control
+smoke-net-dma-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_DMA_ADDR_VIRTUAL=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_DMA_ADDR_VIRTUAL=1 boot.iso
+	@SMOKE_NET=user SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL no-arp-reply' tools/smoke_test.sh boot.iso
 
 # ---- Device capabilities: a CAP_IO_DEVICE names a device --------------------
 #
@@ -4978,6 +5088,22 @@ smoke-frame-info-control:
 		REQUIRE_MARKER='FRAMETEST: FAIL peer-frame-pages-not-an-index' \
 		tools/smoke_test.sh boot.iso
 	@echo "FRAME INFO CONTROL: PASS - a delegate reads frames it holds no capability to"
+
+# SYS_DMA_ADDR's second capability. The call answers with a physical address, and
+# it is gated on a device capability as well as the frame -- because a holder of a
+# bus-mastering device already reaches all of memory, so the disclosure adds
+# nothing to THAT caller, while handing it to anyone who retyped a page gives out
+# the kernel's layout for no purpose they could act on. frametest is the witness:
+# it holds frames and no device capability at all.
+.PHONY: smoke-frame-dma-control
+smoke-frame-dma-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 DMA_ADDR_FRAME_ONLY=1
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 DMA_ADDR_FRAME_ONLY=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FRAMETEST: FAIL dma-addr-without-device-cap' \
+		tools/smoke_test.sh boot.iso
+	@echo "FRAME DMA CONTROL: PASS - a task with no device capability learns a bus address"
 
 .PHONY: smoke-libhorus
 smoke-libhorus:

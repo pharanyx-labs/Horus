@@ -114,6 +114,15 @@ covered:
   # this file is what noticed.
   - SYS_IRQ_REGISTER
   - SYS_DEVICE_INFO
+  # Same story again, one commit later, and for the same structural reason: these
+  # two are SC_NONE like the rest of the device family, so captest's checks that a
+  # task holding no CAP_IO_DEVICE is refused run their handler bodies. Covered
+  # from the day they landed rather than after a promotion, which is what this
+  # file is for -- SYS_DEVICE_ENABLE especially, since it is the call that turns a
+  # device into a bus master (S44) and the one whose gate is worth exercising on
+  # every run.
+  - SYS_DEVICE_ENABLE
+  - SYS_DMA_ADDR
   - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`

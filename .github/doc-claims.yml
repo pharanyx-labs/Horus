@@ -225,6 +225,17 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'console_server</code> is still the only driver'
+    reason: >-
+      README.md and site/index.html said so until 2026-08-28, when netd landed as
+      a second ring-3 driver (S44, roadmap 2.6). Two drivers now, and the sentence
+      that replaced it names the real remaining gap instead: no IOMMU, and no PCI
+      interrupt delivery.
+  - pattern: "a device's DMA is bounded by nothing"
+    reason: >-
+      imprecise: DMA is bounded by nothing only once BUS MASTERING is enabled,
+      which is itself a capability-gated act since S44. The distinction is the
+      whole point of SYS_DEVICE_ENABLE -- who may turn it on, and for what.
   - pattern: 'Device delegation — `console_server` only'
     reason: >-
       docs/SYSCALLS.md's heading until 2026-08-28. The device syscalls are not

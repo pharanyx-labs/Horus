@@ -997,11 +997,39 @@ measured: `captest`'s `.text` is byte-identical to before libhorus existed.
 store requirement by an order of magnitude and makes a larger userspace practical — and it
 needs 2.1's frame capabilities first, which is why it sits behind them in the Track 2 order.
 
-### 2.6 ⬜ Network stack as a ring-3 server — **[F-2.3]**
+### 2.6 ◧ Network stack as a ring-3 server — **[F-2.3]** — *the driver landed 2026-08-28*
 
 A user-mode TCP/IP server holding `CAP_IO_DEVICE` for one NIC, with per-application socket
 capabilities. A network-stack compromise is then contained to one address space with no
 kernel authority — the highest-visibility demonstration of the architecture's value.
+
+**Delivered: `netd`, a virtio-net driver in ring 3** (**S44**). Its entire authority is a
+`CAP_IO_DEVICE` naming the NIC plus one delegated untyped region — no console capability, no
+filesystem, no boot modules, nothing ambient. It brings the device up over the legacy I/O BAR,
+builds its own descriptor rings in memory it retyped itself, and completes an ARP exchange with
+QEMU's user-mode gateway. Witness `make smoke-net`, which asserts the reply came back through
+netd's own receive ring — transmit, receive and DMA end to end, not a register read.
+
+Two kernel mechanisms landed with it, because a DMA mechanism with no driver is authority added
+for nobody. `SYS_DEVICE_ENABLE` (103) sets the three PCI decode bits of the named device and
+**nothing else in configuration space** — the BARs are in the same 256 bytes, and a driver that
+could reach them could move its own BAR onto another device's registers and make 2.7's frame
+check a lie. `SYS_DMA_ADDR` (104) reports where a named device reaches a named frame, and
+requires **both** capabilities; the reasoning is **S44** and is the interesting part of the
+design.
+
+**What this does NOT yet establish, and the sentence above is the one to be careful with.**
+"A network-stack compromise is contained to one address space" is **not true yet**, and no
+capability will make it true: there is no IOMMU, so a bus-mastering device reaches all of
+physical memory regardless of what its driver holds. The capability decides who may turn bus
+mastering on and for which device — the enforceable half. `docs/LIMITATIONS.md` §2.12 states the
+other half plainly, and it is the largest single gap in the model.
+
+**Still open, and most of the item:** everything above the wire. There is no ARP table, no IP
+layer, no TCP, and no socket capability — netd speaks exactly enough Ethernet to prove the
+device is driven. It also polls rather than waiting on its interrupt, because a PCI line cannot
+be delivered on this machine yet (§2.13 of `docs/LIMITATIONS.md`); that is a change to the
+interrupt controller rather than to any capability, and belongs in its own commit.
 
 **Its prerequisite landed 2026-08-28** — see 2.7. Until then the sentence above could not be
 written truthfully: there was no such thing as "`CAP_IO_DEVICE` for one NIC", because the
@@ -1223,7 +1251,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **98 required, 3 exempted** (98 jobs, 101 contexts — re-derive it with
+  The intended set is **99 required, 3 exempted** (99 jobs, 102 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).
@@ -1318,7 +1346,7 @@ Ordered as in the audit's §7.5.
   so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
   claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
   The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-  **empty** — all 45 properties name a witness that resolves.
+  **empty** — all 46 properties name a witness that resolves.
 
   **What the survey found on the way.** **S16** had no witness at all — an em-dash against
   `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1357,7 +1385,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 142 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 52 of them control arms that must reproduce a defect |
+| ✅ | 146 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 55 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

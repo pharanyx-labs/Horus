@@ -371,6 +371,33 @@ void _start(void) {
      * "admin" means holding a CAP_USER, and this task holds none. */
     check(sys_cap_grant(peer, SLOT_FRAME_RO, SLOT_FRAME) == 0, "grant-readonly-to-peer");
 
+    /* ---- a frame's BUS address needs a device capability too (S44) --------
+     *
+     * SYS_DMA_ADDR answers with a physical address, which is the kernel's memory
+     * layout and is disclosed nowhere else in this ABI. It is gated on TWO
+     * capabilities, and this task is the witness for the second one: it holds
+     * CAP_FRAMEs it retyped itself and no CAP_IO_DEVICE at all, so it is exactly
+     * the caller that must be refused.
+     *
+     * The reasoning behind requiring both is worth restating where the test is,
+     * because it is what makes the disclosure acceptable at all: a holder of a
+     * bus-mastering device capability can already read and write all of physical
+     * memory through its device on an IOMMU-less machine, so telling THAT caller
+     * where its own frame sits adds nothing. Telling a caller who merely retyped
+     * a page hands out the layout for no purpose it could act on. Falsified by
+     * DMA_ADDR_FRAME_ONLY=1, which drops the device requirement.
+     *
+     * Exact SYS_ERR_PERM: SYS_ERR_INVAL is what a dead frame index returns, and
+     * "you may not ask" is a different statement from "there is nothing there". */
+    {
+        uint64_t bus = 0;
+        check(sys_dma_addr(CAPSLOT_IO_DEVICE, SLOT_FRAME, &bus) == SYS_ERR_PERM,
+              "dma-addr-without-device-cap");
+        check(bus == 0, "dma-addr-wrote-through-on-refusal");
+        check(sys_dma_addr(SLOT_FRAME, SLOT_FRAME, &bus) == SYS_ERR_PERM,
+              "dma-addr-frame-cap-as-device-cap");
+    }
+
     /* The peer is spawned suspended so this task can finish endowing it before
      * it runs; nothing here depends on scheduling order after that point. The
      * peer prints the PASS marker for the pair, because it is the one that can

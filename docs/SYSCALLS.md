@@ -736,6 +736,8 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 | 80 | `SYS_IOPORT_GRANT` | `dev_slot` — grant native ring-3 `in`/`out` on **the named device's** port ranges via the TSS I/O bitmap (needs WRITE) |
 | 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge` — route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *` — report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
+| 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags` — set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |
+| 104 | `SYS_DMA_ADDR` | `dev_slot`, `frame_slot`, `uint64_t *` — the address at which that device reaches that frame (needs **both**: CAP_IO_DEVICE WRITE and CAP_FRAME READ) |
 
 None of the four has a dispatch-table slot: they are `SC_NONE`, and **that is the gate**, in
 exactly the sense the IPC syscalls are. Until 2026-08-28 each had a fixed slot-10
@@ -748,6 +750,22 @@ console: finding **[C-1]**'s shape one layer down, and it takes [C-1]'s fix.
 capability names. A driver needs it because firmware assigns BARs and a hardcoded address is
 how a driver ends up mapping whatever happens to sit there; there is deliberately no bus walk,
 because holding one device should not be a way to enumerate the machine.
+
+`SYS_DEVICE_ENABLE` is the only write to configuration space reachable from ring 3, and it
+reaches exactly three bits of one register. The narrowness is load-bearing: the BARs live in the
+same 256 bytes, and a driver that could move its own BAR could point it at another device's
+registers and make the frame check above a lie. Unknown bits are **refused**, not masked — a
+caller must not be told yes and given something else — and a platform device, which has no
+configuration space, is refused outright rather than reported as configured.
+
+`SYS_DMA_ADDR` requires **two** capabilities, which is the interesting part of its design. The
+answer is a physical address, disclosed nowhere else in this ABI; gating it on the frame alone
+would hand the kernel's memory layout to every task that ever retyped a page, for no purpose any
+of them could act on. Requiring a device capability makes the disclosure add **nothing** — a
+holder of a bus-mastering device can already read and write all of physical memory through it,
+IOMMU-less. The name is `dma_addr` rather than `paddr` deliberately: what a device needs is the
+address *it* uses, which is the physical address only because there is no IOMMU; with one it
+becomes an IOVA and this signature is already the right shape. `SECURITY.md` **S44**.
 
 Device index **0 is reserved** and names nothing. Two things default to zero — a task slot's
 `io_device` and a capability's `object`, which `cap_install_from_root`'s fourth argument

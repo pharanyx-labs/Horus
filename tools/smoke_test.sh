@@ -253,9 +253,18 @@ fi
 # It prints "hub 0 is not connected to host network" on stderr, which is a correct
 # description of the intent. A future network-stack gate that actually moves
 # traffic will want `-netdev user` with a hostfwd, and that is a different flag.
+#
+# SMOKE_NET=user attaches the same NIC to QEMU's user-mode network instead. That
+# one is for the driver gate rather than the authority gates: slirp answers ARP
+# for 10.0.2.2 with no host configuration and no privilege, so a guest that
+# completes an exchange with it has demonstrably transmitted and received. It
+# needs a QEMU built with slirp; if the runner's is not, QEMU exits at once and
+# the gate fails loudly rather than passing on an absent network.
 NET_ARG="-net none"
 if [ "${SMOKE_NET:-0}" = 1 ]; then
     NET_ARG="-netdev hubport,id=smokenet0,hubid=0 -device virtio-net-pci,netdev=smokenet0"
+elif [ "${SMOKE_NET:-0}" = user ]; then
+    NET_ARG="-netdev user,id=smokenet0 -device virtio-net-pci,netdev=smokenet0"
 fi
 
 # SWTPM_REQUIRED=1 turns "swtpm is not installed" from a silent skip into an

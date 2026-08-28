@@ -1244,7 +1244,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 103
+#define SYSCALL_TABLE_SIZE 105
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1455,6 +1455,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_IOPORT_GRANT]            = { h_ioport_grant,            SC_NONE, 0, SC_ANYTYPE },
     [SYS_IRQ_REGISTER]            = { h_irq_register,            SC_NONE, 0, SC_ANYTYPE },
     [SYS_DEVICE_INFO]             = { h_device_info,             SC_NONE, 0, SC_ANYTYPE },
+    [SYS_DEVICE_ENABLE]           = { h_device_enable,           SC_NONE, 0, SC_ANYTYPE },
+    [SYS_DMA_ADDR]                = { h_dma_addr,                SC_NONE, 0, SC_ANYTYPE },
     /* Pipes: authorization is the pipe-end capability passed as the slot argument,
      * validated in the handler (cap_lookup with the direction's right), so no fixed
      * table slot. SYS_PIPE/STDIO_INFO are self-scoped (own cspace / own tcb). */
@@ -1531,7 +1533,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_DEVICE_INFO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_DMA_ADDR + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -183,6 +183,8 @@ struct audit_event {
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr. ALL OR NOTHING: a failure withdraws every page the call mapped, so an error leaves the address space untouched. Max 64 pages. */
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; what the device named by the CAP_IO_DEVICE at dev_slot declares: ids, MMIO ranges, port ranges, IRQ lines. CAP_IO_DEVICE + READ in dev_slot, and it reports THAT device only. */
+#define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the named device's PCI decode bits (DEV_ENABLE_*). CAP_IO_DEVICE + WRITE. */
+#define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. CAP_IO_DEVICE + WRITE and CAP_FRAME + READ, both. */
 #define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate this task, its memory copy-on-write. Gated on the same slot-3 capability as SYS_SPAWN: fork is a second way to create a task, so it answers to the capability that gates the first. The child inherits the caller's capabilities as DERIVED copies, so revoking the parent's sweeps the child's -- see sys_fork(). */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
@@ -553,6 +555,33 @@ struct dev_info {
  * declares. Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_device_info(uint32_t dev_slot, struct dev_info *out) {
     return (int)syscall(SYS_DEVICE_INFO, dev_slot, (uint64_t)(uintptr_t)out, 0);
+}
+
+/* PCI decode bits for sys_device_enable. BUSMASTER is the one that lets a device
+ * DMA -- and on a machine with no IOMMU that means it reaches all of physical
+ * memory, whatever its driver holds. See docs/LIMITATIONS.md §2.12. */
+#define DEV_ENABLE_IO         0x1u
+#define DEV_ENABLE_MEM        0x2u
+#define DEV_ENABLE_BUSMASTER  0x4u
+
+/* Set the named device's three PCI decode bits to exactly `flags`, preserving
+ * every other bit of its command register. Needs CAP_IO_DEVICE + WRITE. Refused
+ * for the platform device, which has no configuration space. */
+static inline int sys_device_enable(uint32_t dev_slot, uint32_t flags) {
+    return (int)syscall(SYS_DEVICE_ENABLE, dev_slot, flags, 0);
+}
+
+/* The bus address at which the device named by `dev_slot` reaches the frame named
+ * by `frame_slot` -- what goes into a descriptor, a ring base, or a BAR-side
+ * queue-address register. Needs CAP_IO_DEVICE + WRITE *and* CAP_FRAME + READ.
+ *
+ * Both, because the answer is a physical address: gating on the frame alone would
+ * disclose the kernel's memory layout to every task that ever retyped a page, and
+ * requiring the device makes the disclosure add nothing the caller cannot already
+ * do — a bus-mastering device reaches all of memory regardless. Returns 0 or a
+ * negative SYS_ERR_*. */
+static inline int sys_dma_addr(uint32_t dev_slot, uint32_t frame_slot, uint64_t *out) {
+    return (int)syscall(SYS_DMA_ADDR, dev_slot, frame_slot, (uint64_t)(uintptr_t)out);
 }
 
 /* MUST stay byte-identical to struct untyped_info in src/include/kernel.h — the

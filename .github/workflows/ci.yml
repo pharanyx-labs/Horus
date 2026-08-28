@@ -1787,6 +1787,13 @@ jobs:
       # how large, across every task in the system.
       - name: Control arm — a frame's size must be readable only by a holder
         run: make smoke-frame-info-control
+      # SYS_DMA_ADDR's second capability (S44). It answers with a physical
+      # address, disclosed nowhere else in this ABI, and is gated on a device
+      # capability as well as the frame: a bus-mastering device already reaches
+      # all of memory, so the disclosure adds nothing to THAT caller, while
+      # handing it to anyone who retyped a page gives out the layout for free.
+      - name: Control arm — a bus address readable without a device capability
+        run: make smoke-frame-dma-control
 
   devcap:
     name: "A device capability names one device, and reaches only that device"
@@ -1822,6 +1829,42 @@ jobs:
       # The interrupt half. An IRQ line belongs to a device, not to a type.
       - name: Control arm — an IRQ registered against the wrong device
         run: make smoke-devcap-irq-control
+
+  net:
+    name: "A network driver in ring 3, holding one device capability"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Roadmap 2.6's first half. netd brings up virtio-net over the legacy I/O
+      # BAR and completes an ARP exchange with QEMU's user-mode gateway. Its
+      # whole authority is a CAP_IO_DEVICE naming the NIC plus one untyped
+      # region -- no console, no filesystem, no ambient anything.
+      - name: A ring-3 driver completes an exchange on the wire
+        run: make smoke-net
+      # SYS_DEVICE_ENABLE writes the only configuration-space register ring 3 can
+      # reach. Clear all three decode bits and the device stops answering its own
+      # I/O BAR -- which is what shows the write lands rather than returning 0.
+      #
+      # This is NOT the bus-master arm it started as: measured, QEMU does not
+      # enforce PCI bus-master enable for virtio-net, so that arm cannot fail
+      # here and a control arm that cannot fail cannot gate.
+      - name: Control arm — a device asked to decode nothing answers nothing
+        run: make smoke-net-decode-control
+      # SYS_DMA_ADDR returns the address the DEVICE uses. Program the driver's own
+      # virtual address instead and every register write still succeeds, the
+      # device accepts both queues, and not one descriptor is ever found.
+      - name: Control arm — a virtual address where the device's view belongs
+        run: make smoke-net-dma-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

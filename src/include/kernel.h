@@ -853,6 +853,8 @@ void users_init(void);
 #define SYS_MAP_PHYS           79   /* (dev_slot, paddr, vaddr, len, flags) -> 0; map one frame DECLARED BY the device named in dev_slot into the caller's own address space (CAP_IO_DEVICE + WRITE). See src/kernel/pci.c, docs/design/console-server.md */
 #define SYS_IOPORT_GRANT       80   /* (dev_slot) -> 0; grant the caller native ring-3 in/out on the ports declared by the device named in dev_slot, via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE) */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; report what the device named by the CAP_IO_DEVICE at dev_slot declares -- ids, MMIO ranges, port ranges, IRQ lines -- and nothing about any other device (CAP_IO_DEVICE + READ) */
+#define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the three PCI decode bits (IO/MEM/BUSMASTER) of the device named in dev_slot, and nothing else in configuration space (CAP_IO_DEVICE + WRITE) */
+#define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
 #define SYS_IRQ_REGISTER       81   /* (dev_slot, irq, notif_slot, badge) -> 0; route an IRQ the named device declares to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE) */
 #define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (fd-1 output must route through it), else 0; read-only status, self-authorizing */
 #define SYS_PIPE               83   /* () -> (read_slot<<16)|write_slot; create a pipe, install a read-end + write-end CAP_PIPE in the caller's cspace */
@@ -1843,6 +1845,15 @@ uint64_t iodev_first_of_class(uint8_t class_hi);
 int iodev_allows_mmio(const struct io_device *d, uint64_t paddr, uint64_t len);
 int iodev_allows_port(const struct io_device *d, uint16_t port);
 int iodev_allows_irq(const struct io_device *d, int irq);
+/* The one write to PCI configuration space reachable from ring 3, and only the
+ * three decode bits of the device the caller's capability names. Bus mastering
+ * is among them: on a machine with no IOMMU that is authority over ALL of
+ * physical memory, bounded by who may turn it on and for what, never by where
+ * the device then goes (docs/LIMITATIONS.md §2.12, SECURITY.md S44). */
+#define IODEV_DECODE_IO         0x1u
+#define IODEV_DECODE_MEM        0x2u
+#define IODEV_DECODE_BUSMASTER  0x4u
+int iodev_set_decode(const struct io_device *d, uint32_t flags);
 
 /* TSS I/O-permission bitmap (gdt.c): tss_io_bitmap_init clears the bitmap at
  * boot; tss_set_io_device loads the running CPU's bitmap from ONE device's
@@ -2258,9 +2269,10 @@ void notify_selftest(void);
  * neither forge into nor evict from the kernel message ring via SYS_WRITE. */
 void klog_forge_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST)
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST)
 void mapphys_selftest(void);
 void devcap_selftest(void);
+void net_selftest(void);
 void ioport_selftest(void);
 void irq_selftest(void);
 void console_selftest(void);

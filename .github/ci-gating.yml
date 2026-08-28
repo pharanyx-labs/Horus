@@ -117,6 +117,12 @@ required:
   # conformance test asked the question. Roadmap 2.6 and 2.7 both sit on it, and
   # a second ring-3 driver cannot exist until it holds.
   - devcap
+  # Gating. It carries S44 and roadmap 2.6's first half: a network driver in ring
+  # 3 whose whole authority is one device capability and one untyped region,
+  # proved by a real ARP exchange rather than by a register read. It is also the
+  # first caller of SYS_DEVICE_ENABLE and SYS_DMA_ADDR, which is why they landed
+  # with it -- a DMA mechanism with no driver is authority added for nobody.
+  - net
   # Gating. It carries S39 and S40. The memory half is the one a fork gets wrong
   # by accident -- "share the page tables" reads like "copy the memory" and is
   # one process with two contexts -- and the object half is the caller

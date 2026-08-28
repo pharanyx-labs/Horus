@@ -717,6 +717,17 @@ embedded_mapphystest_bin_start:
 embedded_mapphystest_bin_end:
 #endif
 
+#ifdef NET_SELFTEST
+/* PIE netd binary: a virtio-net driver holding one device capability and one
+ * untyped region, proved by a real ARP exchange (roadmap 2.6). */
+.align 16
+.global embedded_netd_bin_start
+embedded_netd_bin_start:
+.incbin "userspace/netd.bin"
+.global embedded_netd_bin_end
+embedded_netd_bin_end:
+#endif
+
 #ifdef DEVCAP_SELFTEST
 /* PIE devcaptest binary: endowed with TWO device capabilities (the platform
  * console hardware and the PCI NIC), it proves each reaches its own device's

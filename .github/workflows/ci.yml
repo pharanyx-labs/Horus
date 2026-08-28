@@ -1798,6 +1798,18 @@ jobs:
       # should have been cloned at all.
       - name: Control arm — a mapped kernel object must refuse the fork
         run: make smoke-fork-arena-control
+      # The derivation, and the two ways to get it wrong. A verbatim copy gives
+      # two capabilities one serial, and the sweep nulls by serial across every
+      # cspace -- so the child revoking its own slot would destroy the parent's,
+      # a cross-task revocation primitive available to every task that can fork.
+      - name: Control arm — a forked capability must not share its parent's serial
+        run: make smoke-fork-cspace-flat-control
+      # ...and the converse, which is the one the change exists for. A fresh
+      # serial with no parent edge is a second ROOT of the capability graph
+      # holding the parent's authority: revoking the parent's leaves the child's
+      # working. Finding 3.3's shape applied to a whole cspace at once.
+      - name: Control arm — a forked capability must be derived from its parent's
+        run: make smoke-fork-cspace-orphan-control
 
   rng-seed:
     name: "The CSPRNG refuses to emit keystream before it is seeded"

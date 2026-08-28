@@ -16,6 +16,61 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A forked child inherits its parent's capabilities as DERIVED copies (roadmap 2.3, S41).**
+  `cap_clone_cspace` gives the child a copy of every capability the parent holds, in the same
+  slot, each with its **own fresh serial** and a `badge` naming the parent capability's serial —
+  the edge `revoke_subtree` walks. The child's authority is therefore a *subtree* of the
+  parent's: fork adds no new **root** to the capability graph, and every revocation that would
+  have swept the parent's capability sweeps the child's with it. Closes
+  `docs/LIMITATIONS.md` §2.11, open since #220 landed the memory half the day before.
+
+  **A cspace is an array of `capability_t`, so this looks like a `memcpy`,** and that is wrong
+  in two independent directions — which is why each is a control arm rather than a sentence:
+
+  **Identical serials** (`FORK_CSPACE_FLAT_COPY=1`). `rust_cap_revoke_global`'s sweep nulls
+  every capability whose serial matches the revoked root's, in *every* cspace, because a serial
+  is supposed to name exactly one capability. Duplicate one and the child revoking its **own**
+  slot destroys the parent's — a cross-task revocation primitive available to any task that can
+  fork, which is every task. Revocation is meant to flow down the derivation tree; this makes it
+  flow sideways.
+
+  **No parent edge** (`FORK_CSPACE_ORPHAN_COPY=1`). A fresh serial with `badge` left alone is
+  not derived from anything: a second **root** of the capability graph holding the parent's
+  authority. `mark_children_of` never marks it and its serial matches no revocation root, so
+  revoking the parent's capability leaves the child's working. This is finding **3.3**'s shape —
+  a capability keyed to a serial no sweep reaches — applied to a whole cspace at once, and it is
+  the hole `docs/LIMITATIONS.md` §2.11 was opened to record.
+
+  **Neither is avoided by getting the copy right; both are avoided by not writing the copy.**
+  The loop calls `rust_cap_grant_into`, which is what `SYS_CAP_GRANT` uses, so a forked
+  capability and a delegated one are the same object by construction rather than by two
+  implementations agreeing. **[H-3]** is what happens when they stop agreeing.
+
+  **Four things are not inherited, and each would be impersonation rather than delegation.**
+  Slots 0–3 and slot 4 are the child's own identity — the parent's slot 0 names the **parent**,
+  so copying it would mint a `CAP_TCB` over the parent that the parent never held in a
+  delegatable form, and slot 4 is the private reply endpoint whose entire value is that nobody
+  else has it (finding **C-1**). `CAP_REPLY` is skipped **by type** wherever it sits: one-shot,
+  and two holders is reply forgery. Hitting `MAX_CAPS_PER_TASK` fails the whole fork rather than
+  handing over a slot-order-dependent prefix of the parent's authority — the same all-or-nothing
+  argument **S35** makes about a partly-installed mapping.
+
+  **Rights are not narrowed**, unlike the console capability `SYS_SPAWN` masks to `WRITE`, and
+  that is a decision rather than an omission. Spawn hands authority to a *different program*;
+  fork's child is the same program at the same instruction. A silently reduced copy would break
+  `if (fork() == 0) serve();` with nothing to report it, and the program would have the parent
+  grant the rights back — achieving nothing but a less legible graph. `rust_cap_grant_into`
+  still intersects with the source's rights, so a copy never carries more than the parent held.
+
+  **Witness `make smoke-fork`**, which reads the derivation graph directly with
+  `SYS_CAP_ENUMERATE` — `serial` and `badge` are the graph's nodes and edges, so the invariant is
+  checked structurally, with no rendezvous between parent and child and no timing assumption.
+  Falsified one arm per rule by `smoke-fork-cspace-flat-control` and
+  `smoke-fork-cspace-orphan-control`, both of which also redden the base gate. The four S41
+  checks deliberately do not short-circuit: an early exit on the first would leave the later ones
+  unreachable from any arm, which is a check that cannot fail.
+
+
 - **`SYS_FORK` (101): a child that gets its own copy of its parent's memory, lazily
   (roadmap 2.3, S39 and S40).** `clone_user_aspace` (`src/kernel/paging.c`) builds the child's
   address space as a copy-on-write clone of the caller's — both trees point at the same physical

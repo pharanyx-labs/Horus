@@ -2372,6 +2372,16 @@ void fork_selftest(void) {
     tasks[pid].uid = 0;
 
     cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
+    /* CAP_DEBUG (root slot 18, READ-only) so the S41 checks can read the
+     * derivation graph with SYS_CAP_ENUMERATE -- serial and badge in the child's
+     * cspace, which is the structural statement of "the copy is derived".
+     *
+     * An observability capability rather than a second authority: it discloses
+     * type/rights/serial/badge and deliberately not `object`, so it cannot be
+     * used to reach anything. Reading the graph is how the invariant is checked
+     * WITHOUT a rendezvous between parent and child -- and a forked child shares
+     * nothing it could rendezvous through, which is the property under test. */
+    cap_install_from_root(pid, CAPSLOT_DEBUG, 18, 0);
 
     selftest_resume_all();
     sched_enable_preemption();

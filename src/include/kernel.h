@@ -1847,6 +1847,14 @@ bool cap_move(uint32_t dest_slot, uint32_t src_slot);
  * locked, accounted, rights-reducing cap-write path (SYS_CAP_GRANT). Authority
  * (CAP_TCB on target / admin) is checked by the caller. */
 bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
+
+/* Duplicate `parent`'s cspace into `child` as DERIVED capabilities (SYS_FORK,
+ * roadmap 2.3). Returns the number of slots copied, or negative. Every copy is a
+ * child of the parent's capability in the derivation tree, so the child's
+ * authority is a subtree of the parent's and every revocation that sweeps the
+ * parent's sweeps the child's. What is deliberately NOT copied -- the identity
+ * slots and CAP_REPLY -- and why, is at the definition. */
+int cap_clone_cspace(int parent, int child);
 bool cap_revoke(uint32_t slot);
 bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot);
 bool has_encrypted_storage_cap(void);

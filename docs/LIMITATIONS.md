@@ -892,36 +892,45 @@ Witness `make smoke-passwd-probe` (8 checks), falsified by
 
 ---
 
-### 2.11 A forked child does not inherit its parent's cspace — *2026-08-28*
+### 2.11 ~~A forked child does not inherit its parent's cspace~~ — CLOSED 2026-08-28
 
-`SYS_FORK` (roadmap 2.3) clones the caller's **memory** copy-on-write (**S39**) and nothing
-else. The child is born with the endowment `create_task` gives every task — its own `CAP_TCB`,
-its own reply endpoint, the legacy image frame — plus the send-only console copy `SYS_SPAWN`
-already propagates. Every other capability the parent holds must be delegated with
-`SYS_CAP_GRANT`, exactly as for a spawned child.
+*Open for one day, from the fork memory clone (#220) to the cspace clone.*
 
-**This is deliberate, and the reason is revocation rather than effort.** A duplicated cspace
-means a copy of every delegated capability the parent holds, and each copy has to be a
-*derived* capability with its own serial stamped from the parent's lineage cell. Copy them as
-they stand — same serial, same generation — and they are not derived from anything: revoking
-the parent's capability bumps its lineage cell and invalidates the parent's copy, while the
-child's, keyed to a serial nobody swept, keeps working. That is a **revocation hole reachable
-from ring 3 by any task that can fork**, and it is exactly the shape of finding 3.3, which
-`do_spawn_inner` and `grant_child_tcb_cap` already carry the fix for (`cap_alloc_fresh_serial`
-+ `rust_lineage_current`). Getting it right for a whole cspace is an authority change that
-deserves its own commit, its own invariant and its own control arm — not a line added to a
-memory-cloning one.
+`SYS_FORK` now gives the child a **derived** copy of every capability the parent holds, in the
+same slot (`cap_clone_cspace`, **S41**). The entry below is kept because the reason it was a
+separate change is the reason the change is correct, and because it names the two defects the
+control arms now reproduce on demand.
 
-**The visible consequence today:** a forked child can print (it has the console) and can be
-waited on or killed by its parent (which is handed a `CAP_TCB`), but it cannot reach
-`fs_server`, a pipe end, an untyped region or any other delegated service until its parent
-grants it one. `fork()` is therefore not yet a drop-in for the POSIX idiom where a child
-inherits its parent's open files.
+**Why it was not simply part of the memory clone.** A cspace is an array of `capability_t`, so
+duplicating one looks like a `memcpy` — and that is wrong in two independent directions:
 
-**Related:** a task with a `CAP_FRAME` **mapped** cannot fork at all (**S40**) — a fork must not
-manufacture a mapping of a kernel object without a capability naming it, and that becomes
-expressible only once a cspace is duplicated. Namespace (mount-table) inheritance across
-`spawn` and `fork` is separately open; see roadmap 2.4.
+- **Identical serials.** `rust_cap_revoke_global`'s sweep nulls every capability whose `serial`
+  matches the revoked root's, in **every** cspace, because a serial is supposed to name exactly
+  one capability. Duplicate one and the child revoking its *own* slot destroys the parent's —
+  a cross-task revocation primitive available to any task that can fork, which is every task.
+  Revocation is meant to flow *down* the derivation tree; this makes it flow sideways.
+  Reproduced by `FORK_CSPACE_FLAT_COPY=1`.
+- **No parent edge.** A fresh serial with `badge` left alone is not derived from anything — a
+  second **root** of the capability graph holding the parent's authority. `mark_children_of`
+  never marks it and its serial matches no revocation root, so revoking the parent's capability
+  leaves the child's working. This is finding **3.3**'s shape — a capability keyed to a serial
+  no sweep reaches — applied to a whole cspace at once. Reproduced by
+  `FORK_CSPACE_ORPHAN_COPY=1`.
+
+Both are avoided by not writing the copy at all: `cap_clone_cspace` calls
+`rust_cap_grant_into` per slot, so a forked capability and a delegated one are the same object
+by construction. **[H-3]** is what happens when two implementations of one idea drift.
+
+**What is still not inherited**, and each is deliberate rather than pending: slots 0–3 and slot
+4 (the child's own `CAP_TCB`, image frame and private reply endpoint — copying the parent's
+would be impersonation, not delegation), `CAP_REPLY` by type (one-shot; two holders is reply
+forgery), the port-I/O grant, the file master key, and every in-flight kernel rendezvous. A
+task with a `CAP_FRAME` **mapped** still cannot fork at all (**S40**) — that is now the only
+remaining refusal, and it stands until a frame can be shared with the capability that names it
+rather than without one.
+
+**Namespace (mount-table) inheritance across `spawn` and `fork` is separately open**; see
+roadmap 2.4. So are process groups, job control and `/proc` — roadmap 2.3.
 
 ---
 

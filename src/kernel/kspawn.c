@@ -686,16 +686,31 @@ void h_fork(struct interrupt_frame64 *r) {
      * console capability simply has a child with none, which is the same
      * inheritance SYS_SPAWN performs.
      *
-     * The same send-only console copy SYS_SPAWN propagates, and for the same
-     * reason: a task is born with no endpoint capability, so without this the
-     * child has no stdout at all. Masked to WRITE whatever the parent holds, so
-     * even console_server's child can only ever SEND. Derived, so revoking the
-     * parent's sweeps it. */
-    {
-        struct capability *con = cap_lookup(CAPSLOT_CONSOLE_EP, CAP_RIGHT_WRITE);
-        if (con && con->type == CAP_ENDPOINT)
-            cap_grant_into(child, CAPSLOT_CONSOLE_EP, CAPSLOT_CONSOLE_EP,
-                           CAP_RIGHT_WRITE);
+     * The child gets a DERIVED copy of every capability the parent holds, in the
+     * same slots (cap_clone_cspace). It replaced a single hand-written grant of
+     * the console endpoint -- the same one SYS_SPAWN propagates -- which was the
+     * whole of a forked child's inheritance until now.
+     *
+     * The rights are the parent's, not narrowed, and the reasoning for that is at
+     * cap_clone_cspace. What matters here is that this cannot widen anything:
+     * every copy is a derived CHILD of a capability the parent already holds, so
+     * the child's authority is a subtree of the parent's, and fork adds no new
+     * ROOT to the capability graph.
+     *
+     * A failure is fatal to the fork rather than partial. A task running with an
+     * arbitrary prefix of its parent's authority is a configuration nothing asked
+     * for and nothing can reason about -- and worse, the prefix would depend on
+     * slot order, so the same program would fork differently depending on which
+     * slot its capabilities happened to land in. Same argument S35 makes about a
+     * partly-installed mapping, for the same reason: the caller is told the call
+     * failed, so it must hold what it held before. */
+    if (cap_clone_cspace(parent, child) < 0) {
+        tasks[child].state = 0;
+        tasks[child].cr3 = 0;
+        if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
+        spawn_stage_release();
+        r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
+        return;
     }
     /* A parent may wait on, signal, or kill what it forked -- the same CAP_TCB
      * SYS_SPAWN hands back, in the same first free slot at or above 16. This one

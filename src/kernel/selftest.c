@@ -1607,6 +1607,12 @@ void net_selftest(void) {
     if (cap_install_from_root(a, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0) {
         print("NET_SELFTEST: FAIL endow-untyped\n"); for (;;) asm volatile("hlt");
     }
+    /* The rendezvous its interrupt is routed to. A notification is a separate
+     * capability from the device precisely so that "may drive this hardware" and
+     * "may be woken here" are separate grants -- SYS_IRQ_REGISTER needs both, and
+     * refuses to aim a real interrupt at a notification the caller does not hold
+     * (finding C-2). */
+    cap_install_from_root(a, CAPSLOT_NOTIFY, 14, NOTIF_FS_READY);
 
     selftest_resume_all();
     sched_enable_preemption();

@@ -184,6 +184,7 @@ struct audit_event {
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; what the device named by the CAP_IO_DEVICE at dev_slot declares: ids, MMIO ranges, port ranges, IRQ lines. CAP_IO_DEVICE + READ in dev_slot, and it reports THAT device only. */
 #define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the named device's PCI decode bits (DEV_ENABLE_*). CAP_IO_DEVICE + WRITE. */
+#define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; unmask the line after servicing the device. CAP_IO_DEVICE + WRITE, and the registration must be the caller's. */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. CAP_IO_DEVICE + WRITE and CAP_FRAME + READ, both. */
 #define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate this task, its memory copy-on-write. Gated on the same slot-3 capability as SYS_SPAWN: fork is a second way to create a task, so it answers to the capability that gates the first. The child inherits the caller's capabilities as DERIVED copies, so revoking the parent's sweeps the child's -- see sys_fork(). */
 
@@ -569,6 +570,16 @@ static inline int sys_device_info(uint32_t dev_slot, struct dev_info *out) {
  * for the platform device, which has no configuration space. */
 static inline int sys_device_enable(uint32_t dev_slot, uint32_t flags) {
     return (int)syscall(SYS_DEVICE_ENABLE, dev_slot, flags, 0);
+}
+
+/* Tell the kernel this task has serviced its device, so the interrupt line may be
+ * unmasked. A registered line is masked the moment it fires and stays masked
+ * until this call: that is what stops an unserviced level-triggered device from
+ * livelocking the machine, and it means a driver MUST call this after each
+ * notification or its device goes quiet. Needs a CAP_IO_DEVICE (WRITE) naming a
+ * device that declares `irq`, and the registration must belong to the caller. */
+static inline int sys_irq_ack(uint32_t dev_slot, uint32_t irq) {
+    return (int)syscall(SYS_IRQ_ACK, dev_slot, irq, 0);
 }
 
 /* The bus address at which the device named by `dev_slot` reaches the frame named

@@ -123,6 +123,11 @@ covered:
   # every run.
   - SYS_DEVICE_ENABLE
   - SYS_DMA_ADDR
+  # Same reason a third time: SC_NONE, so captest's checks that a task holding no
+  # CAP_IO_DEVICE cannot re-enable an interrupt line run the handler body. Worth
+  # having on every run rather than only in the NET_SELFTEST build -- this is the
+  # call that decides a device may interrupt the machine again (S46).
+  - SYS_IRQ_ACK
   - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`

@@ -103,7 +103,7 @@ DEFECT_FLAGS = \
 	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
-	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP
+	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -739,6 +739,29 @@ NET_NO_DECODE ?= 0
 # NETTEST: FAIL dma-never-completed, and it only means anything on a machine with
 # an IOMMU, which is why that gate boots with SMOKE_IOMMU=1.
 NET_IOMMU_NO_MAP ?= 0
+
+# IRQ_NO_MASK_ON_FIRE=1 leaves a registered interrupt line UNMASKED when it fires,
+# which is what a kernel does if it treats an EOI as the end of the story. A legacy
+# PCI interrupt is level-triggered: the device holds the line until its driver
+# services it, so the PIC re-delivers immediately, ring 3 never runs, the driver
+# never clears the device, and the machine stops making progress permanently.
+#
+# THE ARM FOR S46, and it asserts a STALL rather than a marker -- a livelocked
+# machine prints nothing more, which is the honest shape of this defect.
+# `make smoke-net-irq-storm-control` requires NETTEST: PASS to have been reached
+# and NETTEST: IRQ PASS to be ABSENT.
+IRQ_NO_MASK_ON_FIRE ?= 0
+ifeq ($(IRQ_NO_MASK_ON_FIRE),1)
+CFLAGS += -DIRQ_NO_MASK_ON_FIRE
+endif
+
+# IRQ_ACK_UNGATED=1 drops the capability check from SYS_IRQ_ACK, so unmasking an
+# interrupt line stops being an authority question. `make smoke-captest-irq-ack-control`
+# requires CAPTEST: FAIL irq-ack-without-cap-io-device.
+IRQ_ACK_UNGATED ?= 0
+ifeq ($(IRQ_ACK_UNGATED),1)
+CFLAGS += -DIRQ_ACK_UNGATED
+endif
 
 # DMA_ADDR_FRAME_ONLY=1 drops SYS_DMA_ADDR's device-capability requirement, so the
 # call is gated on the frame alone -- the shape it takes if the device capability
@@ -2841,6 +2864,18 @@ smoke-captest-devcap-control:
 		REQUIRE_MARKER='CAPTEST: FAIL map-phys-without-cap-io-device' \
 		tools/smoke_test.sh boot.iso
 
+# SYS_IRQ_ACK's authority. Unmasking an interrupt line decides that a device may
+# interrupt this machine again; drop the capability check and any task can do it
+# for hardware it does not hold.
+.PHONY: smoke-captest-irq-ack-control
+smoke-captest-irq-ack-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IRQ_ACK_UNGATED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IRQ_ACK_UNGATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL irq-ack-without-cap-io-device' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest-clock-control
 smoke-captest-clock-control:
 	@$(MAKE) --no-print-directory clean
@@ -3413,8 +3448,21 @@ smoke-net:
 	@$(MAKE) --no-print-directory NET_SELFTEST=1
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: PASS' \
+		REQUIRE_MARKER='NETTEST: IRQ PASS' \
 		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# A level-triggered line left unmasked when it fires storms: the PIC re-delivers,
+# ring 3 never runs, and the driver that would clear the device never gets the
+# chance. Asserts a STALL, because that is what a livelocked machine looks like --
+# NETTEST: PASS reached (the DMA property still holds) and IRQ PASS never arriving.
+.PHONY: smoke-net-irq-storm-control
+smoke-net-irq-storm-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_STALL='NETTEST: PASS' ABSENT_MARKER='NETTEST: IRQ PASS' \
+		tools/smoke_test.sh boot.iso
 
 # The arm for S45, and the reason the IOMMU is a property rather than a boot
 # message. Same driver, same device, same capability checks -- only the device

@@ -225,6 +225,12 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'a PCI interrupt line cannot yet be delivered to ring 3'
+    reason: >-
+      true until 2026-08-28 (S46). pic_init masked every line above 1, including
+      the cascade, and the IDT had no gates for vectors 34-47. Both fixed; a
+      registered line is unmasked by SYS_IRQ_REGISTER and masked again when it
+      fires, until SYS_IRQ_ACK.
   - pattern: "bus-mastering device.s DMA is bounded by nothing"
     reason: >-
       true until 2026-08-28, when VT-d landed (S45). A device's address space now

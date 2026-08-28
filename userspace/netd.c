@@ -68,6 +68,9 @@ static void wr_hex2(unsigned v) {
 #define E1000_STATUS   0x0008
 #define E1000_ICR      0x00C0   /* interrupt cause, read-to-clear */
 #define E1000_IMC      0x00D8   /* interrupt mask clear */
+#define E1000_IMS      0x00D0   /* interrupt mask set */
+
+#define ICR_TXDW       (1u << 0)   /* transmit descriptor written back */
 #define E1000_RCTL     0x0100
 #define E1000_TCTL     0x0400
 #define E1000_TIPG     0x0410
@@ -133,6 +136,8 @@ struct rx_desc {
 #define SLOT_TXRING   41
 #define SLOT_RXBUF    42
 #define SLOT_TXBUF    43
+#define NOTIF_SLOT    CAPSLOT_NOTIFY   /* CAP_NOTIFICATION: the IRQ rendezvous */
+#define IRQ_BADGE     0x0000E1E1u
 
 #define VA_BAR     0x0000000100000000ULL   /* 4 GiB: the MMIO window */
 #define VA_RXRING  0x0000000200000000ULL
@@ -409,6 +414,57 @@ void _start(void) {
     if (!sent) { wr("NETTEST: FAIL dma-never-completed\n"); for (;;) sys_yield(); }
 
     wr("NETTEST: PASS\n");
+
+    /* ---- 9. route this device's interrupt to us, and service it ---------
+     *
+     * The line comes from SYS_DEVICE_INFO -- firmware decides it, so a driver
+     * that hardcoded one would be subscribing to whatever happened to be there.
+     * SYS_IRQ_REGISTER refuses a line the named device does not declare (S43),
+     * and unmasking it at the PIC is that capability taking effect in hardware:
+     * until 2026-08-28 no PCI line was unmasked at all and this could not have
+     * been delivered whatever a driver held.
+     *
+     * Deliberately AFTER the DMA witness above, so the two properties fail
+     * separately: an interrupt that never arrives leaves `NETTEST: PASS` standing
+     * and only `IRQ PASS` missing. The transmit has already completed, so TXDW is
+     * pending in ICR and enabling IMS raises the line at once. */
+    int irq = -1;
+    for (int i = 0; i < 16; i++) if (nic.irq_mask & (1u << i)) { irq = i; break; }
+    if (irq < 0) { wr("NETTEST: FAIL no-irq-line\n"); sys_exit(); }
+
+    if (sys_irq_register(NIC_SLOT, (uint32_t)irq, NOTIF_SLOT, IRQ_BADGE) != 0) {
+        wr("NETTEST: FAIL irq-register\n"); sys_exit();
+    }
+    mmio_w(E1000_IMS, ICR_TXDW);      /* interrupt on transmit completion */
+
+
+    /* ---- the interrupt, and the acknowledgement it requires ---------------
+     *
+     * The transmit above raises TXDW. The kernel masks the line, notifies us, and
+     * leaves it masked -- so servicing the device and calling SYS_IRQ_ACK is not
+     * politeness, it is the only way this device ever interrupts again. A driver
+     * that skipped the ack would simply go deaf, which is the fail-closed shape:
+     * a broken driver costs its own hardware and not the machine.
+     *
+     * Bounded, like every wait here: it decides how long a failure takes to say
+     * so. sys_wait_notify returns immediately when this is the only runnable task
+     * (the kernel has nothing to switch to), so this is a poll of the badge. */
+    uint32_t badge = 0;
+    for (long i = 0; i < 300000L && badge == 0; i++) {
+        if (sys_wait_notify(NOTIF_SLOT, &badge) != 0) break;
+    }
+    if (badge == IRQ_BADGE) {
+        unsigned int cause = mmio_r(E1000_ICR);   /* read-to-clear: service it */
+        if (sys_irq_ack(NIC_SLOT, (uint32_t)irq) != 0) {
+            wr("NETTEST: FAIL irq-ack\n"); for (;;) sys_yield();
+        }
+        wr("NETD: irq serviced and acknowledged");
+        if (cause & ICR_TXDW) wr(" (txdw)");
+        wr("\n");
+        wr("NETTEST: IRQ PASS\n");
+    } else {
+        wr("NETTEST: FAIL no-irq\n"); for (;;) sys_yield();
+    }
 
     /* ---- 9. and, best effort, the reply ---------------------------------
      *

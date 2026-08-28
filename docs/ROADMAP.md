@@ -1037,9 +1037,9 @@ claim that nothing here makes.
 
 **Still open, and most of the item:** everything above the wire. There is no ARP table, no IP
 layer, no TCP, and no socket capability — netd speaks exactly enough Ethernet to prove the
-device is driven. It also polls rather than waiting on its interrupt, because a PCI line cannot
-be delivered on this machine yet (§2.13 of `docs/LIMITATIONS.md`); that is a change to the
-interrupt controller rather than to any capability, and belongs in its own commit.
+device is driven. Since **S46** it is woken by its device's own interrupt and acknowledges it,
+which is what unmasks the line for the next one — a PCI line could not be delivered to ring 3 at
+all before 2026-08-28.
 
 **Its prerequisite landed 2026-08-28** — see 2.7. Until then the sentence above could not be
 written truthfully: there was no such thing as "`CAP_IO_DEVICE` for one NIC", because the
@@ -1356,7 +1356,7 @@ Ordered as in the audit's §7.5.
   so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
   claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
   The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-  **empty** — all 47 properties name a witness that resolves.
+  **empty** — all 48 properties name a witness that resolves.
 
   **What the survey found on the way.** **S16** had no witness at all — an em-dash against
   `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1395,7 +1395,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 146 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 55 of them control arms that must reproduce a defect |
+| ✅ | 148 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 57 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

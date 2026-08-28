@@ -212,8 +212,8 @@ the IOMMU, so a virtio driver cannot witness a DMA-confinement property at all. 
 version of this driver kept working with an empty device address space — see the header of
 `userspace/netd.c` for the measurement.
 
-It polls rather than waiting on its interrupt, because a PCI line cannot be delivered on this
-machine yet (`docs/LIMITATIONS.md` §2.13), and its receive path does not work (§2.14).
+It is woken by its device's own interrupt and acknowledges it (**S46**), which is what unmasks
+the line for the next one; its receive path does not work yet (`docs/LIMITATIONS.md` §2.14).
 
 ### DMA remapping (VT-d)
 

@@ -1,35 +1,67 @@
-/* syscall_hw.c -- console/driver hardware-delegation syscalls.
+/* syscall_hw.c -- the device-delegation syscalls.
  *
- * The security-hardening program's Phase 6 driver-privilege-separation work moves
+ * The security-hardening program's Phase 6 driver-privilege-separation work moved
  * the console (VGA/serial/keyboard) out of ring 0 into a ring-3 server that owns
  * the hardware directly. This file holds the kernel side of "owns the hardware":
  * the narrow, cap-gated syscalls that hand a ring-3 driver controlled access to
- * device memory. The first (J2) is SYS_MAP_PHYS, which maps an ALLOWLISTED device
- * frame into the caller's own address space. Later jobs (a TSS I/O-permission
- * bitmap grant, an IRQ->notification bridge) join it here.
+ * one device's memory, ports and interrupt.
  *
- * Every syscall here is gated on CAP_IO_DEVICE in the dispatch table (syscall.c),
- * so only a task explicitly endowed with that capability -- the console server --
- * can reach any of it. See docs/design/console-server.md.
+ * WHAT CHANGED, AND WHY IT IS THE [C-1] FIX AGAIN
+ * ----------------------------------------------
+ * Each of these syscalls used to be gated by a fixed dispatch-table entry:
+ * "CAP_IO_DEVICE with WRITE, in slot 10". The capability's `object` field was
+ * never read, and the resources came from constants — a compiled-in VGA
+ * allowlist, a compiled-in console port set, and a hardcoded pair of IRQ numbers.
+ * Holding the type WAS the authority, and the authority it conferred was the
+ * console, all of it, for everyone who held it.
+ *
+ * That is finding [C-1]'s shape exactly: an object named by an unmediated
+ * constant instead of by the capability. So it takes [C-1]'s fix. The first
+ * argument of each of these syscalls is now a CSPACE SLOT holding a
+ * CAP_IO_DEVICE; the slot is resolved through iodev_from_slot(); and the frame,
+ * port range or IRQ the caller asks for is checked against what THAT device
+ * declares in the kernel's device table (src/kernel/pci.c). The fixed slot-10
+ * dispatch entries are gone — the per-slot lookup IS the gate, and leaving the
+ * table entry would have re-admitted the old "any device cap unlocks the console"
+ * behaviour underneath the new checks.
+ *
+ * A driver can now be given the hardware it needs and nothing else, which is the
+ * precondition for a second ring-3 driver existing at all (roadmap 2.6, 2.7).
  */
 #include "syscall_internal.h"
 
-/* The fixed device-frame allowlist. A physical frame may be mapped into a user
- * address space ONLY if it is on this list -- there is no way to name an
- * arbitrary physical address, so this syscall cannot be turned into a
- * map-anything primitive (which would hand a driver the kernel's own memory).
- * The list is exactly the console's frames:
- *   - [0xB8000, 0xBA000): the VGA text-mode framebuffer. An 80x50 text buffer is
- *     8000 bytes, so it spans two 4 KiB frames (0xB8000 and 0xB9000).
- *   - [0xA0000, 0xB0000): the VGA graphics/font plane, written during mode init
- *     (load_8x8_font blits into the font plane). 16 frames.
- * Both live in low physical memory, well inside the user half, so they can be
- * mapped without touching the kernel's higher-half window. */
-static int device_frame_allowed(uint64_t phys) {
-    if (phys & (PAGE_SIZE - 1)) return 0;                  /* frame-aligned only */
-    if (phys >= 0xB8000ULL && phys < 0xBA000ULL) return 1; /* VGA text framebuffer */
-    if (phys >= 0xA0000ULL && phys < 0xB0000ULL) return 1; /* VGA graphics/font plane */
-    return 0;
+/* Resolve a device-capability slot to the device it names.
+ *
+ * Same discipline as ipc_ep_from_slot: type-test the capability, bounds-test the
+ * object, and resolve the object to a live kernel-side entry, all at one choke
+ * point, so no handler can forget one of the three. A device index that names no
+ * present entry fails here rather than in the handler.
+ *
+ * Note there is no `revoke` interaction to worry about that cap_lookup does not
+ * already cover: the table is immutable after boot, so an index that resolves
+ * once resolves to the same device forever. What can change is whether the CALLER
+ * still holds the capability, and that is exactly what cap_lookup answers. */
+static const struct io_device *iodev_from_slot(uint32_t slot, uint32_t need_rights,
+                                              uint64_t *out_index) {
+#ifdef IO_DEVICE_CAP_UNCHECKED
+    /* Control arm: the shape "we removed the dispatch-table entry and the
+     * handler does not gate either". The three syscalls lost their fixed slot-10
+     * CAP_IO_DEVICE entries when the lookup moved here, so this file IS the gate
+     * now; an arm that only ever bypasses the OBJECT check cannot say whether
+     * the capability is still required at all. Under this flag every caller
+     * resolves to the platform device holding nothing. See
+     * `make smoke-captest-devcap-control`. */
+    (void)need_rights; (void)slot;
+    if (out_index) *out_index = IODEV_PLATFORM;
+    return iodev_get(IODEV_PLATFORM);
+#else
+    struct capability *c = cap_lookup(slot, need_rights);
+    if (!c || c->type != CAP_IO_DEVICE) return 0;
+    const struct io_device *d = iodev_get(c->object);
+    if (!d) return 0;
+    if (out_index) *out_index = c->object;
+    return d;
+#endif
 }
 
 /* The user (lower) canonical half: pml4 indices 0..255, i.e. addresses below
@@ -37,23 +69,32 @@ static int device_frame_allowed(uint64_t phys) {
  * here gives a clear SYS_ERR_INVAL rather than a generic map failure. */
 #define USER_HALF_LIMIT   0x0000800000000000ULL
 
-/* SYS_MAP_PHYS(paddr, vaddr, len, flags): map one allowlisted 4 KiB device frame
- * `paddr` at user address `vaddr` in the caller's own address space. The frame is
- * mapped present + user + non-executable, writable iff MAP_PHYS_WRITE is set.
+/* SYS_MAP_PHYS(dev_slot, paddr, vaddr, len, flags): map one 4 KiB frame `paddr`
+ * of the device named by `dev_slot` at user address `vaddr` in the caller's own
+ * address space. The frame is mapped present + user + non-executable, writable
+ * iff MAP_PHYS_WRITE is set.
  *
- * Fail closed on every irregularity: an off-list frame (SYS_ERR_PERM -- it is an
- * authority question, the cap alone is not enough), a misaligned or oversized
- * request, a zero/kernel-half target VA, or a missing access bit (SYS_ERR_INVAL).
- * The cap gate (CAP_IO_DEVICE + WRITE in the authorizing slot) is enforced
- * centrally by syscall_handler before this runs. */
+ * `paddr` is not authority — the capability is. A physical address that the named
+ * device does not declare is refused with SYS_ERR_PERM whatever the caller holds,
+ * so this cannot be turned into a map-anything primitive (which would hand a
+ * driver the kernel's own memory, and the untyped arena with it).
+ *
+ * Fail closed on every irregularity: a frame the device does not declare
+ * (SYS_ERR_PERM -- it is an authority question), a slot that is not a device
+ * capability (SYS_ERR_PERM), a misaligned or oversized request, a zero/kernel-half
+ * target VA, or a missing access bit (SYS_ERR_INVAL). */
 void h_map_phys(struct interrupt_frame64 *r) {
-    uint64_t paddr = r->rbx;
-    uint64_t vaddr = r->rcx;
-    uint64_t len   = r->rdx;
-    uint32_t flags = (uint32_t)r->rsi;
+    uint32_t dev_slot = (uint32_t)r->rbx;
+    uint64_t paddr    = r->rcx;
+    uint64_t vaddr    = r->rdx;
+    uint64_t len      = r->rsi;
+    uint32_t flags    = (uint32_t)r->rdi;
+
+    const struct io_device *d = iodev_from_slot(dev_slot, CAP_RIGHT_WRITE, 0);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     /* One frame at a time: a device mapping is a single named frame, never a
-     * range the caller can stretch off the allowlisted page. */
+     * range the caller can stretch off the declared region. */
     if (len == 0 || len > PAGE_SIZE) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     /* At least READ must be requested; unknown bits are ignored (only WRITE is
@@ -62,7 +103,18 @@ void h_map_phys(struct interrupt_frame64 *r) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
 
-    if (!device_frame_allowed(paddr)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (paddr & (PAGE_SIZE - 1)) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+#ifdef IO_DEVICE_OBJECT_UNCHECKED
+    /* Control arm: the pre-2026-08-28 behaviour, in which the capability's object
+     * was not consulted and every holder of the type reached one compiled-in
+     * allowlist. See docs/BUILDING.md and the smoke-devcap-object-control gate. */
+    if (!(paddr >= 0xB8000ULL && paddr < 0xBA000ULL) &&
+        !(paddr >= 0xA0000ULL && paddr < 0xB0000ULL)) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+#else
+    if (!iodev_allows_mmio(d, paddr, len)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#endif
 
     if ((vaddr & (PAGE_SIZE - 1)) || vaddr == 0 || vaddr >= USER_HALF_LIMIT) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
@@ -76,31 +128,53 @@ void h_map_phys(struct interrupt_frame64 *r) {
     /* Hand the console over to the ring-3 console driver, so the kernel's print()
      * stops touching serial+VGA (klog only) and the two can't interleave on the
      * shared UART once SMP runs them at once. The console driver is the task that
-     * owns BOTH the console ports (io_allowed, via SYS_IOPORT_GRANT) AND the VGA
-     * framebuffer it just mapped — that pair uniquely identifies console_server.
-     * Keying off the port grant alone would wrongly silence ioporttest (grants
-     * ports to probe faults, never drives the console); off the VGA map alone would
-     * wrongly silence mapphystest (maps the frame to verify it, holds no port
-     * grant). Both self-tests report via the kernel console, so neither may lose
-     * ownership of it. */
+     * owns BOTH the console ports (a port grant on the platform device, via
+     * SYS_IOPORT_GRANT) AND the VGA framebuffer it just mapped — that pair
+     * uniquely identifies console_server. Keying off the port grant alone would
+     * wrongly silence ioporttest (grants ports to probe faults, never drives the
+     * console); off the VGA map alone would wrongly silence mapphystest (maps the
+     * frame to verify it, holds no port grant). Both self-tests report via the
+     * kernel console, so neither may lose ownership of it. */
     if (rc == 0 && paddr >= 0xB8000ULL && paddr < 0xBA000ULL &&
-        cur > 0 && cur < MAX_TASKS && tasks[cur].io_allowed) {
+        cur > 0 && cur < MAX_TASKS && tasks[cur].io_device == IODEV_PLATFORM) {
         console_set_owner(cur);
     }
 }
 
-/* SYS_IOPORT_GRANT(): grant the calling task native ring-3 in/out on the console
- * ports (the TSS I/O bitmap's allowlist). Cap-gated on CAP_IO_DEVICE + WRITE by
- * the dispatch table, so only the console/driver server reaches it. Sets the
- * per-task flag and activates the bitmap on the current CPU immediately, so the
- * caller's next in/out succeeds without waiting for a reschedule; the context
- * switch (set_current_task -> tss_set_io_allowed) keeps it correct afterward, and
- * flips it off for every other task. */
+/* SYS_IOPORT_GRANT(dev_slot): grant the calling task native ring-3 in/out on the
+ * ports declared by the device named by `dev_slot`, via the TSS I/O bitmap.
+ *
+ * The grant is to ONE device, recorded per task, and the bitmap is reloaded from
+ * that device's ranges on every switch in (set_current_task -> tss_set_io_device),
+ * so no task inherits another's ports and no grant spans two devices. Regranting
+ * replaces the previous device rather than accumulating: a task holding two device
+ * capabilities gets one port set at a time, because the bitmap is per CPU and the
+ * union of two devices' ports is an authority neither capability names.
+ *
+ * The bitmap is also activated on the current CPU immediately, so the caller's
+ * next in/out succeeds without waiting for a reschedule. */
 void h_ioport_grant(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
-    tasks[cur].io_allowed = 1;
-    tss_set_io_allowed(1);
+
+    uint32_t dev_slot = (uint32_t)r->rbx;
+    uint64_t index = IODEV_NONE;
+    const struct io_device *d = iodev_from_slot(dev_slot, CAP_RIGHT_WRITE, &index);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    /* A device that declares no ports is granted nothing, and says so. Returning
+     * success would activate an empty bitmap and report a grant that confers
+     * nothing, which reads to a driver as "the hardware is yours". */
+    if (d->n_port == 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+#ifdef IO_DEVICE_PORTS_GLOBAL
+    /* Control arm: the pre-2026-08-28 bitmap, which was one boot-time console
+     * allowlist shared by every grant regardless of which device was named.
+     * See the smoke-devcap-ports-control gate. */
+    index = IODEV_PLATFORM;
+#endif
+    tasks[cur].io_device = index;
+    tss_set_io_device(index);
     /* Console ownership is NOT taken here: the port grant alone does not make a
      * task the console driver (ioporttest grants ports only to probe that a
      * non-allowlisted port still faults, and reports via the kernel console). The
@@ -109,26 +183,78 @@ void h_ioport_grant(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
-/* SYS_IRQ_REGISTER(irq, notif_slot, badge): route hardware IRQ `irq` (0 timer /
- * 1 keyboard) to an async notification for the calling task, so a ring-3 driver
- * blocked in SYS_WAIT_NOTIFY wakes to service the device. Cap-gated on
- * CAP_IO_DEVICE + WRITE by the dispatch table -- console/driver server only. Only
- * a task may register for itself; the registration is dropped when the task exits
- * (irq_notify_clear_task from task_teardown). Fail closed on an unroutable IRQ. */
+/* SYS_IRQ_REGISTER(dev_slot, irq, notif_slot, badge): route hardware IRQ `irq` to
+ * an async notification for the calling task, so a ring-3 driver blocked in
+ * SYS_WAIT_NOTIFY wakes to service its device.
+ *
+ * Both ends are capabilities. `dev_slot` must name a device that declares `irq`,
+ * so a driver cannot subscribe to another device's interrupt — the line is the
+ * device's, not the type's. `notif_slot` must name a notification the caller
+ * holds (finding C-2), so the holder cannot aim real interrupts at another task's
+ * rendezvous. Only a task may register for itself; the registration is dropped
+ * when the task exits (irq_notify_clear_task from task_teardown). */
 void h_irq_register(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
-    int irq = (int)r->rbx;
-    /* rcx is a cspace slot holding a CAP_NOTIFICATION with WRITE, not a raw
-     * notification index (finding C-2). Routing a hardware IRQ at an arbitrary
-     * notification slot would let the holder of CAP_IO_DEVICE aim real interrupts
-     * at any task's rendezvous; it must name a notification it actually holds. */
+
+    uint32_t dev_slot = (uint32_t)r->rbx;
+    int irq = (int)r->rcx;
+
+    const struct io_device *d = iodev_from_slot(dev_slot, CAP_RIGHT_WRITE, 0);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#ifndef IO_DEVICE_IRQ_UNCHECKED
+    /* Control arm IO_DEVICE_IRQ_UNCHECKED: the pre-2026-08-28 handler, which
+     * accepted any routable IRQ from any holder of the type. See the
+     * smoke-devcap-irq-control gate. */
+    if (!iodev_allows_irq(d, irq)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#endif
+
     uint32_t ns;
-    if (ipc_notif_from_slot((uint32_t)r->rcx, CAP_RIGHT_WRITE, &ns) != 0) {
+    if (ipc_notif_from_slot((uint32_t)r->rdx, CAP_RIGHT_WRITE, &ns) != 0) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
-    if (irq_notify_register(irq, cur, ns, (uint32_t)r->rdx) != 0) {
+    if (irq_notify_register(irq, cur, ns, (uint32_t)r->rsi) != 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    r->rax = 0;
+}
+
+/* SYS_DEVICE_INFO(dev_slot, struct dev_info *out): report what the device named
+ * by the CAP_IO_DEVICE at `dev_slot` declares.
+ *
+ * READ, not WRITE: learning what your device is is an observation, and a
+ * READ-only delegate should be able to discover its resources without being able
+ * to map them. The rights split is real here — SYS_MAP_PHYS demands WRITE.
+ *
+ * Scoped to the named device on purpose. A driver needs its own BARs (firmware
+ * assigns them, so a hardcoded address is how a driver ends up mapping whatever
+ * happens to sit there), but nothing needs a bus walk, and offering one would
+ * make holding any device capability a way to enumerate the whole machine. There
+ * is no "list all devices" syscall for the same reason. */
+void h_device_info(struct interrupt_frame64 *r) {
+    const struct io_device *d = iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, 0);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    struct dev_info info;
+    for (unsigned i = 0; i < sizeof(info); i++) ((uint8_t *)&info)[i] = 0;
+    info.vendor    = d->vendor;
+    info.device    = d->device;
+    info.bdf       = d->bdf;
+    info.classcode = d->classcode;
+    info.irq_mask  = d->irq_mask;
+    info.n_mmio    = (uint16_t)d->n_mmio;
+    info.n_port    = d->n_port;
+    for (uint32_t i = 0; i < d->n_mmio && i < IODEV_MAX_MMIO; i++) {
+        info.mmio[i].base = d->mmio[i].base;
+        info.mmio[i].len  = d->mmio[i].len;
+    }
+    for (uint32_t i = 0; i < d->n_port && i < IODEV_MAX_PORT; i++) {
+        info.port[i].base = d->port[i].base;
+        info.port[i].len  = d->port[i].len;
+    }
+
+    if (copy_to_user((void *)(addr_t)r->rcx, &info, sizeof(info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
     }
     r->rax = 0;
 }

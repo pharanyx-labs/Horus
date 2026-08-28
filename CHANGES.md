@@ -16,6 +16,72 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A device capability names a device — roadmap 2.7, and the prerequisite 2.6 was written
+  against for a year (S43).** `CAP_IO_DEVICE` was a capability *type with no object*: exactly
+  one existed, primordial, its `object` field permanently 0 and read by nothing, while the three
+  syscalls it gated resolved their authority from constants — a compiled-in VGA allowlist in
+  `SYS_MAP_PHYS`, one compiled-in console port set prefilled into the TSS bitmap at boot, and a
+  hardcoded pair of IRQ numbers. Holding the type **was** the authority, and the authority was
+  the console. A second driver could not be given the hardware it needs without being given the
+  hardware it does not.
+
+  That is finding **[C-1]**'s shape one layer down — an object named by an unmediated constant
+  instead of by the capability — so it takes [C-1]'s fix. `src/kernel/pci.c` enumerates PCI bus 0
+  at boot into an I/O-device table, alongside one non-enumerable **platform** entry for the
+  legacy console hardware; each entry declares exactly the three things these syscalls hand out,
+  which are physical frames, I/O port ranges and interrupt lines. `SYS_MAP_PHYS`,
+  `SYS_IOPORT_GRANT` and `SYS_IRQ_REGISTER` now take a **cspace slot** as their first argument,
+  resolve it through `iodev_from_slot`, and check the resource asked for against what *that*
+  device declares. **Their fixed slot-10 dispatch entries are gone**, which is part of the fix
+  rather than a tidy-up: leaving one would re-admit the old behaviour underneath the new check.
+
+  `SYS_DEVICE_INFO` (102) is new and READ-gated where the others are WRITE: a driver cannot be
+  written against a device whose BARs it cannot discover, since firmware assigns them and a
+  hardcoded address is how a driver ends up mapping whatever happens to sit there. It reports the
+  device the capability names and nothing else — there is deliberately no bus walk, because
+  holding one device must not be a way to enumerate the machine.
+
+  **Index 0 is reserved and names nothing.** Two things default to zero — a task slot's
+  `io_device` and a capability's `object`, which `cap_install_from_root`'s fourth argument
+  overrides — and a 0-based table would have silently resolved both to the platform device, i.e.
+  to the console, which is the exact authority this change exists to stop handing out by default.
+  Reserving 0 makes those paths fail closed without having to be found.
+
+  Port authority follows the capability into the TSS: the bitmap is loaded from the granted
+  device's ranges on every switch in, so a grant is to **one** device and a regrant replaces it
+  rather than accumulating. The one range no device declares is PCI configuration space — a
+  driver that could write it could move any device's BARs and make every check above decorative.
+
+  Witness `make smoke-devcap`: the probe holds **two** device capabilities that are copies of the
+  same primordial root, identical in type and rights and differing in exactly one field, and
+  checks the matrix in both directions on one boot. Both directions are required, because the
+  refusals alone are satisfied by a kernel that refuses everything — and by the *old* kernel,
+  which refused everything off its allowlist whatever capability you held. Falsified one arm per
+  rule: `IO_DEVICE_OBJECT_UNCHECKED=1`, `IO_DEVICE_PORTS_GLOBAL=1`, `IO_DEVICE_IRQ_UNCHECKED=1`,
+  each 3 boots in 3, each breaking exactly one marker, and `smoke-devcap` red under each.
+
+  **The ports arm caught the probe before it caught the kernel.** Its first arrangement read the
+  NIC's *own* port under a NIC grant and then a console port; under a global bitmap the own port
+  is the one that is **denied**, so the probe died there and never reached the read that would
+  have shown the console's ports being handed over. A detector that halts truncates its own
+  evidence — `smoke-kstack-park`'s lesson, one gate over. It now reads the same port twice, under
+  two different grants, so the second fault means "the grant followed the capability" rather than
+  "port I/O is broken here".
+
+  A **fourth** arm lives in `smoke-captest`, and it is the one the other three cannot supply.
+  They all bypass the *object* check while the capability lookup stays; none can say whether a
+  capability is still required at all — a question this change sharpens, because removing the
+  dispatch-table entries made the handler the only gate. `IO_DEVICE_CAP_UNCHECKED=1` removes
+  that lookup and `captest`, holding no `CAP_IO_DEVICE`, maps the console's framebuffer.
+  captest gained seven checks for it (115 → 122), covering the three distinct ways to hold no
+  authority: the conventional slot never endowed, a live capability of the **wrong type**
+  (slot 3's `CAP_FRAME`, the decoy every task is born with), and a slot that never held
+  anything.
+
+  `SMOKE_NET=1` puts a virtio-net NIC on the bus for these four targets alone. The guest **fails
+  rather than skips** when it finds no NIC: a second device is the whole experiment, and without
+  one every refusal in the suite is vacuous and it would pass on the kernel it exists to reject.
+
 - **`fork` + `exec`, the pairing — roadmap 2.3, and the property that makes it safe (S42).**
   Both syscalls existed and both were gated; the *sequence* — the only one a shell ever
   performs — was not, and neither was the question of what an exec does to the capability graph.

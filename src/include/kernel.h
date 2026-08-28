@@ -340,7 +340,11 @@ static inline int reply_ep_for_task(int tid) {
 #define CAPSLOT_AUDIT       7    /* CAP_AUDIT / object-store (server-specific)  */
 #define CAPSLOT_CONSOLE     8    /* CAP_CONSOLE                                */
 #define CAPSLOT_STORAGE     9    /* CAP_ENCRYPTED_STORAGE                      */
-#define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE (console_server only)        */
+#define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE: the task's primary device    */
+#define CAPSLOT_IO_DEVICE_ALT 20 /* CAP_IO_DEVICE: a SECOND device, for a task
+                                  * that legitimately drives two (devcaptest).
+                                  * The slot is a convention, not authority --
+                                  * the capability in it is                    */
 #define CAPSLOT_NOTIFY     11    /* CAP_NOTIFICATION: fs-ready rendezvous      */
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG   (dmesg; shell)            */
@@ -846,9 +850,10 @@ void users_init(void);
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (object-store server only: uid 0 + CAP_BLOCK_DEV) */
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> module count; store owner only (uid 0 + CAP_BLOCK_DEV) */
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module; store owner only (uid 0 + CAP_BLOCK_DEV) */
-#define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an ALLOWLISTED device frame into the caller's own address space (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/design/console-server.md */
-#define SYS_IOPORT_GRANT       80   /* () -> 0; grant the caller native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/design/console-server.md */
-#define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE). Console/driver server only. See docs/design/console-server.md */
+#define SYS_MAP_PHYS           79   /* (dev_slot, paddr, vaddr, len, flags) -> 0; map one frame DECLARED BY the device named in dev_slot into the caller's own address space (CAP_IO_DEVICE + WRITE). See src/kernel/pci.c, docs/design/console-server.md */
+#define SYS_IOPORT_GRANT       80   /* (dev_slot) -> 0; grant the caller native ring-3 in/out on the ports declared by the device named in dev_slot, via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE) */
+#define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; report what the device named by the CAP_IO_DEVICE at dev_slot declares -- ids, MMIO ranges, port ranges, IRQ lines -- and nothing about any other device (CAP_IO_DEVICE + READ) */
+#define SYS_IRQ_REGISTER       81   /* (dev_slot, irq, notif_slot, badge) -> 0; route an IRQ the named device declares to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE) */
 #define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (fd-1 output must route through it), else 0; read-only status, self-authorizing */
 #define SYS_PIPE               83   /* () -> (read_slot<<16)|write_slot; create a pipe, install a read-end + write-end CAP_PIPE in the caller's cspace */
 #define SYS_PIPE_READ          84   /* (slot, buf, len) -> bytes read; 0 = EOF (no writers), SYS_ERR_AGAIN = empty but writers remain */
@@ -1253,11 +1258,16 @@ typedef struct tcb {
      * waiter at teardown makes the record outlive the body. */
     struct task_exit_info exit_info;
     struct task_exit_info wait_exit_info;
-    /* Port-I/O grant (SYS_IOPORT_GRANT, CAP_IO_DEVICE only): while set, this task
-     * runs with the TSS I/O bitmap active so it may in/out the console ports. The
-     * context switch (set_current_task -> tss_set_io_allowed) flips the running
-     * CPU's iomap_base to match, so no other task inherits the grant. */
-    int      io_allowed;
+    /* Port-I/O grant (SYS_IOPORT_GRANT): the index of the ONE device whose ports
+     * this task may in/out natively at ring 3, or IODEV_NONE for no grant. The
+     * context switch (set_current_task -> tss_set_io_device) loads that device's
+     * ranges into the running CPU's TSS bitmap and flips iomap_base to match, so
+     * no other task inherits the grant and no grant reaches a second device.
+     *
+     * One field, not a boolean plus an index: the grant and what it is a grant TO
+     * cannot then disagree, and the "no grant" state is not a value any real
+     * device index can collide with. */
+    uint64_t io_device;
 
 
     uint64_t kernel_stack_top;
@@ -1767,12 +1777,81 @@ void print_section(const char *title, uint8_t color);
 void idt_init64(void);
 void pic_init(void);
 void set_tss_kernel_stack(uint64_t kstack_top);
-/* TSS I/O-permission bitmap (gdt.c): tss_io_bitmap_init prefills the console
- * allowlist at boot; tss_set_io_allowed flips the running CPU's iomap_base so a
- * granted task's ring-3 in/out reaches the console ports while everyone else's
- * #GPs. See docs/design/console-server.md. */
+/* ---- The I/O-device table (src/kernel/pci.c) -----------------------------
+ *
+ * What a CAP_IO_DEVICE names. The capability's `object` field is an index into
+ * this table, and the three hardware syscalls check the resource a caller asks
+ * for against the resources that ONE entry declares. Before this existed the
+ * type alone was the authority and the resources were constants compiled into
+ * syscall_hw.c, so every device capability meant "the console" — see the header
+ * comment of pci.c for why that is the [C-1] shape one layer down.
+ *
+ * Built once at boot by iodev_init(), read-only afterwards, and never reachable
+ * from a syscall: ring 3 names a capability, never a bus address. */
+#define IODEV_MAX          16    /* table entries; a bounded, boot-time array   */
+#define IODEV_MAX_MMIO      8    /* physical ranges one device may declare      */
+#define IODEV_MAX_PORT      8    /* I/O port ranges one device may declare      */
+#define IODEV_NONE          0    /* "no device": index 0 is permanently absent  */
+#define IODEV_PLATFORM      1    /* entry 1: the legacy console/platform device */
+#define IODEV_BDF_NONE      0xFFFFu                /* not a PCI function        */
+#define IODEV_CLASS_NETWORK 0x02                   /* PCI class: network        */
+
+/* WHY INDEX 0 IS RESERVED AND NOT THE FIRST DEVICE.
+ *
+ * Two things default to zero and must not thereby name a device: a task slot's
+ * io_device (tasks[] is .bss and do_spawn re-inits only selected fields), and a
+ * capability's `object` (cap_install_from_root's 4th argument OVERRIDES it, so a
+ * caller that forgets to restate the object passes 0). With a 0-based table both
+ * would silently resolve to the platform device — the console — which is the
+ * whole authority this change exists to stop handing out by default. Reserving 0
+ * makes every one of those paths fail CLOSED without needing to be found. */
+
+struct io_device {
+    uint32_t    present;
+    const char *name;
+    uint16_t    bdf;        /* (bus<<8)|(dev<<3)|fn, or IODEV_BDF_NONE */
+    uint16_t    vendor;
+    uint16_t    device;
+    uint32_t    classcode;  /* class:subclass:prog-if */
+    uint32_t    irq_mask;   /* legacy IRQ lines this device may route */
+    struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
+    struct { uint16_t base, len; } port[IODEV_MAX_PORT];
+    uint32_t    n_mmio, n_port;
+};
+
+/* MUST stay byte-identical to struct dev_info in include/syscall.h. */
+struct dev_info {
+    uint16_t vendor;
+    uint16_t device;
+    uint16_t bdf;
+    uint16_t n_mmio;
+    uint32_t classcode;
+    uint32_t irq_mask;
+    uint32_t n_port;
+    uint32_t reserved;
+    struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
+    struct { uint32_t base, len; } port[IODEV_MAX_PORT];
+};
+/* The ABI header cannot include this one, so it writes the bounds as literals. */
+_Static_assert(IODEV_MAX_MMIO == 8 && IODEV_MAX_PORT == 8,
+               "struct dev_info's array bounds are literal 8s in include/syscall.h");
+
+void iodev_init(void);
+const struct io_device *iodev_get(uint64_t index);
+uint32_t iodev_total(void);
+uint64_t iodev_first_of_class(uint8_t class_hi);
+int iodev_allows_mmio(const struct io_device *d, uint64_t paddr, uint64_t len);
+int iodev_allows_port(const struct io_device *d, uint16_t port);
+int iodev_allows_irq(const struct io_device *d, int irq);
+
+/* TSS I/O-permission bitmap (gdt.c): tss_io_bitmap_init clears the bitmap at
+ * boot; tss_set_io_device loads the running CPU's bitmap from ONE device's
+ * declared port ranges and flips iomap_base, so a granted task's ring-3 in/out
+ * reaches that device's ports and nothing else — every other port, and every
+ * other task's in/out, #GPs. Passing IODEV_NONE deactivates the bitmap entirely.
+ * See docs/design/console-server.md and src/kernel/pci.c. */
 void tss_io_bitmap_init(void);
-void tss_set_io_allowed(int allowed);
+void tss_set_io_device(uint64_t devindex);
 /* IRQ -> userspace notification bridge (idt.c): register/clear routing a hardware
  * IRQ to an async notification for a ring-3 driver. See docs/design/console-server.md. */
 int  irq_notify_register(int irq, int task, uint32_t slot, uint32_t badge);
@@ -2179,8 +2258,9 @@ void notify_selftest(void);
  * neither forge into nor evict from the kernel message ring via SYS_WRITE. */
 void klog_forge_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST)
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST)
 void mapphys_selftest(void);
+void devcap_selftest(void);
 void ioport_selftest(void);
 void irq_selftest(void);
 void console_selftest(void);

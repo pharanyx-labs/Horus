@@ -46,7 +46,7 @@ emulation is slow, and CI runners are slower; a timeout is usually not a real fa
 
 | Target | Proves |
 |---|---|
-| `smoke-captest` | **115 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), ten cover "identity is not authority" (findings I-1 and H-1, run as uid 0), four cover the one-shot reply capability and five the blocking receive (roadmap 1.3) — see below. The central conformance suite. |
+| `smoke-captest` | **122 checks**: an unheld capability is refused; a revoked capability cannot be used; a stale snapshot fails revalidation; minting into a kernel-reserved slot is refused; bad input is rejected. Twelve cover capability-addressed IPC (finding C-1), twenty-two cover untyped memory and retyping (finding I-7), ten cover "identity is not authority" (findings I-1 and H-1, run as uid 0), four cover the one-shot reply capability and five the blocking receive (roadmap 1.3) — see below. The central conformance suite. |
 | `cargo test` (`rust/src/capability.rs`) | Mint masks rights and cannot widen them; transfer shares lineage; system-wide revoke reaches another task's cspace; an unrelated capability survives; primordial roots cannot be revoked; the generation counter skips the pristine sentinel on wrap; serial allocation never yields 0 or a reserved value. **[I-3]:** a subtree past the old 256-entry bound, and a 300-link chain, are revoked *exactly* while an independent peer sharing the same object survives — falsified against `--features=revoke_legacy_bounded`, which CI runs. |
 | Kani proofs | Revocation nulls **exactly** the target's derivation subtree — no descendant survives, no non-descendant is touched. |
 
@@ -832,7 +832,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 
 | Target | Proves |
 |---|---|
-| `smoke-mapphys` | `SYS_MAP_PHYS` maps an allowlisted device frame — and only an allowlisted one. |
+| `smoke-devcap` | A `CAP_IO_DEVICE` names **one device**: each of two capabilities reaches its own device's frame, port and IRQ, and is refused the other's (**S43**). Three control arms. |
+| `smoke-mapphys` | `SYS_MAP_PHYS` maps a frame the named device declares — and only such a frame. |
 | `smoke-ioport` | The TSS I/O-bitmap grant gives native ring-3 port I/O to the holder. |
 | `smoke-irq` | A hardware IRQ is routed to a userspace notification. |
 | `smoke-console` | The ring-3 console server owns the hardware and serves clients. |
@@ -896,7 +897,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `gate-pairs` | **The coverage question applied to the gates themselves.** `tools/check_gate_pairs.py` enforces four structural rules, each violated at least once in this tree: a control arm must extend a base gate that exists; a control arm must actually be invoked by CI; a gate must be invoked or listed in `.github/gate-exceptions.yml` with a reason; and an exception must name a real target and give one. Source analysis, no build. Falsified all four ways — orphan arm, unrun arm, stale exception, empty reason. It was written because `smoke-ksp-guard-control` had **no positive counterpart**: an arm proving the guard *could* fire, with nothing asking whether it stayed silent on a legal value. |
 | `smoke-ksp-guard` | The **false-positive** arm for the producer-side resume-`%rsp` guard, and the direction whose absence is a known way to ship a regression. Every other arm on this guard injects a bogus value and asks whether it fires — they measure false *negatives*, and a predicate that rejected every stack pointer would satisfy all of them. This boots the **default** workload, where every resume value is legal, and requires `SCHED BOGUS KSP` to be **absent**. Falsified by `KSP_GUARD_ALWAYS=1`, which makes `ksp_is_bogus()` reject everything: the guard then fires on a legitimate address (`ipc_block_switch task=2 ksp=0xffffffff8020cf40`) and the gate goes red. The default workload rather than `PROC_SELFTEST` on purpose — the latter still trips [G-9] on ~1–2% of boots and would make this intermittently red for an unrelated reason. |
 | `smoke-ksp-guard-control` | **[G-9]**, producer side. All four switch functions (`preempt_on_tick`, `ipc_block_switch`, `sched_yield_switch`, `task_exit_switch`) end in the same three lines — take `tasks[next].saved_ksp`, drop the lock, return it — and every selection loop above them required that value to be merely **non-zero**. Each now validates it **against the page tables** (`kern_addr_present`), not an address range: `per_task_kstacks`, `ap_idle_stacks` and `ap_ist` all live inside `[__bss_start, __bss_end)` and their guards are armed by being made *absent*, so a pointer sitting in a guard page passes every range test in the tree. Both the value and the byte 8 below it are checked, since that is where the epilogue pushes. On failure it names the producing function and returns 0, so the caller parks instead of `iretq`-ing onto it. `KSP_GUARD_INJECT=1` forges `-7` and requires `SCHED BOGUS KSP from task_exit_switch` on the wire. **A detector, not a fix** — across 57 pinned boots containing a live reproduction it did not fire once, which is what rules those four producers out. |
-| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` — the scripted ring-3 session, the conformance suite, and the boot-modules session — and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **55 of 84** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all — that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
+| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` — the scripted ring-3 session, the conformance suite, and the boot-modules session — and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **55 of 85** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all — that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
 | `syscall-coverage` (2026-08-23) | **The deriver now describes a kernel that exists.** `scan_table` evaluates the preprocessor, so the three entries compiled only under a defect arm or a selftest flag stop counting as shipped and move to a `conditional:` section that records the flag guarding each; and a **bare numeric dispatch index is refused**, which made seven more entries visible — five of them live in the ship build, four with no userspace wrapper anywhere in the tree. 81 → 83, and neither figure was ever a build. Seven new rules, seven falsifying arms: a guarded entry becoming unconditional, an undeclared guarded entry, a `conditional:` naming the wrong flag, a guarded syscall declared covered, a bare numeric index, an `#if` form the deriver cannot evaluate, and a `SYSCOV` number no active entry claims. The sixth arm **did not fire on the first attempt** — it mutated an `#ifdef` earlier in the file than the table, so it was testing nothing; an arm that passes for the wrong reason is the failure this section exists to catch. |
 | `syscall-abi` | **Issue #176**, property **S24**. `tools/check_syscall_abi.py` parses `include/syscall.h` and requires every pointer argument of every inline wrapper to reach `syscall()`/`syscall6()` full-width. Source analysis, no build, no QEMU — which is the point: a runtime gate only covers the syscalls some probe happens to call, and this covers all 46 pointer arguments including wrappers nothing calls yet. Falsified two ways: narrowing one wrapper's pointer (names the wrapper), and narrowing `SYSCALL_UPTR`'s own default definition — the obvious way to defeat a per-wrapper check, so it is checked separately. |
 | `smoke-klog-forge-abi-control` | Control arm for the above at runtime. `SYSCALL_PTR_TRUNC32=1` restores the truncating wrappers; the probe's buffer is a static, so it is above 4 GiB and gets truncated, and `KLOGTEST: FAIL setup dmesg rc=-14` must come back. Measured **3 boots in 3**. This arm is also what stops `smoke-klog-forge` from quietly losing half its coverage: if the probe's buffer ever moves back to the stack the truncation becomes a no-op, this arm goes green, and the failure is visible instead of silent. |
@@ -1212,10 +1213,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **95** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **96** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **97** jobs, **100** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **98** jobs, **101** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1267,7 +1268,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **97 required contexts and 3 reasoned exemptions** — read off
+The intended set is **98 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1606,7 +1607,7 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 44 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 45 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -1634,6 +1635,78 @@ S26's witness cell contains `CAP_RIGHT_WRITE \| CAP_RIGHT_EXEC`, and a naive spl
 the row there, truncating the witness to `WRITE\` and reporting a well-witnessed property as
 unwitnessed. The first thing anyone does with a checker that invents findings is learn to skim
 past it, which costs more than the checker was ever going to save.
+
+### `smoke-devcap` — a device capability names one device, and reaches only that device
+
+Roadmap 2.7's gate, and **S43**'s witness. `devcaptest` is spawned holding *two* device
+capabilities — the legacy platform device (VGA, the UARTs, the PS/2 controller, the PIT) and
+the machine's PCI network controller — plus a `CAP_NOTIFICATION` and a `CAP_CONSOLE` that are
+there to be the wrong type. Both device capabilities are copies of the same primordial root,
+with the same type and the same rights: **they differ in exactly one field, the object**, which
+is the point. If the object did not matter the two would be interchangeable.
+
+The suite is a matrix, checked in both directions on one boot:
+
+|  | platform capability | NIC capability |
+|---|---|---|
+| VGA framebuffer | maps | **refused** |
+| the NIC's own BAR | **refused** | maps |
+| IRQ 1 (the PS/2 keyboard) | its own line | **refused** |
+| COM1 | reads under its grant | **refused** after regranting to the NIC |
+
+**Both directions are required, and that is not symmetry for its own sake.** "The NIC
+capability is refused the VGA framebuffer" is satisfied by a kernel that refuses everything,
+and by the *old* kernel too — which refused everything off its compiled-in allowlist, whatever
+capability you held. The positives are what rule both out, and they are in the same run.
+
+**The port half can observe exactly one fault per boot, so which one it is had to be chosen.**
+A denied `in`/`out` traps, there is no return value to test, and the fault handler cannot resume
+the faulting instruction. The first arrangement read the NIC's *own* port under a NIC grant and
+then a console port; it detected the global-bitmap defect, but by the wrong half — with one
+console bitmap loaded for every grant, the NIC's own port is the one that is denied, so the
+probe died at `nic-own-port-faulted` and never reached the read that would have shown the
+console's ports being handed over. **A detector that halts truncates its own evidence**, the
+lesson `smoke-kstack-park` paid for, one gate over. It now reads the *same* port twice — COM1
+under a platform grant (must succeed) and COM1 again after regranting to the NIC (must fault) —
+so the second fault means "the grant followed the capability" rather than "port I/O is broken
+here". The positive that the NIC capability reaches its own device is carried by the BAR map.
+
+`SMOKE_NET=1` puts a virtio-net NIC on the bus for these four targets alone; every other boot
+keeps `-net none`. The backend is a **hubport**, not `-netdev user`: what these gates need is a
+device on the bus, not a network — nothing in the guest sends a packet — and a hubport needs no
+slirp, so the gate does not depend on how the runner's QEMU was built. **The guest FAILS rather than skips when it finds no NIC**: a second device
+is the whole experiment, and with only the platform device present every refusal above is
+vacuous and the suite would pass on the very kernel it exists to reject.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-devcap` | `DEVCAPTEST: PASS` present, `DEVCAPTEST: FAIL` absent | passes, **3 boots in 3** |
+| `smoke-devcap-object-control` (`IO_DEVICE_OBJECT_UNCHECKED=1`) | `DEVCAPTEST: FAIL nic-cap-mapped-vga` present | passes, **3 boots in 3**; `smoke-devcap` goes red under the same flag |
+| `smoke-devcap-ports-control` (`IO_DEVICE_PORTS_GLOBAL=1`) | `DEVCAPTEST: FAIL nic-cap-got-console-ports` present | passes, **3 boots in 3**; `smoke-devcap` goes red under the same flag |
+| `smoke-devcap-irq-control` (`IO_DEVICE_IRQ_UNCHECKED=1`) | `DEVCAPTEST: FAIL nic-cap-took-platform-irq` present | passes, **3 boots in 3**; `smoke-devcap` goes red under the same flag |
+
+**A fourth arm lives in `smoke-captest`, and it is the one the other three cannot supply.**
+All three above bypass the *object* check while the capability lookup stays; none of them can
+say whether a capability is still required at all — and that question got sharper with this
+change, because the four device syscalls **lost their dispatch-table entries**. Their gate moved
+into `iodev_from_slot`, so the handler is now the only thing standing there.
+`IO_DEVICE_CAP_UNCHECKED=1` removes that lookup, and `captest` — which holds no
+`CAP_IO_DEVICE` — maps the console's framebuffer holding nothing:
+`make smoke-captest-devcap-control` requires `CAPTEST: FAIL map-phys-without-cap-io-device`
+(3 boots in 3), and `smoke-captest` goes red under the same flag. captest gained seven checks
+for it (115 → 122), covering the three distinct ways to have no authority: the conventional
+device slot never endowed, a slot holding a live capability of the **wrong type** (slot 3's
+`CAP_FRAME`, the decoy every task is born with and the one that made **[C-1]** reachable), and
+a slot that has never held anything.
+
+**Each arm breaks exactly one marker, and the probe's ordering is what lets that be read off.**
+The checks run object → ports-positive → IRQ → ports-negative, and the probe stops at its first
+failure. So the IRQ arm reaching `nic-cap-took-platform-irq` proves the object check still
+passed under it, and the ports arm reaching `nic-cap-got-console-ports` proves the object *and*
+IRQ checks still passed under it. Three separate flags rather than one `IO_DEVICE_BROKEN`, for
+the reason the FPU pair below gives: a single flag would redden every marker at once and say
+nothing about whether any individual check can fail on its own. The one gap is honest and
+inherent — the object arm dies first, so it demonstrates nothing about the other two.
 
 ### `smoke-fpu` — a task cannot read another's XMM register file
 
@@ -2003,7 +2076,7 @@ touching kernel state belongs in a QEMU self-test. The binding suites are:
 | Kani proofs (revocation subtree) | `rust/src/` | `cargo kani` |
 | FFI boundary fuzzing | `rust/fuzz/` | `cargo +nightly fuzz run <target>` |
 | Kernel integration self-tests | `src/kernel/selftest.c`, `userspace/` | `make smoke-<name>` |
-| Capability conformance (115 checks — the suite prints its own count as `CAPTEST: PASS <n> checks`; read it from there) | `userspace/captest.c` | `make smoke-captest` |
+| Capability conformance (122 checks — the suite prints its own count as `CAPTEST: PASS <n> checks`; read it from there) | `userspace/captest.c` | `make smoke-captest` |
 | Scripted shell sessions | `tools/*_session.py` | `make smoke-session` |
 
 ---

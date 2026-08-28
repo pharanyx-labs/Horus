@@ -156,9 +156,9 @@ struct audit_event {
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (fs server only) */
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> total module count; fills *info for a valid index (store owner only) */
 #define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module's payload (store owner only) */
-#define SYS_MAP_PHYS           79   /* (paddr, vaddr, len, flags) -> 0; map an allowlisted device frame into the caller's address space (CAP_IO_DEVICE + WRITE; driver server only) */
-#define SYS_IOPORT_GRANT       80   /* () -> 0; grant native ring-3 in/out on the console ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE; driver server only) */
-#define SYS_IRQ_REGISTER       81   /* (irq, notif_slot, badge) -> 0; route a hardware IRQ (0 timer / 1 keyboard) to an async notification (CAP_IO_DEVICE + WRITE; driver server only) */
+#define SYS_MAP_PHYS           79   /* (dev_slot, paddr, vaddr, len, flags) -> 0; map one frame the named device declares into the caller's address space (CAP_IO_DEVICE + WRITE in dev_slot) */
+#define SYS_IOPORT_GRANT       80   /* (dev_slot) -> 0; grant native ring-3 in/out on the named device's ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE in dev_slot) */
+#define SYS_IRQ_REGISTER       81   /* (dev_slot, irq, notif_slot, badge) -> 0; route an IRQ the named device declares to an async notification (CAP_IO_DEVICE + WRITE in dev_slot) */
 #define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (so fd-1 output must route through it, not the kernel), else 0; read-only status, self-authorizing */
 #define SYS_PIPE               83   /* () -> (read_slot<<16)|write_slot; create a bounded pipe, install a read/write CAP_PIPE in the caller's cspace */
 #define SYS_PIPE_READ          84   /* (slot, buf, len) -> bytes; 0 = EOF, SYS_ERR_AGAIN = empty-but-writers-open */
@@ -182,6 +182,7 @@ struct audit_event {
 
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr. ALL OR NOTHING: a failure withdraws every page the call mapped, so an error leaves the address space untouched. Max 64 pages. */
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
+#define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; what the device named by the CAP_IO_DEVICE at dev_slot declares: ids, MMIO ranges, port ranges, IRQ lines. CAP_IO_DEVICE + READ in dev_slot, and it reports THAT device only. */
 #define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate this task, its memory copy-on-write. Gated on the same slot-3 capability as SYS_SPAWN: fork is a second way to create a task, so it answers to the capability that gates the first. The child inherits the caller's capabilities as DERIVED copies, so revoking the parent's sweeps the child's -- see sys_fork(). */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
@@ -488,7 +489,11 @@ static inline int sys_console_owned(void) {
 #define CAPSLOT_AUDIT       7    /* CAP_AUDIT / object-store (server-specific) */
 #define CAPSLOT_CONSOLE     8    /* CAP_CONSOLE                                */
 #define CAPSLOT_STORAGE     9    /* CAP_ENCRYPTED_STORAGE                      */
-#define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE (console_server only)        */
+#define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE: the task's primary device    */
+#define CAPSLOT_IO_DEVICE_ALT 20 /* CAP_IO_DEVICE: a SECOND device, for a task
+                                  * that legitimately drives two (devcaptest).
+                                  * The slot is a convention, not authority --
+                                  * the capability in it is                    */
 #define CAPSLOT_NOTIFY     11    /* CAP_NOTIFICATION: fs-ready rendezvous      */
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG:  SYS_DMESG                 */
@@ -517,6 +522,38 @@ static inline int sys_console_owned(void) {
 #define KOBJ_ENDPOINT       2    /* struct endpoint  -> CAP_ENDPOINT           */
 #define KOBJ_NOTIFICATION   3    /* struct notification -> CAP_NOTIFICATION    */
 #define KOBJ_FRAME          4    /* a run of 4 KiB pages -> CAP_FRAME          */
+
+/* What one device declares (SYS_DEVICE_INFO). MUST stay byte-identical to struct
+ * dev_info in src/include/kernel.h — the kernel fills this layout and copies it
+ * out across copy_to_user.
+ *
+ * A driver cannot be written against a device whose resources it cannot discover:
+ * a BAR is assigned by firmware and differs per machine, so hardcoding one is
+ * how a driver ends up mapping whatever happens to be at that address. This is
+ * the capability-scoped answer — it reports the device THIS capability names, and
+ * nothing about any other, so enumerating the machine is not a side effect of
+ * holding one device.
+ *
+ * The array bounds must match IODEV_MAX_MMIO / IODEV_MAX_PORT in
+ * src/include/kernel.h; the kernel _Static_asserts that they do. */
+struct dev_info {
+    uint16_t vendor;      /* PCI vendor id, 0 for a platform device */
+    uint16_t device;      /* PCI device id, 0 for a platform device */
+    uint16_t bdf;         /* (bus<<8)|(dev<<3)|fn, 0xFFFF if not a PCI function */
+    uint16_t n_mmio;      /* MMIO ranges declared */
+    uint32_t classcode;   /* class:subclass:prog-if */
+    uint32_t irq_mask;    /* bit n set: this device may route legacy IRQ n */
+    uint32_t n_port;      /* port ranges declared */
+    uint32_t reserved;
+    struct { uint64_t base, len; } mmio[8];
+    struct { uint32_t base, len; } port[8];
+};
+
+/* Report what the device named by the CAP_IO_DEVICE (READ right) at `dev_slot`
+ * declares. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_device_info(uint32_t dev_slot, struct dev_info *out) {
+    return (int)syscall(SYS_DEVICE_INFO, dev_slot, (uint64_t)(uintptr_t)out, 0);
+}
 
 /* MUST stay byte-identical to struct untyped_info in src/include/kernel.h — the
  * kernel fills this layout and copies it out across copy_to_user. */
@@ -1189,27 +1226,33 @@ static inline int sys_fs_set_meta(uint32_t ino, uint32_t mode, uint32_t uid, uin
 
 /* Map one 4 KiB physical device frame `paddr` at user address `vaddr` in the
  * caller's own address space (both must be page-aligned; `len` must be <= 4096).
- * Only frames on the kernel's fixed device allowlist may be mapped, and only with
- * a CAP_IO_DEVICE cap (WRITE right) in the gating slot — a console/driver server
- * only. Returns 0 on success or a negative SYS_ERR_*. */
-static inline int sys_map_phys(uint64_t paddr, uint64_t vaddr, uint32_t len, uint32_t flags) {
-    return (int)syscall6(SYS_MAP_PHYS, paddr, vaddr, len, flags, 0, 0);
+ *
+ * `dev_slot` names a CAP_IO_DEVICE (WRITE right) in the caller's cspace, and the
+ * frame must be one the device THAT capability names declares. A physical address
+ * is not authority: holding some other device's capability refuses this frame.
+ * Returns 0 on success or a negative SYS_ERR_*. */
+static inline int sys_map_phys(uint32_t dev_slot, uint64_t paddr, uint64_t vaddr,
+                               uint32_t len, uint32_t flags) {
+    return (int)syscall6(SYS_MAP_PHYS, dev_slot, paddr, vaddr, len, flags, 0);
 }
 
-/* Grant the calling task native ring-3 in/out on the console ports (serial, PS/2
- * keyboard, VGA registers) via the TSS I/O-permission bitmap. Requires a
- * CAP_IO_DEVICE cap (WRITE) in the gating slot — a console/driver server only.
- * Takes effect immediately for the caller. Returns 0 or a negative SYS_ERR_*. */
-static inline int sys_ioport_grant(void) {
-    return syscall(SYS_IOPORT_GRANT, 0, 0, 0);
+/* Grant the calling task native ring-3 in/out on the ports declared by the device
+ * named by the CAP_IO_DEVICE (WRITE right) in `dev_slot`, via the TSS
+ * I/O-permission bitmap. One device at a time: a second grant replaces the first
+ * rather than adding to it. Takes effect immediately for the caller. Returns 0 or
+ * a negative SYS_ERR_*. */
+static inline int sys_ioport_grant(uint32_t dev_slot) {
+    return syscall(SYS_IOPORT_GRANT, dev_slot, 0, 0);
 }
 
-/* Route hardware IRQ `irq` (0 = timer, 1 = keyboard) to notification slot
- * `notif_slot`, delivering `badge` each time it fires — so a ring-3 driver blocked
- * in sys_wait_notify(notif_slot) wakes to service the device. Requires a
- * CAP_IO_DEVICE cap (WRITE) in the gating slot. Returns 0 or a negative SYS_ERR_*. */
-static inline int sys_irq_register(uint32_t irq, uint32_t notif_slot, uint32_t badge) {
-    return syscall(SYS_IRQ_REGISTER, irq, notif_slot, badge);
+/* Route hardware IRQ `irq` to notification slot `notif_slot`, delivering `badge`
+ * each time it fires — so a ring-3 driver blocked in sys_wait_notify(notif_slot)
+ * wakes to service the device. `dev_slot` names a CAP_IO_DEVICE (WRITE) and the
+ * IRQ must be one that device declares, so a driver cannot subscribe to another
+ * device's interrupt. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_irq_register(uint32_t dev_slot, uint32_t irq,
+                                   uint32_t notif_slot, uint32_t badge) {
+    return (int)syscall6(SYS_IRQ_REGISTER, dev_slot, irq, notif_slot, badge, 0, 0);
 }
 
 /* Audit-log integrity digest. Writes 40 bytes to `out` (8-byte little-endian

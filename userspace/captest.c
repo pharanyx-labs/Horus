@@ -767,6 +767,53 @@ void _start(void) {
     check(rc == (int)sizeof(rbprobe), "recv-block-inline-wrong-length");
     check(msg[0] == 'b' && msg[7] == 'g', "recv-block-inline-corrupted-message");
 
+    /* ---- device authority: this task holds no CAP_IO_DEVICE (S43) --------
+     *
+     * The four device syscalls have NO fixed dispatch-table slot -- they take a
+     * cspace slot as their first argument and resolve it, exactly as the IPC
+     * syscalls do since C-1. That makes the refusal a property of the HANDLER
+     * rather than of the table, and this suite is where a handler-side refusal
+     * gets its independent witness: `smoke-devcap` asks whether the right device
+     * capability reaches the right device, and this asks what happens with no
+     * device capability at all.
+     *
+     * Three slots, because the ways to have no authority are not the same thing:
+     * the conventional device slot which this task was never endowed with, a
+     * slot holding a live capability of the WRONG type (slot 3's CAP_FRAME --
+     * the same decoy that made C-1 reachable), and a slot that has never held
+     * anything. A gate that only tested the empty case would pass on a kernel
+     * that skipped the type check, and slot 3 is precisely the capability every
+     * task already holds, so that kernel would grant the console to everyone.
+     *
+     * Exact SYS_ERR_PERM, never `< 0`: SYS_ERR_INVAL is what a malformed request
+     * returns, and "refused for want of authority" is a different statement from
+     * "refused for want of sense". */
+    check((int)syscall6(SYS_MAP_PHYS, CAPSLOT_IO_DEVICE, 0xB8000ULL, 0xB8000ULL,
+                        4096, MAP_PHYS_WRITE, 0) == SYS_ERR_PERM,
+          "map-phys-without-cap-io-device");
+    check((int)syscall6(SYS_MAP_PHYS, SLOT_FRAME, 0xB8000ULL, 0xB8000ULL,
+                        4096, MAP_PHYS_WRITE, 0) == SYS_ERR_PERM,
+          "map-phys-with-wrong-cap-type");
+    check((int)syscall6(SYS_MAP_PHYS, SLOT_EMPTY_HI, 0xB8000ULL, 0xB8000ULL,
+                        4096, MAP_PHYS_WRITE, 0) == SYS_ERR_PERM,
+          "map-phys-from-empty-slot");
+    check(sys_ioport_grant(CAPSLOT_IO_DEVICE) == SYS_ERR_PERM,
+          "ioport-grant-without-cap-io-device");
+    check(sys_irq_register(CAPSLOT_IO_DEVICE, 1, SLOT_NOTIFY, 0x1234) == SYS_ERR_PERM,
+          "irq-register-without-cap-io-device");
+    {
+        /* SYS_DEVICE_INFO discloses a device's BARs and IRQ line. It is READ
+         * where the others are WRITE, which is a real rights split and not a
+         * softer gate: with no capability at all it is refused just the same,
+         * and a task that could read the table without holding a device would
+         * have a bus walk. */
+        struct dev_info di;
+        check(sys_device_info(CAPSLOT_IO_DEVICE, &di) == SYS_ERR_PERM,
+              "device-info-without-cap-io-device");
+        check(sys_device_info(SLOT_FRAME, &di) == SYS_ERR_PERM,
+              "device-info-with-wrong-cap-type");
+    }
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

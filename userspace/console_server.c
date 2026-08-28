@@ -183,15 +183,15 @@ void _start(void) {
      * seeing the port grant succeed also means the gate is already in place. */
     int granted = 0;
     for (int attempt = 0; attempt < CON_GRANT_RETRIES; attempt++) {
-        if (sys_ioport_grant() == 0) { granted = 1; break; }
+        if (sys_ioport_grant(CAPSLOT_IO_DEVICE) == 0) { granted = 1; break; }
         sys_yield();
     }
     if (!granted) { kput("CONSOLE_SELFTEST: FAIL grant\n"); for (;;) sys_yield(); }
 
     /* Map the VGA text framebuffer (two 4 KiB frames: an 80x50 buffer is 8000
      * bytes) into our own address space. */
-    if (sys_map_phys(VGA_PADDR,          VGA_VADDR,          4096, MAP_PHYS_WRITE) != 0 ||
-        sys_map_phys(VGA_PADDR + 0x1000, VGA_VADDR + 0x1000, 4096, MAP_PHYS_WRITE) != 0) {
+    if (sys_map_phys(CAPSLOT_IO_DEVICE, VGA_PADDR,          VGA_VADDR,          4096, MAP_PHYS_WRITE) != 0 ||
+        sys_map_phys(CAPSLOT_IO_DEVICE, VGA_PADDR + 0x1000, VGA_VADDR + 0x1000, 4096, MAP_PHYS_WRITE) != 0) {
         kput("CONSOLE_SELFTEST: FAIL map\n"); for (;;) sys_yield();
     }
     /* Prove the mapping is the real framebuffer: write + read back the last cell

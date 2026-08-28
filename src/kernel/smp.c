@@ -496,6 +496,12 @@ void smp_bringup(void) {
      * proving the SYS_MAP_PHYS device-delegation path (MAPPHYS_SELFTEST: PASS).
      * First driver-privilege-separation job; see docs/design/console-server.md. */
     mapphys_selftest();
+#elif defined(DEVCAP_SELFTEST)
+    /* Gated: a ring-3 task holding TWO device capabilities proves each reaches
+     * only its own device's frames, ports and IRQ (DEVCAPTEST: PASS). The witness
+     * that CAP_IO_DEVICE names a device rather than conferring the console;
+     * falsified by IO_DEVICE_OBJECT_UNCHECKED / _PORTS_GLOBAL / _IRQ_UNCHECKED. */
+    devcap_selftest();
 #elif defined(IOPORT_SELFTEST)
     /* Gated: a ring-3 task endowed with CAP_IO_DEVICE is granted native port I/O
      * (SYS_IOPORT_GRANT / TSS I/O bitmap); an allowlisted port succeeds and a

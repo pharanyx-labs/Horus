@@ -31,12 +31,12 @@ static void report(const char *s) {
 
 void _start(void) {
     /* (1) A frame off the allowlist must be refused even though we hold the cap. */
-    if (sys_map_phys(OFFLIST, OFFLIST, 4096, MAP_PHYS_WRITE) >= 0) {
+    if (sys_map_phys(CAPSLOT_IO_DEVICE, OFFLIST, OFFLIST, 4096, MAP_PHYS_WRITE) >= 0) {
         report("MAPPHYS_SELFTEST: FAIL allowlist\n"); sys_exit();
     }
 
     /* (2) The allowlisted VGA framebuffer maps. */
-    if (sys_map_phys(VGA_PADDR, VGA_VADDR, 4096, MAP_PHYS_WRITE) != 0) {
+    if (sys_map_phys(CAPSLOT_IO_DEVICE, VGA_PADDR, VGA_VADDR, 4096, MAP_PHYS_WRITE) != 0) {
         report("MAPPHYS_SELFTEST: FAIL map\n"); sys_exit();
     }
 

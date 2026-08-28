@@ -336,14 +336,17 @@ tss64:
                            * RSP0 (@4) and IST tops (@36/44/52) are filled by
                            * setup_tss64 / set_tss_kernel_stack. */
     .word 0xFFFF          /* iomap_base (@102): default DISABLED (>= segment limit),
-                           * so a ring-3 in/out #GPs. tss_set_io_allowed() points it
+                           * so a ring-3 in/out #GPs. tss_set_io_device() points it
                            * at the bitmap (offset 104) only while a granted task runs. */
 .global tss64_io_bitmap
 tss64_io_bitmap:
     .space 8193           /* I/O permission bitmap (8192 bytes, one bit per port:
                            * 0=allow, 1=deny) + the mandatory terminating 0xFF byte.
-                           * Filled by tss_io_bitmap_init(): deny all, then clear the
-                           * console port allowlist. */
+                           * Cleared to deny-all by tss_io_bitmap_init(); loaded with
+                           * ONE device's port ranges by tss_set_io_device() when a task
+                           * holding a grant for that device is switched in. Nothing is
+                           * prefilled: which ports belong here is a question about the
+                           * running task's CAP_IO_DEVICE (S43). */
 tss64_end:
 
 /* Each IST fault stack (IST1: #DF/#GP/#PF, IST2: NMI, IST3: #SS) sits above a
@@ -712,6 +715,18 @@ embedded_mapphystest_bin_start:
 .incbin "userspace/mapphystest.bin"
 .global embedded_mapphystest_bin_end
 embedded_mapphystest_bin_end:
+#endif
+
+#ifdef DEVCAP_SELFTEST
+/* PIE devcaptest binary: endowed with TWO device capabilities (the platform
+ * console hardware and the PCI NIC), it proves each reaches its own device's
+ * frames, ports and IRQ and is refused the other's. */
+.align 16
+.global embedded_devcaptest_bin_start
+embedded_devcaptest_bin_start:
+.incbin "userspace/devcaptest.bin"
+.global embedded_devcaptest_bin_end
+embedded_devcaptest_bin_end:
 #endif
 
 #ifdef IOPORT_SELFTEST

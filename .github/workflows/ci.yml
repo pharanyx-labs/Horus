@@ -375,6 +375,13 @@ jobs:
       # including captest, which holds no CAP_DEBUG.
       - name: Control arm — an ungated cspace readout is readable by anyone
         run: make smoke-captest-capenum-control
+      # Roadmap 2.7 / S43. The four device syscalls have NO dispatch-table slot:
+      # the lookup moved into the handler when a device capability started naming
+      # a device, so this file is the whole gate. An arm that only bypasses the
+      # object check cannot say whether a capability is still required at all,
+      # which is why this one removes the lookup entirely.
+      - name: Control arm — device syscalls that gate on nothing
+        run: make smoke-captest-devcap-control
       # Roadmap 2.2. The tempting version of SYS_CLOCK_GETTIME reports real
       # microseconds from the TSC -- strictly more accurate, and it undoes
       # CR4.TSD by handing ring 3 the cycle-accurate timer that bit exists to
@@ -1780,6 +1787,41 @@ jobs:
       # how large, across every task in the system.
       - name: Control arm — a frame's size must be readable only by a holder
         run: make smoke-frame-info-control
+
+  devcap:
+    name: "A device capability names one device, and reaches only that device"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # CAP_IO_DEVICE was a type with no object: SYS_MAP_PHYS tested a compiled-in
+      # VGA allowlist, SYS_IOPORT_GRANT loaded one compiled-in console port set,
+      # and SYS_IRQ_REGISTER took a hardcoded pair of lines -- so holding ANY
+      # device capability was holding the console. This boots with a NIC on the
+      # bus and a probe holding two device capabilities, and requires each to
+      # reach its own device's frames, ports and IRQ and be refused the other's.
+      - name: Device-capability isolation from ring 3
+        run: make smoke-devcap
+      # The [C-1]-shaped defect itself: ignore the capability's object and the NIC
+      # capability maps the console's framebuffer.
+      - name: Control arm — an unconsulted object reaches the console's frames
+        run: make smoke-devcap-object-control
+      # The port half. One global TSS bitmap, loaded for every grant regardless of
+      # which device was named.
+      - name: Control arm — a port grant that ignores the device it named
+        run: make smoke-devcap-ports-control
+      # The interrupt half. An IRQ line belongs to a device, not to a type.
+      - name: Control arm — an IRQ registered against the wrong device
+        run: make smoke-devcap-irq-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

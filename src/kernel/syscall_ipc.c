@@ -609,6 +609,73 @@ int sys_wait_notify(uint32_t notif_slot, uint32_t *out_badge) {
 }
 
 
+/* sys_poll_notify: sys_wait_notify's non-blocking twin. Consume a pending badge
+ * if there is one, and otherwise report that there is not -- never block.
+ *
+ * WHY THIS EXISTS, AND IT IS NOT ONLY A CONVENIENCE.
+ *
+ * A driver servicing hardware in a loop has, until now, had no way to ask "has
+ * my device notified me?" without risking a block: sys_wait_notify parks the
+ * caller when nothing is pending, so a single-threaded driver that also wants to
+ * poll a device register cannot check both. Every driver in this tree has worked
+ * around it by relying on being the only runnable task, which is a property of
+ * the test harness rather than of the system.
+ *
+ * The second reason is about EVIDENCE, and it is what prompted this. Several
+ * properties in SECURITY.md are of the form "no event arrives while X", and a
+ * blocking wait cannot witness one: it either returns because the event happened
+ * (the property is broken) or it blocks forever (the property held, and the test
+ * hangs, which the harness reports as a timeout indistinguishable from a crash).
+ * S46's mask-until-acknowledged is exactly that shape, and its only witness was a
+ * livelock -- a consequence QEMU stopped producing when routing moved to the I/O
+ * APIC. A test can now assert the ABSENCE of a notification directly.
+ *
+ * IPC_AGAIN (-2) rather than 0-with-a-zero-badge, so "nothing pending" is a
+ * distinct answer from "a badge of zero arrived", and so it cannot be confused
+ * with SYS_ERR_PERM (-1) by a caller testing `< 0`. That is the same discipline
+ * SYS_IPC_RECV follows and the same one captest's exact-code checks rely on. */
+int sys_poll_notify(uint32_t notif_slot, uint32_t *out_badge) {
+    struct notification *n = notification_by_index(notif_slot);
+    if (!n) return -1;
+
+    ipc_lock();
+    if (n->pending_badge != 0) {
+        *out_badge = n->pending_badge;
+        n->pending_badge = 0;
+        ipc_unlock();
+        return 0;
+    }
+    ipc_unlock();
+
+    /* Deliberately no pending_block, no blocked_waiter, no state change: this
+     * call must leave the task exactly as it found it, or a poll in a loop would
+     * accumulate the intent-to-block that ipc_publish_pending_block acts on. */
+    *out_badge = 0;
+    return IPC_AGAIN;
+}
+
+/* SYS_POLL_NOTIFY (106): rbx = cspace slot of a CAP_NOTIFICATION with READ.
+ * Gated identically to SYS_WAIT_NOTIFY -- a task may only poll a notification it
+ * holds, exactly as it may only wait on one (finding C-2). Being non-blocking
+ * changes when the answer comes back, never who is entitled to ask. */
+void h_poll_notify(struct interrupt_frame64 *r) {
+    uint32_t ns;
+#ifdef POLL_NOTIFY_UNGATED
+    /* Control arm: take the slot as a raw notification index with no capability
+     * consulted -- finding C-2's shape in a new syscall, which is exactly the
+     * mistake a non-blocking "convenience" variant invites. See
+     * make smoke-captest-poll-notify-control. */
+    ns = (uint32_t)r->rbx;
+#else
+    if (ipc_notif_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ns) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; r->rbx = 0; return;
+    }
+#endif
+    uint32_t badge = 0;
+    r->rax = (uint64_t)(uint32_t)sys_poll_notify(ns, &badge);
+    r->rbx = badge;
+}
+
 /* SYS_IPC_SEND (21): rbx = cspace slot of a CAP_ENDPOINT with WRITE. */
 void h_ipc_send(struct interrupt_frame64 *r) {
     uint32_t ep;
@@ -902,7 +969,7 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
             /* KEEP the right: the caller is committed to blocking and the server
              * was told to retry, so consuming here would destroy its only means
              * of completing the reply it is being asked to repeat. */
-            r->rax = (uint32_t)-2;
+            r->rax = (uint32_t)IPC_AGAIN;
             return;
         }
         /* Dropped, but ANSWERED: the right is spent either way.

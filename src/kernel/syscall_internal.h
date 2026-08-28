@@ -183,6 +183,7 @@ void h_ipc_sender(struct interrupt_frame64 *r);
 void h_ipc_reply_to(struct interrupt_frame64 *r);
 void h_notify(struct interrupt_frame64 *r);
 void h_wait_notify(struct interrupt_frame64 *r);
+void h_poll_notify(struct interrupt_frame64 *r);
 /* syscall_hw.c — device-delegation syscalls (authority is the CAP_IO_DEVICE the
  * caller names in the first argument; see src/kernel/pci.c) */
 void h_map_phys(struct interrupt_frame64 *r);

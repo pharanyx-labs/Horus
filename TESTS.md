@@ -1212,10 +1212,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **93** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **94** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **95** jobs, **98** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **96** jobs, **99** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1267,7 +1267,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **95 required contexts and 3 reasoned exemptions** — read off
+The intended set is **96 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1593,6 +1593,47 @@ are live, so a handler that confuses them answers about frames the asker has no 
 **Probing the range then turns a number into an oracle** for which frames exist across every
 task in the system, which is the part that makes it a security property rather than an ABI
 preference.
+
+### `invariants` — every security property is bound to a witness that exists
+
+Roadmap 4.12 / finding **[F-4.1]**, and the question none of the earlier sweeps asked: *which
+claims have no witness at all?* Ambient-authority sweeps looked for gates that were **absent**;
+the **[H-3]** sweep looked for gates that were **vacuous**. Neither would have found **S16**,
+whose gate was present, correct, and bound to nothing — an em-dash in its witness column against
+`fpu_save`/`fpu_restore`, real code called on every ring transition.
+
+**`SECURITY.md`'s table is the registry.** It already carries id, statement, enforcing code and
+witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
+beside it. A hand-maintained parallel manifest would be a second copy of claims that already
+exist, drifting from the first — which is **[H-3]** restated as documentation.
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 43 properties
+name a witness that resolves to a make target or a CI job.
+
+| Rule | Rejects |
+|---|---|
+| R1 | a property whose witness names nothing runnable — S16's real prior state |
+| R2 | a witness naming a `make` target that does not exist; the residue a renamed gate leaves, where the row still reads as bound |
+| R3 | a witness target no workflow runs — a witness in principle only |
+| R4 | a control-arm flag absent from `DEFECT_FLAGS`, so a boot under it is unstamped and its measurements cannot be told from an unflagged run |
+| R5 | a duplicated id, or a gap in the numbering |
+| R6 | an exemption for an unknown id, or one that has outlived its reason |
+
+**R4 is the subtle one.** A witness column naming `FOO_UNGUARDED=1` is claiming the property is
+falsifiable on demand. If that flag is not in `DEFECT_FLAGS` the boot banner will not stamp it,
+and a measurement taken under it is indistinguishable from one taken without — which is how a
+stale `KSP_GUARD_INJECT` once turned a **[G-9]** campaign into a false reproduction.
+
+**Every rule is falsified** by `tools/test_check_invariants.sh`, run in the same job: eight arms,
+each mutating a **copy** of the tree so the harness cannot leave the repository modified, and
+each required to be reported under *its own* rule rather than merely to fail. A checker nobody
+has seen reject anything is indistinguishable from `return 0`, and this repository has been bitten
+by precisely that — of the first three rules in an earlier checker, two silently could not fail.
+
+**The checker's own first run produced a false finding, and that was fixed before anything else.**
+S26's witness cell contains `CAP_RIGHT_WRITE \| CAP_RIGHT_EXEC`, and a naive split on `|` chopped
+the row there, truncating the witness to `WRITE\` and reporting a well-witnessed property as
+unwitnessed. The first thing anyone does with a checker that invents findings is learn to skim
+past it, which costs more than the checker was ever going to save.
 
 ### `smoke-fpu` — a task cannot read another's XMM register file
 

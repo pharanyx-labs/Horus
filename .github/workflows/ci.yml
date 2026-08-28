@@ -44,6 +44,24 @@ jobs:
       - name: Check CI gating classification
         run: tools/check_ci_gating.py
 
+  invariants:
+    name: "Every security property is bound to a witness that exists"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # Roadmap 4.12, finding [F-4.1]. SECURITY.md's table IS the registry --
+      # deriving from it rather than duplicating it into a parallel manifest is
+      # deliberate, because a second copy of the same claims is [H-3]'s shape.
+      - name: Every property has a witness, and every witness exists and runs
+        run: python3 tools/check_invariants.py
+      # A checker nobody has seen reject anything is indistinguishable from
+      # `return 0`, and this repository has been bitten by exactly that: of the
+      # first three rules in an earlier checker, two silently could not fail.
+      # One arm per rule, applied to a copy of the tree.
+      - name: Falsify every rule of the checker
+        run: ./tools/test_check_invariants.sh
+
   doc-claims:
     name: Every documented count matches the tool that derives it
     runs-on: ubuntu-latest

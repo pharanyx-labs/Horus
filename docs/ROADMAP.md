@@ -1173,7 +1173,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **95 required, 3 exempted** (95 jobs, 98 contexts — re-derive it with
+  The intended set is **96 required, 3 exempted** (96 jobs, 99 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).
@@ -1256,24 +1256,33 @@ Ordered as in the audit's §7.5.
   fetch it at build time with verification instead of committing `.deb`s.
 - **4.11 ⬜ `verify-release.sh`** a third party can run: rebuild from a tag, diff against the
   published artifact, check the signature, recompute the PCRs.
-- **4.12 🚧 A security-invariant registry — [F-4.1].** A machine-readable registry naming each
-  claimed property, the code enforcing it, and the test or proof witnessing it; CI fails if an
-  invariant has no witness. This directly attacks the failure mode that produced **[C-1]**: a
-  documented property with no test binding it to the code.
+- **4.12 ✅ A security-invariant registry — [F-4.1]** — *landed 2026-08-28*.
+  `tools/check_invariants.py` binds every property in `SECURITY.md` to a witness that exists and
+  runs; the required `invariants` job fails the build otherwise. Six rules: every property has a
+  resolvable witness; every `make X` named as one is a real target; every witness target runs in
+  CI or is excused; every control-arm flag named is in `DEFECT_FLAGS`, so a boot under it is
+  stamped; ids are unique and contiguous; and no exemption is stale.
 
-  **The survey for it already paid for itself.** `SECURITY.md`'s table was checked by hand on
-  2026-08-28 against the tree, and **S16 had no witness at all** — an em-dash in the column,
-  against real code (`fpu_save`/`fpu_restore`) called on every ring transition and exercised by
-  nothing. Closed the same day by `make smoke-fpu` (`docs/LIMITATIONS.md` §1.9). Every other
-  rule the registry will enforce was also checked by hand and holds today: every `make X` named
-  as a witness exists, every witness target runs in CI or is excused, and every control-arm flag
-  named is in `DEFECT_FLAGS` and therefore stamped.
+  **It derives from `SECURITY.md` rather than duplicating it into an `invariants.yaml`.** The
+  table already has the four columns a registry needs — id, statement, enforcing code, witness —
+  so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
+  claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
+  The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
+  **empty** — all 43 properties name a witness that resolves.
 
-  **What remains is making those checks mechanical** rather than a thing someone remembers to
-  do. The registry should *derive* from `SECURITY.md`'s table rather than duplicate it into a
-  parallel manifest — a hand-maintained second copy of the same claims is **[H-3]**'s shape, and
-  the manifest should hold only what the table cannot express: explicit exemptions, each with a
-  written reason, for properties witnessed by a CI job or a proof rather than a `make` target.
+  **What the survey found on the way.** **S16** had no witness at all — an em-dash against
+  `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
+  Closed by `make smoke-fpu` (`docs/LIMITATIONS.md` §1.9). Four further rows said *"Rust unit
+  tests"* or *"Kani proofs"* in prose and now name the `rust` and `kani-bounded` jobs, which is
+  strictly more informative than what they replaced. And the checker's own first run reported a
+  **false** finding — S26's witness truncated at an escaped pipe — which was fixed before
+  anything else, because the first thing anyone does with a checker that invents findings is
+  learn to skim past it.
+
+  **Its six rules are falsified one arm each** (`tools/test_check_invariants.sh`, run in the same
+  job), on copies of the tree so the harness cannot leave the repository modified. R1's arm is
+  literally S16's real prior state.
+
 - **4.13 ⬜ Publish the threat model — [F-4.3]** as a versioned first-class document.
 - **4.14 ⬜ Nightly long-running fuzz and Kani** in a scheduled workflow, filing findings as
   issues automatically.

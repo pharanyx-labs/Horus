@@ -1,0 +1,26 @@
+# Exemptions from tools/check_invariants.py, and NOTHING else.
+#
+# THIS FILE IS DELIBERATELY NOT THE REGISTRY. SECURITY.md's table is: it already
+# carries the four columns a registry needs -- id, statement, the code enforcing
+# the property, and the witness -- so the checker parses it. Adding a second,
+# hand-maintained copy of those claims here would be [H-3]'s shape: two
+# descriptions of one thing, drifting, with nothing to say which is right.
+#
+# What lives here is only what the table cannot express: a property whose witness
+# is neither a `make` target nor a CI job, and therefore cannot be resolved
+# mechanically. Each entry must say what it IS witnessed by and why that is the
+# honest answer -- at least eight words, checked, because "TODO" and "see above"
+# are how an exemption outlives its reason.
+#
+# IT IS CURRENTLY EMPTY, AND THAT IS THE POINT. All 43 properties in SECURITY.md
+# name a witness that resolves. Four of them said "Rust unit tests" or "Kani
+# proofs" in prose and were candidates for an exemption; naming the `rust` and
+# `kani-bounded` jobs instead was strictly more informative, and is what a
+# reader wanted from those cells anyway. Reach for that before reaching for this
+# file -- an exemption is a claim nobody rechecks, and rule R6 exists because
+# they go stale.
+#
+# An exemption for an id that has since acquired a real witness is itself a
+# failure (R6): it means the table moved on and this file did not.
+
+exempt: {}

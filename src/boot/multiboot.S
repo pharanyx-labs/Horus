@@ -821,6 +821,24 @@ embedded_recvblockcli_bin_start:
 embedded_recvblockcli_bin_end:
 #endif
 
+#ifdef FPU_SELFTEST
+/* PIE fputest / fpupeer binaries: one loads a sentinel into every xmm register
+ * and requires it intact across switches, the other requires never to see it
+ * (SECURITY.md S16). */
+.align 16
+.global embedded_fputest_bin_start
+embedded_fputest_bin_start:
+.incbin "userspace/fputest.bin"
+.global embedded_fputest_bin_end
+embedded_fputest_bin_end:
+.align 16
+.global embedded_fpupeer_bin_start
+embedded_fpupeer_bin_start:
+.incbin "userspace/fpupeer.bin"
+.global embedded_fpupeer_bin_end
+embedded_fpupeer_bin_end:
+#endif
+
 #ifdef FORK_SELFTEST
 /* PIE forktest binary: forks itself and asserts from ring 3 that the child's
  * memory is a copy-on-write COPY rather than a share, and that a mapped

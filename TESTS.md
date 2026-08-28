@@ -1212,10 +1212,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **92** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **93** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **94** jobs, **97** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **95** jobs, **98** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1267,7 +1267,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **94 required contexts and 3 reasoned exemptions** — read off
+The intended set is **95 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1593,6 +1593,63 @@ are live, so a handler that confuses them answers about frames the asker has no 
 **Probing the range then turns a number into an oracle** for which frames exist across every
 task in the system, which is the part that makes it a security property rather than an ABI
 preference.
+
+### `smoke-fpu` — a task cannot read another's XMM register file
+
+**S16's witness column was a literal em-dash until 2026-08-28.** The property was stated in
+`SECURITY.md`, `fpu_save` / `fpu_restore` were real code called from `interrupt_handler64` on
+every ring transition, and nothing connected the two. That is the **[C-1]** shape — a documented
+property with no test binding it to the code — sitting in the table for the life of the project,
+and it is the first thing roadmap 4.12's invariant registry would have caught.
+
+Two ring-3 tasks share one CPU. `fputest` loads a sentinel into all sixteen xmm registers and
+requires it intact after 64 switches away and back; `fpupeer` never writes an xmm register and
+requires that none of them ever holds that sentinel. `-smp 1` is load-bearing: the disclosure
+needs the two tasks to interleave on **one physical register file**, and on separate cores they
+would not share one — the test would pass for the wrong reason.
+
+**The load, the yields and the read-back are ONE `asm volatile` block.** Userspace here is
+compiled with SSE2 as the baseline (the kernel is `-mno-sse`), so the compiler may use xmm
+registers for its own purposes at any point. Split across three statements, this would be a test
+of whatever GCC happened to leave in those registers, passing or failing on optimisation
+settings rather than on kernel behaviour. One block removes the question: no compiler-generated
+instruction can run between the write and the read.
+
+**The peer needs no such care, and the asymmetry is the reason.** It asserts the *absence* of a
+specific 256-byte pattern. Compiler-generated SSE cannot manufacture `fputest`'s sentinel, so
+anything running before the read can only make the check **miss** a leak, never invent one — and
+the control arm is what establishes that it does not miss.
+
+**THE ARM CAUGHT THE TEST BEFORE IT CAUGHT THE KERNEL, and that is the entry worth reading.**
+The first version released both tasks together with `selftest_resume_all`, and the leak arm
+reproduced on **2 boots in 3**. The miss was not the kernel being intermittent: `fpupeer` samples
+a bounded number of times and then reports success, so when it was scheduled early it could spend
+its entire window while `fputest` was still in `fill_sentinel` — finding nothing, and reporting
+"no leak" having never once looked at a moment when there was one to see.
+
+**A gate that can pass because it looked too early is worth nothing**, and the obvious repair —
+raise `SAMPLES` until the misses stop — would have hidden the race rather than removed it, and
+left the arm's rate a property of the host's timing. That is the `smoke-kstack-park` mistake:
+a bigger N cannot fix a biased sample.
+
+The peer is now spawned **suspended** and released by `fputest` itself, from inside the asm
+block, after the sentinel is in the registers and before the first yield — so its first sample is
+ordered after the load *by construction*. `frametest` holds its peer back for the same class of
+reason. Measured after the fix: **6 boots in 6**, where it was 2 in 3 before.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-fpu` | `FPUTEST: PASS no-xmm-leak` present, `FPUTEST: FAIL` absent | passes, **6 boots in 6** |
+| `smoke-fpu-leak-control` (`FPU_NO_RESTORE=1`) | `FPUTEST: FAIL peer-saw-sentinel` present | passes, **6 boots in 6** (2 in 3 before the ordering fix below); `smoke-fpu` goes red under the same flag |
+| `smoke-fpu-save-control` (`FPU_NO_SAVE=1`) | `FPUTEST: FAIL own-xmm-lost` present | passes, **3 boots in 3**; `smoke-fpu` goes red under the same flag |
+
+**The two arms are separable, and measuring that is what proves the checks are independent.**
+Under `FPU_NO_RESTORE=1` the leak check fails and the **integrity check still passes** — the
+sentinel survives in the physical registers precisely because the peer never writes any, so
+nothing clobbers it. Under `FPU_NO_SAVE=1` the integrity check fails and the **leak check still
+passes** — the peer is handed its own stale image, which discloses nothing. One loses state, the
+other leaks it. A single `FPU_BROKEN` flag would have reddened both markers at once and told you
+nothing about whether either check could fail on its own.
 
 ### `smoke-fork` — a forked child's memory is a copy, and a kernel object is never forked
 

@@ -2175,14 +2175,42 @@ void fpu_task_init(int id) {
     for (int i = 0; i < 512; i++) tasks[id].fpu_state[i] = g_fpu_template[i];
 }
 
+/* ---- THE TWO HALVES OF S16, AND WHY EACH GETS ITS OWN ARM ----------------
+ *
+ * These two are what make a task's xmm/x87 register file private. They ran
+ * un-witnessed until 2026-08-28: SECURITY.md S16 stated the property and its
+ * witness column held an em-dash, which is the [C-1] shape -- a documented
+ * property with nothing binding it to the code -- and is what roadmap 4.12's
+ * invariant registry exists to stop recurring.
+ *
+ * The halves are separable, so they are falsified separately:
+ *
+ *   FPU_NO_SAVE=1 drops the save. A task's registers are never captured when it
+ *   leaves ring 3, so on its next entry it is handed a STALE image -- its own,
+ *   from some earlier point, or the boot template. That destroys the task's own
+ *   state and discloses nothing to anyone: `fputest` loses its sentinel and
+ *   `fpupeer` still sees only its own restored file.
+ *
+ *   FPU_NO_RESTORE=1 drops the restore. Nothing is written back to the physical
+ *   registers on the way to ring 3, so a task simply inherits whatever the
+ *   previously-running task left in them. That is the disclosure S16 names, and
+ *   it is the arm that matters: `fpupeer` reads `fputest`'s sentinel out of
+ *   registers it never wrote.
+ *
+ * Neither arm is the other's mirror -- one loses state, one leaks it -- which is
+ * why a single "FPU_BROKEN" flag would have been a worse pair of arms than two. */
 void fpu_save(int id) {
     if (id <= 0 || id >= MAX_TASKS) return;
+#ifndef FPU_NO_SAVE
     __asm__ volatile ("fxsave (%0)" :: "r"(tasks[id].fpu_state) : "memory");
+#endif
 }
 
 void fpu_restore(int id) {
     if (id <= 0 || id >= MAX_TASKS) return;
+#ifndef FPU_NO_RESTORE
     __asm__ volatile ("fxrstor (%0)" :: "r"(tasks[id].fpu_state) : "memory");
+#endif
 }
 
 /* Request a voluntary yield from a syscall handler. interrupt_handler64 sees

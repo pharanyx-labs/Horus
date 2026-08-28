@@ -392,6 +392,28 @@ the kernel. And the `uncovered` reasons that name another build which *would* re
 are **hypotheses this manifest has not measured**; promoting them should be a measurement, not
 an edit to the reason.
 
+### 1.9 ~~S16 had no witness at all~~ — CLOSED 2026-08-28
+
+`SECURITY.md` S16 — *"a task cannot read another's XMM register file"* — carried a literal
+em-dash in its witness column for the life of the project. The property was real and the code
+enforcing it was real: `fpu_save` / `fpu_restore` (`src/kernel/scheduler.c`) capture and
+reinstate the whole 512-byte FXSAVE image on every ring transition, called from
+`interrupt_handler64`. **Nothing exercised them.**
+
+That is the **[C-1]** shape precisely — a documented property with no test binding it to the
+code — and it is the shape this whole section exists to record. It survived every prior sweep
+because those sweeps looked for gates that were *absent* or *vacuous*, and this gate was
+neither: it was present, correct, and untested. Nobody had asked the different question, *which
+claims have no witness at all*, because nothing asked it mechanically.
+
+**Closed by `make smoke-fpu`**, falsified one arm per half (`FPU_NO_RESTORE=1` discloses without
+losing, `FPU_NO_SAVE=1` loses without disclosing). Writing the arm found a defect in the *test*
+first: released together, the peer could exhaust its sampling window before the sentinel existed,
+and the arm reproduced 2 boots in 3. It is ordered rather than retried — see `TESTS.md`. **Found while surveying `SECURITY.md` for
+roadmap 4.12's invariant registry**, which is the mechanical version of that question and is
+what stops the next one lasting as long. Until 4.12 lands, "does every S-number have a witness"
+is still a thing a person has to remember to ask.
+
 ---
 
 ## 2. Correctness limitations
@@ -1044,8 +1066,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **92** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **94** across the three, producing **97** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **93** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **95** across the three, producing **98** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1090,7 +1112,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **94 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **95 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

@@ -109,6 +109,14 @@ required:
   # before it meant anything, and it is the same capability that made [C-1]
   # reachable. This is the check that it maps nothing.
   - frame
+  # Gating. It carries S43: hardware authority names a device. CAP_IO_DEVICE was
+  # a type with no object — one primordial capability whose `object` was 0 and
+  # never read, against three syscalls that resolved the console from compiled-in
+  # constants — so it is [C-1]'s shape one layer down, and it is required for the
+  # same reason [C-1]'s witness is: the defect stood because no negative
+  # conformance test asked the question. Roadmap 2.6 and 2.7 both sit on it, and
+  # a second ring-3 driver cannot exist until it holds.
+  - devcap
   # Gating. It carries S39 and S40. The memory half is the one a fork gets wrong
   # by accident -- "share the page tables" reads like "copy the memory" and is
   # one process with two contexts -- and the object half is the caller

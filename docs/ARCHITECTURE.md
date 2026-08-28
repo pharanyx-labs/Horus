@@ -171,6 +171,33 @@ Sixteen object types, besides the empty `CAP_NULL`: `CAP_TCB`, `CAP_NOTIFICATION
 Each task has a 256-slot cspace. Userspace names a capability by slot index and never sees
 the struct, so capabilities cannot be forged or guessed.
 
+### Device capabilities
+
+`CAP_IO_DEVICE` names one entry in the kernel's I/O-device table (`src/kernel/pci.c`), built
+once at boot and read-only afterwards: a PCI bus-0 scan, plus one non-enumerable **platform**
+entry standing for the legacy console hardware (the PIT, the PS/2 controller, the two UARTs,
+the VGA register file and its framebuffer). Each entry declares exactly three kinds of
+resource, because those are exactly the three things the device syscalls hand out — physical
+frames, I/O port ranges, and interrupt lines.
+
+The four device syscalls take a cspace slot as their first argument and check the resource
+requested against what *that* device declares. Ring 3 never names a bus address, only a
+capability; configuration space is never exposed, since a driver that could write it could
+move any device's BARs and make every check decorative.
+
+**This was finding [C-1]'s shape one layer down until 2026-08-28.** The capability's `object`
+was permanently 0 and never read, and the resources came from constants compiled into
+`syscall_hw.c`, so hardware authority was one indivisible grant meaning *the console* — and a
+second ring-3 driver could not be given the hardware it needs without the hardware it does
+not. `SECURITY.md` **S43**; witness `make smoke-devcap`. It is the mechanism roadmap 2.6 (a
+network stack as a ring-3 server) and 2.7 (real device drivers) both stand on.
+
+Index 0 is reserved and names nothing, so the two fields that default to zero — a task's
+`io_device` and a capability's `object` — fail closed instead of resolving to the console. The
+bus scan does not follow PCI-to-PCI bridges: a device behind one is *absent* from the table, so
+no capability can name it and no authority over it can be granted. Missing a device costs a
+feature; inventing one would cost the property.
+
 ### Untyped memory
 
 Kernel objects are not entries in fixed arrays. A `CAP_UNTYPED` names a region of physical
@@ -740,10 +767,13 @@ persisted every write regardless.
 
 ### `console_server`
 
-Owns the serial UART and the VGA framebuffer in ring 3. It receives `CAP_IO_DEVICE` from
-`init`, which gates `SYS_MAP_PHYS` (map the framebuffer), `SYS_IOPORT_GRANT` (native ring-3
-`in`/`out` on the console ports via the TSS I/O bitmap), and `SYS_IRQ_REGISTER` (keyboard
-IRQ → notification).
+Owns the serial UART and the VGA framebuffer in ring 3. It receives from `init` a
+`CAP_IO_DEVICE` **naming the platform device**, which gates `SYS_MAP_PHYS` (map the
+framebuffer), `SYS_IOPORT_GRANT` (native ring-3 `in`/`out` on that device's ports via the TSS
+I/O bitmap), and `SYS_IRQ_REGISTER` (keyboard IRQ → notification). Each of those checks the
+frame, port range or line against what the platform device declares in the I/O-device table —
+see "Device capabilities" below — so the same capability reaches none of the machine's other
+hardware.
 
 It is the **single writer** to the console. The kernel keeps a minimal serial writer for
 panics and early boot, and fails closed on the in-kernel read path while a server owns the

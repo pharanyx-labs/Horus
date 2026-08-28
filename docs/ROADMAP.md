@@ -1003,10 +1003,41 @@ A user-mode TCP/IP server holding `CAP_IO_DEVICE` for one NIC, with per-applicat
 capabilities. A network-stack compromise is then contained to one address space with no
 kernel authority — the highest-visibility demonstration of the architecture's value.
 
-### 2.7 ⬜ Real device drivers as ring-3 servers
+**Its prerequisite landed 2026-08-28** — see 2.7. Until then the sentence above could not be
+written truthfully: there was no such thing as "`CAP_IO_DEVICE` for one NIC", because the
+capability named no device and conferred the console.
+
+### 2.7 ◧ Real device drivers as ring-3 servers — *the device capability landed 2026-08-28*
 
 Following the `console_server` pattern: an AHCI/NVMe storage driver, a keyboard/mouse
 server, and a framebuffer server. Each holds only the `CAP_IO_DEVICE` for its own hardware.
+
+**Delivered: a `CAP_IO_DEVICE` names a device** (**S43**). `src/kernel/pci.c` enumerates PCI
+bus 0 at boot and builds the I/O-device table — one entry per function, plus a non-enumerable
+**platform** entry for the legacy console hardware — each declaring the frames, port ranges and
+IRQ lines it owns. `SYS_MAP_PHYS`, `SYS_IOPORT_GRANT` and `SYS_IRQ_REGISTER` now take a cspace
+slot as their first argument, resolve it through `iodev_from_slot`, and check the resource
+asked for against what that device declares; their fixed slot-10 dispatch entries are gone, so
+the per-slot lookup is the gate exactly as it is for IPC. `SYS_DEVICE_INFO` (102) reports what
+one capability's device declares, and only that one, because firmware assigns BARs and a driver
+that hardcodes an address maps whatever happens to sit there.
+
+**The sentence in 2.6 was the tell.** "A user-mode TCP/IP server holding `CAP_IO_DEVICE` for
+one NIC" had been written here since the roadmap existed, and there was no such thing: the
+capability's `object` was permanently 0, never read, and the three syscalls resolved the
+console from compiled-in constants — a VGA allowlist, one console port set prefilled into the
+TSS bitmap at boot, a hardcoded pair of IRQ numbers. Holding *any* device capability was
+holding the console. That is finding **[C-1]**'s shape one layer down — an object named by a
+constant instead of by the capability — and it took [C-1]'s fix.
+
+Witness `make smoke-devcap`: a probe holding **two** device capabilities checks the matrix in
+both directions on one boot — each reaches its own device's frame, port and IRQ, and is refused
+the other's. Both directions are required, because the refusals alone are satisfied by a kernel
+that refuses everything. Falsified one arm per rule (`IO_DEVICE_OBJECT_UNCHECKED`,
+`IO_DEVICE_PORTS_GLOBAL`, `IO_DEVICE_IRQ_UNCHECKED`), each breaking exactly one marker.
+
+**Still open, and most of the item:** every actual driver. The next one is 2.6's network
+server, which is what turns the mechanism into a demonstration.
 
 ---
 
@@ -1192,7 +1223,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **97 required, 3 exempted** (97 jobs, 100 contexts — re-derive it with
+  The intended set is **98 required, 3 exempted** (98 jobs, 101 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).
@@ -1287,7 +1318,7 @@ Ordered as in the audit's §7.5.
   so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
   claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
   The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-  **empty** — all 44 properties name a witness that resolves.
+  **empty** — all 45 properties name a witness that resolves.
 
   **What the survey found on the way.** **S16** had no witness at all — an em-dash against
   `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1326,7 +1357,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 137 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 48 of them control arms that must reproduce a defect |
+| ✅ | 142 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 52 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

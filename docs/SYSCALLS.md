@@ -722,25 +722,46 @@ READ\|WRITE\|GRANT), not a raw cspace store.
 
 These two are the only places `CAP_ENDPOINT->object` is currently consulted.
 
-## Device delegation — `console_server` only
+## Device delegation
 
-Gated on `CAP_IO_DEVICE` with WRITE in slot 10. Only `init` holds the primordial copy and it
-grants it to exactly one task.
+Each of these takes a **cspace slot** holding a `CAP_IO_DEVICE` as its first argument, and the
+authority is that capability's `object`: an index into the kernel's I/O-device table
+(`src/kernel/pci.c`), built once at boot from a PCI bus scan plus one non-enumerable
+**platform** entry for the legacy console hardware. The resource the caller asks for is
+checked against what **that** device declares. `SECURITY.md` **S43**.
 
 | # | Name | Arguments |
 |---|---|---|
-| 79 | `SYS_MAP_PHYS` | `paddr`, `vaddr`, `len`, `flags` — map an **allowlisted** device frame |
-| 80 | `SYS_IOPORT_GRANT` | — grant native ring-3 `in`/`out` on the console ports via the TSS I/O bitmap |
-| 81 | `SYS_IRQ_REGISTER` | `irq`, `notif_slot`, `badge` — route a hardware IRQ to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (needs WRITE) |
+| 79 | `SYS_MAP_PHYS` | `dev_slot`, `paddr`, `vaddr`, `len`, `flags` — map one 4 KiB frame **the named device declares** (needs WRITE) |
+| 80 | `SYS_IOPORT_GRANT` | `dev_slot` — grant native ring-3 `in`/`out` on **the named device's** port ranges via the TSS I/O bitmap (needs WRITE) |
+| 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge` — route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
+| 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *` — report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
 
-`SYS_MAP_PHYS` additionally checks the requested frame against a fixed allowlist in the
-handler, so the capability grants access to *device* memory, not to arbitrary physical
-memory.
+None of the four has a dispatch-table slot: they are `SC_NONE`, and **that is the gate**, in
+exactly the sense the IPC syscalls are. Until 2026-08-28 each had a fixed slot-10
+`CAP_IO_DEVICE` entry and the resources came from constants — a compiled-in VGA allowlist, one
+compiled-in console port set prefilled into the TSS bitmap at boot, a hardcoded pair of IRQ
+numbers. The capability's `object` was never read, so holding the *type* was holding the
+console: finding **[C-1]**'s shape one layer down, and it takes [C-1]'s fix.
 
-The port-I/O grant is revoked in `task_teardown` (`io_allowed = 0`), because task slots are
-reused — otherwise a fresh task could inherit a dead driver's grant. `tss_set_io_allowed` is
-driven from the single `set_current_task` chokepoint, so every other task gets an
-`iomap_base` past the TSS limit and a ring-3 `in`/`out` faults.
+`SYS_DEVICE_INFO` is READ where the other three are WRITE, and reports only the device the
+capability names. A driver needs it because firmware assigns BARs and a hardcoded address is
+how a driver ends up mapping whatever happens to sit there; there is deliberately no bus walk,
+because holding one device should not be a way to enumerate the machine.
+
+Device index **0 is reserved** and names nothing. Two things default to zero — a task slot's
+`io_device` and a capability's `object`, which `cap_install_from_root`'s fourth argument
+overrides — and both must fail closed rather than resolve to the console.
+
+The port-I/O grant is revoked in `task_teardown` (`io_device = IODEV_NONE`), because task slots
+are reused — otherwise a fresh task could inherit a dead driver's grant. `tss_set_io_device` is
+driven from the single `set_current_task` chokepoint and reloads the bitmap from the incoming
+task's device, so every other task gets an `iomap_base` past the TSS limit and a ring-3
+`in`/`out` faults. A grant is to **one** device: regranting replaces it rather than
+accumulating, because the union of two devices' ports is an authority neither capability
+names. PCI configuration space (`0xCF8`/`0xCFC`) is declared by no device and reachable by
+nobody — a driver that could write it could move any device's BARs and defeat the frame check
+as well.
 
 ## Audit
 

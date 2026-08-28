@@ -958,8 +958,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>102 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>84
+            The ABI defines <strong>103 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>85
             handlers</strong> — the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1355,7 +1355,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <div>
 <pre class="code"><span class="c"># check the claims on this page</span>
 <span class="p">$</span> make smoke                 <span class="c"># boot to ring-3 login</span>
-<span class="p">$</span> make smoke-captest         <span class="c"># 115 capability checks</span>
+<span class="p">$</span> make smoke-captest         <span class="c"># 122 capability checks</span>
 <span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
 <span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
 <span class="p">$</span> make reproducible-build    <span class="c"># <span class="x">run twice, diff the record</span></span></pre>
@@ -1363,7 +1363,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 137 test targets, and the troubleshooting
+          Every configuration flag, every one of the 142 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1407,6 +1407,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> (PID 1) supervising the shell</th><td class="t-note">smoke-session</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code> — single writer, owns UART and framebuffer</th><td class="t-note">smoke-console-smp</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Raw terminal mode — termios and winsize</th><td class="t-note">smoke-term</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Device capabilities</strong> — a <code>CAP_IO_DEVICE</code> names one device in a boot-time table (a PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device&rsquo;s frames, port ranges and interrupt lines; until 2026-08-28 the capability&rsquo;s object was never read, so holding the type was holding the console. No IOMMU, so a device&rsquo;s DMA is bounded by nothing; no MSI, no bridge walk, and <code>console_server</code> is still the only driver</th><td class="t-note">smoke-devcap</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>fs_server</code> over an AEAD-encrypted object store</th><td class="t-note">smoke-fs</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">POSIX rwx against a kernel-attested uid, never a client-supplied one</th><td class="t-note">smoke-fs-perms</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong> — TPM 2.0 PCR 8/9, disk KEK sealed under <code>PolicyPCR</code></th><td class="t-note">smoke-tpm-seal</td></tr>
@@ -1467,7 +1468,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 89 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 90 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1648,7 +1649,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 97 gating and 3 exempted, and the promotions are backed by
+              intended set is 98 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -1951,9 +1952,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>55 of 84</strong> system calls have their handler actually executed by the
+              <strong>57 of 85</strong> system calls have their handler actually executed by the
               three workloads this project tracks — a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 29 are each
+              permission conformance suite, and the boot-modules session. The other 28 are each
               listed with a written reason.
             </p>
             <p>
@@ -2191,7 +2192,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             and shared memory, a monotonic clock and timers, a real process and session model —
             <code>fork</code> and the capability space a child inherits are in — a VFS with
             several filesystems, dynamic linking, and a network stack as an unprivileged server
-            holding one network card's capability.
+            holding one network card&rsquo;s capability &mdash; a sentence that only became sayable
+            on 2026-08-28, when a device capability started naming a device instead of conferring
+            the console.
           </p>
           <p>
             The single highest-leverage change is not technical. It is finding a second reviewer

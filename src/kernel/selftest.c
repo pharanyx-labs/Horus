@@ -1544,9 +1544,9 @@ void mapphys_selftest(void) {
     if (a <= 0) { print("MAPPHYS_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
     tasks[a].uid = 0;
 
-    /* Endow the probe with the device-hardware capability in slot 10 -- the
+    /* Endow the probe with a capability naming the PLATFORM device in slot 10 --
      * SYS_MAP_PHYS gate. Nothing else is ever given a copy. */
-    if (cap_install_from_root(a, 10, 10, 0) != 0) {
+    if (cap_install_from_root(a, 10, 10, IODEV_PLATFORM) != 0) {
         print("MAPPHYS_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
@@ -1563,6 +1563,61 @@ void mapphys_selftest(void) {
     sched_enter_user(a);
 }
 #endif /* MAPPHYS_SELFTEST */
+
+#ifdef DEVCAP_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Device-capability isolation self-test (DEVCAP_SELFTEST builds only) -----
+ *
+ * The witness that a CAP_IO_DEVICE names a DEVICE. The probe
+ * (userspace/devcaptest.c) is endowed with TWO device capabilities — the legacy
+ * platform device in slot 10 and the machine's PCI network controller in slot 20
+ * — and shows that each reaches its own device's frames, ports and interrupt and
+ * is refused the other's, in both directions. DEVCAPTEST: PASS.
+ *
+ * WHY THE HARNESS FAILS RATHER THAN SKIPS WHEN THERE IS NO NIC. A second device
+ * is the entire experiment: with only the platform device present, every negative
+ * in the probe is vacuous and the suite would pass on the very kernel it exists
+ * to reject. A gate that quietly becomes a no-op on a machine without a NIC is
+ * worse than one that is absent, because it reports PASS. `make smoke-devcap`
+ * boots QEMU with SMOKE_NET=1 for exactly this reason. */
+void devcap_selftest(void) {
+    extern uint8_t embedded_devcaptest_bin_start[], embedded_devcaptest_bin_end[];
+
+    print("DEVCAP_SELFTEST: launch\n");
+
+    uint64_t nic = iodev_first_of_class(IODEV_CLASS_NETWORK);
+    if (nic == IODEV_NONE) {
+        /* Not "skip". See above. */
+        print("DEVCAPTEST: FAIL no-nic-present\n"); for (;;) asm volatile("hlt");
+    }
+
+    int a = fs_spawn_embedded(embedded_devcaptest_bin_start,
+                              embedded_devcaptest_bin_end, "devcap");
+    if (a <= 0) { print("DEVCAP_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+
+    /* Slot 10: the platform device. Slot 20: the NIC. Both are copied from the
+     * root cnode, so both are primordial CAP_IO_DEVICE capabilities with the same
+     * type and the same rights — they differ in exactly one field, the object,
+     * which is the point. If the object did not matter these two would be
+     * interchangeable, and that is what the suite falsifies. */
+    if (cap_install_from_root(a, CAPSLOT_IO_DEVICE, 10, IODEV_PLATFORM) != 0) {
+        print("DEVCAP_SELFTEST: FAIL endow-platform\n"); for (;;) asm volatile("hlt");
+    }
+    if (cap_install_from_root(a, CAPSLOT_IO_DEVICE_ALT, 10, (uint32_t)nic) != 0) {
+        print("DEVCAP_SELFTEST: FAIL endow-nic\n"); for (;;) asm volatile("hlt");
+    }
+    /* A notification (the SYS_IRQ_REGISTER destination) and a CAP_CONSOLE, which
+     * is there to be the WRONG type: the probe checks a non-device capability in
+     * the device-slot argument is refused, not merely that an empty slot is. */
+    cap_install_from_root(a, CAPSLOT_NOTIFY,  14, NOTIF_FS_READY);
+    cap_install_from_root(a, CAPSLOT_CONSOLE,  8, 0);
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* DEVCAP_SELFTEST */
 
 #ifdef IOPORT_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
@@ -1583,9 +1638,9 @@ void ioport_selftest(void) {
     if (a <= 0) { print("IOPORT_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
     tasks[a].uid = 0;
 
-    /* Endow the probe with the device-hardware capability in slot 10 -- the
+    /* Endow the probe with a capability naming the PLATFORM device in slot 10 --
      * SYS_IOPORT_GRANT gate. Nothing else is ever given a copy. */
-    if (cap_install_from_root(a, 10, 10, 0) != 0) {
+    if (cap_install_from_root(a, 10, 10, IODEV_PLATFORM) != 0) {
         print("IOPORT_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
@@ -1619,7 +1674,7 @@ void irq_selftest(void) {
      * test needs one. slot 10 = CAP_IO_DEVICE gates SYS_IRQ_REGISTER; nothing
      * else gets the device cap. */
     cap_install_from_root(a, CAPSLOT_NOTIFY, 14, NOTIF_FS_READY);
-    if (cap_install_from_root(a, 10, 10, 0) != 0) {
+    if (cap_install_from_root(a, 10, 10, IODEV_PLATFORM) != 0) {
         print("IRQ_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
@@ -1655,7 +1710,7 @@ void console_selftest(void) {
      * CAP_IO_DEVICE gates SYS_MAP_PHYS / SYS_IOPORT_GRANT. Nothing else gets the
      * device cap — only the console server owns the hardware. */
     cap_install_from_root(srv, CAPSLOT_CONSOLE_EP, 11, CON_EP_REQ);
-    if (cap_install_from_root(srv, 10, 10, 0) != 0) {
+    if (cap_install_from_root(srv, 10, 10, IODEV_PLATFORM) != 0) {
         print("CONSOLE_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
@@ -1965,7 +2020,7 @@ void console_isolation_selftest(void) {
     if (srv <= 0) { print("CONSOLE_ISOLATION: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
     tasks[srv].uid = 0;
     cap_install_from_root(srv, CAPSLOT_CONSOLE_EP, 11, CON_EP_REQ);  /* console listen */
-    if (cap_install_from_root(srv, 10, 10, 0) != 0) {
+    if (cap_install_from_root(srv, 10, 10, IODEV_PLATFORM) != 0) {
         print("CONSOLE_ISOLATION: FAIL endow\n"); for (;;) asm volatile("hlt");
     }
 
@@ -1996,7 +2051,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

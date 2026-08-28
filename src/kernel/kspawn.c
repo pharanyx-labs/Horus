@@ -554,9 +554,9 @@ int do_spawn_stdio(uint32_t stdio_spec) {
  *    gets its own commit, its own invariant and its own arm. Until then a forked
  *    child that needs a service must be handed it with SYS_CAP_GRANT, exactly as
  *    a spawned one is. docs/LIMITATIONS.md records this.
- *  - `io_allowed`. A ring-3 port-I/O grant is per-task by construction (the TSS
- *    I/O bitmap is flipped on context switch); inheriting it would hand a second
- *    task the console hardware nothing gave it.
+ *  - `io_device`. A ring-3 port-I/O grant is per-task by construction (the TSS
+ *    I/O bitmap is reloaded on context switch); inheriting it would hand a second
+ *    task device hardware nothing gave it.
  *  - The file master key. It mirrors uid, which IS inherited, so leaving it
  *    behind means a forked child cannot decrypt its user's files until it
  *    authenticates. Fail closed: a key is the one thing worth copying only on

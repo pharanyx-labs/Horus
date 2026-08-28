@@ -183,10 +183,12 @@ void h_ipc_sender(struct interrupt_frame64 *r);
 void h_ipc_reply_to(struct interrupt_frame64 *r);
 void h_notify(struct interrupt_frame64 *r);
 void h_wait_notify(struct interrupt_frame64 *r);
-/* syscall_hw.c — console/driver hardware-delegation syscalls */
+/* syscall_hw.c — device-delegation syscalls (authority is the CAP_IO_DEVICE the
+ * caller names in the first argument; see src/kernel/pci.c) */
 void h_map_phys(struct interrupt_frame64 *r);
 void h_ioport_grant(struct interrupt_frame64 *r);
 void h_irq_register(struct interrupt_frame64 *r);
+void h_device_info(struct interrupt_frame64 *r);
 /* syscall_vm.c — frame capabilities and shared memory (roadmap 2.1) */
 void h_map_frame(struct interrupt_frame64 *r);
 void h_unmap_frame(struct interrupt_frame64 *r);

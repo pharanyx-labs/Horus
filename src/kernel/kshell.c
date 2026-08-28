@@ -429,8 +429,14 @@ void spawn_initial_userspace_init(void) {
         cap_install_from_root(pid, CAPSLOT_DEBUG, 18, 0);        /* root[18] = CAP_DEBUG */
         /* CAP_IO_DEVICE (root[10]): init delegates this to the console_server it
          * launches (userspace/init.c), so that server can own the console hardware
-         * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy. */
-        cap_install_from_root(pid, 12, 10, 0);  /* root[10] = CAP_IO_DEVICE                 */
+         * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy.
+         *
+         * The object must be restated as IODEV_PLATFORM, per the NB above: the 4th
+         * argument overrides it, and passing 0 would leave init holding a device
+         * capability naming device 0 — which is deliberately no device at all, so
+         * console_server's first hardware syscall would be refused. That is the
+         * fail-closed direction, and it is why index 0 is reserved. */
+        cap_install_from_root(pid, 12, 10, IODEV_PLATFORM);   /* root[10] = CAP_IO_DEVICE   */
         /* CAP_UNTYPED (root[17], roadmap 0.3): authority to CREATE kernel objects.
          * init holds the user-facing region and can delegate bounded sub-authority
          * onward with SYS_CAP_GRANT — which is what makes "this server may consume

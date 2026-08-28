@@ -1996,7 +1996,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
@@ -2449,6 +2449,50 @@ void fork_selftest(void) {
     sched_enter_user(pid);   /* forktest prints the PASS/FAIL marker; does not return */
 }
 #endif /* FORK_SELFTEST */
+
+#ifdef FORKEXEC_SELFTEST
+/* ---- fork+exec self-test (roadmap 2.3, FORKEXEC_SELFTEST only) -------------
+ *
+ * Spawn userspace/forkexectest, which forks itself, lets the child replace its
+ * image with userspace/forkexecee through SYS_EXEC_NAMED, and then asserts from
+ * ring 3 that the exec replaced the IMAGE and not the AUTHORITY (S42) -- and
+ * that the parent's memory survived the reclaim of the cloned address space the
+ * exec performed (S39, one layer on from what fork_selftest can reach).
+ *
+ * Endowed exactly as fork_selftest endows forktest, and for the same two
+ * reasons: a CAP_UNTYPED so there is a real delegated capability whose lineage
+ * the exec can be measured against -- authority to create an object, not
+ * authority to fork or exec, both of which answer to the slot-3 capability every
+ * task is born with -- and a READ-only CAP_DEBUG so the driver can read serial
+ * and badge out of the derivation graph with SYS_CAP_ENUMERATE.
+ *
+ * CAP_DEBUG is load-bearing twice here. It is how the invariant is checked
+ * structurally, and it is also the only channel the three tasks have to
+ * rendezvous through: a forked child shares no memory with its parent, and after
+ * the exec it does not share a program either. See userspace/forkexectest.c. */
+void forkexec_selftest(void) {
+    extern uint8_t embedded_forkexectest_bin_start[], embedded_forkexectest_bin_end[];
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    print("FORKEXEC_SELFTEST: begin\n");
+
+    int pid = fs_spawn_embedded(embedded_forkexectest_bin_start,
+                                embedded_forkexectest_bin_end, "forkexectest");
+    if (pid <= 0) { print("FORKEXECTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    /* uid 0 for SYS_CAP_GRANT and SYS_KILL against the child, which the driver
+     * uses to release it into the exec and to reap it afterwards. The authority
+     * being exercised by the test is the CAP_UNTYPED below; this is the
+     * supervisor relationship the driver needs to drive its own children, and it
+     * is the same endowment forktest gets. */
+    tasks[pid].uid = 0;
+
+    cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
+    cap_install_from_root(pid, CAPSLOT_DEBUG, 18, 0);
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(pid);   /* forkexectest prints the PASS/FAIL marker; does not return */
+}
+#endif /* FORKEXEC_SELFTEST */
 
 
 

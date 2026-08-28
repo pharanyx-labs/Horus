@@ -139,6 +139,17 @@ def derive():
         # to notice it becoming 88.
         "gates": (_grep_count(MAKEFILE, r"smoke-[a-z0-9-]*:")
                   - _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*-control[a-z0-9-]*:")),
+        # SECURITY.md's S-numbered rows. Declared 2026-08-28 for the reason
+        # `framepeer_checks` was: four files state it (.github/invariants.yml's
+        # header, TESTS.md, docs/ROADMAP.md, and CHANGES.md's entry for the day
+        # it was measured) and NOTHING was comparing any of them to the table.
+        # It is the count `tools/check_invariants.py` reports, so a property
+        # added without touching the prose around it is caught here rather than
+        # by a reader noticing. CHANGES.md is deliberately not an occurrence:
+        # its entries are dated records of what was true then.
+        "security_properties": _grep_count(
+            str(Path(__file__).resolve().parent.parent / "SECURITY.md"),
+            r"^\|\s*S\d+[a-z]?\s*\|"),
         "captest_checks": _grep_count(CAPTEST, r"\s*check\("),
         # frametest's parent-side checks. Declared 2026-08-27 because this exact
         # number had already gone stale: TESTS.md said 17 while the wire said 31.

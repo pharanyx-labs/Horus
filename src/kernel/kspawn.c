@@ -833,9 +833,32 @@ static void exec_into_armed_image(void) {
     uint64_t stack_top = 0;
     choose_image_placement(cur, &load_base, &stack_top);
 
-    /* Rebuild only the address space (fresh PML4 into tasks[cur].cr3); the cspace
-     * is untouched so capabilities survive. Reset signal dispositions like a real
-     * exec. create_user_pagedir reads image_base for the premap, so set it first. */
+    /* ---- THE CSPACE IS NOT TOUCHED, AND THAT IS THE PROPERTY (S42) --------
+     *
+     * Rebuild only the address space (fresh PML4 into tasks[cur].cr3). The task
+     * keeps every capability it held, with the same serial and the same badge, so
+     * it keeps its POSITION in the derivation graph and not merely its authority.
+     * Two things follow, and the second is why this is a security property rather
+     * than POSIX nostalgia:
+     *
+     *  - a revocation aimed at whatever these were derived from still reaches
+     *    them, so a task cannot launder delegated authority into a root of its
+     *    own by execing;
+     *  - and combined with SYS_FORK, which endows the child with DERIVED copies
+     *    (S41), `fork(); exec();` -- the only sequence a shell ever performs --
+     *    produces a task whose authority is still a subtree of its parent's.
+     *
+     * Written as the ABSENCE of a step, which is the hardest kind of property to
+     * witness: nothing here can be pointed at. `EXEC_RESET_CSPACE=1` and
+     * `EXEC_ROOT_CSPACE=1` add the two steps that would break each half of it
+     * (see cap_exec_mutate_cspace in capability.c), and `make smoke-forkexec`
+     * measures the difference.
+     *
+     * Reset signal dispositions like a real exec. create_user_pagedir reads
+     * image_base for the premap, so set it first. */
+#if defined(EXEC_RESET_CSPACE) || defined(EXEC_ROOT_CSPACE)
+    { extern void cap_exec_mutate_cspace(int t); cap_exec_mutate_cspace(cur); }
+#endif
     tasks[cur].image_base  = load_base;
     tasks[cur].image_end   = load_base;
     /* Size the image-window premap to the new image's loaded span (still armed),

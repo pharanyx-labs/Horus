@@ -1862,6 +1862,43 @@ jobs:
       - name: Control arm — a forked capability must be derived from its parent's
         run: make smoke-fork-cspace-orphan-control
 
+  forkexec:
+    name: "An exec replaces the image, not the authority"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # fork and exec were each gated; the two in SEQUENCE were not, and that is
+      # the only sequence a shell ever performs. The driver forks, the child
+      # replaces its image, and the driver then reads the child's cspace out of
+      # the derivation graph: same capability, same serial, same badge, and the
+      # driver's revoke still reaches it three generations down. It also re-reads
+      # its own page -- the exec RECLAIMS the cloned address space, and nothing
+      # else in the tree frees a cloned space while its parent is still running.
+      - name: fork then exec, from ring 3
+        run: make smoke-forkexec
+      # The exec discards. "Give the new image a clean slate" leaves the task
+      # holding only its birth endowment, so a shell that forks, endows and execs
+      # hands its child nothing.
+      - name: Control arm — an exec must not discard what the task was given
+        run: make smoke-forkexec-reset-control
+      # The exec launders, and the one the property exists for. Keep every
+      # capability but re-mint it as a root: the authority is identical and every
+      # functional check passes, so only the derivation graph can see it -- and
+      # the parent's revoke no longer reaches the child's copy. Finding 3.3's
+      # shape, one syscall over from smoke-fork-cspace-orphan-control.
+      - name: Control arm — an exec must not re-root what it keeps
+        run: make smoke-forkexec-root-control
+
   rng-seed:
     name: "The CSPRNG refuses to emit keystream before it is seeded"
     runs-on: ubuntu-latest

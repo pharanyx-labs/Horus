@@ -851,6 +851,25 @@ embedded_forktest_bin_start:
 embedded_forktest_bin_end:
 #endif
 
+#ifdef FORKEXEC_SELFTEST
+/* PIE fork+exec pairing binaries: forkexectest forks itself and drives the
+ * child through SYS_EXEC_NAMED into forkexecee, then asserts from ring 3 that
+ * the exec replaced the image and not the authority (roadmap 2.3, S42). */
+.align 16
+.global embedded_forkexectest_bin_start
+embedded_forkexectest_bin_start:
+.incbin "userspace/forkexectest.bin"
+.global embedded_forkexectest_bin_end
+embedded_forkexectest_bin_end:
+
+.align 16
+.global embedded_forkexecee_bin_start
+embedded_forkexecee_bin_start:
+.incbin "userspace/forkexecee.bin"
+.global embedded_forkexecee_bin_end
+embedded_forkexecee_bin_end:
+#endif
+
 #ifdef COW_SELFTEST
 /* PIE cowtest binary: reads two fresh heap pages (shared zero page) then writes
  * one, proving copy-on-write hands out a private page without disturbing the

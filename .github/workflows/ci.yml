@@ -382,6 +382,11 @@ jobs:
       # which is why this one removes the lookup entirely.
       - name: Control arm — device syscalls that gate on nothing
         run: make smoke-captest-devcap-control
+      # S46's authority half. Unmasking an interrupt line decides that a device
+      # may interrupt this machine again; ungated, any task can do it for
+      # hardware it does not hold.
+      - name: Control arm — re-enabling an interrupt without the device capability
+        run: make smoke-captest-irq-ack-control
       # Roadmap 2.2. The tempting version of SYS_CLOCK_GETTIME reports real
       # microseconds from the TSC -- strictly more accurate, and it undoes
       # CR4.TSD by handing ring 3 the cycle-accurate timer that bit exists to
@@ -1869,6 +1874,13 @@ jobs:
       # cannot read its own descriptor ring.
       - name: Control arm — a device address space with nothing mapped into it
         run: make smoke-net-iommu-control
+      # S46. A level-triggered PCI line left unmasked when it fires re-delivers
+      # forever: ring 3 never runs, the driver never clears the device, and the
+      # machine stops making progress. Asserts a STALL, because that is what a
+      # livelock looks like -- the DMA property still holds and only the
+      # interrupt half never completes.
+      - name: Control arm — an unmasked level-triggered line livelocks the machine
+        run: make smoke-net-irq-storm-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

@@ -30,7 +30,7 @@ static void wr(const char *s) { sys_write(1, s, slen(s)); }
 void _start(void) {
     wr("IRQ_SELFTEST: begin\n");
 
-    if (sys_irq_register(IRQ_TIMER, NOTIF_SLOT, BADGE) != 0) {
+    if (sys_irq_register(CAPSLOT_IO_DEVICE, IRQ_TIMER, NOTIF_SLOT, BADGE) != 0) {
         wr("IRQ_SELFTEST: FAIL register\n"); sys_exit();
     }
 

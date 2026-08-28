@@ -225,6 +225,27 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'Device delegation — `console_server` only'
+    reason: >-
+      docs/SYSCALLS.md's heading until 2026-08-28. The device syscalls are not
+      console_server's: they take a cspace slot naming any CAP_IO_DEVICE, and a
+      second driver holding a different device capability reaches them and
+      reaches only its own hardware (S43).
+  - pattern: 'Gated on `CAP_IO_DEVICE` with WRITE in slot 10'
+    reason: >-
+      the fixed slot-10 dispatch entries were removed on 2026-08-28. The gate is
+      the per-slot lookup, exactly as it is for IPC; a fixed slot would authorise
+      the wrong capability, which is finding [C-1].
+  - pattern: 'checks the requested frame against a fixed allowlist'
+    reason: >-
+      SYS_MAP_PHYS checked a compiled-in VGA allowlist until 2026-08-28, which is
+      why every device capability reached the console. It now checks the frame
+      against what the device the capability NAMES declares (S43).
+  - pattern: 'io_allowed = 0'
+    reason: >-
+      the per-task port grant is `io_device`, an index, not a boolean -- one
+      field so that the grant and what it is a grant TO cannot disagree. Cleared
+      to IODEV_NONE in task_teardown.
   - pattern: 'every one of the 53 test targets'
     reason: >-
       site/index.html said 53 against a live 134 on 2026-08-28 -- undeclared, so

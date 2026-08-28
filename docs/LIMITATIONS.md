@@ -371,12 +371,12 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **55 of 84** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **57 of 85** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 29 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This is stated as a limitation rather than a finding because nothing here is known to be
-broken. What is known is that a defect in any of those 29 handlers would be invisible in the
+broken. What is known is that a defect in any of those 28 handlers would be invisible in the
 same way issue #176 was — and #176 is the reason the number exists at all. `captest` is a
 **refusal** suite by construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both
 assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. Both syscalls
@@ -386,7 +386,7 @@ were named by the suite; neither handler had ever executed.
 direction, so the number cannot quietly fall. It deliberately does not require all of them —
 that would be a large body of test-writing disguised as a gate. Property **S25**.
 
-**Two of the 29 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
+**Two of the 28 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
 uncovered only because `tools/session_test.py` runs no pipeline — a gap in the workload, not
 the kernel. And the `uncovered` reasons that name another build which *would* reach a syscall
 are **hypotheses this manifest has not measured**; promoting them should be a measurement, not
@@ -986,6 +986,35 @@ roadmap 2.4. So are process groups, job control and `/proc` — roadmap 2.3.
 
 ---
 
+### 2.12 What a device capability does not cover
+
+**S43** landed 2026-08-28: a `CAP_IO_DEVICE` names one entry in the kernel's I/O-device table
+and reaches only that device's frames, ports and interrupt lines. Five things that property
+deliberately does **not** say, listed because a device model that looked like it enforced a
+boundary it does not is worse than one that never claimed to.
+
+- **DMA is outside it entirely.** A capability bounds what a driver may *program*; it bounds
+  nothing about where the device then reads and writes, because there is no IOMMU. A ring-3
+  driver holding one NIC capability can point that NIC's descriptors at any physical address.
+  This is the single largest gap in the model and it is not closable in software — §4's IOMMU
+  bullet and `SECURITY.md`'s physical-attack scope are the same limitation. Until an IOMMU
+  exists, "the driver is confined to its address space" is true of the *driver* and not of its
+  *device*.
+- **PCI-to-PCI bridges are not walked.** The scan covers bus 0, which is every device on the
+  machines this kernel targets. A device behind a bridge is *absent* from the table, so no
+  capability can name it — the failure is un-delegatable hardware, not unmediated hardware.
+- **MSI/MSI-X are not routed.** A device declares at most the one legacy `INTERRUPT_LINE`
+  firmware programmed. A device that only signals by message cannot be driven from ring 3 yet.
+- **Bus mastering is not enabled by anything.** The enumerator restores each device's command
+  register exactly as it found it and no syscall lets ring 3 write config space. A driver whose
+  device needs bus mastering will need a mechanism, and that mechanism is where the DMA question
+  above has to be answered rather than inherited.
+- **The table is not enumerable.** `SYS_DEVICE_INFO` reports the device the caller's capability
+  names and nothing else; there is no "list the devices" call, so holding one device is not a
+  way to learn the shape of the machine. That is a deliberate omission, and it means a driver
+  cannot discover a *second* device it might legitimately want — `init` delegates, or nothing
+  does.
+
 ## 3. Scale and performance limitations
 
 ### 3.1 Hard compile-time ceilings — **[I-7]**
@@ -1099,8 +1128,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **95** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **97** across the three, producing **100** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **96** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **98** across the three, producing **101** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1145,7 +1174,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **97 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **98 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

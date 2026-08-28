@@ -237,6 +237,27 @@ fi
 # harness. That is what a two-boot sealing test needs (KEEP_TPMSTATE carries the
 # same TPM across both boots) without a third copy of this QEMU command line.
 #
+# SMOKE_NET=1 puts a virtio-net NIC on the PCI bus. Every other boot keeps
+# -net none.
+#
+# It exists for the device-capability gates: their whole experiment is that a
+# capability naming ONE device does not reach ANOTHER, so a second real device has
+# to be on the bus. With only the platform device present every negative in
+# devcaptest is vacuous and the suite would pass on the kernel it exists to
+# reject -- which is why the guest FAILS rather than skips when it finds no NIC,
+# and why this flag is not merely an optimisation to leave on by default.
+#
+# The backend is a HUBPORT, not `-netdev user`. What these gates need is a device
+# on the bus, not a network: nothing in the guest sends a packet, and a hubport
+# needs no slirp, so the gate does not depend on how the runner's QEMU was built.
+# It prints "hub 0 is not connected to host network" on stderr, which is a correct
+# description of the intent. A future network-stack gate that actually moves
+# traffic will want `-netdev user` with a hostfwd, and that is a different flag.
+NET_ARG="-net none"
+if [ "${SMOKE_NET:-0}" = 1 ]; then
+    NET_ARG="-netdev hubport,id=smokenet0,hubid=0 -device virtio-net-pci,netdev=smokenet0"
+fi
+
 # SWTPM_REQUIRED=1 turns "swtpm is not installed" from a silent skip into an
 # error -- see tools/swtpm_lib.sh for why that mattered.
 TPM_ARG=""
@@ -256,7 +277,7 @@ qemu-system-x86_64 \
     -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel tcg \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
-    -serial file:"$LOG" -net none \
+    -serial file:"$LOG" $NET_ARG \
     $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!

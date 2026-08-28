@@ -100,7 +100,9 @@ DEFECT_FLAGS = \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
-	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK
+	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK \
+	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
+	IO_DEVICE_CAP_UNCHECKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -171,6 +173,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/tpm.o \
        src/kernel/pipe.o \
        src/kernel/untyped.o \
+       src/kernel/pci.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0
@@ -649,6 +652,59 @@ ifeq ($(MAPPHYS_SELFTEST),1)
 CFLAGS  += -DMAPPHYS_SELFTEST
 ASFLAGS += -DMAPPHYS_SELFTEST
 MAPPHYS_SELFTEST_DEP = userspace/mapphystest.bin
+endif
+
+# DEVCAP_SELFTEST=1 embeds devcaptest and, at boot, spawns it holding TWO device
+# capabilities: the legacy platform device (VGA/UART/PS-2/PIT) and the machine's
+# PCI network controller. The probe proves each capability reaches its own
+# device's frames, ports and interrupt line and is REFUSED the other's, in both
+# directions (prints DEVCAPTEST: PASS to serial). The witness that a CAP_IO_DEVICE
+# names a device rather than conferring the console; gated off the ship kernel.
+# Needs a NIC on the machine: run it under `tools/smoke_test.sh` with SMOKE_NET=1.
+DEVCAP_SELFTEST ?= 0
+ifeq ($(DEVCAP_SELFTEST),1)
+CFLAGS  += -DDEVCAP_SELFTEST
+ASFLAGS += -DDEVCAP_SELFTEST
+DEVCAP_SELFTEST_DEP = userspace/devcaptest.bin
+endif
+
+# IO_DEVICE_OBJECT_UNCHECKED=1 rebuilds SYS_MAP_PHYS's pre-2026-08-28 authority
+# check: the capability's `object` is ignored and the frame is tested against the
+# compiled-in VGA allowlist instead, so ANY device capability reaches the console
+# framebuffer. Control arm for the [C-1]-shaped defect this all exists to close;
+# `make smoke-devcap-object-control` requires DEVCAPTEST: FAIL nic-cap-mapped-vga.
+IO_DEVICE_OBJECT_UNCHECKED ?= 0
+ifeq ($(IO_DEVICE_OBJECT_UNCHECKED),1)
+CFLAGS += -DIO_DEVICE_OBJECT_UNCHECKED
+endif
+
+# IO_DEVICE_PORTS_GLOBAL=1 rebuilds the pre-2026-08-28 TSS I/O bitmap: one
+# console port set, loaded by every grant whatever device the capability named.
+# `make smoke-devcap-ports-control` requires FAIL nic-cap-got-console-ports.
+IO_DEVICE_PORTS_GLOBAL ?= 0
+ifeq ($(IO_DEVICE_PORTS_GLOBAL),1)
+CFLAGS += -DIO_DEVICE_PORTS_GLOBAL
+endif
+
+# IO_DEVICE_IRQ_UNCHECKED=1 rebuilds the pre-2026-08-28 SYS_IRQ_REGISTER, which
+# accepted any routable IRQ from any holder of the type, so a NIC driver could
+# subscribe to the console's keyboard. `make smoke-devcap-irq-control` requires
+# FAIL nic-cap-took-platform-irq.
+IO_DEVICE_IRQ_UNCHECKED ?= 0
+ifeq ($(IO_DEVICE_IRQ_UNCHECKED),1)
+CFLAGS += -DIO_DEVICE_IRQ_UNCHECKED
+endif
+
+# IO_DEVICE_CAP_UNCHECKED=1 removes the capability lookup from iodev_from_slot
+# entirely, so every caller of a device syscall resolves to the platform device
+# while holding nothing. It is the arm for the GATE HAVING MOVED: the three device
+# syscalls lost their fixed slot-10 dispatch entries when the lookup moved into
+# the handler, and an arm that only bypasses the object check cannot say whether
+# a capability is still required at all. `make smoke-captest-devcap-control`
+# requires CAPTEST: FAIL map-phys-without-cap-io-device.
+IO_DEVICE_CAP_UNCHECKED ?= 0
+ifeq ($(IO_DEVICE_CAP_UNCHECKED),1)
+CFLAGS += -DIO_DEVICE_CAP_UNCHECKED
 endif
 
 # IOPORT_SELFTEST=1 embeds ioporttest and, at boot, spawns it endowed with a
@@ -1641,7 +1697,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2142,7 +2198,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -2703,6 +2759,18 @@ smoke-captest-getline-control:
 		ABSENT_MARKER='CAPTEST: PASS' \
 		tools/smoke_test.sh boot.iso
 
+# The device half of captest: this task holds no CAP_IO_DEVICE, and the four
+# device syscalls have no dispatch-table slot, so the handler's own lookup is the
+# whole gate. Drop it and captest maps the console's framebuffer holding nothing.
+.PHONY: smoke-captest-devcap-control
+smoke-captest-devcap-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IO_DEVICE_CAP_UNCHECKED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IO_DEVICE_CAP_UNCHECKED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL map-phys-without-cap-io-device' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest-clock-control
 smoke-captest-clock-control:
 	@$(MAKE) --no-print-directory clean
@@ -3259,6 +3327,57 @@ smoke-console:
 	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
 		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# ---- Device capabilities: a CAP_IO_DEVICE names a device --------------------
+#
+# Base gate. Boots with a virtio-net NIC on the bus (SMOKE_NET=1) and a probe
+# holding two device capabilities, and requires DEVCAPTEST: PASS -- every
+# cross-device request refused AND every own-device request served. The second
+# half is what makes this a gate rather than a way to pass: a kernel that refuses
+# all three syscalls satisfies the negatives and fails P3/P4.
+.PHONY: smoke-devcap
+smoke-devcap:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 boot.iso
+	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='DEVCAPTEST: PASS' \
+		FAIL_MARKER='DEVCAPTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# Control arm 1 of 3: the capability's object is not consulted and SYS_MAP_PHYS
+# tests the frame against the old compiled-in VGA allowlist, so the NIC
+# capability maps the console's framebuffer. The FAIL marker MUST be present.
+.PHONY: smoke-devcap-object-control
+smoke-devcap-object-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_OBJECT_UNCHECKED=1
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_OBJECT_UNCHECKED=1 boot.iso
+	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-mapped-vga' tools/smoke_test.sh boot.iso
+
+# Control arm 2 of 3: one global TSS I/O bitmap, loaded with the console's ports
+# by every grant whatever device was named, so the NIC capability reads COM1.
+#
+# The probe reads the SAME port under two grants for this arm's sake -- see the
+# long note in userspace/devcaptest.c. The first arrangement had it read the NIC's
+# own port, which under this defect is the port that is DENIED, so the probe
+# faulted there and never reached the read this arm exists to observe.
+.PHONY: smoke-devcap-ports-control
+smoke-devcap-ports-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_PORTS_GLOBAL=1
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_PORTS_GLOBAL=1 boot.iso
+	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-got-console-ports' tools/smoke_test.sh boot.iso
+
+# Control arm 3 of 3: SYS_IRQ_REGISTER does not check the line against the named
+# device, so the NIC capability subscribes to the console's keyboard interrupt.
+.PHONY: smoke-devcap-irq-control
+smoke-devcap-irq-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_IRQ_UNCHECKED=1
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_IRQ_UNCHECKED=1 boot.iso
+	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-took-platform-irq' tools/smoke_test.sh boot.iso
 
 # Build with the gated console blast-radius test, boot headless, and require the
 # marker proving the ring-3 console_server's deliberate fault was contained (the

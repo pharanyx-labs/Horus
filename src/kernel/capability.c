@@ -127,11 +127,17 @@ void cap_init(void) {
 
     /* Hardware device authority (CAP_IO_DEVICE): the primordial cap the console
      * server is endowed with (via cap_install_from_root) to reach the
-     * device-hardware syscalls -- SYS_MAP_PHYS today, port-I/O and IRQ grants in
-     * later jobs. Nothing else is given a copy. */
+     * device-hardware syscalls -- SYS_MAP_PHYS, SYS_IOPORT_GRANT, SYS_IRQ_REGISTER.
+     *
+     * `object` names ONE device now: IODEV_PLATFORM, the legacy console hardware
+     * (VGA, the UARTs, the PS/2 controller, the PIT). It used to be 0 and to mean
+     * nothing at all — the syscalls resolved the console from compiled-in
+     * constants — so this capability conferred the console on anyone holding the
+     * type, and there was no way to express a driver for anything else. See
+     * src/kernel/pci.c. Nothing but console_server is given a copy. */
     root_cnode[10].type   = CAP_IO_DEVICE;
     root_cnode[10].rights = CAP_RIGHT_ALL;
-    root_cnode[10].object = 0;
+    root_cnode[10].object = IODEV_PLATFORM;
     root_cnode[10].badge  = 0;
     root_cnode[10].serial = 0xC0DE000AU;
     root_cnode[10].generation = 0;
@@ -236,6 +242,28 @@ void cap_init(void) {
     root_cnode[18].badge  = 0;
     root_cnode[18].serial = 0xC0DE0012U;
     root_cnode[18].generation = 0;
+
+    /* The network device, if this machine has one (root[19]).
+     *
+     * Unlike every other root above, this one is CONDITIONAL: iodev_init has
+     * already run, and if no PCI network controller was enumerated the slot stays
+     * CAP_NULL. That is the fail-closed direction — a machine with no NIC has no
+     * capability naming one, so nothing can be delegated and a driver started
+     * anyway is refused at its first syscall rather than handed a capability that
+     * resolves to whatever happens to sit at that index.
+     *
+     * init delegates this to a network server exactly as it delegates root[10] to
+     * console_server. The two are the demonstration that hardware authority is now
+     * divisible: neither capability reaches the other's device. */
+    uint64_t nic = iodev_first_of_class(IODEV_CLASS_NETWORK);
+    if (nic != IODEV_NONE) {
+        root_cnode[19].type   = CAP_IO_DEVICE;
+        root_cnode[19].rights = CAP_RIGHT_ALL;
+        root_cnode[19].object = nic;
+        root_cnode[19].badge  = 0;
+        root_cnode[19].serial = 0xC0DE0013U;
+        root_cnode[19].generation = 0;
+    }
 
     cap_next_serial = 0x00010000U;
 

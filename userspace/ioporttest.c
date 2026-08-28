@@ -43,7 +43,7 @@ void _start(void) {
     }
     wr("IOPORT_SELFTEST: begin\n");
 
-    if (sys_ioport_grant() != 0) {
+    if (sys_ioport_grant(CAPSLOT_IO_DEVICE) != 0) {
         wr("IOPORT_SELFTEST: FAIL grant\n"); for (;;) sys_yield();
     }
 

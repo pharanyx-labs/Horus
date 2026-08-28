@@ -1244,7 +1244,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 102
+#define SYSCALL_TABLE_SIZE 103
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1441,18 +1441,20 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * slot 7 here + uid 0 in the handler), so only the FS server reaches it. */
     [SYS_BOOT_MODULE_INFO]        = { h_boot_module_info,  CAPSLOT_BOOT_MODULE, CAP_RIGHT_READ, CAP_BOOT_MODULE },
     [SYS_BOOT_MODULE_READ]        = { h_boot_module_read,  CAPSLOT_BOOT_MODULE, CAP_RIGHT_READ, CAP_BOOT_MODULE },
-    /* Console/driver hardware delegation (syscall_hw.c): map an allowlisted
-     * device frame into the caller's own address space. Gated on a CAP_IO_DEVICE
-     * capability with WRITE right in slot 10 -- only the console server is ever
-     * endowed with it, so no other task can reach the map-device path. The frame
-     * itself is additionally checked against a fixed allowlist in the handler. */
-    [SYS_MAP_PHYS]                = { h_map_phys,               10, CAP_RIGHT_WRITE, CAP_IO_DEVICE },
-    /* Grant native ring-3 port I/O (TSS I/O bitmap) on the console ports. Same
-     * CAP_IO_DEVICE + WRITE gate in slot 10 as SYS_MAP_PHYS — console server only. */
-    [SYS_IOPORT_GRANT]            = { h_ioport_grant,           10, CAP_RIGHT_WRITE, CAP_IO_DEVICE },
-    /* Route a hardware IRQ to a userspace notification. Same CAP_IO_DEVICE + WRITE
-     * gate in slot 10 as the other device-delegation syscalls — console server only. */
-    [SYS_IRQ_REGISTER]            = { h_irq_register,           10, CAP_RIGHT_WRITE, CAP_IO_DEVICE },
+    /* Device delegation (syscall_hw.c): map one of a device's frames, grant its
+     * ports, route its IRQ. SC_NONE — and that is the gate, not the absence of
+     * one. Each of these took a FIXED slot-10 CAP_IO_DEVICE entry here until
+     * 2026-08-28, which made holding the type the whole authority and let one
+     * capability reach a compiled-in console allowlist regardless of what it
+     * named. The first argument is now a cspace slot resolved by iodev_from_slot,
+     * exactly as the IPC syscalls resolve theirs (finding C-1), and the resource
+     * asked for is checked against what THAT device declares. Leaving a fixed
+     * entry here would re-admit the old behaviour underneath the new check, which
+     * is why removing it is part of the fix rather than a tidy-up. */
+    [SYS_MAP_PHYS]                = { h_map_phys,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_IOPORT_GRANT]            = { h_ioport_grant,            SC_NONE, 0, SC_ANYTYPE },
+    [SYS_IRQ_REGISTER]            = { h_irq_register,            SC_NONE, 0, SC_ANYTYPE },
+    [SYS_DEVICE_INFO]             = { h_device_info,             SC_NONE, 0, SC_ANYTYPE },
     /* Pipes: authorization is the pipe-end capability passed as the slot argument,
      * validated in the handler (cap_lookup with the direction's right), so no fixed
      * table slot. SYS_PIPE/STDIO_INFO are self-scoped (own cspace / own tcb). */
@@ -1529,7 +1531,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_FORK + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_DEVICE_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

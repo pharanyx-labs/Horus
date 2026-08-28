@@ -2497,11 +2497,11 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     irq_notify_clear_task(id);
 
     /* Revoke native port I/O: task slots are reused without being zeroed (do_spawn
-     * only re-inits selected fields), and io_allowed is otherwise never cleared, so
+     * only re-inits selected fields), and io_device is otherwise never cleared, so
      * a fresh task could inherit a dead driver's port grant. Clearing it here also
      * releases the console back to the kernel if this was the console owner, so the
      * shell's in-kernel console fallback works again after a console_server crash. */
-    tasks[id].io_allowed = 0;
+    tasks[id].io_device = IODEV_NONE;
     console_clear_owner(id);
 
     /* Release any pipe ends this task still holds so the peer sees EOF/EPIPE and
@@ -2991,10 +2991,10 @@ void set_current_task(int v) {
 
     if (c == 0) current_task = v;
 
-    /* Single switch chokepoint: point this CPU's TSS I/O bitmap at the active
-     * bitmap only for a task holding a port-I/O grant; every other task gets
+    /* Single switch chokepoint: load this CPU's TSS I/O bitmap with the ports of
+     * the device the incoming task holds a grant for; every other task gets
      * iomap_base past the limit, so a ring-3 in/out #GPs. */
-    tss_set_io_allowed(v > 0 && v < MAX_TASKS && tasks[v].io_allowed);
+    tss_set_io_device((v > 0 && v < MAX_TASKS) ? tasks[v].io_device : IODEV_NONE);
 }
 
 /* Open/close a declared impersonation window: see the long note on

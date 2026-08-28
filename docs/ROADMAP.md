@@ -1173,7 +1173,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **94 required, 3 exempted** (94 jobs, 97 contexts — re-derive it with
+  The intended set is **95 required, 3 exempted** (95 jobs, 98 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).
@@ -1256,10 +1256,24 @@ Ordered as in the audit's §7.5.
   fetch it at build time with verification instead of committing `.deb`s.
 - **4.11 ⬜ `verify-release.sh`** a third party can run: rebuild from a tag, diff against the
   published artifact, check the signature, recompute the PCRs.
-- **4.12 ⬜ A security-invariant registry — [F-4.1].** A machine-readable `invariants.yaml`
-  naming each claimed property, the code enforcing it, and the test or proof witnessing it;
-  CI fails if an invariant has no witness. This directly attacks the failure mode that
-  produced **[C-1]**: a documented property with no test binding it to the code.
+- **4.12 🚧 A security-invariant registry — [F-4.1].** A machine-readable registry naming each
+  claimed property, the code enforcing it, and the test or proof witnessing it; CI fails if an
+  invariant has no witness. This directly attacks the failure mode that produced **[C-1]**: a
+  documented property with no test binding it to the code.
+
+  **The survey for it already paid for itself.** `SECURITY.md`'s table was checked by hand on
+  2026-08-28 against the tree, and **S16 had no witness at all** — an em-dash in the column,
+  against real code (`fpu_save`/`fpu_restore`) called on every ring transition and exercised by
+  nothing. Closed the same day by `make smoke-fpu` (`docs/LIMITATIONS.md` §1.9). Every other
+  rule the registry will enforce was also checked by hand and holds today: every `make X` named
+  as a witness exists, every witness target runs in CI or is excused, and every control-arm flag
+  named is in `DEFECT_FLAGS` and therefore stamped.
+
+  **What remains is making those checks mechanical** rather than a thing someone remembers to
+  do. The registry should *derive* from `SECURITY.md`'s table rather than duplicate it into a
+  parallel manifest — a hand-maintained second copy of the same claims is **[H-3]**'s shape, and
+  the manifest should hold only what the table cannot express: explicit exemptions, each with a
+  written reason, for properties witnessed by a CI job or a proof rather than a `make` target.
 - **4.13 ⬜ Publish the threat model — [F-4.3]** as a versioned first-class document.
 - **4.14 ⬜ Nightly long-running fuzz and Kani** in a scheduled workflow, filing findings as
   issues automatically.
@@ -1284,7 +1298,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 131 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 44 of them control arms that must reproduce a defect |
+| ✅ | 134 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 46 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

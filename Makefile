@@ -93,6 +93,7 @@ DEFECT_FLAGS = \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
 	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY \
+	FPU_NO_SAVE FPU_NO_RESTORE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
@@ -997,6 +998,29 @@ CFLAGS  += -DFORK_CSPACE_ORPHAN_COPY
 ASFLAGS += -DFORK_CSPACE_ORPHAN_COPY
 endif
 
+# FPU_NO_SAVE=1 drops the fxsave on the way out of ring 3, so a task's xmm/x87
+# register file is never captured and it is handed a STALE image on its next
+# entry. It destroys the task's own state and discloses nothing: fputest loses
+# its sentinel, fpupeer still sees only its own restored file. The INTEGRITY half
+# of S16.
+FPU_NO_SAVE ?= 0
+ifeq ($(FPU_NO_SAVE),1)
+CFLAGS  += -DFPU_NO_SAVE
+ASFLAGS += -DFPU_NO_SAVE
+endif
+
+# FPU_NO_RESTORE=1 drops the fxrstor on the way back to ring 3, so a task simply
+# inherits whatever the previously-running task left in the physical registers.
+# That is the disclosure S16 names, and it is the arm that matters: fpupeer reads
+# fputest's sentinel out of registers it never wrote. Not the mirror of
+# FPU_NO_SAVE -- one loses state, this one leaks it, which is why they are two
+# arms and not one.
+FPU_NO_RESTORE ?= 0
+ifeq ($(FPU_NO_RESTORE),1)
+CFLAGS  += -DFPU_NO_RESTORE
+ASFLAGS += -DFPU_NO_RESTORE
+endif
+
 LIBHORUS_SELFTEST ?= 0
 ifeq ($(LIBHORUS_SELFTEST),1)
 CFLAGS  += -DLIBHORUS_SELFTEST
@@ -1274,6 +1298,18 @@ endif
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
 # COW_SELFTEST: PASS). Gated off the ship kernel.
+# FPU_SELFTEST=1 embeds fputest + fpupeer and boots into them: two ring-3 tasks
+# share one CPU, one loads a sentinel into all sixteen xmm registers and requires
+# it intact across 64 switches, the other requires never to see it. The witness
+# for SECURITY.md S16, whose witness column was an em-dash until 2026-08-28.
+# Prints FPUTEST: PASS twice; `make smoke-fpu` asserts on both.
+FPU_SELFTEST ?= 0
+ifeq ($(FPU_SELFTEST),1)
+CFLAGS  += -DFPU_SELFTEST
+ASFLAGS += -DFPU_SELFTEST
+FPU_SELFTEST_DEP = userspace/fputest.bin userspace/fpupeer.bin
+endif
+
 # FORK_SELFTEST=1 embeds forktest and boots straight into it: it forks itself and
 # asserts from ring 3 that the child's memory is a copy-on-write COPY of the
 # parent's (S39) and that a task with a CAP_FRAME mapped is refused (S40).
@@ -1560,7 +1596,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2061,7 +2097,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -4497,6 +4533,50 @@ smoke-passwd-probe-control:
 		REQUIRE_MARKER='PASSWDPROBE: FAIL opened-a-ramfs-file' \
 		tools/smoke_test.sh boot.iso
 	@echo "PASSWD PROBE CONTROL: PASS - slot-3 gated, an ordinary user reads the store"
+
+# ---- XMM register-file isolation (SECURITY.md S16) ------------------------
+# Both halves in one target: fputest requires its own sentinel intact across 64
+# switches, fpupeer requires never to see it. -smp 1 because the leak needs the
+# two tasks to interleave on ONE physical register file; on separate cores they
+# would not share one and the test would pass for the wrong reason.
+.PHONY: smoke-fpu
+smoke-fpu:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FPUTEST: PASS no-xmm-leak' \
+		FAIL_MARKER='FPUTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 1 -- the disclosure, and the one S16 is about. FPU_NO_RESTORE=1
+# drops the fxrstor on the way back to ring 3, so a task inherits whatever the
+# previously-running task left in the physical registers. The FAIL marker must be
+# PRESENT.
+.PHONY: smoke-fpu-leak-control
+smoke-fpu-leak-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_RESTORE=1
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_RESTORE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FPUTEST: FAIL peer-saw-sentinel' \
+		tools/smoke_test.sh boot.iso
+	@echo "FPU LEAK CONTROL: PASS - unrestored, a task reads its predecessor's xmm"
+
+# Control arm 2 -- the other half, which is loss rather than disclosure.
+# FPU_NO_SAVE=1 never captures a task's registers, so it is handed a stale image
+# on its next entry. Separable from arm 1 on purpose: one loses state, the other
+# leaks it, and a single arm would have conflated them. The FAIL marker must be
+# PRESENT.
+.PHONY: smoke-fpu-save-control
+smoke-fpu-save-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_SAVE=1
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_SAVE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FPUTEST: FAIL own-xmm-lost' \
+		tools/smoke_test.sh boot.iso
+	@echo "FPU SAVE CONTROL: PASS - unsaved, a task loses its own register file"
 
 # ---- fork (roadmap 2.3) ---------------------------------------------------
 # The base arm. forktest forks itself and asserts that the child's memory is a

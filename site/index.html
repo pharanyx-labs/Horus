@@ -1151,7 +1151,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               address space by marking it copy-on-write on <em>both</em> sides — mark only the
               child's and the two tasks are one process sharing one stack.
             </p>
-            <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-aslr</span>
+            <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-fpu · smoke-aslr</span>
           </article>
           <article>
             <h3>Message passing</h3>
@@ -1630,7 +1630,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 94 gating and 3 exempted, and the promotions are backed by
+              intended set is 95 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

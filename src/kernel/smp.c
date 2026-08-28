@@ -552,6 +552,11 @@ void smp_bringup(void) {
      * the kernel contains it as a ring-3 fault and stays alive (CONSOLE_ISOLATION:
      * PASS). The Phase 6 close-out blast-radius proof; see docs/design/console-server.md. */
     console_isolation_selftest();
+#elif defined(FPU_SELFTEST)
+    /* Gated: two ring-3 tasks share one CPU; one loads a sentinel into every xmm
+     * register and requires it intact across switches, the other requires never
+     * to see it (prints FPUTEST: PASS twice). SECURITY.md S16. */
+    { extern void fpu_selftest(void); fpu_selftest(); }
 #elif defined(FORK_SELFTEST)
     /* Gated: fork this task and prove from ring 3 that the child's memory is a
      * COPY rather than a share, and that a mapped CAP_FRAME refuses the fork

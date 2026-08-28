@@ -16,6 +16,40 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **S16 has a witness (`make smoke-fpu`).** `SECURITY.md` claimed "a task cannot read another's
+  XMM register file" with a literal em-dash in its witness column, for the life of the project.
+  `fpu_save` / `fpu_restore` were real code, called from `interrupt_handler64` on every ring
+  transition, and **nothing exercised them** — the **[C-1]** shape exactly: a documented property
+  with no test binding it to the code. Found while surveying `SECURITY.md` for roadmap 4.12's
+  invariant registry, which exists to make that unrepeatable; this is the first thing it catches.
+
+  The witness is two ring-3 tasks sharing one CPU. `fputest` loads a sentinel into all sixteen
+  xmm registers and requires it intact after 64 switches away and back; `fpupeer` never writes an
+  xmm register and requires that none of them ever holds that sentinel. `-smp 1` is load-bearing:
+  the disclosure needs both tasks on **one physical register file**.
+
+  **The load, yields and read-back are one `asm volatile` block.** Userspace is compiled with
+  SSE2 as the baseline, so the compiler may use xmm registers at any point; split across
+  statements this would test whatever GCC left behind, and pass or fail on optimisation settings.
+
+  **The arm caught the test before it caught the kernel.** The first version released both tasks
+  together and the leak arm reproduced on **2 boots in 3** — because `fpupeer` samples a bounded
+  number of times, so scheduled early it could spend its whole window while `fputest` was still
+  filling its sentinel buffer, reporting "no leak" having never looked at a moment when there was
+  one. Raising the sample count would have hidden the race and left the arm's rate a property of
+  the host's timing; that is the `smoke-kstack-park` mistake. The peer is now spawned suspended
+  and released by `fputest` itself, from inside the asm block, after the sentinel is loaded and
+  before the first yield — its first sample is ordered after the load by construction.
+
+  **Two arms, one per half, and they are separable** — which is the part worth recording.
+  `FPU_NO_RESTORE=1` drops the `fxrstor`, so a task inherits the previous task's physical
+  registers: the peer reads the sentinel, and the integrity check **still passes**, because
+  nothing overwrote it. `FPU_NO_SAVE=1` drops the `fxsave`, so a task is handed a stale image:
+  the integrity check fails and the leak check **still passes**, because a stale image discloses
+  nothing. One loses state, the other leaks it. A single `FPU_BROKEN` flag would have reddened
+  both markers at once and shown neither check could fail on its own.
+
+
 - **A forked child inherits its parent's capabilities as DERIVED copies (roadmap 2.3, S41).**
   `cap_clone_cspace` gives the child a copy of every capability the parent holds, in the same
   slot, each with its **own fresh serial** and a `badge` naming the parent capability's serial —

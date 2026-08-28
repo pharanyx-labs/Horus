@@ -371,7 +371,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **60 of 88** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **61 of 89** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -1058,13 +1058,21 @@ so that path is exercised.
 interrupt remapping itself. The teardown mask (a dead driver's line going down with it) is
 correct by construction but has no arm of its own yet.
 
-**And one arm got weaker, which is worth recording rather than hiding.** `IRQ_NO_MASK_ON_FIRE`
-reproduces a livelock on the 8259 and **not** on the I/O APIC — QEMU does not storm on that path.
-The arm is therefore gated on the PIC path, where it can still fail. The kernel logic it tests is
-identical either way, but it means the mask-on-fire property has no *emulator-observable*
-catastrophic consequence on the routing the ship build now uses. A direct test — "no notification
-arrives while the line is masked" — was attempted and needs a non-blocking way to observe that a
-notification did **not** arrive, which the ABI has no call for.
+**One arm got weaker and has since been repaired, and the repair is the interesting part.**
+`IRQ_NO_MASK_ON_FIRE` reproduces a livelock on the 8259 and **not** on the I/O APIC — QEMU does
+not storm on that path — so the mask-on-fire property briefly had no emulator-observable
+catastrophic consequence on the routing the ship build uses. The direct test that would have
+fixed it, *"no notification arrives while the line is masked"*, was blocked by a real ABI gap:
+there was no way to observe that a notification did **not** arrive, because `sys_wait_notify`
+either returns (the property is broken) or blocks forever (the property held, and the test hangs
+indistinguishably from a crash).
+
+`SYS_POLL_NOTIFY` closed that gap, and S46 is now falsified **directly** on the I/O APIC path
+(`make smoke-net-mask-control`) as well as through the livelock on the PIC path
+(`make smoke-net-irq-storm-control`). The general lesson is worth keeping: a property of the form
+"no event arrives while X" needs a non-blocking way to observe absence, or it can only ever be
+witnessed through whatever catastrophe its violation happens to cause — and catastrophes are
+environment-dependent in a way the property is not.
 
 ### 2.14 `netd` transmits but does not receive
 

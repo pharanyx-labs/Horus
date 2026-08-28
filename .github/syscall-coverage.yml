@@ -128,6 +128,11 @@ covered:
   # having on every run rather than only in the NET_SELFTEST build -- this is the
   # call that decides a device may interrupt the machine again (S46).
   - SYS_IRQ_ACK
+  # Entered by captest's three poll checks -- two refusals and, importantly, one
+  # POSITIVE: a notification the task does hold answers IPC_AGAIN rather than
+  # blocking. That last one is why this is covered by the handler body doing its
+  # job rather than only by it saying no.
+  - SYS_POLL_NOTIFY
   - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`

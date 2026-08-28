@@ -467,17 +467,66 @@ void _start(void) {
          * makes the device drop its interrupt line. The ACK is deliberately NOT
          * here -- the masked-window test below needs the line still masked, and
          * acknowledging is what ends that window. */
-        unsigned int cause = mmio_r(E1000_ICR);   /* read-to-clear: service it */
-        if (sys_irq_ack(NIC_SLOT, (uint32_t)irq) != 0) {
-            wr("NETTEST: FAIL irq-ack\n"); for (;;) sys_yield();
-        }
-        wr("NETD: irq serviced and acknowledged");
+        /* Service the device -- reading ICR is read-to-clear, so this is what
+         * makes it drop its line. The ACK is deliberately NOT here: the masked
+         * window below needs the line still masked, and acknowledging ends it. */
+        unsigned int cause = mmio_r(E1000_ICR);
+        wr("NETD: irq serviced");
         if (cause & ICR_TXDW)   wr(" txdw");
         if (cause & ICR_RXT0)   wr(" rxt0");
         if (cause & ICR_RXO)    wr(" rxo");
         if (cause & ICR_RXDMT0) wr(" rxdmt0");
         wr("\n");
         wr("NETTEST: IRQ PASS\n");
+
+        /* ---- S46's masked window, tested DIRECTLY ----------------------
+         *
+         * S46 says a fired line stays masked until acknowledged. That was first
+         * witnessed through its catastrophic consequence -- a livelock when the
+         * mask is removed -- and that arm stopped reproducing the moment routing
+         * moved to the I/O APIC, because QEMU does not storm on that path. An arm
+         * that cannot fail cannot gate, so the arm survives only on the 8259.
+         *
+         * SYS_POLL_NOTIFY makes the property itself observable on the path we
+         * actually ship. The device's cause was cleared above and a second
+         * transmit re-raises the line; while the line is masked, polling must
+         * report IPC_AGAIN, and after SYS_IRQ_ACK unmasks it a badge must arrive.
+         * That is exactly what masking means, it is deterministic, and it does
+         * not depend on an emulator's appetite for interrupt storms.
+         *
+         * The wait ordering is deliberate: poll REPEATEDLY while masked rather
+         * than once, so this fails if the notification arrives at any point in
+         * the window rather than only in the instant after the transmit. */
+        txr[1].addr   = txbuf_dma;
+        txr[1].length = 60;
+        txr[1].cmd    = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
+        txr[1].status = 0;
+        mmio_w(E1000_TDT, 2);
+
+        for (long i = 0; i < 20000L; i++) {
+            uint32_t b2 = 0;
+            int rc2 = sys_poll_notify(NOTIF_SLOT, &b2);
+            if (rc2 == 0) { wr("NETTEST: FAIL irq-while-masked\n"); for (;;) sys_yield(); }
+            if (rc2 != IPC_AGAIN) { wr("NETTEST: FAIL poll-rc\n"); for (;;) sys_yield(); }
+            sys_yield();
+        }
+
+        /* Unmask, and the pending assertion must now be delivered. */
+        if (sys_irq_ack(NIC_SLOT, (uint32_t)irq) != 0) {
+            wr("NETTEST: FAIL irq-reack\n"); for (;;) sys_yield();
+        }
+        uint32_t b3 = 0;
+        for (long i = 0; i < 200000L && b3 == 0; i++) {
+            if (sys_poll_notify(NOTIF_SLOT, &b3) == 0) break;
+            sys_yield();
+        }
+        if (b3 != IRQ_BADGE) { wr("NETTEST: FAIL no-irq-after-unmask\n"); for (;;) sys_yield(); }
+
+        (void)mmio_r(E1000_ICR);
+        if (sys_irq_ack(NIC_SLOT, (uint32_t)irq) != 0) {
+            wr("NETTEST: FAIL irq-final-ack\n"); for (;;) sys_yield();
+        }
+        wr("NETTEST: MASK PASS\n");
 
 
 

@@ -104,7 +104,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
-	IRQ_FORCE_PIC
+	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -769,6 +769,14 @@ endif
 # IRQ_ACK_UNGATED=1 drops the capability check from SYS_IRQ_ACK, so unmasking an
 # interrupt line stops being an authority question. `make smoke-captest-irq-ack-control`
 # requires CAPTEST: FAIL irq-ack-without-cap-io-device.
+# POLL_NOTIFY_UNGATED=1 drops SYS_POLL_NOTIFY's capability check, so any task can
+# poll any notification and consume another task's badges -- finding C-2's shape
+# in a new syscall. `make smoke-captest-poll-notify-control`.
+POLL_NOTIFY_UNGATED ?= 0
+ifeq ($(POLL_NOTIFY_UNGATED),1)
+CFLAGS += -DPOLL_NOTIFY_UNGATED
+endif
+
 IRQ_ACK_UNGATED ?= 0
 ifeq ($(IRQ_ACK_UNGATED),1)
 CFLAGS += -DIRQ_ACK_UNGATED
@@ -2878,6 +2886,26 @@ smoke-captest-devcap-control:
 # SYS_IRQ_ACK's authority. Unmasking an interrupt line decides that a device may
 # interrupt this machine again; drop the capability check and any task can do it
 # for hardware it does not hold.
+# SYS_POLL_NOTIFY's gate. Non-blocking changes when the answer comes back, never
+# who may ask -- so it takes the same CAP_NOTIFICATION + READ check the blocking
+# wait does. Ungated, any task polls any notification and learns another task's
+# badges, which is finding C-2 in a new syscall.
+#
+# The marker is the WRONG-TYPE check, not the empty-slot one, and that is not
+# arbitrary: ungated, the slot is used as a raw notification index, and an empty
+# high slot (200) is out of range so it still fails -- for the wrong reason, but
+# it fails, so that check cannot witness this defect. Slot 3 IS a valid index, so
+# it is the one that comes back IPC_AGAIN instead of refused. A refusal test only
+# detects a missing gate when the ungated path would otherwise SUCCEED.
+.PHONY: smoke-captest-poll-notify-control
+smoke-captest-poll-notify-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 POLL_NOTIFY_UNGATED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 POLL_NOTIFY_UNGATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL poll-notify-with-wrong-cap-type' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest-irq-ack-control
 smoke-captest-irq-ack-control:
 	@$(MAKE) --no-print-directory clean
@@ -3459,8 +3487,22 @@ smoke-net:
 	@$(MAKE) --no-print-directory NET_SELFTEST=1
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: IRQ PASS' \
+		REQUIRE_MARKER='NETTEST: MASK PASS' \
 		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# S46's mask, tested DIRECTLY and on the routing the ship build uses. Since
+# SYS_POLL_NOTIFY exists a driver can observe that a notification did NOT arrive,
+# so the property no longer has to be witnessed through a livelock: while the line
+# is masked the poll must report IPC_AGAIN, and after the ack a badge must come.
+# Deterministic, marker-based, and it fails on the I/O APIC path where the storm
+# arm cannot.
+.PHONY: smoke-net-mask-control
+smoke-net-mask-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL irq-while-masked' tools/smoke_test.sh boot.iso
 
 # ON THE PIC PATH (IRQ_FORCE_PIC=1), deliberately. Measured 2026-08-28: QEMU
 # storms on the 8259 and does NOT on the I/O APIC, so this arm can only fail on

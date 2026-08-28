@@ -855,6 +855,34 @@ void _start(void) {
     check(sys_irq_ack(SLOT_FRAME, 1) == SYS_ERR_PERM,
           "irq-ack-with-wrong-cap-type");
 
+    /* SYS_POLL_NOTIFY is sys_wait_notify's non-blocking twin, and being
+     * non-blocking changes WHEN the answer comes back, never WHO may ask. It
+     * takes the same CAP_NOTIFICATION + READ gate, because a poll that skipped it
+     * would let any task consume any other task's badges -- finding C-2 arriving
+     * in a new syscall, which is what a "convenience" variant invites.
+     *
+     * Exact SYS_ERR_PERM: IPC_AGAIN (-2) is this call's own "nothing pending",
+     * so `< 0` cannot tell refusal from an empty notification. That distinction
+     * is what the ungated arm flips. */
+    {
+        uint32_t pb = 0;
+        check(sys_poll_notify(SLOT_FRAME, &pb) == SYS_ERR_PERM,
+              "poll-notify-with-wrong-cap-type");
+        /* An empty high slot is refused too -- but note it cannot witness a
+         * MISSING gate, because ungated the slot is a raw notification index and
+         * 200 is out of range, so it fails either way. The wrong-type check above
+         * is the discriminating one: slot 3 is a valid index, so an ungated poll
+         * SUCCEEDS there. A refusal test only detects a missing gate where the
+         * ungated path would otherwise have worked. */
+        check(sys_poll_notify(SLOT_EMPTY_HI, &pb) == SYS_ERR_PERM,
+              "poll-notify-without-cap");
+        /* And the positive: a notification this task DOES hold answers IPC_AGAIN
+         * rather than blocking or refusing. Without this the two refusals above
+         * are satisfied by a syscall that rejects everything. */
+        check(sys_poll_notify(SLOT_NOTIFY, &pb) == IPC_AGAIN,
+              "poll-notify-held-should-be-empty");
+    }
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

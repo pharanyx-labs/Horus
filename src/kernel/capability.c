@@ -615,6 +615,176 @@ bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint3
     return ok;
 }
 
+/* ---- FORK: DUPLICATE A CSPACE AS DERIVED CAPABILITIES (roadmap 2.3) -------
+ *
+ * Give `child` a copy of every capability `parent` holds, each one a DERIVED
+ * capability of the parent's: its own fresh serial, and `badge` naming the
+ * parent capability's serial, which is what makes it a child in the derivation
+ * tree `revoke_subtree` walks. Returns the number of slots copied, or negative.
+ *
+ * ---- WHY NOT A memcpy, WHICH IS WHAT THIS LOOKS LIKE -----------------------
+ *
+ * A cspace is an array of `capability_t`. Copying it is one call, and it is
+ * wrong in two different directions at once -- which is why both are control
+ * arms rather than a paragraph.
+ *
+ *   IDENTICAL SERIALS (FORK_CSPACE_FLAT_COPY=1). `rust_cap_revoke_global`'s
+ *   sweep nulls every capability whose `serial` equals the revoked root's,
+ *   across EVERY cspace, because a serial is supposed to identify exactly one
+ *   capability. Duplicate one and that stops being true: the child revoking its
+ *   OWN slot nulls the parent's too. A task that holds nothing but a copy of its
+ *   parent's authority can then destroy that authority in the parent's cspace --
+ *   a cross-task revocation primitive, reachable by any task that can fork,
+ *   which is every task. Revocation is supposed to flow DOWN the derivation
+ *   tree; this makes it flow sideways.
+ *
+ *   NO PARENT LINK (FORK_CSPACE_ORPHAN_COPY=1). Give the copy a fresh serial but
+ *   leave `badge` alone and it is not derived from anything -- a second root of
+ *   the capability graph, holding the parent's authority. `mark_children_of`
+ *   never marks it, its serial matches no revocation root, and so revoking the
+ *   parent's capability leaves the child's working. That is a REVOCATION HOLE
+ *   reachable from ring 3 by any task that can fork, and it is the one this
+ *   function exists to avoid: it is finding 3.3's shape -- a capability keyed to
+ *   a serial no sweep reaches -- applied to a whole cspace at once.
+ *
+ * Both are avoided the same way: by not writing the copy here at all.
+ * `rust_cap_grant_into` is the reviewed derivation, it is what SYS_CAP_GRANT
+ * uses, and calling it per slot means a forked capability and a delegated one
+ * are the same object by construction rather than by two implementations
+ * agreeing. [H-3] is what happens when they stop agreeing.
+ *
+ * ---- WHAT IS NOT COPIED, AND WHY EACH ONE WOULD BE IMPERSONATION -----------
+ *
+ * Slots 0..3 (`KERNEL_RESERVED_CAPS`) and slot 4 are the child's OWN identity,
+ * installed by `create_task`, and copying the parent's over them is not
+ * delegation:
+ *
+ *   slot 0  CAP_TCB on self. The parent's names the PARENT, so the child would
+ *           hold a TCB capability over its own parent -- SYS_KILL and SYS_SIGNAL
+ *           on it. That is a widening: the parent never held authority over
+ *           itself in a form it could hand away, and fork must not mint one.
+ *   slot 3  the legacy image CAP_FRAME. Identical in every task; the child's own
+ *           is already right, and the parent's names the parent's window.
+ *   slot 4  the PRIVATE reply endpoint SYS_IPC_CALL parks on. Copying it gives
+ *           the child the parent's rendezvous, so the child could receive the
+ *           parent's replies or wake it spuriously -- exactly the interception
+ *           the per-task reply endpoint was introduced to make impossible
+ *           (finding C-1). It is the one slot whose whole value is that nobody
+ *           else has it.
+ *
+ * CAP_REPLY is skipped BY TYPE rather than by slot, because it is one-shot and
+ * may sit anywhere: it names a specific in-flight sender, and two tasks holding
+ * it is a reply-forgery primitive with no revocation involved. The same
+ * reasoning already excludes the parent's blocked-IPC state from the fork.
+ *
+ * A source that is revoked or lookup-invalid (serial 0, or a stale generation)
+ * is skipped rather than copied. Copying it would resurrect nothing -- the copy
+ * would fail `lineage_check` too -- but it would occupy a slot and count against
+ * the child's ceiling, and a cspace full of dead capabilities is a worse report
+ * of what a task holds than an empty slot.
+ *
+ * ---- RIGHTS ARE NOT NARROWED, AND THAT IS DELIBERATE ----------------------
+ *
+ * `CAP_RIGHT_ALL` is asked for, and `rust_cap_grant_into` intersects it with the
+ * source's, so the copy carries exactly the parent's rights and never more.
+ * SYS_SPAWN masks the console capability down to WRITE on the way to a child,
+ * and fork deliberately does not do the same, because the two are handing
+ * authority to different things. Spawn's child is a DIFFERENT PROGRAM and the
+ * parent is choosing what to give a stranger. Fork's child is the same program
+ * at the same instruction, and the contract is that it can do what the caller
+ * could; a fork that silently dropped rights would break `if (fork() == 0)
+ * serve();` in a way nothing reports, and the program would work around it by
+ * having the parent grant them back -- achieving nothing except making the same
+ * authority harder to see in the graph.
+ *
+ * The authority graph is no looser for it. Every capability the child holds is a
+ * DERIVED CHILD of one the parent holds, so the child's authority is a subtree
+ * of the parent's, and every revocation that would have swept the parent's now
+ * sweeps the child's with it. Fork adds no new ROOT to the graph -- which is the
+ * property, and what S41 states.
+ *
+ * Caller holds no lock; cap_lock is taken here, ONCE for the whole cspace rather
+ * than per slot as a loop over cap_grant_into would. A fork must see one
+ * consistent snapshot of what the parent holds: released between slots, a
+ * concurrent grant or revoke into the parent's cspace would be half-copied, and
+ * the child would hold an assortment of capabilities that never existed together
+ * in the parent.
+ */
+int cap_clone_cspace(int parent, int child) {
+    if (parent <= 0 || parent >= MAX_TASKS) return -1;
+    if (child  <= 0 || child  >= MAX_TASKS) return -1;
+    if (parent == child) return -1;
+
+    spin_lock(&cap_lock);
+
+    capability_t *pc = tasks[parent].cspace;
+    capability_t *cc = tasks[child].cspace;
+    if (!pc || !cc) { spin_unlock(&cap_lock); return -1; }
+
+    uint32_t psz = tasks[parent].cspace_size ? tasks[parent].cspace_size : CNODE_SIZE;
+    uint32_t csz = tasks[child ].cspace_size ? tasks[child ].cspace_size : CNODE_SIZE;
+    uint32_t lim = psz < csz ? psz : csz;
+    if (lim > CNODE_SIZE) lim = CNODE_SIZE;
+
+    int copied = 0;
+    for (uint32_t s = KERNEL_RESERVED_CAPS; s < lim; s++) {
+        if (s == CAPSLOT_REPLY_EP) continue;      /* the child's own rendezvous */
+
+        capability_t *src = &pc[s];
+        if (src->type == CAP_NULL)  continue;
+        if (src->type == CAP_REPLY) continue;     /* one-shot; see above */
+        if (src->serial == 0)       continue;     /* lookup-invalid */
+        if (!rust_lineage_check(src->serial, src->generation)) continue;   /* revoked */
+
+        /* The child's ceiling is the same MAX_CAPS_PER_TASK every other task
+         * answers to. Reaching it is not a partial success to be reported as one:
+         * a task running with an arbitrary prefix of its parent's authority is a
+         * configuration nothing asked for and nothing can reason about, and the
+         * prefix depends on slot order. Fail the whole fork instead -- the same
+         * all-or-nothing argument S35 makes about a partly-installed mapping. */
+        if (tasks[child].caps_in_use >= MAX_CAPS_PER_TASK) {
+            spin_unlock(&cap_lock);
+            return -2;
+        }
+
+#if defined(FORK_CSPACE_FLAT_COPY) || defined(FORK_CSPACE_ORPHAN_COPY)
+        /* Control arms: write the copy here instead of deriving it. Both keep
+         * type/rights/object, so the child holds the same authority either way
+         * and only its POSITION IN THE DERIVATION TREE is wrong -- which is the
+         * whole point. A reader diffing the arms against the real path should see
+         * two fields, not a different algorithm. */
+        {
+            bool was_null = (cc[s].type == CAP_NULL);
+            cc[s].type   = src->type;
+            cc[s].rights = src->rights;
+            cc[s].object = src->object;
+#ifdef FORK_CSPACE_FLAT_COPY
+            /* The parent's own identity, duplicated: one serial, two capabilities. */
+            cc[s].badge      = src->badge;
+            cc[s].serial     = src->serial;
+            cc[s].generation = src->generation;
+#else
+            /* Fresh identity, but no edge back to the parent's capability. */
+            cc[s].badge      = src->badge;
+            cc[s].serial     = rust_cap_alloc_serial(&cap_next_serial);
+            cc[s].generation = rust_lineage_current(cc[s].serial);
+#endif
+            if (was_null) tasks[child].caps_in_use++;
+            copied++;
+        }
+#else
+        bool was_null = (cc[s].type == CAP_NULL);
+        if (rust_cap_grant_into(src, cc, csz, s, CAP_RIGHT_ALL, &cap_next_serial)) {
+            if (was_null) tasks[child].caps_in_use++;
+            copied++;
+        }
+#endif
+    }
+
+    spin_unlock(&cap_lock);
+    return copied;
+}
+
 bool cap_revoke(uint32_t slot) {
     spin_lock(&cap_lock);
     if (slot >= CNODE_SIZE) {

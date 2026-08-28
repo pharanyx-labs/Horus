@@ -191,6 +191,20 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'the capability space a child inherits is not'
+    reason: >-
+      site/index.html said this in the Track 2 summary for one day, between the
+      fork memory clone (#220, 2026-08-28) and the cspace clone the same day. A
+      forked child now inherits its parent's capabilities as DERIVED copies
+      (S41): own serial, badge naming the parent's capability, so revoking the
+      parent's sweeps the child's. docs/LIMITATIONS.md 2.11 records the closure.
+  - pattern: 'is NOT a copy of the caller''s cspace'
+    reason: >-
+      include/syscall.h's sys_fork() comment and docs/SYSCALLS.md both said this
+      while the memory clone shipped without the cspace clone (2026-08-28, one
+      day). Superseded by S41. The accurate residue is narrower and is stated
+      per-slot instead: slots 0-3, slot 4 and CAP_REPLY are not inherited,
+      because copying those would be impersonation rather than delegation.
   - pattern: 'there is no real <code>fork</code>'
     reason: >-
       site/index.html carried this in the virtual-memory row until 2026-08-28,

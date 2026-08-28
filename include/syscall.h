@@ -182,7 +182,7 @@ struct audit_event {
 
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr. ALL OR NOTHING: a failure withdraws every page the call mapped, so an error leaves the address space untouched. Max 64 pages. */
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
-#define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate this task, its memory copy-on-write. Gated on the same slot-3 capability as SYS_SPAWN: fork is a second way to create a task, so it answers to the capability that gates the first. The child is NOT a copy of the caller's cspace -- see sys_fork(). */
+#define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate this task, its memory copy-on-write. Gated on the same slot-3 capability as SYS_SPAWN: fork is a second way to create a task, so it answers to the capability that gates the first. The child inherits the caller's capabilities as DERIVED copies, so revoking the parent's sweeps the child's -- see sys_fork(). */
 
 /* Reserved cspace slots the spawner wires a child's pipe stdio into (must match
  * src/include/kernel.h). */
@@ -863,12 +863,14 @@ static inline int sys_spawn(void) {
  * copy-on-write clone of the caller's -- it starts out reading the same bytes,
  * and the first write on either side gives that side a private page.
  *
- * The child is NOT a copy of the caller's cspace. It is born with the same
- * endowment a spawned task gets (its own CAP_TCB, its own reply endpoint, a
- * send-only copy of the caller's console capability) and nothing else the parent
- * holds, so anything else it needs must be delegated with sys_cap_grant, exactly
- * as for a spawned child. The caller is handed a CAP_TCB naming the child, so it
- * can sys_wait / sys_kill it.
+ * The child inherits the caller's capabilities as DERIVED copies, in the same
+ * slots and with the same rights: each has its own serial and names the caller's
+ * capability as its parent, so the child's authority is a subtree of the
+ * caller's and revoking a capability here sweeps the child's copy with it. Four
+ * things are NOT inherited, and each would be impersonation rather than
+ * delegation: slots 0-3 and slot 4, which are the child's own CAP_TCB, image
+ * frame and PRIVATE reply endpoint, and any CAP_REPLY, which is one-shot. The
+ * caller is handed a CAP_TCB naming the child, so it can sys_wait / sys_kill it.
  *
  * SYS_ERR_INVAL means this task cannot be cloned as it stands -- the only case
  * today is a mapped CAP_FRAME, which fork refuses rather than share or copy

@@ -1634,6 +1634,8 @@ the identical call to succeed.
 | `smoke-fork` | `FORKTEST: PASS` present, `FORKTEST: FAIL` absent | passes, **3 boots in 3** |
 | `smoke-fork-share-control` (`FORK_SHARE_WRITABLE=1`) | `FORKTEST: FAIL parent-clobbered` present | passes, **3 boots in 3**; also emits `FORKTEST: FAIL child-saw-parent-write`, and no `PASS`; `smoke-fork` goes red under the same flag |
 | `smoke-fork-arena-control` (`FORK_ARENA_UNCHECKED=1`) | `FORKTEST: FAIL forked-with-frame-mapped` present | passes, **3 boots in 3**; `smoke-fork` goes red under the same flag |
+| `smoke-fork-cspace-flat-control` (`FORK_CSPACE_FLAT_COPY=1`) | `FORKTEST: FAIL child-cap-shares-serial` present | passes, **3 boots in 3**; `smoke-fork` goes red under the same flag |
+| `smoke-fork-cspace-orphan-control` (`FORK_CSPACE_ORPHAN_COPY=1`) | `FORKTEST: FAIL child-cap-not-derived` present | passes, **3 boots in 3**; also emits `FORKTEST: FAIL child-cap-survived-revoke`; `smoke-fork` goes red under the same flag |
 
 Three boots rather than a rate over hundreds, for the same reason as `smoke-frame`: neither
 defect is a race. Both are deterministic properties of a build — the leaves are downgraded or
@@ -1641,10 +1643,29 @@ they are not, the arena test is compiled in or it is not — and the `-smp 1` in
 what keeps the parent's post-fork write ordered ahead of the child's first look, so the sample
 size that matters is 1 and 3 is corroboration.
 
-**What this does not test.** That the child's cspace is *not* a copy of the parent's is a
-property of the current design rather than a security claim, and no arm asserts it; when fork
-learns to duplicate a cspace, the invariant to gate is that each copy is a **derived**
-capability the parent's revocation sweeps — see `docs/LIMITATIONS.md` §2.11.
+**The cspace half is checked STRUCTURALLY, and that is what makes it exact.**
+`SYS_CAP_ENUMERATE` reports a capability's `serial` and `badge` — the nodes and edges of the
+derivation graph — which is precisely the statement **S41** makes, so the test reads the
+invariant off the graph rather than inferring it from behaviour. That matters here more than
+usual: a forked child shares nothing with its parent through which the two could synchronise,
+so any behavioural check would need the bounded-spin treatment the memory half uses. The
+structural one needs no rendezvous and no timing assumption at all, and `forktest` holds a
+`CAP_DEBUG` for exactly this. It is an *observability* capability — it discloses type, rights,
+serial and badge and deliberately not `object` — so granting it to the witness adds no reach.
+
+**Three ways to get the derivation wrong, and each fails a different check.** No copy at all
+(the kernel before this change) leaves the slot unoccupied. A verbatim copy gives two
+capabilities one serial. A copy with a fresh serial but no parent edge is a second *root*.
+The last two are the control arms; the first is what the base gate's `child-cap-absent` and
+`child-cannot-use-inherited-cap` checks catch, and it is why the base gate would have failed
+against `main` one commit ago.
+
+**The four S41 checks deliberately do not short-circuit.** Each states a separate rule and the
+arms are one per rule, so an early exit on the first failure would leave the later checks
+unreachable from any arm — a check that cannot fail. `FORK_CSPACE_ORPHAN_COPY=1` fails **both**
+the badge check and the end-to-end revoke check, and it should: the structural claim and its
+consequence are different assertions, and an edge nothing traverses is not a revocation path.
+A `bad` flag suppresses the `PASS` at the end, so no run emits both verdicts.
 
 ### `smoke-nzcow-arena-control` — a kernel object's page is never copied out from under it
 

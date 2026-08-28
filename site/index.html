@@ -1434,7 +1434,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling — a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; copy-on-write over a kernel object is refused by design</th><td class="t-note">smoke-frame</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong> — <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child does <em>not</em> inherit its parent's capability space, and there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong> — <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child inherits its parent's capabilities as <em>derived</em> copies, so revoking one still sweeps the child's; there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong> — a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
@@ -2171,7 +2171,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             <strong>Track 2 grows the operating system on top of that:</strong> frame capabilities
             and shared memory, a monotonic clock and timers, a real process and session model —
-            <code>fork</code> is in, the capability space a child inherits is not — a VFS with
+            <code>fork</code> and the capability space a child inherits are in — a VFS with
             several filesystems, dynamic linking, and a network stack as an unprivileged server
             holding one network card's capability.
           </p>

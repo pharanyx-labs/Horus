@@ -1090,8 +1090,9 @@ kernel authority. This is the highest-visibility demonstration of the architectu
 control, and a `/proc`-equivalent served over IPC. Needed for the shell to become a usable
 OS interface. *Partly addressed 2026-08-28: `SYS_FORK` gives a child a copy-on-write clone
 of its parent's address space (`SECURITY.md` **S39**, **S40**; `make smoke-fork`). The child
-does not inherit its parent's cspace, and process groups, job control and `/proc` are
-untouched — see `docs/ROADMAP.md` §2.3 and `docs/LIMITATIONS.md` §2.10.*
+inherits its parent's capabilities as DERIVED copies (**S41**, 2026-08-28), so revocation
+still reaches them; process groups, job control and `/proc` are untouched — see
+`docs/ROADMAP.md` §2.3.*
 
 **F-2.5 — Dynamic linking and a shared libc.** Currently every binary statically links
 newlib (~450 KiB each, 11 in `/bin`). A shared object loader with capability-mediated

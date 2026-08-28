@@ -92,6 +92,7 @@ DEFECT_FLAGS = \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
+	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
@@ -964,6 +965,36 @@ FORK_ARENA_UNCHECKED ?= 0
 ifeq ($(FORK_ARENA_UNCHECKED),1)
 CFLAGS  += -DFORK_ARENA_UNCHECKED
 ASFLAGS += -DFORK_ARENA_UNCHECKED
+endif
+
+# FORK_CSPACE_FLAT_COPY=1 copies the parent's capabilities into the child
+# verbatim -- same serial, same badge, same generation -- instead of deriving
+# them. The child then holds capabilities that are INDISTINGUISHABLE from the
+# parent's, and a serial is supposed to name exactly one capability. The harm is
+# revocation flowing sideways instead of down: rust_cap_revoke_global's sweep
+# nulls every capability whose serial matches the revoked root's, across every
+# cspace, so the child revoking its OWN slot destroys the parent's capability
+# too. Any task can fork, so that is a cross-task revocation primitive available
+# to every task in the system. Roadmap 2.3, S41.
+FORK_CSPACE_FLAT_COPY ?= 0
+ifeq ($(FORK_CSPACE_FLAT_COPY),1)
+CFLAGS  += -DFORK_CSPACE_FLAT_COPY
+ASFLAGS += -DFORK_CSPACE_FLAT_COPY
+endif
+
+# FORK_CSPACE_ORPHAN_COPY=1 gives the child's copies a fresh serial -- so the
+# flat-copy defect above is absent -- but leaves `badge` as the source's, so the
+# copy is not a CHILD of the parent's capability in the derivation tree. It is a
+# second ROOT holding the parent's authority. mark_children_of never marks it and
+# its serial matches no revocation root, so revoking the parent's capability
+# leaves the child's working: a revocation hole reachable from ring 3 by any task
+# that can fork. This is finding 3.3's shape -- a capability keyed to a serial no
+# sweep reaches -- applied to a whole cspace at once, and it is the one the
+# derivation exists to prevent. Roadmap 2.3, S41.
+FORK_CSPACE_ORPHAN_COPY ?= 0
+ifeq ($(FORK_CSPACE_ORPHAN_COPY),1)
+CFLAGS  += -DFORK_CSPACE_ORPHAN_COPY
+ASFLAGS += -DFORK_CSPACE_ORPHAN_COPY
 endif
 
 LIBHORUS_SELFTEST ?= 0
@@ -4512,6 +4543,39 @@ smoke-fork-arena-control:
 		REQUIRE_MARKER='FORKTEST: FAIL forked-with-frame-mapped' \
 		tools/smoke_test.sh boot.iso
 	@echo "FORK ARENA CONTROL: PASS - unchecked, a mapped kernel object is cloned"
+
+# Control arm 3 -- the derivation. FORK_CSPACE_FLAT_COPY=1 copies the parent's
+# capabilities verbatim, same serial and all, so two capabilities share one
+# identity. The child's copy is then indistinguishable from the parent's, which
+# forktest reads directly out of the derivation graph with SYS_CAP_ENUMERATE.
+# The harm is revocation flowing sideways: the sweep nulls by serial across every
+# cspace, so the child revoking its own slot would destroy the parent's.
+# The FAIL marker must be PRESENT.
+.PHONY: smoke-fork-cspace-flat-control
+smoke-fork-cspace-flat-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_FLAT_COPY=1
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_FLAT_COPY=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKTEST: FAIL child-cap-shares-serial' \
+		tools/smoke_test.sh boot.iso
+	@echo "FORK CSPACE FLAT CONTROL: PASS - copied verbatim, two caps share one serial"
+
+# Control arm 4 -- the parent edge, and the one the whole change exists for.
+# FORK_CSPACE_ORPHAN_COPY=1 gives each copy a fresh serial (so arm 3's defect is
+# absent) but leaves `badge` as the source's, so the copy is not a CHILD of the
+# parent's capability -- it is a second ROOT holding the parent's authority.
+# Revoking the parent's then leaves the child's working: the revocation hole
+# docs/LIMITATIONS.md 2.11 was opened to record. The FAIL marker must be PRESENT.
+.PHONY: smoke-fork-cspace-orphan-control
+smoke-fork-cspace-orphan-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_ORPHAN_COPY=1
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_ORPHAN_COPY=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKTEST: FAIL child-cap-not-derived' \
+		tools/smoke_test.sh boot.iso
+	@echo "FORK CSPACE ORPHAN CONTROL: PASS - fresh serial, no parent edge, revoke misses it"
 
 .PHONY: smoke-frame
 smoke-frame:

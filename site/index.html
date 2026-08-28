@@ -1491,6 +1491,24 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             overstates it is worse than no check, because it is a claim nobody will re-derive.
           </p>
 
+          <h3>And every claim is bound to a gate that exists</h3>
+          <p>
+            Falsifying a gate says nothing about the claims that have <em>no</em> gate. Every
+            security property in <code>SECURITY.md</code> is now checked by CI against the tree:
+            a property whose witness names nothing runnable fails the build, and so does a
+            witness naming a target that does not exist, a target no workflow runs, or a
+            defect-reproducing flag that would go unstamped at boot. The table is the registry —
+            there is deliberately no second copy of these claims to drift from the first.
+          </p>
+          <p>
+            It was written because of what it found. One property — <em>a task cannot read
+            another's XMM register file</em> — had carried an em-dash where its witness should
+            be, against code that was real and ran on every ring transition. No earlier sweep
+            caught it: they looked for gates that were <strong>missing</strong> or
+            <strong>vacuous</strong>, and this one was neither. It was present, correct, and
+            attached to nothing.
+          </p>
+
           <h3>A single green run says nothing about a concurrency change</h3>
           <p>
             Intermittent failures are quoted as <strong>rates over pinned boots</strong>, never
@@ -1630,7 +1648,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 95 gating and 3 exempted, and the promotions are backed by
+              intended set is 96 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

@@ -16,6 +16,37 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A security-invariant registry: every property in `SECURITY.md` is bound to a witness that
+  exists and runs (roadmap 4.12, finding [F-4.1]).** `tools/check_invariants.py` and the required
+  `invariants` job. Six rules — a resolvable witness per property; every `make X` named is a real
+  target; every witness target runs in CI or is excused; every control-arm flag named is in
+  `DEFECT_FLAGS` so a boot under it is stamped; ids unique and contiguous; no stale exemption.
+
+  **It derives from `SECURITY.md` rather than adding an `invariants.yaml` beside it.** The table
+  already carries id, statement, enforcing code and witness — it *is* the registry. A
+  hand-maintained parallel manifest would be a second copy of claims that already exist, which is
+  **[H-3]** restated as documentation. `.github/invariants.yml` holds exemptions only and is
+  currently empty: all 43 properties resolve.
+
+  **The question it asks is the one no earlier sweep asked.** Ambient-authority sweeps looked for
+  gates that were *absent*; the [H-3] sweep looked for gates that were *vacuous*. Neither would
+  have found S16, whose gate was present, correct, and bound to nothing. It was found by the
+  survey for this change and closed separately.
+
+  **Its own first run produced a false finding**, which was fixed before anything else: S26's
+  witness cell contains `CAP_RIGHT_WRITE \| CAP_RIGHT_EXEC`, and a naive split on `|` truncated
+  it to `WRITE\`, reporting a well-witnessed property as unwitnessed. The first thing anyone does
+  with a checker that invents findings is learn to skim past it.
+
+  **Four rows now name the job that witnesses them** instead of saying "Rust unit tests" or
+  "Kani proofs" — the `rust` and `kani-bounded` jobs — which is strictly more informative than
+  the prose it replaced, and is why those rows needed no exemption.
+
+  **Every rule is falsified**, one arm each, in `tools/test_check_invariants.sh` — run in the same
+  job, on copies of the tree, and each arm required to be reported under *its own* rule rather
+  than merely to fail. R1's arm is literally S16's real prior state.
+
+
 - **S16 has a witness (`make smoke-fpu`).** `SECURITY.md` claimed "a task cannot read another's
   XMM register file" with a literal em-dash in its witness column, for the life of the project.
   `fpu_save` / `fpu_restore` were real code, called from `interrupt_handler64` on every ring

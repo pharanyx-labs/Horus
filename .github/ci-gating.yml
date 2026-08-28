@@ -121,6 +121,13 @@ required:
   # invariant registry is what stops that recurring; this is the first thing it
   # would have caught.
   - fpu
+  # Gating. Roadmap 4.12 / [F-4.1]: it asks the question nobody had asked
+  # mechanically — which security properties have no witness at all. S16 had
+  # none for the life of the project, against real enforcing code, and no
+  # ambient-authority sweep found it because every sweep looked for gates that
+  # were ABSENT or VACUOUS rather than for claims that were UNBOUND. Its own six
+  # rules are falsified one arm each in the same job.
+  - invariants
   # Gating. It carries S28: a gate satisfied by a capability every task already
   # holds is not a gate. [H-3] was four of them, on the path to the user
   # database, and they survived two prior ambient-authority sweeps because both

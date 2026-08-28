@@ -1133,10 +1133,18 @@ kernel and a `-Z sanitizer` pass over the Rust core in CI.
 
 Items **P0–P2** of §7.5, plus:
 
-**F-4.1 — A security-invariant registry.** A machine-readable `invariants.yaml` naming each
-claimed property, the code enforcing it, and the test or proof witnessing it. CI fails if
-an invariant has no witness. This directly attacks the failure mode that produced
+**F-4.1 — A security-invariant registry.** *Closed 2026-08-28.* A machine-readable registry
+naming each claimed property, the code enforcing it, and the test or proof witnessing it. CI
+fails if an invariant has no witness. This directly attacks the failure mode that produced
 **[C-1]**: a documented property with no test binding it to the code.
+
+*Implemented as `tools/check_invariants.py` + the required `invariants` job. It DERIVES from
+`SECURITY.md`'s table rather than adding an `invariants.yaml` beside it: the table already
+carries id, statement, enforcing code and witness, so a second hand-maintained copy would be
+**[H-3]**'s shape. `.github/invariants.yml` holds exemptions only and is currently empty. The
+survey that preceded it found **S16 with no witness at all** — see `docs/LIMITATIONS.md` §1.9 —
+which is this finding's own failure mode, present in the tree while the finding was open. Six
+rules, each falsified by its own arm in `tools/test_check_invariants.sh`.*
 
 **F-4.2 — Nightly long-running fuzz + Kani in a scheduled workflow**, with findings filed
 automatically as issues.
@@ -1177,7 +1185,10 @@ result type with explicit conversion at the ABI boundary removes a whole defect 
 
 **R-5 — Establish a written architectural invariant list, and gate on it.** Pair with
 **F-4.1**. Each invariant gets an ID; each security-relevant PR must cite the IDs it
-touches; CI checks every ID has a live witness.
+touches; CI checks every ID has a live witness. *The list and the gate landed 2026-08-28
+(**F-4.1**); the ID already exists as the S-number. What is NOT mechanised is the middle
+clause — a PR citing the IDs it touches — which stays a convention of the commit body's
+`Invariant preserved:` line rather than a check.*
 
 **R-6 — Governance: solve the reviewer problem explicitly.** This is the highest-leverage
 long-term change and it is not technical. Options, in descending preference: recruit a

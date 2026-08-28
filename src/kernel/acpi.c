@@ -132,14 +132,25 @@ static int madt_count(const struct acpi_madt *m, uint8_t *apic_ids, int max_ids)
 }
 
 /* Walk one system-description table (RSDT: 32-bit entries, or XSDT: 64-bit) for
- * the MADT and return its enabled-CPU count, or -1. */
-static int walk_sdt(uint64_t sdt_phys, int is_xsdt, uint8_t *apic_ids, int max_ids) {
+ * a table with signature `sig`, and return it fully validated, or NULL.
+ *
+ * This used to be MADT-specific with the signature compared inline. It is generic
+ * because DMAR (roadmap 2.6's IOMMU) needs the same walk, and duplicating it
+ * would duplicate the VALIDATION -- which is the part that matters here, since
+ * every byte is semi-trusted firmware input. One walker, one set of checks: the
+ * signature is the only thing that varies.
+ *
+ * The returned table has had its length bounds-checked, its whole extent
+ * confirmed inside the PHYS_KVA window, and its checksum verified, so a caller
+ * may read `h->length` bytes from it and no more. */
+static const struct acpi_sdt_header *walk_sdt_for(uint64_t sdt_phys, int is_xsdt,
+                                                  const char *sig) {
     const struct acpi_sdt_header *h = acpi_phys(sdt_phys, sizeof(*h));
-    if (!h) return -1;
+    if (!h) return NULL;
     uint32_t total = h->length;
-    if (total < sizeof(*h) || total > 0x10000) return -1;
-    if (!acpi_phys(sdt_phys, total)) return -1;
-    if (!acpi_checksum_ok((const uint8_t *)h, total)) return -1;
+    if (total < sizeof(*h) || total > 0x10000) return NULL;
+    if (!acpi_phys(sdt_phys, total)) return NULL;
+    if (!acpi_checksum_ok((const uint8_t *)h, total)) return NULL;
 
     uint32_t esize  = is_xsdt ? 8 : 4;
     uint32_t nents  = (total - sizeof(*h)) / esize;
@@ -150,30 +161,51 @@ static int walk_sdt(uint64_t sdt_phys, int is_xsdt, uint8_t *apic_ids, int max_i
             : *(const uint32_t *)(ent + (uint64_t)i * 4);
         const struct acpi_sdt_header *th = acpi_phys(tp, sizeof(*th));
         if (!th) continue;
-        if (th->sig[0]=='A'&&th->sig[1]=='P'&&th->sig[2]=='I'&&th->sig[3]=='C') {
-            return madt_count((const struct acpi_madt *)th, apic_ids, max_ids);
-        }
+        if (th->sig[0] != sig[0] || th->sig[1] != sig[1] ||
+            th->sig[2] != sig[2] || th->sig[3] != sig[3]) continue;
+        /* Validate the TARGET table as thoroughly as the directory: its own
+         * length, its own extent, its own checksum. A caller that trusted the
+         * directory's word for a table's existence would be reading a length
+         * field nothing had checked. */
+        uint32_t tlen = th->length;
+        if (tlen < sizeof(*th) || tlen > 0x10000) continue;
+        if (!acpi_phys(tp, tlen)) continue;
+        if (!acpi_checksum_ok((const uint8_t *)th, tlen)) continue;
+        return th;
     }
-    return -1;
+    return NULL;
+}
+
+/* Find one ACPI table by signature, trying the 64-bit XSDT first and falling
+ * back to the 32-bit RSDT, exactly as acpi_detect_cpus does. Returns a validated
+ * table or NULL. */
+const struct acpi_sdt_header *acpi_find_table(const char *sig) {
+    const struct acpi_rsdp *r = find_rsdp();
+    if (!r) return NULL;
+    if (r->revision >= 2 && r->length >= sizeof(struct acpi_rsdp) &&
+        acpi_checksum_ok((const uint8_t *)r, r->length) && r->xsdt_addr) {
+        const struct acpi_sdt_header *h = walk_sdt_for(r->xsdt_addr, 1, sig);
+        if (h) return h;
+    }
+    if (r->rsdt_addr) {
+        const struct acpi_sdt_header *h = walk_sdt_for(r->rsdt_addr, 0, sig);
+        if (h) return h;
+    }
+    return NULL;
 }
 
 /* Public: how many CPUs does firmware report? Fills apic_ids[] (best effort, up
  * to max_ids). Returns the enabled-CPU count (>=1) or -1 if ACPI is unreadable —
  * in which case the caller uses its conservative fallback. */
 int acpi_detect_cpus(uint8_t *apic_ids, int max_ids) {
-    const struct acpi_rsdp *r = find_rsdp();
-    if (!r) return -1;
+    const struct acpi_sdt_header *h = acpi_find_table("APIC");
+    if (!h) return -1;
+    return madt_count((const struct acpi_madt *)h, apic_ids, max_ids);
+}
 
-    /* Prefer the 64-bit XSDT on ACPI 2.0+ (validate its extended checksum), else
-     * the 32-bit RSDT. */
-    if (r->revision >= 2 && r->length >= sizeof(struct acpi_rsdp) &&
-        acpi_checksum_ok((const uint8_t *)r, r->length) && r->xsdt_addr) {
-        int n = walk_sdt(r->xsdt_addr, 1, apic_ids, max_ids);
-        if (n >= 1) return n;
-    }
-    if (r->rsdt_addr) {
-        int n = walk_sdt(r->rsdt_addr, 0, apic_ids, max_ids);
-        if (n >= 1) return n;
-    }
-    return -1;
+/* The validated length of a table from acpi_find_table. An accessor rather than
+ * an exported struct: iommu.c needs the extent to bound its own walk, and giving
+ * it the layout would let it read fields this file has not checked. */
+uint32_t acpi_table_length(const struct acpi_sdt_header *h) {
+    return h ? h->length : 0;
 }

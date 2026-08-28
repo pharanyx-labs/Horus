@@ -102,8 +102,8 @@ DEFECT_FLAGS = \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
-	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE NET_DMA_ADDR_VIRTUAL \
-	DMA_ADDR_FRAME_ONLY
+	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
+	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -175,6 +175,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/pipe.o \
        src/kernel/untyped.o \
        src/kernel/pci.o \
+       src/kernel/iommu.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0
@@ -729,6 +730,16 @@ NET_NO_BUSMASTER ?= 0
 # checks rather than merely stores.
 NET_NO_DECODE ?= 0
 
+# NET_IOMMU_NO_MAP=1 has netd ask SYS_DMA_ADDR for its frames' addresses WITHOUT
+# installing the device mappings (the DMA_ADDR_NO_MAP flag). Every capability
+# check still runs and every address returned is correct -- what is withheld is
+# the one thing that lets the device reach the memory. THE ARM FOR S45: under it
+# the device's address space stays empty, no descriptor is ever read, and DD
+# never comes back. `make smoke-net-iommu-control` requires
+# NETTEST: FAIL dma-never-completed, and it only means anything on a machine with
+# an IOMMU, which is why that gate boots with SMOKE_IOMMU=1.
+NET_IOMMU_NO_MAP ?= 0
+
 # DMA_ADDR_FRAME_ONLY=1 drops SYS_DMA_ADDR's device-capability requirement, so the
 # call is gated on the frame alone -- the shape it takes if the device capability
 # is read as documentation rather than as a requirement. Under it any task that
@@ -739,12 +750,6 @@ ifeq ($(DMA_ADDR_FRAME_ONLY),1)
 CFLAGS += -DDMA_ADDR_FRAME_ONLY
 endif
 
-# NET_DMA_ADDR_VIRTUAL=1 has netd program its own VIRTUAL addresses into the
-# queue-address register and its descriptors instead of the answer from
-# SYS_DMA_ADDR. Both are numbers and both look plausible; only one is where the
-# device will go. The arm for sys_dma_addr returning something the DEVICE can use.
-# `make smoke-net-dma-control` requires NETTEST: FAIL no-arp-reply.
-NET_DMA_ADDR_VIRTUAL ?= 0
 
 # IO_DEVICE_CAP_UNCHECKED=1 removes the capability lookup from iodev_from_slot
 # entirely, so every caller of a device syscall resolves to the platform device
@@ -1927,8 +1932,8 @@ endif
 ifeq ($(NET_NO_DECODE),1)
 USERSPACE_CFLAGS += -DNET_NO_DECODE
 endif
-ifeq ($(NET_DMA_ADDR_VIRTUAL),1)
-USERSPACE_CFLAGS += -DNET_DMA_ADDR_VIRTUAL
+ifeq ($(NET_IOMMU_NO_MAP),1)
+USERSPACE_CFLAGS += -DNET_IOMMU_NO_MAP
 endif
 USERSPACE_CFLAGS_64 = $(USERSPACE_CFLAGS)
 # 32-bit, for the i386 ELF-loader self-test image ONLY (userspace/elftest.o ->
@@ -3407,8 +3412,21 @@ smoke-net:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso
-	@SMOKE_NET=user SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NETTEST: PASS' \
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: PASS' \
 		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The arm for S45, and the reason the IOMMU is a property rather than a boot
+# message. Same driver, same device, same capability checks -- only the device
+# MAPPINGS withheld. The device's address space then stays empty, it cannot read
+# its own descriptor ring, and the completion never comes back.
+.PHONY: smoke-net-iommu-control
+smoke-net-iommu-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_IOMMU_NO_MAP=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_IOMMU_NO_MAP=1 boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL dma-never-completed' tools/smoke_test.sh boot.iso
 
 # Control arm 1 of 2: no decode bits at all, so the device stops answering its own
 # I/O BAR. The arm for SYS_DEVICE_ENABLE -- it writes the one configuration-space
@@ -3423,20 +3441,8 @@ smoke-net-decode-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_DECODE=1
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_DECODE=1 boot.iso
-	@SMOKE_NET=user SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: FAIL rx-queue-size' tools/smoke_test.sh boot.iso
-
-# Control arm 2 of 2: the driver programs its own VIRTUAL addresses where the
-# device's view belongs. Both are numbers, both look plausible, and only one is
-# where the device will go -- so this is the arm for SYS_DMA_ADDR returning an
-# address the DEVICE can use rather than one that merely exists.
-.PHONY: smoke-net-dma-control
-smoke-net-dma-control:
-	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_DMA_ADDR_VIRTUAL=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_DMA_ADDR_VIRTUAL=1 boot.iso
-	@SMOKE_NET=user SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: FAIL no-arp-reply' tools/smoke_test.sh boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL mac-not-valid' tools/smoke_test.sh boot.iso
 
 # ---- Device capabilities: a CAP_IO_DEVICE names a device --------------------
 #

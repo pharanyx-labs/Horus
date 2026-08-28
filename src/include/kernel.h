@@ -854,6 +854,7 @@ void users_init(void);
 #define SYS_IOPORT_GRANT       80   /* (dev_slot) -> 0; grant the caller native ring-3 in/out on the ports declared by the device named in dev_slot, via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE) */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; report what the device named by the CAP_IO_DEVICE at dev_slot declares -- ids, MMIO ranges, port ranges, IRQ lines -- and nothing about any other device (CAP_IO_DEVICE + READ) */
 #define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the three PCI decode bits (IO/MEM/BUSMASTER) of the device named in dev_slot, and nothing else in configuration space (CAP_IO_DEVICE + WRITE) */
+#define DMA_ADDR_NO_MAP        0x1u  /* SYS_DMA_ADDR: report, do not map (control arm) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
 #define SYS_IRQ_REGISTER       81   /* (dev_slot, irq, notif_slot, badge) -> 0; route an IRQ the named device declares to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE) */
 #define SYS_CONSOLE_OWNED      82   /* () -> 1 if a ring-3 console server owns the console hardware (fd-1 output must route through it), else 0; read-only status, self-authorizing */
@@ -1692,7 +1693,35 @@ void smp_maybe_shootdown(uint64_t v);
 int smp_get_online_count(void);
 /* ACPI MADT CPU enumeration (acpi.c): fills apic_ids[] up to max_ids and returns
  * the enabled-CPU count (>=1), or -1 if the firmware tables can't be parsed. */
+/* ---- VT-d DMA remapping (src/kernel/iommu.c) ------------------------------
+ *
+ * What a device is allowed to reach. Every device starts with an EMPTY address
+ * space -- not an identity map -- so a device whose driver has mapped nothing
+ * reaches nothing and every address it emits faults. That default is what makes
+ * S43/S44's capability meaningful against hardware rather than only against the
+ * CPU: a driver's DMA reach is exactly the frames it holds a CAP_FRAME for and
+ * has asked to map. See SECURITY.md S45.
+ *
+ * iommu_active() is 0 on a machine with no DMAR, and every caller degrades
+ * honestly rather than pretending the property holds. */
+void iommu_init(void);
+int  iommu_active(void);
+int  iommu_map(uint64_t devindex, uint16_t bdf, uint64_t phys, uint32_t pages,
+               int writable);
+int  iommu_unmap(uint64_t devindex, uint64_t phys, uint32_t pages);
+void iommu_reset_device(uint64_t devindex);
+void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys);
+void ensure_iommu_mapped_current(uint64_t *root_pml4);
+uint32_t alloc_user_physical_page(void);
+
 int acpi_detect_cpus(uint8_t *apic_ids, int max_ids);
+/* One validated ACPI table by signature (acpi.c). Length-bounded, extent-confined
+ * to the PHYS_KVA window, checksum-verified: a caller may read `length` bytes and
+ * no more. NULL if absent or if anything about it fails to validate -- firmware
+ * tables are semi-trusted input and a partial parse fails closed. */
+struct acpi_sdt_header;
+const struct acpi_sdt_header *acpi_find_table(const char *sig);
+uint32_t acpi_table_length(const struct acpi_sdt_header *h);
 
 /* Preemptive scheduling (scheduler.c). preempt_on_tick is called from the timer
  * ISR with the current trap-frame pointer and the interrupted CS; it returns the

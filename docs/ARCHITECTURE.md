@@ -206,14 +206,37 @@ from. No console capability, no filesystem, no boot modules. It is the demonstra
 exists for, and `make smoke-net` proves it on the wire — an ARP exchange with QEMU's user-mode
 gateway, the reply arriving through netd's own receive ring.
 
-**It is not yet confined, and the capability is not what would confine it.** There is no IOMMU,
-so once bus mastering is on the device reaches all of physical memory whatever its driver holds,
-and the descriptors directing it are written by the driver. What the capability decides is who
-may turn that on and for which device. See `SECURITY.md` **S44** and
-`docs/LIMITATIONS.md` §2.12 — this is the largest single gap in the model.
+It drives **e1000** rather than virtio, and that is a security decision rather than a taste
+one: a paravirtual virtio device accesses guest memory directly and is not on the far side of
+the IOMMU, so a virtio driver cannot witness a DMA-confinement property at all. The virtio
+version of this driver kept working with an empty device address space — see the header of
+`userspace/netd.c` for the measurement.
 
 It polls rather than waiting on its interrupt, because a PCI line cannot be delivered on this
-machine yet (`docs/LIMITATIONS.md` §2.13).
+machine yet (`docs/LIMITATIONS.md` §2.13), and its receive path does not work (§2.14).
+
+### DMA remapping (VT-d)
+
+`src/kernel/iommu.c` brings up an Intel VT-d unit found through the DMAR table, before any
+ring-3 task exists. **Every device gets an address space of its own, and every one starts
+empty** — a device whose driver has mapped nothing reaches nothing, and every address it emits
+faults. `SYS_DMA_ADDR` installs a mapping, carrying the frame capability's own write right, so a
+driver's DMA reach is exactly the frames it holds a `CAP_FRAME` for.
+
+An identity map would have been much easier and would have made the whole mechanism decorative:
+the device would reach all of memory again, through a translation that always says yes. Each
+device also gets its **own domain**, because sharing one would make a mapping installed for one
+device reachable by another — **S43**'s defect one layer down, and invisible because both
+devices would still work.
+
+The second-level tables look like x86-64 page tables and are walked the same way, but the bits
+mean different things (bit 0 is READ, bit 1 is WRITE, and there is no present or NX bit), so
+reusing `paging.c`'s helpers would be a type confusion that happens to compile. `SECURITY.md`
+**S45**; witness `make smoke-net`, falsified by `make smoke-net-iommu-control`.
+
+On a machine with no DMAR the kernel says so on the wire and `iommu_active()` stays 0; every
+caller then behaves as it did before, which is the honest degradation rather than a property
+quietly claimed and not held.
 
 ### Untyped memory
 

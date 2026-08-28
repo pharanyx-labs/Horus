@@ -260,11 +260,26 @@ fi
 # completes an exchange with it has demonstrably transmitted and received. It
 # needs a QEMU built with slirp; if the runner's is not, QEMU exits at once and
 # the gate fails loudly rather than passing on an absent network.
+# SMOKE_IOMMU=1 boots the q35 machine with an Intel VT-d unit, which is what the
+# DMA-confinement gates need: on i440fx there is no DMAR table at all and the
+# kernel correctly reports that device DMA is unrestricted, so a gate for S45
+# would be vacuous there. Paired with SMOKE_NET=e1000 -- a paravirtual virtio
+# device would bypass the translation entirely (see userspace/netd.c).
+MACHINE_ARG=""
+if [ "${SMOKE_IOMMU:-0}" = 1 ]; then
+    MACHINE_ARG="-machine q35,kernel-irqchip=split -device intel-iommu,intremap=off"
+fi
+
 NET_ARG="-net none"
 if [ "${SMOKE_NET:-0}" = 1 ]; then
     NET_ARG="-netdev hubport,id=smokenet0,hubid=0 -device virtio-net-pci,netdev=smokenet0"
 elif [ "${SMOKE_NET:-0}" = user ]; then
     NET_ARG="-netdev user,id=smokenet0 -device virtio-net-pci,netdev=smokenet0"
+elif [ "${SMOKE_NET:-0}" = e1000 ]; then
+    # A REAL device model, deliberately, not virtio: virtio accesses guest memory
+    # directly and is not on the far side of the IOMMU, so it cannot witness a
+    # DMA-confinement property. See the header of userspace/netd.c.
+    NET_ARG="-netdev user,id=smokenet0 -device e1000,netdev=smokenet0"
 fi
 
 # SWTPM_REQUIRED=1 turns "swtpm is not installed" from a silent skip into an
@@ -287,7 +302,7 @@ qemu-system-x86_64 \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" $NET_ARG \
-    $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG \
+    $MACHINE_ARG $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 

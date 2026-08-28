@@ -389,6 +389,13 @@ void kernel_main(uint32_t mb_info) {
      * before they are minted. Pure port I/O, no allocation, no interrupts. */
     iodev_init();
 
+    /* VT-d, before cap_init and long before any ring-3 task: bringing the unit up
+     * with an empty root table is what makes "a device reaches nothing until its
+     * driver maps a frame" true from the first instruction, rather than from
+     * whenever a driver first asks. A window in which DMA is unrestricted is a
+     * window, however short. */
+    iommu_init();
+
     tss_io_bitmap_init();  /* prefill the console I/O-port allowlist (stays inactive
                             * until a task with a port grant is switched in) */
     cap_init();

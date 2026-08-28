@@ -1273,6 +1273,226 @@ void create_user_pagedir(uint32_t task_id) {
     spin_unlock(&page_lock);
 }
 
+/* ---- FORK: CLONE A USER ADDRESS SPACE COPY-ON-WRITE (roadmap 2.3) ---------
+ *
+ * Build `child`'s address space as a copy-on-write duplicate of the tree at
+ * `parent_cr3`. Returns 0 on success; on any failure the child's tree is freed
+ * and tasks[child].cr3 is left 0, so a half-built space can never run.
+ *
+ * WHAT IS SHARED AND WHAT IS NOT. Every present, USER-accessible 4 KiB leaf in
+ * the parent's user half is pointed at the same physical frame from both trees,
+ * with PAGE_WRITE cleared and PAGE_COW set on BOTH PTEs, and the frame's
+ * refcount raised by one. The first write from either side faults into
+ * cow_break_pte, which was written for exactly this caller and is what actually
+ * gives each side a private page. Read-only sharing until then is the whole
+ * point: a fork of a 450 KiB newlib image costs one PML4 and its interior
+ * tables rather than 110 page copies.
+ *
+ * BOTH SIDES, NOT JUST THE CHILD. The parent's own PTE must be downgraded too,
+ * or the parent keeps writing through a writable mapping of a page the child now
+ * reads -- which is not "copy on write", it is a shared writable page with extra
+ * steps, and the child would observe every subsequent parent write. That is the
+ * defect FORK_SHARE_WRITABLE=1 reinstates.
+ *
+ * THREE KINDS OF PTE ARE NOT CLONED:
+ *
+ *  1. NOT PAGE_USER. The LAPIC and TPM TIS windows are identity-mapped at
+ *     0xFEE00000 / 0xFED40000, which are LOW addresses and therefore live in the
+ *     *user half* of the PML4 -- but supervisor-only, because kernel code touches
+ *     them while running on a task's CR3 (see ensure_lapic_mapped). They are not
+ *     part of the process image, they are not refcounted out of the user pool,
+ *     and the child gets its own via the same ensure_* calls create_user_pagedir
+ *     makes. Cloning them would COW-mark an MMIO register window: the first
+ *     kernel write to the EOI register would fault, in interrupt context, on the
+ *     child's CR3.
+ *
+ *  2. A HUGE PAGE (PAGE_PS at PDPT or PD level). Nothing in a user address space
+ *     builds one today -- user_table_next refuses to descend through one, and
+ *     user_map_fresh_page only ever installs 4 KiB leaves -- so this is refusal
+ *     of a case that does not arise rather than a splitting algorithm nobody can
+ *     test. If a 2 MiB user mapping is ever introduced, this refuses the fork
+ *     loudly instead of silently cloning a leaf whose refcount arithmetic covers
+ *     one page and whose frame covers 512.
+ *
+ *  3. A KERNEL OBJECT'S PAGE -- and this is the security one. See below.
+ *
+ * ---- WHY A MAPPED FRAME REFUSES THE FORK OUTRIGHT -------------------------
+ *
+ * cow_break_pte already refuses to break a COW PTE whose frame lies in the
+ * untyped arena, and the argument there is complete: a break would allocate the
+ * private copy from the ANONYMOUS pool (resource authority no untyped region
+ * paid for) and would repoint the PTE at a page no capability names (the mapping
+ * stops being the object, and the frame's `1 + mappings` pin arithmetic stops
+ * describing reality). That guard was landed before its caller existed, and this
+ * is the caller it named: "the day anything duplicates an address space and marks
+ * present user PTEs copy-on-write -- which is roadmap 2.3's fork".
+ *
+ * So why refuse here as well, rather than let the existing guard do its job?
+ * Because the guard fires at FAULT time, on whichever side writes first, and by
+ * then the fork has succeeded and two tasks exist. The fault path treats a
+ * non-zero return as unhandled and kills the writer -- so the observable result
+ * of forking with a frame mapped would be a child (or a parent!) that dies at an
+ * unpredictable later instruction, on a page it was entitled to write before the
+ * fork. Refusing the clone reports the same policy at the point the caller can
+ * still act on it, and leaves no task holding a mapping it cannot use.
+ *
+ * It also keeps a frame from being SHARED by accident, which is the fail-open
+ * this pair of guards is really about. The alternative to COW-marking a frame is
+ * to clone it writable-shared, and that is superficially attractive -- a frame IS
+ * shared memory, after all. It is still wrong: the child would hold a live
+ * mapping of a kernel object with NO capability naming it, so revoking the
+ * parent's CAP_FRAME would sweep the parent's PTE and leave the child's behind.
+ * Authority in this kernel is the capability, and a fork that copies mappings but
+ * not the capability graph must not manufacture the one without the other. When
+ * fork learns to duplicate a cspace (a separate commit, deliberately), sharing a
+ * frame becomes expressible; until then it is refused.
+ *
+ * FORK_ARENA_UNCHECKED=1 removes this test -- the fork then succeeds with the
+ * frame COW-marked, and `forktest` observes the death that produces.
+ *
+ * ---- ROLLBACK, AND WHY THE PARENT NEEDS NO UNWINDING ----------------------
+ *
+ * A failure part-way through has already downgraded some of the parent's PTEs to
+ * read-only + COW. Those are NOT restored, and do not need to be: freeing the
+ * child's tree runs every leaf it installed back through user_leaf_release, so
+ * each shared frame's refcount returns to 1, and the parent's next write to one
+ * takes cow_break_pte's sole-owner branch -- which upgrades the PTE in place and
+ * keeps the frame. The parent ends up exactly where it started, having paid one
+ * spurious fault per page. Restoring the PTEs by hand would need a second walk
+ * that could itself fail, to undo something that self-heals.
+ *
+ * ---- TLB ------------------------------------------------------------------
+ *
+ * The parent's live PTEs lose PAGE_WRITE, so its cached translations must go.
+ * The caller reloads CR3 on the way out, which flushes every non-global entry on
+ * THIS CPU -- and this CPU is the only one that can be translating the parent's
+ * user addresses. Another core may still have `parent_cr3` in CR3 (a CPU whose
+ * last task died parks in kernel_idle without reloading it -- see the [G-10]
+ * note at the top of create_user_pagedir), but such a core is idle in the kernel
+ * and touches no user address, and it cannot begin running this task without the
+ * scheduler claiming it and installing CR3 afresh. So there is no window in which
+ * a stale writable entry is used, and no per-page broadcast shootdown -- which
+ * this path could not perform anyway: a syscall arrives through an interrupt
+ * gate with IF=0, and smp_maybe_shootdown's ack wait requires interrupts on.
+ *
+ * The caller holds no lock; page_lock is taken here. */
+int clone_user_aspace(uint32_t child, uint64_t parent_cr3) {
+    if (child == 0 || child >= MAX_TASKS) return -1;
+    if (parent_cr3 == 0) return -1;
+
+    spin_lock(&page_lock);
+
+    /* Reclaim whatever the child's slot held, on exactly the terms
+     * create_user_pagedir uses -- a slot handed to a fork is a slot that may
+     * have belonged to a task another CPU is still translating through
+     * ([G-10]), and the rule that a tree in use is leaked rather than freed is
+     * a property of the slot, not of how the new space is built. */
+    if (tasks[child].cr3) {
+        reclaim_deferred_aspaces();
+        if (!aspace_loaded_on_another_cpu(tasks[child].cr3))
+            free_user_aspace(tasks[child].cr3);
+        else
+            defer_aspace_reclaim(tasks[child].cr3);
+        tasks[child].cr3 = 0;
+    }
+
+    uint64_t child_phys = alloc_user_physical_page();
+    if (child_phys == 0) { spin_unlock(&page_lock); return -2; }
+    uint64_t *cp4 = (uint64_t *)PHYS_KVA(child_phys);
+    for (int i = 0; i < 512; i++) cp4[i] = 0;
+
+    /* Kernel half, PAGE_USER stripped -- byte for byte what create_user_pagedir
+     * installs, and for the same reason: the kernel must stay addressable on the
+     * child's CR3 while ring 3 must not reach any of it. */
+    extern uint64_t pml4[512];
+    for (int i = 256; i < 512; i++) cp4[i] = pml4[i] & ~((uint64_t)PAGE_USER);
+
+    uint64_t *pp4 = (uint64_t *)PHYS_KVA(parent_cr3);
+    int failed = 0;
+
+    for (int i4 = 0; i4 < 256 && !failed; i4++) {
+        uint64_t e4 = pp4[i4];
+        if (!(e4 & PAGE_PRESENT)) continue;
+        if (e4 & PAGE_PS) { failed = 1; break; }          /* 512 GiB page: refuse */
+        uint64_t *pdpt = (uint64_t *)PHYS_KVA(e4 & PTE_ADDR_MASK);
+
+        for (int i3 = 0; i3 < 512 && !failed; i3++) {
+            uint64_t e3 = pdpt[i3];
+            if (!(e3 & PAGE_PRESENT)) continue;
+            if (e3 & PAGE_PS) { failed = 1; break; }      /* 1 GiB page: refuse */
+            uint64_t *pd = (uint64_t *)PHYS_KVA(e3 & PTE_ADDR_MASK);
+
+            for (int i2 = 0; i2 < 512 && !failed; i2++) {
+                uint64_t e2 = pd[i2];
+                if (!(e2 & PAGE_PRESENT)) continue;
+                if (e2 & PAGE_PS) { failed = 1; break; }  /* 2 MiB page: refuse */
+                uint64_t *pt = (uint64_t *)PHYS_KVA(e2 & PTE_ADDR_MASK);
+
+                for (int i1 = 0; i1 < 512; i1++) {
+                    uint64_t pte = pt[i1];
+                    if (!(pte & PAGE_PRESENT)) continue;
+                    /* Supervisor leaf in the user half: an MMIO window, not part
+                     * of the process image. Skip it; the child gets its own. */
+                    if (!(pte & PAGE_USER)) continue;
+
+                    uint64_t phys = pte & PTE_ADDR_MASK;
+#ifndef FORK_ARENA_UNCHECKED
+                    if (phys_in_untyped_arena(phys)) { failed = 1; break; }
+#endif
+                    uint64_t va = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
+                                  ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
+
+                    /* Downgrade to read-only + COW. The zero page is already
+                     * exactly this shape (handle_demand_page_fault maps it
+                     * PRESENT|USER|COW with no PAGE_WRITE), so a heap page the
+                     * parent has never written is simply shared again -- the
+                     * refcount rises, and whichever side writes first breaks it. */
+                    uint64_t nf = (pte & ~PTE_ADDR_MASK);
+#ifndef FORK_SHARE_WRITABLE
+                    nf &= ~((uint64_t)PAGE_WRITE);
+                    nf |= (uint64_t)PAGE_COW;
+#endif
+                    if (user_map_page(cp4, va, phys, nf) != 0) { failed = 1; break; }
+                    pt[i1] = phys | nf;
+                    (void)rust_page_ref_inc((uint32_t)phys, page_refcounts,
+                                            (uint32_t)USER_PHYS_PAGES);
+                }
+            }
+        }
+    }
+
+    if (failed) {
+        free_user_aspace(child_phys);
+        tasks[child].cr3 = 0;
+        spin_unlock(&page_lock);
+        return -3;
+    }
+
+    /* The self-map, then the supervisor MMIO windows -- in that order and AFTER
+     * the user half is populated, which is load-bearing in a way that is easy to
+     * undo. ensure_identity_mmio_page installs its intermediate entries WITHOUT
+     * PAGE_USER, and user_table_next reuses a present entry as it finds it. Run
+     * the MMIO ensures first and pml4[0] exists without PAGE_USER; every user
+     * page cloned underneath it is then unreachable from ring 3, because the CPU
+     * ANDs U across all four levels. create_user_pagedir has the same ordering
+     * for the same reason. */
+    cp4[510] = child_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_NX;
+    ensure_lapic_mapped(cp4);
+    ensure_tpm_tis_mapped(cp4);
+
+    tasks[child].cr3 = child_phys;
+
+    /* Same kernel stack binding create_user_pagedir performs: the first page of
+     * per_task_kstacks[child] is the guard kstack_guards_init unmapped once at
+     * boot, and the stack starts above it. */
+    uint8_t *stack_area = per_task_kstacks[child];
+    uint64_t stack_base = (uint64_t)stack_area + PAGE_SIZE;
+    tasks[child].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
+
+    spin_unlock(&page_lock);
+    return 0;
+}
+
 void switch_cr3(addr_t cr3) {
     
     if (cr3 == 0) {

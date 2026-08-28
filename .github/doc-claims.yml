@@ -191,6 +191,22 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'there is no real <code>fork</code>'
+    reason: >-
+      site/index.html carried this in the virtual-memory row until 2026-08-28,
+      when SYS_FORK landed with a copy-on-write address-space clone (S39, S40;
+      make smoke-fork). It is the public face, so a retired negative claim there
+      is the most expensive kind of drift. What is still absent is narrower and
+      is stated in its own row: a forked child does not inherit its parent's
+      cspace (docs/LIMITATIONS.md 2.11).
+  - pattern: '`fork` is the function that would change it'
+    reason: >-
+      docs/ARCHITECTURE.md 14 and TESTS.md both said this of S38's arena guard,
+      which was written in #215 before any caller existed. fork landed the next
+      day (2026-08-28) and does mark present user PTEs copy-on-write -- but it
+      refuses to clone an arena page at all (S40), so the guard is still reached
+      by nothing and is now defended by a stated property rather than by two
+      circumstances. Both files say that instead.
   - pattern: 'overstates the ship build by three'
     reason: >-
       The 2026-08-22 note beside SYS_OPEN named SYS_OPEN, 15 and 16, but 15 and

@@ -1996,8 +1996,8 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE only) ----
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST)
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
@@ -2345,6 +2345,39 @@ void cow_selftest(void) {
     sched_enter_user(pid);   /* cowtest prints the PASS/FAIL marker; does not return */
 }
 #endif /* COW_SELFTEST */
+
+#ifdef FORK_SELFTEST
+/* ---- fork self-test (roadmap 2.3, FORK_SELFTEST only) ----------------------
+ *
+ * Spawn userspace/forktest, which forks itself and asserts from ring 3 that the
+ * child's memory is a COPY of the parent's rather than a share (S36), and that a
+ * task holding a mapped CAP_FRAME is refused (S37). Every assertion is
+ * userspace-side; see userspace/forktest.c for why the two isolation directions
+ * are tested differently.
+ *
+ * It is endowed with exactly ONE capability beyond a spawn's: a CAP_UNTYPED, so
+ * it can retype the frame the S37 check needs. That is authority to create an
+ * object, not authority to fork -- fork answers to the slot-3 capability every
+ * task is born with, the same one SYS_SPAWN answers to. Handing it the untyped
+ * is what makes the refusal a measurement rather than a task that simply had no
+ * frame to map. */
+void fork_selftest(void) {
+    extern uint8_t embedded_forktest_bin_start[], embedded_forktest_bin_end[];
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    print("FORK_SELFTEST: begin\n");
+
+    int pid = fs_spawn_embedded(embedded_forktest_bin_start,
+                                embedded_forktest_bin_end, "forktest");
+    if (pid <= 0) { print("FORKTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[pid].uid = 0;
+
+    cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(pid);   /* forktest prints the PASS/FAIL marker; does not return */
+}
+#endif /* FORK_SELFTEST */
 
 
 

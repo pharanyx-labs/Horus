@@ -88,10 +88,10 @@ a syscall number without adding its table entry.
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
 boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 91 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 92 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 93 of its 96 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 94 of its 97 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
@@ -132,8 +132,9 @@ per item.
 | Subsystem | State |
 |---|---|
 | **Boot** | Multiboot2 via GRUB, higher-half 64-bit kernel at `KERNEL_VMA`, physical pool sized from the E820 map |
-| **Memory** | Per-task 4-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X, unmapped stack guard pages, 30-bit userspace ASLR, frame capabilities with capability-mediated shared memory |
+| **Memory** | Per-task 4-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X, unmapped stack guard pages, 30-bit userspace ASLR, frame capabilities with capability-mediated shared memory, `fork` cloning an address space copy-on-write |
 | **Capabilities** | 16 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop; kernel objects — cspaces, endpoints, notifications and memory frames — retyped out of untyped memory a task must hold authority over |
+| **Processes** | `spawn` from an embedded or caller-supplied image, exec-in-place, `fork` with a copy-on-write address space, `wait` reporting how a task died, signals with handlers and an alternate stack. **No** process groups, job control or `/proc`, and a forked child does not inherit its parent's cspace |
 | **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
 | **SMP** | Default on; ACPI MADT enumeration, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
 | **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, a blocking receive that sleeps on an empty queue, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
@@ -296,7 +297,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 91 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 92 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

@@ -865,10 +865,46 @@ There is no wall clock: nothing reads an RTC and nothing attests one, so every c
 - **A libc `clock_gettime`.** The ABI is POSIX-shaped (`sec`/`nsec`) so newlib can sit on it,
   but nothing is wired yet.
 
-### 2.3 ⬜ Process and session model — **[F-2.4]**
+### 2.3 ◧ Process and session model — **[F-2.4]** — *`fork` landed 2026-08-28*
 
 Real `fork`/`exec` semantics, process groups, job control, and a `/proc`-equivalent served
 over IPC. Needed before the shell can become a usable OS interface.
+
+**Delivered: `SYS_FORK` (101), the memory half.** `clone_user_aspace` (`src/kernel/paging.c`)
+builds the child's address space as a **copy-on-write clone** of the caller's: both trees point
+at the same physical frames with `PAGE_WRITE` cleared and `PAGE_COW` set **on both sides**, and
+the existing `cow_break_pte` — written in #215 for a caller that did not yet exist — hands out
+the private copy on the first write from either side. `SECURITY.md` **S39**; witness
+`make smoke-fork`.
+
+**The parent's leaf is the half that carries the property.** Downgrading only the child's is the
+mistake this looks like from the outside: it reads as "the child gets copy-on-write", and it
+produces a parent that keeps writing through a writable mapping of a page the child is reading.
+That is not a copy — it is one process with two schedulable contexts, sharing one stack — and
+`FORK_SHARE_WRITABLE=1` is that kernel exactly.
+
+**A mapped kernel object refuses the fork** (**S40**). #215's arena guard already refuses the
+*break* of a frame's page; this refuses the *clone*, one layer earlier, because the guard fires
+at fault time on whichever side writes first — by then two tasks exist and one dies at an
+unpredictable later instruction on a page it was entitled to write before the fork. Cloning the
+frame writable-shared instead is the tempting alternative and is worse: the child would hold a
+live mapping of a kernel object that no capability of its own names, so revoking the parent's
+`CAP_FRAME` would sweep the parent's PTE and leave the child's behind.
+
+**Still open, and most of the item:**
+
+- **The child does not inherit its parent's cspace.** It is born with the endowment every task
+  gets, plus the send-only console copy `SYS_SPAWN` already propagates. Duplicating a cspace is
+  an authority change, not a convenience: each copy has to be a *derived* capability stamped
+  from the parent's lineage cell, or revoking the parent's would not sweep the child's — a
+  revocation hole reachable from ring 3. It gets its own commit, invariant and arm.
+  `docs/LIMITATIONS.md` §2.11.
+- **`exec` after `fork`.** `SYS_EXEC_NAMED` / `SYS_EXEC_IMAGE` exist and replace an image in
+  place; what is missing is the pairing every shell needs — fork, endow the child, then exec.
+- **Process groups, job control, and `/proc`.** Untouched. `/proc` is a VFS server, so it sits
+  behind 2.4's mount provisioning rather than here.
+- **Namespace inheritance across `spawn`/`fork`** — the last bullet of 2.4, and the reason a
+  forked child cannot yet see its parent's mounts.
 
 ### 2.4 ◧ A VFS layer above `fs_server` — **[F-2.2]** — *namespace 2026-08-22, clients migrated 2026-08-23*
 
@@ -1135,7 +1171,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **93 required, 3 exempted** (93 jobs, 96 contexts — re-derive it with
+  The intended set is **94 required, 3 exempted** (94 jobs, 97 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).
@@ -1246,7 +1282,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 126 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 40 of them control arms that must reproduce a defect |
+| ✅ | 129 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 42 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

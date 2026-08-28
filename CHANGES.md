@@ -14,6 +14,53 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Added
+
+- **`SYS_FORK` (101): a child that gets its own copy of its parent's memory, lazily
+  (roadmap 2.3, S39 and S40).** `clone_user_aspace` (`src/kernel/paging.c`) builds the child's
+  address space as a copy-on-write clone of the caller's — both trees point at the same physical
+  frames with `PAGE_WRITE` cleared and `PAGE_COW` set, refcounts raised — and leaves the break
+  itself to `cow_break_pte`, which was written in the previous change for a caller that did not
+  yet exist. Fork adds no copying path of its own.
+
+  **The parent's leaf is downgraded too, and that is the property.** Downgrading only the
+  child's is what this looks like from outside — "the child gets copy-on-write" — and it leaves
+  the parent writing through a writable mapping of a page the child reads. That is not a copy:
+  it is one process with two schedulable contexts, sharing one stack. `FORK_SHARE_WRITABLE=1`
+  is that kernel, and the witness catches it from both sides.
+
+  **A mapped kernel object refuses the fork outright (S40).** S38 already refuses the *break* of
+  an arena page, and leaning on it would have been leaning on a fault-time refusal: the fork
+  succeeds, two tasks exist, and whichever writes first is killed at an unpredictable later
+  instruction on a page it was entitled to write a moment before. Refusing the clone reports the
+  same policy while the caller can still act on it. The alternative that reads most reasonably —
+  clone the frame *writable-shared*, since a frame **is** shared memory — is worse: the child
+  would hold a live mapping of a kernel object that no capability of its own names, so revoking
+  the parent's `CAP_FRAME` would sweep the parent's PTE and leave the child's behind.
+
+  **Gated on the same capability as `SYS_SPAWN`** (slot 3, `WRITE|EXEC`), and deliberately not
+  `SC_NONE`. Fork names no object and a task copying itself reaches nothing new, both of which
+  are true and neither of which is the point: an ungated `SYS_FORK` would be a second way to
+  create a task standing beside a gated one, so revoking slot 3 would stop a task spawning and
+  not stop it forking — and "this task can create no more tasks" would quietly stop being true.
+
+  **The child does not inherit its parent's cspace**, and that is recorded as a limitation
+  (`docs/LIMITATIONS.md` §2.11) rather than done quietly. Copying capabilities as they stand
+  would leave the child's keyed to a serial no revocation sweeps — finding 3.3's shape applied
+  to a whole cspace, and a revocation hole reachable from ring 3 by anything that can fork. It
+  gets its own commit. Also not inherited: the port-I/O grant, the file master key, and every
+  in-flight kernel rendezvous. The child **is** born runnable, unlike a spawned one, because
+  fork performs the child's whole endowment inside the syscall — there is no window for a
+  supervisor to lose, which is the only reason spawn suspends.
+
+  **Witness `make smoke-fork`**, falsified by `smoke-fork-share-control` and
+  `smoke-fork-arena-control`, both of which also redden the base gate. **The witness had to be
+  falsified before the kernel was:** its first version had a failing child report and exit, so
+  under `FORK_SHARE_WRITABLE=1` the run printed a `FAIL` and then a `PASS` — the child had died
+  before writing the page the parent's own check reads. A failing child now dies through a null
+  write and the parent reads `TASK_EXIT_PAGEFAULT` back with `SYS_TASK_EXIT_INFO`; the manner of
+  its death is the one channel a forked child still has to its parent.
+
 ### Changed
 
 - **A page belonging to a kernel object is never copied out from under it (roadmap 2.1, S38).**

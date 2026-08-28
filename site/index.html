@@ -1147,9 +1147,11 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               Per-task four-level page tables, demand paging, copy-on-write, non-executable
               stacks, kernel W^X swept for violations at boot, unmapped stack guard pages, and
-              30-bit address-space randomisation for user programs.
+              30-bit address-space randomisation for user programs. <code>fork</code> clones an
+              address space by marking it copy-on-write on <em>both</em> sides — mark only the
+              child's and the two tasks are one process sharing one stack.
             </p>
-            <span class="witness">smoke-wx · smoke-cow · smoke-aslr</span>
+            <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-aslr</span>
           </article>
           <article>
             <h3>Message passing</h3>
@@ -1431,7 +1433,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Process control — spawn, exec, kill, wait, signals with mask and altstack; no <code>fork</code>, no job control</th><td class="t-note">smoke-proc</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling — a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; copy-on-write over a kernel object is refused by design, and there is no real <code>fork</code></th><td class="t-note">smoke-frame</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; copy-on-write over a kernel object is refused by design</th><td class="t-note">smoke-frame</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong> — <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child does <em>not</em> inherit its parent's capability space, and there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong> — a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
@@ -1627,7 +1630,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 93 gating and 3 exempted, and the promotions are backed by
+              intended set is 94 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -1930,9 +1933,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>55 of 83</strong> system calls have their handler actually executed by the
+              <strong>55 of 84</strong> system calls have their handler actually executed by the
               three workloads this project tracks — a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 28 are each
+              permission conformance suite, and the boot-modules session. The other 29 are each
               listed with a written reason.
             </p>
             <p>
@@ -2167,9 +2170,10 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </p>
           <p>
             <strong>Track 2 grows the operating system on top of that:</strong> frame capabilities
-            and shared memory, a monotonic clock and timers, a real process and session model, a
-            VFS with several filesystems, dynamic linking, and a network stack as an unprivileged
-            server holding one network card's capability.
+            and shared memory, a monotonic clock and timers, a real process and session model —
+            <code>fork</code> is in, the capability space a child inherits is not — a VFS with
+            several filesystems, dynamic linking, and a network stack as an unprivileged server
+            holding one network card's capability.
           </p>
           <p>
             The single highest-leverage change is not technical. It is finding a second reviewer

@@ -861,6 +861,7 @@ void users_init(void);
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE must name this capability's own frame. */
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages (roadmap 2.1). ALL OR NOTHING: any page that cannot be mapped withdraws every page the call already mapped, so a caller holding an error holds the address space it started with. The argument for that policy, and why it is the opposite of SYS_RETYPE's, is at the handler in syscall_vm.c. */
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); the length of the frame the CAP_FRAME at `frame_slot` names (roadmap 2.1). Authority is that capability, resolved in syscall_vm.c -- never a frame index the caller supplies, which would be finding C-1's shape and an object-existence oracle over other tasks' frames. */
+#define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate the caller's address space copy-on-write (roadmap 2.3). No capability of its own: a task may always make a copy of ITSELF, and the child is endowed exactly as SYS_SPAWN endows one -- never more than the caller holds. Refuses while the caller has a CAP_FRAME mapped; see clone_user_aspace in paging.c. */
 #define SYS_CLOCK_GETTIME      98   /* (clock_id, struct horus_timespec*) -> 0; monotonic time since boot (roadmap 2.2). No capability: coarse by design, see the struct. */
 #define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. Reports type/rights/serial/badge/generation and whether the slot is occupied; see struct cap_info for what it deliberately does not report. */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
@@ -2088,6 +2089,12 @@ void free_user_aspace_for_test(uint64_t pml4_phys);
 int  user_map_fresh_page_for_test(uint64_t pml4_phys, uint64_t vaddr, uint64_t flags);
 void create_user_pagedir(uint32_t task_id);
 #endif
+
+/* Build task `child`'s address space as a copy-on-write duplicate of the tree at
+ * `parent_cr3` (roadmap 2.3, SYS_FORK). Returns 0, or negative with the child's
+ * cr3 left 0. The full argument -- what is shared, what is refused, and why a
+ * mapped kernel object refuses the whole clone -- is at the definition. */
+int clone_user_aspace(uint32_t child, uint64_t parent_cr3);
 /* Map one 4 KiB physical device frame `phys` at `vaddr` in task `task_id`'s own
  * address space, user-accessible with `flags` (paging.c). The caller (the
  * SYS_MAP_PHYS handler) has already validated `phys` against the device

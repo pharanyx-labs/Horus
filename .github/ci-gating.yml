@@ -109,6 +109,12 @@ required:
   # before it meant anything, and it is the same capability that made [C-1]
   # reachable. This is the check that it maps nothing.
   - frame
+  # Gating. It carries S39 and S40. The memory half is the one a fork gets wrong
+  # by accident -- "share the page tables" reads like "copy the memory" and is
+  # one process with two contexts -- and the object half is the caller
+  # cow_break_pte's arena guard was written for before it existed: fork is what
+  # makes a frame's page reachable as a COW PTE at all.
+  - fork
   # Gating. It carries S28: a gate satisfied by a capability every task already
   # holds is not a gate. [H-3] was four of them, on the path to the user
   # database, and they survived two prior ambient-authority sweeps because both

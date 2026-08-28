@@ -1763,6 +1763,42 @@ jobs:
       - name: Control arm — a frame's size must be readable only by a holder
         run: make smoke-frame-info-control
 
+  fork:
+    name: "A forked child's memory is a copy, and a kernel object is never forked"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Both directions in one target. The child must see the bytes that existed
+      # at the fork and neither side's later writes; and a task with a CAP_FRAME
+      # mapped must be refused, then succeed once it unmaps -- so the refusal is
+      # about the frame rather than about fork being broken. A gate that only
+      # refuses is satisfied by a kernel whose fork never works.
+      - name: fork from ring 3
+        run: make smoke-fork
+      # The copy. Leave both trees' leaves writable and a fork is not a fork: it
+      # is one process with two schedulable contexts, and the child's write to
+      # its own page lands in its parent's.
+      - name: Control arm — an unmarked clone shares its parent's pages
+        run: make smoke-fork-share-control
+      # The kernel object. Clone a PTE whose frame belongs to the untyped arena
+      # and the child holds a live mapping of an object NO capability of its own
+      # names: revoking the parent's CAP_FRAME sweeps the parent's PTE and leaves
+      # the child's behind. Sibling of smoke-nzcow-arena-control, one layer up --
+      # that one asks what a COW break does, this one asks whether the mapping
+      # should have been cloned at all.
+      - name: Control arm — a mapped kernel object must refuse the fork
+        run: make smoke-fork-arena-control
+
   rng-seed:
     name: "The CSPRNG refuses to emit keystream before it is seeded"
     runs-on: ubuntu-latest

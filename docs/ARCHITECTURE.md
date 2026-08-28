@@ -333,6 +333,21 @@ write faults, allocates a private frame, copies, and remaps writable. Refcounts 
 maintained per frame. `user_copy` drives the same COW break when the kernel writes into a
 present-but-read-only COW page, so a `copy_to_user` cannot corrupt the shared zero frame.
 
+**Cloning an address space — `fork`.** `clone_user_aspace` (roadmap 2.3) walks the parent's
+user half and points the child's fresh PML4 at the same physical frames, clearing `PAGE_WRITE`
+and setting `PAGE_COW` **on both sides** and raising each frame's refcount. The break above is
+then what actually gives each side a private page — fork adds no copying path of its own.
+Three kinds of leaf are not cloned: a **supervisor** leaf, because the LAPIC and TPM windows
+are identity-mapped at low addresses and so live in the *user half* of the PML4 while being
+kernel-only (the child re-establishes its own through the same `ensure_*` calls); a **huge**
+page, which is refused rather than split because nothing builds one and an untestable
+splitting path is worse than a refusal; and a page belonging to a **kernel object**, which
+refuses the whole fork (S40). The MMIO and self-map installs must come *after* the user half
+is populated: `ensure_identity_mmio_page` creates its intermediate entries without
+`PAGE_USER`, and since the CPU ANDs U across all four levels, running it first would leave
+every cloned user page under `pml4[0]` unreachable from ring 3. `create_user_pagedir` has the
+same ordering for the same reason.
+
 **Protection.** User stacks are NX. The kernel image is W^X: `.text` r-x, `.rodata` r--,
 `.data`/`.bss` rw-, enforced by `CR0.WP` and swept at boot by a self-test that walks every
 leaf PTE looking for a writable-and-executable page. SMEP and SMAP are enabled when the CPU
@@ -1003,11 +1018,40 @@ memory is created by exercising authority — and the PTE would be repointed at 
 capability names, detaching the mapping from the object while the frame's pin arithmetic went
 on claiming otherwise.
 
-Nothing reaches it today. The guard is here because what prevents it is two *circumstances* —
-`user_map_frame_page` never sets `PAGE_COW`, and the page-fault validator admits only image,
-heap and stack — and neither is a statement about frames. That is the shape **S28** and **S30**
-turned out to have: a property held by the behaviour of some other function until someone
-changed it. `fork` is the function that would change it.
+The guard was written before anything could reach it, because what prevented it was two
+*circumstances* — `user_map_frame_page` never sets `PAGE_COW`, and the page-fault validator
+admits only image, heap and stack — and neither is a statement about frames. That is the shape
+**S28** and **S30** turned out to have: a property held by the behaviour of some other function
+until someone changed it. The entry named `fork` as the function that would change it, and
+`fork` landed the next day.
+
+**`fork` duplicates an address space, which is what made that reachable** (2026-08-28, roadmap
+2.3, **S39** and **S40**). `SYS_FORK` clones the caller's user half copy-on-write:
+`clone_user_aspace` points both trees at the same frames, clears `PAGE_WRITE` and sets
+`PAGE_COW` on both, and leaves the break itself to `cow_break_pte` — so fork adds no copying
+path of its own, and every frame PTE it marks is now a COW PTE of exactly the kind the guard
+above was written for.
+
+Two decisions carry the security of it. The first is that the **parent's** leaf is downgraded
+as well as the child's. Downgrading only the child's is what this looks like from the outside —
+"the child gets copy-on-write" — and it yields a parent still writing through a writable
+mapping of a page the child reads: not a copy, but one process with two schedulable contexts
+sharing one stack. `FORK_SHARE_WRITABLE=1` is that kernel, and the witness catches it from both
+sides.
+
+The second is that a mapped frame **refuses the fork outright**, rather than being left to the
+`cow_break_pte` guard. Relying on that guard would be relying on a fault-time refusal: the fork
+would succeed, two tasks would exist, and whichever wrote first would be killed at an
+unpredictable later instruction on a page it was entitled to write a moment earlier. Refusing
+the clone reports the same policy while the caller can still act on it. The alternative that
+looks most reasonable — clone the frame *writable-shared*, since a frame **is** shared memory —
+is the one to argue with hardest: the child would hold a live mapping of a kernel object that
+**no capability of its own names**, so revoking the parent's `CAP_FRAME` would sweep the
+parent's PTE and leave the child's behind. A fork that copies mappings but not the capability
+graph must not manufacture one without the other, and that is also why the child does not
+inherit its parent's cspace yet (`LIMITATIONS.md` §2.11): copying capabilities *as they stand*
+would leave the child's keyed to a serial no revocation sweeps, which is finding 3.3's shape
+applied to a whole cspace.
 
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are

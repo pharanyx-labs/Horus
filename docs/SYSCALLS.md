@@ -95,6 +95,7 @@ checker.
 | 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights; withdraws the **whole run** |
 | 99 | `SYS_MAP_REGION` | `first_slot`, `count`, `vaddr`, `rights` | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
 | 100 | `SYS_FRAME_PAGES` | `frame_slot` | `CAP_FRAME` at `frame_slot`, any rights |
+| 101 | `SYS_FORK` | — | the **same slot-3 capability as `SYS_SPAWN`** (`CAP_RIGHT_WRITE \| CAP_RIGHT_EXEC`) |
 
 Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and
 here the alternative is not hypothetical: **every task is born holding a `CAP_FRAME` in slot
@@ -202,6 +203,48 @@ source), so sharing a page read-only is mint-then-grant: narrow a copy in your o
 then delegate the narrowed slot. Syscall 4 is not new — it has been in the dispatch table
 since the beginning as an unnamed numeric entry — but roadmap 2.1 is the first time anything
 in ring 3 could call it, so it was unnameable from `include/syscall.h` until then.
+
+
+### `SYS_FORK` (101) — roadmap 2.3
+
+`SYS_FORK()` duplicates the caller into a new task and returns the child's tid to the parent
+and **0 to the child**, from the same instruction. The child's address space is a
+**copy-on-write clone** of the caller's (**S39**), and the call is **refused** while the caller
+has a `CAP_FRAME` mapped (**S40**).
+
+**It is gated on the same capability as `SYS_SPAWN`, and that is the ABI decision worth
+stating.** The tempting reading is that fork needs no capability: it names no object, and a
+task copying *itself* reaches nothing it could not already reach. Both halves are true and the
+conclusion is still wrong, because an ungated `SYS_FORK` would be a **second way to bring a
+task into existence** standing beside a gated one. Revoking a task's slot-3 capability would
+then stop it spawning and not stop it forking, and "this task can create no more tasks" —
+which is what that revocation means — would quietly stop being true. A new path to an existing
+capability's effect inherits that capability's gate.
+
+**The child is not a copy of the caller's cspace.** It is born with the endowment every task
+gets from `create_task` — its own `CAP_TCB`, its own reply endpoint, the legacy image frame —
+plus the send-only console copy `SYS_SPAWN` already propagates, and **nothing else the parent
+holds**. Anything more must be delegated with `SYS_CAP_GRANT`, exactly as for a spawned child;
+the caller is handed a `CAP_TCB` naming the child so it can `SYS_WAIT` / `SYS_KILL` it.
+Duplicating a cspace is an authority change with a revocation-lineage question of its own and
+is deliberately not part of this call yet — `docs/LIMITATIONS.md` §2.11.
+
+**Inherited:** the memory (copy-on-write), uid/gid, the heap bounds, the image window, the
+registered signal handler and mask, the FPU register file, and the argument vector.
+**Not inherited:** the cspace, the port-I/O grant (`io_allowed` — the TSS I/O bitmap is
+per-task by construction), the file master key (it mirrors uid, which *is* inherited, so
+leaving it behind fails closed), and every in-flight kernel rendezvous — a blocked endpoint, a
+pending reply buffer, a one-shot `CAP_REPLY`, queued signals. A fork mid-IPC would otherwise
+produce two tasks waiting on one reply.
+
+**The child is born runnable**, unlike a spawned one. `SYS_SPAWN` suspends its child because a
+supervisor's only way to endow one is `spawn → grant → resume`, and publishing it earlier let
+it run with a half-populated cspace; fork performs the child's entire endowment inside the
+syscall, before the frame is published, so there is no window for a supervisor to lose.
+
+**Errors.** `SYS_ERR_INVAL` — this task cannot be cloned as it stands (today: a mapped
+`CAP_FRAME`, or a huge user page, which nothing builds). `SYS_ERR_NOMEM` — no free task slot,
+or no physical page for the child's tables.
 
 ## IPC arguments are cspace slots, not object indices
 >

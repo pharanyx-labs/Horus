@@ -821,6 +821,18 @@ embedded_recvblockcli_bin_start:
 embedded_recvblockcli_bin_end:
 #endif
 
+#ifdef FORK_SELFTEST
+/* PIE forktest binary: forks itself and asserts from ring 3 that the child's
+ * memory is a copy-on-write COPY rather than a share, and that a mapped
+ * CAP_FRAME refuses the fork (roadmap 2.3). */
+.align 16
+.global embedded_forktest_bin_start
+embedded_forktest_bin_start:
+.incbin "userspace/forktest.bin"
+.global embedded_forktest_bin_end
+embedded_forktest_bin_end:
+#endif
+
 #ifdef COW_SELFTEST
 /* PIE cowtest binary: reads two fresh heap pages (shared zero page) then writes
  * one, proving copy-on-write hands out a private page without disturbing the

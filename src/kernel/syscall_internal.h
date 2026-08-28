@@ -144,6 +144,7 @@ void h_rotate_keys(struct interrupt_frame64 *r);
 void h_exec_named(struct interrupt_frame64 *r);
 void h_exec_image(struct interrupt_frame64 *r);
 void h_spawn(struct interrupt_frame64 *r);
+void h_fork(struct interrupt_frame64 *r);
 void h_spawn_image(struct interrupt_frame64 *r);
 void h_spawn_arg(struct interrupt_frame64 *r);
 void h_get_argv(struct interrupt_frame64 *r);

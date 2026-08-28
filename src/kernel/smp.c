@@ -552,6 +552,11 @@ void smp_bringup(void) {
      * the kernel contains it as a ring-3 fault and stays alive (CONSOLE_ISOLATION:
      * PASS). The Phase 6 close-out blast-radius proof; see docs/design/console-server.md. */
     console_isolation_selftest();
+#elif defined(FORK_SELFTEST)
+    /* Gated: fork this task and prove from ring 3 that the child's memory is a
+     * COPY rather than a share, and that a mapped CAP_FRAME refuses the fork
+     * (prints FORKTEST: PASS). Roadmap 2.3. */
+    { extern void fork_selftest(void); fork_selftest(); }
 #elif defined(COW_SELFTEST)
     /* Gated: read two fresh heap pages (shared zero page) then write one, and
      * prove the write broke COW into a private page without disturbing the

@@ -520,6 +520,213 @@ int do_spawn_stdio(uint32_t stdio_spec) {
     return pid;
 }
 
+/* ---- SYS_FORK (101) -- roadmap 2.3 ---------------------------------------
+ *
+ * Duplicate the caller into a new task whose address space is a copy-on-write
+ * clone of the caller's. Returns the child's tid to the parent and 0 to the
+ * child, from the same instruction, POSIX-fashion.
+ *
+ * GATED EXACTLY AS SYS_SPAWN IS -- slot 3, WRITE|EXEC -- and that choice is the
+ * point rather than a copied line. The tempting reading is that fork needs no
+ * capability at all: it names no object, and a task copying ITSELF reaches
+ * nothing it could not already reach. Both halves of that are true and it is
+ * still the wrong conclusion, because it would make SYS_FORK a SECOND way to
+ * bring a task into existence, ungated, standing beside the one that is gated.
+ * Revoking a task's slot-3 capability would then stop it spawning and not stop
+ * it forking, and the property "this task can create no more tasks" -- which is
+ * what that revocation means -- would quietly stop being true. A new path to an
+ * existing capability's effect inherits that capability's gate; anything else is
+ * a widening dressed as an omission.
+ *
+ * What the gate does NOT have to do is bound the child's authority, because the
+ * child is born with the same endowment create_task gives every task (its own
+ * CAP_TCB, its own reply endpoint, the legacy image frame) plus the send-only
+ * console copy SYS_SPAWN already propagates, and NOTHING ELSE the parent holds.
+ *
+ * WHAT THE CHILD DOES *NOT* INHERIT, deliberately:
+ *
+ *  - The parent's CSPACE. This is the one people expect and it is the next
+ *    commit, not this one. Duplicating a cspace copies every delegated
+ *    capability the parent holds, and each copy has to be a DERIVED capability
+ *    with its own serial stamped from the parent's lineage cell, or revoking the
+ *    parent's would not sweep the child's -- a revocation hole, reachable from
+ *    ring 3, dressed up as a convenience. That is an authority change and it
+ *    gets its own commit, its own invariant and its own arm. Until then a forked
+ *    child that needs a service must be handed it with SYS_CAP_GRANT, exactly as
+ *    a spawned one is. docs/LIMITATIONS.md records this.
+ *  - `io_allowed`. A ring-3 port-I/O grant is per-task by construction (the TSS
+ *    I/O bitmap is flipped on context switch); inheriting it would hand a second
+ *    task the console hardware nothing gave it.
+ *  - The file master key. It mirrors uid, which IS inherited, so leaving it
+ *    behind means a forked child cannot decrypt its user's files until it
+ *    authenticates. Fail closed: a key is the one thing worth copying only on
+ *    purpose.
+ *  - Any in-flight kernel state: blocked-on endpoints, a pending reply buffer, a
+ *    one-shot CAP_REPLY, pending signals. A fork mid-IPC would otherwise produce
+ *    two tasks waiting on one reply. create_task zeroes all of it.
+ *
+ * WHAT IT DOES INHERIT: the memory (copy-on-write), uid/gid, the heap bounds,
+ * the image window, the registered signal handler and mask, the FPU register
+ * file, and the argv the parent was given -- everything that describes the
+ * running program rather than an authority or a kernel-side rendezvous.
+ *
+ * THE CHILD IS BORN RUNNABLE, unlike a spawned one, and the difference is
+ * principled. SYS_SPAWN suspends its child because a supervisor's only way to
+ * endow one is `spawn -> grant -> resume`, and publishing it earlier let it run
+ * with a half-populated cspace (see do_spawn_inner). Fork performs the child's
+ * entire endowment inside this syscall, before the frame is published, so there
+ * is no window for a supervisor to lose. Suspending anyway would mean every
+ * forking program had to resume its own child, which is not fork.
+ *
+ * The staging lock is taken for the SLOT ALLOCATOR, not for the loader staging
+ * this path never touches: do_spawn_inner scans tasks[] for `state == 0` under
+ * this same lock, and a fork racing a spawn for the last free slot would
+ * otherwise have both take it. Same lock, same reason it is the outermost one.
+ */
+void h_fork(struct interrupt_frame64 *r) {
+    extern uint64_t pml4[];
+    int parent = get_current_task();
+    if (parent <= 0 || parent >= MAX_TASKS) { r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return; }
+
+    uint64_t parent_cr3 = tasks[parent].cr3;
+    if (parent_cr3 == 0) { r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return; }
+
+    uint64_t caller_cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(caller_cr3));
+    uint64_t kcr3 = virt_to_phys(pml4);
+
+    spawn_stage_acquire();
+
+    int child = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state == 0) { child = i; break; }
+    }
+    if (child < 0) {
+        spawn_stage_release();
+        r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
+        return;
+    }
+
+    /* Same reason do_spawn does it: create_task -> create_user_pagedir and the
+     * clone below reach freshly-allocated physical pages through PHYS_KVA, in the
+     * kernel half. Restoring the caller's CR3 at the end also performs the TLB
+     * flush the clone's downgraded parent PTEs require -- see clone_user_aspace. */
+    if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
+
+    /* create_task builds the slot's bookkeeping and its birth cspace, and calls
+     * create_user_pagedir -- which builds an address space the clone immediately
+     * discards. That waste is bought deliberately: the alternative is a second
+     * copy of create_task's fifteen fields and its cspace construction, which is
+     * precisely the kind of duplicate that drifts out of step with the original
+     * and grants a forked task authority a spawned one does not have. Keeping the
+     * child's birth endowment LITERALLY the same code is the property worth
+     * paying a page-table build for. clone_user_aspace reclaims the tree on the
+     * slot exactly as create_user_pagedir would. */
+    create_task(child, tasks[parent].eip, 0, tasks[parent].image_base,
+                tasks[parent].image_premap_pages);
+
+    int rc = clone_user_aspace((uint32_t)child, parent_cr3);
+    if (rc != 0) {
+        /* The slot is released rather than left half-alive: state 0 is what makes
+         * it allocatable again, and a task with cr3 == 0 must never be reachable
+         * by the scheduler. runnable_ctx is already 0 (create_task) and no frame
+         * has been published, so nothing can have claimed it. */
+        tasks[child].state = 0;
+        tasks[child].cr3 = 0;
+        if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
+        spawn_stage_release();
+        /* -3 from the clone is the policy refusal (a kernel object's page, or a
+         * huge page); -2 is out of memory. Reported apart so a caller can tell
+         * "this fork is never going to work" from "try again later". */
+        r->rax = (uint64_t)(uint32_t)(rc == -2 ? SYS_ERR_NOMEM : SYS_ERR_INVAL);
+        return;
+    }
+
+    /* Everything that describes the running program rather than an authority. */
+    tasks[child].uid                = tasks[parent].uid;
+    tasks[child].gid                = tasks[parent].gid;
+    tasks[child].heap_start         = tasks[parent].heap_start;
+    tasks[child].heap_current       = tasks[parent].heap_current;
+    tasks[child].heap_end           = tasks[parent].heap_end;
+    tasks[child].image_base         = tasks[parent].image_base;
+    tasks[child].image_end          = tasks[parent].image_end;
+    tasks[child].image_premap_pages = tasks[parent].image_premap_pages;
+    tasks[child].priority           = tasks[parent].priority;
+    tasks[child].sig_handler        = tasks[parent].sig_handler;
+    tasks[child].sig_mask           = tasks[parent].sig_mask;
+    tasks[child].sig_altstack_sp    = tasks[parent].sig_altstack_sp;
+    tasks[child].sig_altstack_size  = tasks[parent].sig_altstack_size;
+    tasks[child].spawn_arg          = tasks[parent].spawn_arg;
+    tasks[child].argc               = tasks[parent].argc;
+    tasks[child].argv_ptr           = tasks[parent].argv_ptr;
+    for (int i = 0; i < 32; i++) tasks[child].name[i] = tasks[parent].name[i];
+    for (int i = 0; i < 512; i++) tasks[child].fpu_state[i] = tasks[parent].fpu_state[i];
+
+    /* ---- ENDOW BEFORE PUBLISHING, and the order is the whole of it ---------
+     *
+     * `runnable_ctx = 1` below is what makes the child schedulable, and under SMP
+     * another CPU may claim it on the very next tick. Everything the child is
+     * owed must therefore already be in its cspace by then. Written the other way
+     * round -- publish, then grant -- this reintroduces do_spawn_inner's bug
+     * class exactly: a child that starts running on another core with a
+     * partially-populated cspace and fails in whatever way its missing capability
+     * implies. That cost three separately-diagnosed intermittent failures before
+     * the pattern was recognised (fs_server's registration, posix's fs_connect,
+     * and the shell's console capability, which simply never printed its banner).
+     *
+     * This is also the reason a forked child needs no SYS_TASK_RESUME while a
+     * spawned one does. Spawn cannot close the window: its child's endowment
+     * comes from a SUPERVISOR, in syscalls that necessarily run after the spawn
+     * returns, so the only safe ordering is to suspend and let the supervisor say
+     * when. Fork's endowment is entirely in-kernel and finishes here, so there is
+     * no window to leave open -- and a fork that demanded its parent resume it
+     * would not be a fork.
+     *
+     * Neither grant can fail in a way the child would notice: a parent with no
+     * console capability simply has a child with none, which is the same
+     * inheritance SYS_SPAWN performs.
+     *
+     * The same send-only console copy SYS_SPAWN propagates, and for the same
+     * reason: a task is born with no endpoint capability, so without this the
+     * child has no stdout at all. Masked to WRITE whatever the parent holds, so
+     * even console_server's child can only ever SEND. Derived, so revoking the
+     * parent's sweeps it. */
+    {
+        struct capability *con = cap_lookup(CAPSLOT_CONSOLE_EP, CAP_RIGHT_WRITE);
+        if (con && con->type == CAP_ENDPOINT)
+            cap_grant_into(child, CAPSLOT_CONSOLE_EP, CAPSLOT_CONSOLE_EP,
+                           CAP_RIGHT_WRITE);
+    }
+    /* A parent may wait on, signal, or kill what it forked -- the same CAP_TCB
+     * SYS_SPAWN hands back, in the same first free slot at or above 16. This one
+     * lands in the PARENT's cspace, so it is not part of the race above; it is
+     * kept here so the two halves of "who may reach whom" read together. */
+    grant_child_tcb_cap(parent, child);
+
+    /* The child resumes from the same instruction as the parent, on its own copy
+     * of the same user stack, with rax = 0. `r` IS the parent's live trap frame
+     * at the top of the parent's kernel stack; the child's copy goes to the top
+     * of its own, which is where the ISR epilogue expects to find it (the same
+     * placement sched_prepare_user_context computes for a fresh task).
+     *
+     * LAST, deliberately: `runnable_ctx = 1` is the publish, and everything the
+     * child is owed is already in place above. See the note there. */
+    {
+        uint64_t top = (tasks[child].kernel_stack_top) & ~0xFULL;
+        struct interrupt_frame64 *cf =
+            (struct interrupt_frame64 *)(top - sizeof(struct interrupt_frame64));
+        *cf = *r;
+        cf->rax = 0;                       /* fork() == 0 in the child */
+        tasks[child].saved_ksp    = (uint64_t)cf;
+        tasks[child].runnable_ctx = 1;
+    }
+
+    if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
+    spawn_stage_release();
+
+    r->rax = (uint64_t)child;
+}
+
 /* Set by the exec tail to ask interrupt_handler64 to re-enter this task via the
  * fresh context sched_prepare_user_context fabricated for it, instead of iretq'ing
  * back into the (now-replaced) old image. -1 when no exec re-entry is pending.

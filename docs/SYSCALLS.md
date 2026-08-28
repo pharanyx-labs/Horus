@@ -737,6 +737,7 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 | 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge` — route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *` — report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
 | 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags` — set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |
+| 106 | `SYS_POLL_NOTIFY` | `notif_slot`, `uint32_t *` — consume a pending badge, or report `IPC_AGAIN` if none. `sys_wait_notify`'s non-blocking twin; same `CAP_NOTIFICATION` + READ gate |
 | 104 | `SYS_DMA_ADDR` | `dev_slot`, `frame_slot`, `uint64_t *`, `flags` — map that frame into that device's address space and report the address it reaches it at (needs **both**: CAP_IO_DEVICE WRITE and CAP_FRAME READ) |
 
 None of the four has a dispatch-table slot: they are `SC_NONE`, and **that is the gate**, in

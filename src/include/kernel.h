@@ -855,6 +855,14 @@ void users_init(void);
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; report what the device named by the CAP_IO_DEVICE at dev_slot declares -- ids, MMIO ranges, port ranges, IRQ lines -- and nothing about any other device (CAP_IO_DEVICE + READ) */
 #define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the three PCI decode bits (IO/MEM/BUSMASTER) of the device named in dev_slot, and nothing else in configuration space (CAP_IO_DEVICE + WRITE) */
 #define DMA_ADDR_NO_MAP        0x1u  /* SYS_DMA_ADDR: report, do not map (control arm) */
+/* MUST equal IPC_AGAIN in include/syscall.h. The ABI value for "nothing there
+ * right now", deliberately distinct from SYS_ERR_PERM (-1) so a caller testing
+ * `< 0` cannot confuse "refused" with "empty" -- the precise mistake the first
+ * [C-1] conformance suite made. The kernel has been writing the literal -2
+ * inline; naming it is what stops the two halves drifting. */
+#define IPC_AGAIN             (-2)
+
+#define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
 #define SYS_IRQ_REGISTER       81   /* (dev_slot, irq, notif_slot, badge) -> 0; route an IRQ the named device declares to an async notification so a ring-3 driver services it (CAP_IO_DEVICE + WRITE) */

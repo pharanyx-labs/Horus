@@ -958,8 +958,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>106 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>88
+            The ABI defines <strong>107 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>89
             handlers</strong> — the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1355,7 +1355,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <div>
 <pre class="code"><span class="c"># check the claims on this page</span>
 <span class="p">$</span> make smoke                 <span class="c"># boot to ring-3 login</span>
-<span class="p">$</span> make smoke-captest         <span class="c"># 128 capability checks</span>
+<span class="p">$</span> make smoke-captest         <span class="c"># 131 capability checks</span>
 <span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
 <span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
 <span class="p">$</span> make reproducible-build    <span class="c"># <span class="x">run twice, diff the record</span></span></pre>
@@ -1363,7 +1363,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 148 test targets, and the troubleshooting
+          Every configuration flag, every one of the 150 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1954,7 +1954,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>A third of the system calls have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>60 of 88</strong> system calls have their handler actually executed by the
+              <strong>61 of 89</strong> system calls have their handler actually executed by the
               three workloads this project tracks — a scripted end-to-end session, the
               permission conformance suite, and the boot-modules session. The other 28 are each
               listed with a written reason.

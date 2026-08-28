@@ -16,6 +16,44 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **`SYS_POLL_NOTIFY` (106): a caller can observe that a notification did NOT arrive.**
+  `sys_wait_notify`'s non-blocking twin — consume a pending badge and return 0, or report
+  `IPC_AGAIN` and never park the caller. Same `CAP_NOTIFICATION` + READ gate: being non-blocking
+  changes *when* the answer comes back, never *who* may ask.
+
+  **Two things it makes possible, and the second is why it was written.** A driver servicing
+  hardware in a loop can ask "has my device notified me?" while also polling a register, instead
+  of relying on being the only runnable task — a property of the test harness rather than of the
+  system, which every driver here had been leaning on. And a test can witness the **absence** of
+  a notification.
+
+  That second one closed a real hole in the evidence. Properties of the form *"no event arrives
+  while X"* cannot be witnessed by a blocking wait: it either returns because the event happened
+  (the property is broken) or blocks forever (the property held, and the harness reports a
+  timeout indistinguishable from a crash). **S46**'s mask-until-acknowledged is exactly that
+  shape, and its only witness was the *consequence* — a livelock. Consequences are
+  environment-dependent in a way properties are not: QEMU storms on the 8259 and does not on the
+  I/O APIC, so moving routing left that arm unable to fail on the path the ship build uses.
+
+  S46 is now falsified **directly** (`make smoke-net-mask-control`): the device's cause is
+  cleared, a second transmit re-raises the line, and while it is masked every poll must report
+  `IPC_AGAIN` — repeatedly, so it fails if the notification arrives anywhere in the window — with
+  a badge required after the ack. `NETTEST: FAIL irq-while-masked`, 3 boots in 3, on the I/O APIC
+  path. The livelock arm survives on the 8259 path, which keeps the fallback controller
+  exercised too.
+
+  `IPC_AGAIN` rather than zero-with-a-zero-badge, so "nothing pending" is distinct from "a badge
+  of zero arrived" and cannot be confused with `SYS_ERR_PERM` (-1) by a caller testing `< 0` —
+  the same discipline `SYS_IPC_RECV` follows. The kernel had been writing the literal `-2`
+  inline; it is a named constant now, which is what stops the two halves of the ABI drifting.
+
+  Falsified by `POLL_NOTIFY_UNGATED=1` (`make smoke-captest-poll-notify-control`) →
+  `CAPTEST: FAIL poll-notify-with-wrong-cap-type`. **The marker is the wrong-type check and not
+  the empty-slot one, deliberately:** ungated, the slot is used as a raw notification index, and
+  an empty high slot is out of range so it fails either way. Only a slot that *is* a valid index
+  witnesses the missing gate. A refusal test detects a missing gate only where the ungated path
+  would otherwise have succeeded. `captest` 128 → 131.
+
 - **Interrupts route through the I/O APIC.** `src/kernel/ioapic.c` finds the unit in the MADT,
   brings it up with **every delegatable pin masked**, and the 8259 is then fully masked — two
   controllers driving the same vectors would deliver every interrupt twice. Masking and EOI go

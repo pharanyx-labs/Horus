@@ -184,6 +184,7 @@ struct audit_event {
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; what the device named by the CAP_IO_DEVICE at dev_slot declares: ids, MMIO ranges, port ranges, IRQ lines. CAP_IO_DEVICE + READ in dev_slot, and it reports THAT device only. */
 #define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the named device's PCI decode bits (DEV_ENABLE_*). CAP_IO_DEVICE + WRITE. */
+#define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN if none. sys_wait_notify's non-blocking twin; same CAP_NOTIFICATION + READ gate. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; unmask the line after servicing the device. CAP_IO_DEVICE + WRITE, and the registration must be the caller's. */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. CAP_IO_DEVICE + WRITE and CAP_FRAME + READ, both. */
 #define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate this task, its memory copy-on-write. Gated on the same slot-3 capability as SYS_SPAWN: fork is a second way to create a task, so it answers to the capability that gates the first. The child inherits the caller's capabilities as DERIVED copies, so revoking the parent's sweeps the child's -- see sys_fork(). */
@@ -933,6 +934,31 @@ static inline uint32_t sys_ipc_sender(int ep, uint32_t *out_gid) {
 
 static inline int sys_notify(int notif_slot, uint32_t badge) {
     return syscall(SYS_NOTIFY, (uint32_t)notif_slot, badge, 0);
+}
+
+/* sys_poll_notify: sys_wait_notify's NON-BLOCKING twin. Returns 0 with the
+ * accumulated badge if one was pending (consuming it, exactly as a wait does), or
+ * IPC_AGAIN if nothing was — and never parks the caller.
+ *
+ * Two things it makes possible that a blocking wait cannot. A driver servicing
+ * hardware in a loop can ask "has my device notified me?" while also polling a
+ * register, instead of relying on being the only runnable task. And a test can
+ * witness the ABSENCE of a notification: a blocking wait either returns because
+ * the event happened (so the property is broken) or blocks forever (so the
+ * property held and the test hangs), which is why "no event arrives while X"
+ * properties previously had to be witnessed through their catastrophic
+ * consequences instead of directly.
+ *
+ * Same gate as the wait — a CAP_NOTIFICATION with READ at `notif_slot`. Being
+ * non-blocking changes when the answer comes back, never who may ask. */
+static inline int sys_poll_notify(int notif_slot, uint32_t *out_badge) {
+    uint32_t ret, badge;
+    asm volatile("int $0x80"
+                 : "=a"(ret), "=b"(badge)
+                 : "a"((uint32_t)SYS_POLL_NOTIFY), "b"((uint32_t)notif_slot)
+                 : "ecx", "edx", "memory");
+    if (out_badge) *out_badge = badge;
+    return (int)ret;
 }
 
 /* sys_wait_notify: block until a badge arrives on notif_slot (or return

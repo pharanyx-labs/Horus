@@ -387,6 +387,10 @@ jobs:
       # hardware it does not hold.
       - name: Control arm — re-enabling an interrupt without the device capability
         run: make smoke-captest-irq-ack-control
+      # SYS_POLL_NOTIFY's gate. Non-blocking changes when the answer comes back,
+      # never who may ask -- ungated it is finding C-2 in a new syscall.
+      - name: Control arm — polling a notification the caller does not hold
+        run: make smoke-captest-poll-notify-control
       # Roadmap 2.2. The tempting version of SYS_CLOCK_GETTIME reports real
       # microseconds from the TSC -- strictly more accurate, and it undoes
       # CR4.TSD by handing ring 3 the cycle-accurate timer that bit exists to
@@ -1879,6 +1883,15 @@ jobs:
       # machine stops making progress. Asserts a STALL, because that is what a
       # livelock looks like -- the DMA property still holds and only the
       # interrupt half never completes.
+      # S46's mask, tested directly rather than through a livelock. Only possible
+      # since SYS_POLL_NOTIFY: a caller can now observe that a notification did
+      # NOT arrive, so "no interrupt while masked" is a deterministic marker
+      # instead of a stall -- and it fails on the I/O APIC path, where the storm
+      # arm below cannot.
+      - name: Control arm — a notification arriving while its line is masked
+        run: make smoke-net-mask-control
+      # The livelock, kept on the 8259 path where QEMU still produces one. Keeps
+      # the fallback controller exercised as well as the property.
       - name: Control arm — an unmasked level-triggered line livelocks the machine
         run: make smoke-net-irq-storm-control
 

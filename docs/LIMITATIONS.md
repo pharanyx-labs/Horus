@@ -371,7 +371,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **59 of 87** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **60 of 88** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -1030,16 +1030,29 @@ device does not declare (**S43**). What it cannot do is deliver one: `pic_init` 
 lines — and bit 2, the cascade to the slave PIC, is masked too, so no line above 7 can arrive at
 all.
 
-So a ring-3 driver for any PCI device must poll, and `netd` does (`userspace/netd.c`), bounded,
-saying so rather than waiting on a notification that cannot come. `smoke-devcap`'s interrupt
-checks are unaffected because they are about **authority** — who may register for which line —
-which is exactly what they asserted before and still assert.
+*Closed by **S46**. The entry is kept because the second question it raised is the one the fix
+had to answer, and because what was found on the way is worth not rediscovering.*
 
-Unmasking a line is a change to the interrupt controller's global state rather than to any
-capability, and it comes with a second question this tree has not answered: legacy PCI
-interrupts are level-triggered and shared, so a driver that does not acknowledge its device
-leaves the line asserted and the next one is a storm. `netd` already reads its ISR for that
-reason. Both belong in the commit that unmasks, not in this one.
+A line is now unmasked when `SYS_IRQ_REGISTER` accepts a capability for it, which makes
+unmasking the capability taking effect in hardware rather than a boot-time constant.
+
+**The second question was the real work.** Legacy PCI interrupts are level-triggered: an
+unserviced device holds its line asserted, so an EOI alone means immediate re-delivery, forever.
+The kernel therefore masks a registered line when it fires and leaves it masked until
+`SYS_IRQ_ACK` — see **S46** for why that is a security property and not a scheduling detail.
+
+**What was found on the way:** the IDT had no gates for vectors 34–47. The stubs `isr34`–`isr47`
+had existed in `lowlevel64.S` since the IDT was written and nothing ever installed a gate,
+because the PIC masked every line above 1 so none could arrive. Unmasking without them is not
+"the interrupt is ignored" — a vector with no gate raises **#GP**, attributed to whatever was
+interrupted, so the first PCI interrupt kills an innocent ring-3 task at a random instruction.
+That is how it was found: `netd` died with `ring-3 trap vector 13` on the store immediately after
+enabling its device's interrupt, and the store was not the problem.
+
+**Still not delivered:** MSI/MSI-X (a device declares only its one legacy `INTERRUPT_LINE`), and
+interrupt remapping in the IOMMU — now the *next* thing rather than a hypothetical, since there
+is finally an interrupt to remap. And the teardown mask (a dead driver's line being masked with
+it) is correct by construction but has no arm of its own yet.
 
 ### 2.14 `netd` transmits but does not receive
 

@@ -399,3 +399,41 @@ void h_dma_addr(struct interrupt_frame64 *r) {
     }
     r->rax = 0;
 }
+
+/* SYS_IRQ_ACK(dev_slot, irq): the driver has serviced its device; unmask the line.
+ *
+ * WHY THIS EXISTS AT ALL. A registered line is masked by the kernel the moment it
+ * fires (see the dispatcher in idt.c) and stays masked until this call. That is
+ * what stops an unserviced level-triggered device from livelocking the machine --
+ * without it, the PIC re-delivers forever, ring 3 never runs, and the driver that
+ * would clear the line never gets the chance.
+ *
+ * WHY IT IS CAPABILITY-GATED. Unmasking is authority: it decides that a device
+ * may interrupt this machine again. Gated exactly as SYS_IRQ_REGISTER is -- the
+ * caller must hold a CAP_IO_DEVICE whose device DECLARES this line -- so a task
+ * cannot re-enable an interrupt for hardware it does not hold. An ungated version
+ * would let any task unmask any line, which is both a way to resurrect a storm
+ * somebody else's dead driver left behind and a way to interfere with a driver
+ * that is deliberately keeping its device quiet.
+ *
+ * AND ONLY THE REGISTRATION'S OWNER. Holding the right device capability is not
+ * sufficient: irq_notify_ack refuses unless the line is registered to the CALLING
+ * task. Two tasks holding copies of one device capability are otherwise able to
+ * acknowledge each other's interrupts, which would let one of them unmask a line
+ * the other is mid-service on. */
+void h_irq_ack(struct interrupt_frame64 *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    int irq = (int)r->rcx;
+#ifndef IRQ_ACK_UNGATED
+    /* Control arm IRQ_ACK_UNGATED: drop the authority check, so any task unmasks
+     * any line. See make smoke-irq-ack-control. */
+    const struct io_device *d = iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, 0);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (!iodev_allows_irq(d, irq)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#endif
+
+    if (irq_notify_ack(irq, cur) != 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    r->rax = 0;
+}

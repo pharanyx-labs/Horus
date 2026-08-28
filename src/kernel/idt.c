@@ -29,38 +29,89 @@ uint32_t kb_tail = 0;
 static uint8_t ps2_e0_prefix;
 
 /* IRQ -> userspace notification bridge (J4, driver privilege separation): a task
- * holding CAP_IO_DEVICE can register (SYS_IRQ_REGISTER) to be sent an async
- * notification each time a hardware IRQ fires, so a ring-3 driver (the console
- * server) can service the device instead of the kernel. Only IRQ0 (timer, for a
- * periodic serial re-poll wake) and IRQ1 (keyboard) are routable.
+ * holding a CAP_IO_DEVICE that DECLARES a line can register (SYS_IRQ_REGISTER) to
+ * be sent an async notification each time that hardware IRQ fires, so a ring-3
+ * driver services the device instead of the kernel. Every line 0..15 is routable
+ * since 2026-08-28; before that only IRQ0 and IRQ1 were even unmasked at the PIC,
+ * so a PCI line could not be delivered whatever a driver held.
  *
  * sys_notify is safe to call from the ISR: syscalls and IRQs both run behind
  * interrupt gates (IF=0), so no code on this CPU can be holding ipc_lock when the
  * ISR takes it (no same-CPU deadlock); under SMP it is ordinary brief spinlock
  * contention. See docs/design/console-server.md. */
-#define IRQ_NOTIFY_MAX 2      /* index 0 = IRQ0 (timer), 1 = IRQ1 (keyboard) */
 struct irq_notify_reg { int task; uint32_t slot; uint32_t badge; int active; };
 static struct irq_notify_reg irq_reg[IRQ_NOTIFY_MAX];
 extern int sys_notify(uint32_t notif_slot, uint32_t badge);
 
-/* Register `task` to receive notification (`slot`, `badge`) on `irq`. Called by
- * the SYS_IRQ_REGISTER handler, which has already enforced CAP_IO_DEVICE. */
+/* ---- 8259 line masking --------------------------------------------------
+ *
+ * Which lines are unmasked is AUTHORITY, and it is why these live here rather
+ * than being set once in pic_init. Until 2026-08-28 the master was programmed
+ * 0xFC at boot -- IRQ 0 and 1 unmasked, everything else masked including bit 2,
+ * the cascade -- so no PCI line could be DELIVERED whatever capability a driver
+ * held (docs/LIMITATIONS.md 2.13, now closed). A line is unmasked when
+ * SYS_IRQ_REGISTER accepts a capability for it, and masked again when that
+ * registration goes away.
+ *
+ * Lines 8-15 arrive through the slave PIC on master line 2, so unmasking one of
+ * them also means unmasking the cascade; masking the last of them does NOT mask
+ * the cascade again, because leaving it unmasked costs nothing and getting the
+ * bookkeeping wrong costs a line that silently stops being delivered. */
+static void pic_set_masked(int irq, int masked) {
+    if (irq < 0 || irq > 15) return;
+    uint16_t port = (irq < 8) ? 0x21 : 0xA1;
+    uint8_t  bit  = (uint8_t)(1u << (irq & 7));
+    uint8_t  m    = inb(port);
+    if (masked) m |= bit; else m = (uint8_t)(m & ~bit);
+    outb(port, m);
+    if (!masked && irq >= 8) {
+        uint8_t mm = inb(0x21);
+        outb(0x21, (uint8_t)(mm & ~(1u << 2)));   /* the cascade */
+    }
+}
+
+/* Register `task` to receive notification (`slot`, `badge`) on `irq`, and unmask
+ * the line. Called by the SYS_IRQ_REGISTER handler, which has already enforced
+ * that the caller holds a CAP_IO_DEVICE naming a device that DECLARES this line
+ * (S43) -- so the unmask below is the capability taking effect in hardware. */
 int irq_notify_register(int irq, int task, uint32_t slot, uint32_t badge) {
     if (irq < 0 || irq >= IRQ_NOTIFY_MAX) return -1;
     irq_reg[irq].task   = task;
     irq_reg[irq].slot   = slot;
     irq_reg[irq].badge  = badge;
     irq_reg[irq].active = 1;
+    pic_set_masked(irq, 0);
     return 0;
 }
 
-/* Drop any IRQ registrations owned by `task`. Called from task_teardown so a dead
- * task's slot cannot keep receiving IRQ notifications (or leak onto a later task
- * that reuses the notification slot). */
+/* Drop any IRQ registrations owned by `task`, and MASK the lines they held.
+ *
+ * Called from task_teardown. The mask is the load-bearing half: a legacy PCI
+ * interrupt is level-triggered, so a device whose driver has died keeps the line
+ * asserted forever. Leaving it unmasked with nobody to service it is an
+ * interrupt storm that no later task can stop -- the machine simply stops making
+ * progress. A dead driver must take its line down with it.
+ *
+ * IRQ 0 is exempt: the timer is the preemption tick and masking it would stop the
+ * scheduler. Nothing registers for IRQ 0 except a console server asking for a
+ * periodic wake, and the kernel needs that line regardless of who is listening. */
 void irq_notify_clear_task(int task) {
     for (int i = 0; i < IRQ_NOTIFY_MAX; i++)
-        if (irq_reg[i].active && irq_reg[i].task == task)
+        if (irq_reg[i].active && irq_reg[i].task == task) {
             irq_reg[i].active = 0;
+            if (i != 0) pic_set_masked(i, 1);
+        }
+}
+
+/* Re-unmask a line after its driver has serviced the device. The authority check
+ * is the caller's (h_irq_ack); by here the capability has already been shown to
+ * name a device that declares this line, and to belong to the task that holds the
+ * registration. */
+int irq_notify_ack(int irq, int task) {
+    if (irq < 0 || irq >= IRQ_NOTIFY_MAX) return -1;
+    if (!irq_reg[irq].active || irq_reg[irq].task != task) return -1;
+    pic_set_masked(irq, 0);
+    return 0;
 }
 
 static inline void irq_notify_fire(int irq) {
@@ -597,6 +648,40 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
             kfault_str("\nKERNEL FATAL EXCEPTION - halting\n");
             kfault_end(1);
         }
+    } else if (vector >= 34 && vector <= 47 && irq_reg[vector - 32].active) {
+        /* ---- A REGISTERED PCI (or other legacy) LINE -----------------------
+         *
+         * MASK THE LINE BEFORE ACKNOWLEDGING IT, and leave it masked until the
+         * driver says it has serviced the device (SYS_IRQ_ACK). This is the
+         * whole design and it is a security property, not a performance one.
+         *
+         * A legacy PCI interrupt is LEVEL-TRIGGERED and shared. The device holds
+         * the line asserted until its driver touches the right register. If the
+         * kernel merely EOIs, the PIC re-delivers immediately, and it keeps
+         * re-delivering: the CPU never returns to ring 3, the driver never runs,
+         * and so the line is never cleared. The machine stops making progress and
+         * nothing short of a reset recovers it.
+         *
+         * That failure is reachable from a capability that is supposed to be
+         * narrow -- a driver that registers for its line and then simply does not
+         * service the device denies the whole machine. Masking here converts it
+         * into a device that stops working, which is the fail-closed shape: the
+         * blast radius of a broken driver is its own hardware.
+         *
+         * It also makes acknowledgement AUTHORITY, which is why SYS_IRQ_ACK is
+         * capability-gated and why only the registration's owner may unmask.
+         *
+         * The notification is sent after the mask so a driver that is already
+         * spinning in SYS_WAIT_NOTIFY cannot be woken, service the device and ack
+         * before the mask lands -- which would leave the line masked with nobody
+         * left to unmask it. */
+        int line = vector - 32;
+#ifndef IRQ_NO_MASK_ON_FIRE
+        pic_set_masked(line, 1);
+#endif
+        if (vector >= 40) outb(0xA0, 0x20);
+        outb(0x20, 0x20);
+        irq_notify_fire(line);
     } else {
         if (vector >= 40) outb(0xA0, 0x20);
         outb(0x20, 0x20);
@@ -925,6 +1010,32 @@ void idt_init64(void)
 
     idt64_set_gate(32, (uint64_t)isr32, 0x08, 0, 0x8E);
     idt64_set_gate(33, (uint64_t)isr33, 0x08, 0, 0x8E);
+
+    /* IRQ 2..15. The stubs isr34..isr47 have existed in lowlevel64.S since the
+     * IDT was written; nothing ever installed a GATE for them, because the PIC
+     * masked every line above 1 so none could arrive.
+     *
+     * Unmasking a PCI line without this is not "the interrupt is ignored" -- a
+     * vector with no gate raises #GP, and the #GP is attributed to whatever was
+     * interrupted, so the first PCI interrupt KILLS AN INNOCENT RING-3 TASK at a
+     * random instruction. That is how this was found: netd died with
+     * "ring-3 trap vector 13" on the store immediately after it enabled its
+     * device's interrupt, and the store was not the problem.
+     *
+     * Installed unconditionally rather than when a driver registers: a gate for a
+     * masked line costs nothing and can never fire, whereas a line unmasked one
+     * instruction before its gate exists is exactly the window above. */
+    extern void isr34(void); extern void isr35(void); extern void isr36(void);
+    extern void isr37(void); extern void isr38(void); extern void isr39(void);
+    extern void isr40(void); extern void isr41(void); extern void isr42(void);
+    extern void isr43(void); extern void isr44(void); extern void isr45(void);
+    extern void isr46(void); extern void isr47(void);
+    static void (*const irq_stubs[])(void) = {
+        isr34, isr35, isr36, isr37, isr38, isr39, isr40,
+        isr41, isr42, isr43, isr44, isr45, isr46, isr47
+    };
+    for (unsigned v = 0; v < sizeof(irq_stubs)/sizeof(irq_stubs[0]); v++)
+        idt64_set_gate((uint8_t)(34 + v), (uint64_t)irq_stubs[v], 0x08, 0, 0x8E);
 
     idt64_set_gate(0x80, (uint64_t)isr128, 0x08, 0, 0xEE);
 

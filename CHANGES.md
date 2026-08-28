@@ -16,6 +16,48 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A PCI interrupt reaches a ring-3 driver, and an unserviced one cannot livelock the machine
+  (S46).** `docs/LIMITATIONS.md` §2.13 is closed. `pic_init` programmed the 8259 master `0xFC` —
+  IRQ 0 and 1 unmasked, everything else masked including the cascade — so no PCI line could be
+  **delivered** whatever capability a driver held. A line is now unmasked when
+  `SYS_IRQ_REGISTER` accepts a capability for it, which makes unmasking the capability taking
+  effect in hardware rather than a boot-time constant.
+
+  **The second half is the security property.** A legacy PCI interrupt is level-triggered: the
+  device holds the line asserted until its driver services it. An EOI alone therefore means
+  immediate re-delivery, forever — ring 3 never runs, the driver never clears the device, and the
+  machine stops making progress with no software able to intervene. That is a denial of the
+  **whole machine** reachable from a capability meant to name one device. So the kernel **masks a
+  registered line when it fires**, delivers the notification, and leaves it masked until the
+  driver calls the new **`SYS_IRQ_ACK` (105)** — which keeps a broken driver's blast radius to
+  its own hardware.
+
+  `SYS_IRQ_ACK` is gated exactly as registration is (a `CAP_IO_DEVICE` naming a device that
+  *declares* the line), because unmasking decides that a device may interrupt this machine again.
+  Holding the right capability is still not sufficient: the registration must belong to the
+  **calling task**, so two holders of one device capability cannot acknowledge each other's
+  interrupts. And a dead driver takes its line down with it — `irq_notify_clear_task` masks on
+  teardown, since a level-triggered line left asserted with nobody to service it is the same
+  storm by another route. IRQ 0 is exempt; masking the preemption tick would stop the scheduler.
+
+  **THE IDT HAD NO GATES FOR VECTORS 34–47.** The stubs `isr34`–`isr47` had existed in
+  `lowlevel64.S` since the IDT was written and nothing ever installed a gate, because the PIC
+  masked every line above 1 so none could arrive. Unmasking without them is not "the interrupt is
+  ignored" — a vector with no gate raises **#GP**, attributed to whatever was interrupted, so the
+  first PCI interrupt **kills an innocent ring-3 task at a random instruction**. `netd` died with
+  `ring-3 trap vector 13` on the store immediately after enabling its device's interrupt, and the
+  store was not the problem; skipping the interrupt enable proved it was delivery, not the store.
+
+  Falsified in both directions. `IRQ_NO_MASK_ON_FIRE=1` (`make smoke-net-irq-storm-control`)
+  asserts a **stall** rather than a marker, because a livelocked machine prints nothing more:
+  `NETTEST: PASS` reached — the DMA property still holds — and `IRQ PASS` never arriving, 3 boots
+  in 3. The authority half is witnessed in `smoke-captest`, which holds no device capability at
+  all: `IRQ_ACK_UNGATED=1` → `CAPTEST: FAIL irq-ack-without-cap-io-device`. `captest` 126 → 128.
+
+  `netd` now waits on its device's interrupt instead of only polling for it. **MSI/MSI-X and
+  interrupt remapping are still absent** — the latter is now the next thing rather than a
+  hypothetical, since there is finally an interrupt to remap.
+
 - **VT-d DMA remapping: a device reaches only the memory its driver mapped for it (S45).**
   The largest single gap in the model, and the one that could not be closed in software. Since
   **S43** a `CAP_IO_DEVICE` names one device; since **S44** making it a bus master is an act a

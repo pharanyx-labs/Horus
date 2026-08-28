@@ -838,6 +838,23 @@ void _start(void) {
         check(bus == 0, "dma-addr-wrote-through-on-refusal");
     }
 
+    /* SYS_IRQ_ACK unmasks an interrupt line, which is authority: it decides that
+     * a device may interrupt this machine again. A registered line is masked by
+     * the kernel the moment it fires and stays masked until acknowledged, so the
+     * gate on this call is what stops one task re-enabling a line for hardware it
+     * does not hold -- including resurrecting a storm that somebody else's dead
+     * driver left behind.
+     *
+     * Exact SYS_ERR_PERM, and the distinction matters here more than usual:
+     * SYS_ERR_INVAL is what an unregistered line returns, so "you may not ask" and
+     * "there is nothing to acknowledge" are different answers. Under
+     * IRQ_ACK_UNGATED the authority check is gone and this task reaches the
+     * second answer, which is what the arm detects. */
+    check(sys_irq_ack(CAPSLOT_IO_DEVICE, 1) == SYS_ERR_PERM,
+          "irq-ack-without-cap-io-device");
+    check(sys_irq_ack(SLOT_FRAME, 1) == SYS_ERR_PERM,
+          "irq-ack-with-wrong-cap-type");
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

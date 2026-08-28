@@ -33,6 +33,10 @@ src/kernel/syscall_hw.c         @pharanyx-labs
 # and which frames, ports and interrupt lines that device declares, so a mistake
 # here widens hardware authority without touching a syscall (S43).
 src/kernel/pci.c                @pharanyx-labs
+# iommu.c decides what a DEVICE may reach. A mistake here is a device writing
+# where no capability said it could, performed by hardware, with no software on
+# the path to catch it (S45).
+src/kernel/iommu.c              @pharanyx-labs
 # The device-capability conformance suite, for the same reason captest.c is
 # owned: it is the evidence for S43, and every check in it is a refusal.
 userspace/devcaptest.c          @pharanyx-labs

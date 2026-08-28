@@ -580,8 +580,30 @@ static inline int sys_device_enable(uint32_t dev_slot, uint32_t flags) {
  * requiring the device makes the disclosure add nothing the caller cannot already
  * do — a bus-mastering device reaches all of memory regardless. Returns 0 or a
  * negative SYS_ERR_*. */
+/* syscall6 with an explicit zero, NOT the 3-argument syscall(): that wrapper
+ * sets rbx/rcx/rdx and leaves rsi holding whatever the caller happened to have
+ * there, so the kernel's flags word would read garbage and the call would be
+ * refused as malformed. Any handler that grows a fourth argument has to be
+ * reached through a wrapper that actually writes it. */
 static inline int sys_dma_addr(uint32_t dev_slot, uint32_t frame_slot, uint64_t *out) {
-    return (int)syscall(SYS_DMA_ADDR, dev_slot, frame_slot, (uint64_t)(uintptr_t)out);
+    return (int)syscall6(SYS_DMA_ADDR, dev_slot, frame_slot,
+                         (uint64_t)(uintptr_t)out, 0, 0, 0);
+}
+
+/* SYS_DMA_ADDR flag: report the address WITHOUT installing the device mapping.
+ *
+ * Exists only for the NET_IOMMU_NO_MAP control arm, and it is a real ABI flag
+ * rather than a #ifdef in the kernel because the arm has to withhold the MAPPING
+ * while leaving every other authority check exactly as it is -- a kernel-side
+ * ifdef around the map call would also be an ifdef around the capability checks
+ * that precede it, and the arm would then prove something weaker. It discloses
+ * nothing extra: the caller already holds both capabilities and would get the
+ * same number with the mapping. */
+#define DMA_ADDR_NO_MAP  0x1u
+static inline int sys_dma_addr_flags(uint32_t dev_slot, uint32_t frame_slot,
+                                     uint64_t *out, uint32_t flags) {
+    return (int)syscall6(SYS_DMA_ADDR, dev_slot, frame_slot,
+                         (uint64_t)(uintptr_t)out, flags, 0, 0);
 }
 
 /* MUST stay byte-identical to struct untyped_info in src/include/kernel.h — the

@@ -1254,6 +1254,10 @@ void create_user_pagedir(uint32_t task_id) {
      * syscall runs in the fs_server's address space), so the supervisor-only TPM
      * page must be present here too or that access page-faults. */
     ensure_tpm_tis_mapped(pml4_tab);
+    /* And the VT-d register page, for the same reason one step further: mapping a
+     * frame into a device's address space (SYS_DMA_ADDR) writes these registers
+     * while running on the calling task's cr3. */
+    ensure_iommu_mapped_current(pml4_tab);
 
     tasks[task_id].cr3 = pml4_phys;
 
@@ -2237,4 +2241,29 @@ void ensure_lapic_mapped(uint64_t *root_pml4) {
  * syscall) does not fault. Supervisor-only + NX, exactly like the LAPIC. */
 void ensure_tpm_tis_mapped(uint64_t *root_pml4) {
     ensure_identity_mmio_page(root_pml4, 0xFED40000ULL);
+}
+
+/* Map one VT-d remapping unit's register page (roadmap 2.6's IOMMU). Same
+ * rationale as the LAPIC and the TPM: SYS_DMA_ADDR maps a frame into a device's
+ * address space, which touches these registers while running on the CALLER's
+ * cr3, so the page must be present in every address space or that syscall
+ * faults. The base comes from the DMAR table rather than a constant -- unlike
+ * the LAPIC and TPM there is no architectural address for it -- so this takes a
+ * parameter and iommu.c passes what firmware reported.
+ *
+ * Supervisor-only + NX + cache-disabled, exactly like the other two. Cache
+ * disable is not optional here: these are command registers whose writes must
+ * reach the unit in order, and a cached write is a command the hardware has not
+ * seen yet. */
+static uint64_t g_iommu_regs_phys;
+void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
+    if (!regs_phys) return;
+    g_iommu_regs_phys = regs_phys;
+    ensure_identity_mmio_page(root_pml4, regs_phys);
+}
+
+/* Re-establish the IOMMU register mapping in a freshly built address space.
+ * Called from create_user_pagedir; a no-op before iommu_init has found a unit. */
+void ensure_iommu_mapped_current(uint64_t *root_pml4) {
+    if (g_iommu_regs_phys) ensure_identity_mmio_page(root_pml4, g_iommu_regs_phys);
 }

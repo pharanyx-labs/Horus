@@ -1608,7 +1608,7 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 46 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 47 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -1637,59 +1637,57 @@ the row there, truncating the witness to `WRITE\` and reporting a well-witnessed
 unwitnessed. The first thing anyone does with a checker that invents findings is learn to skim
 past it, which costs more than the checker was ever going to save.
 
-### `smoke-net` — a network driver in ring 3, holding one device capability
+### `smoke-net` — a device reaches only the memory its driver mapped for it
 
-Roadmap 2.6's first half, and **S44**'s witness. `netd` (`userspace/netd.c`) is spawned holding
-exactly two capabilities — a `CAP_IO_DEVICE` naming the machine's NIC, and one delegated untyped
-region — and brings up virtio-net over the legacy I/O BAR: reset, feature negotiation, two
-descriptor rings built in memory it retyped itself, then an ARP request for QEMU's user-mode
-gateway and the reply arriving through its own receive ring.
+**S45**'s witness, and the point at which the IOMMU stops being a boot message. `netd` is
+spawned holding a `CAP_IO_DEVICE` naming the NIC and one untyped region, brings up an e1000, and
+completes a **DMA round trip**: the device reads its descriptor ring, reads the packet buffer,
+and writes the completion status back. Every one of those addresses was mapped into that
+device's address space by `SYS_DMA_ADDR` and by nothing else — the space starts empty.
 
-**The assertion is on the wire, not on a register.** A driver that reads its own MAC back out of
-device config has proved the BAR is mapped and nothing else; this one has to transmit a frame the
-emulator parses and receive one it generates, which exercises the whole path — decode enable, bus
-mastering, the ring layout, the bus addresses in every descriptor, and the used-ring protocol.
-`10.0.2.2` answers ARP with no host configuration and no privilege, which is what makes it a
-deterministic gate rather than one that depends on a network being present.
+The gate boots q35 with an Intel VT-d unit (`SMOKE_IOMMU`) and an **e1000** (`SMOKE_NET=e1000`).
 
-`SMOKE_NET=user` rather than `SMOKE_NET=1`: the authority gates need a device *on the bus*, this
-one needs something at the *other end of the wire*.
+**THE DRIVER WAS VIRTIO AND HAD TO BE REWRITTEN, and that is the entry worth reading.** The
+first version drove legacy virtio-net, which was the easier device — no MMIO, no PCI capability
+walk. Under VT-d it kept working **with an empty device address space**: translation enabled
+(`GSTS=0xC0000000`), root table installed, zero faults recorded, and the exchange completing
+anyway. Paravirtual virtio devices access guest memory directly; they are not on the far side of
+the IOMMU unless the device negotiates `VIRTIO_F_ACCESS_PLATFORM`, and a *legacy* virtio device
+has no such bit. QEMU says so outright when asked:
+
+```
+-device virtio-net-pci,iommu_platform=on:
+VIRTIO_F_IOMMU_PLATFORM was supported by neither legacy nor transitional device
+```
+
+So the obvious gate would have been a property stated, enforced by real code, and **bound to a
+device that bypassed it** — passing while proving nothing. e1000 is a real device model whose
+DMA goes through the device's address space like any bus master's. **Check that your witness is
+on the far side of the mechanism you are testing.**
 
 | Arm | Asserts | Result |
 |---|---|---|
 | `smoke-net` | `NETTEST: PASS` present, `NETTEST: FAIL` absent | passes, **3 boots in 3** |
-| `smoke-net-decode-control` (`NET_NO_DECODE=1`) | `NETTEST: FAIL rx-queue-size` present | passes, **3 boots in 3**; `smoke-net` goes red under the same flag |
-| `smoke-net-dma-control` (`NET_DMA_ADDR_VIRTUAL=1`) | `NETTEST: FAIL no-arp-reply` present | passes, **3 boots in 3**; `smoke-net` goes red under the same flag |
+| `smoke-net-iommu-control` (`NET_IOMMU_NO_MAP=1`) | `NETTEST: FAIL dma-never-completed` present | passes, **3 boots in 3**; `smoke-net` goes red under the same flag |
+| `smoke-net-decode-control` (`NET_NO_DECODE=1`) | `NETTEST: FAIL mac-not-valid` present | passes; `smoke-net` goes red under the same flag |
 
-**THE BUS-MASTER ARM WAS WRITTEN FIRST AND DOES NOT EXIST, and that is the entry worth reading.**
-The obvious control for `SYS_DEVICE_ENABLE` is to clear the bus-master bit: the device should then
-answer every register access and read no descriptor, so the exchange fails while bring-up
-"succeeds". It was written, and it **passed** — `NETTEST: PASS`, with bus mastering off.
+**The IOMMU arm withholds the mapping and nothing else.** Same driver, same device, every
+capability check still run, every address still correct — and the device cannot read its own
+descriptor ring. That is what makes the mapping load-bearing rather than ceremonial, and it is
+why `DMA_ADDR_NO_MAP` is a real ABI flag rather than a kernel `#ifdef`: an ifdef around the map
+call would also compile out the capability checks above it, and the arm would then demonstrate
+something weaker.
 
-The first instinct was that the flag had not reached the compile. It had: the command line
-carried `-DNET_NO_BUSMASTER` and the boot stamped `DEFECT FLAGS: NET_NO_BUSMASTER`, which is
-exactly what that line is for. The second instinct was that `SYS_DEVICE_ENABLE` was writing
-nothing. That was **measured** rather than assumed — a build asking for *no* decode bits at all
-kills the register file (`FAIL rx-queue-size`), so the write lands.
+**The decode arm caught the rewrite before the rewrite caught anything.** `NET_NO_DECODE` had a
+`#ifdef` in the virtio driver; the e1000 rewrite dropped it, the arm silently stopped being
+wired, and the gate went green for the wrong reason. A defect flag must follow every rewrite of
+the function it mutates — the same lesson `A_DEFECT_FLAG_MUST_FOLLOW_EVERY_SPLIT` records, here
+earned by a whole-file rewrite rather than a split.
 
-What is actually true is that **QEMU does not enforce PCI bus-master enable for virtio-net**. The
-arm cannot fail here, and a control arm that cannot fail cannot gate — the same call
-`SPAWN_STAGE_UNSERIALISED` got. `NET_NO_BUSMASTER` is kept, ungated, with that reason written into
-the Makefile beside it, because a real NIC will not move a byte without the bit and `netd` sets it
-for that reason. `NET_NO_DECODE` is the arm that replaced it, and it tests the syscall rather than
-the emulator's opinion of one register.
-
-**A second thing the arms caught: a bound is a failure budget, not a correctness parameter.** The
-receive poll first ran 40 million iterations. Correct, and irrelevant to the base arm — slirp
-answers in microseconds, so a passing build leaves the loop at once. But a *failing* build spends
-the whole bound, which outlived the harness's 40-second budget, so `smoke-net-dma-control` reported
-a **timeout** rather than its own marker: a gate failing for a reason indistinguishable from a
-hang. The bound is now 300k yields, chosen by how long a failure may take to say so.
-
-The two-capability rule on `SYS_DMA_ADDR` is witnessed separately, in `smoke-frame` — `frametest`
-holds frames it retyped itself and no device capability at all, which is exactly the caller that
-must be refused. `DMA_ADDR_FRAME_ONLY=1` (`make smoke-frame-dma-control`) drops the device
-requirement → `FRAMETEST: FAIL dma-addr-without-device-cap`, 3 boots in 3.
+**What this gate does NOT assert: reception.** `netd` transmits and does not receive; the cause
+is unknown and everything ruled out is written down in `docs/LIMITATIONS.md` §2.14. It is not a
+gap in S45 — both directions of DMA are exercised by the transmit path alone, since the device
+must *read* the ring and *write* the completion — but it is a gap in `netd` as a network driver.
 
 ### `smoke-devcap` — a device capability names one device, and reaches only that device
 

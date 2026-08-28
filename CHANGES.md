@@ -16,6 +16,62 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **VT-d DMA remapping: a device reaches only the memory its driver mapped for it (S45).**
+  The largest single gap in the model, and the one that could not be closed in software. Since
+  **S43** a `CAP_IO_DEVICE` names one device; since **S44** making it a bus master is an act a
+  capability gates. Neither said anything about *where* the device then went, and until now
+  nothing could: a bus-mastering device reached all of physical memory, and the descriptors
+  directing it are written by its own ring-3 driver.
+
+  `src/kernel/iommu.c` brings up an Intel VT-d unit found through the DMAR table before any
+  ring-3 task exists. **Every device gets an address space of its own, and every one starts
+  EMPTY** — not an identity map of the pool, not "everything below 4 GiB". A device whose driver
+  has mapped nothing reaches nothing. That default *is* the property: an identity map would have
+  been far easier and would have made the whole mechanism decorative, since the device would
+  reach all of memory again through a translation that always says yes. `SYS_DMA_ADDR` installs
+  a mapping and carries the frame capability's own write right, so a READ-only `CAP_FRAME` gives
+  a READ-only device mapping — **S27**'s rights floor extended to hardware. Each device gets its
+  own **domain**, because sharing one would make a mapping installed for one device reachable by
+  another: **S43**'s defect one layer down, and invisible because both devices would still work.
+
+  **THE DRIVER HAD TO BE REWRITTEN, AND FINDING OUT WHY IS THE ENTRY WORTH READING.** `netd`
+  drove legacy virtio-net. Under VT-d it kept working **with an empty device address space** —
+  translation enabled (`GSTS=0xC0000000`), root table installed, zero faults recorded, exchange
+  completing anyway. Paravirtual virtio devices access guest memory *directly*; they are not on
+  the far side of the IOMMU unless the device negotiates `VIRTIO_F_ACCESS_PLATFORM`, and a
+  legacy virtio device has no such bit. QEMU refuses the option outright: *"VIRTIO_F_IOMMU_PLATFORM
+  was supported by neither legacy nor transitional device."*
+
+  So the obvious gate would have been a property stated, enforced by real code, and bound to a
+  device that bypassed it — green, and proving nothing. `netd` is an **e1000** driver now: a real
+  device model whose DMA goes through the device's address space like any bus master's.
+  **Check that your witness is on the far side of the mechanism you are testing.**
+
+  Falsified by `NET_IOMMU_NO_MAP=1` (`make smoke-net-iommu-control`): the same driver, the same
+  device, every capability check still run and every address still correct — only the *mappings*
+  withheld — and the device cannot read its own descriptor ring. `NETTEST: FAIL
+  dma-never-completed`, 3 boots in 3, and `smoke-net` red under it. `DMA_ADDR_NO_MAP` is a real
+  ABI flag rather than a kernel `#ifdef` on purpose: an ifdef around the map call would also
+  compile out the capability checks above it, and the arm would demonstrate something weaker.
+
+  Two bugs found on the way, both worth recording. A domain-id limit computed as
+  `(uint16_t)(1u << (4 + 2*nd))` **truncated to zero** for the ND=6 that QEMU reports, so the
+  guard read `1 >= 0` and refused every domain — the same 32-bit truncation shape as issue #176,
+  and a limit must be computed in a type that can hold it. And `sys_dma_addr` reached the kernel
+  through the 3-argument `syscall()` wrapper, which never writes `rsi`, so the new flags word
+  read whatever the caller happened to leave there.
+
+  **`NET_NO_DECODE`'s `#ifdef` did not survive the rewrite**, the arm silently stopped being
+  wired, and its gate went green for the wrong reason — caught by running it. A defect flag must
+  follow every rewrite of the function it mutates, not only every split.
+
+  **What is honestly still missing.** `netd` transmits and does **not receive**; the cause is
+  unknown and everything ruled out is written down (`docs/LIMITATIONS.md` §2.14) — it is a gap in
+  the driver, not in S45, since the transmit path exercises device-reads-memory *and*
+  device-writes-memory. There is no interrupt remapping (nothing to remap yet, §2.13). And
+  containment is now a property of the **memory** a compromised driver can reach, not of the
+  network: a compromised `netd` still speaks for this machine on the wire.
+
 - **A network driver in ring 3 — roadmap 2.6's first half (S44).** `netd`
   (`userspace/netd.c`) drives virtio-net over the legacy I/O BAR holding exactly two
   capabilities: a `CAP_IO_DEVICE` naming the NIC, and one delegated untyped region it builds

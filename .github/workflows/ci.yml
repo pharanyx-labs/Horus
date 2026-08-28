@@ -1863,8 +1863,12 @@ jobs:
       # SYS_DMA_ADDR returns the address the DEVICE uses. Program the driver's own
       # virtual address instead and every register write still succeeds, the
       # device accepts both queues, and not one descriptor is ever found.
-      - name: Control arm — a virtual address where the device's view belongs
-        run: make smoke-net-dma-control
+      # S45. The IOMMU is only a property if the mappings are load-bearing: same
+      # driver, same device, every capability check still run and every address
+      # still correct -- only the device MAPPINGS withheld -- and the device
+      # cannot read its own descriptor ring.
+      - name: Control arm — a device address space with nothing mapped into it
+        run: make smoke-net-iommu-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

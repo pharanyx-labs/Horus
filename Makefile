@@ -91,6 +91,7 @@ DEFECT_FLAGS = \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
+	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
@@ -937,6 +938,34 @@ CFLAGS  += -DCOW_ARENA_UNGUARDED
 ASFLAGS += -DCOW_ARENA_UNGUARDED
 endif
 
+# FORK_SHARE_WRITABLE=1 clones a forked child's address space WITHOUT downgrading
+# the leaves: both trees point at the same frames, both still writable, neither
+# marked PAGE_COW. It is the shape a fork gets when "share the page tables" is
+# mistaken for "copy the memory", and it is not a subtle failure -- the parent
+# and the child are one process with two schedulable contexts, and every write
+# either makes is immediately visible to the other. forktest's parent-side check
+# (FORKTEST: FAIL parent-clobbered) is what sees it. Roadmap 2.3, S39.
+FORK_SHARE_WRITABLE ?= 0
+ifeq ($(FORK_SHARE_WRITABLE),1)
+CFLAGS  += -DFORK_SHARE_WRITABLE
+ASFLAGS += -DFORK_SHARE_WRITABLE
+endif
+
+# FORK_ARENA_UNCHECKED=1 removes clone_user_aspace's refusal to clone a PTE whose
+# frame belongs to the untyped arena, so forking with a CAP_FRAME mapped
+# succeeds. The child then holds a live mapping of a kernel object that NO
+# capability of its own names: revoking the parent's CAP_FRAME sweeps the
+# parent's PTE and leaves the child's behind, and whichever side writes first
+# meets cow_break_pte's own arena guard and is killed for it. Sibling of
+# COW_ARENA_UNGUARDED above and aimed one layer up -- that one asks what a break
+# does, this one asks whether the mapping should have been cloned at all.
+# Roadmap 2.3, S40.
+FORK_ARENA_UNCHECKED ?= 0
+ifeq ($(FORK_ARENA_UNCHECKED),1)
+CFLAGS  += -DFORK_ARENA_UNCHECKED
+ASFLAGS += -DFORK_ARENA_UNCHECKED
+endif
+
 LIBHORUS_SELFTEST ?= 0
 ifeq ($(LIBHORUS_SELFTEST),1)
 CFLAGS  += -DLIBHORUS_SELFTEST
@@ -1214,6 +1243,18 @@ endif
 # aliasing the shared zero page) then writes one, proving the write breaks
 # copy-on-write into a private page without disturbing its sibling (prints
 # COW_SELFTEST: PASS). Gated off the ship kernel.
+# FORK_SELFTEST=1 embeds forktest and boots straight into it: it forks itself and
+# asserts from ring 3 that the child's memory is a copy-on-write COPY of the
+# parent's (S39) and that a task with a CAP_FRAME mapped is refused (S40).
+# Prints FORKTEST: PASS/FAIL; `make smoke-fork` asserts on it. Gated off the
+# ship kernel. Roadmap 2.3.
+FORK_SELFTEST ?= 0
+ifeq ($(FORK_SELFTEST),1)
+CFLAGS  += -DFORK_SELFTEST
+ASFLAGS += -DFORK_SELFTEST
+FORK_SELFTEST_DEP = userspace/forktest.bin
+endif
+
 COW_SELFTEST ?= 0
 ifeq ($(COW_SELFTEST),1)
 CFLAGS  += -DCOW_SELFTEST
@@ -1488,7 +1529,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -1989,7 +2030,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -4425,6 +4466,52 @@ smoke-passwd-probe-control:
 		REQUIRE_MARKER='PASSWDPROBE: FAIL opened-a-ramfs-file' \
 		tools/smoke_test.sh boot.iso
 	@echo "PASSWD PROBE CONTROL: PASS - slot-3 gated, an ordinary user reads the store"
+
+# ---- fork (roadmap 2.3) ---------------------------------------------------
+# The base arm. forktest forks itself and asserts that the child's memory is a
+# COPY of the parent's in both directions (S39), and that a task with a
+# CAP_FRAME mapped is refused -- and that unmapping it makes the same call
+# succeed, so the refusal is about the frame rather than about fork being broken
+# (S40). -smp 1: the parent's post-fork write has to be in flight while the child
+# is watching for it, and one CPU makes that ordering the scheduler's rather than
+# the host's.
+.PHONY: smoke-fork
+smoke-fork:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKTEST: PASS' \
+		FAIL_MARKER='FORKTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 1 -- the copy. FORK_SHARE_WRITABLE=1 leaves both trees' leaves
+# writable and unmarked, so parent and child share every page. The child's write
+# to its own copy then lands in the parent's, and the parent reads it back.
+# The FAIL marker must be PRESENT.
+.PHONY: smoke-fork-share-control
+smoke-fork-share-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_SHARE_WRITABLE=1
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_SHARE_WRITABLE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKTEST: FAIL parent-clobbered' \
+		tools/smoke_test.sh boot.iso
+	@echo "FORK SHARE CONTROL: PASS - unmarked, a fork shares its parent's pages"
+
+# Control arm 2 -- the kernel object. FORK_ARENA_UNCHECKED=1 clones a PTE whose
+# frame belongs to the untyped arena instead of refusing the fork, so a task with
+# a CAP_FRAME mapped forks successfully and the child holds a mapping of an
+# object no capability of its own names. The FAIL marker must be PRESENT.
+.PHONY: smoke-fork-arena-control
+smoke-fork-arena-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_ARENA_UNCHECKED=1
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_ARENA_UNCHECKED=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKTEST: FAIL forked-with-frame-mapped' \
+		tools/smoke_test.sh boot.iso
+	@echo "FORK ARENA CONTROL: PASS - unchecked, a mapped kernel object is cloned"
 
 .PHONY: smoke-frame
 smoke-frame:

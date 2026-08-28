@@ -1244,7 +1244,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 101
+#define SYSCALL_TABLE_SIZE 102
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1376,6 +1376,10 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * WRITE|EXEC gate as SYS_SPAWN / SYS_EXEC_NAMED; the image is validated by the
      * loader (arm_image_from_user -> try_elf_load) exactly like a named binary. */
     [SYS_SPAWN_IMAGE]              = { h_spawn_image,             3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    /* Same gate as SYS_SPAWN, and deliberately not SC_NONE: fork is a second way
+     * to create a task, so it answers to the capability that gates the first.
+     * See h_fork in kspawn.c. */
+    [SYS_FORK]                     = { h_fork,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_EXEC_IMAGE]               = { h_exec_image,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_SIGALTSTACK]              = { h_sigaltstack,             SC_NONE, 0, SC_ANYTYPE }, /* self: register own altstack */
     /* Zero-trust identity: a receiver reads the kernel-attested uid of an
@@ -1525,7 +1529,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_FRAME_PAGES + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_FORK + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

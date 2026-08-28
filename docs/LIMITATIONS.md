@@ -371,12 +371,12 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **55 of 83** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **55 of 84** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 29 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This is stated as a limitation rather than a finding because nothing here is known to be
-broken. What is known is that a defect in any of those 28 handlers would be invisible in the
+broken. What is known is that a defect in any of those 29 handlers would be invisible in the
 same way issue #176 was — and #176 is the reason the number exists at all. `captest` is a
 **refusal** suite by construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both
 assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. Both syscalls
@@ -386,7 +386,7 @@ were named by the suite; neither handler had ever executed.
 direction, so the number cannot quietly fall. It deliberately does not require all of them —
 that would be a large body of test-writing disguised as a gate. Property **S25**.
 
-**Two of the 28 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
+**Two of the 29 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
 uncovered only because `tools/session_test.py` runs no pipeline — a gap in the workload, not
 the kernel. And the `uncovered` reasons that name another build which *would* reach a syscall
 are **hypotheses this manifest has not measured**; promoting them should be a measurement, not
@@ -892,6 +892,39 @@ Witness `make smoke-passwd-probe` (8 checks), falsified by
 
 ---
 
+### 2.11 A forked child does not inherit its parent's cspace — *2026-08-28*
+
+`SYS_FORK` (roadmap 2.3) clones the caller's **memory** copy-on-write (**S39**) and nothing
+else. The child is born with the endowment `create_task` gives every task — its own `CAP_TCB`,
+its own reply endpoint, the legacy image frame — plus the send-only console copy `SYS_SPAWN`
+already propagates. Every other capability the parent holds must be delegated with
+`SYS_CAP_GRANT`, exactly as for a spawned child.
+
+**This is deliberate, and the reason is revocation rather than effort.** A duplicated cspace
+means a copy of every delegated capability the parent holds, and each copy has to be a
+*derived* capability with its own serial stamped from the parent's lineage cell. Copy them as
+they stand — same serial, same generation — and they are not derived from anything: revoking
+the parent's capability bumps its lineage cell and invalidates the parent's copy, while the
+child's, keyed to a serial nobody swept, keeps working. That is a **revocation hole reachable
+from ring 3 by any task that can fork**, and it is exactly the shape of finding 3.3, which
+`do_spawn_inner` and `grant_child_tcb_cap` already carry the fix for (`cap_alloc_fresh_serial`
++ `rust_lineage_current`). Getting it right for a whole cspace is an authority change that
+deserves its own commit, its own invariant and its own control arm — not a line added to a
+memory-cloning one.
+
+**The visible consequence today:** a forked child can print (it has the console) and can be
+waited on or killed by its parent (which is handed a `CAP_TCB`), but it cannot reach
+`fs_server`, a pipe end, an untyped region or any other delegated service until its parent
+grants it one. `fork()` is therefore not yet a drop-in for the POSIX idiom where a child
+inherits its parent's open files.
+
+**Related:** a task with a `CAP_FRAME` **mapped** cannot fork at all (**S40**) — a fork must not
+manufacture a mapping of a kernel object without a capability naming it, and that becomes
+expressible only once a cspace is duplicated. Namespace (mount-table) inheritance across
+`spawn` and `fork` is separately open; see roadmap 2.4.
+
+---
+
 ## 3. Scale and performance limitations
 
 ### 3.1 Hard compile-time ceilings — **[I-7]**
@@ -1002,8 +1035,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **91** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **93** across the three, producing **96** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **92** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **94** across the three, producing **97** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1048,7 +1081,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **93 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **94 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

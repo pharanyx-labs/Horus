@@ -115,6 +115,15 @@ required:
   # cow_break_pte's arena guard was written for before it existed: fork is what
   # makes a frame's page reachable as a COW PTE at all.
   - fork
+  # Gating. It carries S42, and it is the pairing rather than either half: fork
+  # and exec were each gated, and the SEQUENCE -- the only one a shell performs --
+  # was not. The property is written as the ABSENCE of a step (exec touches no
+  # capability), which is the hardest kind to hold: nothing can be pointed at, so
+  # nothing goes stale visibly. It also carries the one memory claim smoke-fork
+  # cannot reach, because task_teardown does not free an address space and an
+  # exec does: this is the only path in the tree that reclaims a copy-on-write
+  # clone while its parent is still running.
+  - forkexec
   # Gating. It carries S16 — which had NO witness at all until 2026-08-28, the
   # exact [C-1] shape this project exists to avoid: a property stated in
   # SECURITY.md, enforced by real code, and bound to nothing. Roadmap 4.12's

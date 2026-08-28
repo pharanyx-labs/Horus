@@ -93,6 +93,7 @@ DEFECT_FLAGS = \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
 	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY \
+	EXEC_RESET_CSPACE EXEC_ROOT_CSPACE \
 	FPU_NO_SAVE FPU_NO_RESTORE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
@@ -998,6 +999,36 @@ CFLAGS  += -DFORK_CSPACE_ORPHAN_COPY
 ASFLAGS += -DFORK_CSPACE_ORPHAN_COPY
 endif
 
+# EXEC_RESET_CSPACE=1 makes SYS_EXEC_NAMED / SYS_EXEC_IMAGE discard every
+# capability at or above KERNEL_RESERVED_CAPS, so the execed image keeps only the
+# birth endowment create_task installs. It is the "give the new image a clean
+# slate" instinct written out, and it breaks the pairing a shell needs: a task
+# that forks, is endowed, and then execs arrives with nothing. Everything the
+# task was DELEGATED -- its console endpoint included -- is gone, which is why
+# forkexecee reports through the capability graph rather than the console: under
+# this arm a console write is exactly the channel the defect closes. Roadmap 2.3,
+# S42.
+EXEC_RESET_CSPACE ?= 0
+ifeq ($(EXEC_RESET_CSPACE),1)
+CFLAGS  += -DEXEC_RESET_CSPACE
+ASFLAGS += -DEXEC_RESET_CSPACE
+endif
+
+# EXEC_ROOT_CSPACE=1 keeps every capability across the exec but re-mints each one
+# as a ROOT: fresh serial, no badge. The task's AUTHORITY is untouched and every
+# check that asks "can it still do the thing" passes -- which is the whole
+# difficulty. What it loses is its position in the derivation graph, so a
+# revocation aimed at whatever the capability was derived from no longer reaches
+# it. Reachable from ring 3 by any task that may exec, and combined with SYS_FORK
+# it is an authority-laundering primitive: fork to inherit a derived copy, exec to
+# turn it into a root nobody can revoke. Finding 3.3's shape, one syscall over
+# from FORK_CSPACE_ORPHAN_COPY. Roadmap 2.3, S42.
+EXEC_ROOT_CSPACE ?= 0
+ifeq ($(EXEC_ROOT_CSPACE),1)
+CFLAGS  += -DEXEC_ROOT_CSPACE
+ASFLAGS += -DEXEC_ROOT_CSPACE
+endif
+
 # FPU_NO_SAVE=1 drops the fxsave on the way out of ring 3, so a task's xmm/x87
 # register file is never captured and it is handed a STALE image on its next
 # entry. It destroys the task's own state and discloses nothing: fputest loses
@@ -1322,6 +1353,20 @@ ASFLAGS += -DFORK_SELFTEST
 FORK_SELFTEST_DEP = userspace/forktest.bin
 endif
 
+# FORKEXEC_SELFTEST=1 embeds forkexectest + forkexecee and boots straight into
+# them: the driver forks itself, the child replaces its image with
+# SYS_EXEC_NAMED, and the driver then asserts from ring 3 that the exec replaced
+# the IMAGE and not the AUTHORITY (S42) -- and that its own memory survived the
+# reclaim of the cloned address space the exec performed (S39). Prints
+# FORKEXECTEST: PASS/FAIL; `make smoke-forkexec` asserts on it. Gated off the
+# ship kernel. Roadmap 2.3.
+FORKEXEC_SELFTEST ?= 0
+ifeq ($(FORKEXEC_SELFTEST),1)
+CFLAGS  += -DFORKEXEC_SELFTEST
+ASFLAGS += -DFORKEXEC_SELFTEST
+FORKEXEC_SELFTEST_DEP = userspace/forkexectest.bin userspace/forkexecee.bin
+endif
+
 COW_SELFTEST ?= 0
 ifeq ($(COW_SELFTEST),1)
 CFLAGS  += -DCOW_SELFTEST
@@ -1596,7 +1641,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2097,7 +2142,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -4656,6 +4701,55 @@ smoke-fork-cspace-orphan-control:
 		REQUIRE_MARKER='FORKTEST: FAIL child-cap-not-derived' \
 		tools/smoke_test.sh boot.iso
 	@echo "FORK CSPACE ORPHAN CONTROL: PASS - fresh serial, no parent edge, revoke misses it"
+
+# ---- fork + exec, the pairing (roadmap 2.3) -------------------------------
+# The base arm. forkexectest forks itself, lets the child replace its image with
+# forkexecee through SYS_EXEC_NAMED, and then asserts that the exec replaced the
+# IMAGE and not the AUTHORITY: the inherited capability is still there, still
+# works, still carries the same serial and badge, and the driver's revoke still
+# reaches it three generations down (S42). It also re-reads its own page, which
+# the child wrote to and then execed away from -- the exec RECLAIMS the cloned
+# address space, and nothing else in the tree frees a cloned space while its
+# parent is still running (S39, one layer on from smoke-fork).
+# -smp 1 for smoke-fork's reason: the rendezvous is the scheduler's, not the
+# host's.
+.PHONY: smoke-forkexec
+smoke-forkexec:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKEXECTEST: PASS' \
+		FAIL_MARKER='FORKEXECTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm 1 -- the exec discards. EXEC_RESET_CSPACE=1 nulls every capability
+# above the birth endowment, so the execed image arrives holding nothing it was
+# given. The FAIL marker must be PRESENT.
+.PHONY: smoke-forkexec-reset-control
+smoke-forkexec-reset-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_RESET_CSPACE=1
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_RESET_CSPACE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKEXECTEST: FAIL exec-dropped-inherited-cap' \
+		tools/smoke_test.sh boot.iso
+	@echo "FORKEXEC RESET CONTROL: PASS - a clean slate loses what the task was given"
+
+# Control arm 2 -- the exec launders, and the one the property exists for.
+# EXEC_ROOT_CSPACE=1 keeps every capability but re-mints it as a root: same
+# authority, no lineage. The task can still do everything it could before, which
+# is why nothing but the derivation graph can see it -- and the driver's revoke
+# no longer reaches the child's copy. The FAIL marker must be PRESENT.
+.PHONY: smoke-forkexec-root-control
+smoke-forkexec-root-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_ROOT_CSPACE=1
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_ROOT_CSPACE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKEXECTEST: FAIL child-cap-survived-revoke-after-exec' \
+		tools/smoke_test.sh boot.iso
+	@echo "FORKEXEC ROOT CONTROL: PASS - re-minted as a root, the parent's revoke misses it"
 
 .PHONY: smoke-frame
 smoke-frame:

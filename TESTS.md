@@ -1212,10 +1212,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **94** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **95** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **96** jobs, **99** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **97** jobs, **100** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1267,7 +1267,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **96 required contexts and 3 reasoned exemptions** — read off
+The intended set is **97 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1606,7 +1606,7 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 43 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 44 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -1764,6 +1764,76 @@ unreachable from any arm — a check that cannot fail. `FORK_CSPACE_ORPHAN_COPY=
 the badge check and the end-to-end revoke check, and it should: the structural claim and its
 consequence are different assertions, and an edge nothing traverses is not a revocation path.
 A `bad` flag suppresses the `PASS` at the end, so no run emits both verdicts.
+
+### `smoke-forkexec` — an exec replaces the image, not the authority
+
+Roadmap 2.3's pairing. `fork` and `exec` were each gated; the two **in sequence** — the only
+sequence a shell ever performs — were not. `forkexectest` forks itself, the child mints a
+capability from the `CAP_UNTYPED` it inherited and then replaces its image with `forkexecee`
+through `SYS_EXEC_NAMED`, and the driver reads the result out of the derivation graph.
+
+**The property is the ABSENCE of a step, which is the hardest kind to witness.**
+`exec_into_armed_image` rebuilds the address space and does nothing at all to the cspace — that
+is **S42**. Nothing can be pointed at, so nothing goes stale visibly and no reviewer is prompted
+to ask whether it still holds. The two control arms therefore *add* the steps an exec is tempted
+to take, and the gate measures the difference.
+
+**`EXEC_ROOT_CSPACE=1` is the one the property exists for, and it is invisible to every
+functional check.** It keeps every capability and re-mints each as a **root**: fresh serial, no
+badge. The task's authority is byte-for-byte what it was, so it can still do everything it could
+before — what it has lost is its position in the graph, and the parent's revoke stops reaching
+it. That is finding **3.3**'s shape one syscall over from `FORK_CSPACE_ORPHAN_COPY`, and
+combined with `SYS_FORK` it is an authority-laundering primitive: fork to inherit a derived
+copy, exec to turn it into a root nobody can revoke.
+
+**The revocation is three generations deep**, deliberately: the driver's `CAP_UNTYPED`, the
+child's forked copy of it (**S41**), and the capability the child minted from *that* before
+execing. Revoking the first must sweep the third, across a fork and an exec.
+
+**Everything the execed task reports, it reports through the capability graph.** `forkexecee`
+mints into slots the driver reads with `SYS_CAP_ENUMERATE` rather than printing, for two
+reasons. A gate decided by matching two tasks' prose on one wire is decided by whichever line
+the harness latches first — which is exactly how `forktest`'s first version printed a `FAIL` and
+then a `PASS`. And the console is not a channel this task is guaranteed: in this selftest boot
+nothing has taken the console so even `EXEC_RESET_CSPACE=1` can still print (measured, not
+assumed), but once a ring-3 console server owns the hardware, printing needs the delegated
+endpoint in slot 5 — precisely what an exec that rebuilt the cspace would discard. A report a
+defect can silence is not a report.
+
+**The rendezvous signals are minted from slot 0, never from the capability under test.** A
+handshake that depends on the property being measured cannot report that property's absence: it
+hangs instead, and a gate that hangs prints no marker at all. Slot 0 is also the *only* birth
+capability `SYS_CAP_MINT` will accept as a source — it is the one carrying `CAP_RIGHT_MINT`,
+where slot 3 is `READ|WRITE|EXEC` and slot 4 `READ|WRITE` — and using slot 3 instead made every
+signal in this test fail silently while it was being written. `FE_SLOT_READY` is minted **last
+and unconditionally**, so it means "I have finished and recorded what I found" rather than "I am
+alive", and every wait in the driver is bounded with its own named `FAIL` on expiry.
+
+**It also carries the one memory claim `smoke-fork` cannot reach.** `task_teardown` does not
+free an address space — a dead task's tree is reclaimed later, when its slot is reused — so a
+forked child that merely exits never exercises the reference `clone_user_aspace` took on each
+shared page. An exec does, through `create_user_pagedir`'s reclaim, and this is the **only path
+in the tree that frees a copy-on-write clone while its parent is still running**. A reference
+dropped once too often would put a live page of the parent's on the free page stack, to be
+handed out as somebody's fresh anonymous page. The driver re-reads its own byte after the exec.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-forkexec` | `FORKEXECTEST: PASS` present, `FORKEXECTEST: FAIL` absent | passes, **3 boots in 3** |
+| `smoke-forkexec-reset-control` (`EXEC_RESET_CSPACE=1`) | `FORKEXECTEST: FAIL exec-dropped-inherited-cap` present | passes, **3 boots in 3**; also emits `FORKEXECTEST: FAIL exec-lost-inherited-cap`, and no `PASS`; `smoke-forkexec` goes red under the same flag |
+| `smoke-forkexec-root-control` (`EXEC_ROOT_CSPACE=1`) | `FORKEXECTEST: FAIL child-cap-survived-revoke-after-exec` present | passes, **3 boots in 3**; also emits `FORKEXECTEST: FAIL exec-recreated-inherited-cap` and `exec-orphaned-inherited-cap`; `smoke-forkexec` goes red under the same flag |
+| S39 across the exec (`FORK_SHARE_WRITABLE=1`, no new flag) | `FORKEXECTEST: FAIL parent-clobbered-by-exec` present | passes, **3 boots in 3** |
+
+**Each arm fails only its own rule's checks**, which is what makes them two rules rather than
+one gate wearing two names: the reset arm never reaches the lineage comparisons (they sit inside
+the `occupied` branch), and the root arm passes the presence and usability checks by
+construction. The checks do not short-circuit, for `smoke-fork`'s reason — an early exit on the
+first failure would leave the later ones unreachable from any arm — and a `bad` flag suppresses
+the `PASS`, so no run emits both verdicts.
+
+Three boots rather than a rate over hundreds: neither defect is a race. Both are deterministic
+properties of a build, and the `-smp 1` in these targets makes the three tasks' interleaving the
+scheduler's rather than the host's.
 
 ### `smoke-nzcow-arena-control` — a kernel object's page is never copied out from under it
 

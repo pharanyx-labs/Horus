@@ -865,7 +865,7 @@ There is no wall clock: nothing reads an RTC and nothing attests one, so every c
 - **A libc `clock_gettime`.** The ABI is POSIX-shaped (`sec`/`nsec`) so newlib can sit on it,
   but nothing is wired yet.
 
-### 2.3 ◧ Process and session model — **[F-2.4]** — *`fork` landed 2026-08-28*
+### 2.3 ◧ Process and session model — **[F-2.4]** — *`fork` 2026-08-28, `fork`+`exec` 2026-08-28*
 
 Real `fork`/`exec` semantics, process groups, job control, and a `/proc`-equivalent served
 over IPC. Needed before the shell can become a usable OS interface.
@@ -901,8 +901,27 @@ live mapping of a kernel object that no capability of its own names, so revoking
   control arms now: `FORK_CSPACE_FLAT_COPY=1` (duplicate serials, so a child's revoke destroys
   its parent's capability) and `FORK_CSPACE_ORPHAN_COPY=1` (no parent edge, so the parent's
   revoke misses the child's copy). `docs/LIMITATIONS.md` §2.11 records the closure.
-- **`exec` after `fork`.** `SYS_EXEC_NAMED` / `SYS_EXEC_IMAGE` exist and replace an image in
-  place; what is missing is the pairing every shell needs — fork, endow the child, then exec.
+- ~~**`exec` after `fork`.**~~ **Landed 2026-08-28** (**S42**). The two syscalls each existed
+  and were each gated; the *sequence* — the only one a shell performs — was not, and neither
+  was the property that makes it safe. `exec_into_armed_image` rebuilds the address space and
+  touches **no capability**, so the execed task keeps the same `serial` and the same `badge`,
+  and therefore its position in the derivation graph. Combined with **S41**, `fork(); exec();`
+  produces a task whose authority is still a subtree of its parent's, and a task cannot launder
+  delegated authority into a root of its own by execing. Witness `make smoke-forkexec`, which
+  revokes three generations deep — the driver's capability, the child's forked copy, and what
+  the child minted from it before the exec.
+
+  The property is written as the **absence** of a step, so both arms *add* one:
+  `EXEC_RESET_CSPACE=1` discards ("a clean slate for a new image") and `EXEC_ROOT_CSPACE=1`
+  re-mints as a root ("the new image should own what it holds"). The second is the one this
+  exists for and is invisible to every functional check — the authority is identical and only
+  the lineage is gone. The same gate carries the one memory claim `smoke-fork` cannot reach:
+  `task_teardown` does not free an address space, so an exec is the only path in the tree that
+  reclaims a copy-on-write clone while its parent is still running.
+
+  Still missing from the *pairing* as a shell would use it: a way for the parent to **narrow**
+  what the child carries into the exec. Today it carries everything the parent held, and the
+  only subtraction available is the child revoking its own slots before it execs.
 - **Process groups, job control, and `/proc`.** Untouched. `/proc` is a VFS server, so it sits
   behind 2.4's mount provisioning rather than here.
 - **Namespace inheritance across `spawn`/`fork`** — the last bullet of 2.4, and the reason a
@@ -1173,7 +1192,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **96 required, 3 exempted** (96 jobs, 99 contexts — re-derive it with
+  The intended set is **97 required, 3 exempted** (97 jobs, 100 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).
@@ -1268,7 +1287,7 @@ Ordered as in the audit's §7.5.
   so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
   claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
   The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-  **empty** — all 43 properties name a witness that resolves.
+  **empty** — all 44 properties name a witness that resolves.
 
   **What the survey found on the way.** **S16** had no witness at all — an em-dash against
   `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1307,7 +1326,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 134 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 46 of them control arms that must reproduce a defect |
+| ✅ | 137 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 48 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

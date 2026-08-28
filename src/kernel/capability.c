@@ -785,6 +785,70 @@ int cap_clone_cspace(int parent, int child) {
     return copied;
 }
 
+#if defined(EXEC_RESET_CSPACE) || defined(EXEC_ROOT_CSPACE)
+/* ---- CONTROL ARMS FOR S42. Not a code path the ship kernel has -------------
+ *
+ * The real exec does NOTHING to the cspace. That is the property, and it is the
+ * hardest kind of property to test: an implementation that omits a step passes
+ * every check aimed at what the step would have done. So the arms here ADD the
+ * two steps a "give the new image a clean slate" instinct would add, and
+ * `forkexectest` measures the difference.
+ *
+ * Both operate on slots at or above KERNEL_RESERVED_CAPS, which is where
+ * `cap_clone_cspace` starts copying and where a task's own identity ends. Slots
+ * 0, 3 and 4 -- the CAP_TCB on self, the image capability and the private reply
+ * endpoint -- are what `create_task` installs for every task, so leaving them
+ * alone is what makes each arm a statement about DELEGATED authority rather than
+ * a task with no cspace at all.
+ *
+ * EXEC_RESET_CSPACE discards. The execed image keeps only its birth endowment,
+ * so everything the task was given -- by delegation, by connect, or by the fork
+ * that produced it -- is gone. This is the arm that fails "the exec kept it".
+ *
+ * EXEC_ROOT_CSPACE keeps every capability but re-mints it as a ROOT: a fresh
+ * serial and no badge. The task's authority is unchanged and every check that
+ * asks "can it still do the thing" passes -- which is the point. What it loses is
+ * its POSITION in the derivation graph, so a revocation aimed at the capability
+ * it was derived from no longer reaches it. That is finding 3.3's shape reached
+ * by execing instead of by forking, and it is the arm the whole property exists
+ * for: an exec that launders inherited authority into a new root is a revocation
+ * hole with no visible symptom until somebody tries to revoke.
+ *
+ * Deliberately in ONE function with the two arms as branches, for the reason the
+ * FORK_CSPACE arms give: a reader diffing them against the real path should see
+ * two policies over one walk, not two different algorithms. */
+void cap_exec_mutate_cspace(int t) {
+    if (t <= 0 || t >= MAX_TASKS) return;
+
+    spin_lock(&cap_lock);
+    capability_t *cs = tasks[t].cspace;
+    if (!cs) { spin_unlock(&cap_lock); return; }
+    uint32_t sz = tasks[t].cspace_size ? tasks[t].cspace_size : CNODE_SIZE;
+    if (sz > CNODE_SIZE) sz = CNODE_SIZE;
+
+    for (uint32_t s = KERNEL_RESERVED_CAPS; s < sz; s++) {
+        if (cs[s].type == CAP_NULL) continue;
+#ifdef EXEC_RESET_CSPACE
+        cs[s].type       = CAP_NULL;
+        cs[s].rights     = 0;
+        cs[s].object     = 0;
+        cs[s].badge      = 0;
+        cs[s].serial     = 0;
+        cs[s].generation = 0;
+        if (tasks[t].caps_in_use > 0) tasks[t].caps_in_use--;
+#else
+        /* Same type, same rights, same object: the authority is untouched and
+         * only its lineage is destroyed. */
+        cs[s].badge      = 0;
+        cs[s].serial     = rust_cap_alloc_serial(&cap_next_serial);
+        cs[s].generation = rust_lineage_current(cs[s].serial);
+#endif
+    }
+
+    spin_unlock(&cap_lock);
+}
+#endif /* EXEC_RESET_CSPACE || EXEC_ROOT_CSPACE */
+
 bool cap_revoke(uint32_t slot) {
     spin_lock(&cap_lock);
     if (slot >= CNODE_SIZE) {

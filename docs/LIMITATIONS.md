@@ -659,13 +659,29 @@ single capability, so nothing can decide they are dead. They are immortal by con
 will stop being so as they migrate to retyped objects. Destruction also does not return the
 bytes — the arena is a monotonic bump allocator, so only the *name* is reclaimed.
 
-### 2.4 Copy-on-write is implemented but narrow
+### 2.4 ~~Copy-on-write is implemented but narrow~~ — LARGELY CLOSED 2026-08-28
 
-COW works for the shared zero page and for the generic non-zero case (both tested). There is
-no `fork` — the only COW producer is the demand pager. Frame capabilities landed 2026-08-22
-(roadmap 2.1), so the object `fork` needs now exists, but nothing breaks COW over a *shared*
-frame yet: what a COW break means for a page two tasks hold capabilities for is an open
-question, not an implemented one.
+*This section said "there is no `fork` — the only COW producer is the demand pager" for a day
+after `fork` landed (#220), which is the drift §3 of `CLAUDE.md` exists to catch. Recorded here
+rather than silently rewritten.*
+
+COW works for the shared zero page and for the generic non-zero case, and `SYS_FORK` is now a
+second producer: `clone_user_aspace` downgrades **both** trees' leaves and `cow_break_pte` hands
+out the private copy to whichever side writes first (**S39**, `make smoke-fork`).
+
+The question this section left open — *what a COW break means for a page two tasks hold
+capabilities for* — has been **answered rather than implemented**, and the answer is that it
+does not happen. `cow_break_pte` refuses any page inside the untyped arena (**S38**), because a
+break would allocate the private copy from the *anonymous* pool — resource authority no untyped
+region paid for — and would repoint the PTE at a page no capability names. `SYS_FORK` refuses
+one layer earlier still, rejecting the clone outright while a `CAP_FRAME` is mapped (**S40**),
+so the refusal reaches the caller at a point it can act on rather than killing whichever side
+writes first. A task wanting a private copy of a frame retypes its own and copies the bytes:
+explicit, budgeted, and visible in the capability graph.
+
+What remains narrow is *sharing*: there is still no way for two tasks to hold one frame
+copy-on-write. That becomes expressible now that a fork duplicates a cspace (§2.11), and it is
+deliberately not written yet.
 
 ### 2.5 A frame's bytes are not reclaimable until its untyped region is reset
 
@@ -951,6 +967,20 @@ task with a `CAP_FRAME` **mapped** still cannot fork at all (**S40**) — that i
 remaining refusal, and it stands until a frame can be shared with the capability that names it
 rather than without one.
 
+**And the exec on the other side of it is closed too** (2026-08-28, **S42**). A cspace a child
+inherits is only worth as much as what happens to it next, and the sequence a shell performs is
+`fork(); exec();` — so `exec` was asked what it does to the capability graph, and the answer is
+**nothing**: same capabilities, same serials, same badges, same position in the derivation
+graph. Without that stated, an exec that re-minted what it kept would turn every inherited
+capability into a **root**, undoing this section's closure one syscall later with no visible
+symptom until somebody tried to revoke. `EXEC_ROOT_CSPACE=1` is that kernel;
+`make smoke-forkexec` is the gate.
+
+**What a shell still cannot do is narrow the child before it execs.** The child carries
+everything the parent held, and the only subtraction available is the child revoking its own
+slots before calling `exec`. A `SYS_CAP_DELETE`, or an exec that takes a keep-set, is the
+natural next step and is not written.
+
 **Namespace (mount-table) inheritance across `spawn` and `fork` is separately open**; see
 roadmap 2.4. So are process groups, job control and `/proc` — roadmap 2.3.
 
@@ -1037,7 +1067,10 @@ blocks until woken or killed.
 - **Networking.** No drivers, no stack, no sockets.
 - **Graphics.** VGA text mode only; no framebuffer graphics, no windowing.
 - **USB, sound, or any modern bus.** ATA PIO and PS/2 only.
-- **`fork`.** `SYS_SPAWN` and `SYS_EXEC_*` exist; POSIX `fork` does not.
+- **Process groups, job control, and `/proc`.** `SYS_SPAWN`, `SYS_EXEC_*` and `SYS_FORK` all
+  exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
+  shell still cannot do is group its children, put one in the background, or read `/proc`.
+  *This bullet read "`fork` does not [exist]" for a day after it landed.*
 - **Dynamic linking.** Every binary statically links newlib (~450 KiB each).
 - **Multiple filesystems or mount points.** One `fs_server`, one volume.
 - **Threads within a task.** One thread per address space.
@@ -1066,8 +1099,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **94** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **96** across the three, producing **99** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **95** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **97** across the three, producing **100** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1112,7 +1145,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **96 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **97 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

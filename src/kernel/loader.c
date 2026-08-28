@@ -109,6 +109,10 @@ extern uint8_t embedded_sigwaiter_bin_end[];
 extern uint8_t embedded_argtest_bin_start[];
 extern uint8_t embedded_argtest_bin_end[];
 #endif
+#ifdef FORKEXEC_SELFTEST
+extern uint8_t embedded_forkexecee_bin_start[];
+extern uint8_t embedded_forkexecee_bin_end[];
+#endif
 
 /* The ported GNU coreutils utilities are no longer embedded here. They ship as
  * GRUB modules and the fs_server installs them into /bin, from where the shell
@@ -144,6 +148,15 @@ static const struct embedded_binary embedded_binaries[] = {
     { "sigwaiter", embedded_sigwaiter_bin_start, embedded_sigwaiter_bin_end},
     /* argtest: spawned with an argv to verify full argument passing. PROC_SELFTEST only. */
     { "argtest",   embedded_argtest_bin_start,  embedded_argtest_bin_end  },
+#endif
+#ifdef FORKEXEC_SELFTEST
+    /* forkexecee: the image a FORKED child execs into, so the fork+exec pairing
+     * can be measured across a genuine change of program rather than a task that
+     * happens to restart. Named rather than supplied as an image because
+     * SYS_EXEC_NAMED is the path a shell uses; SYS_EXEC_IMAGE shares the same
+     * tail (exec_into_armed_image), which is where S42 is enforced.
+     * FORKEXEC_SELFTEST only. */
+    { "forkexecee", embedded_forkexecee_bin_start, embedded_forkexecee_bin_end },
 #endif
     { NULL, NULL, NULL }
 };

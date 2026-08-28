@@ -246,7 +246,8 @@ forgery. A revoked or lookup-invalid source is skipped rather than copied.
 
 **Inherited:** the memory (copy-on-write), uid/gid, the heap bounds, the image window, the
 registered signal handler and mask, the FPU register file, and the argument vector.
-**Not inherited:** the cspace, the port-I/O grant (`io_allowed` — the TSS I/O bitmap is
+**Not inherited:** the cspace *object* — the child gets its own `KOBJ_CNODE`, populated with
+derived copies as above, never a share of the parent's — the port-I/O grant (`io_allowed` — the TSS I/O bitmap is
 per-task by construction), the file master key (it mirrors uid, which *is* inherited, so
 leaving it behind fails closed), and every in-flight kernel rendezvous — a blocked endpoint, a
 pending reply buffer, a one-shot `CAP_REPLY`, queued signals. A fork mid-IPC would otherwise
@@ -260,6 +261,35 @@ syscall, before the frame is published, so there is no window for a supervisor t
 **Errors.** `SYS_ERR_INVAL` — this task cannot be cloned as it stands (today: a mapped
 `CAP_FRAME`, or a huge user page, which nothing builds). `SYS_ERR_NOMEM` — no free task slot,
 or no physical page for the child's tables.
+
+### `SYS_EXEC_NAMED` (64) / `SYS_EXEC_IMAGE` (71) — what an exec does to authority
+
+Both replace the caller's image **in place**, keeping its task id, and on success neither
+returns. What they do to the caller's capabilities is **nothing at all**, and that is a stated
+property rather than an implementation detail (**S42**).
+
+The execed task holds the same capabilities it held going in, with the same `serial` and the
+same `badge` — the same *position in the derivation graph*, not merely the same authority. So a
+revocation aimed at whatever those capabilities were derived from still reaches them, and **a
+task cannot launder delegated authority into a root of its own by execing**. Combined with
+`SYS_FORK`'s derived inheritance (**S41**), `fork(); exec();` — the sequence every shell
+performs — yields a task whose authority is still a subtree of its parent's.
+
+The address space, by contrast, is entirely rebuilt: a fresh page directory, a fresh stack,
+signal dispositions reset, `spawn_arg`/`argc`/`argv` cleared and any new argv marshalled onto
+the new stack. The **previous** address space is reclaimed, which matters when the caller was
+itself a fork: it is the only path in the tree that frees a copy-on-write clone while its parent
+is still running.
+
+**Both are gated on the same slot-3 `WRITE|EXEC` capability as `SYS_SPAWN`**, for the reason
+`SYS_FORK` is: replacing a task's image is a way of putting a program on a CPU, and a new path
+to a gated effect inherits the gate. An image supplied by the caller (`SYS_EXEC_IMAGE`) is
+validated by the same loader as a named one — W^X, bounds, fail-closed relocations — because the
+bytes are untrusted in both cases.
+
+**Errors** (the image is left intact, and the call returns): `SYS_ERR_NOENT` — no embedded
+binary by that name. `SYS_ERR_INVAL` — the supplied image failed validation. Past the point of
+no return there is no error path: the caller's image is gone.
 
 ## IPC arguments are cspace slots, not object indices
 >

@@ -562,6 +562,13 @@ void smp_bringup(void) {
      * COPY rather than a share, and that a mapped CAP_FRAME refuses the fork
      * (prints FORKTEST: PASS). Roadmap 2.3. */
     { extern void fork_selftest(void); fork_selftest(); }
+#elif defined(FORKEXEC_SELFTEST)
+    /* Gated: fork this task, let the child replace its image with SYS_EXEC_NAMED,
+     * and prove from ring 3 that the exec replaced the image and not the
+     * authority -- the inherited capability keeps its identity and its place in
+     * the derivation graph, so the parent's revoke still reaches it (prints
+     * FORKEXECTEST: PASS). SECURITY.md S42, roadmap 2.3. */
+    { extern void forkexec_selftest(void); forkexec_selftest(); }
 #elif defined(COW_SELFTEST)
     /* Gated: read two fresh heap pages (shared zero page) then write one, and
      * prove the write broke COW into a private page without disturbing the

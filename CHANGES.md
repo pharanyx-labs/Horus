@@ -14,7 +14,71 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Added
+
+- **`fork` + `exec`, the pairing — roadmap 2.3, and the property that makes it safe (S42).**
+  Both syscalls existed and both were gated; the *sequence* — the only one a shell ever
+  performs — was not, and neither was the question of what an exec does to the capability graph.
+
+  The answer is **nothing**: `exec_into_armed_image` rebuilds the address space and touches no
+  capability, so the execed task keeps the same `serial` and the same `badge` and therefore its
+  **position in the derivation graph**, not merely its authority. Combined with S41's derived
+  inheritance, `fork(); exec();` yields a task whose authority is still a *subtree* of its
+  parent's, and **a task cannot launder delegated authority into a root of its own by execing**.
+
+  **This is an invariant written as the absence of a step**, which is the hardest kind to hold:
+  there is no line to point at, so nothing goes stale visibly and no reviewer is prompted to
+  ask. Both control arms therefore *add* one. `EXEC_RESET_CSPACE=1` discards everything above
+  the birth endowment — the "clean slate for a new image" instinct, which breaks the pairing a
+  shell needs. `EXEC_ROOT_CSPACE=1` keeps every capability and re-mints it as a **root**, and
+  that is the one this exists for: the authority is byte-for-byte identical, every functional
+  check still passes, and only the derivation graph can see that the parent's revoke no longer
+  reaches it. Finding **3.3**'s shape, one syscall over from `FORK_CSPACE_ORPHAN_COPY`.
+
+  The gate revokes **three generations deep** — the driver's `CAP_UNTYPED`, the child's forked
+  copy, and what the child minted from that before execing — so the sweep has to cross both a
+  fork and an exec.
+
+  **It also carries a memory claim `smoke-fork` cannot reach.** `task_teardown` does not free an
+  address space (a dead task's tree is reclaimed later, when its slot is reused), so a forked
+  child that merely exits never drops the reference `clone_user_aspace` took on each shared
+  page. An **exec** does, through `create_user_pagedir`'s reclaim — making it the only path in
+  the tree that frees a copy-on-write clone while its parent is still running, where a reference
+  dropped once too often would put a live page of the parent's on the free page stack.
+  `FORK_SHARE_WRITABLE=1` falsifies that arm with no new flag.
+
+  **The execed task reports through the capability graph, not the console**, and that was a
+  design correction rather than a flourish. A gate decided by matching two tasks' prose on one
+  wire is decided by whichever line the harness latches first — how `forktest`'s first version
+  printed a `FAIL` and then a `PASS`. And the console is not a channel the task is guaranteed:
+  measured, `EXEC_RESET_CSPACE=1` can still print in this selftest boot because nothing has
+  taken the console, but once a ring-3 console server owns it printing needs the delegated
+  endpoint in slot 5 — precisely what that arm discards.
+
+  One thing had to be measured before any of it worked: the rendezvous mints are from **slot 0**
+  because it is the only birth capability carrying `CAP_RIGHT_MINT` (slot 3 is `READ|WRITE|EXEC`,
+  slot 4 `READ|WRITE`). Using slot 3 made every signal in the test fail silently.
+
+  New: `userspace/forkexectest.c`, `userspace/forkexecee.c`, `FORKEXEC_SELFTEST=1`,
+  `make smoke-forkexec` and its two control arms, and a required `forkexec` CI job. **The
+  ruleset must be synced after this merges** — `tools/check_ci_gating.py --sync-ruleset`.
+
 ### Fixed
+
+- **Two claims in `docs/LIMITATIONS.md` outlived the code by a day.** §2.4 said *"there is no
+  `fork` — the only COW producer is the demand pager"* and §4 listed `fork` under functionality
+  that does not exist, both written before #220 landed it and neither updated by it. §2.4's own
+  open question — what a COW break means for a page two tasks hold capabilities for — turns out
+  to have been **answered** by S38 and S40 rather than left pending. Both retired phrasings are
+  in `.github/doc-claims.yml`'s `forbidden:` list now, so neither can reappear.
+
+- **The count of security properties was stated in three places and derived in none.**
+  `.github/invariants.yml`, `TESTS.md` and `docs/ROADMAP.md` each said *"all 43 properties"*, so
+  adding S42 made all three wrong at once — the same shape as the framepeer count one commit
+  earlier, and the same lesson: a checker covers exactly the claims somebody remembered to
+  declare. Derived now (`security_properties`), with the deriver mirroring
+  `tools/check_invariants.py`'s own row regex so the two tools cannot disagree about what a
+  property is.
 
 - **Five public numeric claims had drifted, none of them declared to the checker that exists to
   catch exactly this.** `tools/check_doc_claims.py` has gated declared counts since 2026-08-19,

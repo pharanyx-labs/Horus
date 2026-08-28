@@ -1151,7 +1151,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               address space by marking it copy-on-write on <em>both</em> sides — mark only the
               child's and the two tasks are one process sharing one stack.
             </p>
-            <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-fpu · smoke-aslr</span>
+            <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-forkexec · smoke-fpu · smoke-aslr</span>
           </article>
           <article>
             <h3>Message passing</h3>
@@ -1363,7 +1363,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 134 test targets, and the troubleshooting
+          Every configuration flag, every one of the 137 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1434,7 +1434,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling — a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; copy-on-write over a kernel object is refused by design</th><td class="t-note">smoke-frame</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong> — <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child inherits its parent's capabilities as <em>derived</em> copies, so revoking one still sweeps the child's; there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong> — <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child inherits its parent's capabilities as <em>derived</em> copies, so revoking one still sweeps the child's; <code>exec</code> then replaces the image and touches no capability, so <code>fork(); exec();</code> cannot turn delegated authority into a root of its own; there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong> — a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
@@ -1467,7 +1467,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 88 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 89 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1648,7 +1648,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither — there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 96 gating and 3 exempted, and the promotions are backed by
+              intended set is 97 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

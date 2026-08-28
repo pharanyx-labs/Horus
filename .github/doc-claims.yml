@@ -117,6 +117,16 @@ counts:
         pattern: '55 parent checks \+ (\d+) peer checks'
       - file: TESTS.md
         pattern: '\+ (\d+) peer checks'
+  - id: security_properties
+    describe: S-numbered rows in SECURITY.md's property table
+    derive: security_properties
+    occurrences:
+      - file: .github/invariants.yml
+        pattern: 'All (\d+) properties in SECURITY\.md'
+      - file: TESTS.md
+        pattern: 'currently \*\*empty\*\*: all (\d+) properties'
+      - file: docs/ROADMAP.md
+        pattern: '\*\*empty\*\* — all (\d+) properties name a witness'
   - id: gates
     describe: base gates — smoke-* targets that are not control arms
     derive: gates
@@ -232,6 +242,25 @@ forbidden:
       2026-08-28. Two documents disagreeing with each other and both with the
       tree is what an underived count does once the test it describes grows.
       Derived now (`framepeer_checks`).
+  - pattern: 'There is\s+no `fork` — the only COW producer is the demand pager'
+    reason: >-
+      docs/LIMITATIONS.md 2.4 said this for a day after SYS_FORK landed (#220), and
+      2.4 is the section a reader consults to find out whether COW has a second
+      producer. Corrected 2026-08-28; the sentence survives only as a quotation of
+      what it used to say.
+  - pattern: '\*\*`fork`\.\*\* `SYS_SPAWN` and `SYS_EXEC_\*` exist; POSIX `fork` does not'
+    reason: >-
+      docs/LIMITATIONS.md 4 listed `fork` under "functionality that does not exist"
+      for a day after it landed. Replaced 2026-08-28 with what a shell actually
+      still cannot do -- process groups, job control, /proc.
+  - pattern: 'All 43 properties in SECURITY.md'
+    reason: >-
+      The invariants.yml header, TESTS.md and ROADMAP.md each stated this count and
+      none of them was compared to the table, so adding S42 made all three wrong at
+      once -- the same shape as the framepeer count one commit earlier. Derived now
+      (`security_properties`), with the deriver mirroring
+      tools/check_invariants.py's own row regex so the two cannot disagree about
+      what a property is.
   - pattern: '68 QEMU integration targets'
     reason: >-
       site/index.html carried this from whenever the gate count was 68 until

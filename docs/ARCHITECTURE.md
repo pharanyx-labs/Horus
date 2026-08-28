@@ -1077,6 +1077,32 @@ the parent never held in a delegatable form; slot 4 is the private reply endpoin
 value is that nobody else has it), and `CAP_REPLY` is skipped by type because a one-shot reply
 held by two tasks is reply forgery.
 
+**And then `exec` had to be asked what it does to all of that** (2026-08-28, **S42**). The
+answer is **nothing**, and that is the property: `exec_into_armed_image` rebuilds the address
+space and leaves the cspace exactly as it found it, so the task that comes back holds the same
+capabilities with the same serials and the same badges — the same *position in the derivation
+graph*, not merely the same authority. Combined with **S41**, `fork(); exec();` — the only
+sequence a shell ever performs — yields a task whose authority is still a subtree of its
+parent's, and no task can launder delegated authority into a root of its own by execing.
+
+This is the hardest kind of invariant to hold, because it is written as the absence of a step:
+there is no line to point at, so nothing goes stale visibly and no reviewer is prompted to ask.
+Both control arms therefore *add* a step. `EXEC_RESET_CSPACE=1` discards everything above the
+birth endowment — the "clean slate for a new image" instinct, which breaks the pairing a shell
+needs. `EXEC_ROOT_CSPACE=1` keeps every capability and re-mints it as a **root**, which is the
+one the property exists for: the authority is byte-for-byte unchanged, every functional check
+still passes, and only the derivation graph can see that the parent's revoke no longer reaches
+it. That is finding **3.3**'s shape again, one syscall over from `FORK_CSPACE_ORPHAN_COPY`.
+
+`make smoke-forkexec` gates it, revoking three generations deep — the driver's capability, the
+child's forked copy, and what the child minted from that before execing. It also carries the one
+memory claim `smoke-fork` cannot: `task_teardown` does not free an address space (a dead task's
+tree is reclaimed later, when its slot is reused), so a forked child that merely exits never
+drops the reference `clone_user_aspace` took on each shared page. An **exec** does, through
+`create_user_pagedir`'s reclaim — making it the only path in the tree that frees a
+copy-on-write clone while its parent is still running, and a reference dropped once too often
+there would put a live page of the parent's on the free page stack.
+
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are
 carved from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an

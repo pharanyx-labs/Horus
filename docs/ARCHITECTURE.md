@@ -198,6 +198,23 @@ bus scan does not follow PCI-to-PCI bridges: a device behind one is *absent* fro
 no capability can name it and no authority over it can be granted. Missing a device costs a
 feature; inventing one would cost the property.
 
+### `netd` — a network driver in ring 3
+
+`userspace/netd.c` drives virtio-net over the legacy I/O BAR holding exactly two capabilities: a
+`CAP_IO_DEVICE` naming the NIC, and one delegated untyped region it builds its descriptor rings
+from. No console capability, no filesystem, no boot modules. It is the demonstration roadmap 2.6
+exists for, and `make smoke-net` proves it on the wire — an ARP exchange with QEMU's user-mode
+gateway, the reply arriving through netd's own receive ring.
+
+**It is not yet confined, and the capability is not what would confine it.** There is no IOMMU,
+so once bus mastering is on the device reaches all of physical memory whatever its driver holds,
+and the descriptors directing it are written by the driver. What the capability decides is who
+may turn that on and for which device. See `SECURITY.md` **S44** and
+`docs/LIMITATIONS.md` §2.12 — this is the largest single gap in the model.
+
+It polls rather than waiting on its interrupt, because a PCI line cannot be delivered on this
+machine yet (`docs/LIMITATIONS.md` §2.13).
+
 ### Untyped memory
 
 Kernel objects are not entries in fixed arrays. A `CAP_UNTYPED` names a region of physical

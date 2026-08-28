@@ -496,6 +496,12 @@ void smp_bringup(void) {
      * proving the SYS_MAP_PHYS device-delegation path (MAPPHYS_SELFTEST: PASS).
      * First driver-privilege-separation job; see docs/design/console-server.md. */
     mapphys_selftest();
+#elif defined(NET_SELFTEST)
+    /* Gated: a ring-3 virtio-net driver whose whole authority is one device
+     * capability and one untyped region completes an ARP exchange on the wire
+     * (NETTEST: PASS). Roadmap 2.6; falsified by NET_NO_BUSMASTER and
+     * NET_DMA_ADDR_VIRTUAL. */
+    net_selftest();
 #elif defined(DEVCAP_SELFTEST)
     /* Gated: a ring-3 task holding TWO device capabilities proves each reaches
      * only its own device's frames, ports and IRQ (DEVCAPTEST: PASS). The witness

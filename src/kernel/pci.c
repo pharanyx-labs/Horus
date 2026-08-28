@@ -75,6 +75,7 @@ static inline uint32_t inl(uint16_t port) {
 
 #define PCI_CMD_IO        0x0001
 #define PCI_CMD_MEM       0x0002
+#define PCI_CMD_MASTER    0x0004
 
 #define PCI_HDR_MULTIFN   0x80
 #define PCI_HDR_TYPE_MASK 0x7F
@@ -359,6 +360,50 @@ int iodev_allows_port(const struct io_device *d, uint16_t port) {
         uint32_t b = d->port[i].base, e = b + d->port[i].len;
         if (port >= b && port < e) return 1;
     }
+    return 0;
+}
+
+/* Set the three PCI command-register decode bits of `d` to exactly `flags`
+ * (IODEV_DECODE_IO / _MEM / _BUSMASTER), preserving every other bit.
+ *
+ * This is the ONLY write to configuration space reachable from ring 3, and the
+ * narrowness is the whole design. A driver needs it — a device that is not
+ * decoding answers nothing, and a device that is not a bus master cannot DMA, so
+ * without this a ring-3 driver can map a BAR and find silence. What it must not
+ * become is a config-space write primitive: the BARs live in the same 256 bytes,
+ * and a driver that could move its own BAR could point it at another device's
+ * registers and make iodev_allows_mmio's answer a lie. So the offset is fixed
+ * here, the value is masked to three bits, and the device is the one the caller's
+ * capability named — never one it passed by address.
+ *
+ * BUS MASTERING IS THE ONE THAT MATTERS, and it is worth being plain about what
+ * granting it means on this machine: there is no IOMMU, so a device that is a bus
+ * master reaches ALL of physical memory, whatever its driver holds. This call
+ * bounds who may turn that on and for which device; it cannot bound where the
+ * device then goes. See docs/LIMITATIONS.md §2.12.
+ *
+ * Refuses a platform device: the legacy console hardware has no configuration
+ * space, and silently succeeding would report a decode that was never set. */
+int iodev_set_decode(const struct io_device *d, uint32_t flags) {
+    if (!d || d->bdf == IODEV_BDF_NONE) return -1;
+    if (flags & ~(uint32_t)(IODEV_DECODE_IO | IODEV_DECODE_MEM | IODEV_DECODE_BUSMASTER))
+        return -1;
+
+    uint8_t bus = (uint8_t)(d->bdf >> 8);
+    uint8_t dev = (uint8_t)((d->bdf >> 3) & 0x1F);
+    uint8_t fn  = (uint8_t)(d->bdf & 0x07);
+
+    uint32_t want = 0;
+    if (flags & IODEV_DECODE_IO)        want |= PCI_CMD_IO;
+    if (flags & IODEV_DECODE_MEM)       want |= PCI_CMD_MEM;
+    if (flags & IODEV_DECODE_BUSMASTER) want |= PCI_CMD_MASTER;
+
+    uint32_t cmd = pci_cfg_read32(bus, dev, fn, PCI_COMMAND);
+    uint32_t hi  = cmd & 0xFFFF0000u;              /* status half: preserved */
+    uint32_t low = (uint32_t)((uint16_t)cmd);
+    low &= (uint32_t)~(PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER);
+    low |= want;
+    pci_cfg_write32(bus, dev, fn, PCI_COMMAND, hi | low);
     return 0;
 }
 

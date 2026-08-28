@@ -814,6 +814,30 @@ void _start(void) {
               "device-info-with-wrong-cap-type");
     }
 
+    /* SYS_DEVICE_ENABLE writes the only configuration-space register ring 3 can
+     * reach — the three PCI decode bits, bus mastering among them. On a machine
+     * with no IOMMU, bus mastering is authority over ALL of physical memory, so
+     * the gate on this call is the difference between "who may make a device a
+     * bus master" being a question and being nobody's business (S44). This task
+     * holds no device capability and must be refused whatever it asks for. */
+    check(sys_device_enable(CAPSLOT_IO_DEVICE, DEV_ENABLE_IO) == SYS_ERR_PERM,
+          "device-enable-without-cap-io-device");
+    check(sys_device_enable(SLOT_FRAME, DEV_ENABLE_BUSMASTER) == SYS_ERR_PERM,
+          "device-enable-with-wrong-cap-type");
+    {
+        /* SYS_DMA_ADDR needs a device capability AND a frame capability. This
+         * task has the second and not the first — exactly the caller the
+         * two-capability rule exists to refuse, because a physical address is
+         * the kernel's memory layout and nothing else in this ABI reports one.
+         * The bus-address half of the rule is witnessed in `smoke-frame`, which
+         * has real frames to ask about; here the point is that holding a frame
+         * is not by itself a licence to ask. */
+        uint64_t bus = 0;
+        check(sys_dma_addr(CAPSLOT_IO_DEVICE, SLOT_FRAME, &bus) == SYS_ERR_PERM,
+              "dma-addr-without-cap-io-device");
+        check(bus == 0, "dma-addr-wrote-through-on-refusal");
+    }
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

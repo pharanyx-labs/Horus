@@ -371,7 +371,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **57 of 85** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **59 of 87** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -1005,15 +1005,42 @@ boundary it does not is worse than one that never claimed to.
   capability can name it — the failure is un-delegatable hardware, not unmediated hardware.
 - **MSI/MSI-X are not routed.** A device declares at most the one legacy `INTERRUPT_LINE`
   firmware programmed. A device that only signals by message cannot be driven from ring 3 yet.
-- **Bus mastering is not enabled by anything.** The enumerator restores each device's command
-  register exactly as it found it and no syscall lets ring 3 write config space. A driver whose
-  device needs bus mastering will need a mechanism, and that mechanism is where the DMA question
-  above has to be answered rather than inherited.
+- ~~**Bus mastering is not enabled by anything.**~~ **Closed 2026-08-28** by `SYS_DEVICE_ENABLE`
+  (**S44**), which sets the three decode bits of the device a capability names and nothing else
+  in configuration space. The DMA question above was answered rather than inherited: the
+  capability decides **who** may turn bus mastering on and **for which device**, and the first
+  bullet is what it still cannot decide. Note one measured caveat — QEMU does not enforce the
+  bus-master bit for virtio-net, so on this emulator the bit is not what permits the DMA; `netd`
+  sets it because real hardware requires it, and no gate can witness that half here.
+- **A driver cannot learn a bus address without a device capability**, and that is deliberate
+  rather than missing: `SYS_DMA_ADDR` requires the frame capability *and* a device capability,
+  because a physical address is a disclosure and a bus-mastering device holder can already reach
+  all of memory anyway. A task that only retyped a page is refused (`make
+  smoke-frame-dma-control`).
 - **The table is not enumerable.** `SYS_DEVICE_INFO` reports the device the caller's capability
   names and nothing else; there is no "list the devices" call, so holding one device is not a
   way to learn the shape of the machine. That is a deliberate omission, and it means a driver
   cannot discover a *second* device it might legitimately want — `init` delegates, or nothing
   does.
+
+### 2.13 A PCI interrupt line cannot be delivered to ring 3
+
+The IRQ → notification bridge exists, is capability-gated, and refuses a line the caller's
+device does not declare (**S43**). What it cannot do is deliver one: `pic_init` programs the
+8259 master with `0xFC`, so IRQ 0 (the PIT) and IRQ 1 (the PS/2 keyboard) are the only unmasked
+lines — and bit 2, the cascade to the slave PIC, is masked too, so no line above 7 can arrive at
+all.
+
+So a ring-3 driver for any PCI device must poll, and `netd` does (`userspace/netd.c`), bounded,
+saying so rather than waiting on a notification that cannot come. `smoke-devcap`'s interrupt
+checks are unaffected because they are about **authority** — who may register for which line —
+which is exactly what they asserted before and still assert.
+
+Unmasking a line is a change to the interrupt controller's global state rather than to any
+capability, and it comes with a second question this tree has not answered: legacy PCI
+interrupts are level-triggered and shared, so a driver that does not acknowledge its device
+leaves the line asserted and the next one is a storm. `netd` already reads its ISR for that
+reason. Both belong in the commit that unmasks, not in this one.
 
 ## 3. Scale and performance limitations
 
@@ -1128,8 +1155,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **96** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **98** across the three, producing **101** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **97** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **99** across the three, producing **102** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1174,7 +1201,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **98 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **99 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

@@ -1564,6 +1564,56 @@ void mapphys_selftest(void) {
 }
 #endif /* MAPPHYS_SELFTEST */
 
+#ifdef NET_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Ring-3 network driver self-test (NET_SELFTEST builds only) --------------
+ *
+ * Roadmap 2.6's first half: stand up `netd`, a virtio-net driver whose ENTIRE
+ * authority is one CAP_IO_DEVICE naming the NIC plus a delegated untyped region,
+ * and require it to complete a real exchange on the wire — an ARP request for
+ * QEMU's user-mode gateway, and the reply coming back through its own receive
+ * ring (NETTEST: PASS).
+ *
+ * Two capabilities and nothing else. No console capability (its output is the
+ * ambient fd-1 write every probe uses), no filesystem, no boot modules, no user
+ * database. If it needed anything more, the claim that a network stack can be
+ * driven from an unprivileged address space would be weaker than it looks.
+ *
+ * FAILS rather than skips with no NIC, for devcap_selftest's reason: without the
+ * device the whole experiment is vacuous, and a gate that quietly becomes a no-op
+ * reports PASS. `make smoke-net` boots QEMU with SMOKE_NET=user, which is what
+ * puts both a NIC and something at the other end of it. */
+void net_selftest(void) {
+    extern uint8_t embedded_netd_bin_start[], embedded_netd_bin_end[];
+
+    print("NET_SELFTEST: launch\n");
+
+    uint64_t nic = iodev_first_of_class(IODEV_CLASS_NETWORK);
+    if (nic == IODEV_NONE) {
+        print("NETTEST: FAIL no-nic-present\n"); for (;;) asm volatile("hlt");
+    }
+
+    int a = fs_spawn_embedded(embedded_netd_bin_start, embedded_netd_bin_end, "netd");
+    if (a <= 0) { print("NET_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+
+    /* The NIC, and the kernel memory it needs to build rings in. The untyped
+     * region is the one authority beyond the device: a driver has to be able to
+     * allocate DMA-able memory, and doing that through CAP_UNTYPED means the
+     * memory it consumes is bounded and attributable rather than ambient. */
+    if (cap_install_from_root(a, CAPSLOT_IO_DEVICE, 10, (uint32_t)nic) != 0) {
+        print("NET_SELFTEST: FAIL endow-nic\n"); for (;;) asm volatile("hlt");
+    }
+    if (cap_install_from_root(a, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0) {
+        print("NET_SELFTEST: FAIL endow-untyped\n"); for (;;) asm volatile("hlt");
+    }
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* NET_SELFTEST */
+
 #ifdef DEVCAP_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Device-capability isolation self-test (DEVCAP_SELFTEST builds only) -----
@@ -2051,7 +2101,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

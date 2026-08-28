@@ -28,6 +28,9 @@
  *   IRQ 1      (platform's own)    REFUSED (N3)
  *   COM1 port  reads (P5)          REFUSED (N6)
  *
+ * N7 is separate: SYS_DEVICE_ENABLE's input validation, which is load-bearing
+ * because it writes the only configuration-space register ring 3 can reach.
+ *
  * One direction alone would not do it. "The NIC cap is refused the VGA" is
  * satisfied by a kernel that refuses everything, and P3/P4 are what rule that
  * out — they are the base arm of each pair, in the same call, on the same boot.
@@ -158,6 +161,27 @@ void _start(void) {
     }
     if (sys_map_phys(NIC_SLOT, bar, BAR_VADDR, 4096, MAP_PHYS_READ) != 0) {
         wr("DEVCAPTEST: FAIL nic-cap-refused-own-bar\n"); sys_exit();
+    }
+
+    /* ---- N7: SYS_DEVICE_ENABLE refuses what it cannot mean ----------------
+     *
+     * It writes the one configuration-space register ring 3 can reach, so its
+     * input validation is load-bearing rather than tidy: the BARs live in the
+     * same 256 bytes, and a driver that could reach them could move its own BAR
+     * onto another device's registers and make every check above a lie. Unknown
+     * bits are REFUSED, not masked away — masking would let a caller ask for
+     * something and be told yes while getting something else. */
+    if (sys_device_enable(NIC_SLOT, 0xFFu) == 0) {
+        wr("DEVCAPTEST: FAIL device-enable-took-unknown-bits\n"); sys_exit();
+    }
+    /* The platform device has no configuration space at all. Succeeding here
+     * would report a decode that was never set, and a driver would then wait on
+     * hardware that is not listening and blame its own ring buffers. */
+    if (sys_device_enable(PLATFORM_SLOT, DEV_ENABLE_IO) == 0) {
+        wr("DEVCAPTEST: FAIL platform-device-enabled\n"); sys_exit();
+    }
+    if (sys_device_enable(CONSOLE_SLOT, DEV_ENABLE_IO) == 0) {
+        wr("DEVCAPTEST: FAIL nondevice-cap-enabled\n"); sys_exit();
     }
 
     /* ---- N3: the NIC capability must not route the keyboard's interrupt ----

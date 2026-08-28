@@ -78,6 +78,14 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   (slot 3's `CAP_FRAME`, the decoy every task is born with), and a slot that never held
   anything.
 
+  **Two syscalls were promoted from `uncovered` to `covered` as a side effect, and the coverage
+  gate is what noticed.** Moving the authority check out of the dispatch table and into the
+  handler means the central gate now admits every caller and the refusal happens *inside* —
+  so captest's new checks, which assert refusals, run those handler bodies for the first time.
+  That is `SYS_GET_LINE`'s precedent exactly: a syscall can be covered by a test that proves it
+  says no. The stale `uncovered` reasons named `IRQ_SELFTEST` as an untracked build that would
+  reach them, and went stale in the same commit that moved the gate.
+
   `SMOKE_NET=1` puts a virtio-net NIC on the bus for these four targets alone. The guest **fails
   rather than skips** when it finds no NIC: a second device is the whole experiment, and without
   one every refusal in the suite is vacuous and it would pass on the kernel it exists to reject.

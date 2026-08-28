@@ -104,6 +104,16 @@ covered:
   # task holding no CAP_CONSOLE is REFUSED still runs the handler body. A
   # syscall can be covered by a test that proves it says no.
   - SYS_GET_LINE
+  # Promoted 2026-08-28, and for exactly SYS_GET_LINE's reason one syscall over.
+  # The device syscalls lost their fixed dispatch-table slots when a CAP_IO_DEVICE
+  # started naming a device (S43), so the central gate admits every caller and the
+  # authority test lives inside the handler -- which means captest's checks that a
+  # task holding NO device capability is refused now run these handler bodies.
+  # Their `uncovered` reasons named IRQ_SELFTEST as an untracked build that would
+  # reach them; that reason went stale in the same commit that moved the gate, and
+  # this file is what noticed.
+  - SYS_IRQ_REGISTER
+  - SYS_DEVICE_INFO
   - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`
@@ -184,8 +194,6 @@ uncovered:
     MEASURED 2026-08-27: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME -- no program in a tracked image holds a CAP_FRAME it retyped, and the legacy slot-3 decoy is refused before the handler body would report anything. Entered by FRAME_SELFTEST on both sides: frametest asks about its own frames, framepeer asks about the one delegated to it. Gated by make smoke-frame and smoke-frame-info-control
   SYS_FORK: >-
     MEASURED 2026-08-28: not entered by the tracked workloads -- nothing in a tracked image forks, because fork's only client so far is its own witness. Entered by FORK_SELFTEST, which is its gate (make smoke-fork, plus both control arms: smoke-fork-share-control and smoke-fork-arena-control). Not promoted to `covered` for the same cost reason as its neighbours: `covered` means a TRACKED arm enters it, and adding a workload here is a full kernel build plus a boot on every run
-  SYS_DEVICE_INFO: >-
-    MEASURED 2026-08-28: not entered by the tracked workloads -- no program in a tracked image holds a CAP_IO_DEVICE. console_server does hold one and is the only production caller of any device syscall, but it does not ask what its device is: its resources are the legacy console's, which are constants it can name directly. The first real caller will be the network driver (roadmap 2.6), whose BARs firmware assigns and which therefore cannot hardcode them. Entered by DEVCAP_SELFTEST, which is its gate (make smoke-devcap and all three control arms). Not promoted to `covered` for the same cost reason as its neighbours: `covered` means a TRACKED arm enters it
   SYS_MAP_REGION: >-
     MEASURED 2026-08-27: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME -- no program in a tracked image holds a CAP_UNTYPED to retype the run from. Entered by FRAME_SELFTEST, which is its gate (make smoke-frame, plus both control arms: smoke-frame-region-control and smoke-frame-region-wide-control). Not promoted to `covered` for the same cost reason as its neighbours: `covered` means a TRACKED arm enters it
   SYS_READ: >-
@@ -226,7 +234,5 @@ uncovered:
     MEASURED 2026-08-20: NOT entered by any of the five selftest builds tried. No build in this tree is known to reach it
   SYS_FS_INODE_LINK: >-
     links an inode into a directory; neither workload creates a hard link
-  SYS_IRQ_REGISTER: >-
-    MEASURED 2026-08-20: entered by an IRQ_SELFTEST=1 boot. Not a tracked arm; that build enters 4 syscalls in total, so it buys one promotion for a full build
   SYS_TASK_EXIT_INFO: >-
     MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not a tracked arm

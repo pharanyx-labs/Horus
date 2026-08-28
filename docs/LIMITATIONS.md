@@ -371,12 +371,12 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **55 of 85** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **57 of 85** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 30 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This is stated as a limitation rather than a finding because nothing here is known to be
-broken. What is known is that a defect in any of those 30 handlers would be invisible in the
+broken. What is known is that a defect in any of those 28 handlers would be invisible in the
 same way issue #176 was — and #176 is the reason the number exists at all. `captest` is a
 **refusal** suite by construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both
 assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. Both syscalls
@@ -386,7 +386,7 @@ were named by the suite; neither handler had ever executed.
 direction, so the number cannot quietly fall. It deliberately does not require all of them —
 that would be a large body of test-writing disguised as a gate. Property **S25**.
 
-**Two of the 30 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
+**Two of the 28 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
 uncovered only because `tools/session_test.py` runs no pipeline — a gap in the workload, not
 the kernel. And the `uncovered` reasons that name another build which *would* reach a syscall
 are **hypotheses this manifest has not measured**; promoting them should be a measurement, not

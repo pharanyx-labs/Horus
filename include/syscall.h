@@ -490,7 +490,7 @@ static inline int sys_console_owned(void) {
 #define CAPSLOT_CONSOLE     8    /* CAP_CONSOLE                                */
 #define CAPSLOT_STORAGE     9    /* CAP_ENCRYPTED_STORAGE                      */
 #define CAPSLOT_IO_DEVICE  10    /* CAP_IO_DEVICE: the task's primary device    */
-#define CAPSLOT_IO_DEVICE_ALT 20 /* CAP_IO_DEVICE: a SECOND device, for a task
+#define CAPSLOT_IO_DEVICE_ALT 22 /* CAP_IO_DEVICE: a SECOND device, for a task
                                   * that legitimately drives two (devcaptest).
                                   * The slot is a convention, not authority --
                                   * the capability in it is                    */

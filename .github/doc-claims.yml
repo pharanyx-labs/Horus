@@ -101,6 +101,28 @@ counts:
       - file: docs/ROADMAP.md
         pattern: '\| (\d+) `smoke-\*` targets'
 
+      - file: site/index.html
+        pattern: 'every one of the (\d+) test targets'
+  - id: syscall_numbers
+    describe: SYS_* numbers the ABI defines, implemented or not
+    derive: syscall_numbers
+    occurrences:
+      - file: site/index.html
+        pattern: 'defines <strong>(\d+) syscall numbers'
+  - id: framepeer_checks
+    describe: check() calls in userspace/framepeer.c (the delegate's side)
+    derive: framepeer_checks
+    occurrences:
+      - file: SECURITY.md
+        pattern: '55 parent checks \+ (\d+) peer checks'
+      - file: TESTS.md
+        pattern: '\+ (\d+) peer checks'
+  - id: gates
+    describe: base gates — smoke-* targets that are not control arms
+    derive: gates
+    occurrences:
+      - file: site/index.html
+        pattern: '(\d+) QEMU integration targets'
   - id: control_arms
     describe: control-arm smoke targets that must reproduce a defect
     derive: control_arms
@@ -166,6 +188,8 @@ counts:
   # is quoted in SECURITY.md as the witness for S35. Read it off the wire
   # (`FRAMETEST: parent OK <n> checks`) -- this only proves the documents agree
   # with the source, not that the source ran.
+      - file: site/index.html
+        pattern: 'installs <strong>(\d+)'
   - id: frametest_checks
     describe: parent-side check() assertions in userspace/frametest.c
     derive: frametest_checks
@@ -191,6 +215,31 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'every one of the 53 test targets'
+    reason: >-
+      site/index.html said 53 against a live 134 on 2026-08-28 -- undeclared, so
+      nothing compared it. Derived now (`smoke_targets`).
+  - pattern: 'defines <strong>86 syscall numbers'
+    reason: >-
+      site/index.html said 86 against a live 102 on 2026-08-28, in the same
+      sentence as a handler count that said 75 against 84. Both halves are
+      derived now, because the DIFFERENCE between them is the fail-closed claim
+      the paragraph makes -- a sentence can drift and still read as consistent
+      when only one half is checked.
+  - pattern: '55 parent checks \+ 8 peer checks'
+    reason: >-
+      SECURITY.md said 8 peer checks and TESTS.md said 5, against a live 9, on
+      2026-08-28. Two documents disagreeing with each other and both with the
+      tree is what an underived count does once the test it describes grows.
+      Derived now (`framepeer_checks`).
+  - pattern: '68 QEMU integration targets'
+    reason: >-
+      site/index.html carried this from whenever the gate count was 68 until
+      2026-08-28, when it was 88 -- undeclared, so nothing compared it to the
+      tree. It is a derived claim now (`gates`), which is the only reason it will
+      not drift again. Found while auditing the public page for numbers that no
+      checker owned; the lesson is that adding a checker does not retrofit
+      coverage over claims nobody declared to it.
   - pattern: 'the capability space a child inherits is not'
     reason: >-
       site/index.html said this in the Track 2 summary for one day, between the

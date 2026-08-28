@@ -737,7 +737,7 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 | 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge` — route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *` — report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
 | 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags` — set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |
-| 104 | `SYS_DMA_ADDR` | `dev_slot`, `frame_slot`, `uint64_t *` — the address at which that device reaches that frame (needs **both**: CAP_IO_DEVICE WRITE and CAP_FRAME READ) |
+| 104 | `SYS_DMA_ADDR` | `dev_slot`, `frame_slot`, `uint64_t *`, `flags` — map that frame into that device's address space and report the address it reaches it at (needs **both**: CAP_IO_DEVICE WRITE and CAP_FRAME READ) |
 
 None of the four has a dispatch-table slot: they are `SC_NONE`, and **that is the gate**, in
 exactly the sense the IPC syscalls are. Until 2026-08-28 each had a fixed slot-10
@@ -757,6 +757,12 @@ same 256 bytes, and a driver that could move its own BAR could point it at anoth
 registers and make the frame check above a lie. Unknown bits are **refused**, not masked — a
 caller must not be told yes and given something else — and a platform device, which has no
 configuration space, is refused outright rather than reported as configured.
+
+`SYS_DMA_ADDR` **installs the mapping** as well as reporting the address, where there is an
+IOMMU (**S45**): a device's address space starts empty, so this call is what grants the reach
+rather than merely describing it, and the mapping carries the frame capability's own write
+right. It takes an optional flags word; `DMA_ADDR_NO_MAP` reports without mapping and exists for
+the control arm.
 
 `SYS_DMA_ADDR` requires **two** capabilities, which is the interesting part of its design. The
 answer is a physical address, disclosed nowhere else in this ABI; gating it on the frame alone

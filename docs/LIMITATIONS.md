@@ -993,13 +993,12 @@ and reaches only that device's frames, ports and interrupt lines. Five things th
 deliberately does **not** say, listed because a device model that looked like it enforced a
 boundary it does not is worse than one that never claimed to.
 
-- **DMA is outside it entirely.** A capability bounds what a driver may *program*; it bounds
-  nothing about where the device then reads and writes, because there is no IOMMU. A ring-3
-  driver holding one NIC capability can point that NIC's descriptors at any physical address.
-  This is the single largest gap in the model and it is not closable in software — §4's IOMMU
-  bullet and `SECURITY.md`'s physical-attack scope are the same limitation. Until an IOMMU
-  exists, "the driver is confined to its address space" is true of the *driver* and not of its
-  *device*.
+- ~~**DMA is outside it entirely.**~~ **Closed 2026-08-28 by VT-d** (**S45**). A device now has
+  an address space of its own that starts **empty**, so it reaches exactly the frames its driver
+  mapped with `SYS_DMA_ADDR` and faults on everything else. What remains true is narrower and
+  worth stating precisely: the confinement is of **memory**, and only on a machine that *has* an
+  IOMMU. `iommu_active()` is 0 where there is no DMAR — the kernel says so on the wire rather
+  than pretending — and on such a machine this bullet still reads as it did.
 - **PCI-to-PCI bridges are not walked.** The scan covers bus 0, which is every device on the
   machines this kernel targets. A device behind a bridge is *absent* from the table, so no
   capability can name it — the failure is un-delegatable hardware, not unmediated hardware.
@@ -1041,6 +1040,26 @@ capability, and it comes with a second question this tree has not answered: lega
 interrupts are level-triggered and shared, so a driver that does not acknowledge its device
 leaves the line asserted and the next one is a storm. `netd` already reads its ISR for that
 reason. Both belong in the commit that unmasks, not in this one.
+
+### 2.14 `netd` transmits but does not receive
+
+`netd` completes the DMA round trip its gate asserts — the device reads its descriptor ring,
+reads the packet buffer, and writes completion status back — and the ARP request it builds
+appears on the wire byte-correct, verified with a QEMU `filter-dump` capture. The **reply does
+not reach its receive ring**, and the cause is not yet known.
+
+Recorded rather than hidden, with what was measured, because the next person to look should not
+repeat it. Ruled out: the address filter (promiscuous mode changes nothing), the ring address
+(`RDBAL` reads back exactly the value written), the descriptor layout (`RDLEN` correct,
+descriptors zeroed and re-armed), the device reset (skipping it changes nothing), bus mastering
+(`PCI_COMMAND` reads back `0x0106` — MEM, MASTER, SERR), and the IOMMU (it fails identically on
+a machine with no DMAR at all). QEMU's `e1000x_rx_can_recv_disabled` trace fires exactly once,
+early, before the driver has configured anything.
+
+It is **not** a gap in **S45**: the property is about what a device may reach, and both
+directions of DMA — device-reads-memory and device-writes-memory — are exercised and falsified
+by the transmit path alone. It is a gap in `netd` as a *network driver*, and it is why roadmap
+2.6 still has no IP layer above it.
 
 ## 3. Scale and performance limitations
 

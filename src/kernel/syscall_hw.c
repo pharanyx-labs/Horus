@@ -329,15 +329,34 @@ void h_device_enable(struct interrupt_frame64 *r) {
  * another object (src/kernel/untyped.c, "ALLOCATION DISCIPLINE"). The day a
  * region reset lands, it must account for outstanding DMA before it rewinds a
  * watermark -- that comment already says so for the refcount pins, and this is a
- * second reason. */
+ * second reason.
+ *
+ * WHAT IT DOES WHEN THERE IS AN IOMMU, which is the point of the call now. It
+ * MAPS the frame into the named device's address space and then reports the
+ * address. Before VT-d it only reported, because the device could already reach
+ * everything and the answer was the whole of the authority. Now the answer is
+ * the SMALLER half: the mapping is what grants the reach, and a device whose
+ * driver never called this reaches nothing at all. The IOVA equals the physical
+ * address, which is a choice rather than an identity map -- see iommu_map.
+ *
+ * `writable` comes from the capability's own rights, not from an argument. A
+ * driver holding a READ-only CAP_FRAME gets a READ-only device mapping, so a
+ * compromised device cannot scribble on a page its driver may only read. That is
+ * the rights floor of S27 extended to the device, and it is why this call takes
+ * the frame capability rather than a physical address. */
 void h_dma_addr(struct interrupt_frame64 *r) {
+    /* The device index this call is about. Resolved once, here, and used both to
+     * gate the call and to name the address space the mapping goes into -- one
+     * lookup, so the gate and the effect cannot disagree about which device. */
+    uint64_t devidx = IODEV_NONE;
 #ifndef DMA_ADDR_FRAME_ONLY
     /* Control arm DMA_ADDR_FRAME_ONLY: gate on the frame alone, the shape this
      * call would take if the device capability were treated as documentation
      * rather than as a requirement. Under it any task that ever retyped a page
      * learns the kernel's physical layout. See make smoke-frame-dma-control. */
-    const struct io_device *d = iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, 0);
-    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (!iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &devidx)) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
 #endif
 
     struct capability *c = cap_lookup((uint32_t)r->rcx, CAP_RIGHT_READ);
@@ -350,6 +369,30 @@ void h_dma_addr(struct interrupt_frame64 *r) {
     uint64_t phys  = frame_phys_by_index((uint32_t)c->object);
     uint32_t pages = frame_pages_by_index((uint32_t)c->object);
     if (phys == 0 || pages == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    /* The device mapping carries the capability's own write right and no more. */
+    int writable = (c->rights & CAP_RIGHT_WRITE) ? 1 : 0;
+
+    /* DMA_ADDR_NO_MAP reports the address without installing the mapping -- what
+     * this call did before VT-d existed. Under an IOMMU that hands a driver an
+     * address its device cannot reach, and the fact that everything then BREAKS
+     * is the evidence that a device's address space really does start empty.
+     * It is the NET_IOMMU_NO_MAP arm's mechanism (make smoke-net-iommu-control).
+     *
+     * A flag rather than a kernel #ifdef on purpose: an ifdef around the map call
+     * would also compile out the capability checks above it, and the arm would
+     * then be demonstrating something weaker than the mapping's necessity. */
+    uint32_t dma_flags = (uint32_t)r->rsi;
+    if (dma_flags & ~(uint32_t)DMA_ADDR_NO_MAP) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    if (iommu_active() && !(dma_flags & DMA_ADDR_NO_MAP)) {
+        const struct io_device *md = iodev_get(devidx);
+        if (!md) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+        if (iommu_map(devidx, md->bdf, phys, pages, writable) != 0) {
+            r->rax = (uint32_t)SYS_ERR_FAULT; return;
+        }
+    }
 
     if (copy_to_user((void *)(addr_t)r->rdx, &phys, sizeof(phys)) != 0) {
         r->rax = (uint32_t)SYS_ERR_FAULT; return;

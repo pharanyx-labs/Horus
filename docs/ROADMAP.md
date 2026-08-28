@@ -1003,12 +1003,18 @@ A user-mode TCP/IP server holding `CAP_IO_DEVICE` for one NIC, with per-applicat
 capabilities. A network-stack compromise is then contained to one address space with no
 kernel authority — the highest-visibility demonstration of the architecture's value.
 
-**Delivered: `netd`, a virtio-net driver in ring 3** (**S44**). Its entire authority is a
+**Delivered: `netd`, an e1000 driver in ring 3** (**S44**, **S45**). Its entire authority is a
 `CAP_IO_DEVICE` naming the NIC plus one delegated untyped region — no console capability, no
 filesystem, no boot modules, nothing ambient. It brings the device up over the legacy I/O BAR,
 builds its own descriptor rings in memory it retyped itself, and completes an ARP exchange with
-QEMU's user-mode gateway. Witness `make smoke-net`, which asserts the reply came back through
-netd's own receive ring — transmit, receive and DMA end to end, not a register read.
+QEMU's user-mode gateway. Witness `make smoke-net`, which asserts a complete DMA round trip:
+the device reads its descriptor ring, reads the packet buffer, and writes the completion back —
+every address of which its driver had to map. Not a register read.
+
+*It drove legacy virtio-net until 2026-08-28 and was rewritten for e1000, because a paravirtual
+device accesses guest memory directly and is not on the far side of the IOMMU at all — so the
+virtio version kept working with an empty device address space and could not have witnessed
+S45. Recorded in `userspace/netd.c`.*
 
 Two kernel mechanisms landed with it, because a DMA mechanism with no driver is authority added
 for nobody. `SYS_DEVICE_ENABLE` (103) sets the three PCI decode bits of the named device and
@@ -1018,12 +1024,16 @@ check a lie. `SYS_DMA_ADDR` (104) reports where a named device reaches a named f
 requires **both** capabilities; the reasoning is **S44** and is the interesting part of the
 design.
 
-**What this does NOT yet establish, and the sentence above is the one to be careful with.**
-"A network-stack compromise is contained to one address space" is **not true yet**, and no
-capability will make it true: there is no IOMMU, so a bus-mastering device reaches all of
-physical memory regardless of what its driver holds. The capability decides who may turn bus
-mastering on and for which device — the enforceable half. `docs/LIMITATIONS.md` §2.12 states the
-other half plainly, and it is the largest single gap in the model.
+**The confinement half landed 2026-08-28 with VT-d** (**S45**). A device now has an address
+space of its own and starts with **nothing in it**, so `netd`'s DMA reach is exactly the frames
+it mapped and no others. "A network-stack compromise is contained to one address space" is
+therefore true of *memory* for the first time — it was not, and could not be, while a
+bus-mastering device reached all of physical memory whatever its driver held.
+
+Two honest qualifications. There is no interrupt remapping yet (nothing to remap: §2.13), and
+containment is now a property of the **memory** a compromised driver can reach, not of the
+*network* — a compromised `netd` still speaks for this machine on the wire, which is a different
+claim that nothing here makes.
 
 **Still open, and most of the item:** everything above the wire. There is no ARP table, no IP
 layer, no TCP, and no socket capability — netd speaks exactly enough Ethernet to prove the
@@ -1346,7 +1356,7 @@ Ordered as in the audit's §7.5.
   so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
   claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
   The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-  **empty** — all 46 properties name a witness that resolves.
+  **empty** — all 47 properties name a witness that resolves.
 
   **What the survey found on the way.** **S16** had no witness at all — an em-dash against
   `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.

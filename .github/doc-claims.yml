@@ -225,6 +225,18 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: "bus-mastering device.s DMA is bounded by nothing"
+    reason: >-
+      true until 2026-08-28, when VT-d landed (S45). A device's address space now
+      starts empty and it reaches only what its driver mapped. The remaining
+      qualification is narrower: no IOMMU means no confinement, and the kernel
+      says so on the wire rather than claiming the property.
+  - pattern: 'netd` drives virtio-net'
+    reason: >-
+      netd was rewritten for e1000 on 2026-08-28. A paravirtual virtio device
+      accesses guest memory directly and is not behind the IOMMU, so a virtio
+      driver cannot witness DMA confinement -- it passed with an empty device
+      address space. See userspace/netd.c.
   - pattern: 'console_server</code> is still the only driver'
     reason: >-
       README.md and site/index.html said so until 2026-08-28, when netd landed as

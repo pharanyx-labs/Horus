@@ -59,6 +59,14 @@ extern int sys_notify(uint32_t notif_slot, uint32_t badge);
  * bookkeeping wrong costs a line that silently stops being delivered. */
 static void pic_set_masked(int irq, int masked) {
     if (irq < 0 || irq > 15) return;
+
+    /* One entry point, two controllers. When an I/O APIC is up it OWNS routing
+     * and the 8259 is fully masked, so masking must go to the redirection table
+     * or it writes a register nothing consults -- a line that stays live while
+     * the kernel believes it masked one, which is S46's storm arriving through a
+     * bookkeeping error rather than a missing check. */
+    if (ioapic_active()) { ioapic_set_irq(irq, masked); return; }
+
     uint16_t port = (irq < 8) ? 0x21 : 0xA1;
     uint8_t  bit  = (uint8_t)(1u << (irq & 7));
     uint8_t  m    = inb(port);
@@ -68,6 +76,21 @@ static void pic_set_masked(int irq, int masked) {
         uint8_t mm = inb(0x21);
         outb(0x21, (uint8_t)(mm & ~(1u << 2)));   /* the cascade */
     }
+}
+
+/* Acknowledge an interrupt to whichever controller delivered it.
+ *
+ * The LAPIC's EOI register when the I/O APIC is routing, the 8259's when it is
+ * not. Sending the wrong one is not a no-op: EOIing the PIC while the LAPIC
+ * holds the in-service bit leaves that priority level blocked, and every
+ * lower-priority interrupt after it is silently dropped. */
+static void irq_eoi(uint64_t vector) {
+    if (ioapic_active()) {
+        *(volatile uint32_t *)0xFEE000B0UL = 0;   /* LAPIC EOI */
+        return;
+    }
+    if (vector >= 40) outb(0xA0, 0x20);
+    outb(0x20, 0x20);
 }
 
 /* Register `task` to receive notification (`slot`, `badge`) on `irq`, and unmask
@@ -461,7 +484,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * across a task switch, then let the preemptive scheduler decide
          * whether to switch. preempt_on_tick returns the kernel %rsp to resume
          * on: the current frame (no switch) or the next task's saved frame. */
-        outb(0x20, 0x20);
+        irq_eoi(32);
         timer_handler();
 #ifdef KFAULT_INJECT
         kfault_inject_tick();
@@ -477,7 +500,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
              * output buffer for it to inb(0x60) itself (the buffer staying full
              * naturally gates the next IRQ until it reads), and just EOI + notify.
              * The kernel does not translate or buffer it here. */
-            outb(0x20, 0x20);
+            irq_eoi(33);
             irq_notify_fire(1);
         } else {
             /* No driver registered: the in-kernel console reader owns the key.
@@ -492,7 +515,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                     if (kb_tail == kb_head) kb_head = (kb_head + 1) % 256;
                 }
             }
-            outb(0x20, 0x20);
+            irq_eoi(33);
         }
 #ifdef SMP
     } else if (vector == 0x40) {
@@ -679,12 +702,10 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 #ifndef IRQ_NO_MASK_ON_FIRE
         pic_set_masked(line, 1);
 #endif
-        if (vector >= 40) outb(0xA0, 0x20);
-        outb(0x20, 0x20);
+        irq_eoi(vector);
         irq_notify_fire(line);
     } else {
-        if (vector >= 40) outb(0xA0, 0x20);
-        outb(0x20, 0x20);
+        irq_eoi(vector);
     }
 
     /* Default (non-timer, non-switching) path: resume on the same trap frame,

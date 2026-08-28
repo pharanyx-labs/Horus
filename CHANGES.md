@@ -16,6 +16,53 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **Interrupts route through the I/O APIC.** `src/kernel/ioapic.c` finds the unit in the MADT,
+  brings it up with **every delegatable pin masked**, and the 8259 is then fully masked — two
+  controllers driving the same vectors would deliver every interrupt twice. Masking and EOI go
+  through one entry point each, so the two controllers cannot disagree about which lines are
+  live. A machine with no MADT entry stays on the PIC and says so, and that path is kept
+  buildable (`IRQ_FORCE_PIC=1`) so it is exercised rather than merely present.
+
+  Every property **S46** states is preserved exactly — a line goes live when a capability is
+  accepted for it, is masked when it fires, unmasked by `SYS_IRQ_ACK`, and masked when its
+  driver dies. Only the register the mask lands in changed.
+
+  **This is the prerequisite for VT-d interrupt remapping**, which applies to messages from an
+  I/O APIC or MSI and never to the 8259's direct delivery. On its own it closes nothing, and it
+  is worth saying so plainly: a device today can only assert the INTx line firmware gave it. That
+  changes the moment MSI exists, because an MSI is a memory write and a device that can DMA
+  anywhere can write any vector.
+
+  **GSIs are not ISA IRQ numbers**, and assuming they were costs the timer: on QEMU's q35 the PIT
+  is on GSI 2. The MADT's Interrupt Source Overrides say where each legacy IRQ went and carry its
+  polarity and trigger mode; measured on q35, lines 5/9/10/11 are declared level-triggered
+  active-high. Where firmware is silent the kernel falls back on what the line is — ISA edge/high,
+  everything else PCI INTx level/low — because the ACPI `_PRT` that would say properly needs an
+  AML interpreter this kernel should not grow for it.
+
+  **"Every pin starts masked" was too broad, and `smoke-preempt` caught it while `smoke` passed.**
+  The timer and the keyboard are the *kernel's own* lines, not delegatable ones — the kernel is
+  their driver. Masking the preemption tick does not produce a stricter system, it produces one
+  that never schedules, which a cooperative workload hides completely.
+
+  **One arm got weaker and is recorded rather than hidden.** `IRQ_NO_MASK_ON_FIRE` reproduces a
+  livelock on the 8259 and **not** on the I/O APIC — QEMU does not storm on that path. The arm is
+  now gated on the PIC path (`IRQ_FORCE_PIC=1`), where it can still fail; the kernel logic under
+  test is identical, but the mask-on-fire property has no emulator-observable catastrophic
+  consequence on the routing the ship build uses. A direct test — "no notification arrives while
+  the line is masked" — was attempted and needs a non-blocking way to observe that a notification
+  did *not* arrive, which the ABI has no call for. `docs/LIMITATIONS.md` §2.13.
+
+### Fixed
+
+- **`netd` asks for ARP more than once.** `docs/LIMITATIONS.md` §2.14 recorded a receive path that
+  did not work; a reply *has* since been observed arriving into `netd`'s own ring, correctly
+  parsed, so the receiver is not categorically broken. Adding the retry every real ARP
+  implementation has did **not** make it reproduce (0 of 3 boots, 0 of 5 before), so the honest
+  state is *intermittent and not understood* rather than *absent* — and one observation is not a
+  property, which is why nothing gates on it. The retry is kept because one request is not a
+  protocol either way.
+
 - **A PCI interrupt reaches a ring-3 driver, and an unserviced one cannot livelock the machine
   (S46).** `docs/LIMITATIONS.md` §2.13 is closed. `pic_init` programmed the 8259 master `0xFC` —
   IRQ 0 and 1 unmasked, everything else masked including the cascade — so no PCI line could be

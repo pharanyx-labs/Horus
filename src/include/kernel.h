@@ -1722,6 +1722,30 @@ int acpi_detect_cpus(uint8_t *apic_ids, int max_ids);
  * tables are semi-trusted input and a partial parse fails closed. */
 struct acpi_sdt_header;
 const struct acpi_sdt_header *acpi_find_table(const char *sig);
+
+/* The machine's interrupt topology, from the MADT: the first I/O APIC's MMIO
+ * base and GSI base, plus the Interrupt Source Overrides that say where each
+ * legacy ISA IRQ actually landed. iso_gsi[n] is the GSI carrying ISA IRQ n
+ * (identity unless firmware said otherwise) and iso_flags[n] its polarity and
+ * trigger-mode bits. */
+struct acpi_ioapic_info {
+    uint64_t base;
+    uint32_t gsi_base;
+    uint32_t iso_gsi[16];
+    uint16_t iso_flags[16];
+};
+int acpi_find_ioapic(struct acpi_ioapic_info *out);
+
+/* I/O APIC routing (src/kernel/ioapic.c). Every pin starts MASKED -- the same
+ * decision as the IOMMU's empty address spaces: the machine cannot deliver
+ * anything nobody asked for, and a line goes live only when a capability is
+ * accepted for it. ioapic_active() is 0 on a machine with no MADT entry, and
+ * interrupt routing falls back to the 8259. */
+int  ioapic_init(void);
+int  ioapic_active(void);
+int  ioapic_set_irq(int irq, int masked);
+void ensure_ioapic_mapped(uint64_t *root_pml4, uint64_t regs_phys);
+void ensure_ioapic_mapped_current(uint64_t *root_pml4);
 uint32_t acpi_table_length(const struct acpi_sdt_header *h);
 
 /* Preemptive scheduling (scheduler.c). preempt_on_tick is called from the timer

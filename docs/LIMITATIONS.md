@@ -1049,10 +1049,22 @@ interrupted, so the first PCI interrupt kills an innocent ring-3 task at a rando
 That is how it was found: `netd` died with `ring-3 trap vector 13` on the store immediately after
 enabling its device's interrupt, and the store was not the problem.
 
+**Routing moved to the I/O APIC on 2026-08-28**, which is what VT-d interrupt remapping needs —
+remapping applies to messages from an I/O APIC or MSI, never to the 8259's direct delivery. The
+8259 remains the fallback for a machine with no MADT entry and stays buildable (`IRQ_FORCE_PIC=1`)
+so that path is exercised.
+
 **Still not delivered:** MSI/MSI-X (a device declares only its one legacy `INTERRUPT_LINE`), and
-interrupt remapping in the IOMMU — now the *next* thing rather than a hypothetical, since there
-is finally an interrupt to remap. And the teardown mask (a dead driver's line being masked with
-it) is correct by construction but has no arm of its own yet.
+interrupt remapping itself. The teardown mask (a dead driver's line going down with it) is
+correct by construction but has no arm of its own yet.
+
+**And one arm got weaker, which is worth recording rather than hiding.** `IRQ_NO_MASK_ON_FIRE`
+reproduces a livelock on the 8259 and **not** on the I/O APIC — QEMU does not storm on that path.
+The arm is therefore gated on the PIC path, where it can still fail. The kernel logic it tests is
+identical either way, but it means the mask-on-fire property has no *emulator-observable*
+catastrophic consequence on the routing the ship build now uses. A direct test — "no notification
+arrives while the line is masked" — was attempted and needs a non-blocking way to observe that a
+notification did **not** arrive, which the ABI has no call for.
 
 ### 2.14 `netd` transmits but does not receive
 
@@ -1060,6 +1072,15 @@ it) is correct by construction but has no arm of its own yet.
 reads the packet buffer, and writes completion status back — and the ARP request it builds
 appears on the wire byte-correct, verified with a QEMU `filter-dump` capture. The **reply does
 not reach its receive ring**, and the cause is not yet known.
+
+**Updated 2026-08-28, and the update sharpens it rather than closing it.** A reply *has* been
+received once, into `netd`'s own ring, correctly parsed — so the receive path is **not
+categorically broken**, which is what this entry previously implied. It was observed on a boot
+where a second ARP request was sent while the driver was already listening. Adding a proper
+retry loop (which the driver now has, because one request is not a protocol) did **not** make it
+reproduce: 0 of 3 boots with retries, 0 of 5 before that. So the honest state is *intermittent
+and not understood*, not *absent* — and one observation is not a property, which is why nothing
+gates on it.
 
 Recorded rather than hidden, with what was measured, because the next person to look should not
 repeat it. Ruled out: the address filter (promiscuous mode changes nothing), the ring address

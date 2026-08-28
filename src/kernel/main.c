@@ -396,6 +396,29 @@ void kernel_main(uint32_t mb_info) {
      * window, however short. */
     iommu_init();
 
+    /* Interrupt routing, after the IOMMU and before any ring-3 task. Every pin
+     * comes up MASKED, so this changes who delivers an interrupt and not which
+     * interrupts exist: a line still goes live only when SYS_IRQ_REGISTER accepts
+     * a capability for it (S46). A machine with no MADT I/O APIC entry stays on
+     * the 8259 and says so. */
+#ifdef IRQ_FORCE_PIC
+    /* Not a defect arm: a supported configuration, and the one every machine
+     * without a MADT I/O APIC entry runs. Keeping it buildable keeps the 8259
+     * fallback path tested rather than merely present -- and it is where the
+     * mask-on-fire arm still reproduces, because QEMU storms on the PIC and does
+     * not on the I/O APIC. See docs/BUILDING.md. */
+    if (0) {
+#else
+    if (ioapic_init() == 0) {
+#endif
+        /* The I/O APIC owns routing now, so the 8259 must not also deliver: two
+         * controllers driving the same vectors means every interrupt arrives
+         * twice. Fully masked, and left initialised only for its vector remap,
+         * which keeps a spurious interrupt off the exception vectors. */
+        outb(0x21, 0xFF);
+        outb(0xA1, 0xFF);
+    }
+
     tss_io_bitmap_init();  /* prefill the console I/O-port allowlist (stays inactive
                             * until a task with a port grant is switched in) */
     cap_init();

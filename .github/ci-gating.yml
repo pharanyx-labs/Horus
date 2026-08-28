@@ -115,6 +115,12 @@ required:
   # cow_break_pte's arena guard was written for before it existed: fork is what
   # makes a frame's page reachable as a COW PTE at all.
   - fork
+  # Gating. It carries S16 — which had NO witness at all until 2026-08-28, the
+  # exact [C-1] shape this project exists to avoid: a property stated in
+  # SECURITY.md, enforced by real code, and bound to nothing. Roadmap 4.12's
+  # invariant registry is what stops that recurring; this is the first thing it
+  # would have caught.
+  - fpu
   # Gating. It carries S28: a gate satisfied by a capability every task already
   # holds is not a gate. [H-3] was four of them, on the path to the user
   # database, and they survived two prior ambient-authority sweeps because both

@@ -1763,6 +1763,39 @@ jobs:
       - name: Control arm — a frame's size must be readable only by a holder
         run: make smoke-frame-info-control
 
+  fpu:
+    name: "A task cannot read another's XMM register file"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # S16's witness column was an em-dash until 2026-08-28: the property was
+      # stated, fpu_save/fpu_restore were real code called from the ring
+      # transition, and nothing exercised them. Both halves in one target -- one
+      # task's sentinel survives 64 switches, and the other task never sees it.
+      - name: XMM register-file isolation from ring 3
+        run: make smoke-fpu
+      # The disclosure, which is what S16 actually says. Drop the fxrstor and a
+      # task inherits whatever the previously-running task left in the physical
+      # registers.
+      - name: Control arm — an unrestored register file leaks to the next task
+        run: make smoke-fpu-leak-control
+      # The other half, which is loss rather than disclosure. Separable on
+      # purpose: under this arm the leak check still passes, and under the arm
+      # above the integrity check still passes, so neither is one gate wearing
+      # two names.
+      - name: Control arm — an unsaved register file is lost to its own task
+        run: make smoke-fpu-save-control
+
   fork:
     name: "A forked child's memory is a copy, and a kernel object is never forked"
     runs-on: ubuntu-latest

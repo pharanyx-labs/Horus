@@ -1996,7 +1996,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
@@ -2345,6 +2345,67 @@ void cow_selftest(void) {
     sched_enter_user(pid);   /* cowtest prints the PASS/FAIL marker; does not return */
 }
 #endif /* COW_SELFTEST */
+
+#ifdef FPU_SELFTEST
+/* ---- XMM register-file isolation (SECURITY.md S16, FPU_SELFTEST only) ------
+ *
+ * Two ring-3 tasks, both runnable, sharing one CPU. `fputest` loads a sentinel
+ * into all sixteen xmm registers and requires it intact after 64 switches away
+ * and back; `fpupeer` never writes an xmm register and requires that none of
+ * them ever holds `fputest`'s sentinel.
+ *
+ * THE PEER IS HELD BACK AND RELEASED BY `fputest` ITSELF, once the sentinel is
+ * in the registers and before the first yield. Nothing else orders the two, and
+ * without that ordering the arm is a race: the peer samples a bounded number of
+ * times and then reports success, so released together it can spend its whole
+ * window while `fputest` is still filling its sentinel buffer -- reporting no
+ * leak having never looked at a moment when there was one. Measured, before the
+ * fix: the leak arm reproduced on 2 boots in 3, and the miss was exactly that.
+ *
+ * `selftest_resume_all` is a blunt instrument that wakes every spawned task, so
+ * the peer is re-suspended after it, the same way `frame_selftest` does.
+ *
+ * The ONLY capability either task is endowed with is `fputest`'s CAP_TCB naming
+ * the peer, which is what makes SYS_TASK_RESUME legal. S16 is about what a task
+ * can read from the HARDWARE rather than about authority, so anything further
+ * would obscure what is being shown. */
+#define FPUTEST_SLOT_PEER_TCB 29   /* must match nothing in userspace: resume takes a tid */
+void fpu_selftest(void) {
+    extern uint8_t embedded_fputest_bin_start[], embedded_fputest_bin_end[];
+    extern uint8_t embedded_fpupeer_bin_start[], embedded_fpupeer_bin_end[];
+    print("FPU_SELFTEST: begin\n");
+
+    int peer = fs_spawn_embedded(embedded_fpupeer_bin_start,
+                                 embedded_fpupeer_bin_end, "fpupeer");
+    if (peer <= 0) { print("FPUTEST: FAIL spawn-peer\n"); for (;;) asm volatile("hlt"); }
+    tasks[peer].uid = 0;
+
+    int pid = fs_spawn_embedded(embedded_fputest_bin_start,
+                                embedded_fputest_bin_end, "fputest");
+    if (pid <= 0) { print("FPUTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[pid].uid = 0;
+
+    tasks[pid].spawn_arg = (uint32_t)peer;   /* how fputest names the task it releases */
+    /* Root slot 0 is the CAP_TCB template (CAP_RIGHT_ALL); the object is
+     * rewritten to the peer's task id, which is what makes it a capability for
+     * THAT task rather than for task 0. Same construction frame_selftest uses. */
+    {
+        extern int cap_install_from_root(int p, uint32_t slot, uint32_t root_slot, uint32_t object);
+        if (cap_install_from_root(pid, FPUTEST_SLOT_PEER_TCB, 0, (uint32_t)peer) != 0) {
+            print("FPUTEST: FAIL endow-peer-tcb\n"); for (;;) asm volatile("hlt");
+        }
+    }
+
+    selftest_resume_all();
+    /* ...then hold the peer back again: it must not sample its registers before
+     * fputest has loaded the sentinel, or a miss is indistinguishable from a
+     * pass. fputest releases it explicitly. */
+    tasks[peer].runnable_ctx = 0;
+
+    sched_enable_preemption();
+    sched_enter_user(pid);   /* both print their own marker; does not return */
+}
+#endif /* FPU_SELFTEST */
 
 #ifdef FORK_SELFTEST
 /* ---- fork self-test (roadmap 2.3, FORK_SELFTEST only) ----------------------

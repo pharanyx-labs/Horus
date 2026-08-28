@@ -893,12 +893,14 @@ live mapping of a kernel object that no capability of its own names, so revoking
 
 **Still open, and most of the item:**
 
-- **The child does not inherit its parent's cspace.** It is born with the endowment every task
-  gets, plus the send-only console copy `SYS_SPAWN` already propagates. Duplicating a cspace is
-  an authority change, not a convenience: each copy has to be a *derived* capability stamped
-  from the parent's lineage cell, or revoking the parent's would not sweep the child's — a
-  revocation hole reachable from ring 3. It gets its own commit, invariant and arm.
-  `docs/LIMITATIONS.md` §2.11.
+- ~~The child does not inherit its parent's cspace.~~ **Landed 2026-08-28** (**S41**).
+  `cap_clone_cspace` gives the child a *derived* copy of every capability the parent holds, in
+  the same slot: own serial, `badge` naming the parent's capability. It is made by
+  `rust_cap_grant_into` — the same derivation `SYS_CAP_GRANT` uses — so a forked capability and
+  a delegated one are the same object by construction. The two ways to get it wrong are both
+  control arms now: `FORK_CSPACE_FLAT_COPY=1` (duplicate serials, so a child's revoke destroys
+  its parent's capability) and `FORK_CSPACE_ORPHAN_COPY=1` (no parent edge, so the parent's
+  revoke misses the child's copy). `docs/LIMITATIONS.md` §2.11 records the closure.
 - **`exec` after `fork`.** `SYS_EXEC_NAMED` / `SYS_EXEC_IMAGE` exist and replace an image in
   place; what is missing is the pairing every shell needs — fork, endow the child, then exec.
 - **Process groups, job control, and `/proc`.** Untouched. `/proc` is a VFS server, so it sits
@@ -1282,7 +1284,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 129 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 42 of them control arms that must reproduce a defect |
+| ✅ | 131 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 44 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

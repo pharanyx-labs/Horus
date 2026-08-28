@@ -12,6 +12,10 @@
  *   S40  A fork never shares a kernel object's page: a task with a CAP_FRAME
  *        mapped is refused, and refused for THAT reason -- unmapping it makes
  *        the same call succeed.
+ *   S41  A forked child inherits its parent's capabilities as DERIVED copies:
+ *        each has its own serial and names the parent's capability as its badge,
+ *        so the child's authority is a subtree of the parent's and fork adds no
+ *        new root to the capability graph.
  *
  * ---- WHY THE TWO DIRECTIONS ARE TESTED DIFFERENTLY -------------------------
  *
@@ -115,7 +119,18 @@ void _start(void) {
         p[0] = 0xB2;
         if (p[0] != 0xB2) child_fail("FORKTEST: FAIL child-write-lost\n");
 
-        /* 3. The parent's post-fork write must never become visible here. */
+        /* 3. An inherited capability must actually WORK, not merely occupy a
+         *    slot. SYS_UNTYPED_INFO is the probe because it is idempotent and
+         *    READ-only -- a retype would consume the region and could not be
+         *    repeated. Before this commit the child's cspace held only what
+         *    create_task installs plus a console endpoint, so this failed. */
+        {
+            struct untyped_info ui;
+            if (sys_untyped_info(CAPSLOT_UNTYPED, &ui) != 0)
+                child_fail("FORKTEST: FAIL child-cannot-use-inherited-cap\n");
+        }
+
+        /* 4. The parent's post-fork write must never become visible here. */
         for (int i = 0; i < WATCH_ITERS; i++) {
             if (q[0] != 0x11) child_fail("FORKTEST: FAIL child-saw-parent-write\n");
             sys_yield();
@@ -196,6 +211,89 @@ void _start(void) {
     if (again < 0) { report("FORKTEST: FAIL fork-after-unmap\n"); sys_exit(); }
     if (again == 0) sys_exit();          /* the second child has nothing to do */
     if (sys_wait(again) != 0) { report("FORKTEST: FAIL wait2\n"); sys_exit(); }
+
+    /* ---- S41: the child's capabilities are DERIVED, not duplicated -------
+     *
+     * Checked STRUCTURALLY, through SYS_CAP_ENUMERATE, rather than by revoking
+     * something and seeing what breaks. `cap_info` reports `serial` and `badge`
+     * -- the nodes and edges of the derivation graph -- which is precisely the
+     * statement being made, and reading it needs no rendezvous between parent and
+     * child and no timing assumption at all. Every check below is exact.
+     *
+     * The three ways to get this wrong each fail a different one:
+     *   - no copy at all (the kernel before this commit)  -> not occupied
+     *   - a verbatim copy (FORK_CSPACE_FLAT_COPY=1)       -> serial matches
+     *   - a copy with no parent edge (ORPHAN_COPY=1)      -> badge does not */
+    {
+        int me = sys_getpid();
+
+        /* A live child to inspect: it parks, and is killed once read. The
+         * earlier children have exited, and a dead task reports every slot
+         * empty -- which would pass the "not occupied" check for the wrong
+         * reason. */
+        int probe = sys_fork();
+        if (probe < 0) { report("FORKTEST: FAIL fork-probe\n"); sys_exit(); }
+        if (probe == 0) { for (;;) sys_yield(); }
+
+        struct cap_info mine, theirs;
+        if (sys_cap_enumerate(me, CAPSLOT_UNTYPED, &mine) != 0 ||
+            sys_cap_enumerate(probe, CAPSLOT_UNTYPED, &theirs) != 0) {
+            report("FORKTEST: FAIL cap-enumerate\n");
+            (void)sys_kill(probe); sys_exit();
+        }
+        if (!mine.occupied) {           /* the test's own premise */
+            report("FORKTEST: FAIL parent-lost-untyped\n");
+            (void)sys_kill(probe); sys_exit();
+        }
+        if (!theirs.occupied) {
+            report("FORKTEST: FAIL child-cap-absent\n");
+            (void)sys_kill(probe); sys_exit();
+        }
+        /* ---- THESE FOUR DO NOT SHORT-CIRCUIT, deliberately ---------------
+         *
+         * Each states a separate rule, and the arms are one per rule -- so an
+         * early exit on the first failure would make the later checks
+         * unreachable from any arm, which is the definition of a check that
+         * cannot fail. FORK_CSPACE_ORPHAN_COPY=1 in particular fails BOTH the
+         * badge check and the revoke check below, and it should: the structural
+         * statement and its end-to-end consequence are different claims, and a
+         * reader wants to see both go red together. They are independent, so
+         * continuing past one costs nothing. */
+        int bad = 0;
+
+        if (theirs.type != mine.type || theirs.rights != mine.rights) {
+            report("FORKTEST: FAIL child-cap-altered\n"); bad = 1;
+        }
+        /* Its own identity: two capabilities must never share a serial, or a
+         * revocation aimed at one nulls the other -- in another task's cspace. */
+        if (theirs.serial == mine.serial || theirs.serial == 0) {
+            report("FORKTEST: FAIL child-cap-shares-serial\n"); bad = 1;
+        }
+        /* ...and an edge back to the parent's, which is what makes revocation
+         * reach it. Without this the child is a second root of the graph. */
+        if (theirs.badge != mine.serial) {
+            report("FORKTEST: FAIL child-cap-not-derived\n"); bad = 1;
+        }
+
+        /* The consequence, end to end: revoking the parent's capability must
+         * sweep the child's copy. The structural check above says the edge
+         * exists; this says the sweep actually walks it. Both, because an edge
+         * nothing traverses is not a revocation path. */
+        if (sys_cap_revoke(CAPSLOT_UNTYPED) != 0) {
+            report("FORKTEST: FAIL revoke\n");
+            (void)sys_kill(probe); sys_exit();
+        }
+        if (sys_cap_enumerate(probe, CAPSLOT_UNTYPED, &theirs) != 0) {
+            report("FORKTEST: FAIL cap-enumerate2\n");
+            (void)sys_kill(probe); sys_exit();
+        }
+        if (theirs.occupied) {
+            report("FORKTEST: FAIL child-cap-survived-revoke\n"); bad = 1;
+        }
+
+        (void)sys_kill(probe);
+        if (bad) sys_exit();          /* no PASS may follow a FAIL */
+    }
 
     report("FORKTEST: PASS\n");
     sys_exit();

@@ -1048,10 +1048,34 @@ looks most reasonable — clone the frame *writable-shared*, since a frame **is*
 is the one to argue with hardest: the child would hold a live mapping of a kernel object that
 **no capability of its own names**, so revoking the parent's `CAP_FRAME` would sweep the
 parent's PTE and leave the child's behind. A fork that copies mappings but not the capability
-graph must not manufacture one without the other, and that is also why the child does not
-inherit its parent's cspace yet (`LIMITATIONS.md` §2.11): copying capabilities *as they stand*
-would leave the child's keyed to a serial no revocation sweeps, which is finding 3.3's shape
-applied to a whole cspace.
+graph must not manufacture one without the other.
+
+**And then the cspace was cloned too** (2026-08-28, **S41**), which is the half with the
+authority question in it. `cap_clone_cspace` gives the child a copy of every capability the
+parent holds, in the same slot — each one **derived**: its own fresh serial, and `badge` naming
+the parent capability's serial, which is the edge `revoke_subtree` walks. The child's authority
+is therefore a *subtree* of the parent's, and fork adds no new **root** to the capability graph.
+
+A cspace is an array of `capability_t`, so this looks like a `memcpy`, and that is wrong in two
+independent directions — which is why each is a control arm rather than a sentence. **Identical
+serials** (`FORK_CSPACE_FLAT_COPY=1`): the revocation sweep nulls by serial across every cspace,
+because a serial is supposed to name exactly one capability, so the child revoking its *own*
+slot would destroy the parent's — revocation flowing sideways instead of down, available to any
+task that can fork. **No parent edge** (`FORK_CSPACE_ORPHAN_COPY=1`): a fresh serial with
+`badge` left alone is a second *root* holding the parent's authority, which `mark_children_of`
+never marks and no revocation root matches, so revoking the parent's leaves the child's working.
+That second one is finding **3.3**'s shape — a capability keyed to a serial no sweep reaches —
+applied to a whole cspace at once.
+
+Neither is avoided by getting the copy right; both are avoided by **not writing the copy here at
+all**. The loop calls `rust_cap_grant_into`, which is what `SYS_CAP_GRANT` uses, so a forked
+capability and a delegated one are the same object by construction rather than by two
+implementations agreeing — **[H-3]** being what happens when they stop agreeing. What is not
+copied is chosen on the same principle: slots 0–3 and slot 4 are the child's own identity (the
+parent's slot 0 names the *parent*, so copying it would mint a `CAP_TCB` over the parent that
+the parent never held in a delegatable form; slot 4 is the private reply endpoint whose whole
+value is that nobody else has it), and `CAP_REPLY` is skipped by type because a one-shot reply
+held by two tasks is reply forgery.
 
 **G-3 — Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are

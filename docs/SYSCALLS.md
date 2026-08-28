@@ -221,13 +221,28 @@ then stop it spawning and not stop it forking, and "this task can create no more
 which is what that revocation means — would quietly stop being true. A new path to an existing
 capability's effect inherits that capability's gate.
 
-**The child is not a copy of the caller's cspace.** It is born with the endowment every task
-gets from `create_task` — its own `CAP_TCB`, its own reply endpoint, the legacy image frame —
-plus the send-only console copy `SYS_SPAWN` already propagates, and **nothing else the parent
-holds**. Anything more must be delegated with `SYS_CAP_GRANT`, exactly as for a spawned child;
-the caller is handed a `CAP_TCB` naming the child so it can `SYS_WAIT` / `SYS_KILL` it.
-Duplicating a cspace is an authority change with a revocation-lineage question of its own and
-is deliberately not part of this call yet — `docs/LIMITATIONS.md` §2.11.
+**The child inherits the caller's capabilities as derived copies** (**S41**), in the same slots
+and with the same rights. Each copy has its **own serial** and names the caller's capability as
+its `badge` — the derivation edge — so the child's authority is a *subtree* of the caller's and
+fork adds no new root to the capability graph: revoking a capability here sweeps the child's
+copy with it. The caller is also handed a `CAP_TCB` naming the child, so it can `SYS_WAIT` /
+`SYS_KILL` it.
+
+**Rights are not narrowed**, unlike the console capability `SYS_SPAWN` masks down to `WRITE`.
+The two are handing authority to different things: spawn's child is a *different program* and
+the caller is choosing what to give a stranger, while fork's child is the same program at the
+same instruction. A silently reduced copy would break `if (fork() == 0) serve();` with nothing
+to report it, and the program would have the parent grant the rights back — achieving nothing
+except a less legible graph. `rust_cap_grant_into` still intersects with the source's rights,
+so a copy can never carry more than the parent held.
+
+**Four things are not inherited, and each would be impersonation rather than delegation.**
+Slots 0–3 and slot 4 are the child's *own* identity: the caller's slot 0 names the **caller**,
+so copying it would mint a `CAP_TCB` over the parent that the parent never held in a
+delegatable form; slot 4 is the private reply endpoint `SYS_IPC_CALL` parks on, whose entire
+value is that nobody else has it (finding **C-1**). `CAP_REPLY` is skipped **by type** wherever
+it sits, because it is one-shot and names a specific in-flight sender — two holders is reply
+forgery. A revoked or lookup-invalid source is skipped rather than copied.
 
 **Inherited:** the memory (copy-on-write), uid/gid, the heap bounds, the image window, the
 registered signal handler and mask, the FPU register file, and the argument vector.

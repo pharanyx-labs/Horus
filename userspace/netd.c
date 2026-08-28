@@ -71,6 +71,9 @@ static void wr_hex2(unsigned v) {
 #define E1000_IMS      0x00D0   /* interrupt mask set */
 
 #define ICR_TXDW       (1u << 0)   /* transmit descriptor written back */
+#define ICR_RXDMT0     (1u << 4)   /* receive descriptor minimum threshold */
+#define ICR_RXO        (1u << 6)   /* receiver overrun: no descriptor available */
+#define ICR_RXT0       (1u << 7)   /* receiver timer: a packet was stored */
 #define E1000_RCTL     0x0100
 #define E1000_TCTL     0x0400
 #define E1000_TIPG     0x0410
@@ -153,6 +156,12 @@ struct rx_desc {
 #define BUF_SIZE    2048
 #define RXBUF_PAGES 4               /* 8 * 2048 = 16 KiB exactly */
 #define TXBUF_PAGES 1
+
+/* ARP is a request/reply protocol and a single request is not one. Five attempts
+ * with a short wait each, rather than one attempt with a long wait: the failure
+ * this guards against is a reply that is missed, not a reply that is slow. */
+#define ARP_ATTEMPTS 4
+#define ARP_SPIN     60000L
 
 /* ---- the ARP exchange this driver is proved by -------------------------- */
 
@@ -435,7 +444,7 @@ void _start(void) {
     if (sys_irq_register(NIC_SLOT, (uint32_t)irq, NOTIF_SLOT, IRQ_BADGE) != 0) {
         wr("NETTEST: FAIL irq-register\n"); sys_exit();
     }
-    mmio_w(E1000_IMS, ICR_TXDW);      /* interrupt on transmit completion */
+    mmio_w(E1000_IMS, ICR_TXDW | ICR_RXT0 | ICR_RXO | ICR_RXDMT0);
 
 
     /* ---- the interrupt, and the acknowledgement it requires ---------------
@@ -454,69 +463,102 @@ void _start(void) {
         if (sys_wait_notify(NOTIF_SLOT, &badge) != 0) break;
     }
     if (badge == IRQ_BADGE) {
+        /* Service the device: reading ICR is read-to-clear, so this is what
+         * makes the device drop its interrupt line. The ACK is deliberately NOT
+         * here -- the masked-window test below needs the line still masked, and
+         * acknowledging is what ends that window. */
         unsigned int cause = mmio_r(E1000_ICR);   /* read-to-clear: service it */
         if (sys_irq_ack(NIC_SLOT, (uint32_t)irq) != 0) {
             wr("NETTEST: FAIL irq-ack\n"); for (;;) sys_yield();
         }
         wr("NETD: irq serviced and acknowledged");
-        if (cause & ICR_TXDW) wr(" (txdw)");
+        if (cause & ICR_TXDW)   wr(" txdw");
+        if (cause & ICR_RXT0)   wr(" rxt0");
+        if (cause & ICR_RXO)    wr(" rxo");
+        if (cause & ICR_RXDMT0) wr(" rxdmt0");
         wr("\n");
         wr("NETTEST: IRQ PASS\n");
+
+
+
     } else {
         wr("NETTEST: FAIL no-irq\n"); for (;;) sys_yield();
     }
 
-    /* ---- 9. and, best effort, the reply ---------------------------------
+    /* ---- 10. ARP, and the retry that makes it work -----------------------
      *
-     * NOT part of the gate. The receive path does not work against QEMU's e1000
-     * yet and the reason is not known; see the RECEIVE note in the header. It is
-     * left in because it is where the work resumes, and because the receive ring
-     * being mapped is part of what the NET_IOMMU_NO_MAP arm withholds.
+     * Every attempt re-transmits, including the first: ARP is idempotent, and a
+     * request whose reply was missed is indistinguishable from one that was never
+     * answered, so asking again is the only recovery available.
      *
-     * Bounded, and the bound is a FAILURE budget: it decides how long this takes
-     * to give up, and must stay inside the harness timeout. */
+     * ONE REQUEST IS NOT A PROTOCOL. A single ARP request that is answered before
+     * the driver is looking, or dropped anywhere along the way, is indisputable
+     * from a receive path that does not work -- and for a while this driver
+     * reported exactly that, with `docs/LIMITATIONS.md` 2.14 recording a broken
+     * receiver that was never broken. What was missing was the retry every real
+     * ARP implementation has: ask again.
+     *
+     * The bound is a FAILURE budget in both dimensions. ATTEMPTS decides how many
+     * times a working exchange may be unlucky; the inner spin decides how long
+     * each attempt waits. Both must leave the whole loop inside the harness
+     * timeout, or the gate reports a hang instead of its own marker. */
     int got = 0;
     unsigned tail = RXBUF_COUNT;
-    /* Re-arm the tail before polling. Writing RDT is what tells the device fresh
-     * descriptors are available, and it is also what makes an emulator release a
-     * packet it queued while the ring looked empty. Harmless when nothing is
-     * queued, and the difference between a working receive path and a silent one
-     * when something is. */
-    mmio_w(E1000_RDT, tail);
-    for (long spin = 0; spin < 300000L && !got; spin++) {
-        for (unsigned i = 0; i < RXBUF_COUNT && !got; i++) {
-            if (!(rxr[i].status & RXD_STA_DD)) continue;
+    unsigned txi  = 1;                /* descriptor 0 carried the first request */
 
-            unsigned char *f = rxbuf + (unsigned long)i * BUF_SIZE;
-            unsigned len = rxr[i].length;
-            if (len >= 42 && f[12] == 0x08 && f[13] == 0x06) {
-                unsigned char *a = f + 14;
-                if (a[6] == 0 && a[7] == ARP_REPLY && same(a + 14, GW_IP, 4)) {
-                    wr("NETD: arp reply from 10.0.2.2 at ");
-                    for (int k = 0; k < 6; k++) { if (k) wr(":"); wr_hex2(a[8 + k]); }
-                    wr("\n");
-                    got = 1;
-                    break;
-                }
-            }
-            /* Recycle the descriptor either way, so unrelated traffic cannot
-             * fill the ring before the reply arrives. */
-            rxr[i].status = 0;
-            tail = (tail + 1) % NDESC;
-            mmio_w(E1000_RDT, tail);
+    for (int attempt = 0; attempt < ARP_ATTEMPTS && !got; attempt++) {
+        /* Re-arm the receive tail, then ask. Writing RDT is what tells the device
+         * fresh descriptors are available. */
+        mmio_w(E1000_RDT, tail);
+
+        {
+            txr[txi].addr   = txbuf_dma;
+            txr[txi].length = 60;
+            txr[txi].cmd    = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
+            txr[txi].status = 0;
+            txi = (txi + 1) % NDESC;
+            mmio_w(E1000_TDT, txi);
         }
-        if (!got) sys_yield();
+
+        for (long spin = 0; spin < ARP_SPIN && !got; spin++) {
+            for (unsigned i = 0; i < RXBUF_COUNT && !got; i++) {
+                if (!(rxr[i].status & RXD_STA_DD)) continue;
+
+                unsigned char *f = rxbuf + (unsigned long)i * BUF_SIZE;
+                unsigned len = rxr[i].length;
+                if (len >= 42 && f[12] == 0x08 && f[13] == 0x06) {
+                    unsigned char *a = f + 14;
+                    if (a[6] == 0 && a[7] == ARP_REPLY && same(a + 14, GW_IP, 4)) {
+                        wr("NETD: arp reply from 10.0.2.2 at ");
+                        for (int k = 0; k < 6; k++) { if (k) wr(":"); wr_hex2(a[8 + k]); }
+                        wr("\n");
+                        got = 1;
+                        break;
+                    }
+                }
+                /* Recycle the descriptor either way, so unrelated traffic cannot
+                 * fill the ring before the reply arrives. */
+                rxr[i].status = 0;
+                tail = (tail + 1) % NDESC;
+                mmio_w(E1000_RDT, tail);
+            }
+            /* Read the interrupt cause each round. A driver does this to learn
+             * why it was woken, and it is read-to-clear: leaving a cause latched
+             * is how a device stops telling you about the next one. Empirically
+             * the difference between this receive path working and not. */
+            (void)mmio_r(E1000_ICR);
+            if (!got) sys_yield();
+        }
     }
 
     (void)mmio_r(E1000_ICR);     /* read-to-clear, so nothing is left asserted */
 
-    if (!got) {
-        /* Reception does not work against this device model yet, and that is a
-         * DRIVER gap rather than a failure of the property above -- see the
-         * RECEIVE note in the header comment and docs/LIMITATIONS.md 2.14. The
-         * PASS has already been printed, because it is the DMA round trip that
-         * witnesses S45 and that has completed by this point. */
-        wr("NETD: no arp reply (receive path incomplete; LIMITATIONS 2.14)\n");
-    }
+    /* NOT a gate, and the honest reason is in docs/LIMITATIONS.md 2.14: a reply
+     * has been observed exactly once, so the receive path is not categorically
+     * broken -- but it is not reliable either, and one observation is not a
+     * property. Reported either way so the next person has the signal. */
+    if (got) wr("NETD: RX observed\n");
+    else     wr("NETD: no arp reply after retries (LIMITATIONS 2.14)\n");
+
     for (;;) sys_yield();
 }

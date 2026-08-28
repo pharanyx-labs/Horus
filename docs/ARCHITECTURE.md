@@ -215,6 +215,35 @@ version of this driver kept working with an empty device address space — see t
 It is woken by its device's own interrupt and acknowledges it (**S46**), which is what unmasks
 the line for the next one; its receive path does not work yet (`docs/LIMITATIONS.md` §2.14).
 
+### Interrupt routing
+
+`src/kernel/ioapic.c` routes interrupts through the I/O APIC when the MADT
+describes one, and the 8259 is then fully masked — two controllers driving the
+same vectors would deliver every interrupt twice. A machine with no I/O APIC
+entry stays on the PIC and says so, and that path is kept buildable
+(`IRQ_FORCE_PIC=1`) so it is exercised rather than merely present.
+
+**Every delegatable pin starts masked**, the same decision as the IOMMU's empty
+address spaces: the machine cannot deliver anything nobody asked for, and a line
+goes live only when `SYS_IRQ_REGISTER` accepts a capability for it (**S46**). The
+two exceptions are the kernel's own — the preemption tick and the in-kernel
+console reader — because the kernel is their driver and they are not anybody's to
+be granted. Masking them is not a stricter policy but a broken scheduler, which
+`smoke-preempt` caught while `smoke` still passed.
+
+**GSIs are not ISA IRQ numbers.** Firmware may route any legacy IRQ to any global
+system interrupt, and on QEMU's q35 the PIT sits on GSI 2; the MADT's Interrupt
+Source Overrides say where each one went, and they also carry polarity and
+trigger mode. Where firmware is silent the kernel falls back on what the line is —
+ISA sources edge/high, everything else PCI INTx level/low — because the ACPI
+`_PRT` that would say properly needs an AML interpreter this kernel does not have.
+
+This is also the prerequisite for VT-d **interrupt** remapping, which applies to
+messages from an I/O APIC or MSI and never to the 8259's direct delivery. On its
+own it closes nothing: a device today can only assert the INTx line firmware gave
+it. That changes the moment MSI exists, because an MSI is a memory write and a
+device that can DMA anywhere can write any vector.
+
 ### DMA remapping (VT-d)
 
 `src/kernel/iommu.c` brings up an Intel VT-d unit found through the DMAR table, before any

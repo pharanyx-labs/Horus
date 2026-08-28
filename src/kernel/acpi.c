@@ -70,6 +70,8 @@ struct acpi_madt {
 } __attribute__((packed));
 
 #define MADT_TYPE_LOCAL_APIC   0
+#define MADT_TYPE_IO_APIC      1   /* an I/O APIC: address + GSI base           */
+#define MADT_TYPE_ISO          2   /* interrupt source override: ISA -> GSI      */
 #define MADT_LAPIC_ENABLED     0x1   /* entry flags bit 0: processor usable */
 
 /* Scan [start,end) physical for the 16-byte-aligned "RSD PTR " anchor with a
@@ -208,4 +210,58 @@ int acpi_detect_cpus(uint8_t *apic_ids, int max_ids) {
  * it the layout would let it read fields this file has not checked. */
 uint32_t acpi_table_length(const struct acpi_sdt_header *h) {
     return h ? h->length : 0;
+}
+
+/* ---- I/O APIC discovery (roadmap 2.6's interrupt half) --------------------
+ *
+ * The MADT describes the machine's interrupt topology as well as its CPUs: one
+ * or more I/O APIC entries giving each unit's MMIO base and the global system
+ * interrupt (GSI) number its first pin carries, and Interrupt Source Override
+ * entries saying where the legacy ISA IRQs actually landed once the firmware was
+ * done moving them.
+ *
+ * The overrides matter and are not decoration. On QEMU's q35 the PIT is wired to
+ * GSI 2 rather than GSI 0, so a kernel that assumed ISA IRQ n == GSI n programs
+ * the wrong pin for the timer and never gets a tick. Reading them is cheaper than
+ * discovering that empirically.
+ *
+ * Same discipline as the CPU walk above: every length bounds-checked against the
+ * table it came from, and a malformed entry fails the whole probe closed rather
+ * than yielding a partial topology. */
+int acpi_find_ioapic(struct acpi_ioapic_info *out) {
+    const struct acpi_sdt_header *h = acpi_find_table("APIC");
+    if (!h || !out) return -1;
+
+    const struct acpi_madt *m = (const struct acpi_madt *)h;
+    uint32_t total = m->hdr.length;
+    if (total < sizeof(struct acpi_madt)) return -1;
+
+    out->base = 0;
+    out->gsi_base = 0;
+    for (int i = 0; i < 16; i++) { out->iso_gsi[i] = (uint32_t)i; out->iso_flags[i] = 0; }
+
+    const uint8_t *base = (const uint8_t *)m;
+    uint32_t off = sizeof(struct acpi_madt);
+    while (off + 2 <= total) {
+        uint8_t type = base[off];
+        uint8_t len  = base[off + 1];
+        if (len < 2 || off + len > total) return -1;      /* malformed: fail closed */
+
+        if (type == MADT_TYPE_IO_APIC && len >= 12 && out->base == 0) {
+            /* [2]=id [3]=reserved [4..7]=address [8..11]=GSI base */
+            out->base = (uint64_t)((uint32_t)base[off+4] | ((uint32_t)base[off+5] << 8) |
+                                   ((uint32_t)base[off+6] << 16) | ((uint32_t)base[off+7] << 24));
+            out->gsi_base = (uint32_t)base[off+8] | ((uint32_t)base[off+9] << 8) |
+                            ((uint32_t)base[off+10] << 16) | ((uint32_t)base[off+11] << 24);
+        } else if (type == MADT_TYPE_ISO && len >= 10) {
+            /* [2]=bus [3]=source (ISA IRQ) [4..7]=GSI [8..9]=flags */
+            uint8_t src = base[off + 3];
+            uint32_t gsi = (uint32_t)base[off+4] | ((uint32_t)base[off+5] << 8) |
+                           ((uint32_t)base[off+6] << 16) | ((uint32_t)base[off+7] << 24);
+            uint16_t flags = (uint16_t)((uint32_t)base[off+8] | ((uint32_t)base[off+9] << 8));
+            if (src < 16) { out->iso_gsi[src] = gsi; out->iso_flags[src] = flags; }
+        }
+        off += len;
+    }
+    return out->base ? 0 : -1;
 }

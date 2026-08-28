@@ -103,7 +103,8 @@ DEFECT_FLAGS = \
 	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
-	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED
+	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
+	IRQ_FORCE_PIC
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -176,6 +177,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/untyped.o \
        src/kernel/pci.o \
        src/kernel/iommu.o \
+       src/kernel/ioapic.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0
@@ -750,6 +752,15 @@ NET_IOMMU_NO_MAP ?= 0
 # machine prints nothing more, which is the honest shape of this defect.
 # `make smoke-net-irq-storm-control` requires NETTEST: PASS to have been reached
 # and NETTEST: IRQ PASS to be ABSENT.
+# IRQ_FORCE_PIC=1 skips I/O APIC bring-up so interrupts route through the 8259 --
+# not a defect, but the configuration every machine without a MADT I/O APIC entry
+# runs, and the one the mask-on-fire arm reproduces on. Keeps the fallback tested
+# rather than merely present.
+IRQ_FORCE_PIC ?= 0
+ifeq ($(IRQ_FORCE_PIC),1)
+CFLAGS += -DIRQ_FORCE_PIC
+endif
+
 IRQ_NO_MASK_ON_FIRE ?= 0
 ifeq ($(IRQ_NO_MASK_ON_FIRE),1)
 CFLAGS += -DIRQ_NO_MASK_ON_FIRE
@@ -3451,6 +3462,13 @@ smoke-net:
 		REQUIRE_MARKER='NETTEST: IRQ PASS' \
 		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
 
+# ON THE PIC PATH (IRQ_FORCE_PIC=1), deliberately. Measured 2026-08-28: QEMU
+# storms on the 8259 and does NOT on the I/O APIC, so this arm can only fail on
+# the PIC -- and an arm that cannot fail cannot gate. The KERNEL LOGIC under test
+# is identical either way (mask the line before acknowledging it); only the
+# controller the mask lands in differs. Running it here also keeps the 8259
+# fallback exercised, which every machine with no MADT I/O APIC entry uses.
+#
 # A level-triggered line left unmasked when it fires storms: the PIC re-delivers,
 # ring 3 never runs, and the driver that would clear the device never gets the
 # chance. Asserts a STALL, because that is what a livelocked machine looks like --
@@ -3458,8 +3476,8 @@ smoke-net:
 .PHONY: smoke-net-irq-storm-control
 smoke-net-irq-storm-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 IRQ_FORCE_PIC=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 IRQ_FORCE_PIC=1 boot.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		EXPECT_STALL='NETTEST: PASS' ABSENT_MARKER='NETTEST: IRQ PASS' \
 		tools/smoke_test.sh boot.iso

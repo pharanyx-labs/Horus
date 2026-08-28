@@ -1258,6 +1258,7 @@ void create_user_pagedir(uint32_t task_id) {
      * frame into a device's address space (SYS_DMA_ADDR) writes these registers
      * while running on the calling task's cr3. */
     ensure_iommu_mapped_current(pml4_tab);
+    ensure_ioapic_mapped_current(pml4_tab);
 
     tasks[task_id].cr3 = pml4_phys;
 
@@ -2260,6 +2261,22 @@ void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
     if (!regs_phys) return;
     g_iommu_regs_phys = regs_phys;
     ensure_identity_mmio_page(root_pml4, regs_phys);
+}
+
+/* Map an I/O APIC's register window (roadmap 2.6's interrupt half). Same
+ * rationale as the LAPIC, the TPM and the VT-d registers: SYS_IRQ_ACK unmasks a
+ * redirection entry while running on the CALLING task's cr3, so the window must
+ * be present in every address space or that syscall faults. The base comes from
+ * the MADT rather than a constant, so this takes a parameter. */
+static uint64_t g_ioapic_regs_phys;
+void ensure_ioapic_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
+    if (!regs_phys) return;
+    g_ioapic_regs_phys = regs_phys;
+    ensure_identity_mmio_page(root_pml4, regs_phys);
+}
+
+void ensure_ioapic_mapped_current(uint64_t *root_pml4) {
+    if (g_ioapic_regs_phys) ensure_identity_mmio_page(root_pml4, g_ioapic_regs_phys);
 }
 
 /* Re-establish the IOMMU register mapping in a freshly built address space.

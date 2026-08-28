@@ -37,6 +37,9 @@ src/kernel/pci.c                @pharanyx-labs
 # where no capability said it could, performed by hardware, with no software on
 # the path to catch it (S45).
 src/kernel/iommu.c              @pharanyx-labs
+# ioapic.c decides which interrupt lines are deliverable at all. A pin unmasked
+# without a capability behind it is delivery becoming ambient again (S46).
+src/kernel/ioapic.c             @pharanyx-labs
 # The device-capability conformance suite, for the same reason captest.c is
 # owned: it is the evidence for S43, and every check in it is a refusal.
 userspace/devcaptest.c          @pharanyx-labs

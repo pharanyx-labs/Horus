@@ -131,6 +131,14 @@ def derive():
         # deliberately NOT named smoke-* so it does not inflate this.
         "smoke_targets": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*:"),
         "control_arms": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*-control[a-z0-9-]*:"),
+        # Base gates: every smoke-* target that is not a control arm. This is the
+        # number a reader means by "integration targets that boot a kernel and
+        # assert a marker" -- the control arms are the falsification OF those, and
+        # counting them together conflates the two layers. Declared 2026-08-28
+        # because site/index.html had said 68 since the count was 68, with nothing
+        # to notice it becoming 88.
+        "gates": (_grep_count(MAKEFILE, r"smoke-[a-z0-9-]*:")
+                  - _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*-control[a-z0-9-]*:")),
         "captest_checks": _grep_count(CAPTEST, r"\s*check\("),
         # frametest's parent-side checks. Declared 2026-08-27 because this exact
         # number had already gone stale: TESTS.md said 17 while the wire said 31.
@@ -139,12 +147,27 @@ def derive():
         # definition is off by one in a way nobody notices until the count is
         # used to decide something.
         "frametest_checks": _grep_count(FRAMETEST, r"^\s+check\("),
+        # The DELEGATE's checks. Declared 2026-08-28 because SECURITY.md said 8
+        # and TESTS.md said 5 against a live 9 -- two documents disagreeing with
+        # each other and both with the tree, which is what an underived count
+        # does when the test grows.
+        "framepeer_checks": _grep_count(
+            str(Path(__file__).resolve().parent.parent / "userspace/framepeer.c"),
+            r"^\s+check\("),
         # Syscall handler-entry coverage. Both halves are derived rather than
         # written down, because both move whenever a syscall is added or a
         # workload starts covering one -- and a coverage number that has to be
         # edited by hand is a coverage number that will be wrong. The measured
         # count lives in .github/syscall-coverage.yml, which
         # tools/check_syscall_coverage.py has already proved equals the boot.
+        # Every SYS_* number the ABI defines, implemented or not. Distinct from
+        # syscalls_implemented (which evaluates the preprocessor for the SHIP
+        # build): the difference between the two IS the fail-closed property the
+        # public page describes, so both halves have to be derived or the
+        # sentence can drift while still reading as consistent.
+        "syscall_numbers": _grep_count(
+            str(Path(__file__).resolve().parent.parent / "src/include/kernel.h"),
+            r"^#define\s+SYS_[A-Z0-9_]+\s+\d+"),
         "syscalls_implemented": _syscalls_implemented(),
         "syscalls_covered": len(
             (yaml.safe_load(Path(SYSCALL_COVERAGE_YML).read_text()) or {}).get(

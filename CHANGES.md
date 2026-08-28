@@ -14,6 +14,35 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Five public numeric claims had drifted, none of them declared to the checker that exists to
+  catch exactly this.** `tools/check_doc_claims.py` has gated declared counts since 2026-08-19,
+  and the lesson here is that **adding a checker does not retrofit coverage over claims nobody
+  declared to it**. Found by auditing `site/index.html`, `README.md` and `SECURITY.md` for
+  numbers no deriver owned:
+
+  | Claim | Said | Live |
+  |---|---|---|
+  | `site` — QEMU integration targets | 68 | **88** |
+  | `site` — configuration/test targets in BUILDING.md | 53 | **134** |
+  | `site` — syscall numbers the ABI defines | 86 | **102** |
+  | `site` — handlers a default build installs | 75 | **84** |
+  | `SECURITY.md` / `TESTS.md` — framepeer's checks | 8 / 5 | **9** |
+
+  The last is the instructive one: **two documents disagreed with each other and both with the
+  tree.** An underived count does that as soon as the test it describes grows, and nothing
+  reconciles them because nothing is comparing either to anything.
+
+  The syscall pair is the second: *"the ABI defines 86 syscall numbers … a default build installs
+  75 handlers"* — the difference between those two **is** the fail-closed claim the paragraph
+  makes, and with only one half derived the sentence could drift while still reading as
+  internally consistent. Both halves are derived now.
+
+  Three new derivers (`gates`, `syscall_numbers`, `framepeer_checks`), five new declared
+  occurrences, and the retired phrasings recorded in `forbidden:` so they cannot reappear.
+  Declared occurrences: 44 → **49**.
+
 ### Added
 
 - **A security-invariant registry: every property in `SECURITY.md` is bound to a witness that

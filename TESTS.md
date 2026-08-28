@@ -1569,7 +1569,7 @@ task at a different virtual address*.
 
 | Arm | Asserts | Result |
 |---|---|---|
-| `smoke-frame` | `FRAMETEST: PASS` present, `FRAMETEST: FAIL` absent | passes, **3 boots in 3**; **55 parent checks** + 5 peer checks, read off the wire |
+| `smoke-frame` | `FRAMETEST: PASS` present, `FRAMETEST: FAIL` absent | passes, **3 boots in 3**; **55 parent checks** + 9 peer checks, read off the wire |
 | `smoke-frame-index-control` (`FRAME_INDEX_UNCHECKED=1`) | `FRAMETEST: FAIL legacy-cap-mapped` present | passes, **3 boots in 3**; `smoke-frame` goes red under the same flag |
 | `smoke-frame-rights-control` (`FRAME_RIGHTS_UNCHECKED=1`) | `FRAMETEST: FAIL readonly-delegate-wrote` present | passes, **3 boots in 3**; `smoke-frame` goes red under the same flag |
 | `smoke-frame-region-control` (`FRAME_REGION_NO_ROLLBACK=1`) | `FRAMETEST: FAIL region-rollback-page0` present | passes, **3 boots in 3**; fails *only* the two rollback checks; `smoke-frame` goes red under the same flag |

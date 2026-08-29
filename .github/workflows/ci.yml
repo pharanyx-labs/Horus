@@ -1858,8 +1858,18 @@ jobs:
       # BAR and completes an ARP exchange with QEMU's user-mode gateway. Its
       # whole authority is a CAP_IO_DEVICE naming the NIC plus one untyped
       # region -- no console, no filesystem, no ambient anything.
-      - name: A ring-3 driver completes an exchange on the wire
+      - name: A ring-3 driver completes an exchange on the wire, over MSI
         run: make smoke-net
+      # The INTx fallback, on a device model with no MSI capability. Same driver,
+      # same code, different device -- which is what keeps the wire path a tested
+      # one rather than an assumption, and is where S46's masking applies.
+      - name: The same driver over a legacy interrupt line
+        run: make smoke-net-intx
+      # S47. An MSI's data word IS the vector, so a driver able to choose one
+      # could raise the timer's, another driver's, or an exception gate. This arm
+      # honours a caller-supplied vector and netd asks for 13 (#GP).
+      - name: Control arm — a driver choosing its own interrupt vector
+        run: make smoke-net-msi-vector-control
       # SYS_DEVICE_ENABLE writes the only configuration-space register ring 3 can
       # reach. Clear all three decode bits and the device stops answering its own
       # I/O BAR -- which is what shows the write lands rather than returning 0.

@@ -133,6 +133,11 @@ covered:
   # blocking. That last one is why this is covered by the handler body doing its
   # job rather than only by it saying no.
   - SYS_POLL_NOTIFY
+  # Entered by captest's refusals: a task holding no device capability is turned
+  # away before anything is programmed. Worth exercising on every run rather than
+  # only in NET_SELFTEST, because this is the call that decides which interrupt a
+  # device raises (S47).
+  - SYS_MSI_REGISTER
   - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`

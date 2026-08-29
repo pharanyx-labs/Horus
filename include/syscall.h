@@ -184,6 +184,7 @@ struct audit_event {
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; what the device named by the CAP_IO_DEVICE at dev_slot declares: ids, MMIO ranges, port ranges, IRQ lines. CAP_IO_DEVICE + READ in dev_slot, and it reports THAT device only. */
 #define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the named device's PCI decode bits (DEV_ENABLE_*). CAP_IO_DEVICE + WRITE. */
+#define SYS_MSI_REGISTER      107   /* (dev_slot, notif_slot, badge) -> 0; route the named device's MSI to a notification. No vector argument, deliberately. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN if none. sys_wait_notify's non-blocking twin; same CAP_NOTIFICATION + READ gate. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; unmask the line after servicing the device. CAP_IO_DEVICE + WRITE, and the registration must be the caller's. */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. CAP_IO_DEVICE + WRITE and CAP_FRAME + READ, both. */
@@ -548,7 +549,9 @@ struct dev_info {
     uint32_t classcode;   /* class:subclass:prog-if */
     uint32_t irq_mask;    /* bit n set: this device may route legacy IRQ n */
     uint32_t n_port;      /* port ranges declared */
-    uint32_t reserved;
+    uint32_t msi_capable; /* nonzero if the device has an MSI capability. Whether,
+                           * not where: the offset is the kernel's business, since
+                           * the register it points at carries the vector (S47). */
     struct { uint64_t base, len; } mmio[8];
     struct { uint32_t base, len; } port[8];
 };
@@ -934,6 +937,24 @@ static inline uint32_t sys_ipc_sender(int ep, uint32_t *out_gid) {
 
 static inline int sys_notify(int notif_slot, uint32_t badge) {
     return syscall(SYS_NOTIFY, (uint32_t)notif_slot, badge, 0);
+}
+
+/* Route the device named by `dev_slot` to deliver `badge` on `notif_slot` when it
+ * raises its message-signalled interrupt.
+ *
+ * THERE IS NO VECTOR ARGUMENT, and that absence is the point. An MSI is a memory
+ * write whose data word carries the interrupt vector, so a driver able to choose
+ * one could point its device at the timer, at another driver's interrupt, or at
+ * an exception gate. The kernel allocates the vector and programs the device's
+ * capability registers itself; ring 3 has nowhere to express a preference.
+ *
+ * Needs a CAP_IO_DEVICE (WRITE) naming the device and a CAP_NOTIFICATION (WRITE)
+ * to be woken on. Refused for a device with no MSI capability rather than falling
+ * back to its INTx line. Unlike an INTx registration there is no ack: an MSI is a
+ * message, edge by construction, so no line stays asserted. */
+static inline int sys_msi_register(uint32_t dev_slot, uint32_t notif_slot,
+                                   uint32_t badge) {
+    return (int)syscall6(SYS_MSI_REGISTER, dev_slot, notif_slot, badge, 0, 0, 0);
 }
 
 /* sys_poll_notify: sys_wait_notify's NON-BLOCKING twin. Returns 0 with the

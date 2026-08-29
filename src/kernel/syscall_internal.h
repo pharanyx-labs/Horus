@@ -193,6 +193,7 @@ void h_device_info(struct interrupt_frame64 *r);
 void h_device_enable(struct interrupt_frame64 *r);
 void h_dma_addr(struct interrupt_frame64 *r);
 void h_irq_ack(struct interrupt_frame64 *r);
+void h_msi_register(struct interrupt_frame64 *r);
 /* syscall_vm.c — frame capabilities and shared memory (roadmap 2.1) */
 void h_map_frame(struct interrupt_frame64 *r);
 void h_unmap_frame(struct interrupt_frame64 *r);

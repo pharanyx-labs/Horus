@@ -862,6 +862,7 @@ void users_init(void);
  * inline; naming it is what stops the two halves drifting. */
 #define IPC_AGAIN             (-2)
 
+#define SYS_MSI_REGISTER      107   /* (dev_slot, notif_slot, badge) -> 0; route the named device's message-signalled interrupt to a notification the caller holds. NOTE: no vector argument -- the kernel allocates it and programs the device, because an MSI's data word IS the vector and a driver that could choose one could raise any interrupt on the machine (S47). */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
@@ -1878,6 +1879,11 @@ struct io_device {
     uint16_t    device;
     uint32_t    classcode;  /* class:subclass:prog-if */
     uint32_t    irq_mask;   /* legacy IRQ lines this device may route */
+    uint8_t     msi_cap;    /* config-space offset of the MSI capability, 0 = none.
+                             * The kernel is the only thing that ever writes it:
+                             * its data field carries the interrupt VECTOR, so a
+                             * driver that could program it could raise any vector
+                             * on the machine (S47). */
     struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
     struct { uint16_t base, len; } port[IODEV_MAX_PORT];
     uint32_t    n_mmio, n_port;
@@ -1892,7 +1898,7 @@ struct dev_info {
     uint32_t classcode;
     uint32_t irq_mask;
     uint32_t n_port;
-    uint32_t reserved;
+    uint32_t msi_capable;
     struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
     struct { uint32_t base, len; } port[IODEV_MAX_PORT];
 };
@@ -1916,6 +1922,24 @@ int iodev_allows_irq(const struct io_device *d, int irq);
 #define IODEV_DECODE_MEM        0x2u
 #define IODEV_DECODE_BUSMASTER  0x4u
 int iodev_set_decode(const struct io_device *d, uint32_t flags);
+int iodev_program_msi(const struct io_device *d, uint8_t vector);
+
+/* ---- Message-signalled interrupts (src/kernel/msi.c) -----------------------
+ *
+ * An MSI is a memory write whose data word carries the interrupt VECTOR, so with
+ * MSI "which interrupt does this device raise" becomes a value in a register
+ * rather than a property of the board. The kernel allocates the vector and
+ * programs the device; a driver names a device and a notification and never a
+ * vector, because the ABI gives it nowhere to say one. SECURITY.md S47.
+ *
+ * 48..63: disjoint from the legacy 32..47 block so an allocated vector cannot
+ * collide with an I/O APIC pin, and below 64 (the LAPIC timer). */
+#define MSI_VECTOR_BASE   48
+#define MSI_VECTOR_COUNT  16
+int  msi_register(const struct io_device *d, uint64_t devindex, int task,
+                  uint32_t notif, uint32_t badge);
+void msi_clear_task(int task);
+int  msi_dispatch(uint64_t vector);
 
 /* TSS I/O-permission bitmap (gdt.c): tss_io_bitmap_init clears the bitmap at
  * boot; tss_set_io_device loads the running CPU's bitmap from ONE device's

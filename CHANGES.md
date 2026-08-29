@@ -14,6 +14,36 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Changed
+
+- **One author identity across the whole history, and one signing key.** The three personal
+  identities were folded into `Pharanyx Labs <horus@pharanyx.co.uk>` across all 470 commits with
+  `git filter-repo`. `git shortlog` now shows that address, GitHub's merge identity, and
+  Dependabot.
+
+  A `.mailmap` was considered and rejected: it changes how `git` *displays* authorship without
+  changing what the commits say, and GitHub's contributor graph keys on the author's email
+  regardless.
+
+  **Verified at blob level rather than asserted:** of the 3,182 unique blobs in the old history,
+  exactly 56 changed and every one of them contained the retired handle — no unrelated content
+  moved. All 470 commits and all 82 merge commits preserved.
+
+  All 470 are now signed with `CCBDEE4097AF426D`, the only key the maintainer still holds; the
+  history previously carried 40 unsigned commits and 184 signed by three keys that no longer
+  exist. GitHub reports the 246 commits whose committer is its own `GitHub <noreply@github.com>`
+  squash identity as unverified — a personal key cannot verify against another party's address.
+
+  Ruleset `19007209` was deleted during the rewrite and rebuilt as `21815299` from
+  `.github/ci-gating.yml`, with `required_linear_history` added so the legacy branch-protection
+  rule stays retired: one place now decides what gates `main`.
+
+- **`CLAUDE.md` §3: rewrite, do not preserve.** Documentation states what is true now — no
+  struck-through wording, no "previously this said". The exception is where the record is what
+  makes a claim checkable: falsification records, the `forbidden:` ratchet, DEVLOG measurements,
+  the comment explaining why a guard exists, and this file's worked examples. Security is the
+  first priority and those records *are* the security property.
+
 ### Added
 
 - **A program links against the shared libc (roadmap 2.5).** `hello_shared.c` is ordinary C — it

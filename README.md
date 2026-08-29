@@ -94,7 +94,7 @@ them QEMU integration self-tests. Which of them may block a merge is a decision 
 gating, or exempted with a written reason (**[C-6]**). The intended set is 101 of its 104 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
-`gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
+`gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence — the ruleset is
 reconciled by hand, so only the API knows.
 
 ---

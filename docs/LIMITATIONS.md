@@ -1352,7 +1352,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
 `.github/workflows/ci.yml` defines **99** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **101** across the three, producing **104** status-check contexts. Ruleset `19007209`
+one more — **101** across the three, producing **104** status-check contexts. Ruleset `21815299`
+requires all **101** today. Its predecessor `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and

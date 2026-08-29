@@ -359,7 +359,7 @@ push protection; cargo-fuzz on the FFI boundary; Kani proofs on capability revoc
   comparison, having failed loudly rather than skipped for the days it was unconfigured. Syncing
   the ruleset remains a manual step that must lag a job landing by one merge, which is what is
   left of this finding. Read the count from
-  `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence.
+  `gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence.
 - No build provenance attestation or signed release artifacts. Finding **[I-9]**.
 
 If you are evaluating Horus, weigh those gaps against the claims in the table above.

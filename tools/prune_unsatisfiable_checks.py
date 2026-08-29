@@ -32,7 +32,7 @@ try:
 except ImportError:
     sys.exit("prune_unsatisfiable_checks: PyYAML is required (pip install pyyaml)")
 
-RULESET = "repos/pharanyx-labs/Horus/rulesets/19007209"
+RULESET = "repos/pharanyx-labs/Horus/rulesets/21815299"
 BASE = "origin/main"
 WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml"]
 

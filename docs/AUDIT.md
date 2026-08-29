@@ -498,7 +498,9 @@ int copy_from_user(void *dst, const void *src, size_t n) {
 
 ### [C-5] Merges require a pull request but require no reviewer — *Critical (process)*
 
-**Location.** Repository ruleset `main protection` (id 19007209).
+**Location.** Repository ruleset `main` (id 21815299). *Recreated 2026-08-29 with the same
+rules; the predecessor `main protection` (id 19007209) was deleted during the identity
+rewrite below and rebuilt from `.github/ci-gating.yml`.*
 
 ```json
 {"type":"pull_request","parameters":{
@@ -877,10 +879,23 @@ party can pre-compute the measured-boot quote.
 - **M-8 — `MAX_REV_SETS` machinery is unused.** `cap_create_revocation_set` has no callers
   and `rev_sets[]` is only cleaned. Either wire it to a syscall or delete it; dead security
   machinery invites false confidence.
-- **M-9 — Two author identities and a bot** in `git shortlog` for what is one person
-  (`Pharanyx Labs <horus@pharanyx.co.uk>`, `<305527349+…@users.noreply.github.com>`,
-  `Yossi Cohen <horus@packetsync.org>`, `<horus@pharanyx.co.uk>`,
-  `pharanyx-labs`). Consolidate via `.mailmap` so authorship is auditable.
+- **M-9 — One author identity.** `git shortlog` shows `Pharanyx Labs <horus@pharanyx.co.uk>`,
+  GitHub's `<305527349+…@users.noreply.github.com>` merge identity, and Dependabot. The three
+  personal identities were folded into the first across all 470 commits on 2026-08-29 with
+  `git filter-repo`.
+
+  A `.mailmap` was considered and rejected: it changes how `git` *displays* authorship without
+  changing what the commits say, and GitHub's contributor graph keys on the author's email
+  regardless.
+
+  The rewrite touched metadata and commit messages only, verified at blob level — of 3,182
+  unique blobs, exactly 56 changed and every one contained the retired handle. All 470 commits
+  and 82 merge commits were preserved.
+
+  All 470 are signed with `CCBDEE4097AF426D`, the only key the maintainer holds; the history
+  previously carried 40 unsigned commits and 184 signed by keys that no longer exist. GitHub
+  reports the 246 commits whose committer is its own `GitHub <noreply@github.com>` squash
+  identity as unverified, since a personal key cannot verify against another party's address.
 
 ---
 
@@ -1011,7 +1026,7 @@ with no recorded provenance, hash, or upstream pin.
 
 **P2**
 8. Enable secret-scanning non-provider patterns and validity checks.
-9. `.mailmap` to consolidate the five author identities.
+9. Author identities consolidated to one — see **M-9**.
 10. Pin vendored `newlib` by upstream URL + SHA-256 in a `THIRD_PARTY.md`, or fetch it at
     build time with verification instead of committing `.deb`s.
 11. A `verify-release.sh` a third party can run: rebuild from a tag, diff against the

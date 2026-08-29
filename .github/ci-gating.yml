@@ -7,7 +7,7 @@
 # decision, and it gets written down.
 #
 # This inverts the maintenance burden that produced finding [C-6]. The live
-# required list lives in branch ruleset 19007209, which no commit touches, so
+# required list lives in branch ruleset 21815299, which no commit touches, so
 # every job added to ci.yml landed in the advisory set BY DEFAULT and nothing
 # asked whether it should have. That is how the ratio drifted from 21-of-30 to
 # 22-of-66 without a decision ever being taken — twice costing a security gate:

@@ -1034,7 +1034,25 @@ and can corrupt an allocator another task is mid-call in. Sharing a libc's text 
 optimisation; sharing its data is a defect. Witness `make smoke-shlib`, falsified in two separable
 directions (`SHLIB_DATA_SHARED=1`, `SHLIB_DATA_UNINITIALISED=1`).
 
-**Still open:** the newlib half itself. Every newlib-linked binary statically links its own libc
+**The shared libc OBJECT builds as of 2026-08-29**, and is gated. `userspace/libc.so` is newlib,
+its port glue and libhorus linked into one shared object the loader accepts: **342
+`R_X86_64_RELATIVE` relocations and nothing else**, zero undefined symbols, **135 KiB of shared
+text** (34 pages) and 6 KiB of per-task data (2 pages) — 36 of `SHLIB_MAX_PAGES`' 64.
+
+Three things were needed, each found by building it and none of them a link error: newlib rebuilt
+`-fPIC -fvisibility=hidden`; the port's syscall glue linked *into* the object (without it, 10
+undefined symbols and 10 `R_X86_64_JUMP_SLOT`); and `-Wl,-z,nodynamic-undefined-weak`, because one
+weak-undefined symbol (`__on_exit_args`) emits a `GLOB_DAT` by itself. The required `shared-objects`
+job runs `tools/check_shared_object.py` so none of them can come back silently.
+
+**Still open:** the CALLER side, and it has a real blocker. Programs still link `libc.a`
+statically. Calling into shared text needs only a stub per function, but a program's direct
+reference to a **data** symbol cannot be redirected to the library's copy without a GOT.
+`_impure_ptr` survives that — it is a pointer *to* per-task state, so a program can hold its own
+copy of the pointer and still reach the one `struct _reent` in the library's private data — but
+`optarg`/`optind` **are** the state, and a program-local copy would desynchronise from the
+`getopt` that writes it. The honest scoping is to share the text and keep `getopt` static per
+program until there is a real dynamic linker. Every newlib-linked binary statically links its own libc
 (~70 KiB of libc text each once stripped; 11 in `/bin`). A shared-object loader with capability-mediated mapping cuts the
 store requirement by an order of magnitude and makes a larger userspace practical — and it
 needs 2.1's frame capabilities first, which is why it sits behind them in the Track 2 order.
@@ -1303,7 +1321,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **100 required, 3 exempted** (100 jobs, 103 contexts — re-derive it with
+  The intended set is **101 required, 3 exempted** (101 jobs, 104 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).

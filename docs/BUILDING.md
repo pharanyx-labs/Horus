@@ -9,6 +9,45 @@ build. Boot is Multiboot2 via GRUB (BIOS); UEFI is not supported.
 ---
 
 
+## The shared libc, and what the loader requires of it
+
+`make check-shared-objects` builds `userspace/libc.so` — newlib, its port glue and libhorus in one
+shared object — and checks it against the two properties `src/kernel/shlib.c` enforces. The
+required `shared-objects` CI job runs the same target.
+
+Nothing links against it yet; programs still link `libc.a` statically. What the gate protects is
+that the object stays **loadable**, because every way of breaking that is silent:
+
+| Mistake | What the object gets | Symptom without the gate |
+|---|---|---|
+| glue object not linked in | 10 undefined symbols, 10 `R_X86_64_JUMP_SLOT` | no link error |
+| no `-Wl,-Bsymbolic` | intra-library refs become `R_X86_64_GLOB_DAT` | no link error |
+| no `-Wl,-z,nodynamic-undefined-weak` | one `GLOB_DAT`, from `__on_exit_args` alone | no link error |
+
+`shlib_init` refuses anything but `R_X86_64_RELATIVE`, so any of these makes the library simply
+**absent** at boot — and the first symptom is a task faulting on a call into an address nothing
+mapped. `tools/check_shared_object.py` decides all of it by reading the object, in milliseconds,
+where the error names the cause.
+
+It checks four things, each falsified against an object that violates it: relocation types, no
+undefined symbols, the page count against `SHLIB_MAX_PAGES` (read from `kernel.h`, not copied),
+and exactly one writable `PT_LOAD` page-aligned away from the read-only ones — S50 instantiates
+that segment per task, and a writable segment sharing a page with read-only data could not be made
+private without privatising shared text too.
+
+**newlib is built `-fPIC -fvisibility=hidden`** (`tools/build_newlib.sh`). Both are needed for the
+shared link and neither harms the static one — userspace is already `-fPIE`/`-pie`. The flags are
+stamped in `newlib/install/.newlib-flags` and a change to them forces a rebuild: the script no-ops
+when `libc.a` exists, so without the stamp, editing the wrapper flags would have no effect on a
+tree that had already built once.
+
+The stamp lives **inside `newlib/install`** because that is the directory CI caches. Placed beside
+it instead, the stamp would be absent on every cache *hit*, the guard would read that as "flags
+changed", and every job that restored a perfectly good `libc.a` would rebuild newlib from scratch
+anyway — a stamp has to travel with the thing it certifies or it certifies nothing.
+
+---
+
 ## Stripped binaries, and where the debug info went
 
 Everything that ships is stripped (`userspace/%.stripped.elf`, `--strip-all`) before

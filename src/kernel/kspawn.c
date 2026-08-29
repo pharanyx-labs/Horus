@@ -508,11 +508,15 @@ int do_spawn_stdio(uint32_t stdio_spec) {
                            CAP_RIGHT_WRITE);
         }
     }
-    /* A child runs as its spawner's identity. This is what lets init's uid-0
-     * fs_server pass the object-store's uid==0 gate, and it closes a latent
-     * privilege bug: previously a child kept its (BSS-zero) task-slot uid, so a
-     * task spawned by a non-root user could come up as uid 0. Authority still
-     * flows through capabilities; uid only mirrors the spawner. */
+    /* A child runs as its spawner's identity. That closes a latent privilege bug:
+     * previously a child kept its (BSS-zero) task-slot uid, so a task spawned by a
+     * non-root user could come up as uid 0.
+     *
+     * It used to say this is also "what lets init's uid-0 fs_server pass the
+     * object-store's uid==0 gate". There is no such gate: the object store is
+     * gated on CAP_ENCRYPTED_STORAGE and has been since ambient uid 0 was retired
+     * ([I-1], [H-1]). Authority flows through capabilities; uid only mirrors the
+     * spawner, and is used for filesystem ownership, not for reaching a syscall. */
     if (pid > 0) {
         tasks[pid].uid = tasks[caller_task].uid;
         tasks[pid].gid = tasks[caller_task].gid;

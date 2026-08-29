@@ -1759,7 +1759,7 @@ void shlib_selftest(void) {
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Ring-3 network driver self-test (NET_SELFTEST builds only) --------------
  *
- * Roadmap 2.6's first half: stand up `netd`, a virtio-net driver whose ENTIRE
+ * Roadmap 2.6's first half: stand up `netd`, an Intel e1000 driver whose ENTIRE
  * authority is one CAP_IO_DEVICE naming the NIC plus a delegated untyped region,
  * and require it to complete a real exchange on the wire — an ARP request for
  * QEMU's user-mode gateway, and the reply coming back through its own receive

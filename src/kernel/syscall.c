@@ -1077,8 +1077,9 @@ static void h_sigaltstack(struct interrupt_frame64 *r) {
 
 /* SYS_BOOT_MODULE_INFO (77): return the recorded boot-module count, and fill the
  * caller's struct boot_module_info for a valid index. Gated centrally on
- * CAP_BLOCK_DEV (the store-owner authority); the uid==0 check here mirrors the
- * rest of the object-store API, so only the trusted FS server reaches it. Boot
+ * CAP_BOOT_MODULE at CAPSLOT_BOOT_MODULE, and on nothing else: there is no uid
+ * check in this handler, and this comment claimed one (and the wrong capability)
+ * until 2026-08-29. Boot
  * modules are bootloader-supplied images at the same trust tier as the block
  * store, so read-only exposure to that owner is not an escalation. */
 static void h_boot_module_info(struct interrupt_frame64 *r) {
@@ -1148,9 +1149,12 @@ static void h_boot_module_read(struct interrupt_frame64 *r) {
 }
 
 /* SYS_DMESG: copy a chunk of the kernel message ring (boot + kernel log) to a
- * user buffer. ROOT ONLY -- the kernel log discloses addresses and boot detail,
- * so like Linux (dmesg_restrict) it is gated to uid 0, enforced here against the
- * caller's kernel-attested identity (never anything the caller supplies). The
+ * user buffer. The log discloses addresses and boot detail, so like Linux
+ * (dmesg_restrict) it is restricted -- but by CAP_KERNEL_LOG at CAPSLOT_KERNEL_LOG
+ * in the dispatch table, NOT by uid. This comment said "ROOT ONLY ... gated to
+ * uid 0, enforced here" until 2026-08-29, and this handler has never contained a
+ * uid check since ambient uid 0 was retired ([I-1], [H-1]). A capability is the
+ * gate precisely because it is revocable and an identity is not. The
  * caller reads the log in small chunks (rcx = byte offset from the oldest
  * retained byte, rdx = max bytes), so it never needs a multi-KiB user buffer and
  * the kernel needs only a small per-call stack buffer -- no shared state to race.
@@ -1257,7 +1261,8 @@ typedef struct {
  *  slot == SC_NONE means there is no single fixed authorizing capability: the
  *  handler (or the helper it calls) performs its own authorization, noted per
  *  entry. A few entries declare the fixed part here and keep an extra,
- *  argument-dependent check in the handler (block uid==0, register-fs ep slot).
+ *  argument-dependent check in the handler (register-fs ep slot). It said
+ *  "block uid==0" until 2026-08-29; no block handler has such a check.
  * ------------------------------------------------------------------------- */
 static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_YIELD]                    = { h_yield,                   SC_NONE, 0, SC_ANYTYPE },
@@ -1386,8 +1391,9 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * endpoint's last sender. Slot-3 READ (same as SYS_IPC_RECV) so only a
      * legitimate receiver on the endpoint can query it. */
     [SYS_IPC_SENDER]               = { h_ipc_sender,              SC_NONE, 0, SC_ANYTYPE },
-    /* Object-store owner/mode persistence — same gate as the rest of the store
-     * (CAP_BLOCK_DEV slot 7 + uid 0 in the handler): filesystem server only. */
+    /* Object-store owner/mode persistence — same gate as the rest of the store:
+     * CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone. Filesystem server
+     * only, because holding that capability is what makes a task the FS server. */
     /* NB: `rights` and `ctype` are DISTINCT fields. These entries used to pass
      * CAP_BLOCK_DEV (the type constant, 11) in the RIGHTS position with
      * ctype = SC_ANYTYPE — so the gate actually demanded rights 0b1011
@@ -1415,8 +1421,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * numbers are left reserved (not reused) so no future syscall silently
      * inherits an old ring-3 caller. */
     [SYS_REGISTER_STORAGE_BACKEND] = { h_register_storage_backend, SC_NONE, 0, SC_ANYTYPE },
-    [SYS_BLOCK_READ]               = { h_block_read,              CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* + uid 0 in handler */
-    [SYS_BLOCK_WRITE]              = { h_block_write,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* + uid 0 in handler */
+    [SYS_BLOCK_READ]               = { h_block_read,              CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* the capability is the whole gate */
+    [SYS_BLOCK_WRITE]              = { h_block_write,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* likewise */
     [SYS_REGISTER_FS_SERVER]       = { h_register_fs_server,      6, CAP_RIGHT_ALL, CAP_USER }, /* + ep lookup in handler */
     [SYS_CONNECT_FS_SERVER]        = { h_connect_fs_server,       SC_NONE, 0, SC_ANYTYPE },
     [SYS_CAP_REVOKE]               = { h_cap_revoke,              SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_revoke */
@@ -1427,8 +1433,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #endif
     [SYS_SIGACTION]                = { h_sigaction,               SC_NONE, 0, SC_ANYTYPE }, /* self: register own handler */
     [SYS_SIGRETURN]                = { h_sigreturn_stub,          SC_NONE, 0, SC_ANYTYPE }, /* real work in interrupt_handler64 */
-    /* Encrypted object-store API — same gate as the raw block syscalls
-     * (CAP_BLOCK_DEV slot 7 here + uid 0 in the handler). */
+    /* Encrypted object-store API — same gate as the raw block syscalls:
+     * CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone. */
     [SYS_FS_INODE_ALLOC]           = { h_fs_inode_alloc,          CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_FS_INODE_FREE]            = { h_fs_inode_free,           CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_FS_INODE_LINK]            = { h_fs_inode_link,           CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
@@ -1437,8 +1443,9 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FS_STAT]                  = { h_fs_stat,                 CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_FS_SET_SIZE]              = { h_fs_set_size,            CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_BRK]                     = { h_brk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, demand-paged */
-    /* Boot-module read surface — same gate as the object store (CAP_BLOCK_DEV
-     * slot 7 here + uid 0 in the handler), so only the FS server reaches it. */
+    /* Boot-module read surface. NOT the object store's gate, despite what this
+     * comment said until 2026-08-29: it is CAP_BOOT_MODULE at CAPSLOT_BOOT_MODULE,
+     * a capability of its own, and there is no uid check in either handler. */
     [SYS_BOOT_MODULE_INFO]        = { h_boot_module_info,  CAPSLOT_BOOT_MODULE, CAP_RIGHT_READ, CAP_BOOT_MODULE },
     [SYS_BOOT_MODULE_READ]        = { h_boot_module_read,  CAPSLOT_BOOT_MODULE, CAP_RIGHT_READ, CAP_BOOT_MODULE },
     /* Device delegation (syscall_hw.c): map one of a device's frames, grant its
@@ -1536,7 +1543,9 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_UNMAP_FRAME is currently the highest syscall number. Adding a higher one
+ * SYS_SHLIB_INFO is currently the highest syscall number, which is what the
+ * assertion below pins; this comment named SYS_UNMAP_FRAME until 2026-08-29,
+ * thirteen numbers out of date. Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a

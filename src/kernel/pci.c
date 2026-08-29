@@ -556,11 +556,13 @@ int iodev_allows_port(const struct io_device *d, uint16_t port) {
  * here, the value is masked to three bits, and the device is the one the caller's
  * capability named — never one it passed by address.
  *
- * BUS MASTERING IS THE ONE THAT MATTERS, and it is worth being plain about what
- * granting it means on this machine: there is no IOMMU, so a device that is a bus
- * master reaches ALL of physical memory, whatever its driver holds. This call
- * bounds who may turn that on and for which device; it cannot bound where the
- * device then goes. See docs/LIMITATIONS.md §2.12.
+ * BUS MASTERING IS THE ONE THAT MATTERS, and what granting it means depends on
+ * the machine. With a DMAR present the device's address space starts empty and it
+ * reaches only the frames its driver mapped (S45); with none, a bus master reaches
+ * ALL of physical memory whatever its driver holds. This call bounds who may turn
+ * that on and for which device; bounding where the device then goes is the
+ * IOMMU's job, and iommu_active() says whether this machine can do it.
+ * See docs/LIMITATIONS.md §2.12.
  *
  * Refuses a platform device: the legacy console hardware has no configuration
  * space, and silently succeeding would report a decode that was never set. */

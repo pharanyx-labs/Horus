@@ -816,8 +816,9 @@ NET_NO_BUSMASTER ?= 0
 # answering its own I/O BAR and the register file reads back as floating bus. The
 # arm for SYS_DEVICE_ENABLE: it writes the one configuration-space register ring 3
 # can reach, and this is what shows the write lands. `make smoke-net-decode-control`
-# requires NETTEST: FAIL rx-queue-size -- the first register whose value the driver
-# checks rather than merely stores.
+# requires `NETTEST: FAIL mac-not-valid` -- the first register whose value the
+# driver checks rather than merely stores. This comment named a different marker
+# than the recipe asserted until 2026-08-29.
 NET_NO_DECODE ?= 0
 
 # NET_IOMMU_NO_MAP=1 has netd ask SYS_DMA_ADDR for its frames' addresses WITHOUT
@@ -3838,7 +3839,7 @@ smoke-notify:
 # probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task can map
 # the allowlisted VGA framebuffer into its own address space (SYS_MAP_PHYS) and
 # that the mapping is the real device frame, while an off-list frame is refused.
-# First driver-privilege-separation job; see docs/proposals/console-server.md.
+# First driver-privilege-separation job; see docs/design/console-server.md.
 .PHONY: smoke-mapphys
 smoke-mapphys:
 	@$(MAKE) --no-print-directory clean
@@ -3851,7 +3852,7 @@ smoke-mapphys:
 # probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task granted
 # native port I/O (TSS I/O bitmap) can read an allowlisted console port while a
 # non-allowlisted port still #GPs. Second driver-privilege-separation job; see
-# docs/proposals/console-server.md.
+# docs/design/console-server.md.
 .PHONY: smoke-ioport
 smoke-ioport:
 	@$(MAKE) --no-print-directory clean
@@ -3864,7 +3865,7 @@ smoke-ioport:
 # ring-3 probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task
 # can route a hardware IRQ (the timer) to an async notification (SYS_IRQ_REGISTER)
 # and be woken by a real interrupt. Third driver-privilege-separation job; see
-# docs/proposals/console-server.md.
+# docs/design/console-server.md.
 .PHONY: smoke-irq
 smoke-irq:
 	@$(MAKE) --no-print-directory clean
@@ -3877,7 +3878,7 @@ smoke-irq:
 # the client's line to appear on serial -- runtime proof that a ring-3
 # console_server, owning the console hardware (SYS_MAP_PHYS + SYS_IOPORT_GRANT),
 # served a client's write over IPC and drove the serial port itself. First J5
-# cutover milestone; see docs/proposals/console-server.md.
+# cutover milestone; see docs/design/console-server.md.
 .PHONY: smoke-console
 smoke-console:
 	@$(MAKE) --no-print-directory clean
@@ -4344,7 +4345,7 @@ smoke-devcap-irq-control:
 
 # Build with the gated console blast-radius test, boot headless, and require the
 # marker proving the ring-3 console_server's deliberate fault was contained (the
-# kernel stayed alive to print it). Phase 6 close-out; see docs/proposals/console-server.md.
+# kernel stayed alive to print it). Phase 6 close-out; see docs/design/console-server.md.
 .PHONY: smoke-console-isolation
 smoke-console-isolation:
 	@$(MAKE) --no-print-directory clean
@@ -5064,8 +5065,9 @@ smoke-kstack-park:
 #
 # That measurement read the three misses as "exactly ONE park in the whole boot,
 # so a shared stack was impossible in that boot" -- the workload simply did not
-# kill enough tasks -- and from there treated the boots as INDEPENDENT: 0.25^8 is
-# one run in 65000, so a clean sweep had to mean decay rather than noise.
+# kill enough tasks -- and from there treated the boots as INDEPENDENT, reasoning
+# that 0.25^8 is "one run in 65000" and so a clean sweep had to mean decay rather
+# than noise.
 #
 # The independence was the error, and `main` proved it on 9476799: 8 misses out of
 # 8, in a run GitHub reported green because the job could not fail (see ci.yml).

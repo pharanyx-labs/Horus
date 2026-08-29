@@ -134,8 +134,11 @@ void h_connect_fs_server(struct interrupt_frame64 *r) {
  * per-(ino,block) subkeys, nonces, tags) stays entirely in the kernel. The
  * server addresses storage by (inode, logical block) and implements all
  * filesystem semantics (names, directories, permissions) on top. Gated exactly
- * like the raw block syscalls — CAP_BLOCK_DEV in slot 7 (dispatch table) plus
- * the uid==0 check below — so only a privileged storage server can call them. */
+ * like the raw block syscalls: CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, enforced
+ * by the dispatch table and by nothing else. There is no uid check here, and this
+ * comment claimed one until 2026-08-29. Possession of that capability IS the
+ * authority, which is the point of retiring ambient uid 0 ([I-1], [H-1]): the
+ * gate is revocable and the uid was not. */
 
 void h_fs_inode_alloc(struct interrupt_frame64 *r) {
     uint32_t type = r->rbx;
@@ -251,8 +254,10 @@ void h_fs_set_size(struct interrupt_frame64 *r) {
 }
 
 /* SYS_FS_SET_META (74): persist an inode's owner (uid/gid) and permission bits.
- * Same gate as the rest of the object-store API — CAP_BLOCK_DEV (slot 7, table)
- * plus the uid==0 check here — so only the trusted filesystem server can call it.
+ * Same gate as the rest of the object-store API: CAP_ENCRYPTED_STORAGE at
+ * CAPSLOT_AUDIT, from the dispatch table. There is no uid check here, and this
+ * comment claimed one until 2026-08-29. Holding that capability is what makes a
+ * caller the trusted filesystem server.
  * The server is the reference monitor: it chooses the values (owner = the
  * kernel-attested creator at create time; chmod/chown only after authorising the
  * attested caller), and this writes them through. Only the low 12 permission bits

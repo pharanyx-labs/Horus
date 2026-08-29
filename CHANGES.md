@@ -14,6 +14,64 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Changed
+
+- **Everything that ships is stripped, and finding out why is the entry to read.** Going into the
+  newlib migration, the first step was to re-derive the number that justifies it. A newlib-linked
+  `coreutils_echo` was 404,528 bytes on disk — but `size` accounted for only ~88 KiB of
+  text+data+bss. **`.debug_info` alone was 144,065 bytes, and the DWARF sections together were
+  about 77% of the file**, all of it shipped in the boot module and stored on the volume.
+
+  So the "~450 KiB each" that justified sharing a libc was mostly debug info, not libc. Stripping
+  what ships took the eleven coreutils from **4,847,020 to 1,210,436 bytes** and `tcc` from
+  1,070,088 to 394,684. *That* is the order of magnitude roadmap 2.5 promised, and it was in the
+  DWARF rather than in the library. Sharing a libc still saves its ~70 KiB of text per program,
+  which is worth having and is no longer the headline.
+
+  The unstripped `.pie.elf` is **kept** and is what to point a debugger or `addr2line` at — this
+  reduces the image, not the ability to diagnose it. Keeping it needs a guard: inserting a
+  stripping step turns the `.pie.elf` into a make *intermediate*, which make deletes when it is
+  done, and that would have made the sentence promising it quietly false the moment it was
+  written. Falsified in both directions — with the guard commented out,
+  `make clean && make userspace/hello.bin` deletes `hello.pie.elf`; with it, the file survives.
+
+  **The guard is `.PRECIOUS`, and the first attempt at it was a fail-green.** A bare `.SECONDARY:`
+  was tried first. With no prerequisites that does not mean "keep the file just named" — it marks
+  **every** target in the build as intermediate, and make will not *create* a missing intermediate
+  when the ultimate target above it already exists. `userspace-clean`'s globs did not cover `*.a`,
+  so `userspace/libhorus.a` survived `make clean` while `libhorus.o` and `hvfs.o` did not, and make
+  declined to rebuild them. Every program in the tree linked an archive built from the **previous**
+  invocation's flags.
+
+  That is the failure mode this repository is organised against, because it fails *green*: the
+  `LIBHORUS_RETRY_ANY` control arm stopped reproducing its own defect — the stale archive still
+  held the **fixed** `ipc_call_retry`, so the arm reported PASS where it must report the spin — and
+  `smoke-vfs` and `smoke-newlib` failed on a stale `hvfs.o`. Three CI jobs, and nothing in the
+  symptom pointed at the line that caused it; `origin/main` was measured on the same arm first, per
+  the rule in `CLAUDE.md` §2, which is what established the diff was to blame. `.PRECIOUS` affects
+  deletion and nothing else, so it cannot change what make decides to rebuild, and
+  `userspace-clean` now removes `*.a` and `*.stripped.elf` as well.
+
+  Left open and recorded here rather than fixed silently: `.build-flags` stamps `CFLAGS`/`ASFLAGS`
+  but **not** `USERSPACE_CFLAGS`, and `userspace/ports/{coreutils,tcc}/*.o` survive `make clean`.
+  No control arm reaches those objects today, so nothing is currently mis-measured, but it is the
+  same class of hazard one layer over and it wants its own witness.
+
+  `--strip-all` rather than `--strip-debug`, because nothing here reads a ring-3 binary's symbol
+  table: the loader parses `PT_LOAD` and the kernel does not symbolise ring-3 faults, so the extra
+  9,688 bytes are as unused as the DWARF.
+
+  The old phrasing is in `.github/doc-claims.yml`'s `forbidden` list, which immediately caught it
+  in three more places — `ROADMAP`, `LIMITATIONS` and `AUDIT` — all now corrected. **This is the
+  repository's own rule paying for itself:** re-derive every number you cite. That figure was
+  accurate about the file and misleading about the cause, and it pointed at a large migration
+  while a one-line change sat in front of it.
+
+  Also measured and recorded (`LIMITATIONS` §2.17): `hello_newlib` is genuinely 1.2 MB of code
+  rather than debug info, because it is linked without `--gc-sections` where the coreutils rule
+  passes it. It is a gated selftest binary so it costs nothing today, but it is why one is 94 KiB
+  and the other twelve times larger.
+
 ### Added
 
 - **Shared library text: executed by many tasks, writable by none (S49).** Roadmap 2.5's

@@ -1,5 +1,6 @@
 CC     = gcc
 LD     = ld
+OBJCOPY = objcopy
 AS     = gcc
 
 export SOURCE_DATE_EPOCH ?= 1609459200
@@ -2235,7 +2236,7 @@ userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
 	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
 	    $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
-userspace/hello_newlib.bin: userspace/hello_newlib.pie.elf tools/mkheadered
+userspace/hello_newlib.bin: userspace/hello_newlib.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "hello_newlib"
 
 # termtest — exercises the console raw-terminal layer (termios + winsize + raw
@@ -2250,7 +2251,7 @@ userspace/termtest.pie.elf: userspace/termtest.o $(NEWLIB_GLUE_OBJS) \
 	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
 	    $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
-userspace/termtest.bin: userspace/termtest.pie.elf tools/mkheadered
+userspace/termtest.bin: userspace/termtest.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "termtest"
 
 # ---- GNU coreutils port (userspace/ports/coreutils) -------------------------
@@ -2302,7 +2303,70 @@ userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
 
 # The header's embedded name is what spawn-by-name matches, so it is the plain
 # utility name ("cat"), not the coreutils_ file prefix.
-userspace/coreutils_%.bin: userspace/coreutils_%.pie.elf tools/mkheadered
+# ---- Strip before shipping ---------------------------------------------------
+#
+# MEASURED 2026-08-29, and it changes what roadmap 2.5 is for. A newlib-linked
+# `coreutils_echo` is 404,528 bytes on disk, of which `size` accounts for only
+# ~88 KiB of text+data+bss: `.debug_info` alone is 144,065 bytes, and the DWARF
+# sections together are about 77% of the file. Every one of those bytes was being
+# shipped in the boot module and stored on the volume.
+#
+#   original     404,528
+#   strip-debug  103,816
+#   strip-all     94,128
+#
+# So the "~450 KiB each" that justified sharing a libc is mostly debug info, not
+# libc. Stripping saves ~310 KiB per binary across 11 of them; sharing libc saves
+# the ~70 KiB of libc text each, once. The order of magnitude was in the DWARF.
+#
+# --strip-all rather than --strip-debug: nothing in this system reads a ring-3
+# binary's symbol table -- the loader parses PT_LOAD and the kernel does not
+# symbolise ring-3 faults -- so the extra 9,688 bytes are as unused as the DWARF.
+#
+# The UNSTRIPPED .pie.elf stays on disk and is what to point a debugger or
+# addr2line at. Only what ships is stripped, which is the distinction worth
+# keeping: this reduces the image, not the ability to diagnose it.
+userspace/%.stripped.elf: userspace/%.pie.elf
+	@$(OBJCOPY) --strip-all $< $@
+
+# Keep the unstripped .pie.elf. Inserting a stripping step turns it into a make
+# INTERMEDIATE -- a file created only to chain two rules -- and make deletes those
+# when it is done, which would have quietly made the sentence above ("the
+# unstripped .pie.elf stays on disk") false the moment it was written.
+#
+# .PRECIOUS, NOT .SECONDARY, AND THE DIFFERENCE COST THREE GREEN GATES.
+#
+# The first attempt was a bare `.SECONDARY:`. With no prerequisites that does not
+# mean "keep the file I just named" -- it means EVERY target in the build is
+# treated as intermediate. Intermediate has a second meaning beyond deletion:
+# make will not CREATE a missing intermediate when the ultimate target already
+# exists. userspace-clean's globs did not cover *.a, so userspace/libhorus.a
+# survived `make clean`; libhorus.o and hvfs.o did not, and make then declined to
+# rebuild them because the archive above them was present. Every program in the
+# tree linked a libhorus.a built from the PREVIOUS invocation's flags.
+#
+# That is a fail-open of the worst kind, because it fails GREEN: the
+# LIBHORUS_RETRY_ANY control arm stopped reproducing its own defect (the stale
+# archive still held the FIXED ipc_call_retry, so the arm reported PASS where it
+# must report the spin), and smoke-vfs and smoke-newlib failed on a stale hvfs.o.
+# A control arm that cannot fail is not a control arm, and nothing about the
+# symptom pointed at the line that caused it.
+#
+# .PRECIOUS affects deletion and nothing else -- it never marks a target
+# intermediate, so it cannot change what make decides to rebuild. It is the
+# narrow tool for the narrow job.
+#
+# The .stripped.elf is deliberately NOT listed, and does not need to be: a file
+# named explicitly as a prerequisite of a static pattern rule (the .bin rules
+# below) is not intermediate, so make never deletes it. Only the .pie.elf is at
+# risk, because it is reached ONLY by chaining the %.stripped.elf pattern onto
+# the %.pie.elf pattern -- an intermediate make invented. Verified in both
+# directions before this line was written: with .PRECIOUS commented out,
+# `make clean && make userspace/hello.bin` leaves hello.stripped.elf and DELETES
+# hello.pie.elf; with it, both survive.
+.PRECIOUS: userspace/%.pie.elf
+
+userspace/coreutils_%.bin: userspace/coreutils_%.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
 # ---- TCC (Tiny C Compiler) port ---------------------------------------------
@@ -2336,7 +2400,7 @@ userspace/tcc.pie.elf: $(TCC_OBJS) $(NEWLIB_GLUE_OBJS) userspace/malloc.o $(LIBH
 	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
 	    userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
-userspace/tcc.bin: userspace/tcc.pie.elf tools/mkheadered
+userspace/tcc.bin: userspace/tcc.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "tcc"
 
 # Fixed-base flat link (used by the gated selftest payloads that are embedded
@@ -2378,7 +2442,7 @@ tools/mkheadered: tools/mkheadered.c
 SHIPPED_PIE_BINS = userspace/shell.bin userspace/init.bin userspace/hello.bin \
                    userspace/fs_server.bin userspace/captest.bin \
                    userspace/console_server.bin
-$(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
+$(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
 # PIE test-only binaries (not shipped): built via the same static-PIE path as
@@ -2408,7 +2472,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.elf userspace/*.pie.elf userspace/*.raw userspace/*.bin userspace/*_image.h tools/mkheadered
+	rm -f userspace/*.o userspace/*.a userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
 # SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with

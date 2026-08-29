@@ -1095,7 +1095,8 @@ still reaches them; process groups, job control and `/proc` are untouched — se
 `docs/ROADMAP.md` §2.3.*
 
 **F-2.5 — Dynamic linking and a shared libc.** Currently every binary statically links
-newlib (~450 KiB each, 11 in `/bin`). A shared object loader with capability-mediated
+newlib (~70 KiB of libc text each once stripped, 11 in `/bin`; the audit's original figure
+counted debug info that is no longer shipped — see `docs/ROADMAP.md` 2.5). A shared object loader with capability-mediated
 mapping cuts the store requirement by an order of magnitude.
 
 **F-2.6 — Time, timers, and a monotonic clock.** `SYS_CLOCK_GETTIME`, per-task timers as

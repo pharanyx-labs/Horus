@@ -883,6 +883,16 @@ void _start(void) {
               "poll-notify-held-should-be-empty");
     }
 
+    /* SYS_MSI_REGISTER programs the register that decides which interrupt a
+     * device raises. This task holds no device capability, so it must be refused
+     * before any of that is reached — and note the call takes no vector: there is
+     * nowhere in the ABI for a caller to name one, which is S47's mechanism
+     * rather than its check. What this asserts is the gate in front of it. */
+    check(sys_msi_register(CAPSLOT_IO_DEVICE, SLOT_NOTIFY, 0x1234) == SYS_ERR_PERM,
+          "msi-register-without-cap-io-device");
+    check(sys_msi_register(SLOT_FRAME, SLOT_NOTIFY, 0x1234) == SYS_ERR_PERM,
+          "msi-register-with-wrong-cap-type");
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

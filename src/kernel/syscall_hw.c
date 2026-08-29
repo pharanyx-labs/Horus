@@ -244,6 +244,9 @@ void h_device_info(struct interrupt_frame64 *r) {
     info.irq_mask  = d->irq_mask;
     info.n_mmio    = (uint16_t)d->n_mmio;
     info.n_port    = d->n_port;
+    /* Whether the device has MSI, never where the capability is: the offset names
+     * the register carrying the vector, and that is the kernel's alone (S47). */
+    info.msi_capable = d->msi_cap ? 1u : 0u;
     for (uint32_t i = 0; i < d->n_mmio && i < IODEV_MAX_MMIO; i++) {
         info.mmio[i].base = d->mmio[i].base;
         info.mmio[i].len  = d->mmio[i].len;
@@ -435,5 +438,74 @@ void h_irq_ack(struct interrupt_frame64 *r) {
 #endif
 
     if (irq_notify_ack(irq, cur) != 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    r->rax = 0;
+}
+
+/* SYS_MSI_REGISTER(dev_slot, notif_slot, badge): route the named device's
+ * message-signalled interrupt to a notification the caller holds.
+ *
+ * NOTE WHAT IS NOT AN ARGUMENT: a vector. That absence IS the property (S47).
+ *
+ * An MSI is a memory write whose data word carries the interrupt vector, so with
+ * MSI the question "which interrupt does this device raise" stops being a fact
+ * about the board and becomes a value in a register. A driver that could set it
+ * could point its device at the timer's vector, another driver's, or an exception
+ * gate -- #GP is vector 13, and a device raising 13 at will could make any task
+ * appear to fault anywhere. The kernel therefore allocates the vector from a
+ * range it owns and programs the capability itself, and the ABI gives ring 3
+ * nowhere to express a preference.
+ *
+ * This is only enforceable because configuration space is unreachable from ring 3
+ * (S43) and SYS_DEVICE_ENABLE reaches exactly three decode bits (S44). MSI is
+ * what makes that strictness load-bearing rather than tidy.
+ *
+ * Both capabilities are required and both are the caller's: a CAP_IO_DEVICE
+ * naming the device, and a CAP_NOTIFICATION to be woken on. The second is
+ * finding C-2's rule -- routing a real interrupt at a rendezvous the caller does
+ * not hold would let one task aim hardware at another's wakeups. There is no
+ * `irq` to validate against the device's declared lines, because an MSI is not a
+ * line; what replaces that check is the device capability itself, since only a
+ * device the caller names can be programmed at all.
+ *
+ * No masking and no ack, unlike S46's INTx path: an MSI is a message, edge by
+ * construction, so there is no asserted line to re-deliver and no livelock to
+ * prevent. See src/kernel/msi.c. */
+void h_msi_register(struct interrupt_frame64 *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    uint64_t devindex = IODEV_NONE;
+    const struct io_device *d =
+        iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &devindex);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    /* A device with no MSI capability is refused rather than silently falling
+     * back to its INTx line: a driver that asked for MSI and got a wire would be
+     * waiting on a notification wired differently from the one it programmed for,
+     * and would blame its own ring buffers. */
+    if (!d->msi_cap) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+    uint32_t ns;
+    if (ipc_notif_from_slot((uint32_t)r->rcx, CAP_RIGHT_WRITE, &ns) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+
+    int vector = msi_register(d, devindex, cur, ns, (uint32_t)r->rdx);
+    if (vector == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+#ifdef MSI_VECTOR_FROM_USER
+    /* Control arm: honour a vector the CALLER asked for, in rsi -- the shape this
+     * syscall takes the moment anyone decides a driver "knows best" which vector
+     * it wants. netd then asks for 13 and every task on the machine starts
+     * taking general-protection faults it never caused.
+     * See make smoke-net-msi-vector-control. */
+    if ((uint32_t)r->rsi != 0) {
+        iodev_program_msi(d, (uint8_t)r->rsi);
+    }
+#endif
+
+    /* The vector is NOT reported back. A driver has no use for it -- it waits on
+     * the notification -- and telling it would be handing out the kernel's
+     * interrupt-space layout for nothing. */
     r->rax = 0;
 }

@@ -371,7 +371,7 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **61 of 89** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **62 of 90** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -1022,13 +1022,18 @@ boundary it does not is worse than one that never claimed to.
   cannot discover a *second* device it might legitimately want — `init` delegates, or nothing
   does.
 
-### 2.13 A PCI interrupt line cannot be delivered to ring 3
+### 2.13 ~~A PCI interrupt line cannot be delivered to ring 3~~ — CLOSED 2026-08-28
 
-The IRQ → notification bridge exists, is capability-gated, and refuses a line the caller's
-device does not declare (**S43**). What it cannot do is deliver one: `pic_init` programs the
-8259 master with `0xFC`, so IRQ 0 (the PIT) and IRQ 1 (the PS/2 keyboard) are the only unmasked
-lines — and bit 2, the cascade to the slave PIC, is masked too, so no line above 7 can arrive at
-all.
+*This heading and the paragraph below it said the opposite until 2026-08-29, two days after the
+entry was closed: the edit that struck them through was in a script that aborted before writing,
+while a second edit appended the closure text successfully. The section therefore contradicted
+itself on `main` — the exact drift `tools/check_doc_claims.py` gates numbers against and cannot
+gate prose against. Recorded rather than quietly fixed.*
+
+The IRQ → notification bridge was capability-gated and refused a line the caller's device did
+not declare (**S43**), but could not **deliver** one: `pic_init` programmed the 8259 master with
+`0xFC`, so IRQ 0 (the PIT) and IRQ 1 (the PS/2 keyboard) were the only unmasked lines — and bit
+2, the cascade to the slave PIC, was masked too, so no line above 7 could arrive at all.
 
 *Closed by **S46**. The entry is kept because the second question it raised is the one the fix
 had to answer, and because what was found on the way is worth not rediscovering.*
@@ -1054,9 +1059,32 @@ remapping applies to messages from an I/O APIC or MSI, never to the 8259's direc
 8259 remains the fallback for a machine with no MADT entry and stays buildable (`IRQ_FORCE_PIC=1`)
 so that path is exercised.
 
-**Still not delivered:** MSI/MSI-X (a device declares only its one legacy `INTERRUPT_LINE`), and
-interrupt remapping itself. The teardown mask (a dead driver's line going down with it) is
-correct by construction but has no arm of its own yet.
+**MSI landed 2026-08-29** (**S47**): the kernel walks the capability list, allocates a vector
+from a range it owns, and programs the device — a driver names a device and a notification and
+never a vector. **MSI-X** is still absent, and **interrupt remapping** still is not on; both are
+in §2.15. The teardown mask (a dead driver's line going down with it) is correct by construction
+but has no arm of its own yet.
+
+### 2.15 What MSI does not yet cover
+
+**S47** puts vector choice in the kernel's hands. Three things about it are worth stating.
+
+- **MSI-X is not implemented.** Its table lives in a BAR rather than in configuration space,
+  which means a driver could reach it with an ordinary `SYS_MAP_PHYS` of its own device's memory
+  — so MSI-X needs the vector-choice argument made again against a different mechanism, and the
+  answer cannot simply be "the kernel writes it". Until then a device offering only MSI-X gets
+  its INTx line. This matters because it is what modern virtio devices use.
+- **A vector is never reclaimed.** `msi_clear_task` stops delivering to a dead driver's route but
+  leaves the device enabled and the vector allocated. Freeing it means the next device allocated
+  that vector inherits any message this one already put in flight; disabling the capability means
+  writing configuration space of a device that may be mid-transaction. Sixteen vectors and
+  sixteen delegatable devices, so exhaustion needs a machine larger than the table — the leak is
+  the safe direction, and reclaiming needs a quiesce step this tree does not have.
+- **Interrupt remapping still is not on**, and with MSI that finally matters in the way the I/O
+  APIC work anticipated: an MSI is a memory write, so a device that could DMA anywhere could in
+  principle compose a message itself rather than being programmed to. What stops that today is
+  **S45** — the device's address space contains only the frames its driver mapped, and the
+  LAPIC's message window is not one of them.
 
 **One arm got weaker and has since been repaired, and the repair is the interesting part.**
 `IRQ_NO_MASK_ON_FIRE` reproduces a livelock on the 8259 and **not** on the I/O APIC — QEMU does
@@ -1080,6 +1108,17 @@ environment-dependent in a way the property is not.
 reads the packet buffer, and writes completion status back — and the ARP request it builds
 appears on the wire byte-correct, verified with a QEMU `filter-dump` capture. The **reply does
 not reach its receive ring**, and the cause is not yet known.
+
+**Updated 2026-08-29: it is a property of ONE DEVICE MODEL, not of the driver.** The same
+`netd`, the same code path, against QEMU's **82574L** (`e1000e`) receives the ARP reply on **5
+boots out of 5** — reliably enough that `make smoke-net` gates on it. Against the **82540EM**
+(`e1000`) a reply has been seen exactly once in many attempts. Two device models, one driver,
+opposite outcomes, which localises the problem to the model, or to this driver's interaction
+with it, rather than to the receive path in general. `make smoke-net-intx` keeps the 82540EM
+exercised for its INTx and masking behaviour and does not assert reception.
+
+*The paragraph below is kept as written, because its measurements are still the record of what
+was ruled out.*
 
 **Updated 2026-08-28, and the update sharpens it rather than closing it.** A reply *has* been
 received once, into `netd`'s own ring, correctly parsed — so the receive path is **not

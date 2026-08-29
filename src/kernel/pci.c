@@ -77,6 +77,13 @@ static inline uint32_t inl(uint16_t port) {
 #define PCI_CMD_MEM       0x0002
 #define PCI_CMD_MASTER    0x0004
 
+#define PCI_STATUS        0x06
+#define PCI_CAP_PTR       0x34
+#define PCI_STATUS_CAPLIST 0x0010
+
+#define PCI_CAP_ID_MSI    0x05
+#define PCI_MSI_CTRL      0x02   /* offset from the capability header */
+
 #define PCI_HDR_MULTIFN   0x80
 #define PCI_HDR_TYPE_MASK 0x7F
 #define PCI_HDR_GENERAL   0x00   /* type 0: the only header with 6 BARs */
@@ -153,6 +160,7 @@ static void iodev_add_platform(void) {
     d->n_port = 5;
 
     d->irq_mask = (1u << 0) | (1u << 1);
+    d->msi_cap  = 0;                  /* the platform device has no config space */
 
     iodev_count = IODEV_PLATFORM + 1;
 }
@@ -210,6 +218,36 @@ static uint64_t pci_bar_size(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t idx,
     return size;
 }
 
+/* Find this function's MSI capability, or 0.
+ *
+ * WHY THE KERNEL WALKS THIS AND RING 3 NEVER DOES. The capability list lives in
+ * configuration space, which no syscall exposes -- deliberately, since the BARs
+ * are in the same 256 bytes (S43). MSI sharpens that considerably: the MSI
+ * capability holds the message ADDRESS and DATA, and the data field carries the
+ * interrupt VECTOR the device will raise. A driver that could write them could
+ * point its device at any vector on the machine -- the timer, another driver's,
+ * or an exception gate. So the kernel finds the capability here, at boot, and is
+ * the only thing that ever programs it (S47).
+ *
+ * The walk is bounded twice over: a capability pointer must be inside the 256
+ * bytes of configuration space and 4-byte aligned, and the loop has a hard trip
+ * count. A malformed or hostile list that pointed at itself would otherwise spin
+ * the boot forever, and firmware is semi-trusted input here exactly as ACPI is. */
+static uint8_t pci_find_msi_cap(uint8_t bus, uint8_t dev, uint8_t fn) {
+    uint16_t status = pci_cfg_read16(bus, dev, fn, PCI_STATUS);
+    if (!(status & PCI_STATUS_CAPLIST)) return 0;
+
+    uint8_t off = pci_cfg_read8(bus, dev, fn, PCI_CAP_PTR) & 0xFCu;
+    for (int hops = 0; hops < 48 && off >= 0x40 && off < 0xFC; hops++) {
+        uint8_t id   = pci_cfg_read8(bus, dev, fn, off);
+        uint8_t next = pci_cfg_read8(bus, dev, fn, (uint8_t)(off + 1)) & 0xFCu;
+        if (id == PCI_CAP_ID_MSI) return off;
+        if (next == off) break;               /* self-referential: stop */
+        off = next;
+    }
+    return 0;
+}
+
 /* Record one PCI function. Bounded by IODEV_MAX: a machine with more functions
  * than the table holds loses the tail, which is the same direction of failure as
  * the bus-0 limit — absent, therefore un-delegatable. */
@@ -228,11 +266,13 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
     d->n_mmio    = 0;
     d->n_port    = 0;
     d->irq_mask  = 0;
+    d->msi_cap   = 0;
 
     /* Only a type-0 header has six BARs; a bridge's header aliases BAR2 onward
      * onto bus-number and window registers, and sizing those would corrupt the
      * bridge. Bridges therefore contribute no resources at all. */
     uint8_t hdr = (uint8_t)(pci_cfg_read8(bus, dev, fn, PCI_HEADER_TYPE) & PCI_HDR_TYPE_MASK);
+    d->msi_cap = (hdr == PCI_HDR_GENERAL) ? pci_find_msi_cap(bus, dev, fn) : 0;
     if (hdr == PCI_HDR_GENERAL) {
         uint16_t cmd = pci_cfg_read16(bus, dev, fn, PCI_COMMAND);
         pci_cfg_write32(bus, dev, fn, PCI_COMMAND,
@@ -404,6 +444,71 @@ int iodev_set_decode(const struct io_device *d, uint32_t flags) {
     low &= (uint32_t)~(PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER);
     low |= want;
     pci_cfg_write32(bus, dev, fn, PCI_COMMAND, hi | low);
+    return 0;
+}
+
+/* ---- MSI programming ------------------------------------------------------
+ *
+ * The ONLY writer of a device's message address and data, and it lives here
+ * because this is the only file that touches configuration space at all. The
+ * data word's low byte is the interrupt VECTOR the device will raise, so
+ * exporting a general config-space write to let another file do this would hand
+ * every future caller the ability to choose a vector -- which is precisely what
+ * S47 exists to keep away from ring 3, and what S43 keeps away from BAR
+ * reprogramming. `vector` comes from src/kernel/msi.c, which owns the range.
+ *
+ * Returns 0 on success, -1 if the device has no MSI capability. */
+#define MSI_CTRL            0x02
+#define MSI_ADDR_LO         0x04
+#define MSI_ADDR_HI         0x08
+#define MSI_DATA_32         0x08
+#define MSI_DATA_64         0x0C
+#define MSI_CTRL_ENABLE     (1u << 0)
+#define MSI_CTRL_64BIT      (1u << 7)
+#define MSI_CTRL_MULTI_MASK 0x0070   /* multiple-message ENABLE, bits 6:4 */
+
+/* The LAPIC's message-address window. Bits 19:12 carry the destination APIC id;
+ * delivery is to APIC 0 in physical mode, the same choice ioapic_program makes
+ * and for the same reason -- nothing here balances interrupts, and pretending to
+ * would spread a device's interrupts across CPUs whose driver is one task. */
+#define MSI_ADDR_BASE       0xFEE00000u
+
+int iodev_program_msi(const struct io_device *d, uint8_t vector) {
+    if (!d || !d->msi_cap || d->bdf == IODEV_BDF_NONE) return -1;
+
+    uint8_t bus = (uint8_t)(d->bdf >> 8);
+    uint8_t dev = (uint8_t)((d->bdf >> 3) & 0x1F);
+    uint8_t fn  = (uint8_t)(d->bdf & 0x07);
+    uint8_t cap = d->msi_cap;
+
+    uint16_t ctrl = pci_cfg_read16(bus, dev, fn, (uint8_t)(cap + MSI_CTRL));
+    int is64 = (ctrl & MSI_CTRL_64BIT) ? 1 : 0;
+
+    /* Address, then data, then enable -- never the other way round. A capability
+     * enabled while its data field still holds a previous value is a device
+     * raising somebody else's vector, which is the same ordering argument the
+     * VT-d context entry and the I/O APIC redirection entry each make. */
+    pci_cfg_write32(bus, dev, fn, (uint8_t)(cap + MSI_ADDR_LO), MSI_ADDR_BASE);
+    if (is64) pci_cfg_write32(bus, dev, fn, (uint8_t)(cap + MSI_ADDR_HI), 0);
+
+    uint8_t data_off = (uint8_t)(cap + (is64 ? MSI_DATA_64 : MSI_DATA_32));
+    /* Delivery mode 000 (fixed), edge-triggered, no level assert: the vector and
+     * nothing else. A 16-bit field written through a 32-bit access, so the upper
+     * half is zeroed deliberately rather than left as found. */
+    pci_cfg_write32(bus, dev, fn, data_off, (uint32_t)vector);
+
+    /* Multiple-message ENABLE forced to zero: one vector, not the up-to-32 a
+     * device may advertise. A block would mean the DEVICE choosing among several
+     * vectors, which is the choice being taken away from it. */
+    ctrl = (uint16_t)((ctrl & (uint16_t)~MSI_CTRL_MULTI_MASK) | MSI_CTRL_ENABLE);
+    {   /* 16-bit field, written through the aligned 32-bit word that contains it,
+         * preserving the other half rather than clobbering it. */
+        uint8_t word_off = (uint8_t)((cap + MSI_CTRL) & 0xFC);
+        uint32_t w = pci_cfg_read32(bus, dev, fn, word_off);
+        unsigned shift = (unsigned)(((cap + MSI_CTRL) & 2) * 8);
+        w = (w & ~(0xFFFFu << shift)) | ((uint32_t)ctrl << shift);
+        pci_cfg_write32(bus, dev, fn, word_off, w);
+    }
     return 0;
 }
 

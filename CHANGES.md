@@ -16,6 +16,61 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **Message-signalled interrupts, and who gets to choose a vector (S47).** An MSI is not a wire:
+  it is a memory **write** the device performs, carrying a data word whose low byte is the
+  interrupt **vector**. So with MSI, *which interrupt does this device raise* stops being a fact
+  about the board and becomes a value in a register.
+
+  That is a far sharper question than INTx posed. A device wired to INTx can only assert the line
+  firmware gave it, and the worst a malicious driver could do was subscribe to a line its device
+  does not own — which **S43** already refuses. A device with MSI raises whatever its capability
+  registers say: the timer's vector, another driver's, or an exception gate. **#GP is vector 13**,
+  and a device raising 13 at will could make any task appear to fault anywhere.
+
+  **So `SYS_MSI_REGISTER` (107) takes no vector argument.** It takes a `CAP_IO_DEVICE` naming the
+  device and a `CAP_NOTIFICATION` to be woken on, and nothing else. The kernel walks the PCI
+  capability list at boot, allocates a vector from a range it owns (48–63 — disjoint from the
+  legacy 32–47 block so it cannot collide with an I/O APIC pin, and below 64 so it cannot collide
+  with the LAPIC timer), programs the capability itself, and records where the interrupt goes.
+  Ring 3 has nowhere to express a preference. `SYS_DEVICE_INFO` reports *whether* a device has
+  MSI and never *where* the capability is, because that offset names the register carrying the
+  vector, and every write to it lives in `src/kernel/pci.c` — the one file that touches
+  configuration space at all.
+
+  This is only enforceable *because* configuration space is unreachable from ring 3 (**S43**) and
+  `SYS_DEVICE_ENABLE` reaches exactly three decode bits (**S44**). **MSI is what makes that
+  strictness load-bearing rather than tidy.**
+
+  Unlike **S46** there is no masking and no acknowledgement: an MSI is edge by construction, so
+  no line stays asserted and there is no livelock to prevent.
+
+  Falsified by `MSI_VECTOR_FROM_USER=1` (`make smoke-net-msi-vector-control`), which honours a
+  caller-supplied vector and has `netd` ask for 13: the NIC raises #GP at the machine, the kernel
+  processes a general-protection fault that never happened against whatever the message
+  interrupted, and the run dies. Asserted as a **fault**, 3 boots in 3, naming the task the fault
+  is attributed to rather than the flavour — a misinterpreted exception frame goes wrong in
+  whichever way it goes wrong first.
+
+  **Two device models, one driver, both gated.** `make smoke-net` runs `netd` against an 82574L,
+  which has an MSI capability; `make smoke-net-intx` runs the *same driver* against an 82540EM,
+  which does not, so it falls back to a wire and **S46**'s masking applies. Keeping both means the
+  fallback is a tested path rather than an assumption. `captest` 131 → 133.
+
+### Fixed
+
+- **`docs/LIMITATIONS.md` §2.13 contradicted itself on `main`.** Its heading and opening paragraph
+  still said a PCI interrupt line *cannot* be delivered to ring 3, two days after **S46** closed
+  it and with the closure text appended directly below. The edit that should have struck them
+  through was in a script that aborted before writing, while a second edit appended the closure
+  successfully — so the section asserted both. Exactly the drift `tools/check_doc_claims.py` gates
+  numbers against and cannot gate prose against; the correction says so in place.
+
+- **§2.14's receive failure is a property of one device model, not of the driver.** The same
+  `netd` and the same code path receive the ARP reply on **5 boots out of 5** against QEMU's
+  82574L, and have managed it once in many attempts against the 82540EM. `make smoke-net` now
+  gates on a real ARP exchange end to end — transmit, MSI, receive — and `make smoke-net-intx`
+  keeps the older model exercised for INTx without asserting reception.
+
 - **`SYS_POLL_NOTIFY` (106): a caller can observe that a notification did NOT arrive.**
   `sys_wait_notify`'s non-blocking twin — consume a pending badge and return 0, or report
   `IPC_AGAIN` and never park the caller. Same `CAP_NOTIFICATION` + READ gate: being non-blocking

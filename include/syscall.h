@@ -725,6 +725,22 @@ static inline int sys_cap_mint(int dest_slot, int src_slot, unsigned int rights)
                         (uint32_t)rights);
 }
 
+/* Copy the capability in `src_slot` to `dest_slot` of the caller's OWN cspace
+ * with the source's rights unchanged. Requires CAP_RIGHT_MINT on the source, the
+ * same authority sys_cap_mint needs: transfer is mint with a full-rights mask,
+ * and the mask is still intersected with what the source holds, so it cannot
+ * widen either. */
+static inline int sys_cap_transfer(int dest_slot, int src_slot) {
+    return (int)syscall(SYS_CAP_TRANSFER, (uint32_t)dest_slot,
+                        (uint32_t)src_slot, 0);
+}
+
+/* Transfer, then revoke the source: the capability ends up at `dest_slot` and
+ * `src_slot` is left empty. */
+static inline int sys_cap_move(int dest_slot, int src_slot) {
+    return (int)syscall(SYS_CAP_MOVE, (uint32_t)dest_slot, (uint32_t)src_slot, 0);
+}
+
 /* Map the frame named by the CAP_FRAME in `frame_slot` at `vaddr`, which must be
  * page-aligned, non-zero, and in the user half. `rights` is any combination of
  * CAP_RIGHT_READ / WRITE / EXEC; WRITE and EXEC together are refused (W^X).

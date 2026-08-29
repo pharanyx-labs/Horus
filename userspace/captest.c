@@ -893,6 +893,54 @@ void _start(void) {
     check(sys_msi_register(SLOT_FRAME, SLOT_NOTIFY, 0x1234) == SYS_ERR_PERM,
           "msi-register-with-wrong-cap-type");
 
+    /* ---- 12. a refused capability operation RETURNS ------------------- */
+
+    /* S52. Every other check in this file asks whether an unauthorised call is
+     * REFUSED. These ask the question one step earlier: whether the refusal
+     * comes back at all.
+     *
+     * cap_mint() and cap_transfer() used to resolve the caller's SOURCE slot
+     * through a helper that spun forever on a NULL lookup, while holding
+     * cap_lock with interrupts masked. All three of the inputs that make
+     * cap_lookup return NULL -- out of range, empty, or lacking the right -- are
+     * chosen by the caller, and h_cap_mint passes rbx/rcx/rdx through without
+     * touching them. So the four negative probes below were, until 2026-08-29,
+     * four ways for an unprivileged task to stop the machine.
+     *
+     * The stall is the whole observable: a task wedged inside a syscall prints
+     * nothing, so the arm for this asserts the ABSENCE of `CAPTEST: PASS` rather
+     * than a FAIL marker, exactly as smoke-captest-getline-control does.
+     *
+     * The positive probe is not decoration. Without it these four are satisfied
+     * by a syscall that refuses everything, and a mint that refuses everything
+     * would pass this section while breaking delegation entirely. Slot 40 is the
+     * endpoint this task retyped for itself in section 9, so it carries
+     * CAP_RIGHT_MINT and a mint from it must SUCCEED. */
+    out("CAPTEST: cap-derivation-probes\n");
+
+    /* Empty slot: a valid index naming nothing. */
+    check(sys_cap_mint(203, SLOT_EMPTY_HI, CAP_RIGHT_READ) != 0,
+          "mint-from-empty-slot-succeeded");
+    /* Out of range: past CNODE_SIZE entirely. */
+    check(sys_cap_mint(203, 300, CAP_RIGHT_READ) != 0,
+          "mint-from-out-of-range-slot-succeeded");
+    /* The same two doors into cap_transfer, which had the identical helper. */
+    check(sys_cap_transfer(204, SLOT_EMPTY_HI) != 0,
+          "transfer-from-empty-slot-succeeded");
+    /* SYS_CAP_MOVE is cap_transfer followed by cap_revoke, so it reaches the
+     * same resolver by a different syscall number. */
+    check(sys_cap_move(205, SLOT_EMPTY_HI) != 0,
+          "move-from-empty-slot-succeeded");
+
+    /* The positive: minting from a capability this task holds, with a right that
+     * capability carries, must work. */
+    check(sys_cap_mint(203, SLOT_RETYPED_EP, CAP_RIGHT_READ) == 0,
+          "mint-from-held-capability-refused");
+    /* And the delegate is narrower than its source, never wider: a READ-only
+     * mint of an endpoint cannot be sent through. */
+    check(sys_ipc_send(203, "x", 1) != 0,
+          "read-only-minted-endpoint-accepted-a-send");
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

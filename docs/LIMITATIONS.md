@@ -326,6 +326,42 @@ Witness `make smoke-passwd-probe` — the probe above, asserting all four doors 
 Falsified by `RAMFS_SLOT3_GATE=1` (`make smoke-passwd-probe-control`), which restores the four
 gates verbatim and reproduces all four openings on every boot.
 
+### 1.6b The task-creating syscalls are gated on the same slot-3 decoy, and it is documented as a gate
+
+*Found 2026-08-30 by audit, and it is **[H-3]**'s shape rather than **[H-3]** itself.*
+
+Seven dispatch entries authorise on cspace **slot 3** with `SC_ANYTYPE`:
+
+```c
+[SYS_SPAWN]       = { h_spawn,       3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_SPAWN_IMAGE] = { h_spawn_image, 3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_EXEC_NAMED]  = { h_exec_named,  3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_EXEC_IMAGE]  = { h_exec_image,  3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_FORK]        = { h_fork,        3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+```
+
+`create_task` installs a `CAP_FRAME` in slot 3 of **every** task with exactly
+`READ|WRITE|EXEC` (`src/kernel/scheduler.c`), so `WRITE|EXEC` on slot 3 is satisfied by a
+capability nobody asked for and everybody has. By **S28** that is not a gate.
+
+**Why this is a documentation defect and not an escalation.** Unlike **[H-3]**, where the decoy
+bought reach into the in-kernel ramfs, these syscalls confer nothing the caller did not already
+have: a fork copies the caller's own address space and cspace, and a spawn endows a child from
+what the spawner holds and never more (**S41**, **S42**). A vacuous gate in front of an
+operation that grants no new authority is dead weight, not a hole. The harm is in the
+description: `src/kernel/syscall.c` says fork "answers to the capability that gates the first",
+which reads as a restriction that does not exist, and `src/include/kernel.h` said the opposite
+("No capability of its own") until 2026-08-30 — two comments, in disagreement, both describing
+a check that admits everyone.
+
+**What would make it a gate**, and why it is not done here: a `CAP_TCB`-shaped authority to
+create tasks, so a task could be spawned without the right to spawn further tasks. That is
+roadmap 0.3's territory (`tasks[]` out of `.bss`, **[I-7]**) rather than a dispatch-table edit,
+because the capability would have to name something, and the thing it would name does not yet
+exist as a kernel object. Recorded here so the next reader of that table knows the entry is
+inherited shape rather than enforcement.
+
+
 ### 1.7 ~~Two syscall wrappers truncated their buffer pointer to 32 bits~~ — **FIXED 2026-08-20** — issue #176
 
 `sys_dmesg()` and `sys_audit_digest()` passed their buffer as
@@ -1380,7 +1416,7 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 `.github/workflows/ci.yml` defines **100** jobs, `codeql.yml` one more and `ruleset-audit.yml`
 one more — **102** across the three, producing **105** status-check contexts. Ruleset `21815299`
-requires all **101** today. Its predecessor `19007209`
+requires all **102** today. Its predecessor `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1458,7 +1494,7 @@ it — the two could diverge through a change in the GitHub UI with nothing in C
 `.github/workflows/ruleset-audit.yml` now runs `--check-ruleset` daily as a **GitHub App scoped
 to this repository with `Administration: read` and nothing else**: the token is minted per run,
 expires within the hour, and cannot modify the ruleset it reads. Its log states the comparison
-outcome explicitly (`live ruleset 19007209 : <n> required contexts, matches`, or `DIVERGED`, or
+outcome explicitly (`live ruleset <id> : <n> required contexts, matches`, or `DIVERGED`, or
 `NOT READ`), so a green run is self-evidencing rather than merely silent — the first live run
 could only be shown to have read anything by falsifying it afterwards with a bad token.
 

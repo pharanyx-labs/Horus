@@ -3075,6 +3075,15 @@ jobs:
       # added as 18, which CAPSLOT_UNTYPED already was.
       - name: The cspace slot map is consistent across both headers
         run: python3 tools/check_capslots.py
+      # Same shape, same file pair, same reason it rides along here. Seven structs
+      # cross the ring-3 boundary and are written down in BOTH headers because
+      # neither includes the other; nothing compared them. All seven agree today,
+      # which is exactly when to gate it -- the kernel fills these and copies them
+      # to a ring-3 buffer sized by the OTHER definition, and neither compiler
+      # sees both files, so drift is silent until it is a write past the end of a
+      # user buffer or a driver reading the wrong MMIO range.
+      - name: Every ABI struct is identical in both headers
+        run: python3 tools/check_abi_structs.py
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier

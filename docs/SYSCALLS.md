@@ -784,6 +784,8 @@ correct when mapped there.
 
 The answer is not ambient. A caller presents a `CAP_FRAME` over one of the library's own **text**
 frames, and the kernel replies only if that capability names a frame the library actually owns.
+**`data_first`/`data_pages` are a RANGE, and were a single index until the real libc was loaded through this call.** newlib's writable segment is two pages; a caller built on the single-index version asked for EXEC on the second and failed to map it. The demo object could not have shown that — its whole data segment was one `int`. The range is contiguous because the loader accepts exactly one writable `PT_LOAD`, which `tools/check_shared_object.py` enforces at build time.
+
 Two things follow, and both are asserted by `make smoke-shlib`: a capability of the wrong *type*
 is refused, and so is a `CAP_FRAME` of the wrong *object* — including the task's own private copy
 of the library's writable page, which it legitimately holds and which says nothing about holding

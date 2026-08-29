@@ -737,6 +737,20 @@ ASFLAGS += -DSHLIB_SELFTEST
 SHLIB_SELFTEST_DEP = userspace/shlibdemo.so userspace/shlibtest.bin userspace/shlibpeer.bin
 endif
 
+# SHLIBC_SELFTEST=1 loads the REAL shared libc instead of the demo object and
+# spawns a task that calls into it. Roadmap 2.5's remaining claim: the mechanism
+# runs newlib, not only an object written to demonstrate the mechanism.
+#
+# Separate from SHLIB_SELFTEST because shlib.c loads ONE object and which object
+# is a build choice. The two never build together, which is also why they can
+# share a capability-slot convention.
+SHLIBC_SELFTEST ?= 0
+ifeq ($(SHLIBC_SELFTEST),1)
+CFLAGS  += -DSHLIBC_SELFTEST
+ASFLAGS += -DSHLIBC_SELFTEST
+SHLIBC_SELFTEST_DEP = userspace/libc.so userspace/libctest.bin
+endif
+
 # NET_SELFTEST=1 embeds netd and, at boot, spawns it holding exactly two
 # capabilities -- a CAP_IO_DEVICE naming the machine's NIC, and the untyped region
 # it builds its DMA rings from. It brings up virtio-net over the legacy I/O BAR
@@ -1098,7 +1112,7 @@ VFS_SELFTEST ?= 0
 ifeq ($(VFS_SELFTEST),1)
 CFLAGS  += -DVFS_SELFTEST
 ASFLAGS += -DVFS_SELFTEST
-VFS_SELFTEST_DEP = userspace/dev_server.bin userspace/vfstest.bin
+VFS_SELFTEST_DEP = userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin
 endif
 
 # VFS_FIRST_MATCH=1 makes hvfs_resolve return the first matching mount instead
@@ -1938,7 +1952,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2578,7 +2592,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -2603,6 +2617,11 @@ userspace/shlib_offsets.h: userspace/shlibdemo.so tools/shlib_offsets.sh
 
 userspace/shlibtest.o userspace/shlibpeer.o: userspace/shlib_offsets.h
 
+# libctest indexes the shared libc's export table, so it needs the header
+# generated alongside that table -- never a remembered number.
+userspace/libctest.o: userspace/libc_exports.h
+userspace/libctest.o: CPPFLAGS += -I userspace
+
 # Flat self-test payloads: HORU-wrap the objcopy'd raw image (loaded flat).
 userspace/%.bin: userspace/%.raw tools/mkheadered
 	@name="$$(basename $@ .bin)"; ./tools/mkheadered $< $@ "$$name"
@@ -2610,7 +2629,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c tools/mkheadered
+	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
 # SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with
@@ -3818,6 +3837,39 @@ smoke-shlib-writable-control:
 # on aslr_random_offset, which is rejection-sampled over 2^30 positions and is
 # the same source the image loader uses. Stated rather than implied.
 .PHONY: smoke-shlib-aslr smoke-shlib-aslr-control
+# ---- The real shared libc, called from ring 3 -------------------------------
+#
+# Roadmap 2.5's remaining claim. Everything under smoke-shlib demonstrates the
+# MECHANISM's properties on a three-page demo object; this boots the real thing
+# -- newlib, its port glue and libhorus in one shared object -- and requires a
+# ring-3 task to map it and call into it.
+#
+# A demo object cannot fail the way a libc can: newlib has writable state
+# (_impure_ptr -- errno, stdio buffers, atexit list, rand state), calls back into
+# the port's syscall glue, and allocates. Each crosses the shared/private
+# boundary S50 draws, and none was exercised by an object whose whole data
+# segment was one int.
+.PHONY: smoke-shlibc
+smoke-shlibc:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1
+	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1 boot.iso
+	@# The probe must not carry a static copy of what it is testing. If libctest
+	@# defined strlen itself, the call would resolve locally, the library would
+	@# never be entered, and LIBCTEST: PASS would mean nothing -- a witness has to
+	@# be behind the mechanism it witnesses. Checked rather than assumed, and
+	@# checked BEFORE the boot so a failure names this rather than a marker.
+	@for sym in strlen strcmp sprintf _impure_ptr; do \
+		if nm --defined-only userspace/libctest.pie.elf 2>/dev/null | grep -qw "$$sym"; then \
+			echo "[shlibc] FAIL: libctest defines $$sym itself -- the call would never reach the library"; \
+			exit 1; \
+		fi; \
+	done
+	@echo "[shlibc] libctest defines none of the symbols it calls; they can only come from the library"
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='LIBCTEST: PASS' FAIL_MARKER='LIBCTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
 smoke-shlib-aslr:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1

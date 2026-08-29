@@ -2002,6 +2002,14 @@ jobs:
       # must name a library TEXT frame" has never been shown to fire.
       - name: Control arm — any frame capability answers, including the task's own data page
         run: make smoke-shlib-info-object-control
+      # Roadmap 2.5's remaining claim: not the mechanism's properties on a
+      # purpose-built demo, but the mechanism running the REAL libc. newlib has
+      # writable state, calls back into the port's syscall glue, and allocates —
+      # none of which an object whose whole data segment was one int could
+      # exercise. The target also checks statically that libctest defines none
+      # of the symbols it calls, so the calls cannot resolve locally.
+      - name: A ring-3 task calls newlib out of the shared library
+        run: make smoke-shlibc
 
   fpu:
     name: "A task cannot read another's XMM register file"

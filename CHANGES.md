@@ -16,6 +16,43 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A ring-3 task calls newlib out of the shared library (roadmap 2.5).** The mechanism has had
+  its properties since S49/S50/S51 — but all of them were demonstrated on `shlibdemo.so`, a
+  three-page object written for the purpose. `make smoke-shlibc` loads the **real** thing: 36
+  pages, 34 of shared text and 2 of per-task data, and requires a task to map it and call in.
+
+  `libctest` calls `strlen`/`strcmp` through the export table, checks that `_impure_ptr` resolves
+  *inside* the library's own per-task data, and formats a string with `sprintf` — a call that goes
+  **through** newlib's reentrancy state rather than only its pure text. A demo object could not
+  fail the way a libc can: newlib has writable state, calls back into the port's syscall glue, and
+  allocates, and none of that was exercised by an object whose entire data segment was one `int`.
+
+  The gate also checks **statically**, before booting, that `libctest` defines none of the symbols
+  it calls. If it did, the call would resolve locally, the library would never be entered, and
+  `LIBCTEST: PASS` would mean nothing — a witness has to be behind the mechanism it witnesses.
+  Falsified by giving the probe its own `strlen` and confirming the check fires. The probe is
+  10,192 bytes with 8 defined symbols, against the library's 711,952.
+
+  It calls **through the table by index** and links nothing, which is the honest shape of what
+  exists: there is no dynamic linker, so a program cannot yet resolve `strlen` by name and have it
+  bind to the library. Generating a stub per symbol is the next step and a build-system job; what
+  had to be true first is that the calls work.
+
+### Fixed
+
+- **`SYS_SHLIB_INFO` reported a single writable page index, and newlib has two.** `data_page` was
+  true of the three-page demo object and false of the real libc, whose writable segment spans two
+  pages. The probe asked for READ|EXEC on the second, its capability carried READ|WRITE, and the
+  map failed. Found on the first run of `smoke-shlibc`, and **only the real object could have
+  found it** — the demo's whole data segment was one `int`.
+
+  The call reports `data_first`/`data_pages` now. The range is contiguous because the loader
+  accepts exactly one writable `PT_LOAD`, which `check_shared_object.py` enforces at build time;
+  neither the handler nor the probe assumes it, and the handler counts what is marked. The ABI
+  landed in #238 the same day, so nothing outside the tree could have been built against the
+  single-index form.
+
+
 - **The shared library's base is drawn per boot, and is not ambient information (S51).** The
   guard, shipped before the mechanism it protects.
 

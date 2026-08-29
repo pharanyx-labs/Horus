@@ -1875,6 +1875,51 @@ passes** — the peer is handed its own stale image, which discloses nothing. On
 other leaks it. A single `FPU_BROKEN` flag would have reddened both markers at once and told you
 nothing about whether either check could fail on its own.
 
+### `smoke-shlibc` — a ring-3 task calls newlib out of the shared library
+
+Every other shlib gate demonstrates the **mechanism's properties** — text shared and unwritable
+(S49), data private per task (S50), base drawn per boot (S51) — on `shlibdemo.so`, a three-page
+object written for the purpose. This one loads the **real** shared libc: ~135 KiB of newlib, its
+port glue and libhorus, 36 pages (34 shared text, 2 per-task data), and requires a ring-3 task to
+map it and call in.
+
+**A demo object cannot fail the way a libc can**, which is the whole reason this exists. newlib
+has writable state (`_impure_ptr` — errno, the stdio buffers, the atexit list, the rand state), it
+calls back into the port's syscall glue, and it allocates. Each of those crosses the
+shared/private boundary S50 draws, and none was exercised by an object whose entire data segment
+was one `int`.
+
+What `libctest` asserts, in an order chosen so a failure isolates itself:
+
+| Check | What it establishes |
+|---|---|
+| `strlen`, `strcmp` through the table | shared text executes at the base the kernel reported |
+| `*_impure_ptr` lands inside `[base, base+pages*4096)` | the reentrancy pointer resolves into the library's **own per-task data**, not null and not outside the mapping |
+| `sprintf` returns `"horus-42"` | a call that goes **through** that writable state, not only through pure text |
+
+Pure text first, deliberately: if `strlen` does not work the library is not mapped where it was
+relocated for, and every later check would fail for that one reason.
+
+**The gate also checks something static, before booting.** `libctest` must define none of
+`strlen`, `strcmp`, `sprintf`, `_impure_ptr` itself. If it did, the call would resolve locally,
+the library would never be entered, and `LIBCTEST: PASS` would mean nothing — **a witness has to
+be behind the mechanism it witnesses**. Falsified by giving `libctest` its own `strlen` and
+confirming the check fires. Measured: the probe is 10,192 bytes with 8 defined symbols, against
+the library's 711,952.
+
+**THE FIRST RUN FOUND A DEFECT IN THE ABI, and it is the kind only the real object could find.**
+`SYS_SHLIB_INFO` reported `data_page` — a single index — which was true of the demo and false of
+newlib, whose writable segment is **two** pages. The probe asked for READ|EXEC on the second,
+its capability carried READ|WRITE, and the map failed (`LIBCTEST: FAIL partial-map`). The call
+reports `data_first`/`data_pages` now. The range is contiguous because the loader accepts exactly
+one writable `PT_LOAD`, which `check_shared_object.py` enforces at build time — the probe does not
+assume it, and neither does the handler, which counts what is marked.
+
+**One task, not two,** and the asymmetry with `smoke-shlib` is deliberate. That test's question is
+cross-task — can one holder write what another executes — and needs a peer to answer. This one's
+question is whether the library *works*, which one task settles. A second task here would be a
+second copy of a test that already exists rather than a stronger claim.
+
 ### `smoke-shlib-aslr` — the library does not load at the same address twice
 
 **Two boots, because the property is not observable from inside one.** A single run sees an

@@ -1019,7 +1019,22 @@ headline.
 "~450 KiB each" here was accurate about the file and misleading about the cause, and it pointed
 at a large migration when a one-line change was sitting in front of it.*
 
-**Still open, and now correctly sized:** the newlib half. Every newlib-linked binary statically links its own libc
+**The per-task data half landed 2026-08-29** (**S50**), and it is the half a libc actually needs.
+`userspace/shlib.ld` splits the object into two page-aligned segments: text, rodata and the export
+table SHARED between every task, `.data` and `.bss` instantiated PRIVATELY per task from the
+library's initial image. Text is endowed from a primordial carrying READ|EXEC and never WRITE;
+data from a separate one carrying READ|WRITE and never EXEC. The isolation is not in the rights —
+they are identical for every task — but in the *object* each capability names being a different
+frame.
+
+Measured going into this: of the **59** newlib symbols the shipped coreutils reference, exactly
+**three** are writable — `_impure_ptr` (errno, the stdio buffers, the atexit list, the rand
+state), `optarg` and `optind`. Shared, one task reads and writes another's errno and stdio buffers
+and can corrupt an allocator another task is mid-call in. Sharing a libc's text is an
+optimisation; sharing its data is a defect. Witness `make smoke-shlib`, falsified in two separable
+directions (`SHLIB_DATA_SHARED=1`, `SHLIB_DATA_UNINITIALISED=1`).
+
+**Still open:** the newlib half itself. Every newlib-linked binary statically links its own libc
 (~70 KiB of libc text each once stripped; 11 in `/bin`). A shared-object loader with capability-mediated mapping cuts the
 store requirement by an order of magnitude and makes a larger userspace practical — and it
 needs 2.1's frame capabilities first, which is why it sits behind them in the Track 2 order.
@@ -1383,7 +1398,7 @@ Ordered as in the audit's §7.5.
   so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
   claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
   The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-  **empty** — all 51 properties name a witness that resolves.
+  **empty** — all 52 properties name a witness that resolves.
 
   **What the survey found on the way.** **S16** had no witness at all — an em-dash against
   `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1422,7 +1437,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 155 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 62 of them control arms that must reproduce a defect |
+| ✅ | 157 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 64 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

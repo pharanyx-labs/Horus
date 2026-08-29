@@ -14,6 +14,68 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Added
+
+- **A shared library's writable data is private to each task (S50).** The half a libc actually
+  needs, and the reason the newlib migration could not simply reuse S49's mechanism as it stood.
+
+  `userspace/shlib.ld` splits the shared object into two page-aligned segments: text, rodata and
+  the export table SHARED between every task, `.data` and `.bss` instantiated PRIVATELY per task.
+  The writable frames the loader carves are a **template** holding the library's initial image,
+  which no task ever maps; `shlib_instantiate_data` carves a fresh frame per task and copies the
+  template into it. Text is endowed from a primordial carrying READ|EXEC and never WRITE; data
+  from a separate one carrying READ|WRITE and never EXEC, so a page a task may write is one it may
+  not jump into.
+
+  **The isolation is not in the rights** — every task holds identical rights over its library data
+  — it is in the *object* each capability names being a different frame. Rights say what may be
+  done; the object says to what.
+
+  **Why this blocks a shared libc, measured rather than assumed.** Of the 133 distinct undefined
+  symbols across the shipped coreutils, **59** resolve from newlib's `libc.a`, and of those exactly
+  **three** are writable: `_impure_ptr` (errno, the stdio buffers, the atexit list, the rand state),
+  `optarg` and `optind`. Shared, one task reads and writes another's errno and stdio buffers and can
+  corrupt an allocator another task is mid-call in. Sharing a libc's text is an optimisation;
+  sharing its data is a defect — the same argument S49 makes about text, one segment further on.
+
+  Falsified in two separable directions. `SHLIB_DATA_SHARED=1` hands every task the template frame
+  itself: `SHLIBTEST: FAIL peer-saw-our-data`, 3 boots in 3 — disclosure.
+  `SHLIB_DATA_UNINITIALISED=1` carves a private frame and zero-fills it:
+  `SHLIBTEST: FAIL data-not-initialised`, 3 boots in 3 — loss, and a libc whose `_impure_ptr` is
+  NULL does not leak, it simply does not work. `smoke-shlib` goes red under each.
+
+  **The witness is the peer's, and it has to be:** a task cannot distinguish a private copy from a
+  shared one by looking at its own writes. Only the task that wrote nothing can witness privacy.
+
+  **Only one direction of the arms' separability is witnessed, and the other is not claimed.**
+  Under `SHLIB_DATA_SHARED` the initialisation check still passes and that is visible on the wire.
+  The reverse is not observed — under `SHLIB_DATA_UNINITIALISED` `shlibtest` fails its own check
+  and exits before resuming the peer, so the privacy half never runs. It does still hold in the
+  code, but this arm does not witness it, so `TESTS.md` says so rather than implying otherwise.
+
+### Fixed
+
+- **The tests held a hardcoded copy of the library's layout.** `shlibtest.c` and `shlibpeer.c`
+  both located the export table at `SHLIB_VA + 0x4000` — correct for exactly one layout, and
+  `shlib.ld` moved it. A test that reads the wrong address does not fail honestly; it reads
+  whatever is there and reports on it. `tools/shlib_offsets.sh` now derives the export offset, page
+  count and data-page index from `shlibdemo.so` itself into a generated header, and refuses an
+  object with no writable segment (falsified against a deliberately writable-free object: exit 1).
+  The expected initialiser is likewise read from the library's own **text** rather than written
+  down in the test, so no constant exists in two places to drift.
+
+- **`userspace/shlibdemo.so` was a tracked build artifact** — the only one in `userspace/`,
+  committed by accident in #234. A generated file under version control can disagree with the
+  source it is generated from: on a fresh clone both get the same checkout timestamp, so whether
+  make rebuilds it is a race, and the kernel *embeds* this object. Untracked and gitignored, with
+  `*.so` added to `userspace-clean`, which did not remove it either — the same stale-artifact
+  hazard as the `libhorus.a` one fixed in #235, one file over.
+
+- **`TESTS.md` had no section for `smoke-shlib` at all.** S49 landed in #234 with a witness that
+  ran and an arm that reproduced, and no write-up. `invariants` binds an S-number to a target and
+  would have caught a *missing* witness, but nothing binds a witness to its documentation, so a
+  test can be real and undocumented. Recorded as the near-miss it is rather than quietly filled in.
+
 ### Changed
 
 - **Everything that ships is stripped, and finding out why is the entry to read.** Going into the

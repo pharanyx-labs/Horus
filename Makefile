@@ -106,7 +106,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
-	SHLIB_TEXT_WRITABLE
+	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -714,9 +714,15 @@ endif
 # no entry point in the runnable sense, so the field is free, and using it means
 # the loader neither guesses a layout nor trusts a section name to survive the
 # toolchain.
-userspace/shlibdemo.so: userspace/shlibdemo.c
+#
+# -T userspace/shlib.ld splits the object into a SHARED read+exec segment and a
+# PER-TASK read+write one, page-aligned apart. That split is S50 and the reason
+# the script exists; see the header comment there for what the default script
+# does instead and why it cannot work.
+userspace/shlibdemo.so: userspace/shlibdemo.c userspace/shlib.ld
 	$(CC) -shared -fPIC -m64 -ffreestanding -nostdlib -fno-stack-protector \
 	  -fno-plt -fvisibility=hidden -Wl,-e,shlib_exports -Wl,--build-id=none \
+	  -Wl,-T,userspace/shlib.ld \
 	  -O2 -o $@ $<
 
 # SHLIB_SELFTEST=1 embeds that object and, at boot, loads it once into frames and
@@ -828,6 +834,31 @@ endif
 SHLIB_TEXT_WRITABLE ?= 0
 ifeq ($(SHLIB_TEXT_WRITABLE),1)
 CFLAGS += -DSHLIB_TEXT_WRITABLE
+endif
+
+# SHLIB_DATA_SHARED=1 endows every task with the SAME frame for the shared
+# library's writable data, instead of a private copy carved from the template.
+# One task's store to the library's .data is then visible to every other -- for
+# real newlib that is another task's errno, stdio buffers and malloc arena.
+#
+# THE DISCLOSURE ARM FOR S50. `make smoke-shlib-data-shared-control` requires
+# SHLIBTEST: FAIL peer-saw-our-data.
+SHLIB_DATA_SHARED ?= 0
+ifeq ($(SHLIB_DATA_SHARED),1)
+CFLAGS += -DSHLIB_DATA_SHARED
+endif
+
+# SHLIB_DATA_UNINITIALISED=1 gives each task a PRIVATE data frame and zero-fills
+# it rather than copying the library's initial image. Loss, not disclosure, and
+# separable from SHLIB_DATA_SHARED on purpose: each arm's other half still
+# passes, which is what shows the two checks are independent. Same shape as the
+# FPU pair (FPU_NO_SAVE / FPU_NO_RESTORE), for the same reason.
+#
+# THE INITIALISATION ARM FOR S50. `make smoke-shlib-data-init-control` requires
+# SHLIBTEST: FAIL data-not-initialised.
+SHLIB_DATA_UNINITIALISED ?= 0
+ifeq ($(SHLIB_DATA_UNINITIALISED),1)
+CFLAGS += -DSHLIB_DATA_UNINITIALISED
 endif
 
 MSIX_TABLE_MAPPABLE ?= 0
@@ -2465,6 +2496,16 @@ userspace/hello_image.h: userspace/hello.bin
 
 userspace/proctest.o: userspace/hello_image.h
 
+# The shared library's layout, derived from the object rather than written down
+# in the tests. shlibtest.c and shlibpeer.c held a hardcoded export-table offset
+# (SHLIB_VA + 0x4000) until 2026-08-29; shlib.ld moved it, and a test reading the
+# wrong address does not fail honestly -- it reads whatever is there. Generated
+# from shlibdemo.so so the two cannot disagree.
+userspace/shlib_offsets.h: userspace/shlibdemo.so tools/shlib_offsets.sh
+	@./tools/shlib_offsets.sh $< $@
+
+userspace/shlibtest.o userspace/shlibpeer.o: userspace/shlib_offsets.h
+
 # Flat self-test payloads: HORU-wrap the objcopy'd raw image (loaded flat).
 userspace/%.bin: userspace/%.raw tools/mkheadered
 	@name="$$(basename $@ .bin)"; ./tools/mkheadered $< $@ "$$name"
@@ -2472,7 +2513,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.a userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h tools/mkheadered
+	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
 # SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with
@@ -3651,6 +3692,57 @@ smoke-shlib-writable-control:
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_TEXT_WRITABLE=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SHLIBTEST: FAIL peer-saw-patched-code' \
+		tools/smoke_test.sh boot.iso
+
+# ---- S50, arm 1: the library's writable data, SHARED ------------------------
+#
+# Every task endowed with the same frame for the library's .data, instead of a
+# private copy. shlibtest writes its sentinel; the peer, which wrote nothing,
+# reads it back. For real newlib that value is another task's errno, stdio
+# buffers and malloc arena -- so this is disclosure AND corruption, and it is
+# why a libc could not simply be moved onto the S49 mechanism as it stood.
+#
+# The marker is the PEER's, not shlibtest's: shlibtest cannot tell a private
+# copy from a shared one by looking at its own writes. Only the task that never
+# wrote can witness it.
+smoke-shlib-data-shared-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_SHARED=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_SHARED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SHLIBTEST: FAIL peer-saw-our-data' \
+		tools/smoke_test.sh boot.iso
+
+# ---- S50, arm 2: the copy is private, but never initialised -----------------
+#
+# A private frame per task, zero-filled rather than copied from the library's
+# image. LOSS where the arm above is DISCLOSURE, and two flags rather than one
+# because they break different halves of S50 -- the FPU pair is the same shape
+# for the same reason.
+#
+# WHAT SEPARABILITY IS ACTUALLY WITNESSED, since only one direction of it is.
+# Under arm 1 the data IS correctly initialised, and that is observable on the
+# wire: `SHLIBTEST: data initialised from the image, and written` prints before
+# the peer reports the disclosure. The reverse is NOT observed -- under this arm
+# shlibtest fails its own initialisation check and exits before it ever resumes
+# the peer, so the peer's privacy check does not run. The privacy property does
+# still hold here in the code (a fresh frame is carved either way; only the copy
+# is skipped), but this arm does not witness it and the claim is not made.
+#
+# That asymmetry is the probe stopping at its first failure, which is a choice
+# about what an arm demonstrates rather than an accident -- the same reason
+# smoke-shlib-writable-control skips the refusal checks deliberately. Recorded
+# rather than papered over: a detector that halts truncates its own evidence.
+#
+# A libc whose data is private but uninitialised is a libc whose _impure_ptr is
+# NULL: it does not leak anything, it just does not work. That is a different
+# defect and it gets a different arm.
+smoke-shlib-data-init-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_UNINITIALISED=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_UNINITIALISED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SHLIBTEST: FAIL data-not-initialised' \
 		tools/smoke_test.sh boot.iso
 
 # The MSI path, on an 82574L -- the device model that HAS an MSI capability, and

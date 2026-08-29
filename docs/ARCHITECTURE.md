@@ -297,12 +297,35 @@ On a machine with no DMAR the kernel says so on the wire and `iommu_active()` st
 caller then behaves as it did before, which is the honest degradation rather than a property
 quietly claimed and not held.
 
-### Shared library text
+### Shared library text, and per-task library data
 
 `src/kernel/shlib.c` loads a shared object **once** into frames at boot, relocates
 it against a fixed base, and hands every task a `CAP_FRAME` over those frames
 carrying READ and EXEC and never WRITE. Two tasks then execute the same physical
 pages and neither can write them (**S49**).
+
+**Its writable segment is not shared** (**S50**). `userspace/shlib.ld` puts the
+object into two page-aligned `PT_LOAD`s — text, rodata and the export table in one,
+`.data` and `.bss` in the other — and the loader treats them differently. The
+writable pages' frames are a **template**, holding the library's initial image,
+which no task ever maps; `shlib_instantiate_data` carves a fresh frame per task and
+copies the template into it. Those are endowed from a *separate* primordial carrying
+READ and WRITE and never EXEC, so a page a task may write is one it may not jump
+into.
+
+**The isolation is not in the rights.** Every task holds identical rights over its
+library data. It is in the *object* each capability names being a different frame —
+rights say what may be done, the object says to what. A libc needs this before it can
+be shared at all: of the 59 newlib symbols the shipped coreutils reference, three are
+writable (`_impure_ptr`, `optarg`, `optind`), and sharing those means one task reading
+and writing another's errno, stdio buffers and malloc arena.
+
+Which pages are writable is read off the program headers (`PF_W`, sized by `memsz` so
+`.bss` counts), and rounded **outward** — a page shared between a read-only and a
+writable segment is counted writable, so the imprecision falls on the side of *this
+task gets its own copy*. The linker script page-aligns the boundary so that case does
+not arise, but a linker script is not an enforcement mechanism and the loader does not
+depend on it.
 
 **The enforcement is S27's rights floor, not the loader's intent.** The primordial
 capability never held WRITE, and rights only ever narrow on delegation, so no

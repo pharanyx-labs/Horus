@@ -60,9 +60,24 @@ static uint32_t shlib_text_count;
 static uint64_t shlib_entry_table;      /* vaddr of the library's export table */
 static int      shlib_ready;
 
+/* Which pages came from a PF_W PT_LOAD. Those are the library's DATA, and the
+ * frames carved for them here are a TEMPLATE -- the library's initial image --
+ * rather than something any task maps. Each task gets its own copy (S50). */
+static uint8_t  shlib_page_w[SHLIB_MAX_PAGES];
+
 int shlib_active(void) { return shlib_ready; }
 uint32_t shlib_pages(void) { return shlib_text_count; }
 uint64_t shlib_base(void) { return SHLIB_BASE; }
+
+/* Non-zero if page `i` is the library's writable data rather than its text.
+ * The caller uses this to decide WHICH primordial a page is endowed from, so a
+ * wrong answer here is a rights decision made on the wrong basis -- it fails
+ * closed (an out-of-range page reports "not writable", so it would be endowed
+ * read+exec and a write to it would fault) rather than open. */
+int shlib_page_writable(uint32_t i) {
+    if (i >= shlib_text_count) return 0;
+    return shlib_page_w[i] != 0;
+}
 
 /* The frame index of text page `i`, for minting a capability over it. */
 uint32_t shlib_frame_index(uint32_t i) {
@@ -115,6 +130,31 @@ int shlib_init(const uint8_t *elf, uint64_t len) {
     uint32_t pages = (uint32_t)((hi + PAGE_SIZE - 1) / PAGE_SIZE);
     if (pages == 0 || pages > SHLIB_MAX_PAGES) return -1;
 
+    /* Mark every page a PF_W segment touches, BEFORE anything is carved.
+     *
+     * memsz and not filesz: .bss has no bytes in the file and is still writable
+     * data, and a page of it endowed read+exec would fault on the library's
+     * first store. Rounding is deliberately OUTWARD -- a page shared between a
+     * read-only and a writable segment is counted writable -- because the
+     * imprecision has to fall on the side of "this task gets its own copy". The
+     * opposite rounding would share a page some task then writes, which is
+     * exactly the disclosure S50 exists to refuse. shlib.ld page-aligns the
+     * boundary so the ambiguous case does not arise; this loop does not depend
+     * on that holding, because a linker script is not an enforcement mechanism. */
+    for (uint16_t i = 0; i < phnum; i++) {
+        const uint8_t *ph = elf + phoff + (uint64_t)i * phentsz;
+        if (*(const uint32_t *)(ph + 0) != 1) continue;            /* PT_LOAD */
+        uint32_t p_flags = *(const uint32_t *)(ph + 4);
+        if (!(p_flags & 2)) continue;                              /* PF_W */
+        uint64_t vaddr = *(const uint64_t *)(ph + 16);
+        uint64_t memsz = *(const uint64_t *)(ph + 40);
+        if (memsz == 0) continue;
+        uint64_t first = vaddr / PAGE_SIZE;
+        uint64_t last  = (vaddr + memsz - 1) / PAGE_SIZE;
+        if (last >= pages) return -1;
+        for (uint64_t pg = first; pg <= last; pg++) shlib_page_w[pg] = 1;
+    }
+
     /* Carve from UNTYPED_KERNEL, not the user-facing region. These frames back
      * code every task executes; they must not come out of a budget ring 3 can
      * exhaust, and no capability naming that region is ever minted. */
@@ -161,10 +201,15 @@ int shlib_init(const uint8_t *elf, uint64_t len) {
     shlib_entry_table = SHLIB_BASE + entry;
 
     shlib_ready = 1;
+    uint32_t wpages = 0;
+    for (uint32_t p = 0; p < shlib_text_count; p++) if (shlib_page_w[p]) wpages++;
+
     kmsg_begin();
     print("shlib: ");
     print_decimal((uint64_t)shlib_text_count);
-    print(" pages loaded, read+exec only; no task can write another's code\n");
+    print(" pages loaded (");
+    print_decimal((uint64_t)wpages);
+    print(" per-task data); no task can write another's code or read its data\n");
 
     return 0;
 }
@@ -222,6 +267,64 @@ static int shlib_relocate_impl(const uint8_t *elf, uint64_t len, uint64_t phoff,
             SHLIB_BASE + (uint64_t)r_add;
     }
     return 0;
+}
+
+/* Carve a PRIVATE copy of writable page `page` for one task, and return its
+ * frame index (0 on failure).
+ *
+ * THIS IS S50. The frames shlib_init carved are a template: they hold the
+ * library's initial image and no task ever maps them. A task that maps the
+ * library's data maps a frame of its own, copied from that template, so it sees
+ * the library's initialisers and never another task's writes.
+ *
+ * WHY PRIVATE DATA IS NOT A CONVENIENCE. Of the 59 newlib symbols the shipped
+ * coreutils reference, three are writable: _impure_ptr -- which is errno, the
+ * stdio buffers, the atexit list and the rand state -- plus optarg and optind.
+ * Shared, one task reads another's stdio buffers and errno, and a write through
+ * a shared malloc arena corrupts an allocator another task is mid-call in. That
+ * is strictly worse than the per-program static copies it replaces, which is
+ * the same argument S49 makes about text arriving one segment further on.
+ *
+ * The copy is made from the RELOCATED template, once, and never re-relocated:
+ * shlib_init applied R_X86_64_RELATIVE against SHLIB_BASE before any task
+ * existed, and the library is mapped at that same base everywhere, so a pointer
+ * in .data is already correct in every copy.
+ *
+ * Carved from UNTYPED_KERNEL for the reason the text frames are: this is a
+ * per-task allocation driven by task creation, and a budget ring 3 could
+ * exhaust would make library instantiation a denial of service. */
+uint32_t shlib_instantiate_data(uint32_t page) {
+    if (!shlib_ready || page >= shlib_text_count) return 0;
+    if (!shlib_page_w[page]) return 0;          /* text is shared, not copied */
+
+#ifdef SHLIB_DATA_SHARED
+    /* Control arm: hand back the TEMPLATE frame itself, so every task maps the
+     * same physical page and the library's data is shared. One task's write to
+     * shlib_counter is then visible to every other -- the disclosure this
+     * property refuses. See make smoke-shlib-data-shared-control. */
+    return shlib_text_frames[page];
+#else
+    uint32_t idx = 0;
+    void *mem = kobj_alloc(UNTYPED_KERNEL, KOBJ_FRAME, 1, &idx);
+    if (!mem || idx == 0) return 0;
+
+    uint8_t *dst = (uint8_t *)mem;
+#ifdef SHLIB_DATA_UNINITIALISED
+    /* Control arm: a private frame, but zero-filled instead of copied from the
+     * library's image. Separable from SHLIB_DATA_SHARED on purpose -- this one
+     * is LOSS where that one is DISCLOSURE, and each arm's other half still
+     * passes, which is what shows the two checks are independent. The FPU pair
+     * (FPU_NO_SAVE / FPU_NO_RESTORE) is the same shape and the reason this is
+     * two flags rather than one. */
+    for (uint32_t k = 0; k < PAGE_SIZE; k++) dst[k] = 0;
+#else
+    uint64_t src_phys = frame_phys_by_index(shlib_text_frames[page]);
+    if (!src_phys) return 0;
+    const uint8_t *src = (const uint8_t *)PHYS_KVA(src_phys);
+    for (uint32_t k = 0; k < PAGE_SIZE; k++) dst[k] = src[k];
+#endif
+    return idx;
+#endif
 }
 
 /* The library's export table lives at its base: a fixed array of function

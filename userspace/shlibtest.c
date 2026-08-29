@@ -20,8 +20,16 @@
 static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
 static void wr(const char *s) { sys_write(1, s, slen(s)); }
 
-#define SLOT_SHLIB_FIRST 40          /* READ|EXEC caps over the library's pages */
+#define SLOT_SHLIB_FIRST 40          /* caps over the library's pages */
 #define SHLIB_VA         0x0000000300000000ULL
+
+/* SHLIB_EXPORTS_OFF, SHLIB_PAGES and SHLIB_DATA_PAGE are DERIVED from
+ * shlibdemo.so at build time by tools/shlib_offsets.sh. They were hardcoded
+ * until 2026-08-29 -- the export table was `SHLIB_VA + 0x4000` here and in
+ * shlibpeer.c -- and the linker script that split the object into a shared and a
+ * per-task segment moved it. A test that reads the wrong address does not fail
+ * honestly; it reads whatever is there and reports on it. */
+#include "shlib_offsets.h"
 
 /* The library's export table, at its base +e_entry. Index, not name: resolving
  * by name is what a dynamic linker does and this mechanism does not have one
@@ -30,8 +38,16 @@ struct shlib_exports {
     int (*add)(int, int);
     int (*magic)(void);
     int (*checksum)(const char *);
+    int (*state_get)(void);
+    void (*state_set)(int);
+    int (*state_initial)(void);
     const void *end;
 };
+
+/* The value this task writes into its own copy of the library's data. Arbitrary,
+ * and deliberately not the initialiser: the peer distinguishes "I saw my own
+ * initialised copy" from "I saw the value the other task wrote". */
+#define OUR_STATE 0x0BADF00D
 
 #define MAGIC_EXPECTED 0x5A5A1234
 
@@ -42,17 +58,30 @@ void _start(void) {
      * READ|EXEC is all we ask for, and all we could get: the capabilities were
      * minted without WRITE, and rights only ever narrow on delegation (S27). */
     unsigned pages = 0;
-    for (unsigned i = 0; i < 32; i++) {
+    for (unsigned i = 0; i < SHLIB_PAGES; i++) {
+        /* Each page is asked for the rights ITS capability carries, and the two
+         * sets are disjoint on purpose: text is READ|EXEC and never writable
+         * (S49), data is READ|WRITE and never executable (W^X -- this task can
+         * write the page, so it must not be able to jump into what it wrote).
+         *
+         * Asking uniformly would fail on whichever page it guessed wrong, and a
+         * loop that breaks on first failure would then report "no pages" rather
+         * than the property under test. */
+        unsigned rights = (i == SHLIB_DATA_PAGE)
+                        ? (CAP_RIGHT_READ | CAP_RIGHT_WRITE)
+                        : (CAP_RIGHT_READ | CAP_RIGHT_EXEC);
         int rc = sys_map_frame(SLOT_SHLIB_FIRST + i, SHLIB_VA + (unsigned long long)i * 4096,
-                               CAP_RIGHT_READ | CAP_RIGHT_EXEC);
+                               rights);
         if (rc != 0) break;
         pages = i + 1;
     }
     if (pages == 0) { wr("SHLIBTEST: FAIL no-pages-mapped\n"); sys_exit(); }
+    if (pages != SHLIB_PAGES) { wr("SHLIBTEST: FAIL partial-map\n"); sys_exit(); }
 
     /* (2) Call into it. The entry table's address is what the kernel put in the
      * library's e_entry; the loader mapped the whole object at SHLIB_VA. */
-    struct shlib_exports *ex = (struct shlib_exports *)(unsigned long)(SHLIB_VA + 0x4000);
+    struct shlib_exports *ex =
+        (struct shlib_exports *)(unsigned long)(SHLIB_VA + SHLIB_EXPORTS_OFF);
     if (ex->magic == 0 || ex->add == 0) { wr("SHLIBTEST: FAIL no-export-table\n"); sys_exit(); }
 
     if (ex->magic() != MAGIC_EXPECTED) { wr("SHLIBTEST: FAIL wrong-magic\n"); sys_exit(); }
@@ -60,6 +89,37 @@ void _start(void) {
     if (ex->checksum("horus") != ex->checksum("horus")) {
         wr("SHLIBTEST: FAIL unstable-checksum\n"); sys_exit();
     }
+
+    /* (2b) THE OTHER HALF, S50: this task's copy of the library's writable data.
+     *
+     * Two separate claims, checked separately because two separate arms break
+     * them separately:
+     *
+     *   initialised -- the copy carries the library's initialisers, not zeroes.
+     *                  SHLIB_DATA_UNINITIALISED=1 breaks this and nothing else.
+     *   private     -- no other task sees what this one writes. Only the PEER
+     *                  can witness that, which is why the sentinel is written
+     *                  here and judged there.
+     *
+     * The expected value comes from the library's own TEXT (state_initial),
+     * never from a literal here: a constant written down in this file would be a
+     * second copy of a fact shlibdemo.c owns, and the two would drift. */
+    if (ex->state_get == 0 || ex->state_set == 0 || ex->state_initial == 0) {
+        wr("SHLIBTEST: FAIL no-state-exports\n"); sys_exit();
+    }
+    if (ex->state_get() != ex->state_initial()) {
+        wr("SHLIBTEST: FAIL data-not-initialised\n"); sys_exit();
+    }
+
+    /* Write our sentinel through the library's own accessor -- a real store to
+     * the library's .data, made by library code, which is what a libc doing
+     * `errno = EINVAL` would be. If this faults, the data page was mapped
+     * read-only and the property is broken in the other direction. */
+    ex->state_set(OUR_STATE);
+    if (ex->state_get() != OUR_STATE) {
+        wr("SHLIBTEST: FAIL own-write-not-visible\n"); sys_exit();
+    }
+    wr("SHLIBTEST: data initialised from the image, and written\n");
 
     /* (3) THE ASSERTION. Try to obtain a writable mapping of the same frames,
      * every way the ABI offers.

@@ -437,12 +437,43 @@ void _start(void) {
      * separately: an interrupt that never arrives leaves `NETTEST: PASS` standing
      * and only `IRQ PASS` missing. The transmit has already completed, so TXDW is
      * pending in ICR and enabling IMS raises the line at once. */
+    /* MSI where the device has it, the INTx line otherwise.
+     *
+     * NOTE WHAT THIS DRIVER CANNOT SAY: which vector. sys_msi_register takes a
+     * device and a notification and nothing else -- the kernel allocates the
+     * vector and programs the capability, because an MSI's data word IS the
+     * vector and a driver able to choose one could raise the timer's, another
+     * driver's, or an exception gate (S47). The INTx path still names a line, but
+     * a line is a fact about the board that S43 checks against the device; a
+     * vector would be a free choice.
+     *
+     * MSI also needs no acknowledgement: it is a message, edge by construction,
+     * so no line stays asserted and S46's mask-until-acked does not apply. */
     int irq = -1;
-    for (int i = 0; i < 16; i++) if (nic.irq_mask & (1u << i)) { irq = i; break; }
-    if (irq < 0) { wr("NETTEST: FAIL no-irq-line\n"); sys_exit(); }
+    int used_msi = 0;
 
-    if (sys_irq_register(NIC_SLOT, (uint32_t)irq, NOTIF_SLOT, IRQ_BADGE) != 0) {
-        wr("NETTEST: FAIL irq-register\n"); sys_exit();
+    if (nic.msi_capable) {
+#ifdef MSI_VECTOR_FROM_USER
+        /* The control arm's driver: it asks for vector 13 (#GP). On a kernel that
+         * honours a caller-supplied vector, every task on the machine then starts
+         * taking general-protection faults it never caused, and the fault is
+         * attributed to whatever was interrupted. On the real kernel this extra
+         * argument is ignored, because the ABI has no field for it. */
+        if (syscall6(SYS_MSI_REGISTER, NIC_SLOT, NOTIF_SLOT, IRQ_BADGE, 13, 0, 0) != 0) {
+            wr("NETTEST: FAIL msi-register\n"); sys_exit();
+        }
+#else
+        if (sys_msi_register(NIC_SLOT, NOTIF_SLOT, IRQ_BADGE) != 0) {
+            wr("NETTEST: FAIL msi-register\n"); sys_exit();
+        }
+#endif
+        used_msi = 1;
+    } else {
+        for (int i = 0; i < 16; i++) if (nic.irq_mask & (1u << i)) { irq = i; break; }
+        if (irq < 0) { wr("NETTEST: FAIL no-irq-line\n"); sys_exit(); }
+        if (sys_irq_register(NIC_SLOT, (uint32_t)irq, NOTIF_SLOT, IRQ_BADGE) != 0) {
+            wr("NETTEST: FAIL irq-register\n"); sys_exit();
+        }
     }
     mmio_w(E1000_IMS, ICR_TXDW | ICR_RXT0 | ICR_RXO | ICR_RXDMT0);
 
@@ -467,11 +498,11 @@ void _start(void) {
          * makes the device drop its interrupt line. The ACK is deliberately NOT
          * here -- the masked-window test below needs the line still masked, and
          * acknowledging is what ends that window. */
-        /* Service the device -- reading ICR is read-to-clear, so this is what
-         * makes it drop its line. The ACK is deliberately NOT here: the masked
-         * window below needs the line still masked, and acknowledging ends it. */
+        /* Service the device -- reading ICR is read-to-clear. For INTx the ACK is
+         * deliberately NOT here: the masked window below needs the line still
+         * masked, and acknowledging ends it. For MSI there is nothing to ack. */
         unsigned int cause = mmio_r(E1000_ICR);
-        wr("NETD: irq serviced");
+        wr(used_msi ? "NETD: msi serviced" : "NETD: irq serviced");
         if (cause & ICR_TXDW)   wr(" txdw");
         if (cause & ICR_RXT0)   wr(" rxt0");
         if (cause & ICR_RXO)    wr(" rxo");
@@ -497,6 +528,15 @@ void _start(void) {
          * The wait ordering is deliberate: poll REPEATEDLY while masked rather
          * than once, so this fails if the notification arrives at any point in
          * the window rather than only in the instant after the transmit. */
+        if (used_msi) {
+            /* An MSI leaves no line asserted, so S46's mask-until-acknowledged
+             * has nothing to act on and the masked-window test below does not
+             * apply. Said explicitly rather than silently skipped, because a gate
+             * that quietly stops asserting something is how a property goes
+             * unwitnessed. The ARP exchange still runs after this. */
+            wr("NETTEST: MSI PASS\n");
+        } else {
+
         txr[1].addr   = txbuf_dma;
         txr[1].length = 60;
         txr[1].cmd    = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
@@ -527,6 +567,7 @@ void _start(void) {
             wr("NETTEST: FAIL irq-final-ack\n"); for (;;) sys_yield();
         }
         wr("NETTEST: MASK PASS\n");
+        }
 
 
 
@@ -606,7 +647,11 @@ void _start(void) {
      * has been observed exactly once, so the receive path is not categorically
      * broken -- but it is not reliable either, and one observation is not a
      * property. Reported either way so the next person has the signal. */
-    if (got) wr("NETD: RX observed\n");
+    /* Gated on the 82574L, where it is reliable (5 boots in 5), and NOT on the
+     * 82540EM, where a reply has been seen exactly once in many attempts. Same
+     * driver, same code path, two device models -- which is what localised the
+     * problem to the model rather than the driver. docs/LIMITATIONS.md 2.14. */
+    if (got) wr("NETTEST: RX PASS\n");
     else     wr("NETD: no arp reply after retries (LIMITATIONS 2.14)\n");
 
     for (;;) sys_yield();

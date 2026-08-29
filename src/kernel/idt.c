@@ -671,6 +671,18 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
             kfault_str("\nKERNEL FATAL EXCEPTION - halting\n");
             kfault_end(1);
         }
+    } else if (vector >= MSI_VECTOR_BASE &&
+               vector < MSI_VECTOR_BASE + MSI_VECTOR_COUNT) {
+        /* A message-signalled interrupt. EOI to the LAPIC and deliver -- no mask,
+         * because an MSI is a message rather than a level: one write, one
+         * interrupt, and no line left asserted to re-deliver. S46's masking exists
+         * for the INTx case and would be ceremony here.
+         *
+         * msi_dispatch drops a message whose route is gone (a dead driver), which
+         * is the fail-closed outcome: the device keeps sending into nothing rather
+         * than a later task inheriting the previous owner's wakeups. */
+        *(volatile uint32_t *)0xFEE000B0UL = 0;   /* LAPIC EOI */
+        (void)msi_dispatch(vector);
     } else if (vector >= 34 && vector <= 47 && irq_reg[vector - 32].active) {
         /* ---- A REGISTERED PCI (or other legacy) LINE -----------------------
          *
@@ -1046,6 +1058,26 @@ void idt_init64(void)
      * Installed unconditionally rather than when a driver registers: a gate for a
      * masked line costs nothing and can never fire, whereas a line unmasked one
      * instruction before its gate exists is exactly the window above. */
+    /* MSI vectors 48..63, for the reason the paragraph above gives: a vector with
+     * no gate raises #GP against whatever was interrupted, so the first message a
+     * device sent would kill an innocent task. Installed unconditionally, because
+     * a gate for a vector nothing is programmed to raise costs nothing and can
+     * never fire, whereas a device programmed one instruction before its gate
+     * exists is exactly that window. */
+    extern void isr48(void); extern void isr49(void); extern void isr50(void);
+    extern void isr51(void); extern void isr52(void); extern void isr53(void);
+    extern void isr54(void); extern void isr55(void); extern void isr56(void);
+    extern void isr57(void); extern void isr58(void); extern void isr59(void);
+    extern void isr60(void); extern void isr61(void); extern void isr62(void);
+    extern void isr63(void);
+    static void (*const msi_stubs[])(void) = {
+        isr48, isr49, isr50, isr51, isr52, isr53, isr54, isr55,
+        isr56, isr57, isr58, isr59, isr60, isr61, isr62, isr63
+    };
+    for (unsigned v = 0; v < sizeof(msi_stubs)/sizeof(msi_stubs[0]); v++)
+        idt64_set_gate((uint8_t)(MSI_VECTOR_BASE + v), (uint64_t)msi_stubs[v],
+                       0x08, 0, 0x8E);
+
     extern void isr34(void); extern void isr35(void); extern void isr36(void);
     extern void isr37(void); extern void isr38(void); extern void isr39(void);
     extern void isr40(void); extern void isr41(void); extern void isr42(void);

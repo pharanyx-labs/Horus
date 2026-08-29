@@ -2495,6 +2495,11 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     /* Drop any IRQ->notification routing this task registered, so a hardware IRQ
      * cannot keep notifying a dead task's slot. */
     irq_notify_clear_task(id);
+    /* And any message-signalled route it owned. The device stays enabled and its
+     * vector allocated -- see msi_clear_task for why reclaiming is the unsafe
+     * direction -- but its messages are dropped rather than delivered to whatever
+     * task next occupies this slot. */
+    msi_clear_task(id);
 
     /* Revoke native port I/O: task slots are reused without being zeroed (do_spawn
      * only re-inits selected fields), and io_device is otherwise never cleared, so

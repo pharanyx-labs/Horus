@@ -212,8 +212,10 @@ the IOMMU, so a virtio driver cannot witness a DMA-confinement property at all. 
 version of this driver kept working with an empty device address space — see the header of
 `userspace/netd.c` for the measurement.
 
-It is woken by its device's own interrupt and acknowledges it (**S46**), which is what unmasks
-the line for the next one; its receive path does not work yet (`docs/LIMITATIONS.md` §2.14).
+It is woken by its device's own interrupt — by **MSI** where the device has one (an 82574L), and
+by a legacy line it acknowledges (**S46**) where it does not (an 82540EM). Both are gated:
+`make smoke-net` and `make smoke-net-intx`, one driver against two device models. Its receive
+path works on the former and not the latter (`docs/LIMITATIONS.md` §2.14).
 
 ### Interrupt routing
 
@@ -243,6 +245,27 @@ messages from an I/O APIC or MSI and never to the 8259's direct delivery. On its
 own it closes nothing: a device today can only assert the INTx line firmware gave
 it. That changes the moment MSI exists, because an MSI is a memory write and a
 device that can DMA anywhere can write any vector.
+
+### Message-signalled interrupts
+
+An MSI is a memory **write** the device performs, carrying a data word whose low byte is the
+interrupt **vector**. So with MSI, *which interrupt does this device raise* stops being a fact
+about the board and becomes a value in a register — a much sharper question than INTx posed,
+where a device can only assert the line firmware gave it.
+
+`src/kernel/msi.c` allocates the vector (48–63, disjoint from the legacy 32–47 block and below
+the LAPIC timer at 64) and `src/kernel/pci.c` programs the capability. **`SYS_MSI_REGISTER` takes
+no vector argument**: a driver names a device and a notification, and the ABI gives it nowhere to
+express a preference. `SECURITY.md` **S47**; witness `make smoke-net`.
+
+That is only enforceable because configuration space is unreachable from ring 3 (**S43**) and
+`SYS_DEVICE_ENABLE` reaches exactly three decode bits (**S44**). MSI is what makes that
+strictness load-bearing rather than tidy — and every write to the capability lives in `pci.c`,
+the one file that touches configuration space at all, because exporting a general config-space
+write would hand any future caller both a vector and a BAR.
+
+Unlike **S46**'s INTx path there is no masking and no acknowledgement: an MSI is edge by
+construction, so no line stays asserted and there is no livelock to prevent.
 
 ### DMA remapping (VT-d)
 

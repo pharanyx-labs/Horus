@@ -104,7 +104,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
-	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED
+	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -178,6 +178,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/pci.o \
        src/kernel/iommu.o \
        src/kernel/ioapic.o \
+       src/kernel/msi.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0
@@ -772,6 +773,20 @@ endif
 # POLL_NOTIFY_UNGATED=1 drops SYS_POLL_NOTIFY's capability check, so any task can
 # poll any notification and consume another task's badges -- finding C-2's shape
 # in a new syscall. `make smoke-captest-poll-notify-control`.
+# MSI_VECTOR_FROM_USER=1 has SYS_MSI_REGISTER honour a vector the CALLER supplies
+# -- the shape this syscall takes the moment anyone decides a driver "knows best"
+# which vector it wants. netd's arm then asks for 13 (#GP) and the machine starts
+# taking general-protection faults attributed to whatever was interrupted.
+#
+# THE ARM FOR S47, and the reason the real ABI has no vector field at all.
+# `make smoke-net-msi-vector-control` asserts a STALL: a machine faulting on a
+# vector nothing expects does not get to print a marker.
+MSI_VECTOR_FROM_USER ?= 0
+ifeq ($(MSI_VECTOR_FROM_USER),1)
+CFLAGS += -DMSI_VECTOR_FROM_USER
+USERSPACE_CFLAGS_EXTRA_MSI = -DMSI_VECTOR_FROM_USER
+endif
+
 POLL_NOTIFY_UNGATED ?= 0
 ifeq ($(POLL_NOTIFY_UNGATED),1)
 CFLAGS += -DPOLL_NOTIFY_UNGATED
@@ -1976,6 +1991,11 @@ USERSPACE_CFLAGS += -DNET_NO_DECODE
 endif
 ifeq ($(NET_IOMMU_NO_MAP),1)
 USERSPACE_CFLAGS += -DNET_IOMMU_NO_MAP
+endif
+# Both halves of the S47 arm: the kernel must honour the extra argument AND the
+# driver must supply one, so the flag reaches both compilations.
+ifeq ($(MSI_VECTOR_FROM_USER),1)
+USERSPACE_CFLAGS += -DMSI_VECTOR_FROM_USER
 endif
 USERSPACE_CFLAGS_64 = $(USERSPACE_CFLAGS)
 # 32-bit, for the i386 ELF-loader self-test image ONLY (userspace/elftest.o ->
@@ -3481,8 +3501,46 @@ smoke-console:
 #
 # SMOKE_NET=user rather than 1: the authority gates need a device on the bus, this
 # one needs something at the other end of the wire.
+# The MSI path, on an 82574L -- the device model that HAS an MSI capability, and
+# the one whose receive path works (5 boots in 5), so this gate also asserts a
+# real ARP exchange end to end: transmit, MSI, receive. The
+# kernel allocates the vector and programs the device; the driver names a device
+# and a notification and never a vector, because the ABI gives it nowhere to say
+# one (S47).
 .PHONY: smoke-net
 smoke-net:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso
+	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: RX PASS' \
+		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# S47's arm. The kernel honours a caller-supplied vector and netd asks for 13,
+# so the NIC raises #GP at the machine. The kernel then processes a
+# general-protection fault that never happened, against whatever context the
+# message interrupted -- measured, the driver is rejected by the loader validator
+# and the kernel takes a supervisor page fault.
+#
+# Asserts a FAULT rather than a marker or a stall, because that is what this
+# defect IS. The precise downstream symptom is not stable (a misinterpreted
+# exception frame goes wrong in whichever way it goes wrong first), so the
+# assertion names the task the fault is attributed to rather than the flavour of
+# fault -- the point being that a device chose a vector and something died.
+.PHONY: smoke-net-msi-vector-control
+smoke-net-msi-vector-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1 boot.iso
+	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_FAULT='task 1' tools/smoke_test.sh boot.iso
+
+# The INTx path, on an 82540EM -- a device model with NO MSI capability, so the
+# driver falls back to a wire and S46's mask-until-acknowledged applies. Both
+# gates run the same driver against the same code; only the device differs, which
+# is what makes the fallback a tested path rather than an assumption.
+.PHONY: smoke-net-intx
+smoke-net-intx:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso

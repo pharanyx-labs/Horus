@@ -737,6 +737,7 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 | 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge` — route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *` — report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
 | 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags` — set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |
+| 107 | `SYS_MSI_REGISTER` | `dev_slot`, `notif_slot`, `badge` — route the named device's message-signalled interrupt to a notification. **No vector argument**, deliberately (WRITE on both) |
 | 106 | `SYS_POLL_NOTIFY` | `notif_slot`, `uint32_t *` — consume a pending badge, or report `IPC_AGAIN` if none. `sys_wait_notify`'s non-blocking twin; same `CAP_NOTIFICATION` + READ gate |
 | 104 | `SYS_DMA_ADDR` | `dev_slot`, `frame_slot`, `uint64_t *`, `flags` — map that frame into that device's address space and report the address it reaches it at (needs **both**: CAP_IO_DEVICE WRITE and CAP_FRAME READ) |
 
@@ -773,6 +774,13 @@ holder of a bus-mastering device can already read and write all of physical memo
 IOMMU-less. The name is `dma_addr` rather than `paddr` deliberately: what a device needs is the
 address *it* uses, which is the physical address only because there is no IOMMU; with one it
 becomes an IOVA and this signature is already the right shape. `SECURITY.md` **S44**.
+
+**`SYS_MSI_REGISTER` takes no vector, and that absence is the property.** An MSI is a memory
+write whose data word carries the interrupt vector, so a driver able to choose one could point
+its device at the timer, at another driver's interrupt, or at an exception gate. The kernel
+allocates from a range it owns (48–63) and programs the capability itself; `SYS_DEVICE_INFO`
+reports *whether* a device has MSI and never *where* the capability lives, because that offset
+names the register carrying the vector. `SECURITY.md` **S47**.
 
 Device index **0 is reserved** and names nothing. Two things default to zero — a task slot's
 `io_device` and a capability's `object`, which `cap_install_from_root`'s fourth argument

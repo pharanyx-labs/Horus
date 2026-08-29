@@ -201,6 +201,29 @@ idt_load:
 .global isr46
 .global isr47
 
+/* MSI vectors (48..63). An MSI is a memory WRITE whose data field carries the
+ * vector, so a device programmed with one raises it directly at the local APIC --
+ * no I/O APIC pin, no line to mask. The range is deliberately separate from the
+ * legacy 32..47 block so a vector allocated to a device can never collide with a
+ * pin, and it stops below 0x40 (the LAPIC timer) so it cannot collide with that
+ * either. Who may put a number in that data field is the whole of S47. */
+.global isr48
+.global isr49
+.global isr50
+.global isr51
+.global isr52
+.global isr53
+.global isr54
+.global isr55
+.global isr56
+.global isr57
+.global isr58
+.global isr59
+.global isr60
+.global isr61
+.global isr62
+.global isr63
+
 /* LAPIC timer (vector 0x40): per-CPU preemption tick on the application
  * processors, where the legacy PIC IRQ0 does not reach. */
 .global isr64
@@ -225,6 +248,22 @@ isr44: pushq $0; pushq $44; jmp isr_common_stub64
 isr45: pushq $0; pushq $45; jmp isr_common_stub64
 isr46: pushq $0; pushq $46; jmp isr_common_stub64
 isr47: pushq $0; pushq $47; jmp isr_common_stub64
+isr48: pushq $0; pushq $48; jmp isr_common_stub64
+isr49: pushq $0; pushq $49; jmp isr_common_stub64
+isr50: pushq $0; pushq $50; jmp isr_common_stub64
+isr51: pushq $0; pushq $51; jmp isr_common_stub64
+isr52: pushq $0; pushq $52; jmp isr_common_stub64
+isr53: pushq $0; pushq $53; jmp isr_common_stub64
+isr54: pushq $0; pushq $54; jmp isr_common_stub64
+isr55: pushq $0; pushq $55; jmp isr_common_stub64
+isr56: pushq $0; pushq $56; jmp isr_common_stub64
+isr57: pushq $0; pushq $57; jmp isr_common_stub64
+isr58: pushq $0; pushq $58; jmp isr_common_stub64
+isr59: pushq $0; pushq $59; jmp isr_common_stub64
+isr60: pushq $0; pushq $60; jmp isr_common_stub64
+isr61: pushq $0; pushq $61; jmp isr_common_stub64
+isr62: pushq $0; pushq $62; jmp isr_common_stub64
+isr63: pushq $0; pushq $63; jmp isr_common_stub64
 
 .extern early_handler_stack_top
 

@@ -275,6 +275,11 @@ if [ "${SMOKE_NET:-0}" = 1 ]; then
     NET_ARG="-netdev hubport,id=smokenet0,hubid=0 -device virtio-net-pci,netdev=smokenet0"
 elif [ "${SMOKE_NET:-0}" = user ]; then
     NET_ARG="-netdev user,id=smokenet0 -device virtio-net-pci,netdev=smokenet0"
+elif [ "${SMOKE_NET:-0}" = e1000e ]; then
+    # The 82574L, which HAS an MSI capability where the 82540EM does not -- so it
+    # is the device the MSI gate needs. Register-compatible with the older part
+    # for the path netd drives, which is why one driver covers both.
+    NET_ARG="-netdev user,id=smokenet0 -device e1000e,netdev=smokenet0"
 elif [ "${SMOKE_NET:-0}" = e1000 ]; then
     # A REAL device model, deliberately, not virtio: virtio accesses guest memory
     # directly and is not on the far side of the IOMMU, so it cannot witness a

@@ -40,6 +40,9 @@ src/kernel/iommu.c              @pharanyx-labs
 # ioapic.c decides which interrupt lines are deliverable at all. A pin unmasked
 # without a capability behind it is delivery becoming ambient again (S46).
 src/kernel/ioapic.c             @pharanyx-labs
+# msi.c decides which vector a device raises. Get it wrong and a NIC can deliver
+# an exception vector to whatever it interrupts (S47).
+src/kernel/msi.c                @pharanyx-labs
 # The device-capability conformance suite, for the same reason captest.c is
 # owned: it is the evidence for S43, and every check in it is a refusal.
 userspace/devcaptest.c          @pharanyx-labs

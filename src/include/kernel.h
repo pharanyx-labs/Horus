@@ -845,11 +845,11 @@ void users_init(void);
 #define SYS_EXEC_IMAGE         71   /* (image, len, 0, argv, argc) -> replace the caller's own image with a caller-supplied one; no return on success */
 #define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's own alternate signal stack (ss_size 0 disables) */
 #define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of the last sender on `ep` (unforgeable, set at login) */
-#define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (object-store server only: uid 0 + CAP_BLOCK_DEV) */
+#define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode. CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone: the FS server is whoever holds it. No uid check. */
 #define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the task that sent the last request on req_ep (routed by kernel-recorded sender, not a shared reply endpoint) — multi-client safe */
-#define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (object-store server only: uid 0 + CAP_BLOCK_DEV) */
-#define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> module count; store owner only (uid 0 + CAP_BLOCK_DEV) */
-#define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module; store owner only (uid 0 + CAP_BLOCK_DEV) */
+#define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count. CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone. No uid check. */
+#define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> module count. CAP_BOOT_MODULE at CAPSLOT_BOOT_MODULE -- a capability of its own, NOT the object store's, and no uid check. */
+#define SYS_BOOT_MODULE_READ   78   /* (index, offset, buf, len) -> bytes copied from a boot module. CAP_BOOT_MODULE at CAPSLOT_BOOT_MODULE, and no uid check. */
 #define SYS_MAP_PHYS           79   /* (dev_slot, paddr, vaddr, len, flags) -> 0; map one frame DECLARED BY the device named in dev_slot into the caller's own address space (CAP_IO_DEVICE + WRITE). See src/kernel/pci.c, docs/design/console-server.md */
 #define SYS_IOPORT_GRANT       80   /* (dev_slot) -> 0; grant the caller native ring-3 in/out on the ports declared by the device named in dev_slot, via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE) */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; report what the device named by the CAP_IO_DEVICE at dev_slot declares -- ids, MMIO ranges, port ranges, IRQ lines -- and nothing about any other device (CAP_IO_DEVICE + READ) */
@@ -880,11 +880,11 @@ void users_init(void);
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE must name this capability's own frame. */
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages (roadmap 2.1). ALL OR NOTHING: any page that cannot be mapped withdraws every page the call already mapped, so a caller holding an error holds the address space it started with. The argument for that policy, and why it is the opposite of SYS_RETYPE's, is at the handler in syscall_vm.c. */
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); the length of the frame the CAP_FRAME at `frame_slot` names (roadmap 2.1). Authority is that capability, resolved in syscall_vm.c -- never a frame index the caller supplies, which would be finding C-1's shape and an object-existence oracle over other tasks' frames. */
-#define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate the caller's address space copy-on-write (roadmap 2.3). No capability of its own: a task may always make a copy of ITSELF, and the child is endowed exactly as SYS_SPAWN endows one -- never more than the caller holds. Refuses while the caller has a CAP_FRAME mapped; see clone_user_aspace in paging.c. */
+#define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate the caller's address space copy-on-write (roadmap 2.3). Gated exactly as SYS_SPAWN is, on slot 3 with WRITE|EXEC: fork is a second way to create a task, so it answers to the capability that gates the first. This line said "No capability of its own" until 2026-08-29, contradicting both the dispatch table and include/syscall.h. The child is endowed exactly as SYS_SPAWN endows one -- never more than the caller holds. Refuses while the caller has a CAP_FRAME mapped; see clone_user_aspace in paging.c. */
 #define SYS_CLOCK_GETTIME      98   /* (clock_id, struct horus_timespec*) -> 0; monotonic time since boot (roadmap 2.2). No capability: coarse by design, see the struct. */
 #define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. Reports type/rights/serial/badge/generation and whether the slot is occupied; see struct cap_info for what it deliberately does not report. */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
-#define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. ROOT ONLY (uid==0), else SYS_ERR_PERM */
+#define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) at CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM. Restricted like Linux's dmesg_restrict, but by capability rather than by uid. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ), same class as dmesg. */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died (finding G-8). Self-scoped: no capability, waiting already entitled the caller to observe it. */
 #define SYS_IPC_RECV_BLOCK     94   /* (ep_slot, buf, max) -> len; blocking SYS_IPC_RECV (roadmap 1.3). CAP_ENDPOINT + READ, enforced per-slot in the handler like every other IPC syscall. */
@@ -1974,10 +1974,11 @@ int iodev_msix_blocks_page(const struct io_device *d, uint64_t paddr, uint64_t l
 int iodev_allows_port(const struct io_device *d, uint16_t port);
 int iodev_allows_irq(const struct io_device *d, int irq);
 /* The one write to PCI configuration space reachable from ring 3, and only the
- * three decode bits of the device the caller's capability names. Bus mastering
- * is among them: on a machine with no IOMMU that is authority over ALL of
- * physical memory, bounded by who may turn it on and for what, never by where
- * the device then goes (docs/LIMITATIONS.md §2.12, SECURITY.md S44). */
+ * three decode bits of the device the caller's capability names. Bus mastering is
+ * among them: on a machine with no DMAR that is authority over ALL of physical
+ * memory; with one, the device reaches only what its driver mapped (S45). Either
+ * way this call bounds who may turn it on and for what, never by itself where the
+ * device then goes (docs/LIMITATIONS.md §2.12, SECURITY.md S44, S45). */
 #define IODEV_DECODE_IO         0x1u
 #define IODEV_DECODE_MEM        0x2u
 #define IODEV_DECODE_BUSMASTER  0x4u

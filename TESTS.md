@@ -1611,6 +1611,18 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
+**The `forbidden:` ratchet scans source as well as prose, since 2026-08-29.** It covered
+`*.md`, `*.html` and `*.yml`, which meant a retired claim could be corrected in every document
+and stay alive in the comment beside the check it describes. It did: #243 added "there is no
+IOMMU" to the ratchet while four copies survived in `.c` and `.h` files, two of them stating the
+security argument for a disclosure. The globs now include `*.c`, `*.h`, `*.rs`, `*.py`, `*.sh`
+and the `Makefile`, and switching it on found eight further live instances, including a
+`Makefile` comment naming a different failing marker than its own recipe asserts. Falsified
+three ways: a planted phrasing in a `.c` file is caught with file and line; the same phrasing in
+`docs/history/` stays exempt, because that log records what was true when written; and a
+phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
+correcting it.
+
 `.github/invariants.yml` holds exemptions only, and is currently **empty**: all 55 properties
 name a witness that resolves to a make target or a CI job.
 

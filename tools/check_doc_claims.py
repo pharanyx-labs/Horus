@@ -226,10 +226,28 @@ def main():
                         f"{path}: says {got} for {cid} ({claim['describe']}), "
                         f"live value is {want}")
 
+    # WHY THE RATCHET SCANS SOURCE TOO, since 2026-08-29.
+    #
+    # It used to look at *.md, *.html and *.yml only. The 2026-08-29 audit found
+    # the retired claim "there is no IOMMU" alive in four kernel comments
+    # (syscall_hw.c twice, pci.c, kernel.h) after the documents saying it had all
+    # been corrected -- and two of those comments were stating the SECURITY
+    # ARGUMENT for disclosing a physical address, resting on a premise VT-d had
+    # retired. A pattern added to `forbidden:` could not see any of them.
+    #
+    # The same sweep found twelve comments naming CAP_BLOCK_DEV as the gate on the
+    # object store, a capability the dispatch table does not use and no code
+    # enforces, and seven asserting a uid==0 check that no handler contains.
+    #
+    # A comment is where the next reader looks first. A ratchet that remembers a
+    # retired claim in the documentation and forgets it in the code beside the
+    # check is remembering the smaller half.
+    FORBIDDEN_GLOBS = ["*.md", "*.html", "*.yml",
+                       "*.c", "*.h", "*.rs", "*.py", "*.sh", "Makefile"]
     for rule in claims.get("forbidden") or []:
         pat = re.compile(rule["pattern"])
         for path in sorted(set(
-                subprocess.run(["git", "ls-files", "*.md", "*.html", "*.yml"],
+                subprocess.run(["git", "ls-files", *FORBIDDEN_GLOBS],
                                capture_output=True, text=True,
                                check=True).stdout.split())):
             if path in (CLAIMS_YML,) or path.startswith(HISTORICAL):

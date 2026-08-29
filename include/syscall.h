@@ -132,7 +132,7 @@ struct audit_event {
  * FS server WITHOUT handing it key material — the AEAD stays in the kernel. The
  * server addresses storage by (inode, logical block) and builds all filesystem
  * semantics (names, directories, permissions) on top. Gated like the raw block
- * syscalls: CAP_BLOCK_DEV (slot 7) + uid 0. */
+ * syscalls: CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone. */
 #define SYS_FS_INODE_ALLOC     56   /* (type) -> ino */
 #define SYS_FS_INODE_FREE      57   /* (ino)  -> 0 */
 #define SYS_FBLOCK_READ        58   /* (ino, block, buf) -> BLOCK_SIZE (decrypt+verify) */
@@ -608,8 +608,9 @@ static inline int sys_shlib_info(uint32_t frame_slot, struct shlib_info *out) {
 }
 
 /* PCI decode bits for sys_device_enable. BUSMASTER is the one that lets a device
- * DMA -- and on a machine with no IOMMU that means it reaches all of physical
- * memory, whatever its driver holds. See docs/LIMITATIONS.md §2.12. */
+ * DMA. Where the machine has a DMAR the device's address space starts empty and
+ * it reaches only the frames its driver mapped; where it has none, it reaches all
+ * of physical memory whatever its driver holds. See docs/LIMITATIONS.md §2.12. */
 #define DEV_ENABLE_IO         0x1u
 #define DEV_ENABLE_MEM        0x2u
 #define DEV_ENABLE_BUSMASTER  0x4u
@@ -1383,7 +1384,7 @@ static inline int sys_fs_set_size(uint32_t ino, uint32_t size) {
 }
 
 /* Persist an inode's permission bits (low 12 of `mode`) and owner (uid/gid).
- * Object-store server only (uid 0 + CAP_BLOCK_DEV); the file-type bits are
+ * Object-store server only (CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT); the file-type bits are
  * preserved. Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_fs_set_meta(uint32_t ino, uint32_t mode, uint32_t uid, uint32_t gid) {
     return (int)syscall6(SYS_FS_SET_META, ino, mode, uid, gid, 0, 0);

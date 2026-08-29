@@ -225,6 +225,33 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'uid 0 \+ CAP_BLOCK_DEV|\+ uid 0 in handler|object-store server only: uid 0'
+    reason: >-
+      Seven handler comments and five header lines asserted a uid==0 second gate
+      on the object store and the boot-module surface. No such check exists in any
+      of those bodies; ambient uid 0 was retired by [I-1] and [H-1] and the
+      comments were never swept. The gate is the capability in the dispatch table
+      and nothing else. Corrected 2026-08-29.
+  - pattern: 'CAP_BLOCK_DEV \(slot 7\)|CAP_BLOCK_DEV \(the store-owner authority\)|CAP_BLOCK_DEV slot 7'
+    reason: >-
+      Twelve comments named CAP_BLOCK_DEV as the gate on the object store. The
+      type is defined (kernel.h, 11) and enforced by NOTHING -- no dispatch entry
+      and no check uses it. The object store is gated on CAP_ENCRYPTED_STORAGE at
+      CAPSLOT_AUDIT, and the boot-module surface on CAP_BOOT_MODULE at
+      CAPSLOT_BOOT_MODULE. A reader auditing that authority would have looked for
+      the wrong capability. Corrected 2026-08-29.
+  - pattern: 'SYS_UNMAP_FRAME is currently the highest syscall number'
+    reason: >-
+      The comment above the SYSCALL_TABLE_SIZE assertion, thirteen syscall numbers
+      out of date: the assertion itself pins SYS_SHLIB_INFO (108). Corrected
+      2026-08-29.
+  - pattern: 'this machine has no IOMMU|there is no IOMMU, so a device|on a machine with no IOMMU that is authority'
+    reason: >-
+      The four kernel-source survivors of the same correction the documents got in
+      #243, found only once the ratchet began scanning source. Two of them were
+      stating the SECURITY ARGUMENT for disclosing a physical address from
+      SYS_DMA_ADDR, resting on a premise VT-d retired on 2026-08-28. The honest
+      statement is conditional on a DMAR being present. Corrected 2026-08-29.
   - pattern: 'NETTEST: FAIL rx-queue-size'
     reason: >-
       SECURITY.md's S44 row named this as NET_NO_DECODE's failing marker. The

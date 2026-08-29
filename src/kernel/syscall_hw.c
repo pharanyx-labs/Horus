@@ -274,14 +274,20 @@ void h_device_info(struct interrupt_frame64 *r) {
  * device's decode wherever it liked, and a device that is not a bus master cannot
  * DMA, so without this a ring-3 driver maps a BAR and finds silence.
  *
- * WHAT GRANTING BUS MASTERING MEANS HERE, stated plainly because the capability
- * cannot bound it: this machine has no IOMMU. A bus-mastering device reaches ALL
- * of physical memory, and the descriptors that tell it where to go live in guest
- * memory the driver writes. So the authority this call confers is, in the worst
- * case, the machine — and that is a property of the hardware, not of the
- * capability model. What the capability still does is decide WHO may turn it on
- * and FOR WHICH device, which is the part that is enforceable and the part that
- * an IOMMU would later make complete. SECURITY.md S44; docs/LIMITATIONS.md §2.12.
+ * WHAT GRANTING BUS MASTERING MEANS HERE, and it now depends on the machine.
+ * Where a DMAR is present, iommu_init has already given every device an address
+ * space of its own that starts EMPTY, so a bus master reaches exactly the frames
+ * its driver mapped through SYS_DMA_ADDR and faults on everything else (S45), and
+ * since 2026-08-29 those mappings do not outlive the capability that authorised
+ * them (S53). Where there is none, iommu_active() is 0 and the old statement
+ * still holds in full: a bus-mastering device reaches ALL of physical memory, the
+ * descriptors that tell it where to go live in memory the driver writes, and the
+ * authority this call confers is, in the worst case, the machine.
+ *
+ * What the capability decides either way is WHO may turn bus mastering on and FOR
+ * WHICH device. That is the enforceable part, and the IOMMU is what made the rest
+ * of it enforceable rather than merely stated.
+ * SECURITY.md S44, S45; docs/LIMITATIONS.md §2.12.
  *
  * Not a config-space write primitive: the offset is fixed in iodev_set_decode,
  * the value is masked to three bits, and the device is the one the capability
@@ -313,15 +319,21 @@ void h_device_enable(struct interrupt_frame64 *r) {
  *
  * Requiring the device capability makes the disclosure add NOTHING to what the
  * caller can already do. A holder of a bus-mastering device capability can
- * already read and write all of physical memory through its device, IOMMU-less;
- * telling it where its own frame sits is beneath the authority it holds. That is
- * the whole security argument for this call, and it is why the two capabilities
- * are required together rather than either alone.
+ * already read and write all of physical memory through its device on a machine
+ * with no DMAR; telling it where its own frame sits is beneath the authority it
+ * holds there. That WAS the whole security argument for this call, and VT-d
+ * retired it on 2026-08-28: where an IOMMU is active the device reaches only what
+ * its driver mapped, so the disclosure is no longer beneath an authority the
+ * caller already has. The two-capability rule stands on the narrower ground that
+ * a device capability is what makes a bus address meaningful at all, and it is
+ * recorded here rather than quietly reworded because a retired security argument
+ * should be visible as retired.
  *
  * The name is `dma_addr` and not `paddr` deliberately. What a device needs is the
- * address IT uses, which is the physical address only because there is no IOMMU;
- * with one it becomes an IOVA established by a mapping call, and this signature
- * — device, frame, out — is already the right shape for that day.
+ * address IT uses. That is the physical address here because iommu_map chooses
+ * the IOVA equal to it -- a choice, not an identity map, since one mapping is
+ * installed per frame the driver asks for -- and this signature, device, frame,
+ * out, is already the right shape for an IOVA that differs.
  *
  * The kernel cannot police the DIRECTION. READ on the frame is what is required,
  * because a transmit buffer the device only reads is legitimate and demanding

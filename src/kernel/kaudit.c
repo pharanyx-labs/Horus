@@ -168,7 +168,8 @@ void h_audit_digest(struct interrupt_frame64 *r) {
     r->rax = vstatus;
 }
 
-/* SYS_BLOCK_READ: raw block read. The slot-7 CAP_BLOCK_DEV capability is
- * enforced centrally by the dispatch table; the uid==0 gate stays here (its
- * distinct -2 return is part of the ABI). */
+/* NOTE: h_block_read lives in syscall_fs.c, not here. This comment described it
+ * from a file it had already left, and described a uid==0 gate its body does not
+ * contain. Both were true once; neither was true by 2026-08-29. The authority is
+ * CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, from the dispatch table. */
 

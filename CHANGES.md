@@ -16,6 +16,50 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **Comments across the kernel asserted a system that had been retired, and the ratchet
+  could not see them.** The 2026-08-29 audit swept the source for claims about authority and
+  found three families, none of which broke a build or a test, and all of which would mislead
+  the next person to audit that code. Documentation is a hard gate here; comments beside the
+  checks were not.
+
+  - **Seven handlers claimed a `uid == 0` gate their bodies do not contain**, and five header
+    lines said the same. `h_block_read`, `h_block_write`, `h_fs_inode_link`,
+    `h_boot_module_info`, `h_boot_module_read`, `h_dmesg` and `h_fs_set_meta`. Ambient uid 0
+    was retired by **[I-1]** and **[H-1]**; the comments were never swept. `SYS_DMESG`'s said
+    "ROOT ONLY ... gated to uid 0, enforced here", and it is gated on `CAP_KERNEL_LOG` in the
+    dispatch table.
+  - **Twelve comments named `CAP_BLOCK_DEV` as the gate on the object store.** That type is
+    defined (`kernel.h`, 11) and **enforced by nothing**: no dispatch entry and no check in the
+    tree uses it. The object store is gated on `CAP_ENCRYPTED_STORAGE` at `CAPSLOT_AUDIT`, and
+    the boot-module surface on `CAP_BOOT_MODULE` at `CAPSLOT_BOOT_MODULE`, which is a different
+    capability again. Someone auditing that authority would have looked for the wrong one.
+  - **Four kernel comments still said "there is no IOMMU"**, the source-side survivors of the
+    documentation fix in #243. Two were stating the *security argument* for disclosing a
+    physical address from `SYS_DMA_ADDR`, resting on a premise VT-d retired on 2026-08-28.
+
+  Also corrected: `SYS_FORK`'s header said "No capability of its own" while the dispatch table
+  and `include/syscall.h` both gate it on slot 3 with `WRITE|EXEC`; the comment above the
+  `SYSCALL_TABLE_SIZE` assertion named `SYS_UNMAP_FRAME` as the highest syscall number when the
+  assertion beside it pins `SYS_SHLIB_INFO`, thirteen numbers later; `kspawn.c` justified uid
+  inheritance by "the object-store's uid==0 gate", which does not exist; and `kaudit.c` carried
+  a comment describing `h_block_read`, a function that lives in `syscall_fs.c`.
+
+  **The mechanism, which is the point.** `tools/check_doc_claims.py`'s `forbidden:` ratchet
+  scanned `*.md`, `*.html` and `*.yml` only. Every one of the above was invisible to it, and
+  #243 had added "there is no IOMMU" to that ratchet the same day four copies stayed live in
+  `.c` and `.h` files. It now scans `*.c`, `*.h`, `*.rs`, `*.py`, `*.sh` and the `Makefile` too.
+  Turning it on immediately found **eight more live instances** nobody had looked for: the
+  `NET_NO_DECODE` comment in the `Makefile` naming a *different* failing marker than its own
+  recipe asserts, `selftest.c` still calling `netd` a virtio driver, five references to
+  `docs/proposals/console-server.md` (moved in August), and a withdrawn statistical figure.
+
+  **Falsified in three directions.** A retired phrasing planted in a `.c` file is caught
+  (`src/kernel/pci.c:718`, reported with file and line); the same phrasing in
+  `docs/history/DEVLOG-2026.md` is still exempt, because that log is a record of what was true
+  when written; and a phrasing inside a quotation in source is still exempt, so a comment may
+  record the wrong thing while correcting it, exactly as prose already could.
+
+
 - **A device's IOMMU translation outlived the frame that authorised it (S53).** `SYS_DMA_ADDR`
   installs a VT-d entry for the frame a driver names, and nothing removed it.
   `frame_map_refcount` counts CPU mappings only, so a device mapping neither kept the frame

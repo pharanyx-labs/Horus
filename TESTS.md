@@ -1217,10 +1217,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **99** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **100** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **101** jobs, **104** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **102** jobs, **105** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1272,7 +1272,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **101 required contexts and 3 reasoned exemptions** — read off
+The intended set is **102 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1611,6 +1611,17 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
+**Every production `unsafe` states its caller's obligations, gated since 2026-08-29.**
+`tools/check_unsafe_safety.py` (required job `unsafe-safety`) walks `rust/src/*.rs`, skipping
+test modules, and requires a `# Safety` clause on the enclosing item of every `unsafe`. It was
+added because `CLAUDE.md` §7 required exactly this and nothing enforced it: 30 of 49 sites had
+no clause, including all six in `memory.rs`. Its own harness,
+`tools/test_check_unsafe_safety.sh`, falsifies it four ways and **found a defect in it on the
+first run** — a fixed 30-line lookback let an undocumented item inherit its neighbour's clause,
+which is how a 30th undocumented site (`rust_hmac_sha256`) had been missed by hand. What the
+gate does not do is stated in the tool: it proves an obligation is written, never that it is
+true or upheld. Miri and `kani-bounded` test the code beneath it.
+
 **The `forbidden:` ratchet scans source as well as prose, since 2026-08-29.** It covered
 `*.md`, `*.html` and `*.yml`, which meant a retired claim could be corrected in every document
 and stay alive in the comment beside the check it describes. It did: #243 added "there is no
@@ -1623,7 +1634,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 55 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 56 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

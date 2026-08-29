@@ -186,11 +186,17 @@ impl Drop for LockGuard {
     }
 }
 
+/// Run `f` with exclusive access to the CSPRNG state.
+///
+/// # Safety
+/// The function itself is safe to call. The `unsafe` inside is discharged by
+/// `RNG_LOCK`, taken above and held for the whole closure, so the `&mut` it
+/// creates is unaliased for its lifetime and never outlives the guard. This is
+/// the ONLY route to `RNG`: every other function in this module goes through it,
+/// which is what makes that argument checkable by reading one place.
 #[inline]
 fn with_rng<R>(f: impl FnOnce(&mut RngState) -> R) -> R {
     let _g = lock();
-    // SAFETY: exclusive access is enforced by RNG_LOCK for the duration of the
-    // closure; we never hand out a reference that outlives the guard.
     let st = unsafe { &mut *core::ptr::addr_of_mut!(RNG) };
     f(st)
 }
@@ -202,8 +208,11 @@ fn with_rng<R>(f: impl FnOnce(&mut RngState) -> R) -> R {
 /// Read one 64-bit value from RDRAND. Returns false if the CPU does not signal
 /// success after retries, or if the value fails a trivial health check.
 ///
-/// SAFETY / preconditions: the caller MUST only invoke this when CPUID has
-/// confirmed RDRAND support; otherwise the instruction faults (#UD).
+/// # Safety
+/// The caller MUST only invoke this when CPUID has confirmed RDRAND support:
+/// otherwise the instruction faults (#UD), and in ring 0 that is a triple fault
+/// rather than a signal. `out` must be null or point to a writable `u64`; null
+/// is handled and returns false.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rdrand_u64(out: *mut u64) -> bool {
     if out.is_null() {
@@ -218,6 +227,10 @@ pub unsafe extern "C" fn rust_rdrand_u64(out: *mut u64) -> bool {
     }
 }
 
+/// # Safety
+/// Requires the `rdrand` target feature to be present on the executing CPU,
+/// which is a CPUID question the caller answers, not this function. Executing
+/// RDRAND without it is #UD.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "rdrand")]
 unsafe fn rdrand_step_64() -> Option<u64> {
@@ -230,6 +243,8 @@ unsafe fn rdrand_step_64() -> Option<u64> {
     }
 }
 
+/// # Safety
+/// As `rdrand_step_64`: the `rdrand` feature must be present on this CPU.
 #[cfg(target_arch = "x86")]
 #[target_feature(enable = "rdrand")]
 unsafe fn rdrand_step_32() -> Option<u32> {
@@ -241,11 +256,15 @@ unsafe fn rdrand_step_32() -> Option<u32> {
     }
 }
 
+/// # Safety
+/// Inherits `rdrand_step_64`'s obligation: RDRAND must be supported here.
 #[cfg(target_arch = "x86_64")]
 unsafe fn rdrand_raw() -> Option<u64> {
     rdrand_step_64()
 }
 
+/// # Safety
+/// Inherits `rdrand_step_32`'s obligation: RDRAND must be supported here.
 #[cfg(target_arch = "x86")]
 unsafe fn rdrand_raw() -> Option<u64> {
     let lo = rdrand_step_32()?;
@@ -253,11 +272,20 @@ unsafe fn rdrand_raw() -> Option<u64> {
     Some(((hi as u64) << 32) | lo as u64)
 }
 
+/// # Safety
+/// None: on an architecture with no RDRAND this executes no instruction and
+/// always reports failure. `unsafe` only to match the signature of the two
+/// architecture-specific versions above.
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 unsafe fn rdrand_raw() -> Option<u64> {
     None
 }
 
+/// # Safety
+/// Inherits `rdrand_raw`'s obligation: RDRAND must be supported on this CPU.
+/// The retry loop and health check are about output QUALITY, not about safety --
+/// a stuck RNG is rejected here, but an unsupported instruction is still #UD and
+/// only the caller can rule that out.
 unsafe fn rdrand_u64_inner() -> Option<u64> {
     // Up to 10 retries per Intel's guidance.
     for _ in 0..10 {
@@ -277,6 +305,12 @@ unsafe fn rdrand_u64_inner() -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 /// Mix `len` bytes of caller-supplied entropy into the pool.
+///
+/// # Safety
+/// `data` must be null, or point to `len` readable bytes that stay valid for the
+/// call. Null and a zero length are both handled and do nothing. The bytes need
+/// not be good entropy -- mixing is one-way and additional input cannot make the
+/// pool worse -- but they are read, so the pointer must be real.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rng_add_entropy(data: *const u8, len: usize) {
     if data.is_null() || len == 0 {

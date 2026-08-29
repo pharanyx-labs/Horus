@@ -162,6 +162,19 @@ fn lineage_check(serial: u32, gen: u32) -> bool {
     LINEAGE_GEN[lineage_idx(serial)].load(Ordering::SeqCst) == gen
 }
 
+/// Resolve a slot to a live capability carrying at least `required_rights`, or
+/// null. The single authority on what "live" means: type, rights and lineage
+/// generation are all checked here.
+///
+/// # Safety
+/// `cspace` must be null, or point to at least `cspace_size` valid
+/// `Capability`s -- and `cspace_size` must be the TRUE length of that array, not
+/// a larger number the C side hoped was right. Null is handled and every slot
+/// index is bounds-checked against `cspace_size`, so the one obligation this
+/// code cannot discharge for itself is the truthfulness of that length. Call
+/// under `cap_lock`: these read and write the array non-atomically, and a
+/// concurrent revoke would otherwise be able to change a capability between the
+/// validity check and the use.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_lookup(
     cspace: *mut Capability,
@@ -206,6 +219,14 @@ pub unsafe extern "C" fn rust_cap_lookup(
 /// implementation of the serial wrap logic: serials never collide with the
 /// reserved primordial range and never wrap to 0. Both `rust_cap_mint` and the C
 /// `cap_alloc_fresh_serial` go through it so the two cannot drift.
+///
+/// # Safety
+/// `next_serial` must be null, or point to a valid, writable `u32` -- the
+/// kernel's monotonic serial counter, which this reads and advances. Null is
+/// handled by returning a serial without advancing anything. Call under
+/// `cap_lock`: the read-modify-write is not atomic, and two callers racing here
+/// would hand out one serial twice, which would fuse two unrelated capabilities
+/// into one node of the derivation graph.
 #[inline]
 unsafe fn assign_fresh_serial(next_serial: *mut u32) -> u32 {
     if next_serial.is_null() {
@@ -222,13 +243,30 @@ unsafe fn assign_fresh_serial(next_serial: *mut u32) -> u32 {
     fresh
 }
 
-/// FFI: centralized fresh-serial allocation for the C kernel. The caller holds
-/// `cap_lock`; `next_serial` points at the kernel's monotonic serial counter.
+/// FFI: centralized fresh-serial allocation for the C kernel.
+///
+/// # Safety
+/// As `assign_fresh_serial`, which this is a thin wrapper over: `next_serial`
+/// must be null or a valid writable `u32`, and the caller must hold `cap_lock`.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_alloc_serial(next_serial: *mut u32) -> u32 {
     assign_fresh_serial(next_serial)
 }
 
+/// Mint a capability into `dest_slot`, derived from the one at `src_slot`, with
+/// rights masked down to `new_rights & src.rights`. Cannot widen authority: that
+/// intersection is the enforcement point for S2 and it is here, not in C.
+///
+/// # Safety
+/// `cspace` must be null, or point to at least `cspace_size` valid
+/// `Capability`s -- and `cspace_size` must be the TRUE length of that array, not
+/// a larger number the C side hoped was right. Null is handled and every slot
+/// index is bounds-checked against `cspace_size`, so the one obligation this
+/// code cannot discharge for itself is the truthfulness of that length. Call
+/// under `cap_lock`: these read and write the array non-atomically, and a
+/// concurrent revoke would otherwise be able to change a capability between the
+/// validity check and the use.
+/// `next_serial` carries `assign_fresh_serial`'s obligation in addition.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_mint(
     cspace: *mut Capability,
@@ -289,6 +327,20 @@ pub unsafe extern "C" fn rust_cap_mint(
     true
 }
 
+/// Copy a capability to `dest_slot` with the source's rights unchanged. This is
+/// `rust_cap_mint` with an all-ones mask, so the `& src.rights` intersection
+/// still applies and this cannot widen either.
+///
+/// # Safety
+/// `cspace` must be null, or point to at least `cspace_size` valid
+/// `Capability`s -- and `cspace_size` must be the TRUE length of that array, not
+/// a larger number the C side hoped was right. Null is handled and every slot
+/// index is bounds-checked against `cspace_size`, so the one obligation this
+/// code cannot discharge for itself is the truthfulness of that length. Call
+/// under `cap_lock`: these read and write the array non-atomically, and a
+/// concurrent revoke would otherwise be able to change a capability between the
+/// validity check and the use.
+/// `next_serial` carries `assign_fresh_serial`'s obligation in addition.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_transfer(
     cspace: *mut Capability,
@@ -367,6 +419,12 @@ pub unsafe extern "C" fn rust_cap_grant_into(
 }
 
 /// Clear a capability slot to the null capability.
+///
+/// # Safety
+/// Takes a `&mut` and dereferences nothing raw, so it has no preconditions of
+/// its own; it is `unsafe` because every caller reaches it from a raw pointer
+/// walk and the reference must therefore be unaliased for the call, which in
+/// this kernel means `cap_lock` is held.
 #[inline]
 unsafe fn nullify(c: &mut Capability) {
     c.typ = CAP_NULL;
@@ -677,6 +735,14 @@ unsafe fn revoke_subtree(
     }
 }
 
+/// Is this slot one of the kernel's non-revocable primordial roots?
+///
+/// # Safety
+/// `cspace` must point to an array with at least `slot + 1` valid
+/// `Capability`s. Unlike its neighbours this does NOT bounds-check `slot`
+/// itself: it is a file-private helper and every caller has already validated
+/// the index against `cspace_size`. Adding a caller that has not is the way to
+/// make this read out of bounds.
 #[inline]
 unsafe fn is_primordial_root(cspace: *mut Capability, slot: u32) -> bool {
     let s = (*cspace.add(slot as usize)).serial;
@@ -685,6 +751,16 @@ unsafe fn is_primordial_root(cspace: *mut Capability, slot: u32) -> bool {
 
 /// Single-cspace revoke. Used for moves and for revoking a CAP_REVOCATION
 /// helper slot. For system-wide revocation use `rust_cap_revoke_global`.
+///
+/// # Safety
+/// `cspace` must be null, or point to at least `cspace_size` valid
+/// `Capability`s -- and `cspace_size` must be the TRUE length of that array, not
+/// a larger number the C side hoped was right. Null is handled and every slot
+/// index is bounds-checked against `cspace_size`, so the one obligation this
+/// code cannot discharge for itself is the truthfulness of that length. Call
+/// under `cap_lock`: these read and write the array non-atomically, and a
+/// concurrent revoke would otherwise be able to change a capability between the
+/// validity check and the use.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_revoke(
     cspace: *mut Capability,
@@ -759,6 +835,16 @@ pub struct CSpaceDesc {
 /// not strip the grantor's own authority).
 ///
 /// Must be called by C under `cap_lock` so the `spaces` snapshot is stable.
+///
+/// # Safety
+/// `target_cspace` carries the obligation described on `rust_cap_lookup`.
+/// `spaces` must be null, or point to `space_count` valid `CSpaceDesc`s, each of
+/// whose `caps`/`size` pairs describes a live array with a truthful length --
+/// every cspace in the system, since the sweep is system-wide and a cspace
+/// omitted here keeps a derived copy the revoke was supposed to reach.
+/// `caps_in_use` pointers must be null or valid writable `u32`s. `cap_lock` must
+/// be held for the whole call: the snapshot of `tasks[]` this describes has to
+/// stay stable across a sweep that visits every task.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_revoke_global(
     target_cspace: *mut Capability,
@@ -809,6 +895,16 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
 /// system-wide path is `rust_cap_revoke_global`. Revokes the derivation subtree
 /// rooted at `target_serial` (audit A1) — `target_badge` is no longer used for
 /// matching, since the subtree is defined by the serial→badge derivation links.
+///
+/// # Safety
+/// `cspace` must be null, or point to at least `cspace_size` valid
+/// `Capability`s -- and `cspace_size` must be the TRUE length of that array, not
+/// a larger number the C side hoped was right. Null is handled and every slot
+/// index is bounds-checked against `cspace_size`, so the one obligation this
+/// code cannot discharge for itself is the truthfulness of that length. Call
+/// under `cap_lock`: these read and write the array non-atomically, and a
+/// concurrent revoke would otherwise be able to change a capability between the
+/// validity check and the use.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_revoke_by_values(
     cspace: *mut Capability,

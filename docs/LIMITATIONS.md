@@ -1157,6 +1157,33 @@ directions of DMA — device-reads-memory and device-writes-memory — are exerc
 by the transmit path alone. It is a gap in `netd` as a *network driver*, and it is why roadmap
 2.6 still has no IP layer above it.
 
+### 2.16 What the shared-library mechanism does not yet do
+
+**S49** makes shared library text executable by many tasks and writable by none. It is the
+mechanism roadmap 2.5's remainder needs, and it is not yet dynamic linking. Four things it does
+not do, stated because a mechanism that looked like a linker would be worse than one that says
+what it is.
+
+- **It resolves nothing by name.** A caller indexes a fixed export table whose address the
+  loader takes from the object's `e_entry`. Symbol resolution — walking `.dynsym`, matching
+  `DT_NEEDED`, patching a GOT — is what makes a dynamic linker, and an index into a table is what
+  this supports until one exists.
+- **newlib is still statically linked.** The saving this is for has not been taken yet:
+  `coreutils_echo` is still 404,572 bytes (measured 2026-08-29), and eleven such programs ship.
+  Migrating newlib onto this mechanism is a build-system job — rebuilding it `-shared -fPIC`,
+  relinking every program against it — and it gets its own commit rather than riding on the one
+  that adds the mechanism.
+- **The library has no ASLR.** Shared text must be identical in every address space, so it is
+  relocated once against a fixed base and mapped at that address everywhere. Text needing
+  per-task relocation would not be shared text. The cost is a known address for a ROP chain, and
+  it is the direct price of sharing rather than an oversight; per-task randomisation needs
+  PC-relative code with a per-task GOT, which is where full dynamic linking goes.
+- **Only `R_X86_64_RELATIVE`.** A shared object with an undefined symbol, a `JUMP_SLOT` or a TLS
+  entry is refused at load rather than partially applied, because a half-relocated library is one
+  whose calls go somewhere nobody chose. That is also why the demo object is built
+  `-fvisibility=hidden`: an exported symbol can be interposed, so the linker emits
+  `R_X86_64_64` against the dynamic symbol for it.
+
 ## 3. Scale and performance limitations
 
 ### 3.1 Hard compile-time ceilings — **[I-7]**
@@ -1270,8 +1297,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **97** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **99** across the three, producing **102** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **98** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **100** across the three, producing **103** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1316,7 +1343,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **99 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **100 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

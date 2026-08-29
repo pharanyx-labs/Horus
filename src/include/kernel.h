@@ -1920,6 +1920,21 @@ struct dev_info {
 _Static_assert(IODEV_MAX_MMIO == 8 && IODEV_MAX_PORT == 8,
                "struct dev_info's array bounds are literal 8s in include/syscall.h");
 
+/* ---- Shared library text (src/kernel/shlib.c) -----------------------------
+ *
+ * One copy of a library's code, executed by many tasks and writable by none.
+ * Loaded once into frames at boot and mapped through CAP_FRAMEs carrying READ
+ * and EXEC and never WRITE -- so a shared library cannot become a code-injection
+ * path between the tasks that share it, which is what sharing it naively would
+ * be. SECURITY.md S49. */
+#define SHLIB_MAX_PAGES  64
+int      shlib_init(const uint8_t *elf, uint64_t len);
+int      shlib_active(void);
+uint32_t shlib_pages(void);
+uint64_t shlib_base(void);
+uint32_t shlib_frame_index(uint32_t i);
+uint64_t shlib_entry(void);
+
 void iodev_init(void);
 const struct io_device *iodev_get(uint64_t index);
 uint32_t iodev_total(void);
@@ -2381,10 +2396,14 @@ void notify_selftest(void);
  * neither forge into nor evict from the kernel message ring via SYS_WRITE. */
 void klog_forge_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST)
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST)
 void mapphys_selftest(void);
 void devcap_selftest(void);
 void net_selftest(void);
+void shlib_selftest(void);
+/* Must match SLOT_SHLIB_FIRST in userspace/shlibtest.c and shlibpeer.c. */
+#define SHLIB_SLOT_FIRST 40
+#define SHLIB_SLOT_PEER_TCB 30
 void ioport_selftest(void);
 void irq_selftest(void);
 void console_selftest(void);

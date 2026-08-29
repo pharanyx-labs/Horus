@@ -297,6 +297,25 @@ On a machine with no DMAR the kernel says so on the wire and `iommu_active()` st
 caller then behaves as it did before, which is the honest degradation rather than a property
 quietly claimed and not held.
 
+### Shared library text
+
+`src/kernel/shlib.c` loads a shared object **once** into frames at boot, relocates
+it against a fixed base, and hands every task a `CAP_FRAME` over those frames
+carrying READ and EXEC and never WRITE. Two tasks then execute the same physical
+pages and neither can write them (**S49**).
+
+**The enforcement is S27's rights floor, not the loader's intent.** The primordial
+capability never held WRITE, and rights only ever narrow on delegation, so no
+descendant of it can carry WRITE — there is no delegation path to a writable
+mapping of code another task is running.
+
+That matters because sharing a library *writably* would be a code-injection
+primitive between every task that maps it, which is strictly worse than the
+per-program static copies it replaces. The text is at a fixed address because
+shared text must be identical in every address space; the cost is no ASLR for the
+library, recorded in `docs/LIMITATIONS.md` §2.16. It is not yet a dynamic linker —
+§2.16 lists what it does not do.
+
 ### Untyped memory
 
 Kernel objects are not entries in fixed arrays. A `CAP_UNTYPED` names a region of physical

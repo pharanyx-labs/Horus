@@ -992,7 +992,18 @@ re-derives from memory. `smoke-libhorus` is its gate; `LIBHORUS_RETRY_ANY=1` and
 It is an archive rather than an object so a program that uses none of it pays nothing —
 measured: `captest`'s `.text` is byte-identical to before libhorus existed.
 
-**Still open:** the newlib half. Every newlib-linked binary statically links its own libc
+**The sharing MECHANISM landed 2026-08-29** (**S49**). `src/kernel/shlib.c` loads a shared object
+once into frames at boot, relocates it against a fixed base, and hands every task a `CAP_FRAME`
+carrying READ and EXEC and never WRITE. Two tasks map the same frames, execute them, and neither
+can obtain a writable mapping — witness `make smoke-shlib`.
+
+**The security argument is the one worth stating, because the size argument is obvious.** Sharing
+a libc writably would be a code-injection primitive between every task that maps it: one task
+patches a function, another runs the patch. That is strictly *worse* than the per-program static
+copies it replaces, which at least isolated the damage. `SHLIB_TEXT_WRITABLE=1` is that attack,
+performed: the peer, which asked for nothing but read+exec, executes code another task wrote.
+
+**Still open, and it is most of the value:** the newlib half. Every newlib-linked binary statically links its own libc
 (~450 KiB each; 11 in `/bin`). A shared-object loader with capability-mediated mapping cuts the
 store requirement by an order of magnitude and makes a larger userspace practical — and it
 needs 2.1's frame capabilities first, which is why it sits behind them in the Track 2 order.
@@ -1261,7 +1272,7 @@ Ordered as in the audit's §7.5.
   defect. It caught CodeQL unclassified on its first run, which is the same omission class the
   finding describes.
 
-  The intended set is **99 required, 3 exempted** (99 jobs, 102 contexts — re-derive it with
+  The intended set is **100 required, 3 exempted** (100 jobs, 103 contexts — re-derive it with
   `tools/check_ci_gating.py`, never from this line) — `fuzz` (a 30-second time-boxed search is
   evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
   and `ruleset-audit` (schedule-only, so it never runs on a pull request).
@@ -1356,7 +1367,7 @@ Ordered as in the audit's §7.5.
   so the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
   claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
   The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-  **empty** — all 50 properties name a witness that resolves.
+  **empty** — all 51 properties name a witness that resolves.
 
   **What the survey found on the way.** **S16** had no witness at all — an em-dash against
   `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1395,7 +1406,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 153 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 61 of them control arms that must reproduce a defect |
+| ✅ | 155 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 62 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

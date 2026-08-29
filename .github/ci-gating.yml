@@ -123,6 +123,11 @@ required:
   # first caller of SYS_DEVICE_ENABLE and SYS_DMA_ADDR, which is why they landed
   # with it -- a DMA mechanism with no driver is authority added for nobody.
   - net
+  # Gating. It carries S49 and roadmap 2.5's mechanism: one library, many
+  # executors, no writer. The property is not the memory saving -- it is that the
+  # saving does not come at the price of a code-injection primitive between every
+  # task that shares the library, which is what sharing it writably would be.
+  - shlib
   # Gating. It carries S39 and S40. The memory half is the one a fork gets wrong
   # by accident -- "share the page tables" reads like "copy the memory" and is
   # one process with two contexts -- and the object half is the caller

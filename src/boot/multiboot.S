@@ -717,6 +717,30 @@ embedded_mapphystest_bin_start:
 embedded_mapphystest_bin_end:
 #endif
 
+#ifdef SHLIB_SELFTEST
+/* The shared object itself, plus the two probes that map it. */
+.align 16
+.global embedded_shlibdemo_so_start
+embedded_shlibdemo_so_start:
+.incbin "userspace/shlibdemo.so"
+.global embedded_shlibdemo_so_end
+embedded_shlibdemo_so_end:
+
+.align 16
+.global embedded_shlibtest_bin_start
+embedded_shlibtest_bin_start:
+.incbin "userspace/shlibtest.bin"
+.global embedded_shlibtest_bin_end
+embedded_shlibtest_bin_end:
+
+.align 16
+.global embedded_shlibpeer_bin_start
+embedded_shlibpeer_bin_start:
+.incbin "userspace/shlibpeer.bin"
+.global embedded_shlibpeer_bin_end
+embedded_shlibpeer_bin_end:
+#endif
+
 #ifdef NET_SELFTEST
 /* PIE netd binary: a virtio-net driver holding one device capability and one
  * untyped region, proved by a real ARP exchange (roadmap 2.6). */

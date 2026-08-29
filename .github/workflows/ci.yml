@@ -1911,6 +1911,32 @@ jobs:
       - name: Control arm — an unmasked level-triggered line livelocks the machine
         run: make smoke-net-irq-storm-control
 
+  shlib:
+    name: "Shared library text is executed by many tasks and writable by none"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils make \
+            xorriso grub-pc-bin grub-common mtools \
+            qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Roadmap 2.5's mechanism. Sharing a library is a memory optimisation;
+      # sharing it writably is a code-injection primitive between every task that
+      # maps it, which is worse than the static copies it replaces. Two tasks map
+      # the same frames, execute them, and neither can write them.
+      - name: Two tasks execute one library; neither can write it
+        run: make smoke-shlib
+      # The attack, not a stand-in: the capability carries WRITE, one task patches
+      # a function through a writable alias, and the PEER runs the patch.
+      - name: Control arm — writable shared text is cross-task code injection
+        run: make smoke-shlib-writable-control
+
   fpu:
     name: "A task cannot read another's XMM register file"
     runs-on: ubuntu-latest

@@ -40,6 +40,16 @@ userspace/*.bin
 userspace/*.elf
 userspace/*.o
 userspace/*.raw
+userspace/*.a
+# shlibdemo.so was TRACKED from #234 until 2026-08-29 -- the only build output in
+# userspace/ that was. A generated file under version control is a file that can
+# disagree with the source it is generated from: on a fresh clone both get the
+# same checkout timestamp, so whether make rebuilds it is a race, and the kernel
+# embeds this object. A committed binary that need not match the .c beside it is
+# the wrong shape for a tree with supply-chain gates.
+userspace/*.so
+# Derived from shlibdemo.so by tools/shlib_offsets.sh; see the rule in Makefile.
+userspace/shlib_offsets.h
 
 # Log and trace files
 *.log

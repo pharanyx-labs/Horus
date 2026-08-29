@@ -292,6 +292,28 @@ void cap_init(void) {
     root_cnode[20].serial = 0xC0DE0014U;
     root_cnode[20].generation = 0;
 
+    /* Shared library DATA (root[21]), roadmap 2.5 / S50.
+     *
+     * READ | WRITE and deliberately NOT EXEC -- the mirror image of root[20]
+     * above, and the two are separate primordials rather than one because they
+     * carry opposite rights for opposite reasons. Text must never be writable
+     * (S49: one task patching code another executes). Data must never be
+     * executable (W^X: a task can write this page, so it must not be able to
+     * jump into what it wrote).
+     *
+     * A page endowed from this primordial is a PRIVATE frame that
+     * shlib_instantiate_data carved and initialised for one task; the object is
+     * overridden per install, as it is for root[20]. Nothing endowed from here
+     * is ever shared, which is the whole of S50 -- and note the property is not
+     * enforced by these rights, which say nothing about sharing. It is enforced
+     * by the frame the object names being a fresh one per task. */
+    root_cnode[21].type   = CAP_FRAME;
+    root_cnode[21].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+    root_cnode[21].object = 0;
+    root_cnode[21].badge  = 0;
+    root_cnode[21].serial = 0xC0DE0015U;
+    root_cnode[21].generation = 0;
+
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;

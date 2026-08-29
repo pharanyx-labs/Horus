@@ -1610,15 +1610,43 @@ void shlib_selftest(void) {
         print("SHLIBTEST: FAIL endow-peer-tcb\n"); for (;;) asm volatile("hlt");
     }
 
-    /* Endow BOTH with the same frames, from the same primordial capability.
-     * root[20] carries READ|EXEC and never WRITE, and the object is overridden
-     * per install so one primordial names every page of the library in turn. */
+    /* Endow both tasks, and the two segments are endowed DIFFERENTLY -- which is
+     * the whole of S50 expressed in one loop.
+     *
+     * TEXT: the same frames for both, from root[20], READ|EXEC and never WRITE.
+     * One physical copy of the library's code, executed by two tasks, writable
+     * by neither (S49).
+     *
+     * DATA: a frame of its OWN for each task, carved and initialised from the
+     * library's image by shlib_instantiate_data, endowed from root[21] with
+     * READ|WRITE and never EXEC. Two tasks, two copies, no shared writable
+     * state. Note where the isolation lives: NOT in the rights, which are
+     * identical for both tasks, but in the OBJECT each capability names being a
+     * different frame. Rights say what may be done; the object says to what.
+     *
+     * Reading shlib_page_writable at each page rather than assuming a layout
+     * keeps that decision in one visible place -- the linker script puts data on
+     * its own page, but a linker script is not an enforcement mechanism. */
     for (uint32_t p = 0; p < shlib_pages(); p++) {
         uint32_t fidx = shlib_frame_index(p);
         if (fidx == 0) { print("SHLIBTEST: FAIL frame-index\n"); for (;;) asm volatile("hlt"); }
-        if (cap_install_from_root(a,    SHLIB_SLOT_FIRST + p, 20, fidx) != 0 ||
-            cap_install_from_root(peer, SHLIB_SLOT_FIRST + p, 20, fidx) != 0) {
-            print("SHLIBTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+
+        if (!shlib_page_writable(p)) {
+            if (cap_install_from_root(a,    SHLIB_SLOT_FIRST + p, 20, fidx) != 0 ||
+                cap_install_from_root(peer, SHLIB_SLOT_FIRST + p, 20, fidx) != 0) {
+                print("SHLIBTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+            }
+            continue;
+        }
+
+        uint32_t da = shlib_instantiate_data(p);
+        uint32_t dp = shlib_instantiate_data(p);
+        if (da == 0 || dp == 0) {
+            print("SHLIBTEST: FAIL instantiate-data\n"); for (;;) asm volatile("hlt");
+        }
+        if (cap_install_from_root(a,    SHLIB_SLOT_FIRST + p, 21, da) != 0 ||
+            cap_install_from_root(peer, SHLIB_SLOT_FIRST + p, 21, dp) != 0) {
+            print("SHLIBTEST: FAIL endow-data\n"); for (;;) asm volatile("hlt");
         }
     }
 

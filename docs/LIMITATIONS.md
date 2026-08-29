@@ -1168,16 +1168,27 @@ and it is worth fixing before anything else links the same way.
 
 ### 2.16 What the shared-library mechanism does not yet do
 
-**S49** makes shared library text executable by many tasks and writable by none. It is the
-mechanism roadmap 2.5's remainder needs, and it is not yet dynamic linking. Four things it does
-not do, stated because a mechanism that looked like a linker would be worse than one that says
-what it is.
+**S49** makes shared library text executable by many tasks and writable by none, and **S50** makes
+a shared library's writable data private to each task — the half a libc needs, since of the 59
+newlib symbols the shipped coreutils reference, three (`_impure_ptr`, `optarg`, `optind`) are
+writable. Together they are the mechanism roadmap 2.5's remainder needs, and they are not yet
+dynamic linking. Four things it does not do, stated because a mechanism that looked like a linker
+would be worse than one that says what it is.
+
+**One property is asserted more narrowly than it may read.** S50 gives each task a private copy of
+the library's writable segment; it does **not** give the library per-task storage in any richer
+sense. There is no TLS (`R_X86_64_TPOFF*` is refused with every other non-RELATIVE relocation), and
+a task's copy is instantiated once when the library is endowed to it — nothing re-initialises it,
+so a `fork` would need the copy-on-write path that ordinary user pages already take rather than a
+second instantiation. Neither is exercised by a test today, so neither is claimed.
 
 - **It resolves nothing by name.** A caller indexes a fixed export table whose address the
   loader takes from the object's `e_entry`. Symbol resolution — walking `.dynsym`, matching
   `DT_NEEDED`, patching a GOT — is what makes a dynamic linker, and an index into a table is what
   this supports until one exists.
 - **newlib is still statically linked.** The saving from SHARING it has not been taken yet.
+  The mechanism can now carry it — S50 closed the writable-data blocker on 2026-08-29 — so what
+  remains is the build-system work rather than a missing kernel property.
   Note the figure that used to sit here was misleading: `coreutils_echo` was 404,572 bytes, but
   **77% of that was DWARF debug info**, not libc. Stripping what ships (2026-08-29) took it to
   94,172 and the eleven coreutils from 4,847,020 to 1,210,436 bytes in total. What sharing libc

@@ -14,7 +14,90 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Added
+
+- **`tools/check_abi_structs.py`**, gating in the `kani-bounded` job beside `check_capslots.py`.
+  Seven structs cross the ring-3 boundary and are written down **twice**, in
+  `src/include/kernel.h` and `include/syscall.h`, because neither header includes the other:
+  `dev_info`, `shlib_info`, `untyped_info`, `cap_info`, `horus_timespec`, `boot_module_info`,
+  `task_exit_info`. Nothing compared them, and three were held identical **by comment**.
+
+  All seven agree today, so this gates a latent risk rather than fixing a live defect — which is
+  the moment to do it, because the failure mode is silent and this tree already knows the shape:
+  `check_capslots.py` exists because the cspace slot map is written twice and drifted, and
+  `CAPSLOT_DEBUG` was added as a number `CAPSLOT_UNTYPED` already held.
+
+  What drift would do: the kernel fills these and copies them out with `copy_to_user`, sized by
+  the **kernel's** definition, into a buffer ring 3 sized against the other one. A shorter
+  userspace copy is a write past the end of a user buffer; a moved field is a driver reading a
+  different MMIO range than the kernel wrote, or a supervisor reading the wrong rights out of a
+  `cap_info`. Neither is a compile error, because neither compiler sees both files.
+
+  The check compares the sequence of (type, name, array) triples, catching a field added,
+  removed, renamed, retyped or reordered, and names the first differing field on both sides. It
+  deliberately does **not** check `sizeof` or offsets: those are properties of a compilation
+  rather than of a header, and the two are compiled with different flags. The struct list is
+  declared rather than discovered, so a struct disappearing from one header fails too — discovery
+  would silently start checking nothing. Falsified three ways: a renamed field, a removed field,
+  and a struct absent from one header.
+
 ### Fixed
+
+- **The task-creating syscalls are gated on the [C-1] decoy, and two comments described that as
+  a gate** (`docs/LIMITATIONS.md` §1.6b, new). `SYS_SPAWN`, `SYS_SPAWN_IMAGE`, `SYS_EXEC_NAMED`,
+  `SYS_EXEC_IMAGE` and `SYS_FORK` authorise on cspace slot 3 with `SC_ANYTYPE`, and `create_task`
+  installs a `CAP_FRAME` there in **every** task with exactly `READ|WRITE|EXEC`. So `WRITE|EXEC`
+  on slot 3 is satisfied by a capability nobody asked for and everybody has, which by **S28** is
+  not a gate. It is **[H-3]**'s shape, one table over.
+
+  **Not an escalation, and the entry is left in place.** Unlike [H-3], where the decoy bought
+  reach into the in-kernel ramfs, these calls confer nothing the caller did not already have: a
+  fork copies the caller's own address space and cspace, and a spawn endows a child from what the
+  spawner holds and never more (**S41**, **S42**). Changing the entries to `SC_NONE` would state
+  the truth and lose the shape; the authority that belongs there would have to name a task
+  object, and `tasks[]` is still `.bss` (**[I-7]**, roadmap 0.3).
+
+  What is fixed is the description. `src/kernel/syscall.c` said fork "answers to the capability
+  that gates the first", which reads as a restriction that does not exist, while
+  `src/include/kernel.h` said "No capability of its own" — two comments in disagreement, both
+  describing a check that admits everyone. Both now say what the entry is and what actually
+  bounds the operation.
+
+
+- **Finding IDs disagreed with each other across the tree, including inside one file.**
+  `CLAUDE.md` §3 says a finding must carry the same status everywhere it is named, and calls a
+  disagreement "the exact defect this rule exists to catch". The 2026-08-29 audit found nine.
+
+  - **[G-9] was simultaneously open and closed in `TESTS.md`**: a section headed *"Open finding
+    G-9 … Status: open"* at line 443, against *"[G-9] closed"* at line 1319 of the same file and
+    in `SECURITY.md`, `docs/LIMITATIONS.md`, `docs/ROADMAP.md` and `README.md`. It closed on
+    2026-08-21. `docs/ROADMAP.md` §1.7 still read *"the rest of [G-9] open"* too.
+  - **`docs/AUDIT.md` disagreed with `docs/LIMITATIONS.md` on seven findings** — C-3, I-3, I-5,
+    I-6, I-10, I-11, G-8 — and **contradicted itself on C-3**, whose heading said OPEN while
+    §11 of the same document said fixed. Six headings now carry their fix date, and the
+    "Still open" list is dated to the 2026-08-15 re-verification it records rather than reading
+    as present tense. That framing is the point: this is a *dated record*, and a reader taking
+    it as current is how [H-1] survived nineteen days, which this document says four lines up.
+  - `docs/AUDIT.md` also reported **21 required contexts** (live: 102) and
+    **`CODE_OF_CONDUCT.md` as absent** when it is tracked and landed the day of that audit.
+  - **`docs/ROADMAP.md` 4.9 marked [M-9] open** (`⬜`) for want of a `.mailmap`, against a HEAD
+    whose subject is *"one author identity, one signing key, one ruleset"*. The marker was
+    tracking a proposed mechanism rather than the property: `git filter-repo` rewrote all 470
+    commits, so the history *says* one identity instead of merely displaying one.
+
+  **A deleted ruleset id survived in a sentence telling a reader to go and query it.**
+  Ruleset `19007209` was deleted in the 2026-08-29 identity rewrite and rebuilt as `21815299`,
+  and a stale id returns a 404 that reads as a permissions problem rather than as a stale id.
+  `docs/LIMITATIONS.md` named it while describing what the audit job's log *says*, which now
+  uses a placeholder; historical output quoting what a past run reported stays verbatim, since
+  that is a record. Ratcheted so it cannot come back.
+
+  **And one gated count had an undeclared second occurrence.** `docs/LIMITATIONS.md` stated the
+  required-context total twice, three lines apart; only one was declared in
+  `.github/doc-claims.yml`, so the other was stale by one and nothing noticed. That is the
+  manifest's own documented blind spot — the mechanism is opt-in per sentence — and the fix is
+  the second occurrence, now declared.
+
 
 - **The security core's `unsafe` FFI stated no obligations, and nothing required it to
   (S54).** `CLAUDE.md` §7 has always said "`unsafe` only at the FFI boundary, with a `# Safety`

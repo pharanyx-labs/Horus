@@ -72,6 +72,12 @@ counts:
         pattern: 'The intended set is \*\*(\d+) required contexts'
       - file: docs/LIMITATIONS.md
         pattern: 'That intended set is \*\*(\d+) required contexts'
+      # Undeclared until 2026-08-30, and stale by one the moment a job landed.
+      # A second sentence stating the same gated number, three lines from a
+      # declared one -- which is what the manifest means by opt-in per sentence:
+      # deleting or never adding an occurrence deletes the check for it.
+      - file: docs/LIMITATIONS.md
+        pattern: 'requires all \*\*(\d+)\*\* today'
       - file: docs/ROADMAP.md
         pattern: 'The intended set is \*\*(\d+) required, \d+ exempted\*\*'
       # site/index.html said 73 here for as long as the count had been 89. It was
@@ -225,6 +231,13 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'rulesets/19007209'
+    reason: >-
+      Ruleset 19007209 was deleted during the 2026-08-29 identity rewrite and
+      rebuilt as 21815299. CLAUDE.md told the next session to query the dead one,
+      which returns 404 and looks like a permissions problem rather than a stale
+      id. Quoted historical output that records what a past run reported is
+      exempt, as ever; an instruction to go and read it is not.
   - pattern: 'uid 0 \+ CAP_BLOCK_DEV|\+ uid 0 in handler|object-store server only: uid 0'
     reason: >-
       Seven handler comments and five header lines asserted a uid==0 second gate

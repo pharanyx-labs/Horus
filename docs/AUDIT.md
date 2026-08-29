@@ -367,7 +367,7 @@ userspace. Fix is the `CAP_NOTIFICATION` half of **[C-1]**'s patch.
 
 ---
 
-### [C-3] `spin_lock`/`spin_unlock` interrupt bookkeeping is global and IF-destroying — *High* — **OPEN; a fix was attempted and reverted, see 3.1**
+### [C-3] `spin_lock`/`spin_unlock` interrupt bookkeeping is global and IF-destroying — *High* — **FIXED (2026-08-11)**; as audited it was open after a fix was attempted and reverted, see 3.1
 
 **Location.** `src/kernel/scheduler.c:974-989`.
 
@@ -619,7 +619,7 @@ Correct only while every heap lives below 4 GiB. With ASLR widening the user add
 authorised region. **Fix:** make the arithmetic `uint64_t` end-to-end and check overflow
 explicitly before the range test. Latent today, sharp the moment the address space widens.
 
-### [I-3] `MAX_REVOKE_LINEAGE` overflow fallback is object-scoped — *Medium, fails safe*
+### [I-3] `MAX_REVOKE_LINEAGE` overflow fallback is object-scoped — *Medium, fails safe* — **FIXED (2026-08-16)**
 
 `revoke_subtree` caps the descendant worklist at 256 and, on overflow, nulls every
 capability sharing `root_object`. Complete (no descendant survives) but over-broad: an
@@ -637,7 +637,7 @@ comment about not disclosing physical layout, but `eip` defeats user-space ASLR 
 observed task by directly revealing a code address. **Fixed:** `eip` is now reported only for the calling task and zeroed for any other, matching
 the existing treatment of `cr3`.
 
-### [I-5] Shared global reply endpoint `FS_EP_REP = 5` — *Medium*
+### [I-5] Shared global reply endpoint `FS_EP_REP = 5` — *Medium* — **FIXED (2026-08-10)**
 
 Every client parks its `SYS_IPC_CALL` block on endpoint 5. Two concurrent clients overwrite
 each other's `blocked_waiter`; correctness survives only because `SYS_IPC_REPLY_TO` routes
@@ -645,7 +645,7 @@ by `last_sender`. The remaining `blocked_waiter` write is dead state that will b
 moment a second reply path is added. **Fix:** allocate a per-client reply endpoint at
 `SYS_CONNECT_FS_SERVER` time (folds into **[C-1]**).
 
-### [I-6] `this_cpu()` performs an uncached LAPIC MMIO read per call — *Medium (performance/DoS)*
+### [I-6] `this_cpu()` performs an uncached LAPIC MMIO read per call — *Medium (performance/DoS)* — **FIXED**
 
 `get_current_task()` → `this_cpu()` → `lapic[0x20/4]`, several times per syscall. Hundreds
 of cycles each on an uncacheable mapping. **Fix:** `swapgs` + a per-CPU block at `%gs:0`
@@ -683,7 +683,7 @@ Seven non-existent paths; the files containing **[C-1]** are covered only by the
 fallback; `require_code_owner_review: false` makes the whole file advisory. Fix alongside
 **[C-5]**.
 
-### [I-10] The write-ahead journal is never flushed to stable storage — *Medium-High (data integrity)*
+### [I-10] The write-ahead journal is never flushed to stable storage — *Medium-High (data integrity)* — **FIXED (2026-08-16)**
 
 **Location.** `src/kernel/ata.c` — the driver's complete command set.
 
@@ -730,7 +730,7 @@ Then add a test that runs with `cache=writeback` (or `cache=unsafe`) so the guar
 exercised where the emulator is *not* silently providing it. Without that, the new code is
 as unwitnessed as the old.
 
-### [I-11] `smoke-fs-wal` is nondeterministic by construction, and is a required check — *Medium (process)*
+### [I-11] `smoke-fs-wal` is nondeterministic by construction, and is a required check — *Medium (process)* — **FIXED (2026-08-16)**
 
 **Location.** `tools/smoke_test.sh:90-106`, `Makefile:1247`.
 
@@ -953,7 +953,7 @@ party can pre-compute the measured-boot quote.
 | Required PR | Yes | Weakened by ↓ |
 | Required approvals | **0** | **Critical gap [C-5]** |
 | Code-owner review | **Disabled**, file stale | **Gap [I-8]** |
-| Required status checks | 21 contexts, `strict: false` | **Mixed [C-6]** |
+| Required status checks | 21 contexts, `strict: false` *(as audited 2026-07-27; the intended set is now over a hundred and `strict` is true -- run `tools/check_ci_gating.py` rather than reading a number here)* | **Mixed [C-6]** |
 | Action pinning | Full SHA, all workflows | **Strong** |
 | `GITHUB_TOKEN` scopes | Least-privilege, per-workflow | **Strong** |
 | Self-hosted runners | None | **Good** |
@@ -968,7 +968,7 @@ party can pre-compute the measured-boot quote.
 | Formal methods | Kani (revocation), TLA+ specs | **Excellent for stage** |
 | Fuzzing | cargo-fuzz on FFI predicates, advisory | **Good** |
 | `SECURITY.md` | Present, detailed | **Good** |
-| `CODE_OF_CONDUCT.md` / issue templates | **Absent** | **[M-3]** |
+| `CODE_OF_CONDUCT.md` / issue templates | **Absent** *(as audited 2026-07-27; `CODE_OF_CONDUCT.md` landed the same day -- see roadmap 4.7)* | **[M-3]** |
 | Releases / tags | **None** | See below |
 | Contributor count | 1 (+ Dependabot) | **Structural [C-5]** |
 
@@ -1266,6 +1266,15 @@ the time of writing and are tracked in `docs/ROADMAP.md`.*
 > (**[H-1]**). Still open: **[C-5]**, **[C-6]**, **[I-3]**, **[I-9]**, **[I-10]**, **[I-11]**,
 > **[G-8]**, and the `tasks[]` remainder of **[I-7]**. The live status of every finding is in
 > [`LIMITATIONS.md`](LIMITATIONS.md), not here.
+>
+> *That list was accurate **on 2026-08-15** and is kept as the record of what this audit's
+> re-verification found on the day. It is not the current state and has not been since:
+> **[I-3]** and **[I-10]** and **[I-11]** closed on 2026-08-16, **[G-8]** on 2026-08-17,
+> **[G-9]** on 2026-08-21. Only **[C-5]**, **[C-6]**, **[I-7]** and **[I-9]** remain, all
+> process or scale findings rather than defects. The dated framing was added on 2026-08-30,
+> when an audit of this file found a reader could take the sentence above as present tense --
+> which is exactly how **[H-1]** survived nineteen days, and this document says so four lines
+> up.*
 
 ---
 

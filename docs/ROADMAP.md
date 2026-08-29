@@ -636,7 +636,7 @@ Two regression tests witness it and both are falsified by `--features=revoke_leg
 which compiles the old bounded closure back in. The `rust` CI job runs that control arm and
 fails if the tests pass against it — a falsification that is executed, not asserted.
 
-### 1.7 ◧ Serialise the spawn/exec path — **[G-10]** closed, the rest of **[G-9]** open
+### 1.7 ✅ Serialise the spawn/exec path — **[G-10]** closed 2026-08-18, **[G-9]** closed 2026-08-21
 
 Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight is a process-wide singleton — the one
 ELF staging buffer `loader_staging`, the staged argv `g_args_*`, `g_spawn_stdio_spec` and
@@ -1430,7 +1430,12 @@ Ordered as in the audit's §7.5.
 ### P2
 
 - **4.8 ⬜ Enable secret-scanning non-provider patterns and validity checks — [M-4].**
-- **4.9 ⬜ `.mailmap`** consolidating the five author identities — [M-9].
+- **4.9 ✅ One author identity — [M-9]** — *landed 2026-08-29 (#241)*. Solved **without** a
+  `.mailmap`, which is why this line said `⬜` until 2026-08-30: the marker was tracking the
+  proposed mechanism rather than the property. `git filter-repo` rewrote all 470 commits to
+  `Pharanyx Labs <horus@pharanyx.co.uk>`, so the history *says* one identity rather than merely
+  displaying one — a `.mailmap` changes what `git` shows and not what the commits contain, and
+  GitHub's contributor graph keys on the author's email regardless.
 - **4.10 ⬜ Pin vendored `newlib`** by upstream URL and SHA-256 in a `THIRD_PARTY.md`, or
   fetch it at build time with verification instead of committing `.deb`s.
 - **4.11 ⬜ `verify-release.sh`** a third party can run: rebuild from a tag, diff against the

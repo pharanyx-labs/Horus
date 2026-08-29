@@ -1381,9 +1381,20 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * WRITE|EXEC gate as SYS_SPAWN / SYS_EXEC_NAMED; the image is validated by the
      * loader (arm_image_from_user -> try_elf_load) exactly like a named binary. */
     [SYS_SPAWN_IMAGE]              = { h_spawn_image,             3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
-    /* Same gate as SYS_SPAWN, and deliberately not SC_NONE: fork is a second way
-     * to create a task, so it answers to the capability that gates the first.
-     * See h_fork in kspawn.c. */
+    /* Same entry as SYS_SPAWN, and deliberately not SC_NONE. Read that as
+     * consistency rather than as enforcement: slot 3 holds the CAP_FRAME
+     * create_task gives EVERY task, with exactly READ|WRITE|EXEC, so WRITE|EXEC
+     * on it is satisfied by every caller. By S28 this is not a gate, and this
+     * comment claimed it was one until 2026-08-30.
+     *
+     * It is left in place rather than changed to SC_NONE because the entry is
+     * the right SHAPE -- creating a task should answer to an authority -- and
+     * the authority does not exist yet: it would have to name a task object, and
+     * tasks[] is still .bss ([I-7], roadmap 0.3). What keeps this from being a
+     * hole meanwhile is that these calls confer nothing new: a fork copies the
+     * caller's own address space and cspace, and a spawn endows a child from
+     * what the spawner holds and never more (S41, S42). See
+     * docs/LIMITATIONS.md 1.6b. */
     [SYS_FORK]                     = { h_fork,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_EXEC_IMAGE]               = { h_exec_image,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
     [SYS_SIGALTSTACK]              = { h_sigaltstack,             SC_NONE, 0, SC_ANYTYPE }, /* self: register own altstack */

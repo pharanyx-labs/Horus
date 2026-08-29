@@ -1564,6 +1564,77 @@ void mapphys_selftest(void) {
 }
 #endif /* MAPPHYS_SELFTEST */
 
+#ifdef SHLIB_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Shared library text self-test (SHLIB_SELFTEST builds only) -------------
+ *
+ * Roadmap 2.5's mechanism, and S49's witness. The library is loaded ONCE into
+ * frames here at boot; two tasks are then endowed with READ|EXEC capabilities
+ * over the SAME frames, map them independently, and execute them.
+ *
+ * TWO TASKS, NOT ONE, AND THAT IS THE POINT. A single task proving it cannot
+ * write its own library page proves less than it looks. The failure worth
+ * excluding is cross-task: one holder of a shared mapping patching code a
+ * DIFFERENT holder runs, which is a code-injection primitive that static
+ * per-program copies did not have. So the peer is the half that would notice,
+ * and it reports the pair's verdict. */
+void shlib_selftest(void) {
+    extern uint8_t embedded_shlibdemo_so_start[], embedded_shlibdemo_so_end[];
+    extern uint8_t embedded_shlibtest_bin_start[], embedded_shlibtest_bin_end[];
+    extern uint8_t embedded_shlibpeer_bin_start[], embedded_shlibpeer_bin_end[];
+
+    print("SHLIB_SELFTEST: launch\n");
+
+    if (shlib_init(embedded_shlibdemo_so_start,
+                   (uint64_t)(embedded_shlibdemo_so_end - embedded_shlibdemo_so_start)) != 0) {
+        print("SHLIBTEST: FAIL shlib-load\n"); for (;;) asm volatile("hlt");
+    }
+
+    int peer = fs_spawn_embedded(embedded_shlibpeer_bin_start,
+                                 embedded_shlibpeer_bin_end, "shlibpeer");
+    if (peer <= 0) { print("SHLIBTEST: FAIL spawn-peer\n"); for (;;) asm volatile("hlt"); }
+    tasks[peer].uid = 0;
+
+    int a = fs_spawn_embedded(embedded_shlibtest_bin_start,
+                              embedded_shlibtest_bin_end, "shlibtest");
+    if (a <= 0) { print("SHLIBTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+    tasks[a].spawn_arg = (uint32_t)peer;
+
+    /* The supervisor right over the peer, so shlibtest may release it when its
+     * own checks are done. Root slot 0 is the CAP_TCB template; the object is
+     * rewritten to the peer's task id, which is what turns a template into a
+     * capability naming one task. task_kill_authorized scans the cspace for it,
+     * so the slot number is a convention and the capability is the authority. */
+    if (cap_install_from_root(a, SHLIB_SLOT_PEER_TCB, 0, (uint32_t)peer) != 0) {
+        print("SHLIBTEST: FAIL endow-peer-tcb\n"); for (;;) asm volatile("hlt");
+    }
+
+    /* Endow BOTH with the same frames, from the same primordial capability.
+     * root[20] carries READ|EXEC and never WRITE, and the object is overridden
+     * per install so one primordial names every page of the library in turn. */
+    for (uint32_t p = 0; p < shlib_pages(); p++) {
+        uint32_t fidx = shlib_frame_index(p);
+        if (fidx == 0) { print("SHLIBTEST: FAIL frame-index\n"); for (;;) asm volatile("hlt"); }
+        if (cap_install_from_root(a,    SHLIB_SLOT_FIRST + p, 20, fidx) != 0 ||
+            cap_install_from_root(peer, SHLIB_SLOT_FIRST + p, 20, fidx) != 0) {
+            print("SHLIBTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+        }
+    }
+
+    selftest_resume_all();
+    /* ...then hold the peer back again. resume_all wakes every spawned task, and
+     * the peer must not read the library before the first task has finished with
+     * it -- under the control arm the first task PATCHES it, and a peer that read
+     * early would report a pass that meant nothing. frametest holds its peer the
+     * same way and for the same reason. */
+    tasks[peer].runnable_ctx = 0;
+
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* SHLIB_SELFTEST */
+
 #ifdef NET_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Ring-3 network driver self-test (NET_SELFTEST builds only) --------------
@@ -2107,7 +2178,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

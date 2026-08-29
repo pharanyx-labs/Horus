@@ -1877,6 +1877,19 @@ jobs:
       # one rather than an assumption, and is where S46's masking applies.
       - name: The same driver over a legacy interrupt line
         run: make smoke-net-intx
+      # S53. SYS_DMA_ADDR installs an IOMMU translation for a frame, and nothing
+      # removed it when the frame died: frame_map_refcount counts CPU mappings
+      # only, so a device mapping neither kept the frame alive nor was torn down,
+      # and destroy_dyn_frame scrubbed the run and returned it to the arena with
+      # the device still able to reach it. A device-side use-after-free.
+      #
+      # In-kernel rather than a DMA on purpose: proving it with a packet means
+      # pointing a live device at a page the arena has already handed out, which
+      # is committing the bug to observe the fix.
+      - name: A device translation does not outlive the frame it named
+        run: make smoke-iommu-teardown
+      - name: Control arm — a destroyed frame the device can still reach
+        run: make smoke-iommu-teardown-control
       # S47. An MSI's data word IS the vector, so a driver able to choose one
       # could raise the timer's, another driver's, or an exception gate. This arm
       # honours a caller-supplied vector and netd asks for 13 (#GP).

@@ -102,6 +102,7 @@ DEFECT_FLAGS = \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
+	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
@@ -591,6 +592,29 @@ endif
 CAP_LOOKUP_ASSERT_HANG ?= 0
 ifeq ($(CAP_LOOKUP_ASSERT_HANG),1)
 CFLAGS += -DCAP_LOOKUP_ASSERT_HANG
+endif
+
+# IOMMU_TEARDOWN_SELFTEST=1 builds the in-kernel witness for S53. Not a defect
+# flag: it adds a test, it does not remove a check, so it is not in DEFECT_FLAGS.
+IOMMU_TEARDOWN_SELFTEST ?= 0
+ifeq ($(IOMMU_TEARDOWN_SELFTEST),1)
+CFLAGS += -DIOMMU_TEARDOWN_SELFTEST
+endif
+
+# IOMMU_NO_FRAME_TEARDOWN=1 restores the pre-2026-08-29 destroy_dyn_frame: the
+# frame's bytes are scrubbed and returned to the arena while every device
+# translation of them stays installed (S53).
+IOMMU_NO_FRAME_TEARDOWN ?= 0
+ifeq ($(IOMMU_NO_FRAME_TEARDOWN),1)
+CFLAGS += -DIOMMU_NO_FRAME_TEARDOWN
+endif
+
+# IOMMU_NO_TASK_TEARDOWN=1 restores the pre-2026-08-29 task_teardown, which
+# released every other device resource a dying task held -- IRQ route, MSI route,
+# port grant, console -- and left its IOMMU domain populated (S53).
+IOMMU_NO_TASK_TEARDOWN ?= 0
+ifeq ($(IOMMU_NO_TASK_TEARDOWN),1)
+CFLAGS += -DIOMMU_NO_TASK_TEARDOWN
 endif
 
 TASKINFO_WIDE_AUTHORITY ?= 0
@@ -4125,6 +4149,41 @@ smoke-net:
 	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NETTEST: RX PASS' \
 		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# S53. A device translation must not outlive the capability that authorised it.
+# SYS_DMA_ADDR installs an IOMMU entry for a frame; frame_map_refcount counts CPU
+# mappings only, so a device mapping neither keeps the frame alive nor was torn
+# down when it died. destroy_dyn_frame scrubbed the run and returned it to the
+# arena with the device's translation still installed -- a device-side
+# use-after-free, and the third capability-free path to a page in a file whose
+# comments already reason carefully about the second.
+#
+# An in-kernel witness rather than a DMA, and the reason is in the selftest's own
+# header: proving it with a packet means pointing a live device at a page the
+# arena has already reallocated, which is committing the bug to observe the fix.
+# It boots with SMOKE_IOMMU (it needs a real VT-d unit) and SMOKE_NET (it needs a
+# device to own a domain).
+.PHONY: smoke-iommu-teardown
+smoke-iommu-teardown:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='IOMMUTEST: PASS' \
+		FAIL_MARKER='IOMMUTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm: destroy_dyn_frame as it stood until 2026-08-29, scrubbing
+# and releasing the run while leaving every device translation of it in place.
+# The marker names the specific check rather than any IOMMUTEST failure, so an
+# arm that reddens the test for some other reason does not satisfy it.
+.PHONY: smoke-iommu-teardown-control
+smoke-iommu-teardown-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_FRAME_TEARDOWN=1
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_FRAME_TEARDOWN=1 boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='IOMMUTEST: FAIL device-still-translates-destroyed-frame' \
+		tools/smoke_test.sh boot.iso
 
 # S47's arm. The kernel honours a caller-supplied vector and netd asks for 13,
 # so the NIC raises #GP at the machine. The kernel then processes a

@@ -624,6 +624,25 @@ static void destroy_dyn_frame(int i) {
     for (uint32_t k = 0; k < pages; k++)
         if (frame_map_refcount(phys + (uint64_t)k * PAGE_SIZE) > 1) return;
 
+    /* A DEVICE mapping is a third capability-free path to these bytes, and until
+     * 2026-08-29 nothing removed it. SYS_DMA_ADDR installs an IOMMU translation
+     * for the run; frame_map_refcount counts CPU mappings only, so a device
+     * mapping neither keeps the frame alive above nor is torn down here. The
+     * sequence that follows from that is a device-side use-after-free: a driver
+     * maps a frame for its device, drops the capability and its own PTE, this
+     * function scrubs the run and returns it to the arena, the arena hands those
+     * bytes to a fresh object -- and the device is still bus-mastering into them
+     * through a translation whose authorising capability no longer exists. The
+     * scrub above is what makes it concrete: it is the point at which the kernel
+     * has decided these bytes belong to nobody.
+     *
+     * Unmapped before the scrub rather than after, so there is no window in which
+     * the run is zeroed and reallocatable while a device can still write to it.
+     * See iommu_unmap_all for why this tears down where the PTE policy refuses. */
+#ifndef IOMMU_NO_FRAME_TEARDOWN
+    iommu_unmap_all(phys, pages);
+#endif
+
     /* Scrub before releasing the name, for the reason destroy_dyn_endpoint
      * scrubs: the bytes outlive the object under bump allocation, and a frame's
      * bytes are whatever userspace last put in them. All of them -- a run
@@ -816,3 +835,80 @@ int untyped_info(uint32_t untyped_slot, struct untyped_info *out) {
     out->reserved  = 0;
     return 0;
 }
+
+
+#ifdef IOMMU_TEARDOWN_SELFTEST
+/* S53: destroying a frame removes every device's translation of it.
+ *
+ * WHY THIS IS AN IN-KERNEL TEST AND NOT A PACKET. The sibling gates for the
+ * IOMMU (NET_IOMMU_NO_MAP and friends) make the DEVICE try, and prove the
+ * property by whether a DMA round trip completes. That is the stronger shape and
+ * it is the right one when the question is "can the device reach this". It is
+ * the wrong one here, because the question is "is the translation gone once the
+ * kernel has decided these bytes belong to nobody", and answering it with a DMA
+ * means pointing a live device at a page the arena has already reallocated. A
+ * test that has to commit the bug to observe the fix is not a test worth having.
+ *
+ * So this reads the device's second-level table directly through
+ * iommu_translates(), which exists for exactly this and has no syscall behind
+ * it. What that buys is determinism and no packet; what it costs is that the
+ * witness is kernel state rather than device behaviour, and that limit is stated
+ * rather than papered over: it shows the entry is removed, not that the device
+ * observed its removal. The IOTLB invalidation that makes those the same thing
+ * is iommu_flush(), which iommu_unmap() already issues and which this test does
+ * not separately witness.
+ *
+ * The frame is destroyed through destroy_dyn_frame(), the real path, so the arm
+ * below reproduces a defect in the shipping code rather than in a copy of it. */
+void iommu_frame_teardown_selftest(void) {
+    kmsg_begin();
+
+    if (!iommu_active()) {
+        print("IOMMUTEST: FAIL no-iommu (this gate boots with SMOKE_IOMMU=1)\n");
+        return;
+    }
+
+    /* Any present device with a bdf will do: the property is about the domain,
+     * not about which hardware owns it. Index 0 is permanently absent. */
+    uint64_t dev = 0;
+    uint16_t bdf = 0;
+    for (uint64_t d = 1; d < IODEV_MAX; d++) {
+        const struct io_device *io = iodev_get(d);
+        if (io && io->present && io->bdf) { dev = d; bdf = io->bdf; break; }
+    }
+    if (!dev) {
+        print("IOMMUTEST: FAIL no-device (this gate boots with SMOKE_NET)\n");
+        return;
+    }
+
+    uint32_t idx = 0;
+    void *mem = kobj_alloc(UNTYPED_ROOT, KOBJ_FRAME, 1, &idx);
+    if (!mem) { print("IOMMUTEST: FAIL frame-alloc\n"); return; }
+    uint64_t phys = (uint64_t)mem - PHYS_KVA_BASE;
+
+    if (iommu_translates(dev, phys) != 0) {
+        print("IOMMUTEST: FAIL translated-before-map\n");
+        return;
+    }
+    if (iommu_map(dev, bdf, phys, 1, 1) != 0) {
+        print("IOMMUTEST: FAIL map\n");
+        return;
+    }
+    /* The positive half. Without it the assertion after the destroy is satisfied
+     * by a mapping that was never installed, which is the same mistake as a
+     * refusal test whose ungated path would have failed anyway. */
+    if (iommu_translates(dev, phys) != 1) {
+        print("IOMMUTEST: FAIL not-translated-after-map\n");
+        return;
+    }
+
+    destroy_dyn_frame((int)(idx - DYN_FRAME_BASE));
+
+    if (iommu_translates(dev, phys) != 0) {
+        print("IOMMUTEST: FAIL device-still-translates-destroyed-frame\n");
+        return;
+    }
+
+    print("IOMMUTEST: PASS\n");
+}
+#endif /* IOMMU_TEARDOWN_SELFTEST */

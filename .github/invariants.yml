@@ -12,7 +12,7 @@
 # honest answer -- at least eight words, checked, because "TODO" and "see above"
 # are how an exemption outlives its reason.
 #
-# IT IS CURRENTLY EMPTY, AND THAT IS THE POINT. All 54 properties in SECURITY.md
+# IT IS CURRENTLY EMPTY, AND THAT IS THE POINT. All 55 properties in SECURITY.md
 # name a witness that resolves. Four of them said "Rust unit tests" or "Kani
 # proofs" in prose and were candidates for an exemption; naming the `rust` and
 # `kani-bounded` jobs instead was strictly more informative, and is what a

@@ -770,11 +770,23 @@ the control arm.
 `SYS_DMA_ADDR` requires **two** capabilities, which is the interesting part of its design. The
 answer is a physical address, disclosed nowhere else in this ABI; gating it on the frame alone
 would hand the kernel's memory layout to every task that ever retyped a page, for no purpose any
-of them could act on. Requiring a device capability makes the disclosure add **nothing** — a
-holder of a bus-mastering device can already read and write all of physical memory through it,
-IOMMU-less. The name is `dma_addr` rather than `paddr` deliberately: what a device needs is the
-address *it* uses, which is the physical address only because there is no IOMMU; with one it
-becomes an IOVA and this signature is already the right shape. `SECURITY.md` **S44**.
+of them could act on. Requiring a device capability is what makes the disclosure land only on a
+caller who has a use for it.
+
+The original argument was stronger and is now **wrong**: it read that the disclosure adds nothing
+because a holder of a bus-mastering device can already read and write all of physical memory
+through it, IOMMU-less. That stopped being true on 2026-08-28, when VT-d gave every device an
+address space of its own that starts empty (**S45**), and it is recorded here rather than quietly
+replaced because it was a security rationale and it should be visible that it was retired rather
+than forgotten. On a machine with no DMAR the old sentence still describes the situation, and
+`iommu_active()` is what distinguishes the two.
+
+The name is `dma_addr` rather than `paddr` deliberately: what a device needs is the address *it*
+uses. That is the physical address here because the IOVA is chosen equal to it, which is a choice
+and not an identity map: one mapping is installed per frame a driver asks for, so the device
+reaches those frames and faults on every other address. The signature is already the right shape
+for an IOVA that differs. Since 2026-08-29 the mapping this call installs is also removed when the
+frame is destroyed (**S53**). `SECURITY.md` **S44**, **S45**, **S53**.
 
 **`SYS_SHLIB_INFO` exists because the library's base is not a constant, and it is gated
 because the base is worth protecting.** The shared library is loaded at an address drawn once per

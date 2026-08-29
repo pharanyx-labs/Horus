@@ -1187,8 +1187,19 @@ second instantiation. Neither is exercised by a test today, so neither is claime
   `DT_NEEDED`, patching a GOT — is what makes a dynamic linker, and an index into a table is what
   this supports until one exists.
 - **newlib is still statically linked.** The saving from SHARING it has not been taken yet.
-  The mechanism can now carry it — S50 closed the writable-data blocker on 2026-08-29 — so what
-  remains is the build-system work rather than a missing kernel property.
+  The mechanism can now carry it — S50 closed the writable-data blocker on 2026-08-29 — and the
+  shared object itself now builds and is gated (`userspace/libc.so`, the required
+  `shared-objects` job): 135 KiB of shared text, 342 `R_X86_64_RELATIVE` relocations and nothing
+  else, no undefined symbols.
+
+  **What remains is the caller side, and one part of it needs a GOT.** A stub per function is
+  enough to call into shared text. A program's direct reference to a **data** symbol is not
+  redirectable without one. Of the three writable symbols the coreutils need, `_impure_ptr` is a
+  pointer *to* per-task state, so a program can hold its own copy of that pointer and still reach
+  the single `struct _reent` in the library's private data; `optarg` and `optind` **are** the
+  state, and a program-local copy would desynchronise from the `getopt` that writes it. So the
+  planned scoping is to share the text and leave `getopt` static per program — recorded here
+  rather than discovered when `optind` silently stops advancing.
   Note the figure that used to sit here was misleading: `coreutils_echo` was 404,572 bytes, but
   **77% of that was DWARF debug info**, not libc. Stripping what ships (2026-08-29) took it to
   94,172 and the eleven coreutils from 4,847,020 to 1,210,436 bytes in total. What sharing libc
@@ -1321,8 +1332,8 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand — **[C-6]**
 
-`.github/workflows/ci.yml` defines **98** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more — **100** across the three, producing **103** status-check contexts. Ruleset `19007209`
+`.github/workflows/ci.yml` defines **99** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more — **101** across the three, producing **104** status-check contexts. Ruleset `19007209`
 required **22** of them before 2026-08-16, and
 until 2026-08-15 exactly **zero** of those 22 were security gates: capability conformance,
 kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence, flush-on-switch and
@@ -1367,7 +1378,7 @@ the wrong verdict. Step-level `continue-on-error` is untouched and still allowed
 step be advisory while the job's own status still reports the truth, which is how the `security`
 job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **100 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
+That intended set is **101 required contexts and 3 reasoned exemptions** — `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

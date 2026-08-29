@@ -2325,6 +2325,60 @@ $(COREUTILS_DIR)/%.o: $(COREUTILS_DIR)/%.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(COREUTILS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare -Wno-type-limits \
 	    -Wno-implicit-fallthrough -Wno-return-type -c $< -o $@
 
+# ---- The shared libc (roadmap 2.5) -----------------------------------------
+#
+# newlib, its port glue and libhorus linked into ONE shared object that
+# src/kernel/shlib.c can load: ~135 KiB of text shared between every task, and a
+# writable segment instantiated per task (S50).
+#
+# NOT YET LINKED AGAINST. Programs still link libc.a statically. What this
+# target does today is make the object real and CHECK it, so the three
+# separate ways of producing one the kernel would refuse cannot come back
+# silently -- each was found by building this, and none of them is a link error:
+#
+#   * without the port's syscall glue, 10 undefined symbols and 10 JUMP_SLOTs
+#   * without -Bsymbolic, intra-library references become GLOB_DAT
+#   * ONE weak-undefined symbol (__on_exit_args) emits a GLOB_DAT by itself,
+#     unless -z nodynamic-undefined-weak says to resolve it statically to 0
+#
+# The remaining work is the CALLER side, and it has a real blocker recorded in
+# docs/LIMITATIONS.md: a program's direct reference to a DATA symbol cannot be
+# redirected to the library's copy without a GOT. `_impure_ptr` survives that
+# (it is a pointer TO per-task state, so a program can hold its own copy of the
+# pointer), but `optarg`/`optind` are the state itself and would desynchronise.
+COREUTILS_ALL_OBJS = $(addprefix $(COREUTILS_DIR)/,$(addsuffix .o,$(COREUTILS_PROGS))) \
+                     $(COREUTILS_PORT_OBJS)
+
+# Compiled -fPIC, and every one of these is also built non-PIC for the static
+# link. Separate objects rather than reusing them: the shared object needs PIC
+# and the static programs must keep the exact objects they ship with, so the two
+# builds do not share intermediate state.
+userspace/%.pic.o: userspace/%.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -fPIC -c $< -o $@
+
+# The export table, derived from what the programs actually reference. See
+# tools/gen_libc_exports.sh for why it is generated and why order is the ABI.
+userspace/libc_exports.c: $(COREUTILS_ALL_OBJS) $(NEWLIB_LIB)/libc.a tools/gen_libc_exports.sh
+	@./tools/gen_libc_exports.sh $(NEWLIB_LIB)/libc.a $@ $(COREUTILS_ALL_OBJS)
+
+LIBC_SO_OBJS = userspace/libc_exports.pic.o userspace/newlib_glue.pic.o \
+               userspace/newlib_glue64.pic.o userspace/posix.pic.o \
+               userspace/hvfs.pic.o userspace/libhorus.pic.o
+
+userspace/libc.so: $(LIBC_SO_OBJS) userspace/shlib.ld $(NEWLIB_LIB)/libc.a
+	$(CC) -shared -fPIC -m64 -nostdlib -Wl,--build-id=none \
+	  -Wl,-e,shlib_exports -Wl,-T,userspace/shlib.ld \
+	  -Wl,-Bsymbolic -Wl,-z,nodynamic-undefined-weak \
+	  -o $@ $(LIBC_SO_OBJS) -L$(NEWLIB_LIB) -lc
+
+# Every shared object in the tree must be one the loader accepts. A static gate
+# because the properties are decidable by reading the object, and because a
+# refusal at boot is a correct behaviour with a terrible diagnostic: the library
+# is simply absent, and the first symptom is a fault on a call into nothing.
+.PHONY: check-shared-objects
+check-shared-objects: userspace/shlibdemo.so userspace/libc.so
+	@python3 tools/check_shared_object.py $^
+
 userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
                                $(NEWLIB_GLUE_OBJS) userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
@@ -2513,7 +2567,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h tools/mkheadered
+	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
 # SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with

@@ -28,9 +28,34 @@ BUILD=$NEWLIB_DIR/build
 TOOLS=$NEWLIB_DIR/tools
 TARBALL=$NEWLIB_DIR/newlib-${NEWLIB_VERSION}.tar.gz
 
+# The flags the target wrappers below are written with, stamped beside the built
+# library so a CHANGE to them forces a rebuild.
+#
+# WHY THIS IS NOT BELT-AND-BRACES. The guard below skips everything when libc.a
+# exists, which is what makes this script cheap to call from a Makefile rule. It
+# also means that without a stamp, editing the wrapper flags has NO EFFECT on a
+# tree that already built once: the flags change, the library does not, and the
+# mismatch surfaces later as a link that fails for a reason nothing points at.
+# A build that silently reuses a previous invocation's flags is the same defect
+# that disarmed a control arm in #235 -- it fails green.
+NEWLIB_TARGET_CFLAGS="-m64 -ffreestanding -fno-stack-protector -fno-builtin -mno-red-zone -fPIC -fvisibility=hidden"
+# Inside $PREFIX, deliberately: that is the directory CI caches
+# (.github/workflows/ci.yml, "Cache built newlib", path: newlib/install). A
+# stamp outside it would be absent on every cache HIT, the guard below would
+# read that as "flags changed", and every job that restored a perfectly good
+# libc.a would rebuild newlib from scratch anyway. A stamp has to travel with
+# the thing it certifies or it certifies nothing.
+STAMP=$PREFIX/.newlib-flags
+
 if [ -f "$PREFIX/x86_64-elf/lib/libc.a" ]; then
-	echo "newlib: $PREFIX/x86_64-elf/lib/libc.a already built, nothing to do"
-	exit 0
+	if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$NEWLIB_TARGET_CFLAGS" ]; then
+		echo "newlib: $PREFIX/x86_64-elf/lib/libc.a already built, nothing to do"
+		exit 0
+	fi
+	echo "newlib: target flags changed since the last build -- rebuilding"
+	echo "newlib:   was: $([ -f "$STAMP" ] && cat "$STAMP" || echo '<unstamped>')"
+	echo "newlib:   now: $NEWLIB_TARGET_CFLAGS"
+	rm -rf "$BUILD" "$PREFIX"
 fi
 
 mkdir -p "$NEWLIB_DIR"
@@ -92,10 +117,29 @@ fi
 # Target-toolchain wrappers. configure looks these up on PATH by target triple.
 echo "newlib: writing x86_64-elf toolchain wrappers"
 mkdir -p "$TOOLS"
+#
+# -fPIC AND -fvisibility=hidden ARE FOR THE SHARED LIBC, and they are set here
+# rather than in a second build because one libc.a serves both links.
+#
+# Roadmap 2.5's remainder needs newlib as a shared object, and as built without
+# these it cannot be one: a shared object may hold no absolute text relocation,
+# and the link fails outright. -fvisibility=hidden is the other half — it makes
+# every intra-library reference internal, so calls bind at link time and emit
+# R_X86_64_RELATIVE rather than JUMP_SLOT/GLOB_DAT, which is the only relocation
+# type src/kernel/shlib.c accepts.
+#
+# Neither harms the STATIC link that every newlib program still uses today. PIC
+# code is valid in a static PIE, and userspace here is already built -fPIE and
+# linked -pie; hidden visibility on an archive changes nothing about how a
+# program links against it. Verified rather than assumed — smoke-newlib,
+# smoke-tcc and the coreutils session all pass with these in place.
+# One definition of the flags: the wrapper is written FROM the stamped variable,
+# so the stamp cannot drift from what was actually used. Two copies of a flag
+# string is how a stamp comes to certify the wrong thing.
 for tool in gcc cc; do
-	cat >"$TOOLS/x86_64-elf-$tool" <<'EOF'
+	cat >"$TOOLS/x86_64-elf-$tool" <<EOF
 #!/bin/sh
-exec gcc -m64 -ffreestanding -fno-stack-protector -fno-builtin -mno-red-zone "$@"
+exec gcc $NEWLIB_TARGET_CFLAGS "\$@"
 EOF
 done
 for tool in ar ranlib strip; do
@@ -162,4 +206,12 @@ test -f "$PREFIX/x86_64-elf/lib/libc.a" || {
 	echo "newlib: build finished but $PREFIX/x86_64-elf/lib/libc.a is missing" >&2
 	exit 1
 }
+
+# The stamp is written LAST, and only here. A stamp written before the build
+# would certify flags no library was built with -- and because the guard at the
+# top trusts it, a failed build would then be skipped on the next run and the
+# stale library used as if it were current. It records success, not intent.
+mkdir -p "$(dirname "$STAMP")"
+printf '%s' "$NEWLIB_TARGET_CFLAGS" > "$STAMP"
+
 echo "newlib: built $PREFIX/x86_64-elf/lib/libc.a"

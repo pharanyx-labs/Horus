@@ -19,6 +19,12 @@ set -eu
 SO="$1"
 OUT="$2"
 
+# The scratch below was removed by an explicit rm at the end and by nothing else,
+# so `set -e` firing anywhere between creating it and that line leaked it into
+# the tree. A trap covers every exit path; the glob covers temps added later.
+# Same defect as gen_libc_exports.sh's, whose leaked scratch reached main in #239.
+trap 'rm -f "$OUT".tmp.*' EXIT
+
 [ -r "$SO" ] || { echo "shlib_offsets: cannot read $SO" >&2; exit 1; }
 
 # e_entry carries the export table's address: a shared object has no entry point

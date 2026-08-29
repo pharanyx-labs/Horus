@@ -1057,8 +1057,27 @@ witnesses.
 writable segment is two pages; the three-page demo object's was one, so the demo could not have
 shown it. The call reports a range now.*
 
-**Still open:** linking programs against it, and it has a real blocker. Programs still link
-`libc.a` statically. Calling into shared text needs only a stub per function, but a program's direct
+**A program links against it as of 2026-08-29** — `make smoke-shlibc-link`. `hello_shared.c` is
+ordinary C: it calls `printf` and `strlen` **by name**, and links no libc at all — only the
+generated stub archive (`tools/gen_libc_stubs.sh`: one tail-jump thunk per exported function) and
+a `crt0_shared` that binds the library before `main`.
+
+**Measured, same source and flags, only the libc link differing:**
+
+| | bytes |
+|---|---|
+| static libc | 106,392 |
+| shared libc | **13,088** |
+
+**8.1× smaller per program**, and that is the saving this item promised. The gate checks *before*
+booting that every libc symbol the program defines is a 14-byte thunk rather than an
+implementation — a statically-linked build would print the same thing and prove nothing.
+
+**Still open:** the shipped programs. `hello_shared` is the witness; migrating the eleven
+coreutils needs the kernel to endow ordinary tasks with the library's capabilities, which is an
+authority change and gets its own commit. Three of them (`echo`, `true`, `false`) were measured
+to need only `_impure_ptr` among data symbols, so they can move as they are; the rest use
+`getopt`, and `optarg`/`optind` are the blocker below. Calling into shared text needs only a stub per function, but a program's direct
 reference to a **data** symbol cannot be redirected to the library's copy without a GOT.
 `_impure_ptr` survives that — it is a pointer *to* per-task state, so a program can hold its own
 copy of the pointer and still reach the one `struct _reent` in the library's private data — but
@@ -1467,7 +1486,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 162 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 67 of them control arms that must reproduce a defect |
+| ✅ | 163 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 67 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

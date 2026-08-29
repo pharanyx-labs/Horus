@@ -1594,6 +1594,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
 void shlibc_selftest(void) {
     extern uint8_t embedded_libc_so_start[], embedded_libc_so_end[];
     extern uint8_t embedded_libctest_bin_start[], embedded_libctest_bin_end[];
+    extern uint8_t embedded_hello_shared_bin_start[], embedded_hello_shared_bin_end[];
 
     print("SHLIBC_SELFTEST: launch\n");
 
@@ -1607,6 +1608,22 @@ void shlibc_selftest(void) {
     if (a <= 0) { print("LIBCTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
     tasks[a].uid = 0;
 
+    /* hello_shared is the other half of the claim, and a different one.
+     *
+     * libctest indexes the export table by hand: it proves the library WORKS.
+     * hello_shared is written in ordinary C -- it calls printf and strlen by
+     * name -- and links no libc at all, only the generated stub archive. It
+     * proves a PROGRAM can be built against the library, which is what roadmap
+     * 2.5 was actually for. Measured: the same source linked statically is
+     * 106,392 bytes and linked this way is 13,088.
+     *
+     * Both are endowed identically and from the same primordials, so the second
+     * task adds no authority -- only a second consumer of it. */
+    int hs = fs_spawn_embedded(embedded_hello_shared_bin_start,
+                               embedded_hello_shared_bin_end, "hello_shared");
+    if (hs <= 0) { print("HELLOSHARED: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[hs].uid = 0;
+
     /* Same endowment rule as shlib_selftest, read off shlib_page_writable rather
      * than assuming a layout: which primordial a page comes from is a security
      * decision and belongs in one visible place. */
@@ -1615,14 +1632,20 @@ void shlibc_selftest(void) {
         if (fidx == 0) { print("LIBCTEST: FAIL frame-index\n"); for (;;) asm volatile("hlt"); }
 
         if (!shlib_page_writable(p)) {
-            if (cap_install_from_root(a, LIBC_SLOT_FIRST + p, 20, fidx) != 0) {
+            if (cap_install_from_root(a,  LIBC_SLOT_FIRST + p, 20, fidx) != 0 ||
+                cap_install_from_root(hs, LIBC_SLOT_FIRST + p, 20, fidx) != 0) {
                 print("LIBCTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
             }
             continue;
         }
-        uint32_t d = shlib_instantiate_data(p);
-        if (d == 0) { print("LIBCTEST: FAIL instantiate-data\n"); for (;;) asm volatile("hlt"); }
-        if (cap_install_from_root(a, LIBC_SLOT_FIRST + p, 21, d) != 0) {
+        /* A private copy EACH: two tasks, two frames, from the one template
+         * (S50). Instantiating once and installing it twice would be the
+         * SHLIB_DATA_SHARED defect written by hand. */
+        uint32_t d  = shlib_instantiate_data(p);
+        uint32_t dh = shlib_instantiate_data(p);
+        if (d == 0 || dh == 0) { print("LIBCTEST: FAIL instantiate-data\n"); for (;;) asm volatile("hlt"); }
+        if (cap_install_from_root(a,  LIBC_SLOT_FIRST + p, 21, d)  != 0 ||
+            cap_install_from_root(hs, LIBC_SLOT_FIRST + p, 21, dh) != 0) {
             print("LIBCTEST: FAIL endow-data\n"); for (;;) asm volatile("hlt");
         }
     }

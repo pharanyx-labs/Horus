@@ -2021,6 +2021,15 @@ jobs:
       # of the symbols it calls, so the calls cannot resolve locally.
       - name: A ring-3 task calls newlib out of the shared library
         run: make smoke-shlibc
+      # The other half, and the one roadmap 2.5 was for: a program written in
+      # ordinary C — calling printf by name — linking no libc at all, only the
+      # generated stub archive. Same source linked statically is 106,392 bytes;
+      # linked this way, 13,088. The target checks before booting that every
+      # libc symbol the program defines is a 14-byte thunk rather than an
+      # implementation, because a statically-linked build would print exactly
+      # the same thing and prove nothing.
+      - name: A program links against the shared libc and carries none of it
+        run: make smoke-shlibc-link
 
   fpu:
     name: "A task cannot read another's XMM register file"

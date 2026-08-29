@@ -106,7 +106,8 @@ DEFECT_FLAGS = \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
-	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED
+	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
+	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -843,6 +844,48 @@ endif
 #
 # THE DISCLOSURE ARM FOR S50. `make smoke-shlib-data-shared-control` requires
 # SHLIBTEST: FAIL peer-saw-our-data.
+# SHLIB_BASE_FIXED=1 restores the pre-2026-08-29 compiled-in library base, so
+# every boot loads the shared library at the same address. That was defensible
+# for a three-page demo and is not once newlib moves onto this mechanism: ~135
+# KiB of executable code at an address printed in the binary, in every task --
+# and a REGRESSION, since a program's static libc lives inside its own PIE image,
+# which the loader already randomises.
+#
+# THE ARM FOR S51. `make smoke-shlib-aslr-control` boots twice and requires the
+# two reported bases to be IDENTICAL, which is what the base gate requires them
+# not to be.
+SHLIB_BASE_FIXED ?= 0
+ifeq ($(SHLIB_BASE_FIXED),1)
+CFLAGS += -DSHLIB_BASE_FIXED
+endif
+
+# SHLIB_INFO_UNGATED=1 removes SYS_SHLIB_INFO's capability test entirely, making
+# the shared library's base ambient information any task can ask for -- which
+# defeats randomising it, since an attacker with code execution anywhere can
+# simply ask where the shared code is. The whole gate goes, not just the
+# ownership half: with the type check left in place a wrong-type slot would be
+# refused anyway and the arm would pass for a reason unrelated to the authority.
+#
+# THE ARM FOR S51's second half. `make smoke-shlib-info-control` requires
+# SHLIBTEST: FAIL shlib-info-with-wrong-cap-type.
+SHLIB_INFO_UNGATED ?= 0
+ifeq ($(SHLIB_INFO_UNGATED),1)
+CFLAGS += -DSHLIB_INFO_UNGATED
+endif
+
+# SHLIB_INFO_TYPE_ONLY=1 keeps SYS_SHLIB_INFO's type check and drops the OBJECT
+# test, so any CAP_FRAME answers -- including a task's own private copy of the
+# library's data page, which says nothing about holding the library's code.
+# Separate from SHLIB_INFO_UNGATED because they break different rules, and
+# because with only that arm the object rule has never been shown to fire.
+#
+# `make smoke-shlib-info-object-control` requires
+# SHLIBTEST: FAIL shlib-info-with-data-frame.
+SHLIB_INFO_TYPE_ONLY ?= 0
+ifeq ($(SHLIB_INFO_TYPE_ONLY),1)
+CFLAGS += -DSHLIB_INFO_TYPE_ONLY
+endif
+
 SHLIB_DATA_SHARED ?= 0
 ifeq ($(SHLIB_DATA_SHARED),1)
 CFLAGS += -DSHLIB_DATA_SHARED
@@ -3759,6 +3802,91 @@ smoke-shlib-writable-control:
 # The marker is the PEER's, not shlibtest's: shlibtest cannot tell a private
 # copy from a shared one by looking at its own writes. Only the task that never
 # wrote can witness it.
+# ---- S51: the shared library's base is drawn per boot, not compiled in -------
+#
+# TWO BOOTS, because the property is not observable from inside one. A single
+# run cannot tell a random base from a fixed one -- it sees an address either
+# way. So both boots report theirs (SHLIBBASE: <hex>, from shlibtest) and the
+# gate requires the two to DIFFER.
+#
+# The base gate and its control arm are the same script with the comparison
+# inverted, which is what makes the pair a measurement rather than two tests.
+#
+# A NOTE ON WHAT "DIFFER" PROVES, since it is weaker than it looks. Two unequal
+# draws are consistent with a 1-bit source. This gate is a smoke test for
+# "the base is not a constant", not a randomness test -- the entropy claim rests
+# on aslr_random_offset, which is rejection-sampled over 2^30 positions and is
+# the same source the image loader uses. Stated rather than implied.
+.PHONY: smoke-shlib-aslr smoke-shlib-aslr-control
+smoke-shlib-aslr:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory shlib-aslr-compare EXPECT=differ
+
+smoke-shlib-aslr-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_BASE_FIXED=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_BASE_FIXED=1 boot.iso
+	@$(MAKE) --no-print-directory shlib-aslr-compare EXPECT=same
+
+# The shared half. Boots twice, keeps each boot's serial log, and compares the
+# reported base. Both boots must also PASS -- a base that differs because the
+# second boot died before printing one would otherwise read as success.
+.PHONY: shlib-aslr-compare
+shlib-aslr-compare:
+	@rm -f .shlib-base-1.log .shlib-base-2.log
+	@echo "[shlib-aslr] boot 1/2"
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=.shlib-base-1.log \
+		REQUIRE_MARKER='SHLIBTEST: PASS' FAIL_MARKER='SHLIBTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[shlib-aslr] boot 2/2"
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=.shlib-base-2.log \
+		REQUIRE_MARKER='SHLIBTEST: PASS' FAIL_MARKER='SHLIBTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@b1=$$(grep -m1 -o 'SHLIBBASE: [0-9a-f]*' .shlib-base-1.log | awk '{print $$2}'); \
+	 b2=$$(grep -m1 -o 'SHLIBBASE: [0-9a-f]*' .shlib-base-2.log | awk '{print $$2}'); \
+	 if [ -z "$$b1" ] || [ -z "$$b2" ]; then \
+	   echo "[shlib-aslr] FAIL: a boot reported no base (1='$$b1' 2='$$b2')"; exit 1; fi; \
+	 echo "[shlib-aslr] boot1=$$b1 boot2=$$b2 (expecting: $(EXPECT))"; \
+	 if [ "$(EXPECT)" = "differ" ]; then \
+	   if [ "$$b1" = "$$b2" ]; then \
+	     echo "[shlib-aslr] FAIL: the library loaded at the same address twice"; exit 1; fi; \
+	   echo "[shlib-aslr] PASS: the base is not a constant"; \
+	 else \
+	   if [ "$$b1" != "$$b2" ]; then \
+	     echo "[shlib-aslr] FAIL: the arm did not fix the base"; exit 1; fi; \
+	   echo "[shlib-aslr] PASS (control): the base was identical, as the defect requires"; \
+	 fi
+
+# ---- S51, second half: the base is not ambient information ------------------
+#
+# The refusal arm. Under SHLIB_INFO_UNGATED the syscall answers whoever asks, so
+# shlibtest's wrong-TYPE probe (a CAP_TCB) succeeds where it must be refused.
+#
+# The marker names the wrong-TYPE check rather than the wrong-OBJECT one purely
+# because the probe stops at its first failure and that check runs first; both
+# are what the gate asserts, and both succeed under this arm.
+smoke-shlib-info-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_UNGATED=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_UNGATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SHLIBTEST: FAIL shlib-info-with-wrong-cap-type' \
+		tools/smoke_test.sh boot.iso
+
+# The object half of the same gate: the type is right, the frame is not the
+# library's. Under this arm the wrong-TYPE probe is still refused, so the probe
+# reaches the second check and it is that one which fires -- which is what shows
+# the object rule can fail on its own.
+smoke-shlib-info-object-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_TYPE_ONLY=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_TYPE_ONLY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SHLIBTEST: FAIL shlib-info-with-data-frame' \
+		tools/smoke_test.sh boot.iso
+
 smoke-shlib-data-shared-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_SHARED=1

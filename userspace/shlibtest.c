@@ -21,7 +21,13 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n
 static void wr(const char *s) { sys_write(1, s, slen(s)); }
 
 #define SLOT_SHLIB_FIRST 40          /* caps over the library's pages */
-#define SHLIB_VA         0x0000000300000000ULL
+/* Must match SHLIB_SLOT_PEER_TCB in src/include/kernel.h. */
+#define SLOT_PEER_TCB    30
+/* The base is NOT a constant. It is drawn once per boot from the ASLR source
+ * (src/kernel/shlib.c), so it is asked for -- with a capability -- rather than
+ * assumed. A hardcoded address here would be a test that maps the library
+ * somewhere it was not relocated for, and reads whatever is there. */
+static unsigned long long shlib_va;
 
 /* SHLIB_EXPORTS_OFF, SHLIB_PAGES and SHLIB_DATA_PAGE are DERIVED from
  * shlibdemo.so at build time by tools/shlib_offsets.sh. They were hardcoded
@@ -54,6 +60,68 @@ struct shlib_exports {
 void _start(void) {
     wr("SHLIBTEST: begin\n");
 
+    /* Ask where the library is, before mapping anything.
+     *
+     * The capability comes first and the address second: SLOT_SHLIB_FIRST holds
+     * a CAP_FRAME over one of the library's TEXT frames, and the kernel answers
+     * only because of that. A task holding no library capability is refused --
+     * the base is the address of code every task executes, and handing it to
+     * any caller that asked would defeat randomising it at all. */
+    struct shlib_info si;
+    if (sys_shlib_info(SLOT_SHLIB_FIRST, &si) != 0) {
+        wr("SHLIBTEST: FAIL shlib-info\n"); sys_exit();
+    }
+    shlib_va = si.base;
+
+    /* Report it, in hex, on the wire. This is what makes the ASLR property
+     * testable at all: `make smoke-shlib-aslr` boots twice and requires the two
+     * lines to DIFFER. A property of the address space is not observable from
+     * inside one boot -- a single run cannot tell a random base from a fixed
+     * one, which is exactly why the control arm compares two. */
+    {
+        static const char hexd[] = "0123456789abcdef";
+        char buf[32];
+        unsigned n = 0;
+        buf[n++] = 'S'; buf[n++] = 'H'; buf[n++] = 'L'; buf[n++] = 'I';
+        buf[n++] = 'B'; buf[n++] = 'B'; buf[n++] = 'A'; buf[n++] = 'S';
+        buf[n++] = 'E'; buf[n++] = ':'; buf[n++] = ' ';
+        for (int b = 60; b >= 0; b -= 4)
+            buf[n++] = hexd[(shlib_va >> b) & 0xF];
+        buf[n++] = '\n';
+        sys_write(1, buf, n);
+    }
+
+    /* THE REFUSALS. Checked here rather than in a separate probe because the
+     * authority is per-CAPABILITY, and this task holds the one that works --
+     * so the same call, made with a different capability, is the comparison.
+     *
+     * Neither of these is an empty slot, deliberately. An empty slot is refused
+     * by cap_lookup before any of this call's own logic runs, so it would pass
+     * whether or not the gate existed and would witness nothing. Both slots
+     * below hold REAL capabilities:
+     *
+     *   SLOT_PEER_TCB   a CAP_TCB -- right task, wrong TYPE.
+     *   the data page   a CAP_FRAME the task legitimately holds, right type and
+     *                   wrong OBJECT: it is this task's own private copy of the
+     *                   library's writable page, not a frame the library owns.
+     *                   That is the sharper of the two, because a gate that
+     *                   tested only the type would pass it -- and being endowed
+     *                   with a copy of the data page says nothing about holding
+     *                   the code.
+     *
+     * If either answered, the base would be ambient information and randomising
+     * it would protect nothing from a task that has none of the library. */
+    {
+        struct shlib_info bad;
+        if (sys_shlib_info(SLOT_PEER_TCB, &bad) == 0) {
+            wr("SHLIBTEST: FAIL shlib-info-with-wrong-cap-type\n"); sys_exit();
+        }
+        if (si.data_page != SHLIB_INFO_NO_DATA &&
+            sys_shlib_info(SLOT_SHLIB_FIRST + si.data_page, &bad) == 0) {
+            wr("SHLIBTEST: FAIL shlib-info-with-data-frame\n"); sys_exit();
+        }
+    }
+
     /* (1) Map every page of the library from the capabilities we were given.
      * READ|EXEC is all we ask for, and all we could get: the capabilities were
      * minted without WRITE, and rights only ever narrow on delegation (S27). */
@@ -70,7 +138,7 @@ void _start(void) {
         unsigned rights = (i == SHLIB_DATA_PAGE)
                         ? (CAP_RIGHT_READ | CAP_RIGHT_WRITE)
                         : (CAP_RIGHT_READ | CAP_RIGHT_EXEC);
-        int rc = sys_map_frame(SLOT_SHLIB_FIRST + i, SHLIB_VA + (unsigned long long)i * 4096,
+        int rc = sys_map_frame(SLOT_SHLIB_FIRST + i, shlib_va + (unsigned long long)i * 4096,
                                rights);
         if (rc != 0) break;
         pages = i + 1;
@@ -79,9 +147,9 @@ void _start(void) {
     if (pages != SHLIB_PAGES) { wr("SHLIBTEST: FAIL partial-map\n"); sys_exit(); }
 
     /* (2) Call into it. The entry table's address is what the kernel put in the
-     * library's e_entry; the loader mapped the whole object at SHLIB_VA. */
+     * library's e_entry; the loader mapped the whole object at the base. */
     struct shlib_exports *ex =
-        (struct shlib_exports *)(unsigned long)(SHLIB_VA + SHLIB_EXPORTS_OFF);
+        (struct shlib_exports *)(unsigned long)(shlib_va + SHLIB_EXPORTS_OFF);
     if (ex->magic == 0 || ex->add == 0) { wr("SHLIBTEST: FAIL no-export-table\n"); sys_exit(); }
 
     if (ex->magic() != MAGIC_EXPECTED) { wr("SHLIBTEST: FAIL wrong-magic\n"); sys_exit(); }
@@ -130,11 +198,11 @@ void _start(void) {
      * is the one worth having: it checks the PTE really lacks the write bit,
      * rather than only that the syscall said no. */
 #ifndef SHLIB_TEXT_WRITABLE
-    if (sys_map_frame(SLOT_SHLIB_FIRST, SHLIB_VA + 0x100000,
+    if (sys_map_frame(SLOT_SHLIB_FIRST, shlib_va + 0x100000,
                       CAP_RIGHT_READ | CAP_RIGHT_WRITE) == 0) {
         wr("SHLIBTEST: FAIL got-writable-mapping\n"); sys_exit();
     }
-    if (sys_map_frame(SLOT_SHLIB_FIRST, SHLIB_VA + 0x100000,
+    if (sys_map_frame(SLOT_SHLIB_FIRST, shlib_va + 0x100000,
                       CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_EXEC) == 0) {
         wr("SHLIBTEST: FAIL got-wx-mapping\n"); sys_exit();
     }
@@ -164,14 +232,14 @@ void _start(void) {
      * read+exec. That asymmetry is why a shared library mapped writable is worse
      * than the per-program static copies it replaces. */
     {
-        unsigned long long rw = SHLIB_VA + 0x200000;
+        unsigned long long rw = shlib_va + 0x200000;
         for (unsigned i = 0; i < pages; i++) {
             if (sys_map_frame(SLOT_SHLIB_FIRST + i, rw + (unsigned long long)i * 4096,
                               CAP_RIGHT_READ | CAP_RIGHT_WRITE) != 0) {
                 wr("SHLIBTEST: FAIL arm-no-rw-mapping\n"); sys_exit();
             }
         }
-        unsigned long long off = (unsigned long long)(unsigned long)ex->magic - SHLIB_VA;
+        unsigned long long off = (unsigned long long)(unsigned long)ex->magic - shlib_va;
         volatile unsigned char *p = (volatile unsigned char *)(unsigned long)(rw + off);
         p[0] = 0xB8;                       /* mov eax, imm32 */
         p[1] = 0xEF; p[2] = 0xBE; p[3] = 0xAD; p[4] = 0xDE;

@@ -204,6 +204,15 @@ uncovered:
   # question this file could fail on. That is the [C-6] shape applied to itself,
   # and it is why the implemented count moved 76 -> 81 in a change that added two
   # syscalls. Naming them in the table is what made them countable.
+  SYS_SHLIB_INFO: >-
+    MEASURED 2026-08-29: not entered by any tracked workload, and cannot be --
+    the shared library is only loaded in SHLIB_SELFTEST builds, and none of the
+    three tracked images builds one. It IS entered on every boot of that build,
+    by both shlibtest and shlibpeer, which is what make smoke-shlib asserts; its
+    refusals have arms of their own (SHLIB_INFO_UNGATED, SHLIB_INFO_TYPE_ONLY).
+    It moves to `covered` when the shared library becomes part of an ordinary
+    image, which is roadmap 2.5's remaining half.
+
   SYS_CAP_MINT: >-
     MEASURED 2026-08-22: not entered by any tracked workload. Narrowing a capability's rights before delegating it was unreachable from ring 3 until roadmap 2.1 named this syscall in include/syscall.h, so no program in a tracked image calls it yet; FRAME_SELFTEST does, via frametest's READ-only mint (make smoke-frame)
   SYS_CAP_TRANSFER: >-

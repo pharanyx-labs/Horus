@@ -183,6 +183,7 @@ struct audit_event {
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr. ALL OR NOTHING: a failure withdraws every page the call mapped, so an error leaves the address space untouched. Max 64 pages. */
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; what the device named by the CAP_IO_DEVICE at dev_slot declares: ids, MMIO ranges, port ranges, IRQ lines. CAP_IO_DEVICE + READ in dev_slot, and it reports THAT device only. */
+#define SYS_SHLIB_INFO        108   /* (frame_slot, struct shlib_info*) -> 0; where the shared library is loaded. CAP_FRAME + READ naming one of the library's own TEXT frames -- the base is randomised per boot, and telling an uncapable caller would defeat that. */
 #define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the named device's PCI decode bits (DEV_ENABLE_*). CAP_IO_DEVICE + WRITE. */
 #define SYS_MSI_REGISTER      107   /* (dev_slot, notif_slot, badge) -> 0; route the named device's MSI to a notification. No vector argument, deliberately. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN if none. sys_wait_notify's non-blocking twin; same CAP_NOTIFICATION + READ gate. */
@@ -566,6 +567,35 @@ struct dev_info {
  * declares. Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_device_info(uint32_t dev_slot, struct dev_info *out) {
     return (int)syscall(SYS_DEVICE_INFO, dev_slot, (uint64_t)(uintptr_t)out, 0);
+}
+
+/* Where the shared library is loaded this boot.
+ *
+ * `base` is drawn once per boot from the ASLR source, not compiled in, so a
+ * program cannot assume it -- and must not, since the library's relocations were
+ * applied against that base and it is only correct when mapped there.
+ *
+ * `data_page` is the index of the library's per-task writable page, whose
+ * capability carries READ|WRITE and never EXEC; every other page is shared text
+ * with READ|EXEC and never WRITE. Ask each page for the rights ITS capability
+ * holds: a uniform request fails on whichever kind it guessed wrong.
+ */
+#define SHLIB_INFO_NO_DATA  0xFFFFFFFFu
+
+struct shlib_info {
+    uint64_t base;        /* virtual address the library is mapped at         */
+    uint64_t entry;       /* the export table, already base-relative-resolved */
+    uint32_t pages;       /* total pages, text + data                         */
+    uint32_t data_page;   /* index of the writable page, or SHLIB_INFO_NO_DATA */
+};
+
+/* Report where the shared library named by the CAP_FRAME (READ right) at
+ * `frame_slot` is loaded. That capability must name one of the library's own
+ * TEXT frames: the base is the address of code every task executes, so a caller
+ * holding no library capability is refused rather than told. Returns 0 or a
+ * negative SYS_ERR_*. */
+static inline int sys_shlib_info(uint32_t frame_slot, struct shlib_info *out) {
+    return (int)syscall(SYS_SHLIB_INFO, frame_slot, (uint64_t)(uintptr_t)out, 0);
 }
 
 /* PCI decode bits for sys_device_enable. BUSMASTER is the one that lets a device

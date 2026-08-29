@@ -738,6 +738,7 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *` — report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
 | 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags` — set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |
 | 107 | `SYS_MSI_REGISTER` | `dev_slot`, `notif_slot`, `badge` — route the named device's message-signalled interrupt to a notification. **No vector argument**, deliberately (WRITE on both) |
+| 108 | `SYS_SHLIB_INFO` | `frame_slot`, `struct shlib_info *` — where the shared library is loaded **this boot**. The base is drawn from the ASLR source, not compiled in, so a program cannot assume it. Requires a `CAP_FRAME` + READ naming one of the library's own **text** frames: the base is the address of code every task executes, and a task's private copy of the library's data page does not qualify |
 | 106 | `SYS_POLL_NOTIFY` | `notif_slot`, `uint32_t *` — consume a pending badge, or report `IPC_AGAIN` if none. `sys_wait_notify`'s non-blocking twin; same `CAP_NOTIFICATION` + READ gate |
 | 104 | `SYS_DMA_ADDR` | `dev_slot`, `frame_slot`, `uint64_t *`, `flags` — map that frame into that device's address space and report the address it reaches it at (needs **both**: CAP_IO_DEVICE WRITE and CAP_FRAME READ) |
 
@@ -774,6 +775,25 @@ holder of a bus-mastering device can already read and write all of physical memo
 IOMMU-less. The name is `dma_addr` rather than `paddr` deliberately: what a device needs is the
 address *it* uses, which is the physical address only because there is no IOMMU; with one it
 becomes an IOVA and this signature is already the right shape. `SECURITY.md` **S44**.
+
+**`SYS_SHLIB_INFO` exists because the library's base is not a constant, and it is gated
+because the base is worth protecting.** The shared library is loaded at an address drawn once per
+boot from the same CSPRNG-seeded source the image loader uses (S51), so a program cannot hardcode
+it — and must not, since the object's relocations were applied against that base and it is only
+correct when mapped there.
+
+The answer is not ambient. A caller presents a `CAP_FRAME` over one of the library's own **text**
+frames, and the kernel replies only if that capability names a frame the library actually owns.
+Two things follow, and both are asserted by `make smoke-shlib`: a capability of the wrong *type*
+is refused, and so is a `CAP_FRAME` of the wrong *object* — including the task's own private copy
+of the library's writable page, which it legitimately holds and which says nothing about holding
+the code. Without that gate an attacker with execution in any task could simply ask where the
+shared gadgets are, and randomising the base would protect nothing.
+
+Shared text must be at the same address in every address space — that is what makes it shared —
+so per-boot is the strongest randomisation this mechanism admits. One information leak reveals the
+library for every task rather than for one; that is weaker than per-process ASLR and far stronger
+than an address printed in the binary.
 
 **`SYS_MSI_REGISTER` takes no vector, and that absence is the property.** An MSI is a memory
 write whose data word carries the interrupt vector, so a driver able to choose one could point

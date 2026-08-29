@@ -530,6 +530,17 @@ forbidden:
       only and cannot change what make rebuilds. Corrected 2026-08-29; the phrasing is
       forbidden so the wrong mechanism cannot be reintroduced as documentation.
 
+  - pattern: 'The library has no ASLR'
+    reason: >-
+      docs/LIMITATIONS.md 2.16 stated the shared library had no ASLR at all,
+      which was true from #234 until 2026-08-29: the base was a compiled-in
+      constant. It is now drawn per boot from the same CSPRNG-seeded source the
+      image loader uses (S51), and a task learns it only by presenting a
+      capability over the library's own text. The residual limitation is real but
+      DIFFERENT -- the randomisation is per boot, not per task, so one leak
+      reveals the library for every task -- and stating the old, stronger
+      limitation would understate what is now enforced. Corrected 2026-08-29.
+
   - pattern: 'slot 8 READ, else slot 3 READ'
     reason: >-
       docs/SYSCALLS.md stated SYS_GET_LINE's authorisation this way, and it was

@@ -514,3 +514,78 @@ void h_msi_register(struct interrupt_frame64 *r) {
      * interrupt-space layout for nothing. */
     r->rax = 0;
 }
+
+/* SYS_SHLIB_INFO(frame_slot, struct shlib_info *out): where the shared library is.
+ *
+ * WHY THIS SYSCALL HAS TO EXIST. The library's base is drawn at boot from the
+ * ASLR source (src/kernel/shlib.c) rather than compiled in, so a task can no
+ * longer hardcode it -- and it must know it, because the object's relocations
+ * were applied against that base and it is only correct when mapped there.
+ *
+ * WHY IT IS CAPABILITY-GATED, which is the part worth reading. The base is the
+ * address of executable code shared by every task that maps the library. Handing
+ * it to any caller that asks would defeat the randomisation entirely: an
+ * attacker with code execution in any task -- including one that holds no
+ * library capability at all -- could simply ask where the gadgets are. So the
+ * caller presents a CAP_FRAME over one of the library's own TEXT frames, and the
+ * kernel answers only if that capability names a frame the library actually
+ * owns.
+ *
+ * A task's private data frame does not qualify (shlib_owns_frame tests text
+ * only): being endowed with a copy of the library's writable page says nothing
+ * about holding the library, and admitting it would widen the answer to a task
+ * that was never given the code.
+ *
+ * The frame index is the authority, not the slot number: slot conventions are
+ * documentation, and this call resolves the capability and tests the OBJECT it
+ * names -- the same rule SYS_MAP_FRAME follows since finding F-2.1.
+ */
+void h_shlib_info(struct interrupt_frame64 *r) {
+    if (!shlib_active()) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+
+#ifndef SHLIB_INFO_UNGATED
+    struct capability *c = cap_lookup((uint32_t)r->rbx, CAP_RIGHT_READ);
+    if (!c || c->type != CAP_FRAME) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#ifndef SHLIB_INFO_TYPE_ONLY
+    if (!shlib_owns_frame((uint32_t)c->object)) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+#else
+    /* Control arm SHLIB_INFO_TYPE_ONLY: the TYPE is checked and the OBJECT is
+     * not -- the shape this call would take if CAP_FRAME were treated as the
+     * authority. Any frame capability then answers, including a task's own
+     * private copy of the library's data page, which says nothing about holding
+     * the library's CODE. Separate from SHLIB_INFO_UNGATED because they fail
+     * different rules: that one answers whoever asks, this one answers anyone
+     * holding any frame at all. See make smoke-shlib-info-object-control. */
+    (void)0;
+#endif
+#else
+    /* Control arm SHLIB_INFO_UNGATED: no capability test at all, so the library's
+     * base is ambient information any task can ask for. The whole point of
+     * drawing it at random is then lost -- an attacker with code execution
+     * anywhere simply asks where the shared code is. The ENTIRE gate is removed
+     * rather than just the ownership half, because with the type check still in
+     * place a wrong-type slot would be refused anyway and the arm would pass for
+     * a reason that has nothing to do with the authority.
+     * See make smoke-shlib-info-control. */
+    (void)0;
+#endif
+
+    struct shlib_info info;
+    for (unsigned i = 0; i < sizeof(info); i++) ((uint8_t *)&info)[i] = 0;
+    info.base    = shlib_base();
+    info.pages   = shlib_pages();
+    info.entry   = shlib_entry();
+    /* Which page is the per-task writable one, so a caller asks for the rights
+     * that page's capability actually carries (READ|WRITE, never EXEC) rather
+     * than guessing a layout. SHLIB_INFO_NO_DATA when the object has none. */
+    info.data_page = SHLIB_INFO_NO_DATA;
+    for (uint32_t i = 0; i < shlib_pages(); i++)
+        if (shlib_page_writable(i)) { info.data_page = i; break; }
+
+    if (copy_to_user((void *)(addr_t)r->rcx, &info, sizeof(info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
+    }
+    r->rax = 0;
+}

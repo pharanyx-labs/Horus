@@ -15,7 +15,11 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n
 static void wr(const char *s) { sys_write(1, s, slen(s)); }
 
 #define SLOT_SHLIB_FIRST 40
-#define SHLIB_VA         0x0000000300000000ULL
+/* The base is NOT a constant. It is drawn once per boot from the ASLR source
+ * (src/kernel/shlib.c), so it is asked for -- with a capability -- rather than
+ * assumed. A hardcoded address here would be a test that maps the library
+ * somewhere it was not relocated for, and reads whatever is there. */
+static unsigned long long shlib_va;
 #define MAGIC_EXPECTED   0x5A5A1234
 
 /* Derived from shlibdemo.so at build time; see the note in shlibtest.c. */
@@ -37,6 +41,19 @@ struct shlib_exports {
 #define PEER_SENTINEL 0x0BADF00D
 
 void _start(void) {
+
+    /* Ask where the library is, before mapping anything.
+     *
+     * The capability comes first and the address second: SLOT_SHLIB_FIRST holds
+     * a CAP_FRAME over one of the library's TEXT frames, and the kernel answers
+     * only because of that. A task holding no library capability is refused --
+     * the base is the address of code every task executes, and handing it to
+     * any caller that asked would defeat randomising it at all. */
+    struct shlib_info si;
+    if (sys_shlib_info(SLOT_SHLIB_FIRST, &si) != 0) {
+        wr("SHLIBTEST: FAIL peer-shlib-info\n"); for (;;) sys_yield();
+    }
+    shlib_va = si.base;
     unsigned pages = 0;
     for (unsigned i = 0; i < SHLIB_PAGES; i++) {
         /* Rights per page, as in shlibtest: text READ|EXEC, data READ|WRITE.
@@ -45,7 +62,7 @@ void _start(void) {
         unsigned rights = (i == SHLIB_DATA_PAGE)
                         ? (CAP_RIGHT_READ | CAP_RIGHT_WRITE)
                         : (CAP_RIGHT_READ | CAP_RIGHT_EXEC);
-        int rc = sys_map_frame(SLOT_SHLIB_FIRST + i, SHLIB_VA + (unsigned long long)i * 4096,
+        int rc = sys_map_frame(SLOT_SHLIB_FIRST + i, shlib_va + (unsigned long long)i * 4096,
                                rights);
         if (rc != 0) break;
         pages = i + 1;
@@ -54,7 +71,7 @@ void _start(void) {
     if (pages != SHLIB_PAGES) { wr("SHLIBTEST: FAIL peer-partial-map\n"); for (;;) sys_yield(); }
 
     struct shlib_exports *ex =
-        (struct shlib_exports *)(unsigned long)(SHLIB_VA + SHLIB_EXPORTS_OFF);
+        (struct shlib_exports *)(unsigned long)(shlib_va + SHLIB_EXPORTS_OFF);
     if (ex->magic == 0) { wr("SHLIBTEST: FAIL peer-no-export-table\n"); for (;;) sys_yield(); }
 
     /* The magic value is the thing a patch would change, and this task never

@@ -1879,6 +1879,19 @@ struct io_device {
     uint16_t    device;
     uint32_t    classcode;  /* class:subclass:prog-if */
     uint32_t    irq_mask;   /* legacy IRQ lines this device may route */
+    /* MSI-X, and why three fields rather than one offset.
+     *
+     * The capability offset alone is not enough to protect anything: the vector
+     * TABLE lives in a BAR, so the kernel has to know its PHYSICAL extent in
+     * order to refuse a driver's request to map it (S48). These are resolved once
+     * at boot, from the capability plus the sized BAR, and are the only reason
+     * iodev_allows_mmio can tell a page of ordinary device registers from the
+     * page holding the register that chooses an interrupt vector. */
+    uint8_t     msix_cap;       /* config-space offset, 0 = no MSI-X          */
+    uint16_t    msix_entries;   /* table entries (capability's size + 1)      */
+    uint64_t    msix_table_phys;/* physical base of the table, 0 = unresolved */
+    uint64_t    msix_table_len; /* entries * 16                               */
+
     uint8_t     msi_cap;    /* config-space offset of the MSI capability, 0 = none.
                              * The kernel is the only thing that ever writes it:
                              * its data field carries the interrupt VECTOR, so a
@@ -1898,6 +1911,7 @@ struct dev_info {
     uint32_t classcode;
     uint32_t irq_mask;
     uint32_t n_port;
+    uint64_t msix_table;
     uint32_t msi_capable;
     struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
     struct { uint32_t base, len; } port[IODEV_MAX_PORT];
@@ -1911,6 +1925,10 @@ const struct io_device *iodev_get(uint64_t index);
 uint32_t iodev_total(void);
 uint64_t iodev_first_of_class(uint8_t class_hi);
 int iodev_allows_mmio(const struct io_device *d, uint64_t paddr, uint64_t len);
+/* Does this range touch the device's MSI-X vector table? The table lives in a
+ * BAR, so without this a driver could map it and choose its own interrupt vector
+ * -- S47's guarantee undone through a door S47 does not cover. SECURITY.md S48. */
+int iodev_msix_blocks_page(const struct io_device *d, uint64_t paddr, uint64_t len);
 int iodev_allows_port(const struct io_device *d, uint16_t port);
 int iodev_allows_irq(const struct io_device *d, int irq);
 /* The one write to PCI configuration space reachable from ring 3, and only the
@@ -1923,6 +1941,9 @@ int iodev_allows_irq(const struct io_device *d, int irq);
 #define IODEV_DECODE_BUSMASTER  0x4u
 int iodev_set_decode(const struct io_device *d, uint32_t flags);
 int iodev_program_msi(const struct io_device *d, uint8_t vector);
+int iodev_program_msix(const struct io_device *d, uint16_t entry, uint8_t vector);
+void ensure_msix_mapped(uint64_t *root_pml4, uint64_t page_phys);
+void ensure_msix_mapped_current(uint64_t *root_pml4);
 
 /* ---- Message-signalled interrupts (src/kernel/msi.c) -----------------------
  *

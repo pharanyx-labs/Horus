@@ -104,7 +104,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
-	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER
+	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -781,6 +781,19 @@ endif
 # THE ARM FOR S47, and the reason the real ABI has no vector field at all.
 # `make smoke-net-msi-vector-control` asserts a STALL: a machine faulting on a
 # vector nothing expects does not get to print a marker.
+# MSIX_TABLE_MAPPABLE=1 drops the refusal, so a driver can map its own device's
+# MSI-X vector table -- ordinary device memory inside a BAR it holds a capability
+# for. The table entry carries the interrupt VECTOR, so this is S47's guarantee
+# undone through a door S47 does not cover: the driver writes the vector itself,
+# in its own address space, with no syscall involved.
+#
+# THE ARM FOR S48. `make smoke-net-msix-table-control` requires
+# NETTEST: FAIL msix-table-mapped.
+MSIX_TABLE_MAPPABLE ?= 0
+ifeq ($(MSIX_TABLE_MAPPABLE),1)
+CFLAGS += -DMSIX_TABLE_MAPPABLE
+endif
+
 MSI_VECTOR_FROM_USER ?= 0
 ifeq ($(MSI_VECTOR_FROM_USER),1)
 CFLAGS += -DMSI_VECTOR_FROM_USER
@@ -3534,6 +3547,18 @@ smoke-net-msi-vector-control:
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1 boot.iso
 	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		EXPECT_FAULT='task 1' tools/smoke_test.sh boot.iso
+
+# S48's arm. The MSI-X vector table lives in a BAR, so without an explicit
+# refusal a driver maps it like any other register page and writes its own
+# interrupt vector -- no syscall, no capability check, nothing to gate. The
+# refusal is what makes S47 hold for MSI-X as well as MSI.
+.PHONY: smoke-net-msix-table-control
+smoke-net-msix-table-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSIX_TABLE_MAPPABLE=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSIX_TABLE_MAPPABLE=1 boot.iso
+	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL msix-table-mapped' tools/smoke_test.sh boot.iso
 
 # The INTx path, on an 82540EM -- a device model with NO MSI capability, so the
 # driver falls back to a wire and S46's mask-until-acknowledged applies. Both

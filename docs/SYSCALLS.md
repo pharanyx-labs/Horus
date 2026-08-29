@@ -782,6 +782,12 @@ allocates from a range it owns (48–63) and programs the capability itself; `SY
 reports *whether* a device has MSI and never *where* the capability lives, because that offset
 names the register carrying the vector. `SECURITY.md` **S47**.
 
+**One page of a device's own MMIO is never mappable: its MSI-X vector table** (**S48**). A table
+entry carries the interrupt vector, and unlike MSI's it sits in a BAR rather than in
+configuration space — so a driver holding a valid `CAP_IO_DEVICE` is still refused that page,
+read-only as well as writable. `SYS_DEVICE_INFO` reports which page it is, because knowing the
+address buys nothing against a refusal.
+
 Device index **0 is reserved** and names nothing. Two things default to zero — a task slot's
 `io_device` and a capability's `object`, which `cap_install_from_root`'s fourth argument
 overrides — and both must fail closed rather than resolve to the console.

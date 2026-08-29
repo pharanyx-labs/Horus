@@ -1259,6 +1259,7 @@ void create_user_pagedir(uint32_t task_id) {
      * while running on the calling task's cr3. */
     ensure_iommu_mapped_current(pml4_tab);
     ensure_ioapic_mapped_current(pml4_tab);
+    ensure_msix_mapped_current(pml4_tab);
 
     tasks[task_id].cr3 = pml4_phys;
 
@@ -2277,6 +2278,42 @@ void ensure_ioapic_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
 
 void ensure_ioapic_mapped_current(uint64_t *root_pml4) {
     if (g_ioapic_regs_phys) ensure_identity_mmio_page(root_pml4, g_ioapic_regs_phys);
+}
+
+/* Map a page of a device's MSI-X vector table for the KERNEL's use.
+ *
+ * The same physical page SYS_MAP_PHYS refuses to a driver (S48). That asymmetry
+ * is deliberate and is the property: supervisor-only and NX, so it exists in the
+ * kernel half of every address space and nowhere ring 3 can reach. Cache-disabled
+ * because these are device registers whose writes must reach the device in order.
+ *
+ * Up to four table pages are remembered so a freshly built address space can
+ * re-establish them; four because MSI_VECTOR_COUNT is 16 and one page holds 256
+ * entries, so a machine would need an implausible spread of devices to exceed it.
+ * A fifth is refused rather than silently dropped -- a table page that is not
+ * present in the current address space is a kernel write to an unmapped address,
+ * which is a panic, not a subtle bug. */
+#define MSIX_MAX_PAGES 4
+static uint64_t g_msix_pages[MSIX_MAX_PAGES];
+static unsigned g_msix_page_count;
+
+void ensure_msix_mapped(uint64_t *root_pml4, uint64_t page_phys) {
+    if (!page_phys) return;
+    page_phys &= ~(uint64_t)(PAGE_SIZE - 1);
+
+    unsigned i;
+    for (i = 0; i < g_msix_page_count; i++)
+        if (g_msix_pages[i] == page_phys) break;
+    if (i == g_msix_page_count) {
+        if (g_msix_page_count >= MSIX_MAX_PAGES) return;   /* refuse, do not drop */
+        g_msix_pages[g_msix_page_count++] = page_phys;
+    }
+    ensure_identity_mmio_page(root_pml4, page_phys);
+}
+
+void ensure_msix_mapped_current(uint64_t *root_pml4) {
+    for (unsigned i = 0; i < g_msix_page_count; i++)
+        ensure_identity_mmio_page(root_pml4, g_msix_pages[i]);
 }
 
 /* Re-establish the IOMMU register mapping in a freshly built address space.

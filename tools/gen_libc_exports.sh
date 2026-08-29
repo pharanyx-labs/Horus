@@ -55,7 +55,40 @@ nm --defined-only "$LIBC" 2>/dev/null | awk '$2 ~ /^[TtWwRrDdBb]$/ { print $3 }'
 # the wrong kind of thing is a trap for whoever reads it next.
 nm --defined-only "$LIBC" 2>/dev/null | awk '$2 !~ /^[TtWw]$/ { print $3 }' | sort -u > "$TMP.data"
 
-comm -12 "$TMP.undef" "$TMP.def" > "$TMP.need"
+# A REQUIRED CORE, unioned with the derived set.
+#
+# WHY THE DERIVED SET ALONE IS NOT ENOUGH. It is "whatever this compiler left
+# undefined", and that varies by toolchain: gcc 14 on Debian leaves `sprintf`
+# undefined in the coreutils objects, and the compiler on GitHub's runners does
+# not -- so the table had a symbol on one machine and not the other, and a caller
+# built against one header failed to compile against the other. An interface that
+# changes with the compiler is not an interface.
+#
+# So these are exported whether or not any shipped program currently references
+# them: they are what a libc means, and what a caller may rely on being there.
+# A required symbol missing from libc.a is a hard error rather than a quiet
+# omission -- fail closed, because the alternative is a table that silently does
+# not contain what it promises.
+#
+# The derived set is still the bulk of it and still varies. That is fine for
+# SIZE -- an unreferenced symbol is library text nobody calls -- and it is the
+# reason the index header must be regenerated with the table rather than
+# remembered.
+REQUIRED_SYMS="__errno _impure_ptr free malloc memcmp memcpy memset sprintf strcmp strlen"
+
+comm -12 "$TMP.undef" "$TMP.def" > "$TMP.derived"
+
+missing=""
+for sym in $REQUIRED_SYMS; do
+	grep -qx "$sym" "$TMP.def" || missing="$missing $sym"
+done
+if [ -n "$missing" ]; then
+	echo "gen_libc_exports: required symbol(s) not defined by $LIBC:$missing" >&2
+	echo "gen_libc_exports: refusing to emit a table that does not contain what it promises" >&2
+	exit 1
+fi
+
+{ cat "$TMP.derived"; for sym in $REQUIRED_SYMS; do echo "$sym"; done; } | sort -u > "$TMP.need"
 
 COUNT=$(wc -l < "$TMP.need" | tr -d ' ')
 [ "$COUNT" -gt 0 ] || {

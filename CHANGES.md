@@ -40,6 +40,21 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **The shared libc's export set was toolchain-dependent.** It is derived from what the shipped
+  programs leave undefined, and that varies by compiler: gcc 14 on Debian leaves `sprintf`
+  undefined in the coreutils objects, the compiler on GitHub's runners does not. The table held a
+  symbol on one machine and not the other, so `libctest` compiled locally and failed in CI on
+  `SHLIB_IDX_sprintf undeclared`. **An interface that changes with the compiler is not an
+  interface.**
+
+  `gen_libc_exports.sh` now unions the derived set with a **required core** (`__errno`,
+  `_impure_ptr`, `free`, `malloc`, `memcmp`, `memcpy`, `memset`, `sprintf`, `strcmp`, `strlen`),
+  exported whether or not anything currently references them. A required symbol `libc.a` does not
+  define is a hard error — a table that does not contain what it promises fails closed. Falsified
+  in both directions, since locally every required symbol was already derived and the union path
+  would never have run: an undefined required symbol is refused, and `qsort` (0 references from
+  the coreutils) is exported anyway, 59 → 60.
+
 - **`SYS_SHLIB_INFO` reported a single writable page index, and newlib has two.** `data_page` was
   true of the three-page demo object and false of the real libc, whose writable segment spans two
   pages. The probe asked for READ|EXEC on the second, its capability carried READ|WRITE, and the

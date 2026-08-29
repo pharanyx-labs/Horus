@@ -1907,6 +1907,28 @@ be behind the mechanism it witnesses**. Falsified by giving `libctest` its own `
 confirming the check fires. Measured: the probe is 10,192 bytes with 8 defined symbols, against
 the library's 711,952.
 
+**THE EXPORT SET WAS TOOLCHAIN-DEPENDENT, and CI is what showed it.** The list is derived from
+what the shipped programs leave undefined — and that varies by compiler. gcc 14 on Debian leaves
+`sprintf` undefined in the coreutils objects; the compiler on GitHub's runners does not. So the
+table held a symbol on one machine and not the other, and `libctest` compiled here and failed
+there on `SHLIB_IDX_sprintf undeclared`. **An interface that changes with the compiler is not an
+interface.**
+
+`gen_libc_exports.sh` now unions the derived set with a **required core** — `__errno`,
+`_impure_ptr`, `free`, `malloc`, `memcmp`, `memcpy`, `memset`, `sprintf`, `strcmp`, `strlen` —
+exported whether or not any shipped program references them, because they are what a libc *means*
+and what a caller may rely on being there. A required symbol that `libc.a` does not define is a
+**hard error**, not a quiet omission: a table that does not contain what it promises fails closed.
+
+Falsified both ways, because locally every required symbol was already in the derived set and the
+union path would otherwise never have executed: a required symbol `libc.a` does not define is
+refused (`horus_not_a_real_symbol`), and a required symbol the coreutils do *not* reference
+(`qsort`, 0 references) is exported anyway, taking the table from 59 to 60.
+
+The derived remainder still varies by toolchain, and that is fine — an unreferenced symbol is
+library text nobody calls. It is also why the index header must be regenerated *with* the table
+and never remembered.
+
 **THE FIRST RUN FOUND A DEFECT IN THE ABI, and it is the kind only the real object could find.**
 `SYS_SHLIB_INFO` reported `data_page` — a single index — which was true of the demo and false of
 newlib, whose writable segment is **two** pages. The probe asked for READ|EXEC on the second,

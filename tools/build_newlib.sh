@@ -39,7 +39,13 @@ TARBALL=$NEWLIB_DIR/newlib-${NEWLIB_VERSION}.tar.gz
 # A build that silently reuses a previous invocation's flags is the same defect
 # that disarmed a control arm in #235 -- it fails green.
 NEWLIB_TARGET_CFLAGS="-m64 -ffreestanding -fno-stack-protector -fno-builtin -mno-red-zone -fPIC -fvisibility=hidden"
-STAMP=$NEWLIB_DIR/.newlib-flags
+# Inside $PREFIX, deliberately: that is the directory CI caches
+# (.github/workflows/ci.yml, "Cache built newlib", path: newlib/install). A
+# stamp outside it would be absent on every cache HIT, the guard below would
+# read that as "flags changed", and every job that restored a perfectly good
+# libc.a would rebuild newlib from scratch anyway. A stamp has to travel with
+# the thing it certifies or it certifies nothing.
+STAMP=$PREFIX/.newlib-flags
 
 if [ -f "$PREFIX/x86_64-elf/lib/libc.a" ]; then
 	if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$NEWLIB_TARGET_CFLAGS" ]; then
@@ -205,6 +211,7 @@ test -f "$PREFIX/x86_64-elf/lib/libc.a" || {
 # would certify flags no library was built with -- and because the guard at the
 # top trusts it, a failed build would then be skipped on the next run and the
 # stale library used as if it were current. It records success, not intent.
+mkdir -p "$(dirname "$STAMP")"
 printf '%s' "$NEWLIB_TARGET_CFLAGS" > "$STAMP"
 
 echo "newlib: built $PREFIX/x86_64-elf/lib/libc.a"

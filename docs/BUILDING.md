@@ -37,9 +37,14 @@ private without privatising shared text too.
 
 **newlib is built `-fPIC -fvisibility=hidden`** (`tools/build_newlib.sh`). Both are needed for the
 shared link and neither harms the static one — userspace is already `-fPIE`/`-pie`. The flags are
-stamped in `newlib/.newlib-flags` and a change to them forces a rebuild: the script no-ops when
-`libc.a` exists, so without the stamp, editing the wrapper flags would have no effect on a tree
-that had already built once.
+stamped in `newlib/install/.newlib-flags` and a change to them forces a rebuild: the script no-ops
+when `libc.a` exists, so without the stamp, editing the wrapper flags would have no effect on a
+tree that had already built once.
+
+The stamp lives **inside `newlib/install`** because that is the directory CI caches. Placed beside
+it instead, the stamp would be absent on every cache *hit*, the guard would read that as "flags
+changed", and every job that restored a perfectly good `libc.a` would rebuild newlib from scratch
+anyway — a stamp has to travel with the thing it certifies or it certifies nothing.
 
 ---
 

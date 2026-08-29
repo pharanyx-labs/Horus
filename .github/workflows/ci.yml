@@ -1922,6 +1922,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential binutils make texinfo
+      # Required even though nothing here builds Rust: the Makefile's cargo and
+      # rust-target guards are $(error) at PARSE time, so they fire for every
+      # target and no recipe is reachable without this. Same reason
+      # smoke-newlib-tamper carries it.
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # newlib/ is gitignored, so the checkout does not carry it. Same cache and
+      # key as the other newlib jobs -- the key tracks the build script, which
+      # pins both the newlib version and the target flags.
+      - name: Cache built newlib
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: newlib/install
+          key: newlib-${{ runner.os }}-${{ hashFiles('tools/build_newlib.sh') }}
+      - name: Build newlib (no-op on cache hit)
+        run: tools/build_newlib.sh
       # Roadmap 2.5's remainder: newlib, its port glue and libhorus linked into
       # one shared object the kernel can load. Programs do not link against it
       # yet — what is gated here is that the object stays loadable, because the

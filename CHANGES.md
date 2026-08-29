@@ -39,11 +39,15 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   newlib is now built **`-fPIC -fvisibility=hidden`**. Verified not to regress the static link it
   still serves: `smoke-newlib`, `smoke-tcc` and `smoke-coreutils-shell` all pass.
 
-  **The flags are stamped** (`newlib/.newlib-flags`). The build script no-ops when `libc.a`
+  **The flags are stamped** (`newlib/install/.newlib-flags`). The build script no-ops when `libc.a`
   exists — which is what makes it cheap to call from a Makefile rule, and also means that without
   a stamp, editing the wrapper flags would have had *no effect* on a tree that had already built
   once. That is the defect that disarmed a control arm in #235, one directory over. The stamp is
-  written last and only on success, so a failed build cannot certify itself.
+  written last and only on success, so a failed build cannot certify itself, and it lives *inside*
+  `newlib/install` — the directory CI caches. Placed beside it instead, the stamp would be absent
+  on every cache **hit**, the guard would read that as "flags changed", and every job restoring a
+  perfectly good `libc.a` would rebuild newlib from scratch: a stamp has to travel with the thing
+  it certifies or it certifies nothing.
 
   The export table is **derived**, not hand-written (`tools/gen_libc_exports.sh`): every symbol
   the shipped programs leave undefined, intersected with what `libc.a` defines — 59 of the 133

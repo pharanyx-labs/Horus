@@ -1112,7 +1112,7 @@ VFS_SELFTEST ?= 0
 ifeq ($(VFS_SELFTEST),1)
 CFLAGS  += -DVFS_SELFTEST
 ASFLAGS += -DVFS_SELFTEST
-VFS_SELFTEST_DEP = userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin
+VFS_SELFTEST_DEP = userspace/dev_server.bin userspace/vfstest.bin
 endif
 
 # VFS_FIRST_MATCH=1 makes hvfs_resolve return the first matching mount instead

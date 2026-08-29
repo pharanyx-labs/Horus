@@ -334,9 +334,12 @@ mapping of code another task is running.
 
 That matters because sharing a library *writably* would be a code-injection
 primitive between every task that maps it, which is strictly worse than the
-per-program static copies it replaces. The text is at a fixed address because
-shared text must be identical in every address space; the cost is no ASLR for the
-library, recorded in `docs/LIMITATIONS.md` §2.16. It is not yet a dynamic linker —
+per-program static copies it replaces. The text is at the *same* address in every
+address space because that is what makes it shared — but not a *fixed* one: the
+base is drawn at boot from the ASLR source (**S51**), and a task learns it only
+by presenting a capability over the library's own text (`SYS_SHLIB_INFO`). The
+residual cost is that one leak reveals it for every task rather than one,
+recorded in `docs/LIMITATIONS.md` §2.16. It is not yet a dynamic linker —
 §2.16 lists what it does not do.
 
 ### Untyped memory

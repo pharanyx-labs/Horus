@@ -461,6 +461,22 @@ void kernel_main(uint32_t mb_info) {
     rng_unseeded_probe();
 #endif
     entropy_init();
+    /* Seed the layout PRNG HERE, immediately behind the CSPRNG it draws from.
+     *
+     * It used to be called after smp_bringup(), which does not return on the
+     * 64-bit path — it spawns the shell and enters ring 3 — so the call was
+     * unreachable and the xorshift state stayed at its compile-time constant for
+     * the whole boot. That was harmless while every consumer sat downstream of
+     * choose_image_placement, which mixes read_tsc() and secure_random_u64()
+     * before it draws: image base, stack offset and heap gap were all randomised
+     * by that mix rather than by this seed. It stopped being harmless when
+     * shlib_init started drawing a base at boot, BEFORE any spawn and so before
+     * any mix -- it got the same "random" address every boot, which is what
+     * make smoke-shlib-aslr caught.
+     *
+     * Moving it rather than adding a second call: two seeding sites for one
+     * PRNG is a question about which one won. */
+    aslr_init_seed();
     /* Must follow entropy_init (needs the CSPRNG) and must run from a frame
      * that never returns — kernel_main is both. See stack_protector_init. */
     stack_protector_init();
@@ -511,7 +527,9 @@ void kernel_main(uint32_t mb_info) {
 #endif
     smp_bringup();
     __asm__ volatile ("sti" ::: "memory");
-    aslr_init_seed();
+    /* aslr_init_seed() used to be here, where the 64-bit path never reaches it
+     * (smp_bringup enters ring 3 and does not return). It is now immediately
+     * after entropy_init above. */
     set_current_task(0);
     /* Note: the 64-bit boot reaches userspace via smp_bringup() above, which
      * spawns the shell and never returns; the ELF_SELFTEST hook lives there.

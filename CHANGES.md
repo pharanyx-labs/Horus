@@ -16,6 +16,53 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **The shared library's base is drawn per boot, and is not ambient information (S51).** The
+  guard, shipped before the mechanism it protects.
+
+  The base was compiled in. That was defensible while the only object on this mechanism was a
+  three-page demo, and it stops being defensible the moment newlib moves onto it (roadmap 2.5):
+  ~135 KiB of executable code at an address printed in the binary, mapped into **every** task —
+  and a *regression*, because a program's static libc today lives inside its own PIE image, which
+  the loader already randomises. So it landed now, while the only consumer is a selftest and the
+  change is cheap.
+
+  `shlib_init` now draws the base from `aslr_random_offset` — the same CSPRNG-seeded source the
+  image loader uses, rejection-sampled over 2^30 page-aligned positions — **before** relocating the
+  object. Shared text must be at the same address in every address space, which is what makes it
+  shared, so per-boot is the strongest randomisation this mechanism admits. One leak reveals the
+  library for every task rather than for one: weaker than per-process ASLR, far stronger than a
+  constant. Stated in `docs/LIMITATIONS.md` §2.16 rather than glossed.
+
+  **`SYS_SHLIB_INFO` (108)** is how a task learns it, and it is capability-gated: the caller
+  presents a `CAP_FRAME` over one of the library's own **text** frames. Ungated, an attacker with
+  execution in any task could simply ask where the shared gadgets are. A wrong *type* is refused,
+  and so is a `CAP_FRAME` of the wrong *object* — including the caller's own private copy of the
+  library's writable page (S50), which it legitimately holds and which says nothing about holding
+  the code.
+
+  Witness `make smoke-shlib-aslr`: **two boots**, because the property is not observable from
+  inside one — a single run sees an address either way. Falsified in every direction, one arm per
+  rule: `SHLIB_BASE_FIXED=1` (bases identical), `SHLIB_INFO_UNGATED=1` (no capability test at
+  all), and `SHLIB_INFO_TYPE_ONLY=1` (type checked, object not). All 3 runs in 3; the base gates go
+  red under each. The third arm exists because with only the second, the object rule would never
+  have been shown to fire — the probe stops at its first failure and the type check runs first.
+
+### Fixed
+
+- **`aslr_init_seed()` was never reached on the 64-bit boot path.** It was called after
+  `smp_bringup()`, which does not return — it spawns the shell and enters ring 3 — so the layout
+  PRNG ran on its compile-time constant state for the whole boot. Found by `smoke-shlib-aslr`
+  failing on its first run, against a change that was otherwise correct.
+
+  **The image ASLR was never broken, and checking that mattered more than the fix.** Every other
+  consumer of that PRNG sits downstream of `choose_image_placement`, which mixes `read_tsc()` and
+  `secure_random_u64()` before it draws — so image base, stack offset and heap gap were randomised
+  by that mix and not by the dead seed. `shlib_init` was simply the first consumer to draw *before*
+  any spawn, and so the first to see the unseeded state. The seed now runs immediately behind
+  `entropy_init()`, where it is reachable; it was moved rather than duplicated, because two seeding
+  sites for one PRNG is a question about which one won.
+
+
 - **The shared libc builds, and is gated (roadmap 2.5).** `userspace/libc.so` — newlib, its port
   glue and libhorus in one shared object the kernel's loader accepts: **342 `R_X86_64_RELATIVE`
   relocations and nothing else**, zero undefined symbols, 135 KiB of shared text (34 pages) and

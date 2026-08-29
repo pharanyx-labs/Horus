@@ -863,6 +863,7 @@ void users_init(void);
 #define IPC_AGAIN             (-2)
 
 #define SYS_MSI_REGISTER      107   /* (dev_slot, notif_slot, badge) -> 0; route the named device's message-signalled interrupt to a notification the caller holds. NOTE: no vector argument -- the kernel allocates it and programs the device, because an MSI's data word IS the vector and a driver that could choose one could raise any interrupt on the machine (S47). */
+#define SYS_SHLIB_INFO        108   /* (frame_slot, struct shlib_info*) -> 0; where the shared library is loaded THIS BOOT. The base is drawn from the ASLR source rather than compiled in, so a program cannot assume it -- and the answer is gated on a CAP_FRAME + READ naming one of the library's own TEXT frames, because the base is the address of code every task executes and telling an uncapable caller would defeat the randomisation. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
@@ -1935,6 +1936,23 @@ uint64_t shlib_base(void);
 uint32_t shlib_frame_index(uint32_t i);
 int      shlib_page_writable(uint32_t i);
 uint32_t shlib_instantiate_data(uint32_t page);
+int      shlib_owns_frame(uint32_t idx);
+
+/* The SYS_SHLIB_INFO payload. MUST stay byte-identical to the copy in
+ * include/syscall.h -- the kernel fills this layout and ring-3 reads it across
+ * copy_to_user, exactly like struct untyped_info and struct dev_info.
+ *
+ * Nothing checks that automatically; the field order here is chosen to make the
+ * layout hard to get wrong instead -- both 64-bit members first, then both
+ * 32-bit ones, so the struct is 24 bytes with no interior padding on either
+ * side and no ordering either compiler could disagree about. */
+#define SHLIB_INFO_NO_DATA  0xFFFFFFFFu
+struct shlib_info {
+    uint64_t base;
+    uint64_t entry;
+    uint32_t pages;
+    uint32_t data_page;
+};
 uint64_t shlib_entry(void);
 
 void iodev_init(void);

@@ -371,12 +371,12 @@ a page at the bogus address and reported success.
 
 ### 1.8 A third of the syscall table has no test that runs its handler
 
-**Measured 2026-08-20**, and gated since: **62 of 90** implemented syscalls have their handler
+**Measured 2026-08-20**, and gated since: **62 of 91** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 28 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 29 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This is stated as a limitation rather than a finding because nothing here is known to be
-broken. What is known is that a defect in any of those 28 handlers would be invisible in the
+broken. What is known is that a defect in any of those 29 handlers would be invisible in the
 same way issue #176 was — and #176 is the reason the number exists at all. `captest` is a
 **refusal** suite by construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both
 assert `SYS_ERR_PERM`, and the capability gate returns before the handler runs. Both syscalls
@@ -386,7 +386,7 @@ were named by the suite; neither handler had ever executed.
 direction, so the number cannot quietly fall. It deliberately does not require all of them —
 that would be a large body of test-writing disguised as a gate. Property **S25**.
 
-**Two of the 28 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
+**Two of the 29 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
 uncovered only because `tools/session_test.py` runs no pipeline — a gap in the workload, not
 the kernel. And the `uncovered` reasons that name another build which *would* reach a syscall
 are **hypotheses this manifest has not measured**; promoting them should be a measurement, not
@@ -1207,11 +1207,14 @@ second instantiation. Neither is exercised by a test today, so neither is claime
   Migrating newlib onto this mechanism is a build-system job — rebuilding it `-shared -fPIC`,
   relinking every program against it — and it gets its own commit rather than riding on the one
   that adds the mechanism.
-- **The library has no ASLR.** Shared text must be identical in every address space, so it is
-  relocated once against a fixed base and mapped at that address everywhere. Text needing
-  per-task relocation would not be shared text. The cost is a known address for a ROP chain, and
-  it is the direct price of sharing rather than an oversight; per-task randomisation needs
-  PC-relative code with a per-task GOT, which is where full dynamic linking goes.
+- **The library's ASLR is per BOOT, not per task.** Shared text must be identical in every address
+  space, so it is relocated once and mapped at that address everywhere; text needing per-task
+  relocation would not be shared text. Since 2026-08-29 that address is **drawn at boot** from the
+  same CSPRNG-seeded source the image loader uses rather than compiled in (**S51**), so it is not
+  an address an attacker reads off the binary. The residual cost is real and stated: one
+  information leak reveals the library for *every* task rather than for one, which is weaker than
+  the per-process ASLR an ordinary PIE image gets. Per-task randomisation needs PC-relative code
+  with a per-task GOT, which is where full dynamic linking goes.
 - **Only `R_X86_64_RELATIVE`.** A shared object with an undefined symbol, a `JUMP_SLOT` or a TLS
   entry is refused at load rather than partially applied, because a half-relocated library is one
   whose calls go somewhere nobody chose. That is also why the demo object is built

@@ -43,6 +43,10 @@ src/kernel/ioapic.c             @pharanyx-labs
 # msi.c decides which vector a device raises. Get it wrong and a NIC can deliver
 # an exception vector to whatever it interrupts (S47).
 src/kernel/msi.c                @pharanyx-labs
+# shlib.c decides the rights on memory many tasks execute. Writable shared text is
+# a code-injection primitive between every task that maps it (S49).
+src/kernel/shlib.c              @pharanyx-labs
+userspace/shlibtest.c           @pharanyx-labs
 # The device-capability conformance suite, for the same reason captest.c is
 # owned: it is the evidence for S43, and every check in it is a refusal.
 userspace/devcaptest.c          @pharanyx-labs

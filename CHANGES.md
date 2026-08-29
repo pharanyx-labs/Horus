@@ -16,6 +16,47 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **Shared library text: executed by many tasks, writable by none (S49).** Roadmap 2.5's
+  mechanism. `src/kernel/shlib.c` loads a shared object **once** into frames at boot, relocates
+  it against a fixed base, and hands every task a `CAP_FRAME` over those frames carrying READ and
+  EXEC and never WRITE. Two tasks map the same physical pages, execute them, and neither can
+  obtain a writable mapping.
+
+  **The size argument for sharing a libc is obvious; the security argument is why this is written
+  the way it is.** Sharing a library *writably* is a code-injection primitive between every task
+  that maps it — one task patches a function and another executes the patch — which is strictly
+  **worse** than the per-program static copies it would replace, because those at least isolated
+  the damage. So the interesting assertion is not that the call works, it is that the write does
+  not.
+
+  The enforcement is **S27**'s rights floor rather than the loader's intent: the primordial
+  capability over those frames never held WRITE, and rights only ever narrow on delegation, so no
+  descendant can carry WRITE and there is no delegation path to a writable mapping of code
+  another task is running.
+
+  Falsified by `SHLIB_TEXT_WRITABLE=1` (`make smoke-shlib-writable-control`), which is **the
+  attack rather than a stand-in**: the capability carries WRITE, `shlibtest` maps the library a
+  second time writable and overwrites `shlib_magic` through that alias while executing through
+  its read+exec one, and the **peer** — which asked for nothing but read+exec, in its own address
+  space — runs the patch. `SHLIBTEST: FAIL peer-saw-patched-code`, 3 boots in 3, and
+  `smoke-shlib` red under it. **Two tasks and not one:** a single task proving it cannot write its
+  own page proves less than it looks, because the failure worth excluding is cross-task.
+
+  The probe's refusal checks are skipped under the arm deliberately. They cannot pass there, and
+  stopping at the first of them would make the marker *"a writable mapping was obtainable"*
+  rather than what the other task then executes — the probe stops at its first failure, so which
+  failure it reaches is a choice about what the arm demonstrates.
+
+  **What this is not, stated because a mechanism that looked like a linker would be worse than
+  one that says what it is** (`docs/LIMITATIONS.md` §2.16): it resolves nothing by name — a caller
+  indexes a fixed export table whose address comes from the object's `e_entry`; **newlib is still
+  statically linked**, so the saving this exists for has not been taken (`coreutils_echo` is still
+  404,572 bytes, measured, and eleven such programs ship); the library gets **no ASLR**, because
+  shared text must be identical in every address space and text needing per-task relocation would
+  not be shared; and only `R_X86_64_RELATIVE` is accepted, since a half-relocated library is one
+  whose calls go somewhere nobody chose. Migrating newlib onto this is a build-system job and
+  gets its own commit.
+
 - **A driver cannot map its own device's MSI-X vector table (S48).** An MSI-X table entry carries
   a message address and a data word whose low byte is the interrupt **vector** — the same field
   **S47** keeps out of a driver's hands. But unlike MSI's, it does *not* live in configuration

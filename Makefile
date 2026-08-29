@@ -104,7 +104,8 @@ DEFECT_FLAGS = \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
-	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE
+	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
+	SHLIB_TEXT_WRITABLE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -179,6 +180,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/iommu.o \
        src/kernel/ioapic.o \
        src/kernel/msi.o \
+       src/kernel/shlib.o \
        src/kernel/ata.o
 
 MINIMAL_SECURE ?= 0
@@ -700,6 +702,33 @@ ifeq ($(IO_DEVICE_IRQ_UNCHECKED),1)
 CFLAGS += -DIO_DEVICE_IRQ_UNCHECKED
 endif
 
+# The shared object every SHLIB_SELFTEST task maps. -fvisibility=hidden is not
+# cosmetic: an exported symbol can be interposed, so the linker emits
+# R_X86_64_64 against the dynamic symbol for it, and shlib_init refuses anything
+# but R_X86_64_RELATIVE -- a library whose calls resolve somewhere the loader did
+# not compute is a library nobody chose. Hidden visibility makes every reference
+# internal and every relocation RELATIVE.
+#
+# -e shlib_exports puts the export table's address in e_entry. A shared object has
+# no entry point in the runnable sense, so the field is free, and using it means
+# the loader neither guesses a layout nor trusts a section name to survive the
+# toolchain.
+userspace/shlibdemo.so: userspace/shlibdemo.c
+	$(CC) -shared -fPIC -m64 -ffreestanding -nostdlib -fno-stack-protector \
+	  -fno-plt -fvisibility=hidden -Wl,-e,shlib_exports -Wl,--build-id=none \
+	  -O2 -o $@ $<
+
+# SHLIB_SELFTEST=1 embeds that object and, at boot, loads it once into frames and
+# spawns TWO tasks that each map it read+exec from a capability that never held
+# WRITE. Both call into the same physical pages; neither can modify them
+# (SHLIBTEST: PASS). Roadmap 2.5's mechanism; gated off the ship kernel.
+SHLIB_SELFTEST ?= 0
+ifeq ($(SHLIB_SELFTEST),1)
+CFLAGS  += -DSHLIB_SELFTEST
+ASFLAGS += -DSHLIB_SELFTEST
+SHLIB_SELFTEST_DEP = userspace/shlibdemo.so userspace/shlibtest.bin userspace/shlibpeer.bin
+endif
+
 # NET_SELFTEST=1 embeds netd and, at boot, spawns it holding exactly two
 # capabilities -- a CAP_IO_DEVICE naming the machine's NIC, and the untyped region
 # it builds its DMA rings from. It brings up virtio-net over the legacy I/O BAR
@@ -789,6 +818,17 @@ endif
 #
 # THE ARM FOR S48. `make smoke-net-msix-table-control` requires
 # NETTEST: FAIL msix-table-mapped.
+# SHLIB_TEXT_WRITABLE=1 mints the shared library's frame capability WITH the
+# write right, so a task can map the library writable and patch code another task
+# executes. The arm for S49: shlibtest overwrites shlib_magic through a writable
+# alias while executing through its read+exec one, and the PEER -- which asked for
+# nothing but read+exec -- runs the patch. `make smoke-shlib-writable-control`
+# requires SHLIBTEST: FAIL peer-saw-patched-code.
+SHLIB_TEXT_WRITABLE ?= 0
+ifeq ($(SHLIB_TEXT_WRITABLE),1)
+CFLAGS += -DSHLIB_TEXT_WRITABLE
+endif
+
 MSIX_TABLE_MAPPABLE ?= 0
 ifeq ($(MSIX_TABLE_MAPPABLE),1)
 CFLAGS += -DMSIX_TABLE_MAPPABLE
@@ -1823,7 +1863,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2009,6 +2049,9 @@ endif
 # driver must supply one, so the flag reaches both compilations.
 ifeq ($(MSI_VECTOR_FROM_USER),1)
 USERSPACE_CFLAGS += -DMSI_VECTOR_FROM_USER
+endif
+ifeq ($(SHLIB_TEXT_WRITABLE),1)
+USERSPACE_CFLAGS += -DSHLIB_TEXT_WRITABLE
 endif
 USERSPACE_CFLAGS_64 = $(USERSPACE_CFLAGS)
 # 32-bit, for the i386 ELF-loader self-test image ONLY (userspace/elftest.o ->
@@ -2343,7 +2386,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -3514,6 +3557,38 @@ smoke-console:
 #
 # SMOKE_NET=user rather than 1: the authority gates need a device on the bus, this
 # one needs something at the other end of the wire.
+# ---- Shared library text: executed by many, writable by none ----------------
+#
+# Roadmap 2.5's mechanism. One shared object, loaded once into frames at boot,
+# mapped read+exec by TWO tasks that each execute it. The size argument for
+# sharing a libc is obvious; the security argument is that sharing it WRITABLY
+# would be a code-injection primitive between every task that maps it, which is
+# strictly worse than the per-program static copies it replaces.
+.PHONY: smoke-shlib
+smoke-shlib:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='SHLIBTEST: PASS' \
+		FAIL_MARKER='SHLIBTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The arm for S49, and it is the attack rather than a stand-in for one: the
+# capability carries WRITE, shlibtest maps the library a second time writable and
+# overwrites a function through that alias while executing through its read+exec
+# one, and the PEER -- which asked for nothing but read+exec -- runs the patch.
+#
+# The refusal checks are skipped under this flag on purpose. They cannot pass
+# there, and stopping at the first of them would make the marker "a writable
+# mapping was obtainable" rather than what the other task then executes.
+.PHONY: smoke-shlib-writable-control
+smoke-shlib-writable-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_TEXT_WRITABLE=1
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_TEXT_WRITABLE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SHLIBTEST: FAIL peer-saw-patched-code' \
+		tools/smoke_test.sh boot.iso
+
 # The MSI path, on an 82574L -- the device model that HAS an MSI capability, and
 # the one whose receive path works (5 boots in 5), so this gate also asserts a
 # real ARP exchange end to end: transmit, MSI, receive. The

@@ -265,6 +265,33 @@ void cap_init(void) {
         root_cnode[19].generation = 0;
     }
 
+    /* Shared library text (root[20]), roadmap 2.5 / S49.
+     *
+     * READ | EXEC and deliberately NOT WRITE. Every capability a task receives
+     * over the shared library's pages descends from this one, and rights only
+     * ever narrow on delegation -- so a primordial that never held WRITE cannot
+     * produce a descendant that does, and there is no path by which any task
+     * obtains a writable mapping of code another task is executing. That is the
+     * whole enforcement; the loader's read-only intent would be advice without
+     * it.
+     *
+     * The object is overridden per install (cap_install_from_root's 4th
+     * argument), so this one primordial names every frame of the library in
+     * turn. */
+    root_cnode[20].type   = CAP_FRAME;
+#ifdef SHLIB_TEXT_WRITABLE
+    /* Control arm: the primordial carries WRITE, so a task can obtain a writable
+     * mapping of shared library text and patch code another task executes. The
+     * whole of S49 is this one bit. See make smoke-shlib-writable-control. */
+    root_cnode[20].rights = CAP_RIGHT_READ | CAP_RIGHT_EXEC | CAP_RIGHT_WRITE;
+#else
+    root_cnode[20].rights = CAP_RIGHT_READ | CAP_RIGHT_EXEC;
+#endif
+    root_cnode[20].object = 0;
+    root_cnode[20].badge  = 0;
+    root_cnode[20].serial = 0xC0DE0014U;
+    root_cnode[20].generation = 0;
+
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;

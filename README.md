@@ -88,10 +88,10 @@ a syscall number without adding its table entry.
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
 boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 97 jobs, most of
+Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 98 jobs, most of
 them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
 `.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 99 of its 102 contexts,
+gating, or exempted with a written reason (**[C-6]**). The intended set is 100 of its 103 contexts,
 including every security test; the ruleset is reconciled to it by hand and lags whenever a
 gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this sentence — the ruleset is
@@ -145,6 +145,7 @@ per item.
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, hierarchical rollback MAC; key material never leaves the kernel |
 | **Boot integrity** | SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 8 and 9; vdisk KEK sealed under `PolicyPCR` |
 | **Userspace** | newlib libc, a shell with pipelines, GNU coreutils, TCC |
+| **Shared libraries** | A shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. **Not** yet a dynamic linker — no symbol resolution, and newlib is still statically linked into each program |
 | **Assurance** | Every property in `SECURITY.md` is bound by CI to a witness that exists and runs (`tools/check_invariants.py`); every declared count in the docs is derived and compared; every control arm is paired with a base gate |
 | **Security core** | `no_std` Rust: ELF parsing and relocation, capability algebra, ChaCha20 CSPRNG, BLAKE2b/SHA-256, AEAD, Argon2 |
 
@@ -300,7 +301,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 97 jobs; each boots a purpose-built
+2. **QEMU integration self-tests** — the bulk of CI's 98 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

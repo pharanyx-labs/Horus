@@ -166,6 +166,16 @@ required:
   # were ABSENT or VACUOUS rather than for claims that were UNBOUND. Its own six
   # rules are falsified one arm each in the same job.
   - invariants
+  # Gating, and for invariants' reason one layer down. CLAUDE.md section 7 has
+  # always required a `# Safety` clause on every `unsafe`, and nothing enforced
+  # it: 29 of 49 production sites had none, worst in the two modules the kernel
+  # trusts most. These are all called from C, and C cannot uphold an obligation
+  # nobody wrote down -- rust_cap_revoke_global needs EVERY cspace in its array
+  # or a revoke misses a derived copy, and neither that nor rust_page_ref_inc's
+  # lock requirement is visible from the signature. The check proves only that an
+  # obligation is written, never that it is true; Miri and Kani test the code
+  # beneath it, and its own three arms are falsified in the same job.
+  - unsafe-safety
   # Gating. It carries S28: a gate satisfied by a capability every task already
   # holds is not a gate. [H-3] was four of them, on the path to the user
   # database, and they survived two prior ambient-authority sweeps because both

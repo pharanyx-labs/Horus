@@ -116,9 +116,16 @@ fn lock() -> Guard {
     }
     Guard
 }
+/// Run `f` with exclusive access to the login throttle.
+///
+/// # Safety
+/// The function is safe to call. The `unsafe` inside is discharged by
+/// `THROTTLE_LOCK`, taken above and held for the whole closure, so the `&mut` it
+/// creates is unaliased for its lifetime and never escapes. As in `rng.rs`, this
+/// is the only route to the static, which is what makes that argument checkable
+/// by reading one place.
 fn with_throttle<R>(f: impl FnOnce(&mut GlobalThrottle) -> R) -> R {
     let _g = lock();
-    // SAFETY: exclusive access is held via THROTTLE_LOCK for the closure.
     let t = unsafe { &mut *core::ptr::addr_of_mut!(THROTTLE) };
     f(t)
 }

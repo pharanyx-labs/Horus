@@ -90,6 +90,15 @@ const AUDIT_PUB_DOMAIN: &[u8] = b"horus-audit-pub-v1";
 
 /// Overwrite a key buffer so the old key cannot be recovered. `write_volatile`
 /// plus a compiler fence stops the store from being optimized away as dead.
+///
+/// # Safety
+/// The function is safe to call. The `unsafe` inside writes through a pointer
+/// derived from the `&mut` argument, one element at a time, within the bounds of
+/// the array the reference already guarantees, so there is nothing for a caller
+/// to uphold. `write_volatile` is used for its optimiser semantics rather than
+/// for any memory-model reason: a plain store to a buffer that is never read
+/// again is dead and may be deleted, which is exactly the deletion that would
+/// leave a key in memory.
 #[inline]
 fn erase_key(k: &mut [u8; SHA256_OUT]) {
     for b in k.iter_mut() {

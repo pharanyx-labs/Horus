@@ -16,6 +16,43 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **The security core's `unsafe` FFI stated no obligations, and nothing required it to
+  (S54).** `CLAUDE.md` §7 has always said "`unsafe` only at the FFI boundary, with a `# Safety`
+  comment stating the caller's obligations". The 2026-08-29 audit counted **30 of 49 production
+  `unsafe` sites with no such clause**, worst in the two modules the kernel trusts most:
+  `rust/src/capability.rs` (10 of 14) and `rust/src/memory.rs` (6 of 6, with the string
+  appearing nowhere in the file).
+
+  That matters more here than in ordinary Rust because **every one of these is called from C,
+  and C cannot be made to uphold an obligation nobody wrote down**. Two examples, neither
+  visible from the signature: `rust_cap_revoke_global` needs *every* cspace in the system in its
+  `spaces` array, or a revoke silently misses a derived copy it was supposed to reach;
+  `rust_page_ref_inc` needs `page_lock` held, because it is a non-atomic read-modify-write on
+  the refcount that decides when a page is freed.
+
+  All 49 now carry a clause saying what the caller must uphold and, where it matters, what the
+  function does **not** check. `rust_password_hash` and `rust_hkdf_sha256` say plainly that a
+  null pointer is rejected but a *length* that overstates its buffer cannot be;
+  `rust_free_user_physical_page` says it does not check that the page was ever allocated, and
+  names the refcount discipline in `paging.c` as what prevents a double free.
+
+  **The rule is now enforced.** `tools/check_unsafe_safety.py`, required job `unsafe-safety`.
+  It states its own limit: it proves an obligation is *written*, never that it is true,
+  complete, or upheld — a clause reading "none" would satisfy it. It is a floor, and Miri and
+  the Kani proofs are what test the code beneath.
+
+  **Falsified four ways, and the harness found a real defect in the checker.** The first
+  version looked back a fixed 30 lines for a clause, and arm A1 — an undocumented FFI export
+  planted in production code — reported PASS, because the *previous* function's `# Safety` sat
+  21 lines up. A checker that reads one item's contract as another's is worse than none, since
+  it certifies precisely the case it cannot see. The scan now walks to the enclosing item. That
+  correction immediately surfaced a **30th** undocumented site, `rust_hmac_sha256`, which the
+  manual count had missed. The four arms: an undocumented production `unsafe` is caught and
+  named; the same inside a test module is ignored; an item cannot inherit its neighbour's
+  clause; and an `unsafe { }` block is reported when its *enclosing* item loses its clause,
+  which is where a block's obligation is discharged.
+
+
 - **Comments across the kernel asserted a system that had been retired, and the ratchet
   could not see them.** The 2026-08-29 audit swept the source for claims about authority and
   found three families, none of which broke a build or a test, and all of which would mislead

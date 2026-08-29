@@ -26,6 +26,16 @@ static REFC_LEN: AtomicU32 = AtomicU32::new(0);
 
 /// Register the authoritative refcount table. Must be called once at paging
 /// init before any inc/dec. Rejects anything but the expected fixed-size table.
+///
+/// # Safety
+/// `refcounts` must be null, or point to an array of at least `n_pages` `u16`s
+/// that lives for the rest of the boot: it is stored and every later
+/// `rust_page_ref_inc`/`_dec` is checked against it. A null pointer, or any
+/// `n_pages` other than `USER_PHYS_PAGES`, is refused rather than trusted, so
+/// the only obligation the caller cannot be relieved of is that a NON-null
+/// pointer really does address that many `u16`s. Call once, from paging init,
+/// before any other function in this module; a second call silently re-points
+/// the table every later check validates against.
 #[no_mangle]
 pub unsafe extern "C" fn rust_page_refcounts_register(refcounts: *const u16, n_pages: u32) -> bool {
     if refcounts.is_null() || n_pages != USER_PHYS_PAGES {
@@ -44,6 +54,18 @@ fn refc_table_ok(refcounts: *const u16, n_pages: u32) -> bool {
     p != 0 && p == refcounts as usize && l == n_pages && n_pages == USER_PHYS_PAGES
 }
 
+/// Increment the refcount of the page containing `phys`. Returns the new count,
+/// or 0 if the arguments do not name a tracked page.
+///
+/// # Safety
+/// `refcounts`/`n_pages` must be the exact pair registered by
+/// `rust_page_refcounts_register`; anything else is refused by `refc_table_ok`
+/// before a single byte is touched, which is what makes a wrong pointer from C a
+/// returned 0 rather than an out-of-bounds write. `phys` is unconstrained: below
+/// `USER_PHYS_BASE` or past the end of the table it is refused too. The caller
+/// must serialise concurrent calls -- this is a plain read-modify-write through
+/// the raw pointer, not an atomic -- which in this kernel means holding
+/// `page_lock`.
 #[no_mangle]
 pub unsafe extern "C" fn rust_page_ref_inc(phys: u32, refcounts: *mut u16, n_pages: u32) -> u16 {
     if !refc_table_ok(refcounts as *const u16, n_pages) {
@@ -63,6 +85,15 @@ pub unsafe extern "C" fn rust_page_ref_inc(phys: u32, refcounts: *mut u16, n_pag
     next
 }
 
+/// Decrement the refcount of the page containing `phys`. Returns the new count,
+/// -1 if the arguments do not name a tracked page, or -2 if it was already 0.
+///
+/// # Safety
+/// As `rust_page_ref_inc`: `refcounts`/`n_pages` must be the registered pair,
+/// every other argument is validated, and the caller must hold `page_lock`.
+/// Underflow is reported (-2) rather than wrapped, because a refcount that wraps
+/// to 65535 would pin a page forever and one that wraps past 0 would free a page
+/// somebody still holds.
 #[no_mangle]
 pub unsafe extern "C" fn rust_page_ref_dec(phys: u32, refcounts: *mut u16, n_pages: u32) -> i32 {
     if !refc_table_ok(refcounts as *const u16, n_pages) {
@@ -85,6 +116,13 @@ pub unsafe extern "C" fn rust_page_ref_dec(phys: u32, refcounts: *mut u16, n_pag
     next as i32
 }
 
+/// Is `phys` inside the pool the refcount metadata can track?
+///
+/// # Safety
+/// Dereferences nothing and has no preconditions at all: it is `unsafe` only
+/// because `extern "C"` functions in this module are declared that way as a
+/// group, and it is called from the two allocator entry points below to validate
+/// their arguments. Safe to call at any time from any context.
 #[no_mangle]
 pub unsafe extern "C" fn rust_page_is_valid_user_phys(phys: u32, n_pages: u32) -> bool {
     if n_pages != USER_PHYS_PAGES {
@@ -97,6 +135,18 @@ pub unsafe extern "C" fn rust_page_is_valid_user_phys(phys: u32, n_pages: u32) -
     idx < n_pages
 }
 
+/// Pop a physical page from the free stack. Returns the address, or 0 if the
+/// stack is empty or the arguments are not the shape this expects.
+///
+/// # Safety
+/// `free_stack` must be null, or point to at least `n_pages` `u32`s;
+/// `free_count` must be null, or point to a valid `i32`. Both are null-checked
+/// and `n_pages` must equal `USER_PHYS_PAGES`, so the residual obligation is
+/// only that non-null pointers address what they claim to. The value read back
+/// off the stack is validated against the pool before it is returned, so a
+/// corrupted stack yields 0 rather than a wild page. The caller must serialise
+/// concurrent calls: the count is read, decremented and written back
+/// non-atomically.
 #[no_mangle]
 pub unsafe extern "C" fn rust_alloc_user_physical_page(
     free_stack: *mut u32,
@@ -119,6 +169,17 @@ pub unsafe extern "C" fn rust_alloc_user_physical_page(
     phys
 }
 
+/// Push a physical page back onto the free stack. Returns false if the page is
+/// outside the pool or the stack is already full.
+///
+/// # Safety
+/// As `rust_alloc_user_physical_page` for the two pointers and `n_pages`. `phys`
+/// is validated against the pool before it is stored, and the count is bounded
+/// by `n_pages` before the write, so neither a wild address nor an overfull
+/// stack can write out of bounds. This does NOT check that the page was actually
+/// allocated: freeing a page twice pushes it twice, and the caller (the refcount
+/// discipline in paging.c) is what prevents that. The caller must serialise
+/// concurrent calls.
 #[no_mangle]
 pub unsafe extern "C" fn rust_free_user_physical_page(
     phys: u32,

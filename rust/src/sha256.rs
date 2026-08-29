@@ -288,6 +288,15 @@ impl Sha256Hmac {
 // ---------------------------------------------------------------------------
 
 /// PBKDF2-HMAC-SHA256 password hash. Returns 0 on success, -1 on bad args.
+///
+/// # Safety
+/// `password` must point to `password_len` readable bytes, `salt` to `salt_len`,
+/// and `out` to `out_len` WRITABLE bytes; all three are null-checked, and a zero
+/// `out_len` is refused. Note the asymmetry: a null pointer is rejected but a
+/// LENGTH that overstates its buffer cannot be, so the truthfulness of
+/// `password_len`, `salt_len` and `out_len` is the caller's obligation and the
+/// one this code cannot discharge. `iterations` is a cost parameter with no
+/// safety role.
 #[no_mangle]
 pub unsafe extern "C" fn rust_password_hash(
     password: *const u8,
@@ -330,6 +339,14 @@ pub unsafe extern "C" fn rust_sha256(data: *const u8, data_len: usize, out32: *m
 }
 
 /// HMAC-SHA256 over `data` with `key`, writing 32 bytes to `out32`.
+///
+/// # Safety
+/// `key` must point to `key_len` readable bytes and `out32` to 32 WRITABLE
+/// bytes; both are null-checked. `data` may be null when `data_len` is 0, which
+/// is the empty message. The output length is fixed by the algorithm rather than
+/// passed, so a caller that supplies a shorter buffer than 32 bytes gets a
+/// 32-byte write regardless: that one is not checkable from here and is the
+/// caller's obligation.
 #[no_mangle]
 pub unsafe extern "C" fn rust_hmac_sha256(
     key: *const u8,
@@ -349,6 +366,14 @@ pub unsafe extern "C" fn rust_hmac_sha256(
 }
 
 /// HKDF-SHA256 (extract+expand). Returns 0 on success, -1 on bad args.
+///
+/// # Safety
+/// `ikm` must point to `ikm_len` readable bytes and `out` to `out_len` writable
+/// bytes; both are null-checked and a zero `out_len` is refused. `salt` and
+/// `info` are OPTIONAL: null or a zero length is treated as the empty string,
+/// which is what RFC 5869 specifies, so only a non-null pointer must be backed
+/// by its stated length. As with `rust_password_hash`, a length that overstates
+/// its buffer is the caller's obligation.
 #[no_mangle]
 pub unsafe extern "C" fn rust_hkdf_sha256(
     ikm: *const u8,

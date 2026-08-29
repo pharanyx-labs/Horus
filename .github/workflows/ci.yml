@@ -62,6 +62,26 @@ jobs:
       - name: Falsify every rule of the checker
         run: ./tools/test_check_invariants.sh
 
+  unsafe-safety:
+    name: "Every unsafe in the security core states the caller's obligations"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # CLAUDE.md section 7 required a `# Safety` clause on every `unsafe` and
+      # nothing enforced it. The 2026-08-29 audit found 29 of 49 production sites
+      # without one, concentrated in capability.rs (10 of 14) and memory.rs
+      # (6 of 6, the string appearing nowhere in the file). Every one is called
+      # from C, which cannot be made to uphold an obligation nobody wrote down.
+      - name: Every production unsafe carries a # Safety clause
+        run: python3 tools/check_unsafe_safety.py
+      # The check only proves an obligation is WRITTEN, never that it is true or
+      # upheld -- Miri and the Kani proofs are what test the code beneath. So the
+      # one thing it must not do is silently pass: falsified three ways, in the
+      # repository's own idiom.
+      - name: Falsify the checker in every direction
+        run: ./tools/test_check_unsafe_safety.sh
+
   doc-claims:
     name: Every documented count matches the tool that derives it
     runs-on: ubuntu-latest

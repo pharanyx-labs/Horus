@@ -2619,8 +2619,25 @@ userspace/shlibtest.o userspace/shlibpeer.o: userspace/shlib_offsets.h
 
 # libctest indexes the shared libc's export table, so it needs the header
 # generated alongside that table -- never a remembered number.
+#
+# THE HEADER NEEDS A RULE OF ITS OWN, and not having one was a real defect.
+# One run of the generator produces BOTH files, but make understands
+# single-output rules: only libc_exports.c was a known target, so a prerequisite
+# on the .h gave "No rule to make target 'userspace/libc_exports.h'" on any tree
+# that did not already have one. Invisible locally, where a previous run had
+# always left the file behind; five seconds into a clean CI checkout otherwise.
+#
+# Depending on the .c instead was tried and is NOT sufficient: with the .c
+# current and the .h deleted on its own, make consults no rule for the .h at all
+# and the compile fails on a missing include. So the .o depends on the .h, and
+# the .h has a rule that regenerates it -- guarded, because the generator writes
+# both files and rewriting the .c on every miss would make it look newer than
+# everything downstream of it.
 userspace/libctest.o: userspace/libc_exports.h
 userspace/libctest.o: CPPFLAGS += -I userspace
+
+userspace/libc_exports.h: userspace/libc_exports.c
+	@[ -f $@ ] || ./tools/gen_libc_exports.sh $(NEWLIB_LIB)/libc.a $< $(COREUTILS_ALL_OBJS)
 
 # Flat self-test payloads: HORU-wrap the objcopy'd raw image (loaded flat).
 userspace/%.bin: userspace/%.raw tools/mkheadered

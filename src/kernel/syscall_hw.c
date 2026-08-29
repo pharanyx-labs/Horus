@@ -577,12 +577,25 @@ void h_shlib_info(struct interrupt_frame64 *r) {
     info.base    = shlib_base();
     info.pages   = shlib_pages();
     info.entry   = shlib_entry();
-    /* Which page is the per-task writable one, so a caller asks for the rights
-     * that page's capability actually carries (READ|WRITE, never EXEC) rather
-     * than guessing a layout. SHLIB_INFO_NO_DATA when the object has none. */
-    info.data_page = SHLIB_INFO_NO_DATA;
-    for (uint32_t i = 0; i < shlib_pages(); i++)
-        if (shlib_page_writable(i)) { info.data_page = i; break; }
+    /* Which pages are the per-task writable ones, so a caller asks each page for
+     * the rights ITS capability actually carries (READ|WRITE and never EXEC on
+     * these, READ|EXEC and never WRITE on the rest) rather than guessing.
+     *
+     * A RANGE, not a single index. This reported one page until the real shared
+     * libc was loaded through it: newlib's writable segment is two pages, and a
+     * caller built on the single-index version asked for EXEC on the second and
+     * failed to map it. The demo object could not have shown that -- its whole
+     * data segment was one int. The range is contiguous because the loader
+     * accepts exactly one writable PT_LOAD, which check_shared_object.py enforces
+     * at build time; the scan below does not assume it, and counts what is
+     * marked. */
+    info.data_first = SHLIB_INFO_NO_DATA;
+    info.data_pages = 0;
+    for (uint32_t i = 0; i < shlib_pages(); i++) {
+        if (!shlib_page_writable(i)) continue;
+        if (info.data_first == SHLIB_INFO_NO_DATA) info.data_first = i;
+        info.data_pages++;
+    }
 
     if (copy_to_user((void *)(addr_t)r->rcx, &info, sizeof(info)) != 0) {
         r->rax = (uint32_t)SYS_ERR_FAULT; return;

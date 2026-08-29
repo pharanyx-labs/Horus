@@ -717,6 +717,27 @@ embedded_mapphystest_bin_start:
 embedded_mapphystest_bin_end:
 #endif
 
+#ifdef SHLIBC_SELFTEST
+/* The REAL shared libc -- newlib, its port glue and libhorus in one object --
+ * plus the probe that calls into it. Separate from SHLIB_SELFTEST below because
+ * the mechanism loads ONE object and which object is a build choice: that one
+ * carries the S49/S50/S51 property tests on a purpose-built demo, this one
+ * establishes that the same mechanism runs a real libc. */
+.align 16
+.global embedded_libc_so_start
+embedded_libc_so_start:
+.incbin "userspace/libc.so"
+.global embedded_libc_so_end
+embedded_libc_so_end:
+
+.align 16
+.global embedded_libctest_bin_start
+embedded_libctest_bin_start:
+.incbin "userspace/libctest.bin"
+.global embedded_libctest_bin_end
+embedded_libctest_bin_end:
+#endif
+
 #ifdef SHLIB_SELFTEST
 /* The shared object itself, plus the two probes that map it. */
 .align 16

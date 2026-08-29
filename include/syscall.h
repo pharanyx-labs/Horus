@@ -575,10 +575,17 @@ static inline int sys_device_info(uint32_t dev_slot, struct dev_info *out) {
  * program cannot assume it -- and must not, since the library's relocations were
  * applied against that base and it is only correct when mapped there.
  *
- * `data_page` is the index of the library's per-task writable page, whose
- * capability carries READ|WRITE and never EXEC; every other page is shared text
+ * `data_first`/`data_pages` delimit the library's per-task writable RANGE, whose
+ * capabilities carry READ|WRITE and never EXEC; every other page is shared text
  * with READ|EXEC and never WRITE. Ask each page for the rights ITS capability
  * holds: a uniform request fails on whichever kind it guessed wrong.
+ *
+ * A range and not a single index. The first version of this call reported one
+ * page, which was true of the three-page demo object and false of the real
+ * shared libc -- newlib's writable segment is two pages, so a caller built on
+ * the single-index version asked for EXEC on the second and its map failed. The
+ * range is contiguous because the loader accepts exactly one writable PT_LOAD,
+ * which tools/check_shared_object.py enforces at build time.
  */
 #define SHLIB_INFO_NO_DATA  0xFFFFFFFFu
 
@@ -586,7 +593,9 @@ struct shlib_info {
     uint64_t base;        /* virtual address the library is mapped at         */
     uint64_t entry;       /* the export table, already base-relative-resolved */
     uint32_t pages;       /* total pages, text + data                         */
-    uint32_t data_page;   /* index of the writable page, or SHLIB_INFO_NO_DATA */
+    uint32_t data_first;  /* first writable page, or SHLIB_INFO_NO_DATA       */
+    uint32_t data_pages;  /* how many writable pages; 0 when there are none   */
+    uint32_t reserved;    /* pad to an 8-byte multiple                        */
 };
 
 /* Report where the shared library named by the CAP_FRAME (READ right) at

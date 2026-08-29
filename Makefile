@@ -101,7 +101,7 @@ DEFECT_FLAGS = \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
-	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK \
+	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
@@ -579,6 +579,18 @@ endif
 GETLINE_SLOT3_FALLBACK ?= 0
 ifeq ($(GETLINE_SLOT3_FALLBACK),1)
 CFLAGS += -DGETLINE_SLOT3_FALLBACK
+endif
+
+# CAP_LOOKUP_ASSERT_HANG=1 restores the pre-2026-08-29 source-slot resolver in
+# cap_mint/cap_transfer: a helper that spun forever on a NULL cap_lookup, while
+# holding cap_lock with interrupts masked. All three inputs that make cap_lookup
+# return NULL are caller-chosen and the handlers validate nothing, so under this
+# arm any unprivileged task stops the machine with one syscall (S52).
+# `make smoke-captest` must go red under it -- by TIMEOUT, because the task is
+# wedged inside the syscall and prints nothing at all.
+CAP_LOOKUP_ASSERT_HANG ?= 0
+ifeq ($(CAP_LOOKUP_ASSERT_HANG),1)
+CFLAGS += -DCAP_LOOKUP_ASSERT_HANG
 endif
 
 TASKINFO_WIDE_AUTHORITY ?= 0
@@ -3224,6 +3236,28 @@ smoke-captest-getline-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 GETLINE_SLOT3_FALLBACK=1
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 GETLINE_SLOT3_FALLBACK=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_STALL='CAPTEST: begin' \
+		ABSENT_MARKER='CAPTEST: PASS' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm for S52: a refused capability operation must RETURN, not halt.
+# CAP_LOOKUP_ASSERT_HANG=1 puts back the helper that spun on a NULL lookup inside
+# cap_mint/cap_transfer, holding cap_lock with IF=0. captest's section-12 probes
+# hand those calls an empty and an out-of-range source slot -- both of which any
+# ring-3 task may name -- and the guest never comes back.
+#
+# Like the getline arm above, the evidence is an ABSENCE: a task wedged inside a
+# syscall prints nothing, so there is no FAIL line to require. EXPECT_STALL makes
+# that two-sided rather than a bare timeout -- the run must first REACH the probe
+# marker and only then stop, which is why smoke_test.sh refuses EXPECT_STALL
+# without ABSENT_MARKER ("a stall proves nothing"). Reaching
+# `CAPTEST: cap-derivation-probes` and never reaching `CAPTEST: PASS` is the
+# reproduction; a boot that died earlier fails this arm rather than satisfying it.
+.PHONY: smoke-captest-mint-hang-control
+smoke-captest-mint-hang-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_ASSERT_HANG=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_ASSERT_HANG=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_STALL='CAPTEST: cap-derivation-probes' \
 		ABSENT_MARKER='CAPTEST: PASS' \
 		tools/smoke_test.sh boot.iso
 

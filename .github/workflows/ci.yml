@@ -409,6 +409,18 @@ jobs:
       # and must demonstrably not finish.
       - name: Control arm — the slot-3 decoy must not buy console input
         run: make smoke-captest-getline-control
+      # S52. cap_mint/cap_transfer resolved their SOURCE slot through a helper
+      # that spun forever on a NULL lookup, holding cap_lock with interrupts
+      # masked. Every input that makes cap_lookup return NULL is caller-chosen
+      # and the handlers validate none of them, so this was a whole-machine stop
+      # available to any unprivileged task in one syscall.
+      #
+      # A stall arm again, for the getline reason: a task wedged inside a syscall
+      # prints nothing. EXPECT_STALL fences it -- the probes must be REACHED and
+      # then never complete, so a boot that died earlier fails rather than
+      # satisfying it.
+      - name: Control arm — a refused capability operation that halts instead of returning
+        run: make smoke-captest-mint-hang-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)

@@ -486,8 +486,41 @@ struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
     return p;
 }
 
+/* WHY THIS IS NO LONGER A HALTING ASSERT.
+ *
+ * Until 2026-08-29 this file exported two helpers:
+ *
+ *     void kassert_cap(struct capability *c){if(!c){for(;;){}}}
+ *     struct capability *kcap_lookup(uint32_t s,uint32_t r){...kassert_cap(c);...}
+ *
+ * and cap_mint()/cap_transfer() resolved their SOURCE slot through the second,
+ * while holding cap_lock, with interrupts masked by spin_lock's own `cli`.
+ * cap_lookup() returns NULL for an out-of-range slot, an empty slot, or a slot
+ * whose rights do not include the one asked for. A ring-3 caller picks all three
+ * freely: h_cap_mint passes rbx/rcx/rdx straight through, and SYS_CAP_MINT,
+ * SYS_CAP_TRANSFER and SYS_CAP_MOVE are SC_NONE entries whose comment says the
+ * authority lives "inside the cap_* primitives". So syscall(SYS_CAP_MINT, 200,
+ * 200, 0) from any unprivileged task spun that CPU forever inside the critical
+ * section, and the next CPU to want cap_lock -- a spawn, a sudo, a revoke, an IPC
+ * reply mint -- joined it there. One syscall, no capability required, and the
+ * machine stops.
+ *
+ * The `if (!src || dest_slot >= CNODE_SIZE) { unlock; return false; }` a few
+ * lines below was already the intended behaviour. It was simply unreachable,
+ * because the helper it guarded could not return NULL. The repair is to let it
+ * run, which is why the call sites are unchanged.
+ *
+ * A halting assert is the wrong primitive for a fail-closed kernel: it turns
+ * "refuse this" into "stop everything", at precisely the point a caller-supplied
+ * index is resolved. It survives only as the control arm below, so the defect
+ * stays reproducible on demand. See SECURITY.md S52.
+ */
+#ifdef CAP_LOOKUP_ASSERT_HANG
 void kassert_cap(struct capability *c){if(!c){for(;;){}}}
 struct capability *kcap_lookup(uint32_t slot,uint32_t r){struct capability *c=cap_lookup(slot,r);kassert_cap(c);return c;}
+#else
+struct capability *kcap_lookup(uint32_t slot,uint32_t r){return cap_lookup(slot,r);}
+#endif
 
 /*
  * Capability snapshot + revalidation (defense-in-depth against lookup/use

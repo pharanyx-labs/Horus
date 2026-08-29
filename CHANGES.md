@@ -14,6 +14,57 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refused capability operation halted the CPU instead of returning, from ring 3, with no
+  capability required (S52).** `cap_mint` and `cap_transfer` resolved the caller's SOURCE slot
+  through `kcap_lookup`, which was `cap_lookup` followed by `kassert_cap`, an unconditional
+  `for(;;){}` on a NULL result. Both run while holding `cap_lock`, with interrupts masked by
+  `spin_lock`'s own `cli`.
+
+  Every input that makes `cap_lookup` return NULL is chosen by the caller: a slot past
+  `CNODE_SIZE`, an empty slot, or a slot without `CAP_RIGHT_MINT`. `h_cap_mint` passes
+  `rbx`/`rcx`/`rdx` through untouched, and `SYS_CAP_MINT`, `SYS_CAP_TRANSFER` and `SYS_CAP_MOVE`
+  are `SC_NONE` entries whose table comment delegates authority to the primitives. So
+  `syscall(SYS_CAP_MINT, 203, 200, 0)` from any unprivileged task spun that CPU forever inside a
+  global critical section, and the next CPU to want `cap_lock` (a spawn, a sudo, a revoke, an IPC
+  reply mint) stopped behind it.
+
+  **This is not the documented local-DoS exemption.** That exemption covers a task spending its
+  own share: spinning, allocating, forcing a broad revoke. This ends the machine for every task,
+  and consumes no quota to do it.
+
+  The repair is one word: `kcap_lookup` is now `cap_lookup` and nothing else. The
+  `if (!src || dest_slot >= CNODE_SIZE) { unlock; return false; }` immediately below the call was
+  always the intended behaviour and was simply unreachable, because the helper it guarded could
+  not return NULL. A halting assert is the wrong primitive for a fail-closed kernel at the point
+  a caller-supplied index is resolved, so it survives only as the control arm.
+
+  **Why it lasted.** All three syscalls sat on `.github/syscall-coverage.yml`'s `uncovered` list,
+  carrying "not entered by any tracked workload, and by no build known in this tree" since
+  2026-08-22. Nothing ran the handlers, so nothing found it. They are on `covered` now, which
+  moved the coverage figure from 62 of 91 to 65 of 91 and the uncovered remainder from 29 to 26.
+  `docs/LIMITATIONS.md` §1.8 previously said "nothing here is known to be broken" and has been
+  rewritten, because that is no longer true.
+
+  **Falsified in both directions.** `CAP_LOOKUP_ASSERT_HANG=1` (`make
+  smoke-captest-mint-hang-control`) restores the halting assert; measured 2026-08-29, the guest
+  reaches `CAPTEST: cap-derivation-probes` and never prints `CAPTEST: PASS`. The arm asserts a
+  STALL rather than a marker, because a task wedged inside a syscall prints nothing at all, and
+  `EXPECT_STALL` makes that two-sided: the probes must be reached and must then not complete, so
+  a boot that died earlier fails the arm rather than satisfying it. `make smoke-captest` goes red
+  under the same flag, confirmed by running its own assertion against the arm's ISO. On the fixed
+  build captest reports `CAPTEST: PASS 139 checks`, six more than before: four refusals, one
+  positive mint from a capability the task does hold (so the refusals cannot be satisfied by a
+  call that refuses everything), and one check that the READ-only delegate cannot send.
+
+  Reproduced on a uniprocessor boot, where the single CPU is the whole machine. The SMP
+  amplification through `cap_lock` follows from that lock being global and is not separately
+  measured.
+
+  Found by the 2026-08-29 audit. `SECURITY.md` **S52**; `docs/BUILDING.md`
+  "Defect-reproducing builds"; `TESTS.md`.
+
 ### Changed
 
 - **One author identity across the whole history, and one signing key.** The three personal

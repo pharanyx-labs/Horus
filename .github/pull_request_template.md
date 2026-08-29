@@ -51,7 +51,7 @@ Tick what you actually ran, and paste the relevant output if a test is central t
 > **Note.** As of 2026-08-16 the security suite **is** merge-gating: every `smoke-*` security
 > job and CodeQL are classified as required in `.github/ci-gating.yml`. CI *will* stop you, so
 > running these locally saves a round trip rather than covering a gap. Read the live count from
-> `gh api repos/pharanyx-labs/Horus/rulesets/19007209` — the ruleset is reconciled by hand and
+> `gh api repos/pharanyx-labs/Horus/rulesets/21815299` — the ruleset is reconciled by hand and
 > lags by one merge whenever a gate is added.
 >
 > Exactly two jobs are exempt, each with its reason in `.github/ci-gating.yml`:

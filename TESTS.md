@@ -1235,7 +1235,7 @@ least-privilege. There are no self-hosted runners.
 ### A known weakness in the gate
 
 Of those, **22 were required status checks** before 2026-08-16 — read the current set from
-`gh api repos/pharanyx-labs/Horus/rulesets/19007209`, not from this file, which is the kind of
+`gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this file, which is the kind of
 hand-maintained number this document exists to distrust.
 
 `smoke-captest` joined that set on 2026-08-15. It is the named witness for eight of the

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assert every CI job is either merge-gating or exempted with a written reason.
 
-Finding [C-6]: the required-status-check list lives in branch ruleset 19007209,
+Finding [C-6]: the required-status-check list lives in branch ruleset 21815299,
 which no commit touches. So a job added to ci.yml lands in the advisory set by
 default, and nothing asks whether it should have. That is how `smoke-captest` —
 the named witness for eight of SECURITY.md's S-properties — sat advisory for
@@ -47,7 +47,7 @@ WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml",
              ".github/workflows/ruleset-audit.yml"]
 CI_YML = ".github/workflows/ci.yml"
 GATING_YML = ".github/ci-gating.yml"
-RULESET = "repos/pharanyx-labs/Horus/rulesets/19007209"
+RULESET = "repos/pharanyx-labs/Horus/rulesets/21815299"
 
 
 # GitHub truncates a check-run name to this many characters when it publishes it

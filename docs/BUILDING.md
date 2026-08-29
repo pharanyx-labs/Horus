@@ -8,6 +8,31 @@ build. Boot is Multiboot2 via GRUB (BIOS); UEFI is not supported.
 
 ---
 
+
+## Stripped binaries, and where the debug info went
+
+Everything that ships is stripped (`userspace/%.stripped.elf`, `--strip-all`) before
+`tools/mkheadered` wraps it. The **unstripped `.pie.elf` is kept** — marked `.SECONDARY` so make
+does not delete it as an intermediate — and is what to point a debugger or `addr2line` at.
+
+Measured 2026-08-29, which is why this exists: a newlib-linked `coreutils_echo` was 404,528 bytes
+on disk with only ~88 KiB of text+data+bss. `.debug_info` alone was 144,065 bytes, and the DWARF
+sections together were about 77% of the file — all of it shipped in the boot module and stored on
+the volume.
+
+| | bytes |
+|---|---|
+| `coreutils_echo`, as shipped before | 404,572 |
+| `--strip-debug` | 103,816 |
+| `--strip-all` (what ships now) | 94,172 |
+| eleven coreutils, total, before | 4,847,020 |
+| eleven coreutils, total, now | 1,210,436 |
+| `tcc` | 1,070,088 → 394,684 |
+
+`--strip-all` rather than `--strip-debug`: nothing in this system reads a ring-3 binary's symbol
+table — the loader parses `PT_LOAD` and the kernel does not symbolise ring-3 faults — so the
+extra 9,688 bytes are as unused as the DWARF.
+
 ## Requirements
 
 A Linux host with an x86-64 native toolchain. No cross-compiler is needed — the kernel is

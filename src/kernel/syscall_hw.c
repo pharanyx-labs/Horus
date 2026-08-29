@@ -247,6 +247,11 @@ void h_device_info(struct interrupt_frame64 *r) {
     /* Whether the device has MSI, never where the capability is: the offset names
      * the register carrying the vector, and that is the kernel's alone (S47). */
     info.msi_capable = d->msi_cap ? 1u : 0u;
+    /* Page-aligned, and only the page: the exact offset within it is the kernel's
+     * business. A driver is told where the refusal applies so it can verify the
+     * refusal exists -- which is what smoke-net asserts. Disclosing it costs
+     * nothing, since the page is unmappable whether or not the driver knows. */
+    info.msix_table = d->msix_table_phys & ~(uint64_t)(PAGE_SIZE - 1);
     for (uint32_t i = 0; i < d->n_mmio && i < IODEV_MAX_MMIO; i++) {
         info.mmio[i].base = d->mmio[i].base;
         info.mmio[i].len  = d->mmio[i].len;

@@ -267,6 +267,13 @@ write would hand any future caller both a vector and a BAR.
 Unlike **S46**'s INTx path there is no masking and no acknowledgement: an MSI is edge by
 construction, so no line stays asserted and there is no livelock to prevent.
 
+**MSI-X is the harder case, and it is why S47 needed a second property.** Its vector table does
+not live in configuration space at all — it lives in a **BAR**, in ordinary device memory a
+driver maps page by page. The kernel resolves the table's physical extent at boot and refuses
+any page overlapping it (**S48**), keeping its own supervisor-only mapping of the same physical
+page: that asymmetry is the property. The kernel does not yet *enable* MSI-X — see
+`docs/LIMITATIONS.md` §2.15 for why the protection ships ahead of the mechanism.
+
 ### DMA remapping (VT-d)
 
 `src/kernel/iommu.c` brings up an Intel VT-d unit found through the DMAR table, before any

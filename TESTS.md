@@ -1608,7 +1608,7 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 49 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 50 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -1671,6 +1671,25 @@ it services and acknowledges. That half is deliberately sequenced *after* the DM
 two fail separately — an interrupt that never arrives leaves `NETTEST: PASS` standing and only
 `IRQ PASS` missing.
 
+**MSI-X is where the previous property's shape genuinely failed.** S47 keeps vector choice in
+the kernel by putting the register out of ring 3's reach — configuration space. That argument
+does not transfer to MSI-X, whose vector table lives in a **BAR**: ordinary device memory a
+driver maps page by page with a capability it legitimately holds. *"The kernel programs it"* is
+no answer when the driver can program it too.
+
+So **S48** refuses the page. `netd` is told where its own table is and is turned away from it
+both writable and read-only, holding a valid `CAP_IO_DEVICE` for that device, on a page inside a
+BAR the device declares — `NETTEST: MSIX PASS`. `devcaptest` had to be taught to route *around*
+that page when picking a BAR page to map, which is exactly what a real driver does and is the
+clearest demonstration that the refusal is real.
+
+**Scope, because the gate would otherwise overclaim:** the kernel does not yet *enable* MSI-X,
+so while MSI-X Enable stays clear the table is inert and S48 is defence in depth rather than
+load-bearing. It ships first deliberately — `docs/LIMITATIONS.md` §2.15 records why enabling is
+deferred (an unverified cause-to-entry register on the only MSI-X device here, and an interrupt
+that never arrived; a path that appears to work by guesswork is how a device never interrupts on
+real hardware).
+
 **S46's mask is now tested DIRECTLY, and getting there needed a new syscall.** The property is
 "no notification arrives while the line is masked", and a blocking wait cannot witness it: it
 either returns because the event happened (the property is broken) or blocks forever (the
@@ -1703,6 +1722,7 @@ enable proved it was delivery rather than the store.
 | Arm | Asserts | Result |
 |---|---|---|
 | `smoke-net` | `NETTEST: IRQ PASS` present, `NETTEST: FAIL` absent | passes, **3 boots in 3** |
+| `smoke-net-msix-table-control` (`MSIX_TABLE_MAPPABLE=1`) | `NETTEST: FAIL msix-table-mapped` present | passes, **3 boots in 3** |
 | `smoke-net-mask-control` (`IRQ_NO_MASK_ON_FIRE=1`) | `NETTEST: FAIL irq-while-masked` present | passes, **3 boots in 3** |
 | `smoke-net-irq-storm-control` (`IRQ_NO_MASK_ON_FIRE=1`, `IRQ_FORCE_PIC=1`) | `NETTEST: PASS` reached, then a stall with `IRQ PASS` **absent** | passes, **3 boots in 3** |
 | `smoke-net-iommu-control` (`NET_IOMMU_NO_MAP=1`) | `NETTEST: FAIL dma-never-completed` present | passes, **3 boots in 3**; `smoke-net` goes red under the same flag |

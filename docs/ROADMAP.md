@@ -1003,8 +1003,24 @@ patches a function, another runs the patch. That is strictly *worse* than the pe
 copies it replaces, which at least isolated the damage. `SHLIB_TEXT_WRITABLE=1` is that attack,
 performed: the peer, which asked for nothing but read+exec, executes code another task wrote.
 
-**Still open, and it is most of the value:** the newlib half. Every newlib-linked binary statically links its own libc
-(~450 KiB each; 11 in `/bin`). A shared-object loader with capability-mediated mapping cuts the
+**THE NUMBER THAT JUSTIFIED THIS ITEM WAS MOSTLY DEBUG INFO, and finding that out changed what
+to do first.** Re-derived 2026-08-29, going into the newlib migration: `coreutils_echo` was
+404,528 bytes on disk, of which `size` accounted for ~88 KiB of text+data+bss. `.debug_info`
+alone was 144,065 bytes and the DWARF sections together were about **77% of the file** — and all
+of it was being shipped in the boot module and stored on the volume.
+
+Stripping what ships (the unstripped `.pie.elf` is kept for debugging) took the eleven coreutils
+from **4,847,020 to 1,210,436 bytes**, and `tcc` from 1,070,088 to 394,684. That is the order of
+magnitude this item promised, and it was in the debug sections rather than in libc. Sharing a
+libc still saves its ~70 KiB of text per program, which is worth having and is no longer the
+headline.
+
+*The lesson is the repository's own rule paying for itself: re-derive every number you cite. The
+"~450 KiB each" here was accurate about the file and misleading about the cause, and it pointed
+at a large migration when a one-line change was sitting in front of it.*
+
+**Still open, and now correctly sized:** the newlib half. Every newlib-linked binary statically links its own libc
+(~70 KiB of libc text each once stripped; 11 in `/bin`). A shared-object loader with capability-mediated mapping cuts the
 store requirement by an order of magnitude and makes a larger userspace practical — and it
 needs 2.1's frame capabilities first, which is why it sits behind them in the Track 2 order.
 

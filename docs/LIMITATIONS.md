@@ -1157,6 +1157,15 @@ directions of DMA — device-reads-memory and device-writes-memory — are exerc
 by the transmit path alone. It is a gap in `netd` as a *network driver*, and it is why roadmap
 2.6 still has no IP layer above it.
 
+### 2.17 hello_newlib is 1.2 MB of real code
+
+Unlike the coreutils, `hello_newlib` is **not** mostly debug info: stripped, its text alone is
+1,220,900 bytes. It is linked without `--gc-sections`, which the coreutils rule does pass, so it
+retains every newlib object the archive offers rather than only what it calls. It is a gated
+selftest binary rather than something the default image ships, so it costs nothing today — but
+the same one-word difference is why `coreutils_echo` is 94 KiB and this is twelve times larger,
+and it is worth fixing before anything else links the same way.
+
 ### 2.16 What the shared-library mechanism does not yet do
 
 **S49** makes shared library text executable by many tasks and writable by none. It is the
@@ -1168,8 +1177,11 @@ what it is.
   loader takes from the object's `e_entry`. Symbol resolution — walking `.dynsym`, matching
   `DT_NEEDED`, patching a GOT — is what makes a dynamic linker, and an index into a table is what
   this supports until one exists.
-- **newlib is still statically linked.** The saving this is for has not been taken yet:
-  `coreutils_echo` is still 404,572 bytes (measured 2026-08-29), and eleven such programs ship.
+- **newlib is still statically linked.** The saving from SHARING it has not been taken yet.
+  Note the figure that used to sit here was misleading: `coreutils_echo` was 404,572 bytes, but
+  **77% of that was DWARF debug info**, not libc. Stripping what ships (2026-08-29) took it to
+  94,172 and the eleven coreutils from 4,847,020 to 1,210,436 bytes in total. What sharing libc
+  would still save is its ~70 KiB of text per program — real, and no longer the headline.
   Migrating newlib onto this mechanism is a build-system job — rebuilding it `-shared -fPIC`,
   relinking every program against it — and it gets its own commit rather than riding on the one
   that adds the mechanism.
@@ -1269,7 +1281,8 @@ blocks until woken or killed.
   exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
   shell still cannot do is group its children, put one in the background, or read `/proc`.
   *This bullet read "`fork` does not [exist]" for a day after it landed.*
-- **Dynamic linking.** Every binary statically links newlib (~450 KiB each).
+- **Dynamic linking.** Every binary statically links newlib (~70 KiB of libc text each once
+  stripped; the file used to look far larger because 77% of it was debug info — §2.16).
 - **Multiple filesystems or mount points.** One `fs_server`, one volume.
 - **Threads within a task.** One thread per address space.
 - **Swap or memory pressure handling.** Pool exhaustion is a hard failure.

@@ -225,6 +225,13 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: '~450 KiB each'
+    reason: >-
+      accurate about the file and misleading about the cause: measured
+      2026-08-29, 77% of a newlib binary was DWARF debug info, not libc.
+      Stripping what ships took the eleven coreutils from 4,847,020 to 1,210,436
+      bytes. Quote what sharing libc actually saves (~70 KiB of text per
+      program) rather than the unstripped file size.
   - pattern: 'a PCI interrupt line cannot yet be delivered to ring 3'
     reason: >-
       true until 2026-08-28 (S46). pic_init masked every line above 1, including
@@ -508,6 +515,20 @@ forbidden:
       figure beside it, "54 of 81", WAS gated and WAS right: a checked number
       lends its credibility to the unchecked sentence around it. Corrected
       2026-08-27, and the remainder it introduces is now derived (syscalls_uncovered).
+
+  - pattern: 'marked `.SECONDARY` so make'
+    reason: >-
+      docs/BUILDING.md said the unstripped .pie.elf was kept by marking it
+      `.SECONDARY`. A bare `.SECONDARY:` has no prerequisites and does not mark one
+      file -- it marks EVERY target in the build as intermediate, and make will not
+      create a missing intermediate when the target above it already exists.
+      `make clean` did not remove userspace/*.a, so a stale libhorus.a survived while
+      libhorus.o and hvfs.o did not, and make declined to rebuild them; every program
+      linked the previous invocation's flags. It failed GREEN: the LIBHORUS_RETRY_ANY
+      control arm stopped reproducing its own defect, and smoke-vfs and smoke-newlib
+      went red on a stale hvfs.o. The guard is `.PRECIOUS`, which affects deletion
+      only and cannot change what make rebuilds. Corrected 2026-08-29; the phrasing is
+      forbidden so the wrong mechanism cannot be reintroduced as documentation.
 
   - pattern: 'slot 8 READ, else slot 3 READ'
     reason: >-

@@ -516,6 +516,20 @@ forbidden:
       lends its credibility to the unchecked sentence around it. Corrected
       2026-08-27, and the remainder it introduces is now derived (syscalls_uncovered).
 
+  - pattern: 'marked `.SECONDARY` so make'
+    reason: >-
+      docs/BUILDING.md said the unstripped .pie.elf was kept by marking it
+      `.SECONDARY`. A bare `.SECONDARY:` has no prerequisites and does not mark one
+      file -- it marks EVERY target in the build as intermediate, and make will not
+      create a missing intermediate when the target above it already exists.
+      `make clean` did not remove userspace/*.a, so a stale libhorus.a survived while
+      libhorus.o and hvfs.o did not, and make declined to rebuild them; every program
+      linked the previous invocation's flags. It failed GREEN: the LIBHORUS_RETRY_ANY
+      control arm stopped reproducing its own defect, and smoke-vfs and smoke-newlib
+      went red on a stale hvfs.o. The guard is `.PRECIOUS`, which affects deletion
+      only and cannot change what make rebuilds. Corrected 2026-08-29; the phrasing is
+      forbidden so the wrong mechanism cannot be reintroduced as documentation.
+
   - pattern: 'slot 8 READ, else slot 3 READ'
     reason: >-
       docs/SYSCALLS.md stated SYS_GET_LINE's authorisation this way, and it was

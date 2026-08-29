@@ -29,10 +29,33 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   which is worth having and is no longer the headline.
 
   The unstripped `.pie.elf` is **kept** and is what to point a debugger or `addr2line` at — this
-  reduces the image, not the ability to diagnose it. Keeping it needed `.SECONDARY`: inserting a
+  reduces the image, not the ability to diagnose it. Keeping it needs a guard: inserting a
   stripping step turns the `.pie.elf` into a make *intermediate*, which make deletes when it is
   done, and that would have made the sentence promising it quietly false the moment it was
-  written.
+  written. Falsified in both directions — with the guard commented out,
+  `make clean && make userspace/hello.bin` deletes `hello.pie.elf`; with it, the file survives.
+
+  **The guard is `.PRECIOUS`, and the first attempt at it was a fail-green.** A bare `.SECONDARY:`
+  was tried first. With no prerequisites that does not mean "keep the file just named" — it marks
+  **every** target in the build as intermediate, and make will not *create* a missing intermediate
+  when the ultimate target above it already exists. `userspace-clean`'s globs did not cover `*.a`,
+  so `userspace/libhorus.a` survived `make clean` while `libhorus.o` and `hvfs.o` did not, and make
+  declined to rebuild them. Every program in the tree linked an archive built from the **previous**
+  invocation's flags.
+
+  That is the failure mode this repository is organised against, because it fails *green*: the
+  `LIBHORUS_RETRY_ANY` control arm stopped reproducing its own defect — the stale archive still
+  held the **fixed** `ipc_call_retry`, so the arm reported PASS where it must report the spin — and
+  `smoke-vfs` and `smoke-newlib` failed on a stale `hvfs.o`. Three CI jobs, and nothing in the
+  symptom pointed at the line that caused it; `origin/main` was measured on the same arm first, per
+  the rule in `CLAUDE.md` §2, which is what established the diff was to blame. `.PRECIOUS` affects
+  deletion and nothing else, so it cannot change what make decides to rebuild, and
+  `userspace-clean` now removes `*.a` and `*.stripped.elf` as well.
+
+  Left open and recorded here rather than fixed silently: `.build-flags` stamps `CFLAGS`/`ASFLAGS`
+  but **not** `USERSPACE_CFLAGS`, and `userspace/ports/{coreutils,tcc}/*.o` survive `make clean`.
+  No control arm reaches those objects today, so nothing is currently mis-measured, but it is the
+  same class of hazard one layer over and it wants its own witness.
 
   `--strip-all` rather than `--strip-debug`, because nothing here reads a ring-3 binary's symbol
   table: the loader parses `PT_LOAD` and the kernel does not symbolise ring-3 faults, so the extra

@@ -12,8 +12,17 @@ build. Boot is Multiboot2 via GRUB (BIOS); UEFI is not supported.
 ## Stripped binaries, and where the debug info went
 
 Everything that ships is stripped (`userspace/%.stripped.elf`, `--strip-all`) before
-`tools/mkheadered` wraps it. The **unstripped `.pie.elf` is kept** — marked `.SECONDARY` so make
+`tools/mkheadered` wraps it. The **unstripped `.pie.elf` is kept** — marked `.PRECIOUS` so make
 does not delete it as an intermediate — and is what to point a debugger or `addr2line` at.
+
+`.PRECIOUS` rather than `.SECONDARY`, and the difference is not cosmetic. A bare `.SECONDARY:`
+with no prerequisites does not mean "keep this file": it marks **every** target in the build as
+intermediate, and make will not create a missing intermediate when the target above it already
+exists. `make clean` did not remove `userspace/*.a`, so a stale `libhorus.a` survived and
+`libhorus.o`/`hvfs.o` were never recompiled — every program linked the *previous* invocation's
+flags. That failed **green**: the `LIBHORUS_RETRY_ANY` control arm stopped reproducing its own
+defect. `.PRECIOUS` affects deletion only and cannot change what make rebuilds; `userspace-clean`
+now removes `*.a` and `*.stripped.elf` too.
 
 Measured 2026-08-29, which is why this exists: a newlib-linked `coreutils_echo` was 404,528 bytes
 on disk with only ~88 KiB of text+data+bss. `.debug_info` alone was 144,065 bytes, and the DWARF

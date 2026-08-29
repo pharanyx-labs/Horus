@@ -2332,10 +2332,39 @@ userspace/%.stripped.elf: userspace/%.pie.elf
 # Keep the unstripped .pie.elf. Inserting a stripping step turns it into a make
 # INTERMEDIATE -- a file created only to chain two rules -- and make deletes those
 # when it is done, which would have quietly made the sentence above ("the
-# unstripped .pie.elf stays on disk") false the moment it was written. .SECONDARY
-# is what stops that. The .stripped.elf is left intermediate on purpose: it is
-# derivable and nothing wants to read it.
-.SECONDARY:
+# unstripped .pie.elf stays on disk") false the moment it was written.
+#
+# .PRECIOUS, NOT .SECONDARY, AND THE DIFFERENCE COST THREE GREEN GATES.
+#
+# The first attempt was a bare `.SECONDARY:`. With no prerequisites that does not
+# mean "keep the file I just named" -- it means EVERY target in the build is
+# treated as intermediate. Intermediate has a second meaning beyond deletion:
+# make will not CREATE a missing intermediate when the ultimate target already
+# exists. userspace-clean's globs did not cover *.a, so userspace/libhorus.a
+# survived `make clean`; libhorus.o and hvfs.o did not, and make then declined to
+# rebuild them because the archive above them was present. Every program in the
+# tree linked a libhorus.a built from the PREVIOUS invocation's flags.
+#
+# That is a fail-open of the worst kind, because it fails GREEN: the
+# LIBHORUS_RETRY_ANY control arm stopped reproducing its own defect (the stale
+# archive still held the FIXED ipc_call_retry, so the arm reported PASS where it
+# must report the spin), and smoke-vfs and smoke-newlib failed on a stale hvfs.o.
+# A control arm that cannot fail is not a control arm, and nothing about the
+# symptom pointed at the line that caused it.
+#
+# .PRECIOUS affects deletion and nothing else -- it never marks a target
+# intermediate, so it cannot change what make decides to rebuild. It is the
+# narrow tool for the narrow job.
+#
+# The .stripped.elf is deliberately NOT listed, and does not need to be: a file
+# named explicitly as a prerequisite of a static pattern rule (the .bin rules
+# below) is not intermediate, so make never deletes it. Only the .pie.elf is at
+# risk, because it is reached ONLY by chaining the %.stripped.elf pattern onto
+# the %.pie.elf pattern -- an intermediate make invented. Verified in both
+# directions before this line was written: with .PRECIOUS commented out,
+# `make clean && make userspace/hello.bin` leaves hello.stripped.elf and DELETES
+# hello.pie.elf; with it, both survive.
+.PRECIOUS: userspace/%.pie.elf
 
 userspace/coreutils_%.bin: userspace/coreutils_%.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
@@ -2443,7 +2472,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.elf userspace/*.pie.elf userspace/*.raw userspace/*.bin userspace/*_image.h tools/mkheadered
+	rm -f userspace/*.o userspace/*.a userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
 # SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with

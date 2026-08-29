@@ -360,6 +360,52 @@ int iommu_unmap(uint64_t devindex, uint64_t phys, uint32_t pages) {
     return 0;
 }
 
+/* Does `dev`'s address space currently translate `phys`?
+ *
+ * A kernel-internal query, with no syscall behind it: the answer is a statement
+ * about another protection domain's page tables, and ring 3 has no business
+ * asking. It exists so a selftest can witness that destroying a frame removes
+ * the device's translation, rather than the test having to infer it from a
+ * packet that did or did not arrive. */
+int iommu_translates(uint64_t devindex, uint64_t phys) {
+    if (!iommu_ready) return -1;
+    if (devindex >= IODEV_MAX) return -1;
+    struct iommu_domain *d = &domains[devindex];
+    if (!d->in_use) return 0;
+    uint64_t *e = sl_entry(d, phys, 0);
+    if (!e) return 0;
+    return (*e & (SL_READ | SL_WRITE)) ? 1 : 0;
+}
+
+/* Remove `pages` pages from EVERY device's address space.
+ *
+ * Called when a frame object is destroyed. The IOVA is the physical address by
+ * construction (see iommu_map), so one physical run identifies the same mapping
+ * in every domain, and the loop is bounded by IODEV_MAX.
+ *
+ * WHY DESTRUCTION TEARS THE MAPPING DOWN RATHER THAN REFUSING TO COLLECT.
+ * destroy_dyn_frame's neighbouring policy for CPU mappings is the opposite: a
+ * frame with a live PTE is left alone, and the name leaks until the last holder
+ * unmaps or dies. That is right for a PTE because the holder is a live task
+ * still reading the bytes, and collecting underneath it would scrub memory
+ * somebody is using.
+ *
+ * A device mapping is not that. The authority behind it was a CAP_FRAME the
+ * kernel is in the middle of destroying, and the "holder" is a piece of hardware
+ * that cannot be asked to stop. Refusing to collect would leave a bus-mastering
+ * device with write access to the run forever, on the strength of a capability
+ * that no longer exists; tearing the mapping down leaves the device faulting on
+ * an address it is no longer entitled to, which is the direction that fails
+ * closed. The two policies differ because the two holders differ, not because
+ * one of them was copied. */
+void iommu_unmap_all(uint64_t phys, uint32_t pages) {
+    if (!iommu_ready) return;
+    for (uint64_t dev = 0; dev < IODEV_MAX; dev++) {
+        if (!domains[dev].in_use) continue;
+        (void)iommu_unmap(dev, phys, pages);
+    }
+}
+
 /* Drop every mapping a device holds. */
 void iommu_reset_device(uint64_t devindex) {
     if (!iommu_ready || devindex >= IODEV_MAX) return;

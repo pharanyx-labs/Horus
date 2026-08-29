@@ -1058,8 +1058,10 @@ the barriers themselves are gated on CPUID feature detection.
 would use to build a cache side channel.
 
 **What is not covered.** A concurrent sibling on the same physical core when SMT parking is
-disabled; DMA-capable devices (no IOMMU); and any channel through the shared L2/L3. See
-`docs/LIMITATIONS.md`.
+disabled; any channel through the shared L2/L3; and DMA-capable devices **on a machine with no
+DMAR**. Since 2026-08-28 a machine that has one confines every device to the frames its driver
+mapped (**S45**, `src/kernel/iommu.c`), and `iommu_active()` reports 0 where there is none. See
+`docs/LIMITATIONS.md` §2.12.
 
 ---
 

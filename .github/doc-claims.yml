@@ -225,6 +225,38 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'NETTEST: FAIL rx-queue-size'
+    reason: >-
+      SECURITY.md's S44 row named this as NET_NO_DECODE's failing marker. The
+      Makefile requires `NETTEST: FAIL mac-not-valid`. A falsification record that
+      names the wrong marker is the one kind of stale text section 3 says must not
+      be tolerated, because the record IS what makes the claim re-checkable.
+  - pattern: '`netd`, a virtio-net driver'
+    reason: >-
+      README.md still called netd a virtio-net driver a day after it became an
+      e1000 one. The existing ratchet entry ("netd` drives virtio-net") did not
+      match this wording, which is the ratchet's own blind spot: it remembers
+      phrasings, not facts. The device model is load-bearing rather than
+      incidental, because virtio accesses guest memory directly and cannot
+      witness S45 at all.
+  - pattern: 'there is no IOMMU support'
+    reason: >-
+      SECURITY.md's threat model put DMA from a malicious PCI device out of scope
+      on these grounds for a day after S45 landed, while the same file's S45 row
+      claimed VT-d with per-device empty address spaces. iommu_init runs
+      unconditionally at boot; the honest statement is the conditional, that the
+      property holds where a DMAR is present and iommu_ready is 0 where it is not.
+  - pattern: 'DMA-capable devices \(no IOMMU\)'
+    reason: >-
+      ARCHITECTURE.md's side-channel section carried this after VT-d landed.
+      Same correction as the row above: the gap is a machine with no DMAR, not
+      the design.
+  - pattern: 'which is the physical address only because there is no IOMMU'
+    reason: >-
+      SYSCALLS.md used the absence of an IOMMU as the RATIONALE for disclosing a
+      physical address from SYS_DMA_ADDR, which made a security argument rest on
+      a premise VT-d had already retired. The IOVA equals the physical address by
+      choice, not by absence.
   - pattern: '~450 KiB each'
     reason: >-
       accurate about the file and misleading about the cause: measured

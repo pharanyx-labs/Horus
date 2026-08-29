@@ -396,6 +396,13 @@ void kernel_main(uint32_t mb_info) {
      * window, however short. */
     iommu_init();
 
+#ifdef IOMMU_TEARDOWN_SELFTEST
+    /* After iommu_init (it needs a live unit) and after iodev_init (it needs a
+     * device to own a domain), and before any ring-3 task exists, so the frame it
+     * allocates and destroys cannot race a driver. */
+    iommu_frame_teardown_selftest();
+#endif
+
     /* Interrupt routing, after the IOMMU and before any ring-3 task. Every pin
      * comes up MASKED, so this changes who delivers an interrupt and not which
      * interrupts exist: a line still goes live only when SYS_IRQ_REGISTER accepts

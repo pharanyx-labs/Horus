@@ -16,6 +16,76 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Fixed
 
+- **A device's IOMMU translation outlived the frame that authorised it (S53).** `SYS_DMA_ADDR`
+  installs a VT-d entry for the frame a driver names, and nothing removed it.
+  `frame_map_refcount` counts CPU mappings only, so a device mapping neither kept the frame
+  alive nor was torn down when it died: `destroy_dyn_frame` scrubbed the run, released the pages
+  to the untyped arena, and left the translation in place. The arena then handed those bytes to
+  a fresh object while a bus-mastering device could still read and write them.
+
+  A device-side use-after-free, and the third capability-free path to a page in a function whose
+  own comments reason carefully about the second. `iommu_unmap()` and `iommu_reset_device()`
+  existed, were prototyped, and were **called by nothing**; their own comment said they run
+  "when a frame capability is revoked or a driver dies".
+
+  `destroy_dyn_frame` now calls a new `iommu_unmap_all()` **before** the scrub, so there is no
+  window in which the run is both reallocatable and reachable. `task_teardown` resets the dying
+  task's device domain, which the frame path does not cover: a frame held by a second task
+  survives the driver's death, and the driver's device would otherwise keep its mapping of it.
+  Every other device resource on that path was already released, the IRQ route, the MSI route,
+  the port grant and the console; this was the one that was not.
+
+  Destruction tears the mapping down rather than refusing to collect, which is the **opposite**
+  of the policy for a live PTE one branch above. That is deliberate and argued rather than
+  inherited: a PTE's holder is a live task still reading the bytes, so collecting underneath it
+  would scrub memory somebody is using; a device mapping's authority is the capability being
+  destroyed, and its holder is hardware that cannot be asked to stop.
+
+  **Falsified.** `IOMMU_NO_FRAME_TEARDOWN=1` (`make smoke-iommu-teardown-control`) restores the
+  old destroy path: measured 2026-08-29, `IOMMUTEST: FAIL
+  device-still-translates-destroyed-frame`. `make smoke-iommu-teardown` goes red under the same
+  flag. The base gate boots with `SMOKE_IOMMU=1` and `SMOKE_NET=e1000` because it needs a real
+  VT-d unit and a real device to own a domain.
+
+  **What the witness does not show,** stated rather than implied: it reads the device's
+  second-level table through a kernel-internal query, so it establishes that the entry is
+  removed, not that the device observed the removal. A DMA-based witness was rejected rather
+  than skipped, because proving it with a packet means pointing a live device at a page the
+  arena has already reallocated, which is committing the defect to observe the fix. The
+  `task_teardown` half has no arm at all: it needs a driver to die under `SMOKE_IOMMU` while a
+  peer still holds the frame, and no workload here does that yet. `IOMMU_NO_TASK_TEARDOWN=1` is
+  kept buildable so the arm exists the day one does.
+
+- **Documentation that contradicted the kernel about the IOMMU, in both directions.** Found by
+  the same audit and fixed here because a commit adding S53 cannot coherently ship beside a
+  threat model saying the mechanism does not exist.
+
+  - `SECURITY.md` put DMA from a malicious PCI device out of scope on the grounds that "there is
+    no IOMMU support", in the same file as S45. `docs/ARCHITECTURE.md` §13 repeated it.
+    `docs/SYSCALLS.md` used it as the **rationale** for disclosing a physical address from
+    `SYS_DMA_ADDR`, which made a security argument rest on a premise VT-d had retired. All three
+    now state the conditional: the property holds where a DMAR is present, and `iommu_init`
+    leaves `iommu_ready` at 0 where there is none.
+  - `site/index.html` listed "IOMMU" under **Not yet**, two rows below a **Working** row
+    describing VT-d. The public page contradicted itself.
+  - `site/index.html` said `netd` "transmits but does not yet receive"; it receives on the
+    82574L 5 boots in 5, which is what `smoke-net` gates on.
+  - `README.md` still called `netd` "a virtio-net driver". The device model is load-bearing, not
+    incidental: virtio accesses guest memory directly and cannot witness S45 at all.
+  - `SECURITY.md`'s **S44 row named the wrong failing marker** for `NET_NO_DECODE`, quoting
+    `NETTEST: FAIL rx-queue-size` where the Makefile requires `NETTEST: FAIL mac-not-valid`, and
+    described `netd` as a virtio driver. A falsification record that names the wrong marker is
+    the one kind of stale text that cannot be tolerated, because the record is what makes the
+    claim re-checkable.
+  - `docs/LIMITATIONS.md` §2.12 still said "MSI/MSI-X are not routed", which S47 and S48 closed
+    on 2026-08-29.
+
+  Every retired phrasing above is now in `.github/doc-claims.yml`'s `forbidden:` ratchet. The
+  `netd` one is instructive: an entry for "netd` drives virtio-net" was already there and did
+  not match `README.md`'s "a virtio-net driver", which is the ratchet's own blind spot. It
+  remembers phrasings, not facts.
+
+
 - **A refused capability operation halted the CPU instead of returning, from ring 3, with no
   capability required (S52).** `cap_mint` and `cap_transfer` resolved the caller's SOURCE slot
   through `kcap_lookup`, which was `cap_lookup` followed by `kassert_cap`, an unconditional

@@ -998,9 +998,11 @@ roadmap 2.4. So are process groups, job control and `/proc` — roadmap 2.3.
 ### 2.12 What a device capability does not cover
 
 **S43** landed 2026-08-28: a `CAP_IO_DEVICE` names one entry in the kernel's I/O-device table
-and reaches only that device's frames, ports and interrupt lines. Five things that property
-deliberately does **not** say, listed because a device model that looked like it enforced a
-boundary it does not is worse than one that never claimed to.
+and reaches only that device's frames, ports and interrupt lines. The things that property
+deliberately does **not** say are listed below, because a device model that looked like it
+enforced a boundary it does not is worse than one that never claimed to. Several have since
+closed and are struck through rather than deleted, so the shape of what the capability covers
+stays legible.
 
 - ~~**DMA is outside it entirely.**~~ **Closed 2026-08-28 by VT-d** (**S45**). A device now has
   an address space of its own that starts **empty**, so it reaches exactly the frames its driver
@@ -1011,8 +1013,12 @@ boundary it does not is worse than one that never claimed to.
 - **PCI-to-PCI bridges are not walked.** The scan covers bus 0, which is every device on the
   machines this kernel targets. A device behind a bridge is *absent* from the table, so no
   capability can name it — the failure is un-delegatable hardware, not unmediated hardware.
-- **MSI/MSI-X are not routed.** A device declares at most the one legacy `INTERRUPT_LINE`
-  firmware programmed. A device that only signals by message cannot be driven from ring 3 yet.
+- ~~**MSI/MSI-X are not routed.**~~ **Closed 2026-08-29** (**S47**, **S48**). `SYS_MSI_REGISTER`
+  programs the device's MSI capability, and the vector is chosen by the kernel: there is no field
+  in the ABI for a driver to name one, which is why a driver cannot aim an interrupt at a vector
+  it does not own. The MSI-X vector table lives in a BAR rather than in configuration space, so
+  `SYS_MAP_PHYS` refuses the page it occupies; otherwise a driver would write its own vector with
+  no syscall involved.
 - ~~**Bus mastering is not enabled by anything.**~~ **Closed 2026-08-28** by `SYS_DEVICE_ENABLE`
   (**S44**), which sets the three decode bits of the device a capability names and nothing else
   in configuration space. The DMA question above was answered rather than inherited: the
@@ -1021,10 +1027,22 @@ boundary it does not is worse than one that never claimed to.
   bus-master bit for virtio-net, so on this emulator the bit is not what permits the DMA; `netd`
   sets it because real hardware requires it, and no gate can witness that half here.
 - **A driver cannot learn a bus address without a device capability**, and that is deliberate
-  rather than missing: `SYS_DMA_ADDR` requires the frame capability *and* a device capability,
-  because a physical address is a disclosure and a bus-mastering device holder can already reach
-  all of memory anyway. A task that only retyped a page is refused (`make
+  rather than missing: `SYS_DMA_ADDR` requires the frame capability *and* a device capability. A
+  physical address is a disclosure, and the two-capability rule makes it a disclosure to somebody
+  who has no use for it. The original argument for that was "a bus-mastering device holder can
+  already reach all of memory anyway", and **since VT-d landed that argument is no longer true**:
+  the device reaches only what its driver mapped. The rule stands on the narrower ground that a
+  device capability is what makes a bus address meaningful at all, rather than on a reach the
+  IOMMU has since removed. A task that only retyped a page is refused (`make
   smoke-frame-dma-control`).
+- ~~**A device translation outlives the frame that authorised it.**~~ **Closed 2026-08-29**
+  (**S53**). `SYS_DMA_ADDR` installed an IOMMU entry and nothing removed it: `frame_map_refcount`
+  counts CPU mappings only, so a device mapping neither kept the frame alive nor was torn down
+  when it died, and `destroy_dyn_frame` scrubbed the run and returned it to the arena with the
+  device still able to read and write it. `destroy_dyn_frame` now unmaps from every device domain
+  before the scrub, and `task_teardown` resets a dying driver's domain. What is still **not**
+  witnessed is the task-death half: reproducing it needs a driver holding a device capability to
+  die under `SMOKE_IOMMU` while a peer still holds the frame, and no workload here does that yet.
 - **The table is not enumerable.** `SYS_DEVICE_INFO` reports the device the caller's capability
   names and nothing else; there is no "list the devices" call, so holding one device is not a
   way to learn the shape of the machine. That is a deliberate omission, and it means a driver

@@ -2506,6 +2506,21 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
      * a fresh task could inherit a dead driver's port grant. Clearing it here also
      * releases the console back to the kernel if this was the console owner, so the
      * shell's in-kernel console fallback works again after a console_server crash. */
+    /* And the device's DMA reach. A driver's IOMMU domain is authority that
+     * outlives it otherwise: the mappings SYS_DMA_ADDR installed stay in the
+     * device's address space, the device stays a bus master (msi_clear_task
+     * deliberately leaves it enabled, because disabling a device mid-transaction
+     * is the unsafe direction), and the frames those mappings name go back to the
+     * arena when the dead task's capabilities are swept. Every other device
+     * resource on this path is already released -- the IRQ route, the MSI route,
+     * the port grant, the console -- and this was the one that was not.
+     *
+     * Ordered before io_device is cleared, because that field is the only record
+     * of which domain to reset. */
+#ifndef IOMMU_NO_TASK_TEARDOWN
+    if (tasks[id].io_device != IODEV_NONE)
+        iommu_reset_device(tasks[id].io_device);
+#endif
     tasks[id].io_device = IODEV_NONE;
     console_clear_owner(id);
 

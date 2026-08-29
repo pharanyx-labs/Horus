@@ -1958,11 +1958,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential binutils make \
+            build-essential binutils make texinfo \
             xorriso grub-pc-bin grub-common mtools \
             qemu-system-x86
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
+      # smoke-shlibc builds the REAL shared libc, so this job needs newlib —
+      # which it did not until that step was added, and adding a step whose
+      # toolchain the job does not set up is how it first went red. Same cache
+      # and key as every other newlib job.
+      - name: Cache built newlib
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: newlib/install
+          key: newlib-${{ runner.os }}-${{ hashFiles('tools/build_newlib.sh') }}
+      - name: Build newlib (no-op on cache hit)
+        run: tools/build_newlib.sh
       # Roadmap 2.5's mechanism. Sharing a library is a memory optimisation;
       # sharing it writably is a code-injection primitive between every task that
       # maps it, which is worse than the static copies it replaces. Two tasks map

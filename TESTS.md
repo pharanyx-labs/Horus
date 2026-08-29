@@ -1608,7 +1608,7 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 51 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 52 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -1874,6 +1874,71 @@ nothing clobbers it. Under `FPU_NO_SAVE=1` the integrity check fails and the **l
 passes** — the peer is handed its own stale image, which discloses nothing. One loses state, the
 other leaks it. A single `FPU_BROKEN` flag would have reddened both markers at once and told you
 nothing about whether either check could fail on its own.
+
+### `smoke-shlib` — one library, executed by many, writable by none, with data private to each
+
+**This section did not exist until 2026-08-29, and S49 landed without it.** The property had a
+witness that ran and a control arm that reproduced; what it did not have was an entry here. Worth
+recording as the near-miss it is: `invariants` binds an S-number to a target and would have caught
+a *missing* witness, but nothing binds a witness to its write-up, so a test can be real and
+undocumented. Noted rather than quietly filled in.
+
+The library is one shared object (`userspace/shlibdemo.c`), loaded once into frames at boot by
+`src/kernel/shlib.c` and mapped by two ring-3 tasks that each call into it.
+
+**Two properties, two segments, and the split is the whole design.**
+
+`userspace/shlib.ld` puts the object into exactly two loadable segments, page-aligned apart:
+
+    LOAD  R E   .text .shlib_exports .dynamic   -> SHARED between every task   (S49)
+    LOAD  R W   .data .bss                      -> instantiated PER TASK       (S50)
+
+Text is endowed from a primordial carrying READ\|EXEC and never WRITE; data from a *separate*
+primordial carrying READ\|WRITE and never EXEC. A page a task may write is a page it may not
+jump into, and vice versa. **The isolation is not in the rights** — every task holds identical
+rights over its data — it is in the *object* each capability names being a different frame.
+
+**Why a shared libc needs the second half.** Measured going into the newlib migration: of the
+**59** newlib symbols the shipped coreutils reference, exactly **three** are writable —
+`_impure_ptr` (errno, the stdio buffers, the atexit list, the rand state), `optarg` and `optind`.
+Shared, one task reads and writes another's errno and stdio buffers and can corrupt an allocator
+another task is mid-call in. Sharing a libc's *text* is an optimisation; sharing its *data* is a
+defect, and it is the same argument S49 makes about text arriving one segment further on.
+
+**The peer is the witness, and it has to be.** A task cannot distinguish a private copy from a
+shared one by looking at its own writes — it sees what it wrote either way. So `shlibtest` writes
+a sentinel into its copy and `shlibpeer`, which wrote nothing, reports what it sees. The peer is
+spawned suspended and released by `shlibtest` after its own checks, for the same reason `fputest`
+holds its peer: a peer that read early would report a pass that meant nothing.
+
+**Nothing in the test writes the library's constants down.** The expected initialiser is read from
+the library's own *text* (`shlib_state_initial`), and the export-table offset, page count and
+data-page index are generated from the object by `tools/shlib_offsets.sh` into
+`userspace/shlib_offsets.h`. Both used to be literals: the export table was `SHLIB_VA + 0x4000`
+in two files, correct for exactly one layout, and `shlib.ld` moved it. **A test that reads the
+wrong address does not fail honestly — it reads whatever is there and reports on it.**
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-shlib` | `SHLIBTEST: PASS` present, `SHLIBTEST: FAIL` absent | passes, **3 boots in 3** |
+| `smoke-shlib-writable-control` (`SHLIB_TEXT_WRITABLE=1`) | `SHLIBTEST: FAIL peer-saw-patched-code` present | passes, **3 boots in 3** |
+| `smoke-shlib-data-shared-control` (`SHLIB_DATA_SHARED=1`) | `SHLIBTEST: FAIL peer-saw-our-data` present | passes, **3 boots in 3**; `smoke-shlib` goes red under the same flag |
+| `smoke-shlib-data-init-control` (`SHLIB_DATA_UNINITIALISED=1`) | `SHLIBTEST: FAIL data-not-initialised` present | passes, **3 boots in 3**; `smoke-shlib` goes red under the same flag |
+
+**The two S50 arms break different things**: `SHLIB_DATA_SHARED` hands every task the template
+frame itself (disclosure), `SHLIB_DATA_UNINITIALISED` carves a private frame and zero-fills it
+(loss). A libc whose data is private but uninitialised is a libc whose `_impure_ptr` is NULL — it
+leaks nothing and simply does not work, which is a different defect and gets a different arm.
+
+**Only one direction of their separability is witnessed, and the other is not claimed.** Under
+`SHLIB_DATA_SHARED` the initialisation check still passes, and that is visible on the wire —
+`SHLIBTEST: data initialised from the image, and written` prints before the peer reports the
+disclosure. The reverse is *not* observed: under `SHLIB_DATA_UNINITIALISED`, `shlibtest` fails its
+own initialisation check and exits before it ever resumes the peer, so the privacy check does not
+run. The privacy property does still hold there in the code — a fresh frame is carved either way
+and only the copy is skipped — but this arm does not witness it, so the claim is not made. **A
+detector that stops at its first failure chooses what it demonstrates**, which is the same reason
+`smoke-shlib-writable-control` skips the refusal checks deliberately.
 
 ### `smoke-fork` — a forked child's memory is a copy, and a kernel object is never forked
 

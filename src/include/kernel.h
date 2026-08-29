@@ -1933,6 +1933,8 @@ int      shlib_active(void);
 uint32_t shlib_pages(void);
 uint64_t shlib_base(void);
 uint32_t shlib_frame_index(uint32_t i);
+int      shlib_page_writable(uint32_t i);
+uint32_t shlib_instantiate_data(uint32_t page);
 uint64_t shlib_entry(void);
 
 void iodev_init(void);

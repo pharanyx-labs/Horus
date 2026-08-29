@@ -1936,6 +1936,17 @@ jobs:
       # a function through a writable alias, and the PEER runs the patch.
       - name: Control arm — writable shared text is cross-task code injection
         run: make smoke-shlib-writable-control
+      # S50, the half a libc needs. Of the 59 newlib symbols the shipped
+      # coreutils reference, three are writable — _impure_ptr (errno, stdio
+      # buffers, atexit, rand), optarg and optind — so a library cannot be
+      # shared until it can carry data that is private per task.
+      - name: Control arm — a shared library's writable data is one task's errno in another's hands
+        run: make smoke-shlib-data-shared-control
+      # Loss rather than disclosure, and a separate flag: private but never
+      # initialised is a libc whose _impure_ptr is NULL. It does not leak, it
+      # just does not work, and that is a different defect.
+      - name: Control arm — a private copy that was never initialised from the image
+        run: make smoke-shlib-data-init-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

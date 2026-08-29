@@ -70,6 +70,7 @@ static void wr_hex2(unsigned v) {
 #define E1000_IMC      0x00D8   /* interrupt mask clear */
 #define E1000_IMS      0x00D0   /* interrupt mask set */
 
+
 #define ICR_TXDW       (1u << 0)   /* transmit descriptor written back */
 #define ICR_RXDMT0     (1u << 4)   /* receive descriptor minimum threshold */
 #define ICR_RXO        (1u << 6)   /* receiver overrun: no descriptor available */
@@ -147,6 +148,7 @@ struct rx_desc {
 #define VA_TXRING  0x0000000200010000ULL
 #define VA_RXBUF   0x0000000200020000ULL
 #define VA_TXBUF   0x0000000200030000ULL
+#define VA_MSIX_PROBE 0x0000000200040000ULL   /* where the refused map would land */
 
 #define RING_PAGES  1
 #define RING_BYTES  4096
@@ -292,6 +294,35 @@ void _start(void) {
         }
     }
     bar = (volatile unsigned char *)(unsigned long)VA_BAR;
+
+    /* ---- 2a. the one page of our own device we may NOT map (S48) ---------
+     *
+     * An MSI-X vector table entry holds the interrupt VECTOR the device raises --
+     * the same field S47 keeps out of a driver's hands for MSI. But unlike MSI's,
+     * it does not live in configuration space: it lives HERE, in a BAR, in
+     * ordinary device memory this driver maps page by page. "The kernel programs
+     * it" is no answer when the driver can program it too, so the page carrying
+     * it is refused.
+     *
+     * This driver holds a perfectly good CAP_IO_DEVICE for this device and the
+     * page is inside a BAR the device declares. It is still refused, and that is
+     * the point: authority over a device is not authority over the register that
+     * decides which interrupt the machine takes. */
+    if (nic.msix_table != 0) {
+        if (sys_map_phys(NIC_SLOT, nic.msix_table, VA_MSIX_PROBE, 4096,
+                         MAP_PHYS_WRITE) == 0) {
+            wr("NETTEST: FAIL msix-table-mapped\n"); sys_exit();
+        }
+        /* And READ-only is refused too. A read of the table discloses nothing
+         * dangerous by itself, but allowing it would mean the refusal is about
+         * writes rather than about the page, and the next person to add a
+         * "harmless" read path would have a precedent. */
+        if (sys_map_phys(NIC_SLOT, nic.msix_table, VA_MSIX_PROBE, 4096,
+                         MAP_PHYS_READ) == 0) {
+            wr("NETTEST: FAIL msix-table-mapped-readonly\n"); sys_exit();
+        }
+        wr("NETTEST: MSIX PASS\n");
+    }
 
     /* ---- 3. reset, then bring the link up ------------------------------- */
     mmio_w(E1000_IMC, 0xFFFFFFFFu);          /* mask every interrupt: we poll */

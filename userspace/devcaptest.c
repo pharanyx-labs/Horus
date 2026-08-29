@@ -120,12 +120,29 @@ void _start(void) {
 
     /* A page-aligned page of the NIC's own MMIO, for P4/N2. */
     unsigned long long bar = 0;
-    for (unsigned i = 0; i < nic.n_mmio; i++) {
-        if ((nic.mmio[i].base & 0xFFFULL) == 0 && nic.mmio[i].len >= 4096) {
-            bar = nic.mmio[i].base; break;
+    for (unsigned i = 0; i < nic.n_mmio && bar == 0; i++) {
+        if ((nic.mmio[i].base & 0xFFFULL) != 0 || nic.mmio[i].len < 4096) continue;
+        /* Skip the page holding the device's MSI-X vector table: it is refused to
+         * every driver, capability or not (S48), so mapping it is not the
+         * cross-device question this probe is asking. A real driver routes around
+         * the same page for the same reason -- this is what that looks like. */
+        for (unsigned long long p = nic.mmio[i].base;
+             p + 4096 <= nic.mmio[i].base + nic.mmio[i].len; p += 4096) {
+            if (nic.msix_table != 0 && p == nic.msix_table) continue;
+            bar = p; break;
         }
     }
     if (bar == 0) { wr("DEVCAPTEST: FAIL nic-no-aligned-bar\n"); sys_exit(); }
+
+    /* And while we are here: that page IS refused, to a capability that reaches
+     * every other page of the same BAR. Checked on the NIC capability, which is
+     * the strongest place to check it -- this task holds exactly the authority
+     * that would otherwise permit the mapping. */
+    if (nic.msix_table != 0 &&
+        sys_map_phys(NIC_SLOT, nic.msix_table, BAR_VADDR + 0x10000, 4096,
+                     MAP_PHYS_WRITE) == 0) {
+        wr("DEVCAPTEST: FAIL nic-cap-mapped-msix-table\n"); sys_exit();
+    }
 
     /* ---- N1: the NIC capability must NOT reach the console's framebuffer ---
      * THE defect. Under IO_DEVICE_OBJECT_UNCHECKED this succeeds, because the

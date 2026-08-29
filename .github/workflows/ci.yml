@@ -1870,6 +1870,12 @@ jobs:
       # honours a caller-supplied vector and netd asks for 13 (#GP).
       - name: Control arm — a driver choosing its own interrupt vector
         run: make smoke-net-msi-vector-control
+      # S48. An MSI-X vector table lives in a BAR, not in configuration space, so
+      # S47's mechanism does not transfer -- a driver could map it like any other
+      # register page and write its own vector with no syscall involved. The
+      # refusal is what makes S47 hold for MSI-X too.
+      - name: Control arm — a driver mapping its own MSI-X vector table
+        run: make smoke-net-msix-table-control
       # SYS_DEVICE_ENABLE writes the only configuration-space register ring 3 can
       # reach. Clear all three decode bits and the device stops answering its own
       # I/O BAR -- which is what shows the write lands rather than returning 0.

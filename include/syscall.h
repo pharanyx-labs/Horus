@@ -549,6 +549,12 @@ struct dev_info {
     uint32_t classcode;   /* class:subclass:prog-if */
     uint32_t irq_mask;    /* bit n set: this device may route legacy IRQ n */
     uint32_t n_port;      /* port ranges declared */
+    uint64_t msix_table;  /* page-aligned physical base of the device's MSI-X
+                           * vector table, or 0 if it has none. Reported so a
+                           * driver can TEST that it is refused -- knowing the
+                           * address buys nothing, because the refusal is what
+                           * the kernel enforces and the page is not mappable
+                           * whether or not the driver knows where it is (S48). */
     uint32_t msi_capable; /* nonzero if the device has an MSI capability. Whether,
                            * not where: the offset is the kernel's business, since
                            * the register it points at carries the vector (S47). */

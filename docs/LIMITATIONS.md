@@ -1069,11 +1069,26 @@ but has no arm of its own yet.
 
 **S47** puts vector choice in the kernel's hands. Three things about it are worth stating.
 
-- **MSI-X is not implemented.** Its table lives in a BAR rather than in configuration space,
-  which means a driver could reach it with an ordinary `SYS_MAP_PHYS` of its own device's memory
-  — so MSI-X needs the vector-choice argument made again against a different mechanism, and the
-  answer cannot simply be "the kernel writes it". Until then a device offering only MSI-X gets
-  its INTx line. This matters because it is what modern virtio devices use.
+- **MSI-X is PROTECTED but not ENABLED, and the order is deliberate.** Its table lives in a BAR
+  rather than in configuration space, so a driver could reach it with an ordinary `SYS_MAP_PHYS`
+  of its own device's memory — the vector-choice argument had to be made again against a
+  mechanism inside the driver's own reach, and *"the kernel writes it"* was not an available
+  answer. **S48** is that answer: the page carrying the table is refused to the driver, for every
+  device that has one, whether or not the kernel ever enables MSI-X.
+
+  Enabling is deferred, and the reason is worth being blunt about. Bringing MSI-X up end to end
+  needs per-device work that could not be **verified** here: on the one MSI-X-capable device in
+  this tree (an 82574L) the cause-to-entry mapping lives in a register whose layout was not
+  confirmed, an attempt at it produced no interrupt, and an interrupt that never arrives is
+  indistinguishable from a driver that is simply wrong. Shipping a path that appears to work by
+  guesswork is how a device ends up never interrupting on real hardware. So the protection ships
+  and the enabling does not, which also means the door is shut *before* it is opened rather than
+  afterwards.
+
+  While MSI-X Enable stays clear the table is inert — that bit is in configuration space, which
+  ring 3 cannot reach — so **S48 is defence in depth today rather than load-bearing**. A device
+  offering only MSI-X is refused a message-signalled interrupt and falls back to its INTx line,
+  rather than being handed a mechanism the kernel cannot drive.
 - **A vector is never reclaimed.** `msi_clear_task` stops delivering to a dead driver's route but
   leaves the device enabled and the vector allocated. Freeing it means the next device allocated
   that vector inherits any message this one already put in flight; disabling the capability means

@@ -16,6 +16,47 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A driver cannot map its own device's MSI-X vector table (S48).** An MSI-X table entry carries
+  a message address and a data word whose low byte is the interrupt **vector** — the same field
+  **S47** keeps out of a driver's hands. But unlike MSI's, it does *not* live in configuration
+  space: it lives in a **BAR**, in ordinary device memory a driver maps page by page with
+  `SYS_MAP_PHYS`.
+
+  **So S47's mechanism does not transfer.** *"The kernel programs it"* is no answer when the
+  driver can program it too, and this is the case where the previous property's shape genuinely
+  fails rather than merely needing restating. The kernel resolves the table's physical extent at
+  boot — from the capability's BAR index and offset, against the sized BAR — and
+  `iodev_allows_mmio` refuses **any page overlapping it**, to a driver holding a perfectly good
+  `CAP_IO_DEVICE` for that device, on a page inside a BAR the device declares. Authority over a
+  device is not authority over the register that decides which interrupt the machine takes.
+
+  Page granularity, failing closed: a device ignoring the PCI spec's advice to give its table a
+  private 4 KiB region loses its neighbouring registers with it, because denying a driver
+  registers costs a feature and allowing the write costs the machine. READ is refused as well as
+  WRITE, so the rule is about the page rather than about writes — otherwise the next "harmless"
+  read path has a precedent. The kernel keeps its own supervisor-only mapping of the same
+  physical page, and that asymmetry is the property.
+
+  **Scope, stated plainly: MSI-X is protected but NOT enabled, and the order is deliberate.**
+  Bringing it up end to end needs per-device work that could not be *verified* here — on the one
+  MSI-X-capable device in this tree the cause-to-entry mapping lives in a register whose layout
+  was not confirmed, an attempt produced no interrupt, and an interrupt that never arrives is
+  indistinguishable from a driver that is simply wrong. Shipping a path that appears to work by
+  guesswork is how a device ends up never interrupting on real hardware, so it is not shipped.
+  While MSI-X Enable stays clear the table is inert (that bit is in configuration space), which
+  makes S48 defence in depth today rather than load-bearing — **in place before the mechanism it
+  guards, rather than remembered afterwards.** A device offering only MSI-X falls back to INTx.
+
+  Falsified by `MSIX_TABLE_MAPPABLE=1` (`make smoke-net-msix-table-control`): the driver maps its
+  own vector table with no syscall, no capability check and nothing to gate.
+  `NETTEST: FAIL msix-table-mapped`, 3 boots in 3, and `smoke-net` red under it.
+
+  **Also found on the way:** mapping the table for the kernel *lazily*, when a device is first
+  programmed, faults — `SYS_MSI_REGISTER` runs on the calling task's cr3, and a mapping installed
+  into the kernel pml4 after that task's address space was built does not appear in it. The
+  symptom was a supervisor page fault at the table address attributed to the driver, the same
+  shape as the missing IDT gates in §2.13. The extent is known at boot, so it is mapped there.
+
 - **Message-signalled interrupts, and who gets to choose a vector (S47).** An MSI is not a wire:
   it is a memory **write** the device performs, carrying a data word whose low byte is the
   interrupt **vector**. So with MSI, *which interrupt does this device raise* stops being a fact

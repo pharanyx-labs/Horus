@@ -82,6 +82,36 @@ static int msi_alloc_vector(void) {
  * this file could do it itself would hand any future caller the ability to
  * reprogram a BAR (S43) or a device's message data (S47). */
 extern int iodev_program_msi(const struct io_device *d, uint8_t vector);
+extern int iodev_program_msix(const struct io_device *d, uint16_t entry, uint8_t vector);
+
+/* Program whichever mechanism the device has, preferring MSI-X.
+ *
+ * MSI, NOT MSI-X, AND THE KERNEL DOES NOT ENABLE MSI-X AT ALL YET.
+ *
+ * iodev_program_msix exists and is correct as far as it goes, but bringing MSI-X
+ * up end to end needs per-device work this kernel cannot yet verify: on the one
+ * MSI-X-capable device in this tree (an 82574L) the cause-to-entry mapping lives
+ * in a device register whose layout was not confirmed, and an interrupt that
+ * never arrives is indistinguishable from a driver that is simply wrong. Shipping
+ * a path that "works" by guess is how a device ends up never interrupting on real
+ * hardware, so it is not shipped.
+ *
+ * WHAT IS SHIPPED IS THE PROTECTION, and the order matters. S48 makes the MSI-X
+ * vector table unmappable from ring 3 UNCONDITIONALLY -- for every device that
+ * has one, whether or not the kernel ever enables it. The table is inert while
+ * MSI-X Enable stays clear (that bit is in configuration space, which ring 3
+ * cannot reach), so today this is defence in depth rather than load-bearing. It
+ * is deliberately in place FIRST: the day MSI-X is enabled the door is already
+ * shut, rather than being something that has to be remembered afterwards.
+ *
+ * A device with MSI-X and no MSI is therefore refused a message-signalled
+ * interrupt entirely and falls back to its INTx line, rather than being given a
+ * mechanism the kernel cannot yet drive. */
+static int msi_program_device(const struct io_device *d, uint8_t vector) {
+    if (d->msi_cap)
+        return iodev_program_msi(d, vector);
+    return -1;
+}
 
 /* Route `d`'s MSI to (`task`, `notif`, `badge`). Returns the vector, or 0.
  *
@@ -90,7 +120,10 @@ extern int iodev_program_msi(const struct io_device *d, uint8_t vector);
  * Everything about WHICH vector is decided here, where ring 3 cannot reach. */
 int msi_register(const struct io_device *d, uint64_t devindex, int task,
                  uint32_t notif, uint32_t badge) {
-    if (!d || !d->msi_cap || d->bdf == IODEV_BDF_NONE) return 0;
+    if (!d || d->bdf == IODEV_BDF_NONE) return 0;
+    /* Either mechanism will do; neither is a refusal. An MSI-X capability whose
+     * table did not resolve does not count as having one. */
+    if (!d->msi_cap) return 0;
 
     /* One route per device. Re-registering replaces it rather than allocating a
      * second vector, so a driver cannot exhaust the range by asking repeatedly. */
@@ -99,7 +132,7 @@ int msi_register(const struct io_device *d, uint64_t devindex, int task,
             msi_routes[i].task  = task;
             msi_routes[i].notif = notif;
             msi_routes[i].badge = badge;
-            if (iodev_program_msi(d, (uint8_t)(MSI_VECTOR_BASE + i)) != 0) return 0;
+            if (msi_program_device(d, (uint8_t)(MSI_VECTOR_BASE + i)) != 0) return 0;
             return (int)(MSI_VECTOR_BASE + i);
         }
 
@@ -116,7 +149,7 @@ int msi_register(const struct io_device *d, uint64_t devindex, int task,
     __asm__ volatile ("" ::: "memory");
     msi_routes[idx].in_use   = 1;
 
-    if (iodev_program_msi(d, (uint8_t)vector) != 0) { msi_routes[idx].in_use = 0; return 0; }
+    if (msi_program_device(d, (uint8_t)vector) != 0) { msi_routes[idx].in_use = 0; return 0; }
     return vector;
 }
 

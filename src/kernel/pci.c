@@ -82,6 +82,10 @@ static inline uint32_t inl(uint16_t port) {
 #define PCI_STATUS_CAPLIST 0x0010
 
 #define PCI_CAP_ID_MSI    0x05
+#define PCI_CAP_ID_MSIX   0x11
+#define PCI_MSIX_CTRL     0x02   /* 16-bit: enable, function mask, table size-1 */
+#define PCI_MSIX_TABLE    0x04   /* 32-bit: BIR in bits 2:0, offset in 31:3    */
+#define PCI_MSIX_PBA      0x08
 #define PCI_MSI_CTRL      0x02   /* offset from the capability header */
 
 #define PCI_HDR_MULTIFN   0x80
@@ -161,6 +165,10 @@ static void iodev_add_platform(void) {
 
     d->irq_mask = (1u << 0) | (1u << 1);
     d->msi_cap  = 0;                  /* the platform device has no config space */
+    d->msix_cap = 0;
+    d->msix_entries = 0;
+    d->msix_table_phys = 0;
+    d->msix_table_len  = 0;
 
     iodev_count = IODEV_PLATFORM + 1;
 }
@@ -248,6 +256,30 @@ static uint8_t pci_find_msi_cap(uint8_t bus, uint8_t dev, uint8_t fn) {
     return 0;
 }
 
+/* Find this function's MSI-X capability, or 0. Same bounded walk as the MSI one.
+ *
+ * MSI-X matters more than MSI does, and is harder. Its vector TABLE does not live
+ * in configuration space at all -- it lives in a BAR, in ordinary device MMIO,
+ * which a driver holding CAP_IO_DEVICE can map with SYS_MAP_PHYS. So S47's
+ * mechanism ("the kernel writes config space, ring 3 cannot reach it") does not
+ * transfer: for MSI-X the register that chooses a vector is inside the driver's
+ * own reach by default, and it has to be taken out of it deliberately. See S48
+ * and iodev_msix_blocks_page(). */
+static uint8_t pci_find_msix_cap(uint8_t bus, uint8_t dev, uint8_t fn) {
+    uint16_t status = pci_cfg_read16(bus, dev, fn, PCI_STATUS);
+    if (!(status & PCI_STATUS_CAPLIST)) return 0;
+
+    uint8_t off = pci_cfg_read8(bus, dev, fn, PCI_CAP_PTR) & 0xFCu;
+    for (int hops = 0; hops < 48 && off >= 0x40 && off < 0xFC; hops++) {
+        uint8_t id   = pci_cfg_read8(bus, dev, fn, off);
+        uint8_t next = pci_cfg_read8(bus, dev, fn, (uint8_t)(off + 1)) & 0xFCu;
+        if (id == PCI_CAP_ID_MSIX) return off;
+        if (next == off) break;
+        off = next;
+    }
+    return 0;
+}
+
 /* Record one PCI function. Bounded by IODEV_MAX: a machine with more functions
  * than the table holds loses the tail, which is the same direction of failure as
  * the bus-0 limit — absent, therefore un-delegatable. */
@@ -267,12 +299,17 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
     d->n_port    = 0;
     d->irq_mask  = 0;
     d->msi_cap   = 0;
+    d->msix_cap  = 0;
+    d->msix_entries = 0;
+    d->msix_table_phys = 0;
+    d->msix_table_len  = 0;
 
     /* Only a type-0 header has six BARs; a bridge's header aliases BAR2 onward
      * onto bus-number and window registers, and sizing those would corrupt the
      * bridge. Bridges therefore contribute no resources at all. */
     uint8_t hdr = (uint8_t)(pci_cfg_read8(bus, dev, fn, PCI_HEADER_TYPE) & PCI_HDR_TYPE_MASK);
-    d->msi_cap = (hdr == PCI_HDR_GENERAL) ? pci_find_msi_cap(bus, dev, fn) : 0;
+    d->msi_cap  = (hdr == PCI_HDR_GENERAL) ? pci_find_msi_cap(bus, dev, fn) : 0;
+    d->msix_cap = (hdr == PCI_HDR_GENERAL) ? pci_find_msix_cap(bus, dev, fn) : 0;
     if (hdr == PCI_HDR_GENERAL) {
         uint16_t cmd = pci_cfg_read16(bus, dev, fn, PCI_COMMAND);
         pci_cfg_write32(bus, dev, fn, PCI_COMMAND,
@@ -307,6 +344,46 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
          * so the device may route no interrupt at all. */
         uint8_t line = pci_cfg_read8(bus, dev, fn, PCI_INTERRUPT_LINE);
         if (line < 16) d->irq_mask = (1u << line);
+
+        /* Resolve the MSI-X table's physical extent, now that the BARs are sized.
+         *
+         * This has to happen HERE, after the BAR walk, because the capability
+         * gives a BAR INDEX and an offset -- not an address. Without resolving it
+         * the kernel cannot tell which page of a device's MMIO holds the vector
+         * table, and iodev_allows_mmio would have to allow all of it or none.
+         *
+         * An unresolvable table (a BIR naming a BAR the device did not implement,
+         * or an offset past its end) leaves msix_table_phys at 0, and every
+         * MSI-X path then refuses rather than guessing -- see S48. Firmware and
+         * device capability registers are semi-trusted input like everything else
+         * on this path. */
+        if (d->msix_cap) {
+            uint16_t mc = pci_cfg_read16(bus, dev, fn, (uint8_t)(d->msix_cap + PCI_MSIX_CTRL));
+            uint32_t tb = pci_cfg_read32(bus, dev, fn, (uint8_t)(d->msix_cap + PCI_MSIX_TABLE));
+            d->msix_entries = (uint16_t)((mc & 0x07FFu) + 1u);
+            uint32_t bir    = tb & 0x7u;
+            uint64_t toff   = (uint64_t)(tb & ~0x7u);
+            uint64_t tlen   = (uint64_t)d->msix_entries * 16u;
+
+            /* The BIR indexes the device's own BARs as the DEVICE numbers them,
+             * which is not how this table numbers the mmio[] entries it kept --
+             * an I/O BAR or an unimplemented one takes a slot there and not here.
+             * Re-deriving from the raw BAR rather than indexing mmio[] is what
+             * keeps the two numbering schemes from being silently conflated. */
+            if (bir < 6) {
+                uint32_t raw = pci_cfg_read32(bus, dev, fn, (uint8_t)(PCI_BAR0 + bir * 4));
+                if (!(raw & 1u)) {                       /* memory BAR, not I/O */
+                    uint64_t base = (uint64_t)(raw & 0xFFFFFFF0u);
+                    if (((raw >> 1) & 3u) == 2u)         /* 64-bit: take the top half */
+                        base |= (uint64_t)pci_cfg_read32(bus, dev, fn,
+                                    (uint8_t)(PCI_BAR0 + bir * 4 + 4)) << 32;
+                    if (base && toff + tlen > toff) {
+                        d->msix_table_phys = base + toff;
+                        d->msix_table_len  = tlen;
+                    }
+                }
+            }
+        }
     }
 
     iodev_count++;
@@ -342,6 +419,27 @@ void iodev_init(void) {
         }
     }
     iodev_ready = 1;
+
+    /* Map every resolved MSI-X table page for the KERNEL, here at boot and not
+     * lazily when a device is first programmed.
+     *
+     * Lazily was the first attempt and it faulted: SYS_MSI_REGISTER runs on the
+     * CALLING task's cr3, and a mapping installed into the kernel pml4 after that
+     * task's address space was built does not appear in it. The result was a
+     * supervisor page fault at the table address, attributed to the driver -- the
+     * same shape as the missing IDT gates, and caught the same way.
+     *
+     * Boot time is both correct and simpler: the extent is already resolved by
+     * then, nothing has an address space yet, and create_user_pagedir replicates
+     * these pages into every one it builds (ensure_msix_mapped_current). */
+    for (uint32_t i = IODEV_PLATFORM; i < IODEV_MAX; i++) {
+        if (!iodev_table[i].present || !iodev_table[i].msix_table_phys) continue;
+        uint64_t first = iodev_table[i].msix_table_phys & ~(uint64_t)(PAGE_SIZE - 1);
+        uint64_t last  = (iodev_table[i].msix_table_phys + iodev_table[i].msix_table_len - 1)
+                         & ~(uint64_t)(PAGE_SIZE - 1);
+        for (uint64_t pg = first; pg <= last; pg += PAGE_SIZE)
+            ensure_msix_mapped(NULL, pg);
+    }
 
     /* One line, because the table is the authority behind every device
      * capability and a reader debugging a refused SYS_MAP_PHYS wants to know
@@ -383,9 +481,51 @@ uint64_t iodev_first_of_class(uint8_t class_hi) {
  * refused rather than clipped. Clipping would let a caller ask for one legal byte
  * and a page of somebody else's device, and be told yes. Overflow on the sum is
  * checked because paddr comes from ring 3. */
+/* Does [paddr, paddr+len) touch this device's MSI-X vector table?
+ *
+ * THIS IS S48, and it is the whole reason MSI-X needed its own property rather
+ * than inheriting S47's. An MSI-X table entry holds a message address and a
+ * message data word whose low byte is the interrupt VECTOR -- exactly the field
+ * S47 keeps out of ring 3's hands -- but unlike MSI's, that entry does not live
+ * in configuration space. It lives in a BAR: ordinary device memory, which a
+ * driver holding CAP_IO_DEVICE maps with SYS_MAP_PHYS like any other register
+ * page. "The kernel writes it" is not an answer when the driver can write it too.
+ *
+ * So the page carrying it stops being mappable. A driver gets its device's
+ * registers and not the four words that decide which interrupt the machine takes.
+ *
+ * PAGE GRANULARITY, and it fails CLOSED. The unit of mapping is a page, so any
+ * page OVERLAPPING the table is refused entirely -- even if the table occupies
+ * sixteen bytes of it and the driver wanted the other 4080. The PCI spec says an
+ * MSI-X table should sit in its own 4 KiB-aligned region precisely so it can be
+ * protected this way, and a device that ignores that advice loses its neighbours
+ * along with its table. Denying a driver registers it wanted costs a feature;
+ * allowing the write costs the machine.
+ *
+ * An UNRESOLVED table (msix_table_phys == 0, from a capability naming a BAR the
+ * device never implemented) blocks nothing here -- but nothing can use MSI-X on
+ * such a device either, because msix_register refuses it for the same reason. The
+ * two must agree, and they agree by both keying off the same zero. */
+int iodev_msix_blocks_page(const struct io_device *d, uint64_t paddr, uint64_t len) {
+    if (!d || !d->msix_table_phys || d->msix_table_len == 0) return 0;
+    if (len == 0 || paddr + len < paddr) return 0;
+
+    uint64_t tstart = d->msix_table_phys & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t tend   = (d->msix_table_phys + d->msix_table_len + PAGE_SIZE - 1)
+                      & ~(uint64_t)(PAGE_SIZE - 1);
+    /* Overlap of [paddr, paddr+len) with the page-rounded table extent. */
+    return (paddr < tend) && (tstart < paddr + len);
+}
+
 int iodev_allows_mmio(const struct io_device *d, uint64_t paddr, uint64_t len) {
     if (!d || len == 0) return 0;
     if (paddr + len < paddr) return 0;
+#ifndef MSIX_TABLE_MAPPABLE
+    /* Control arm MSIX_TABLE_MAPPABLE: drop the refusal, and a driver maps its own
+     * vector table and writes whatever vector it likes -- S47's guarantee undone
+     * through a door S47 never covered. See make smoke-net-msix-table-control. */
+    if (iodev_msix_blocks_page(d, paddr, len)) return 0;
+#endif
     for (uint32_t i = 0; i < d->n_mmio; i++) {
         uint64_t b = d->mmio[i].base, e = b + d->mmio[i].len;
         if (e < b) continue;
@@ -509,6 +649,62 @@ int iodev_program_msi(const struct io_device *d, uint8_t vector) {
         w = (w & ~(0xFFFFu << shift)) | ((uint32_t)ctrl << shift);
         pci_cfg_write32(bus, dev, fn, word_off, w);
     }
+    return 0;
+}
+
+/* ---- MSI-X programming ----------------------------------------------------
+ *
+ * The kernel's own path to the table it refuses to let ring 3 map. Same argument
+ * as iodev_program_msi one section up: exactly one file writes the registers that
+ * decide a vector, and it is this one.
+ *
+ * The table is device MMIO above the physical pool, so it needs a kernel mapping
+ * of its own -- identity, supervisor-only, cache-disabled -- exactly like the
+ * LAPIC, the TPM, the VT-d registers and the I/O APIC. Note the asymmetry that IS
+ * the property: this mapping exists in the kernel half of every address space,
+ * and the same physical page is refused to the driver in the user half. */
+#define MSIX_CTRL_ENABLE    (1u << 15)
+#define MSIX_CTRL_FUNC_MASK (1u << 14)
+#define MSIX_VCTL_MASKED    (1u << 0)
+
+int iodev_program_msix(const struct io_device *d, uint16_t entry, uint8_t vector) {
+    if (!d || !d->msix_cap || d->bdf == IODEV_BDF_NONE) return -1;
+    if (!d->msix_table_phys || entry >= d->msix_entries) return -1;
+
+    uint64_t ent_phys = d->msix_table_phys + (uint64_t)entry * 16u;
+    /* One entry never straddles a page (16 bytes, 16-byte aligned by spec), so a
+     * single page mapping covers it. Asserted rather than assumed: a device
+     * reporting an unaligned table would otherwise have its second word written
+     * into a page this never mapped. */
+    if ((ent_phys & (PAGE_SIZE - 1)) + 16u > PAGE_SIZE) return -1;
+
+    volatile uint32_t *e = (volatile uint32_t *)(uintptr_t)ent_phys;
+
+    /* Mask the entry before touching it, and unmask last. An MSI-X entry is four
+     * separate writes and the device may fire on the strength of a half-written
+     * one -- a new address with a previous vector is a real interrupt to the
+     * wrong handler. Same ordering argument as the VT-d context entry, the I/O
+     * APIC redirection entry and the MSI capability. */
+    e[3] = MSIX_VCTL_MASKED;
+    e[0] = 0xFEE00000u;            /* message address: LAPIC, APIC 0, physical */
+    e[1] = 0;
+    e[2] = (uint32_t)vector;       /* fixed delivery, edge: the vector alone */
+    __asm__ volatile ("" ::: "memory");
+    e[3] = 0;                      /* unmask */
+
+    uint8_t bus = (uint8_t)(d->bdf >> 8);
+    uint8_t dev = (uint8_t)((d->bdf >> 3) & 0x1F);
+    uint8_t fn  = (uint8_t)(d->bdf & 0x07);
+    uint8_t coff = (uint8_t)(d->msix_cap + PCI_MSIX_CTRL);
+    uint8_t word = (uint8_t)(coff & 0xFC);
+    unsigned shift = (unsigned)((coff & 2) * 8);
+    uint32_t w = pci_cfg_read32(bus, dev, fn, word);
+    uint16_t ctrl = (uint16_t)((w >> shift) & 0xFFFFu);
+    /* Enable the function and clear the global function mask; the per-entry mask
+     * above is the one that gates this vector. */
+    ctrl = (uint16_t)((ctrl | MSIX_CTRL_ENABLE) & (uint16_t)~MSIX_CTRL_FUNC_MASK);
+    w = (w & ~(0xFFFFu << shift)) | ((uint32_t)ctrl << shift);
+    pci_cfg_write32(bus, dev, fn, word, w);
     return 0;
 }
 

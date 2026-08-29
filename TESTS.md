@@ -1214,10 +1214,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **98** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **99** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below — **100** jobs, **103** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
+below — **101** jobs, **104** contexts. Counts from `tools/check_ci_gating.py`, which prints them;
 do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20 — a backstop, not a budget. The default is
@@ -1269,7 +1269,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **100 required contexts and 3 reasoned exemptions** — read off
+The intended set is **101 required contexts and 3 reasoned exemptions** — read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence — `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1874,6 +1874,41 @@ nothing clobbers it. Under `FPU_NO_SAVE=1` the integrity check fails and the **l
 passes** — the peer is handed its own stale image, which discloses nothing. One loses state, the
 other leaks it. A single `FPU_BROKEN` flag would have reddened both markers at once and told you
 nothing about whether either check could fail on its own.
+
+### `shared-objects` — an object the kernel's loader would refuse never gets built
+
+`make check-shared-objects` builds every shared object in the tree and checks it against what
+`src/kernel/shlib.c` actually enforces. Required CI job; static, not a boot test.
+
+**Why static.** `shlib_init` refuses anything but `R_X86_64_RELATIVE`. Refusing is correct and a
+terrible diagnostic: the library is simply **absent**, and the first symptom is a task faulting on
+a call into an address nothing mapped. The properties are decidable by reading the object, so they
+are read at build time where the error names the cause.
+
+**Every rule here exists because building the shared libc hit it, and none of them is a link
+error:**
+
+| Mistake | Object gets |
+|---|---|
+| port's syscall glue not linked in | 10 undefined symbols, 10 `R_X86_64_JUMP_SLOT` |
+| no `-Wl,-Bsymbolic` | intra-library references become `R_X86_64_GLOB_DAT` |
+| no `-Wl,-z,nodynamic-undefined-weak` | one `GLOB_DAT`, from `__on_exit_args` alone |
+
+**Falsified one arm per rule**, because a checker with four rules and one arm has three rules that
+have never been shown to fire:
+
+| Rule | Falsified against | Result |
+|---|---|---|
+| only `R_X86_64_RELATIVE` | a libc linked without the glue | 10x `JUMP_SLOT` reported |
+| no undefined symbols | the same object | 10 undefined named |
+| fits `SHLIB_MAX_PAGES` | `SHLIB_MAX_PAGES` temporarily set to 4 | "needs 36 pages" |
+| one page-aligned writable `PT_LOAD` | `shlibdemo.c` linked with the DEFAULT script | "starts at 0x3f20, not page-aligned" |
+
+The last is worth keeping: it is the exact layout `userspace/shlib.ld` exists to prevent, so the
+rule is checked against the thing it was written for rather than a synthetic case.
+
+`SHLIB_MAX_PAGES` is read from `src/include/kernel.h`, not copied into the checker — the two
+cannot drift.
 
 ### `smoke-shlib` — one library, executed by many, writable by none, with data private to each
 

@@ -16,6 +16,46 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **The shared libc builds, and is gated (roadmap 2.5).** `userspace/libc.so` — newlib, its port
+  glue and libhorus in one shared object the kernel's loader accepts: **342 `R_X86_64_RELATIVE`
+  relocations and nothing else**, zero undefined symbols, 135 KiB of shared text (34 pages) and
+  6 KiB of per-task data (2 pages), 36 of `SHLIB_MAX_PAGES`' 64.
+
+  **Nothing links against it yet** — programs still link `libc.a` statically. What landed is the
+  object and the gate, because all three ways of producing one the kernel refuses are **silent**,
+  and each was found by building it rather than predicted:
+
+  - the port's syscall glue not linked in → 10 undefined symbols and 10 `R_X86_64_JUMP_SLOT`
+  - no `-Wl,-Bsymbolic` → intra-library references become `R_X86_64_GLOB_DAT`
+  - **one** weak-undefined symbol (`__on_exit_args`) → a `GLOB_DAT` by itself, unless
+    `-Wl,-z,nodynamic-undefined-weak` resolves it statically
+
+  None is a link error, and `shlib_init`'s refusal names nothing: the library is simply absent and
+  the first symptom is a fault on a call into an address nothing mapped. `check_shared_object.py`
+  decides it statically instead, and its four rules were each falsified against an object that
+  breaks that rule alone — including the page limit and the segment-alignment rule, which the
+  real objects never violate.
+
+  newlib is now built **`-fPIC -fvisibility=hidden`**. Verified not to regress the static link it
+  still serves: `smoke-newlib`, `smoke-tcc` and `smoke-coreutils-shell` all pass.
+
+  **The flags are stamped** (`newlib/.newlib-flags`). The build script no-ops when `libc.a`
+  exists — which is what makes it cheap to call from a Makefile rule, and also means that without
+  a stamp, editing the wrapper flags would have had *no effect* on a tree that had already built
+  once. That is the defect that disarmed a control arm in #235, one directory over. The stamp is
+  written last and only on success, so a failed build cannot certify itself.
+
+  The export table is **derived**, not hand-written (`tools/gen_libc_exports.sh`): every symbol
+  the shipped programs leave undefined, intersected with what `libc.a` defines — 59 of the 133
+  the coreutils leave undefined; the other 74 are coreutils and gnulib internals.
+
+  **The remaining blocker is recorded rather than discovered later.** Calling into shared text
+  needs only a stub per function; a program's direct reference to a **data** symbol cannot be
+  redirected without a GOT. `_impure_ptr` survives (a pointer *to* per-task state), but `optarg`
+  and `optind` **are** the state and a program-local copy would desynchronise from the `getopt`
+  that writes it. `docs/LIMITATIONS.md` §2.16.
+
+
 - **A shared library's writable data is private to each task (S50).** The half a libc actually
   needs, and the reason the newlib migration could not simply reuse S49's mechanism as it stood.
 

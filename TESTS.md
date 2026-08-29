@@ -1613,6 +1613,16 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
+**Does the base gate go red under the flag? Measured 2026-08-30, 30 of 30.**
+`docs/BUILDING.md` claims 31 times that a named gate "must go red" under a defect flag, and
+nothing tested it: an arm builds *with* the flag and asserts its own FAIL marker, the gate builds
+*without* it and asserts PASS, and nobody built the gate with the flag. Those come apart whenever
+the arm and the gate watch different markers — an arm can redden its own assertion beside a gate
+that would stay green while the property was broken. `tools/check_base_gate_reddens.sh` derives
+the pairs from `docs/BUILDING.md` (not a copy of them) and runs each one; every pair reddened.
+It is not in CI on purpose: each pair is a clean rebuild plus a boot, so the sweep is hours, and
+it belongs before promoting an arm or during an audit rather than on every pull request.
+
 **Every ABI struct is identical in both headers, gated since 2026-08-30.**
 `tools/check_abi_structs.py` runs beside `check_capslots.py` and compares the seven structs that
 cross the ring-3 boundary and are written down in both `src/include/kernel.h` and

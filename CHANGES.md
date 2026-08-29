@@ -16,6 +16,31 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **`tools/check_base_gate_reddens.sh`** — measures the direction nobody measured.
+  `docs/BUILDING.md` claims **31 times** that a base gate "must go red" under a given defect
+  flag, and until 2026-08-30 **nothing tested it**: not a target, not a CI job, not a checker.
+  Thirty-one written assertions with no measurement behind any of them.
+
+  **It is not implied by the control arm.** An arm builds *with* the flag and asserts a FAIL
+  marker appears; the base gate builds *without* it and asserts PASS. Nobody built the base gate
+  with the flag. So the pair establishes "the defect is detectable by the arm", never "the defect
+  is caught by the gate that guards the property in the shipping configuration" — and those come
+  apart whenever the arm and the gate watch different markers, binaries or workloads. An arm that
+  reddens only its own private assertion sits beside a gate that would stay green while the
+  property was broken.
+
+  **Measured 2026-08-30: 30 of 30 pairs go red.** (One of the 31 rows is a `cargo` feature rather
+  than a `-D` flag and is driven separately.) So every claim in that table is now true *and*
+  checked rather than asserted. The pairs are derived from `docs/BUILDING.md` itself rather than
+  listed in the script, for the reason `check_invariants.py` reads `SECURITY.md` instead of a
+  parallel manifest: a copy would drift from the thing it checks.
+
+  Deliberately **not** wired into CI. Each pair is a clean rebuild plus a boot, so the sweep is
+  hours — a poor fit for a per-PR gate and a good fit for something run before promoting an arm,
+  or when auditing. `PAIR_TIMEOUT` is sized by how long a *failing* run takes, never a passing
+  one.
+
+
 - **`tools/check_abi_structs.py`**, gating in the `kani-bounded` job beside `check_capslots.py`.
   Seven structs cross the ring-3 boundary and are written down **twice**, in
   `src/include/kernel.h` and `include/syscall.h`, because neither header includes the other:

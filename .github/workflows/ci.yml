@@ -1984,6 +1984,24 @@ jobs:
       # just does not work, and that is a different defect.
       - name: Control arm — a private copy that was never initialised from the image
         run: make smoke-shlib-data-init-control
+      # S51. Two boots, because the property is not observable from inside one:
+      # a single run sees an address either way and cannot tell a random base
+      # from a fixed one. This matters most for what comes next — when newlib
+      # moves onto this mechanism it is ~135 KiB of executable code in every
+      # task, and a compiled-in base would be a regression against a program's
+      # static libc, which already lives inside its ASLR'd PIE image.
+      - name: The library loads at a different address every boot
+        run: make smoke-shlib-aslr
+      - name: Control arm — a compiled-in base loads at the same address twice
+        run: make smoke-shlib-aslr-control
+      # The base is the address of code every task executes, so it is answered
+      # only to a caller holding a capability over the library's own text.
+      - name: Control arm — an ungated SYS_SHLIB_INFO tells whoever asks
+        run: make smoke-shlib-info-control
+      # Separate rule, separate arm: with only the arm above, "the capability
+      # must name a library TEXT frame" has never been shown to fire.
+      - name: Control arm — any frame capability answers, including the task's own data page
+        run: make smoke-shlib-info-object-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

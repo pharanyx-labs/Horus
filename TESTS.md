@@ -898,7 +898,7 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `gate-pairs` | **The coverage question applied to the gates themselves.** `tools/check_gate_pairs.py` enforces four structural rules, each violated at least once in this tree: a control arm must extend a base gate that exists; a control arm must actually be invoked by CI; a gate must be invoked or listed in `.github/gate-exceptions.yml` with a reason; and an exception must name a real target and give one. Source analysis, no build. Falsified all four ways — orphan arm, unrun arm, stale exception, empty reason. It was written because `smoke-ksp-guard-control` had **no positive counterpart**: an arm proving the guard *could* fire, with nothing asking whether it stayed silent on a legal value. |
 | `smoke-ksp-guard` | The **false-positive** arm for the producer-side resume-`%rsp` guard, and the direction whose absence is a known way to ship a regression. Every other arm on this guard injects a bogus value and asks whether it fires — they measure false *negatives*, and a predicate that rejected every stack pointer would satisfy all of them. This boots the **default** workload, where every resume value is legal, and requires `SCHED BOGUS KSP` to be **absent**. Falsified by `KSP_GUARD_ALWAYS=1`, which makes `ksp_is_bogus()` reject everything: the guard then fires on a legitimate address (`ipc_block_switch task=2 ksp=0xffffffff8020cf40`) and the gate goes red. The default workload rather than `PROC_SELFTEST` on purpose — the latter still trips [G-9] on ~1–2% of boots and would make this intermittently red for an unrelated reason. |
 | `smoke-ksp-guard-control` | **[G-9]**, producer side. All four switch functions (`preempt_on_tick`, `ipc_block_switch`, `sched_yield_switch`, `task_exit_switch`) end in the same three lines — take `tasks[next].saved_ksp`, drop the lock, return it — and every selection loop above them required that value to be merely **non-zero**. Each now validates it **against the page tables** (`kern_addr_present`), not an address range: `per_task_kstacks`, `ap_idle_stacks` and `ap_ist` all live inside `[__bss_start, __bss_end)` and their guards are armed by being made *absent*, so a pointer sitting in a guard page passes every range test in the tree. Both the value and the byte 8 below it are checked, since that is where the epilogue pushes. On failure it names the producing function and returns 0, so the caller parks instead of `iretq`-ing onto it. `KSP_GUARD_INJECT=1` forges `-7` and requires `SCHED BOGUS KSP from task_exit_switch` on the wire. **A detector, not a fix** — across 57 pinned boots containing a live reproduction it did not fire once, which is what rules those four producers out. |
-| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` — the scripted ring-3 session, the conformance suite, and the boot-modules session — and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **62 of 90** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all — that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
+| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` — the scripted ring-3 session, the conformance suite, and the boot-modules session — and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **62 of 91** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all — that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
 | `syscall-coverage` (2026-08-23) | **The deriver now describes a kernel that exists.** `scan_table` evaluates the preprocessor, so the three entries compiled only under a defect arm or a selftest flag stop counting as shipped and move to a `conditional:` section that records the flag guarding each; and a **bare numeric dispatch index is refused**, which made seven more entries visible — five of them live in the ship build, four with no userspace wrapper anywhere in the tree. 81 → 83, and neither figure was ever a build. Seven new rules, seven falsifying arms: a guarded entry becoming unconditional, an undeclared guarded entry, a `conditional:` naming the wrong flag, a guarded syscall declared covered, a bare numeric index, an `#if` form the deriver cannot evaluate, and a `SYSCOV` number no active entry claims. The sixth arm **did not fire on the first attempt** — it mutated an `#ifdef` earlier in the file than the table, so it was testing nothing; an arm that passes for the wrong reason is the failure this section exists to catch. |
 | `syscall-abi` | **Issue #176**, property **S24**. `tools/check_syscall_abi.py` parses `include/syscall.h` and requires every pointer argument of every inline wrapper to reach `syscall()`/`syscall6()` full-width. Source analysis, no build, no QEMU — which is the point: a runtime gate only covers the syscalls some probe happens to call, and this covers all 46 pointer arguments including wrappers nothing calls yet. Falsified two ways: narrowing one wrapper's pointer (names the wrapper), and narrowing `SYSCALL_UPTR`'s own default definition — the obvious way to defeat a per-wrapper check, so it is checked separately. |
 | `smoke-klog-forge-abi-control` | Control arm for the above at runtime. `SYSCALL_PTR_TRUNC32=1` restores the truncating wrappers; the probe's buffer is a static, so it is above 4 GiB and gets truncated, and `KLOGTEST: FAIL setup dmesg rc=-14` must come back. Measured **3 boots in 3**. This arm is also what stops `smoke-klog-forge` from quietly losing half its coverage: if the probe's buffer ever moves back to the stack the truncation becomes a no-op, this arm goes green, and the failure is visible instead of silent. |
@@ -1608,7 +1608,7 @@ whose gate was present, correct, and bound to nothing — an em-dash in its witn
 witness, so `tools/check_invariants.py` parses it rather than adding an `invariants.yaml`
 beside it. A hand-maintained parallel manifest would be a second copy of claims that already
 exist, drifting from the first — which is **[H-3]** restated as documentation.
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 52 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 53 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -1874,6 +1874,62 @@ nothing clobbers it. Under `FPU_NO_SAVE=1` the integrity check fails and the **l
 passes** — the peer is handed its own stale image, which discloses nothing. One loses state, the
 other leaks it. A single `FPU_BROKEN` flag would have reddened both markers at once and told you
 nothing about whether either check could fail on its own.
+
+### `smoke-shlib-aslr` — the library does not load at the same address twice
+
+**Two boots, because the property is not observable from inside one.** A single run sees an
+address either way and cannot tell a random base from a compiled-in one. So both boots report
+theirs (`SHLIBBASE: <hex>`, from `shlibtest`) and the gate requires the two to differ. The base
+gate and its control arm are the same script with the comparison inverted, which is what makes the
+pair a measurement rather than two tests.
+
+Both boots must also reach `SHLIBTEST: PASS`. Without that, a boot that died before printing a
+base would leave the comparison to a missing value — and "the two differ" would be satisfied by a
+failure.
+
+**Why this landed before the thing it protects.** The base was compiled in, which was fine for a
+three-page demo. It stops being fine when newlib moves onto this mechanism: ~135 KiB of executable
+code at an address printed in the binary, mapped into every task — and a *regression*, because a
+program's static libc today lives inside its own PIE image, which the loader already randomises.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-shlib-aslr` | two boots, bases DIFFER, both PASS | passes, **3 runs in 3** |
+| `smoke-shlib-aslr-control` (`SHLIB_BASE_FIXED=1`) | two boots, bases IDENTICAL | passes, **3 in 3**; `smoke-shlib-aslr` goes red under the flag |
+| `smoke-shlib-info-control` (`SHLIB_INFO_UNGATED=1`) | `SHLIBTEST: FAIL shlib-info-with-wrong-cap-type` | passes, **3 in 3**; `smoke-shlib` goes red |
+| `smoke-shlib-info-object-control` (`SHLIB_INFO_TYPE_ONLY=1`) | `SHLIBTEST: FAIL shlib-info-with-data-frame` | passes, **3 in 3**; `smoke-shlib` goes red |
+
+**THE GATE CAUGHT ITS OWN CHANGE ON THE FIRST RUN, and that is the entry worth reading.** The
+first version drew the base from `aslr_random_offset` and reported the *same* address on both
+boots. The draw was correct; the PRNG was not seeded. `aslr_init_seed()` was called after
+`smp_bringup()`, which on the 64-bit path **does not return** — it spawns the shell and enters
+ring 3 — so the call was unreachable and the xorshift state sat at its compile-time constant for
+the whole boot.
+
+That had been harmless, and checking *why* mattered more than fixing it. Every other consumer of
+that PRNG sits downstream of `choose_image_placement`, which mixes `read_tsc()` and
+`secure_random_u64()` before it draws — so image base, stack offset and heap gap were randomised
+by that mix and not by the dead seed. **The image ASLR was never broken**, which is worth stating
+plainly because the obvious reading of a dead `aslr_init_seed()` is that it was. `shlib_init` was
+simply the first consumer to draw *before* any spawn, and so the first to see the unseeded state.
+The seed now runs immediately behind `entropy_init()`, where it is reachable.
+
+**Two unequal draws do not prove much on their own** — they are consistent with a 1-bit source.
+This gate asserts that the base is not a constant. The entropy claim rests on
+`aslr_random_offset`, which is rejection-sampled over 2^30 page-aligned positions (30 bits, the
+same window the image gets), and it is stated here rather than implied by the test.
+
+**The refusals are falsified one arm per rule.** `SYS_SHLIB_INFO` applies two: the capability must
+be a `CAP_FRAME`, and it must name a frame the library *owns*. With only the ungated arm, the
+second rule would never have been shown to fire — the probe stops at its first failure, and the
+type check runs first. `SHLIB_INFO_TYPE_ONLY` keeps the type check and drops the object test, so
+the probe reaches the second check and *that* one fires. Neither probe uses an empty slot: an
+empty slot is refused by `cap_lookup` before any of the call's own logic runs, so it would pass
+whether or not the gate existed.
+
+The sharper of the two is the object rule. The capability it refuses is one the task **legitimately
+holds** — its own private copy of the library's writable page (S50) — and a gate that tested only
+the type would answer it.
 
 ### `shared-objects` — an object the kernel's loader would refuse never gets built
 

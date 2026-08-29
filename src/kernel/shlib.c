@@ -46,11 +46,45 @@
  */
 #include "kernel.h"
 
-/* The fixed base. Chosen above the image ASLR window and below the heap so it
- * collides with neither: image at 16 GiB (USER_IMAGE_ASLR_BASE), heap at 16 MiB,
- * stack below 8 MiB. A collision here would be a library mapped over a task's
- * own text, which fails as a fault at an address nobody expects. */
-#define SHLIB_BASE   0x0000000300000000ULL
+/* WHERE THE LIBRARY GOES, AND WHY IT IS NOT A CONSTANT ANY MORE.
+ *
+ * The base was compiled in until 2026-08-29. That was defensible while the only
+ * object here was a three-page demo. It stops being defensible the moment newlib
+ * moves onto this mechanism (roadmap 2.5): ~135 KiB of executable code, at an
+ * address printed in the binary, mapped into EVERY task. That is a ROP gadget
+ * source at a known location -- and it would be a REGRESSION, because today each
+ * program's libc sits inside its own PIE image, which the loader already
+ * randomises (USER_IMAGE_ASLR_BASE + aslr_random_offset).
+ *
+ * So the base is drawn once per boot, from the same CSPRNG-seeded source the
+ * image loader uses, BEFORE the object is relocated. Shared text must be at the
+ * same address in every address space -- that is what makes it shared, and why
+ * this cannot be per-task -- so per-boot is the strongest randomisation the
+ * mechanism admits. An attacker still needs an information leak to find it, and
+ * one leak now reveals the library for every task rather than one; that is
+ * weaker than per-process ASLR and enormously stronger than a constant.
+ *
+ * The guard lands BEFORE the mechanism it protects, deliberately: while the only
+ * consumer is the selftest, this change is cheap and testable. After libc moves
+ * in it would be a change to something every program depends on.
+ *
+ * THE WINDOW sits above the image ASLR window and far below the high stack:
+ *
+ *   image   USER_IMAGE_ASLR_BASE (16 GiB) + up to 2^30 pages   -> tops out ~4.06 TiB
+ *   shlib   5 TiB + up to 2^30 pages                           -> tops out ~9 TiB
+ *   stack   ASLR_HIGH_STACK_BASE                               -> ~128 TiB
+ *
+ * 2^30 page-aligned positions is 30 bits, the same entropy the image gets, and
+ * the region between them is empty. The old base (12 GiB) was NOT a safe window
+ * to randomise in place: USER_HEAP_HIGH_BASE puts a heap at 8 GiB that grows
+ * upward, so a wide window anchored there could be grown into. */
+#define SHLIB_ASLR_BASE    0x0000050000000000ULL
+#define SHLIB_ASLR_PAGES   (1ULL << 30)
+
+/* Drawn in shlib_init, read by everything else. Zero until then, which is what
+ * shlib_active() reports and what keeps a caller from using a base nobody
+ * chose. */
+static uint64_t shlib_load_base;
 
 static int shlib_relocate_impl(const uint8_t *elf, uint64_t len, uint64_t phoff,
                                uint16_t phentsz, uint16_t phnum);
@@ -67,7 +101,7 @@ static uint8_t  shlib_page_w[SHLIB_MAX_PAGES];
 
 int shlib_active(void) { return shlib_ready; }
 uint32_t shlib_pages(void) { return shlib_text_count; }
-uint64_t shlib_base(void) { return SHLIB_BASE; }
+uint64_t shlib_base(void) { return shlib_load_base; }
 
 /* Non-zero if page `i` is the library's writable data rather than its text.
  * The caller uses this to decide WHICH primordial a page is endowed from, so a
@@ -88,7 +122,7 @@ uint32_t shlib_frame_index(uint32_t i) {
 /* Load the embedded shared object into frames.
  *
  * Deliberately NOT a general ELF path: this reads the program headers, copies
- * every PT_LOAD into freshly carved frames at SHLIB_BASE, applies the object's
+ * every PT_LOAD into freshly carved frames at the chosen base, applies the object's
  * R_X86_64_RELATIVE relocations against that base, and stops. A shared object
  * with anything else in its relocation table -- an undefined symbol, a
  * JUMP_SLOT, a TLS entry -- is REFUSED rather than partially applied, because a
@@ -100,6 +134,25 @@ uint32_t shlib_frame_index(uint32_t i) {
 int shlib_init(const uint8_t *elf, uint64_t len) {
     shlib_ready = 0;
     shlib_text_count = 0;
+
+    /* Draw the base FIRST: every relocation below is applied against it, and the
+     * export table's address is derived from it. Drawing it after any of that
+     * would relocate the object against an address it is not mapped at.
+     *
+     * The window is shortened by SHLIB_MAX_PAGES so the library's last page
+     * cannot run past the top of the region, whatever the object's size.
+     * aslr_random_offset is rejection-sampled, so the distribution over the
+     * window is exact rather than modulo-skewed toward the bottom. */
+#ifdef SHLIB_BASE_FIXED
+    /* Control arm: the pre-2026-08-29 compiled-in base. Every boot loads the
+     * library at the same address, so the address of shared library code -- and
+     * of every gadget in it -- is a constant an attacker reads off the binary.
+     * See make smoke-shlib-aslr-control. */
+    shlib_load_base = 0x0000000300000000ULL;
+#else
+    shlib_load_base = SHLIB_ASLR_BASE +
+                      (uint64_t)aslr_random_offset(SHLIB_ASLR_PAGES - SHLIB_MAX_PAGES);
+#endif
 
     if (!elf || len < 64) return -1;
     if (!(elf[0] == 0x7F && elf[1] == 'E' && elf[2] == 'L' && elf[3] == 'F')) return -1;
@@ -189,7 +242,7 @@ int shlib_init(const uint8_t *elf, uint64_t len) {
         }
     }
 
-    /* Pass 3: relocations, applied ONCE against SHLIB_BASE. */
+    /* Pass 3: relocations, applied ONCE against the base drawn above. */
     if (shlib_relocate_impl(elf, len, phoff, phentsz, phnum) != 0) return -1;
 
     /* The export table's address comes from e_entry. A shared object has no
@@ -198,7 +251,7 @@ int shlib_init(const uint8_t *elf, uint64_t len) {
      * or trust a section name to survive the toolchain. */
     uint64_t entry = *(const uint64_t *)(elf + 24);
     if (entry == 0 || entry >= (uint64_t)shlib_text_count * PAGE_SIZE) return -1;
-    shlib_entry_table = SHLIB_BASE + entry;
+    shlib_entry_table = shlib_load_base + entry;
 
     shlib_ready = 1;
     uint32_t wpages = 0;
@@ -209,12 +262,14 @@ int shlib_init(const uint8_t *elf, uint64_t len) {
     print_decimal((uint64_t)shlib_text_count);
     print(" pages loaded (");
     print_decimal((uint64_t)wpages);
-    print(" per-task data); no task can write another's code or read its data\n");
+    print(" per-task data) at ");
+    print_hex64(shlib_load_base);
+    print("; no task can write another's code or read its data\n");
 
     return 0;
 }
 
-/* Apply the object's R_X86_64_RELATIVE relocations against SHLIB_BASE.
+/* Apply the object's R_X86_64_RELATIVE relocations against the boot-chosen base.
  *
  * RELATIVE only, and anything else fails the load. A shared object built
  * -fPIC -nostdlib with no undefined symbols has nothing else, and accepting a
@@ -264,7 +319,7 @@ static int shlib_relocate_impl(const uint8_t *elf, uint64_t len, uint64_t phoff,
         uint64_t phys = frame_phys_by_index(shlib_text_frames[pg]);
         if (!phys) return -1;
         *(uint64_t *)((uint8_t *)PHYS_KVA(phys) + (r_off % PAGE_SIZE)) =
-            SHLIB_BASE + (uint64_t)r_add;
+            shlib_load_base + (uint64_t)r_add;
     }
     return 0;
 }
@@ -286,7 +341,7 @@ static int shlib_relocate_impl(const uint8_t *elf, uint64_t len, uint64_t phoff,
  * the same argument S49 makes about text arriving one segment further on.
  *
  * The copy is made from the RELOCATED template, once, and never re-relocated:
- * shlib_init applied R_X86_64_RELATIVE against SHLIB_BASE before any task
+ * shlib_init applied R_X86_64_RELATIVE against the boot-chosen base before any task
  * existed, and the library is mapped at that same base everywhere, so a pointer
  * in .data is already correct in every copy.
  *
@@ -327,8 +382,27 @@ uint32_t shlib_instantiate_data(uint32_t page) {
 #endif
 }
 
+/* Is `idx` one of the library's shared text frames?
+ *
+ * The authority test behind SYS_SHLIB_INFO. A task learns where the library is
+ * only by presenting a capability over it -- the base is not ambient
+ * information, and a task holding no library capability has no business
+ * knowing where the shared code lives. That matters more now the base is
+ * randomised: handing it to any caller would defeat the randomisation for an
+ * attacker who has code execution in some other task.
+ *
+ * Text frames only, deliberately. A task's private DATA frame is its own, and
+ * naming it proves nothing about holding the library -- a task could be endowed
+ * with a copy of the data page and no text at all. */
+int shlib_owns_frame(uint32_t idx) {
+    if (!shlib_ready || idx == 0) return 0;
+    for (uint32_t i = 0; i < shlib_text_count; i++)
+        if (!shlib_page_w[i] && shlib_text_frames[i] == idx) return 1;
+    return 0;
+}
+
 /* The library's export table lives at its base: a fixed array of function
  * pointers a caller indexes. Deliberately not symbol resolution by name -- that
  * is the dynamic linker this file is the substrate for, and pretending to have
  * one would be the harder claim without the harder implementation. */
-uint64_t shlib_entry(void) { return shlib_entry_table ? shlib_entry_table : SHLIB_BASE; }
+uint64_t shlib_entry(void) { return shlib_entry_table ? shlib_entry_table : shlib_load_base; }

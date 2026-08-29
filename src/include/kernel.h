@@ -1951,7 +1951,9 @@ struct shlib_info {
     uint64_t base;
     uint64_t entry;
     uint32_t pages;
-    uint32_t data_page;
+    uint32_t data_first;
+    uint32_t data_pages;
+    uint32_t reserved;
 };
 uint64_t shlib_entry(void);
 
@@ -2416,13 +2418,19 @@ void notify_selftest(void);
  * neither forge into nor evict from the kernel message ring via SYS_WRITE. */
 void klog_forge_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST)
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST)
 void mapphys_selftest(void);
 void devcap_selftest(void);
 void net_selftest(void);
 void shlib_selftest(void);
+void shlibc_selftest(void);
 /* Must match SLOT_SHLIB_FIRST in userspace/shlibtest.c and shlibpeer.c. */
 #define SHLIB_SLOT_FIRST 40
+/* libctest maps the real shared libc from the same slot base as shlibtest maps
+ * the demo object -- the two selftests never build together, so one convention
+ * serves both and there is no second number to keep in step. Must match
+ * SLOT_LIBC_FIRST in userspace/libctest.c. */
+#define LIBC_SLOT_FIRST  40
 #define SHLIB_SLOT_PEER_TCB 30
 void ioport_selftest(void);
 void irq_selftest(void);

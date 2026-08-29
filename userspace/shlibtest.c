@@ -116,8 +116,8 @@ void _start(void) {
         if (sys_shlib_info(SLOT_PEER_TCB, &bad) == 0) {
             wr("SHLIBTEST: FAIL shlib-info-with-wrong-cap-type\n"); sys_exit();
         }
-        if (si.data_page != SHLIB_INFO_NO_DATA &&
-            sys_shlib_info(SLOT_SHLIB_FIRST + si.data_page, &bad) == 0) {
+        if (si.data_first != SHLIB_INFO_NO_DATA &&
+            sys_shlib_info(SLOT_SHLIB_FIRST + si.data_first, &bad) == 0) {
             wr("SHLIBTEST: FAIL shlib-info-with-data-frame\n"); sys_exit();
         }
     }

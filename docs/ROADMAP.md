@@ -1045,8 +1045,20 @@ undefined symbols and 10 `R_X86_64_JUMP_SLOT`); and `-Wl,-z,nodynamic-undefined-
 weak-undefined symbol (`__on_exit_args`) emits a `GLOB_DAT` by itself. The required `shared-objects`
 job runs `tools/check_shared_object.py` so none of them can come back silently.
 
-**Still open:** the CALLER side, and it has a real blocker. Programs still link `libc.a`
-statically. Calling into shared text needs only a stub per function, but a program's direct
+**A ring-3 task calls newlib out of the shared library as of 2026-08-29** — `make smoke-shlibc`.
+`libctest` maps the real 36-page object (34 shared text, 2 per-task data), calls `strlen`/`strcmp`
+through the export table, checks that `_impure_ptr` resolves *inside* the library's own per-task
+data, and formats a string with `sprintf` — a call that goes through newlib's reentrancy state
+rather than only its pure text. The gate also checks **statically** that `libctest` defines none of
+the symbols it calls, so they cannot resolve locally: a witness has to be behind the mechanism it
+witnesses.
+
+*That run is what found the `SYS_SHLIB_INFO` ABI reporting a single writable page index. newlib's
+writable segment is two pages; the three-page demo object's was one, so the demo could not have
+shown it. The call reports a range now.*
+
+**Still open:** linking programs against it, and it has a real blocker. Programs still link
+`libc.a` statically. Calling into shared text needs only a stub per function, but a program's direct
 reference to a **data** symbol cannot be redirected to the library's copy without a GOT.
 `_impure_ptr` survives that — it is a pointer *to* per-task state, so a program can hold its own
 copy of the pointer and still reach the one `struct _reent` in the library's private data — but
@@ -1455,7 +1467,7 @@ Ordered as in the audit's §7.5.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue` — §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 161 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 67 of them control arms that must reproduce a defect |
+| ✅ | 162 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 67 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

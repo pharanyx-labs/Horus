@@ -50,8 +50,12 @@ userspace/*.a
 userspace/*.so
 # Derived from shlibdemo.so by tools/shlib_offsets.sh; see the rule in Makefile.
 userspace/shlib_offsets.h
-# Derived from the coreutils objects by tools/gen_libc_exports.sh.
+# Derived from the coreutils objects by tools/gen_libc_exports.sh -- BOTH files.
+# The .h nearly shipped tracked because this rule named only the .c: a generated
+# file under version control can disagree with what generated it, which is the
+# shlibdemo.so hazard fixed in #236.
 userspace/libc_exports.c
+userspace/libc_exports.h
 
 # Log and trace files
 *.log

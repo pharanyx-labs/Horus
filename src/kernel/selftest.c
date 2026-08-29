@@ -1564,6 +1564,75 @@ void mapphys_selftest(void) {
 }
 #endif /* MAPPHYS_SELFTEST */
 
+#ifdef SHLIBC_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- The REAL shared libc, called from ring 3 (SHLIBC_SELFTEST builds only) --
+ *
+ * Roadmap 2.5's remaining claim. Everything under SHLIB_SELFTEST demonstrates
+ * the mechanism's PROPERTIES -- text shared and unwritable (S49), data private
+ * per task (S50), base drawn per boot (S51) -- on `shlibdemo.so`, a three-page
+ * object written for the purpose. This one loads the real thing: ~135 KiB of
+ * newlib, its port glue and libhorus, and requires a ring-3 task to actually
+ * call into it.
+ *
+ * WHY A DEMO OBJECT COULD NOT ESTABLISH THIS. newlib is not a bag of pure
+ * functions. It has writable state (`_impure_ptr` -- errno, the stdio buffers,
+ * the atexit list, the rand state), it calls back into the port's syscall glue,
+ * and it allocates. Each of those crosses the shared/private boundary S50 draws,
+ * and none was exercised by an object whose whole data segment was one `int`.
+ *
+ * ONE TASK, not two, and the asymmetry with shlib_selftest is deliberate. That
+ * test's question is cross-task -- can one holder write what another executes --
+ * and needs a peer to answer. This one's question is whether the library WORKS,
+ * which one task settles. Adding a second here would be a second copy of a test
+ * that already exists rather than a stronger claim.
+ *
+ * The task is endowed exactly as shlibtest is, from the same two primordials:
+ * text from root[20] (READ|EXEC, never WRITE) and its own private copy of the
+ * data page from root[21] (READ|WRITE, never EXEC). No new authority -- what is
+ * new is the object on the far side of it. */
+void shlibc_selftest(void) {
+    extern uint8_t embedded_libc_so_start[], embedded_libc_so_end[];
+    extern uint8_t embedded_libctest_bin_start[], embedded_libctest_bin_end[];
+
+    print("SHLIBC_SELFTEST: launch\n");
+
+    if (shlib_init(embedded_libc_so_start,
+                   (uint64_t)(embedded_libc_so_end - embedded_libc_so_start)) != 0) {
+        print("LIBCTEST: FAIL libc-load\n"); for (;;) asm volatile("hlt");
+    }
+
+    int a = fs_spawn_embedded(embedded_libctest_bin_start,
+                              embedded_libctest_bin_end, "libctest");
+    if (a <= 0) { print("LIBCTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[a].uid = 0;
+
+    /* Same endowment rule as shlib_selftest, read off shlib_page_writable rather
+     * than assuming a layout: which primordial a page comes from is a security
+     * decision and belongs in one visible place. */
+    for (uint32_t p = 0; p < shlib_pages(); p++) {
+        uint32_t fidx = shlib_frame_index(p);
+        if (fidx == 0) { print("LIBCTEST: FAIL frame-index\n"); for (;;) asm volatile("hlt"); }
+
+        if (!shlib_page_writable(p)) {
+            if (cap_install_from_root(a, LIBC_SLOT_FIRST + p, 20, fidx) != 0) {
+                print("LIBCTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+            }
+            continue;
+        }
+        uint32_t d = shlib_instantiate_data(p);
+        if (d == 0) { print("LIBCTEST: FAIL instantiate-data\n"); for (;;) asm volatile("hlt"); }
+        if (cap_install_from_root(a, LIBC_SLOT_FIRST + p, 21, d) != 0) {
+            print("LIBCTEST: FAIL endow-data\n"); for (;;) asm volatile("hlt");
+        }
+    }
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* SHLIBC_SELFTEST */
+
 #ifdef SHLIB_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Shared library text self-test (SHLIB_SELFTEST builds only) -------------
@@ -2206,7 +2275,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

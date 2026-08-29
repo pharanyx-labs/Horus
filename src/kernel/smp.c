@@ -496,6 +496,12 @@ void smp_bringup(void) {
      * proving the SYS_MAP_PHYS device-delegation path (MAPPHYS_SELFTEST: PASS).
      * First driver-privilege-separation job; see docs/design/console-server.md. */
     mapphys_selftest();
+#elif defined(SHLIBC_SELFTEST)
+    /* Gated: the REAL shared libc -- newlib plus its port glue in one object --
+     * loaded once into frames, mapped by a ring-3 task that calls into it
+     * (LIBCTEST: PASS). Roadmap 2.5's remaining claim; the property tests for the
+     * mechanism itself live under SHLIB_SELFTEST below. */
+    shlibc_selftest();
 #elif defined(SHLIB_SELFTEST)
     /* Gated: one shared library, loaded once into frames, mapped read+exec by two
      * tasks that each execute it and neither of which can write it

@@ -1192,14 +1192,30 @@ second instantiation. Neither is exercised by a test today, so neither is claime
   `shared-objects` job): 135 KiB of shared text, 342 `R_X86_64_RELATIVE` relocations and nothing
   else, no undefined symbols.
 
-  **What remains is the caller side, and one part of it needs a GOT.** A stub per function is
-  enough to call into shared text. A program's direct reference to a **data** symbol is not
-  redirectable without one. Of the three writable symbols the coreutils need, `_impure_ptr` is a
-  pointer *to* per-task state, so a program can hold its own copy of that pointer and still reach
-  the single `struct _reent` in the library's private data; `optarg` and `optind` **are** the
-  state, and a program-local copy would desynchronise from the `getopt` that writes it. So the
-  planned scoping is to share the text and leave `getopt` static per program — recorded here
-  rather than discovered when `optind` silently stops advancing.
+  **The stub archive landed 2026-08-29** and a program links against it — `hello_shared`, ordinary
+  C calling `printf` by name, carrying no libc: 106,392 bytes static against 13,088 shared. What
+  remains is migrating the **shipped** programs, which needs the kernel to endow ordinary tasks
+  with the library's capabilities.
+
+  **One part of it still needs a GOT, and the limit is now exact.** A tail-jump thunk forwards a
+  *call*; a reference to a **variable** is an address the compiler emits directly, and redirecting
+  it needs a GOT. So `tools/gen_libc_stubs.sh` emits stubs for the 55 exported **functions** and
+  none for the four data symbols, and the consequences differ per symbol:
+
+  - `_impure_ptr` works anyway. It is a pointer *to* per-task state, so `crt0_shared` gives the
+    program its own copy initialised from the library's, and both reach the one `struct _reent` in
+    the library's private data (S50).
+  - `environ` works the same way, and `crt0_shared` defines an empty one: the library's is empty
+    too, so there is nothing for the two copies to disagree about.
+  - `optarg`/`optind` **do not** and cannot. They *are* the state, and a program-local copy would
+    diverge from the library's `getopt` that writes it. No stub is emitted, so a program needing
+    them **fails to link** — the fail-closed outcome, and far better than one whose `optind`
+    silently stops advancing.
+  - `_ctype_` is const, so a local copy would be correct, but it is data all the same and gets no
+    stub for the same reason.
+
+  Measured: of the eleven shipped coreutils, `echo`, `true` and `false` need only `_impure_ptr`
+  among data symbols and can move as they are; the rest use `getopt`.
   Note the figure that used to sit here was misleading: `coreutils_echo` was 404,572 bytes, but
   **77% of that was DWARF debug info**, not libc. Stripping what ships (2026-08-29) took it to
   94,172 and the eleven coreutils from 4,847,020 to 1,210,436 bytes in total. What sharing libc

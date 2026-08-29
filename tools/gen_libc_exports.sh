@@ -27,18 +27,42 @@
 # holding a copy of a fact this script owns. Both come from one run over one
 # sorted list, so they cannot disagree about what is at slot n.
 #
-# Usage: gen_libc_exports.sh <libc.a> <out.c> <objects...>
+# WHAT THE LIBRARY PROVIDES IS MORE THAN newlib. libc.so is newlib plus the
+# port's glue (newlib_glue, posix, hvfs, libhorus), and a program linking against
+# the library needs the glue's entry points too -- posix_init sets up the fd
+# table and the mount namespace, and a program that could not call it would come
+# up with no stdout. So the definition side is libc.a UNION the objects that go
+# into the library, given after a `--` separator.
+#
+# Usage: gen_libc_exports.sh <libc.a> <out.c> <consumers...> [-- <providers...>]
+#
+#   consumers  objects whose UNDEFINED symbols say what is needed
+#   providers  objects linked into libc.so, whose DEFINED symbols say what it has
 set -eu
 
 LIBC="$1"; shift
 OUT="$1"; shift
 OUT_H="${OUT%.c}.h"
 
+CONSUMERS=""
+PROVIDERS=""
+seen_sep=0
+for arg in "$@"; do
+	if [ "$arg" = "--" ]; then seen_sep=1; continue; fi
+	if [ "$seen_sep" = "1" ]; then PROVIDERS="$PROVIDERS $arg"; else CONSUMERS="$CONSUMERS $arg"; fi
+done
+set -- $CONSUMERS
+
 [ -r "$LIBC" ] || { echo "gen_libc_exports: cannot read $LIBC" >&2; exit 1; }
 [ $# -gt 0 ] || { echo "gen_libc_exports: no objects given" >&2; exit 1; }
 
 TMP="$OUT.tmp.$$"
-trap 'rm -f "$TMP.undef" "$TMP.def" "$TMP.data" "$TMP.need"' EXIT
+# Every temp this script makes shares the $TMP prefix, and the trap removes them
+# by GLOB rather than by name. Naming them individually is how five of them --
+# "$TMP.derived", added later than the trap -- ended up committed to main in
+# #239: a `git add -A` swept up build detritus nothing was ignoring, and no
+# checker looks for files that should not exist.
+trap 'rm -f "$TMP" "$TMP".*' EXIT
 
 # What the programs need but do not define.
 nm --undefined-only "$@" 2>/dev/null | awk '{ print $2 }' | sort -u > "$TMP.undef"
@@ -47,13 +71,13 @@ nm --undefined-only "$@" 2>/dev/null | awk '{ print $2 }' | sort -u > "$TMP.unde
 # not cosmetic: a function is emitted as a function pointer, a data symbol as
 # the address of an object, and getting it wrong makes the table hold the
 # contents of a variable where its address belongs.
-nm --defined-only "$LIBC" 2>/dev/null | awk '$2 ~ /^[TtWwRrDdBb]$/ { print $3 }' | sort -u > "$TMP.def"
+nm --defined-only "$LIBC" $PROVIDERS 2>/dev/null | awk 'NF==3 && $2 ~ /^[TtWwRrDdBb]$/ { print $3 }' | sort -u > "$TMP.def"
 # FUNCTIONS are T/t/W/w. Everything else defined -- R/r (rodata, e.g. _ctype_)
 # and D/d/B/b (writable) -- is DATA. Classifying only the writable ones as data
 # left `_ctype_`, a const array, declared as a function: the address taken is
 # the same either way, so nothing broke, but a generated declaration that says
 # the wrong kind of thing is a trap for whoever reads it next.
-nm --defined-only "$LIBC" 2>/dev/null | awk '$2 !~ /^[TtWw]$/ { print $3 }' | sort -u > "$TMP.data"
+nm --defined-only "$LIBC" $PROVIDERS 2>/dev/null | awk 'NF==3 && $2 !~ /^[TtWw]$/ { print $3 }' | sort -u > "$TMP.data"
 
 # A REQUIRED CORE, unioned with the derived set.
 #
@@ -74,7 +98,10 @@ nm --defined-only "$LIBC" 2>/dev/null | awk '$2 !~ /^[TtWw]$/ { print $3 }' | so
 # SIZE -- an unreferenced symbol is library text nobody calls -- and it is the
 # reason the index header must be regenerated with the table rather than
 # remembered.
-REQUIRED_SYMS="__errno _impure_ptr free malloc memcmp memcpy memset sprintf strcmp strlen"
+# posix_init comes from the glue rather than newlib: a shared-linked program
+# calls it before main to set up its fd table and mount namespace, and one
+# that could not reach it would come up with no stdout.
+REQUIRED_SYMS="__errno _impure_ptr free malloc memcmp memcpy memset posix_init sprintf strcmp strlen"
 
 comm -12 "$TMP.undef" "$TMP.def" > "$TMP.derived"
 

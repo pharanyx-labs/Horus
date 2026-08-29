@@ -1875,6 +1875,55 @@ passes** — the peer is handed its own stale image, which discloses nothing. On
 other leaks it. A single `FPU_BROKEN` flag would have reddened both markers at once and told you
 nothing about whether either check could fail on its own.
 
+### `smoke-shlibc-link` — a program links against the shared libc and carries none of it
+
+`smoke-shlibc` proves the library *works*, by indexing its export table by hand. This proves a
+**program** can be built against it. `hello_shared.c` is ordinary C — it calls `printf` and
+`strlen` by name — and links no libc at all: only the generated stub archive and a `crt0_shared`
+that binds the library before `main`.
+
+**Measured, same source and flags, only the libc link differing:**
+
+| | bytes |
+|---|---|
+| static libc | 106,392 |
+| shared libc | **13,088** (8.1× smaller) |
+
+**The check before the boot is the falsification.** If `hello_shared` had linked `libc.a` it would
+print exactly the same thing and prove nothing, so every libc symbol it defines must be a
+**14-byte thunk** (`mov m64,%r11; jmp *disp(%r11)`) rather than an implementation. Falsified
+against the statically-linked build of the *same source*, which the predicate rejects naming
+sizes: `printf is 168 bytes, malloc is 428 bytes, sprintf is 240 bytes, …`.
+
+*The first attempt at that falsification was wrong and passed:* substituting the static ELF and
+running the target does nothing, because the target begins with `make clean` and rebuilds over it.
+The predicate has to be exercised directly.
+
+**Why the thunks are assembly, and why `%r11`.** A C forwarder needs each callee's prototype, and
+variadic functions cannot be forwarded from C at all without a `va_list` wrapper per function. A
+tail jump needs no prototype. The scratch register is not `%rax` because **`%al` carries the
+number of vector registers used when calling a variadic function** — clobbering it tells `printf`
+how many xmm registers to spill.
+
+That hazard is measured, not assumed, and it is nastier than it looks: `%al` too *large* merely
+spills more than needed, which is harmless, so a `%rax` thunk passes every test until the table
+pointer happens to land on an address ending in a small byte. Forced to zero, the same
+`sprintf("%.1f")` call **segfaults**. `%r11` is caller-saved, never an argument register, and has
+no role in the variadic convention — which is why a real PLT uses it.
+
+**No runtime control arm, and the reason is recorded rather than omitted.** The obvious one —
+generate `%rax` thunks — is *probabilistic* for exactly the reason above, and the library's base
+is randomised per boot (S51), so the arm would reproduce only sometimes. An off-by-one index arm
+crashes the task rather than printing a marker. A gate must not assert something it can only
+sometimes observe, so the deterministic static check is the falsification.
+
+**What has no stub, and what happens instead.** Data symbols cannot be thunked — a variable
+reference is an address the compiler emits directly, which is what needs a GOT. `_impure_ptr`
+survives as a program-local *pointer* initialised from the library's (S50 makes the target
+per-task); `environ` likewise, empty on both sides; `optarg`/`optind` **are** the state and get no
+stub, so a program needing them fails to **link** rather than running with an `optind` that
+silently stops advancing.
+
 ### `smoke-shlibc` — a ring-3 task calls newlib out of the shared library
 
 Every other shlib gate demonstrates the **mechanism's properties** — text shared and unwritable

@@ -748,7 +748,7 @@ SHLIBC_SELFTEST ?= 0
 ifeq ($(SHLIBC_SELFTEST),1)
 CFLAGS  += -DSHLIBC_SELFTEST
 ASFLAGS += -DSHLIBC_SELFTEST
-SHLIBC_SELFTEST_DEP = userspace/libc.so userspace/libctest.bin
+SHLIBC_SELFTEST_DEP = userspace/libc.so userspace/libctest.bin userspace/hello_shared.bin
 endif
 
 # NET_SELFTEST=1 embeds netd and, at boot, spawns it holding exactly two
@@ -2415,8 +2415,15 @@ userspace/%.pic.o: userspace/%.c $(NEWLIB_LIB)/libc.a
 
 # The export table, derived from what the programs actually reference. See
 # tools/gen_libc_exports.sh for why it is generated and why order is the ABI.
-userspace/libc_exports.c: $(COREUTILS_ALL_OBJS) $(NEWLIB_LIB)/libc.a tools/gen_libc_exports.sh
-	@./tools/gen_libc_exports.sh $(NEWLIB_LIB)/libc.a $@ $(COREUTILS_ALL_OBJS)
+# The providers after `--` are the objects that go into libc.so, so the export
+# set is what the LIBRARY has rather than only what newlib has: the port's glue
+# is in there too, and posix_init is the entry point a shared-linked program
+# needs before main.
+LIBC_SO_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
+                    userspace/posix.o userspace/hvfs.o userspace/libhorus.o
+
+userspace/libc_exports.c: $(COREUTILS_ALL_OBJS) $(LIBC_SO_GLUE_OBJS) $(NEWLIB_LIB)/libc.a tools/gen_libc_exports.sh
+	@./tools/gen_libc_exports.sh $(NEWLIB_LIB)/libc.a $@ $(COREUTILS_ALL_OBJS) -- $(LIBC_SO_GLUE_OBJS)
 
 LIBC_SO_OBJS = userspace/libc_exports.pic.o userspace/newlib_glue.pic.o \
                userspace/newlib_glue64.pic.o userspace/posix.pic.o \
@@ -2427,6 +2434,41 @@ userspace/libc.so: $(LIBC_SO_OBJS) userspace/shlib.ld $(NEWLIB_LIB)/libc.a
 	  -Wl,-e,shlib_exports -Wl,-T,userspace/shlib.ld \
 	  -Wl,-Bsymbolic -Wl,-z,nodynamic-undefined-weak \
 	  -o $@ $(LIBC_SO_OBJS) -L$(NEWLIB_LIB) -lc
+
+# ---- Linking a program against the shared libc -------------------------------
+#
+# The stub archive is what a program links INSTEAD of libc.a: one tail-jump
+# thunk per exported function, plus the startup shim that binds the library and
+# the crt0 that runs it before main. See tools/gen_libc_stubs.sh for why the
+# thunks are assembly and why the scratch register is %r11.
+userspace/libc_stubs.S: userspace/libc_exports.c tools/gen_libc_stubs.sh
+	@./tools/gen_libc_stubs.sh $< $@
+
+userspace/libc_stubs.o: userspace/libc_stubs.S
+	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
+
+userspace/shlib_start.o: userspace/shlib_start.c userspace/libc_exports.h
+	$(CC) $(USERSPACE_CFLAGS) -I userspace -c $< -o $@
+
+userspace/crt0_shared.o: userspace/crt0_shared.c
+	$(CC) $(USERSPACE_CFLAGS) -c $< -o $@
+
+LIBC_STUB_LIB = userspace/libc_stubs.a
+$(LIBC_STUB_LIB): userspace/libc_stubs.o userspace/shlib_start.o
+	@rm -f $@
+	@$(AR) rcs $@ $^
+
+# A program linked this way carries NO libc: crt0_shared, its own objects, and
+# the stubs. Not $(NEWLIB_GLUE_OBJS), not malloc.o, not -lc -- all of that is in
+# the library. Compiled against newlib's headers all the same, because the
+# declarations are still newlib's; only the definitions moved.
+userspace/hello_shared.o: userspace/hello_shared.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/hello_shared.pie.elf: userspace/hello_shared.o userspace/crt0_shared.o \
+                                $(LIBC_STUB_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
+	    userspace/crt0_shared.o userspace/hello_shared.o $(LIBC_STUB_LIB)
 
 # Every shared object in the tree must be one the loader accepts. A static gate
 # because the properties are decidable by reading the object, and because a
@@ -2592,7 +2634,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -2646,7 +2688,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h tools/mkheadered
+	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h userspace/libc_stubs.S tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
 # SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with
@@ -3866,6 +3908,45 @@ smoke-shlib-writable-control:
 # the port's syscall glue, and allocates. Each crosses the shared/private
 # boundary S50 draws, and none was exercised by an object whose whole data
 # segment was one int.
+# ---- A program LINKED against the shared libc --------------------------------
+#
+# smoke-shlibc proves the library works, by indexing its export table by hand.
+# This proves a PROGRAM can be built against it: hello_shared.c is ordinary C --
+# it calls printf and strlen by NAME -- and links no libc at all, only the
+# generated stub archive and the crt0 that binds the library before main.
+#
+# Measured, same source and flags, only the libc link differing:
+#   static libc  106,392 bytes
+#   shared libc   13,088 bytes   (8.1x smaller)
+#
+# THE CHECK BEFORE THE BOOT IS THE FALSIFICATION. If hello_shared had linked
+# libc.a it would print exactly the same thing and prove nothing, so every libc
+# symbol it defines must be a THUNK -- 14 bytes of mov+jmp -- and not real code.
+# That is the property; the marker on its own is not.
+#
+# No runtime control arm, deliberately, and the reason is worth recording. The
+# obvious one -- emit %rax thunks instead of %r11, the variadic-ABI hazard -- is
+# PROBABILISTIC: %al too large merely makes a callee spill more xmm registers
+# than needed, so it misbehaves only when the table pointer's low byte is small,
+# and the base is randomised per boot (S51). An off-by-one index arm crashes the
+# task rather than printing a marker. A gate must not assert something it can
+# only sometimes observe, so the deterministic static check is the falsification.
+.PHONY: smoke-shlibc-link
+smoke-shlibc-link:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1
+	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1 boot.iso
+	@# Every libc symbol hello_shared defines must be a thunk, not an
+	@# implementation. 16 bytes is the ceiling for `mov m64,%r11; jmp *disp(%r11)`.
+	@python3 -c "import subprocess,sys; \
+o=subprocess.run(['nm','-S','--defined-only','userspace/hello_shared.pie.elf'],capture_output=True,text=True).stdout; \
+w=[l for l in o.splitlines() if len(l.split())==4 and l.split()[3] in ('printf','sprintf','strlen','strcmp','malloc','free','memset','exit','posix_init') and int(l.split()[1],16)>16]; \
+sys.exit('[shlibc-link] FAIL: '+', '.join(x.split()[3]+' is '+str(int(x.split()[1],16))+' bytes, not a thunk' for x in w) if w else 0)"
+	@echo "[shlibc-link] every libc symbol in hello_shared is a thunk; the code is in the library"
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='HELLOSHARED: PASS' FAIL_MARKER='FAIL' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-shlibc
 smoke-shlibc:
 	@$(MAKE) --no-print-directory clean

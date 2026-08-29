@@ -736,6 +736,13 @@ embedded_libctest_bin_start:
 .incbin "userspace/libctest.bin"
 .global embedded_libctest_bin_end
 embedded_libctest_bin_end:
+
+.align 16
+.global embedded_hello_shared_bin_start
+embedded_hello_shared_bin_start:
+.incbin "userspace/hello_shared.bin"
+.global embedded_hello_shared_bin_end
+embedded_hello_shared_bin_end:
 #endif
 
 #ifdef SHLIB_SELFTEST

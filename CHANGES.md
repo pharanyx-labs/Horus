@@ -16,6 +16,43 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
+- **A program links against the shared libc (roadmap 2.5).** `hello_shared.c` is ordinary C — it
+  calls `printf` and `strlen` **by name** — and links no libc at all: only a generated stub
+  archive and a `crt0_shared` that binds the library before `main`.
+
+  **Measured, same source and flags, only the libc link differing: 106,392 bytes static against
+  13,088 shared — 8.1× smaller per program.** That is the saving this roadmap item promised, and
+  it is now a number rather than an estimate.
+
+  `tools/gen_libc_stubs.sh` emits one tail-jump thunk per exported function.
+  **Assembly, not C:** a C forwarder needs each callee's prototype, and variadic functions cannot
+  be forwarded from C without a `va_list` wrapper each; a tail jump needs no prototype.
+
+  **The scratch register is `%r11`, not `%rax`, and that was measured rather than assumed.** In
+  the x86-64 SysV ABI `%al` carries the number of vector registers used when calling a variadic
+  function. The hazard is nastier than it looks: `%al` too *large* only spills more xmm registers
+  than needed, which is harmless — so a `%rax` thunk passes everything until the table pointer
+  lands on an address ending in a small byte. Forced to zero, the same `sprintf("%.1f")` call
+  segfaults.
+
+  **The gate's falsification is static, before the boot:** every libc symbol `hello_shared`
+  defines must be a 14-byte thunk, not an implementation, because a statically-linked build would
+  print the same thing and prove nothing. Falsified against the static build of the same source,
+  which the predicate rejects naming sizes. A runtime arm is deliberately absent and the reason is
+  written down: the `%rax` variant is probabilistic, and an off-by-one index crashes rather than
+  printing a marker.
+
+  **What has no stub.** A tail jump forwards a *call*; a variable reference is an address the
+  compiler emits directly, which needs a GOT. So the four data symbols get none: `_impure_ptr` and
+  `environ` survive as program-local *pointers* initialised from the library, but `optarg`/`optind`
+  **are** the state and a program needing them now fails to **link** — fail-closed, and far better
+  than an `optind` that silently stops advancing.
+
+  The export set also grew to cover what the library actually *provides* rather than only what
+  newlib does: the port's glue is inside `libc.so`, and `posix_init` is the entry point a
+  shared-linked program needs before `main` to have an fd table at all. 59 → 73 symbols.
+
+
 - **A ring-3 task calls newlib out of the shared library (roadmap 2.5).** The mechanism has had
   its properties since S49/S50/S51 — but all of them were demonstrated on `shlibdemo.so`, a
   three-page object written for the purpose. `make smoke-shlibc` loads the **real** thing: 36

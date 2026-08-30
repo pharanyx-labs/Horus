@@ -5,7 +5,7 @@ title: ""
 labels: bug
 ---
 
-> If this is a **security** issue, use the security report template — or, for anything
+> If this is a **security** issue, use the security report template, or, for anything
 > exploitable, [private disclosure](https://github.com/pharanyx-labs/Horus/security/advisories/new).
 >
 > Please check [docs/LIMITATIONS.md](../../docs/LIMITATIONS.md) first. A great deal is known
@@ -15,8 +15,8 @@ labels: bug
 
 ## What you expected
 
-<!-- If a document says otherwise, quote it — documentation drift is itself a bug worth
-     fixing. -->
+<!-- If a document says otherwise, quote it, documentation drift is itself a bug worth fixing.
+-->
 
 ## Reproduction
 

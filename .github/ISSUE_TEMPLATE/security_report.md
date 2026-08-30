@@ -6,7 +6,7 @@ labels: security
 assignees: pharanyx-labs
 ---
 
-> ## ⚠️ Stop — is this sensitive?
+> ## ⚠️ Stop, is this sensitive?
 >
 > **For an exploitable vulnerability, do not open a public issue.** Use
 > [private vulnerability reporting](https://github.com/pharanyx-labs/Horus/security/advisories/new)
@@ -36,18 +36,18 @@ assignees: pharanyx-labs
 
 ## Which security property is violated?
 
-<!-- Ideally by ID from the claims table in SECURITY.md — e.g. "S1: a task cannot exercise
-     authority it holds no capability for". If it does not map to a listed claim, say what
-     you expected the system to guarantee. -->
+<!-- Ideally by ID from the claims table in SECURITY.md, e.g. "S1: a task cannot exercise
+authority it holds no capability for". If it does not map to a listed claim, say what you
+expected the system to guarantee. -->
 
 ## Component
 
-- [ ] Capability system — lookup, mint, grant, revocation, lineage
+- [ ] Capability system, lookup, mint, grant, revocation, lineage
 - [ ] Syscall dispatch and authorisation
-- [ ] Memory management — paging, COW, user copies, W^X
+- [ ] Memory management, paging, COW, user copies, W^X
 - [ ] IPC, notifications, or pipes
 - [ ] Scheduler, SMP, or locking
-- [ ] Process control — spawn, exec, kill, signal, wait
+- [ ] Process control, spawn, exec, kill, signal, wait
 - [ ] Filesystem server or the encrypted object store
 - [ ] Console server or device delegation
 - [ ] Cryptography, RNG, or key derivation
@@ -70,8 +70,8 @@ assignees: pharanyx-labs
 
 ## Reproduction
 
-<!-- Steps, or a minimal program. Write "available privately" if you would rather not post it
-     — and in that case please use private disclosure instead. -->
+<!-- Steps, or a minimal program. Write "available privately" if you would rather not post it,
+and in that case please use private disclosure instead. -->
 
 ## Environment
 

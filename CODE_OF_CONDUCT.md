@@ -2,17 +2,16 @@
 
 ## Our commitment
 
-Horus is a technical project about building trustworthy systems. Everyone participating in
-it — reporting issues, contributing code, reviewing changes, or asking questions — deserves a
+Horus is a technical project about building trustworthy systems. Everyone participating in it
+(reporting issues, contributing code, reviewing changes, or asking questions) deserves a
 harassment-free experience regardless of age, body size, disability, ethnicity, sex
-characteristics, gender identity and expression, level of experience, education,
-socioeconomic status, nationality, personal appearance, race, religion, or sexual identity
-and orientation.
+characteristics, gender identity and expression, level of experience, education, socioeconomic
+status, nationality, personal appearance, race, religion, or sexual identity and orientation.
 
 ## Expected behaviour
 
 - **Be direct about code, considerate about people.** Rigorous technical criticism is
-  essential here — a security project that cannot say "this check is wrong" plainly is not
+  essential here, a security project that cannot say "this check is wrong" plainly is not
   doing its job. Aim that rigour at the work, never at the person who wrote it.
 - **Assume competence.** Someone asking a basic question about the capability model is not
   wasting your time; they are the reader the documentation exists for.
@@ -45,9 +44,9 @@ and orientation.
 
 ## Scope
 
-This Code of Conduct applies within all project spaces — the repository, issues, pull
-requests, discussions, and any project communication channel — and when an individual is
-representing the project in public.
+This Code of Conduct applies within all project spaces (the repository, issues, pull requests,
+discussions, and any project communication channel) and when an individual is representing the
+project in public.
 
 ## Reporting
 

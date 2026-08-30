@@ -4,15 +4,59 @@ All notable changes to Horus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project intends to follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
-**The reasoning behind these lines is in [`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)** —
-117 entries recording what was tried, what failed, and how each measurement was taken. In a
-security project that record is evidence, not commentary, so it is kept in full rather than
-compressed away. Entries here cite finding IDs; their **current** status is in
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never in this file.
+**The reasoning behind these lines is in
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 117 entries recording what was
+tried, what failed, and how each measurement was taken. In a security project that record is
+evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
+finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
+in this file.
 
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **Every tracked document rewritten to British English with no em dashes**, per a house-style
+  decision taken on 2026-08-29. **3,617 removed**, counted against `origin/main` rather than from
+  a running tally, across every `.md` and `.html` file in the repository: the twelve top-level and
+  `docs/` documents, `CHANGES.md`, `site/index.html`, both files under `docs/history/`, the four
+  investigations, the issue and pull-request templates, and the four subordinate READMEs. The new
+  `docs/AUDIT.md` was written in the style from its first draft and had none to remove.
+
+  **`site/index.html` needed a different pass, and the difference is the point.** Re-flowing HTML
+  would move tags across lines and produce a diff nobody could review, so it is fixed strictly in
+  place. That exposed a bug the markdown pass did not have: a catch-all of `\s*em\s*` matches the
+  trailing **newline**, silently joining a line to the next. Six lines of the page were lost that
+  way on the first attempt, and every tag count stayed identical, so only the line count showed
+  it. The rule excludes newlines now, and every file is checked for paragraph count against its
+  pre-transform copy.
+
+  **A ratchet entry can be disarmed by its own house style.** Three `forbidden:` patterns
+  contained an em dash, so after this change a reintroduction of those retired claims, written in
+  the new style, would not have matched them. A ratchet that can only catch the old punctuation of
+  a retired claim is not a ratchet. Their separators are character classes now, and both forms
+  were tested against the pattern list.
+
+  **The punctuation is chosen, not substituted.** A blind replacement with a comma produces
+  splices, because an em dash in this tree almost always joins two independent clauses. The
+  transformation is rule-ordered: a matched pair becomes parentheses, a bold lead-in label takes
+  a full stop, an identifier and its gloss inside emphasis take a colon (`**A4b: Concurrent task
+  ...**`), a dash before a coordinating conjunction takes a comma, one introducing an enumeration
+  takes a colon, and the fallback before an independent clause is a semicolon rather than a comma.
+  Headings take a colon. The paragraphs are joined before matching and re-wrapped after, because
+  the files are hard-wrapped and a line-local rule never sees a parenthetical that spans a break.
+
+  **The required `doc-claims` job caught the coupling, as expected.** Five declared patterns in
+  `.github/doc-claims.yml` embedded an em dash and stopped matching the moment the prose changed:
+  `all_jobs` (twice), `security_properties`, `syscalls_covered` and `syscalls_implemented`. The
+  manifest moves with the prose in this commit, which is why the two are one change and not two.
+
+  **What was preserved.** Falsification records, failing markers quoted verbatim, rates over N,
+  the `forbidden:` ratchet, and every count. All seven checkers pass, `check_defect_flags`
+  included, which is what confirms no control-arm marker was reworded while the sentence around
+  it changed.
+
 
 ### Changed
 
@@ -39,18 +83,18 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
-- **`tools/check_base_gate_reddens.sh`** — measures the direction nobody measured.
+- **`tools/check_base_gate_reddens.sh`**, measures the direction nobody measured.
   `docs/BUILDING.md` claims **31 times** that a base gate "must go red" under a given defect
   flag, and until 2026-08-30 **nothing tested it**: not a target, not a CI job, not a checker.
   Thirty-one written assertions with no measurement behind any of them.
 
-  **It is not implied by the control arm.** An arm builds *with* the flag and asserts a FAIL
-  marker appears; the base gate builds *without* it and asserts PASS. Nobody built the base gate
-  with the flag. So the pair establishes "the defect is detectable by the arm", never "the defect
-  is caught by the gate that guards the property in the shipping configuration" — and those come
-  apart whenever the arm and the gate watch different markers, binaries or workloads. An arm that
-  reddens only its own private assertion sits beside a gate that would stay green while the
-  property was broken.
+**It is not implied by the control arm.** An arm builds *with* the flag and asserts a FAIL
+marker appears; the base gate builds *without* it and asserts PASS. Nobody built the base gate
+with the flag. So the pair establishes "the defect is detectable by the arm", never "the defect
+is caught by the gate that guards the property in the shipping configuration", and those come
+apart whenever the arm and the gate watch different markers, binaries or workloads. An arm that
+reddens only its own private assertion sits beside a gate that would stay green while the
+property was broken.
 
   **Measured 2026-08-30: 30 of 30 pairs go red.** (One of the 31 rows is a `cargo` feature rather
   than a `-D` flag and is driven separately.) So every claim in that table is now true *and*
@@ -58,10 +102,9 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   listed in the script, for the reason `check_invariants.py` reads `SECURITY.md` instead of a
   parallel manifest: a copy would drift from the thing it checks.
 
-  Deliberately **not** wired into CI. Each pair is a clean rebuild plus a boot, so the sweep is
-  hours — a poor fit for a per-PR gate and a good fit for something run before promoting an arm,
-  or when auditing. `PAIR_TIMEOUT` is sized by how long a *failing* run takes, never a passing
-  one.
+Deliberately **not** wired into CI. Each pair is a clean rebuild plus a boot, so the sweep is
+hours, a poor fit for a per-PR gate and a good fit for something run before promoting an arm, or
+when auditing. `PAIR_TIMEOUT` is sized by how long a *failing* run takes, never a passing one.
 
 
 - **`tools/check_abi_structs.py`**, gating in the `kani-bounded` job beside `check_capslots.py`.
@@ -70,10 +113,10 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   `dev_info`, `shlib_info`, `untyped_info`, `cap_info`, `horus_timespec`, `boot_module_info`,
   `task_exit_info`. Nothing compared them, and three were held identical **by comment**.
 
-  All seven agree today, so this gates a latent risk rather than fixing a live defect — which is
-  the moment to do it, because the failure mode is silent and this tree already knows the shape:
-  `check_capslots.py` exists because the cspace slot map is written twice and drifted, and
-  `CAPSLOT_DEBUG` was added as a number `CAPSLOT_UNTYPED` already held.
+All seven agree today, so this gates a latent risk rather than fixing a live defect, which is
+the moment to do it, because the failure mode is silent and this tree already knows the shape:
+`check_capslots.py` exists because the cspace slot map is written twice and drifted, and
+`CAPSLOT_DEBUG` was added as a number `CAPSLOT_UNTYPED` already held.
 
   What drift would do: the kernel fills these and copies them out with `copy_to_user`, sized by
   the **kernel's** definition, into a buffer ring 3 sized against the other one. A shorter
@@ -81,13 +124,13 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   different MMIO range than the kernel wrote, or a supervisor reading the wrong rights out of a
   `cap_info`. Neither is a compile error, because neither compiler sees both files.
 
-  The check compares the sequence of (type, name, array) triples, catching a field added,
-  removed, renamed, retyped or reordered, and names the first differing field on both sides. It
-  deliberately does **not** check `sizeof` or offsets: those are properties of a compilation
-  rather than of a header, and the two are compiled with different flags. The struct list is
-  declared rather than discovered, so a struct disappearing from one header fails too — discovery
-  would silently start checking nothing. Falsified three ways: a renamed field, a removed field,
-  and a struct absent from one header.
+The check compares the sequence of (type, name, array) triples, catching a field added, removed,
+renamed, retyped or reordered, and names the first differing field on both sides. It
+deliberately does **not** check `sizeof` or offsets: those are properties of a compilation
+rather than of a header, and the two are compiled with different flags. The struct list is
+declared rather than discovered, so a struct disappearing from one header fails too, discovery
+would silently start checking nothing. Falsified three ways: a renamed field, a removed field,
+and a struct absent from one header.
 
 ### Fixed
 
@@ -105,11 +148,11 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   the truth and lose the shape; the authority that belongs there would have to name a task
   object, and `tasks[]` is still `.bss` (**[I-7]**, roadmap 0.3).
 
-  What is fixed is the description. `src/kernel/syscall.c` said fork "answers to the capability
-  that gates the first", which reads as a restriction that does not exist, while
-  `src/include/kernel.h` said "No capability of its own" — two comments in disagreement, both
-  describing a check that admits everyone. Both now say what the entry is and what actually
-  bounds the operation.
+What is fixed is the description. `src/kernel/syscall.c` said fork "answers to the capability
+that gates the first", which reads as a restriction that does not exist, while
+`src/include/kernel.h` said "No capability of its own": two comments in disagreement, both
+describing a check that admits everyone. Both now say what the entry is and what actually bounds
+the operation.
 
 
 - **Finding IDs disagreed with each other across the tree, including inside one file.**
@@ -120,8 +163,8 @@ compressed away. Entries here cite finding IDs; their **current** status is in
     G-9 … Status: open"* at line 443, against *"[G-9] closed"* at line 1319 of the same file and
     in `SECURITY.md`, `docs/LIMITATIONS.md`, `docs/ROADMAP.md` and `README.md`. It closed on
     2026-08-21. `docs/ROADMAP.md` §1.7 still read *"the rest of [G-9] open"* too.
-  - **`docs/AUDIT.md` disagreed with `docs/LIMITATIONS.md` on seven findings** — C-3, I-3, I-5,
-    I-6, I-10, I-11, G-8 — and **contradicted itself on C-3**, whose heading said OPEN while
+  - **`docs/AUDIT.md` disagreed with `docs/LIMITATIONS.md` on seven findings**. C-3, I-3, I-5,
+    I-6, I-10, I-11, G-8, and **contradicted itself on C-3**, whose heading said OPEN while
     §11 of the same document said fixed. Six headings now carry their fix date, and the
     "Still open" list is dated to the 2026-08-15 re-verification it records rather than reading
     as present tense. That framing is the point: this is a *dated record*, and a reader taking
@@ -140,11 +183,11 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   uses a placeholder; historical output quoting what a past run reported stays verbatim, since
   that is a record. Ratcheted so it cannot come back.
 
-  **And one gated count had an undeclared second occurrence.** `docs/LIMITATIONS.md` stated the
-  required-context total twice, three lines apart; only one was declared in
-  `.github/doc-claims.yml`, so the other was stale by one and nothing noticed. That is the
-  manifest's own documented blind spot — the mechanism is opt-in per sentence — and the fix is
-  the second occurrence, now declared.
+**And one gated count had an undeclared second occurrence.** `docs/LIMITATIONS.md` stated the
+required-context total twice, three lines apart; only one was declared in
+`.github/doc-claims.yml`, so the other was stale by one and nothing noticed. That is the
+manifest's own documented blind spot (the mechanism is opt-in per sentence) and the fix is the
+second occurrence, now declared.
 
 
 - **The security core's `unsafe` FFI stated no obligations, and nothing required it to
@@ -167,21 +210,21 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   `rust_free_user_physical_page` says it does not check that the page was ever allocated, and
   names the refcount discipline in `paging.c` as what prevents a double free.
 
-  **The rule is now enforced.** `tools/check_unsafe_safety.py`, required job `unsafe-safety`.
-  It states its own limit: it proves an obligation is *written*, never that it is true,
-  complete, or upheld — a clause reading "none" would satisfy it. It is a floor, and Miri and
-  the Kani proofs are what test the code beneath.
+**The rule is now enforced.** `tools/check_unsafe_safety.py`, required job `unsafe-safety`. It
+states its own limit: it proves an obligation is *written*, never that it is true, complete, or
+upheld, a clause reading "none" would satisfy it. It is a floor, and Miri and the Kani proofs
+are what test the code beneath.
 
-  **Falsified four ways, and the harness found a real defect in the checker.** The first
-  version looked back a fixed 30 lines for a clause, and arm A1 — an undocumented FFI export
-  planted in production code — reported PASS, because the *previous* function's `# Safety` sat
-  21 lines up. A checker that reads one item's contract as another's is worse than none, since
-  it certifies precisely the case it cannot see. The scan now walks to the enclosing item. That
-  correction immediately surfaced a **30th** undocumented site, `rust_hmac_sha256`, which the
-  manual count had missed. The four arms: an undocumented production `unsafe` is caught and
-  named; the same inside a test module is ignored; an item cannot inherit its neighbour's
-  clause; and an `unsafe { }` block is reported when its *enclosing* item loses its clause,
-  which is where a block's obligation is discharged.
+**Falsified four ways, and the harness found a real defect in the checker.** The first version
+looked back a fixed 30 lines for a clause, and arm A1 (an undocumented FFI export planted in
+production code) reported PASS, because the *previous* function's `# Safety` sat 21 lines up. A
+checker that reads one item's contract as another's is worse than none, since it certifies
+precisely the case it cannot see. The scan now walks to the enclosing item. That correction
+immediately surfaced a **30th** undocumented site, `rust_hmac_sha256`, which the manual count
+had missed. The four arms: an undocumented production `unsafe` is caught and named; the same
+inside a test module is ignored; an item cannot inherit its neighbour's clause; and an `unsafe {
+}` block is reported when its *enclosing* item loses its clause, which is where a block's
+obligation is discharged.
 
 
 - **Comments across the kernel asserted a system that had been retired, and the ratchet
@@ -358,20 +401,20 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   changing what the commits say, and GitHub's contributor graph keys on the author's email
   regardless.
 
-  **Verified at blob level rather than asserted:** of the 3,182 unique blobs in the old history,
-  exactly 56 changed and every one of them contained the retired handle — no unrelated content
-  moved. All 470 commits and all 82 merge commits preserved.
+**Verified at blob level rather than asserted:** of the 3,182 unique blobs in the old history,
+exactly 56 changed and every one of them contained the retired handle: no unrelated content
+moved. All 470 commits and all 82 merge commits preserved.
 
-  All 470 are now signed with `CCBDEE4097AF426D`, the only key the maintainer still holds; the
-  history previously carried 40 unsigned commits and 184 signed by three keys that no longer
-  exist. GitHub reports the 246 commits whose committer is its own `GitHub <noreply@github.com>`
-  squash identity as unverified — a personal key cannot verify against another party's address.
+All 470 are now signed with `CCBDEE4097AF426D`, the only key the maintainer still holds; the
+history previously carried 40 unsigned commits and 184 signed by three keys that no longer
+exist. GitHub reports the 246 commits whose committer is its own `GitHub <noreply@github.com>`
+squash identity as unverified, a personal key cannot verify against another party's address.
 
   Ruleset `19007209` was deleted during the rewrite and rebuilt as `21815299` from
   `.github/ci-gating.yml`, with `required_linear_history` added so the legacy branch-protection
   rule stays retired: one place now decides what gates `main`.
 
-- **`CLAUDE.md` §3: rewrite, do not preserve.** Documentation states what is true now — no
+- **`CLAUDE.md` §3: rewrite, do not preserve.** Documentation states what is true now: no
   struck-through wording, no "previously this said". The exception is where the record is what
   makes a claim checkable: falsification records, the `forbidden:` ratchet, DEVLOG measurements,
   the comment explaining why a guard exists, and this file's worked examples. Security is the
@@ -379,24 +422,24 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Added
 
-- **A program links against the shared libc (roadmap 2.5).** `hello_shared.c` is ordinary C — it
-  calls `printf` and `strlen` **by name** — and links no libc at all: only a generated stub
+- **A program links against the shared libc (roadmap 2.5).** `hello_shared.c` is ordinary C; it
+  calls `printf` and `strlen` **by name**, and links no libc at all: only a generated stub
   archive and a `crt0_shared` that binds the library before `main`.
 
-  **Measured, same source and flags, only the libc link differing: 106,392 bytes static against
-  13,088 shared — 8.1× smaller per program.** That is the saving this roadmap item promised, and
-  it is now a number rather than an estimate.
+**Measured, same source and flags, only the libc link differing: 106,392 bytes static against
+13,088 shared: 8.1× smaller per program.** That is the saving this roadmap item promised, and it
+is now a number rather than an estimate.
 
   `tools/gen_libc_stubs.sh` emits one tail-jump thunk per exported function.
   **Assembly, not C:** a C forwarder needs each callee's prototype, and variadic functions cannot
   be forwarded from C without a `va_list` wrapper each; a tail jump needs no prototype.
 
-  **The scratch register is `%r11`, not `%rax`, and that was measured rather than assumed.** In
-  the x86-64 SysV ABI `%al` carries the number of vector registers used when calling a variadic
-  function. The hazard is nastier than it looks: `%al` too *large* only spills more xmm registers
-  than needed, which is harmless — so a `%rax` thunk passes everything until the table pointer
-  lands on an address ending in a small byte. Forced to zero, the same `sprintf("%.1f")` call
-  segfaults.
+**The scratch register is `%r11`, not `%rax`, and that was measured rather than assumed.** In
+the x86-64 SysV ABI `%al` carries the number of vector registers used when calling a variadic
+function. The hazard is nastier than it looks: `%al` too *large* only spills more xmm registers
+than needed, which is harmless, so a `%rax` thunk passes everything until the table pointer
+lands on an address ending in a small byte. Forced to zero, the same `sprintf("%.1f")` call
+segfaults.
 
   **The gate's falsification is static, before the boot:** every libc symbol `hello_shared`
   defines must be a 14-byte thunk, not an implementation, because a statically-linked build would
@@ -405,11 +448,11 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   written down: the `%rax` variant is probabilistic, and an off-by-one index crashes rather than
   printing a marker.
 
-  **What has no stub.** A tail jump forwards a *call*; a variable reference is an address the
-  compiler emits directly, which needs a GOT. So the four data symbols get none: `_impure_ptr` and
-  `environ` survive as program-local *pointers* initialised from the library, but `optarg`/`optind`
-  **are** the state and a program needing them now fails to **link** — fail-closed, and far better
-  than an `optind` that silently stops advancing.
+**What has no stub.** A tail jump forwards a *call*; a variable reference is an address the
+compiler emits directly, which needs a GOT. So the four data symbols get none: `_impure_ptr` and
+`environ` survive as program-local *pointers* initialised from the library, but
+`optarg`/`optind` **are** the state and a program needing them now fails to **link**,
+fail-closed, and far better than an `optind` that silently stops advancing.
 
   The export set also grew to cover what the library actually *provides* rather than only what
   newlib does: the port's glue is inside `libc.so`, and `posix_init` is the entry point a
@@ -417,21 +460,21 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 
 - **A ring-3 task calls newlib out of the shared library (roadmap 2.5).** The mechanism has had
-  its properties since S49/S50/S51 — but all of them were demonstrated on `shlibdemo.so`, a
+  its properties since S49/S50/S51, but all of them were demonstrated on `shlibdemo.so`, a
   three-page object written for the purpose. `make smoke-shlibc` loads the **real** thing: 36
   pages, 34 of shared text and 2 of per-task data, and requires a task to map it and call in.
 
-  `libctest` calls `strlen`/`strcmp` through the export table, checks that `_impure_ptr` resolves
-  *inside* the library's own per-task data, and formats a string with `sprintf` — a call that goes
-  **through** newlib's reentrancy state rather than only its pure text. A demo object could not
-  fail the way a libc can: newlib has writable state, calls back into the port's syscall glue, and
-  allocates, and none of that was exercised by an object whose entire data segment was one `int`.
+`libctest` calls `strlen`/`strcmp` through the export table, checks that `_impure_ptr` resolves
+*inside* the library's own per-task data, and formats a string with `sprintf`: a call that goes
+**through** newlib's reentrancy state rather than only its pure text. A demo object could not
+fail the way a libc can: newlib has writable state, calls back into the port's syscall glue, and
+allocates, and none of that was exercised by an object whose entire data segment was one `int`.
 
-  The gate also checks **statically**, before booting, that `libctest` defines none of the symbols
-  it calls. If it did, the call would resolve locally, the library would never be entered, and
-  `LIBCTEST: PASS` would mean nothing — a witness has to be behind the mechanism it witnesses.
-  Falsified by giving the probe its own `strlen` and confirming the check fires. The probe is
-  10,192 bytes with 8 defined symbols, against the library's 711,952.
+The gate also checks **statically**, before booting, that `libctest` defines none of the symbols
+it calls. If it did, the call would resolve locally, the library would never be entered, and
+`LIBCTEST: PASS` would mean nothing, a witness has to be behind the mechanism it witnesses.
+Falsified by giving the probe its own `strlen` and confirming the check fires. The probe is
+10,192 bytes with 8 defined symbols, against the library's 711,952.
 
   It calls **through the table by index** and links nothing, which is the honest shape of what
   exists: there is no dynamic linker, so a program cannot yet resolve `strlen` by name and have it
@@ -447,19 +490,19 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   `SHLIB_IDX_sprintf undeclared`. **An interface that changes with the compiler is not an
   interface.**
 
-  `gen_libc_exports.sh` now unions the derived set with a **required core** (`__errno`,
-  `_impure_ptr`, `free`, `malloc`, `memcmp`, `memcpy`, `memset`, `sprintf`, `strcmp`, `strlen`),
-  exported whether or not anything currently references them. A required symbol `libc.a` does not
-  define is a hard error — a table that does not contain what it promises fails closed. Falsified
-  in both directions, since locally every required symbol was already derived and the union path
-  would never have run: an undefined required symbol is refused, and `qsort` (0 references from
-  the coreutils) is exported anyway, 59 → 60.
+`gen_libc_exports.sh` now unions the derived set with a **required core** (`__errno`,
+`_impure_ptr`, `free`, `malloc`, `memcmp`, `memcpy`, `memset`, `sprintf`, `strcmp`, `strlen`),
+exported whether or not anything currently references them. A required symbol `libc.a` does not
+define is a hard error, a table that does not contain what it promises fails closed. Falsified
+in both directions, since locally every required symbol was already derived and the union path
+would never have run: an undefined required symbol is refused, and `qsort` (0 references from
+the coreutils) is exported anyway, 59 → 60.
 
 - **`SYS_SHLIB_INFO` reported a single writable page index, and newlib has two.** `data_page` was
   true of the three-page demo object and false of the real libc, whose writable segment spans two
   pages. The probe asked for READ|EXEC on the second, its capability carried READ|WRITE, and the
   map failed. Found on the first run of `smoke-shlibc`, and **only the real object could have
-  found it** — the demo's whole data segment was one `int`.
+  found it**; the demo's whole data segment was one `int`.
 
   The call reports `data_first`/`data_pages` now. The range is contiguous because the loader
   accepts exactly one writable `PT_LOAD`, which `check_shared_object.py` enforces at build time;
@@ -471,86 +514,87 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 - **The shared library's base is drawn per boot, and is not ambient information (S51).** The
   guard, shipped before the mechanism it protects.
 
-  The base was compiled in. That was defensible while the only object on this mechanism was a
-  three-page demo, and it stops being defensible the moment newlib moves onto it (roadmap 2.5):
-  ~135 KiB of executable code at an address printed in the binary, mapped into **every** task —
-  and a *regression*, because a program's static libc today lives inside its own PIE image, which
-  the loader already randomises. So it landed now, while the only consumer is a selftest and the
-  change is cheap.
+The base was compiled in. That was defensible while the only object on this mechanism was a
+three-page demo, and it stops being defensible the moment newlib moves onto it (roadmap 2.5):
+~135 KiB of executable code at an address printed in the binary, mapped into **every** task: and
+a *regression*, because a program's static libc today lives inside its own PIE image, which the
+loader already randomises. So it landed now, while the only consumer is a selftest and the
+change is cheap.
 
-  `shlib_init` now draws the base from `aslr_random_offset` — the same CSPRNG-seeded source the
-  image loader uses, rejection-sampled over 2^30 page-aligned positions — **before** relocating the
-  object. Shared text must be at the same address in every address space, which is what makes it
-  shared, so per-boot is the strongest randomisation this mechanism admits. One leak reveals the
-  library for every task rather than for one: weaker than per-process ASLR, far stronger than a
-  constant. Stated in `docs/LIMITATIONS.md` §2.16 rather than glossed.
+`shlib_init` now draws the base from `aslr_random_offset`; the same CSPRNG-seeded source the
+image loader uses, rejection-sampled over 2^30 page-aligned positions; **before** relocating the
+object. Shared text must be at the same address in every address space, which is what makes it
+shared, so per-boot is the strongest randomisation this mechanism admits. One leak reveals the
+library for every task rather than for one: weaker than per-process ASLR, far stronger than a
+constant. Stated in `docs/LIMITATIONS.md` §2.16 rather than glossed.
 
-  **`SYS_SHLIB_INFO` (108)** is how a task learns it, and it is capability-gated: the caller
-  presents a `CAP_FRAME` over one of the library's own **text** frames. Ungated, an attacker with
-  execution in any task could simply ask where the shared gadgets are. A wrong *type* is refused,
-  and so is a `CAP_FRAME` of the wrong *object* — including the caller's own private copy of the
-  library's writable page (S50), which it legitimately holds and which says nothing about holding
-  the code.
+**`SYS_SHLIB_INFO` (108)** is how a task learns it, and it is capability-gated: the caller
+presents a `CAP_FRAME` over one of the library's own **text** frames. Ungated, an attacker with
+execution in any task could simply ask where the shared gadgets are. A wrong *type* is refused,
+and so is a `CAP_FRAME` of the wrong *object*, including the caller's own private copy of the
+library's writable page (S50), which it legitimately holds and which says nothing about holding
+the code.
 
-  Witness `make smoke-shlib-aslr`: **two boots**, because the property is not observable from
-  inside one — a single run sees an address either way. Falsified in every direction, one arm per
-  rule: `SHLIB_BASE_FIXED=1` (bases identical), `SHLIB_INFO_UNGATED=1` (no capability test at
-  all), and `SHLIB_INFO_TYPE_ONLY=1` (type checked, object not). All 3 runs in 3; the base gates go
-  red under each. The third arm exists because with only the second, the object rule would never
-  have been shown to fire — the probe stops at its first failure and the type check runs first.
+Witness `make smoke-shlib-aslr`: **two boots**, because the property is not observable from
+inside one, a single run sees an address either way. Falsified in every direction, one arm per
+rule: `SHLIB_BASE_FIXED=1` (bases identical), `SHLIB_INFO_UNGATED=1` (no capability test at
+all), and `SHLIB_INFO_TYPE_ONLY=1` (type checked, object not). All 3 runs in 3; the base gates
+go red under each. The third arm exists because with only the second, the object rule would
+never have been shown to fire; the probe stops at its first failure and the type check runs
+first.
 
 ### Fixed
 
 - **`aslr_init_seed()` was never reached on the 64-bit boot path.** It was called after
-  `smp_bringup()`, which does not return — it spawns the shell and enters ring 3 — so the layout
+  `smp_bringup()`, which does not return (it spawns the shell and enters ring 3) so the layout
   PRNG ran on its compile-time constant state for the whole boot. Found by `smoke-shlib-aslr`
   failing on its first run, against a change that was otherwise correct.
 
-  **The image ASLR was never broken, and checking that mattered more than the fix.** Every other
-  consumer of that PRNG sits downstream of `choose_image_placement`, which mixes `read_tsc()` and
-  `secure_random_u64()` before it draws — so image base, stack offset and heap gap were randomised
-  by that mix and not by the dead seed. `shlib_init` was simply the first consumer to draw *before*
-  any spawn, and so the first to see the unseeded state. The seed now runs immediately behind
-  `entropy_init()`, where it is reachable; it was moved rather than duplicated, because two seeding
-  sites for one PRNG is a question about which one won.
+**The image ASLR was never broken, and checking that mattered more than the fix.** Every other
+consumer of that PRNG sits downstream of `choose_image_placement`, which mixes `read_tsc()` and
+`secure_random_u64()` before it draws: so image base, stack offset and heap gap were randomised
+by that mix and not by the dead seed. `shlib_init` was simply the first consumer to draw
+*before* any spawn, and so the first to see the unseeded state. The seed now runs immediately
+behind `entropy_init()`, where it is reachable; it was moved rather than duplicated, because two
+seeding sites for one PRNG is a question about which one won.
 
 
-- **The shared libc builds, and is gated (roadmap 2.5).** `userspace/libc.so` — newlib, its port
+- **The shared libc builds, and is gated (roadmap 2.5).** `userspace/libc.so`, newlib, its port
   glue and libhorus in one shared object the kernel's loader accepts: **342 `R_X86_64_RELATIVE`
   relocations and nothing else**, zero undefined symbols, 135 KiB of shared text (34 pages) and
   6 KiB of per-task data (2 pages), 36 of `SHLIB_MAX_PAGES`' 64.
 
-  **Nothing links against it yet** — programs still link `libc.a` statically. What landed is the
-  object and the gate, because all three ways of producing one the kernel refuses are **silent**,
-  and each was found by building it rather than predicted:
+**Nothing links against it yet**: programs still link `libc.a` statically. What landed is the
+object and the gate, because all three ways of producing one the kernel refuses are **silent**,
+and each was found by building it rather than predicted:
 
   - the port's syscall glue not linked in → 10 undefined symbols and 10 `R_X86_64_JUMP_SLOT`
   - no `-Wl,-Bsymbolic` → intra-library references become `R_X86_64_GLOB_DAT`
   - **one** weak-undefined symbol (`__on_exit_args`) → a `GLOB_DAT` by itself, unless
     `-Wl,-z,nodynamic-undefined-weak` resolves it statically
 
-  None is a link error, and `shlib_init`'s refusal names nothing: the library is simply absent and
-  the first symptom is a fault on a call into an address nothing mapped. `check_shared_object.py`
-  decides it statically instead, and its four rules were each falsified against an object that
-  breaks that rule alone — including the page limit and the segment-alignment rule, which the
-  real objects never violate.
+None is a link error, and `shlib_init`'s refusal names nothing: the library is simply absent and
+the first symptom is a fault on a call into an address nothing mapped. `check_shared_object.py`
+decides it statically instead, and its four rules were each falsified against an object that
+breaks that rule alone, including the page limit and the segment-alignment rule, which the real
+objects never violate.
 
   newlib is now built **`-fPIC -fvisibility=hidden`**. Verified not to regress the static link it
   still serves: `smoke-newlib`, `smoke-tcc` and `smoke-coreutils-shell` all pass.
 
-  **The flags are stamped** (`newlib/install/.newlib-flags`). The build script no-ops when `libc.a`
-  exists — which is what makes it cheap to call from a Makefile rule, and also means that without
-  a stamp, editing the wrapper flags would have had *no effect* on a tree that had already built
-  once. That is the defect that disarmed a control arm in #235, one directory over. The stamp is
-  written last and only on success, so a failed build cannot certify itself, and it lives *inside*
-  `newlib/install` — the directory CI caches. Placed beside it instead, the stamp would be absent
-  on every cache **hit**, the guard would read that as "flags changed", and every job restoring a
-  perfectly good `libc.a` would rebuild newlib from scratch: a stamp has to travel with the thing
-  it certifies or it certifies nothing.
+**The flags are stamped** (`newlib/install/.newlib-flags`). The build script no-ops when
+`libc.a` exists: which is what makes it cheap to call from a Makefile rule, and also means that
+without a stamp, editing the wrapper flags would have had *no effect* on a tree that had already
+built once. That is the defect that disarmed a control arm in #235, one directory over. The
+stamp is written last and only on success, so a failed build cannot certify itself, and it lives
+*inside* `newlib/install`: the directory CI caches. Placed beside it instead, the stamp would be
+absent on every cache **hit**, the guard would read that as "flags changed", and every job
+restoring a perfectly good `libc.a` would rebuild newlib from scratch: a stamp has to travel
+with the thing it certifies or it certifies nothing.
 
-  The export table is **derived**, not hand-written (`tools/gen_libc_exports.sh`): every symbol
-  the shipped programs leave undefined, intersected with what `libc.a` defines — 59 of the 133
-  the coreutils leave undefined; the other 74 are coreutils and gnulib internals.
+The export table is **derived**, not hand-written (`tools/gen_libc_exports.sh`): every symbol
+the shipped programs leave undefined, intersected with what `libc.a` defines, 59 of the 133 the
+coreutils leave undefined; the other 74 are coreutils and gnulib internals.
 
   **The remaining blocker is recorded rather than discovered later.** Calling into shared text
   needs only a stub per function; a program's direct reference to a **data** symbol cannot be
@@ -570,36 +614,37 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   from a separate one carrying READ|WRITE and never EXEC, so a page a task may write is one it may
   not jump into.
 
-  **The isolation is not in the rights** — every task holds identical rights over its library data
-  — it is in the *object* each capability names being a different frame. Rights say what may be
-  done; the object says to what.
+**The isolation is not in the rights** (every task holds identical rights over its library data)
+it is in the *object* each capability names being a different frame. Rights say what may be
+done; the object says to what.
 
-  **Why this blocks a shared libc, measured rather than assumed.** Of the 133 distinct undefined
-  symbols across the shipped coreutils, **59** resolve from newlib's `libc.a`, and of those exactly
-  **three** are writable: `_impure_ptr` (errno, the stdio buffers, the atexit list, the rand state),
-  `optarg` and `optind`. Shared, one task reads and writes another's errno and stdio buffers and can
-  corrupt an allocator another task is mid-call in. Sharing a libc's text is an optimisation;
-  sharing its data is a defect — the same argument S49 makes about text, one segment further on.
+**Why this blocks a shared libc, measured rather than assumed.** Of the 133 distinct undefined
+symbols across the shipped coreutils, **59** resolve from newlib's `libc.a`, and of those
+exactly **three** are writable: `_impure_ptr` (errno, the stdio buffers, the atexit list, the
+rand state), `optarg` and `optind`. Shared, one task reads and writes another's errno and stdio
+buffers and can corrupt an allocator another task is mid-call in. Sharing a libc's text is an
+optimisation; sharing its data is a defect; the same argument S49 makes about text, one segment
+further on.
 
-  Falsified in two separable directions. `SHLIB_DATA_SHARED=1` hands every task the template frame
-  itself: `SHLIBTEST: FAIL peer-saw-our-data`, 3 boots in 3 — disclosure.
-  `SHLIB_DATA_UNINITIALISED=1` carves a private frame and zero-fills it:
-  `SHLIBTEST: FAIL data-not-initialised`, 3 boots in 3 — loss, and a libc whose `_impure_ptr` is
-  NULL does not leak, it simply does not work. `smoke-shlib` goes red under each.
+Falsified in two separable directions. `SHLIB_DATA_SHARED=1` hands every task the template frame
+itself: `SHLIBTEST: FAIL peer-saw-our-data`, 3 boots in 3: disclosure.
+`SHLIB_DATA_UNINITIALISED=1` carves a private frame and zero-fills it: `SHLIBTEST: FAIL
+data-not-initialised`, 3 boots in 3: loss, and a libc whose `_impure_ptr` is NULL does not leak,
+it simply does not work. `smoke-shlib` goes red under each.
 
   **The witness is the peer's, and it has to be:** a task cannot distinguish a private copy from a
   shared one by looking at its own writes. Only the task that wrote nothing can witness privacy.
 
-  **Only one direction of the arms' separability is witnessed, and the other is not claimed.**
-  Under `SHLIB_DATA_SHARED` the initialisation check still passes and that is visible on the wire.
-  The reverse is not observed — under `SHLIB_DATA_UNINITIALISED` `shlibtest` fails its own check
-  and exits before resuming the peer, so the privacy half never runs. It does still hold in the
-  code, but this arm does not witness it, so `TESTS.md` says so rather than implying otherwise.
+**Only one direction of the arms' separability is witnessed, and the other is not claimed.**
+Under `SHLIB_DATA_SHARED` the initialisation check still passes and that is visible on the wire.
+The reverse is not observed: under `SHLIB_DATA_UNINITIALISED` `shlibtest` fails its own check
+and exits before resuming the peer, so the privacy half never runs. It does still hold in the
+code, but this arm does not witness it, so `TESTS.md` says so rather than implying otherwise.
 
 ### Fixed
 
 - **The tests held a hardcoded copy of the library's layout.** `shlibtest.c` and `shlibpeer.c`
-  both located the export table at `SHLIB_VA + 0x4000` — correct for exactly one layout, and
+  both located the export table at `SHLIB_VA + 0x4000`, correct for exactly one layout, and
   `shlib.ld` moved it. A test that reads the wrong address does not fail honestly; it reads
   whatever is there and reports on it. `tools/shlib_offsets.sh` now derives the export offset, page
   count and data-page index from `shlibdemo.so` itself into a generated header, and refuses an
@@ -607,11 +652,11 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   The expected initialiser is likewise read from the library's own **text** rather than written
   down in the test, so no constant exists in two places to drift.
 
-- **`userspace/shlibdemo.so` was a tracked build artifact** — the only one in `userspace/`,
+- **`userspace/shlibdemo.so` was a tracked build artifact**, the only one in `userspace/`,
   committed by accident in #234. A generated file under version control can disagree with the
   source it is generated from: on a fresh clone both get the same checkout timestamp, so whether
   make rebuilds it is a race, and the kernel *embeds* this object. Untracked and gitignored, with
-  `*.so` added to `userspace-clean`, which did not remove it either — the same stale-artifact
+  `*.so` added to `userspace-clean`, which did not remove it either; the same stale-artifact
   hazard as the `libhorus.a` one fixed in #235, one file over.
 
 - **`TESTS.md` had no section for `smoke-shlib` at all.** S49 landed in #234 with a witness that
@@ -623,7 +668,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 - **Everything that ships is stripped, and finding out why is the entry to read.** Going into the
   newlib migration, the first step was to re-derive the number that justifies it. A newlib-linked
-  `coreutils_echo` was 404,528 bytes on disk — but `size` accounted for only ~88 KiB of
+  `coreutils_echo` was 404,528 bytes on disk, but `size` accounted for only ~88 KiB of
   text+data+bss. **`.debug_info` alone was 144,065 bytes, and the DWARF sections together were
   about 77% of the file**, all of it shipped in the boot module and stored on the volume.
 
@@ -633,29 +678,29 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   DWARF rather than in the library. Sharing a libc still saves its ~70 KiB of text per program,
   which is worth having and is no longer the headline.
 
-  The unstripped `.pie.elf` is **kept** and is what to point a debugger or `addr2line` at — this
-  reduces the image, not the ability to diagnose it. Keeping it needs a guard: inserting a
-  stripping step turns the `.pie.elf` into a make *intermediate*, which make deletes when it is
-  done, and that would have made the sentence promising it quietly false the moment it was
-  written. Falsified in both directions — with the guard commented out,
-  `make clean && make userspace/hello.bin` deletes `hello.pie.elf`; with it, the file survives.
+The unstripped `.pie.elf` is **kept** and is what to point a debugger or `addr2line` at: this
+reduces the image, not the ability to diagnose it. Keeping it needs a guard: inserting a
+stripping step turns the `.pie.elf` into a make *intermediate*, which make deletes when it is
+done, and that would have made the sentence promising it quietly false the moment it was
+written. Falsified in both directions, with the guard commented out, `make clean && make
+userspace/hello.bin` deletes `hello.pie.elf`; with it, the file survives.
 
-  **The guard is `.PRECIOUS`, and the first attempt at it was a fail-green.** A bare `.SECONDARY:`
-  was tried first. With no prerequisites that does not mean "keep the file just named" — it marks
-  **every** target in the build as intermediate, and make will not *create* a missing intermediate
-  when the ultimate target above it already exists. `userspace-clean`'s globs did not cover `*.a`,
-  so `userspace/libhorus.a` survived `make clean` while `libhorus.o` and `hvfs.o` did not, and make
-  declined to rebuild them. Every program in the tree linked an archive built from the **previous**
-  invocation's flags.
+**The guard is `.PRECIOUS`, and the first attempt at it was a fail-green.** A bare `.SECONDARY:`
+was tried first. With no prerequisites that does not mean "keep the file just named": it marks
+**every** target in the build as intermediate, and make will not *create* a missing intermediate
+when the ultimate target above it already exists. `userspace-clean`'s globs did not cover `*.a`,
+so `userspace/libhorus.a` survived `make clean` while `libhorus.o` and `hvfs.o` did not, and
+make declined to rebuild them. Every program in the tree linked an archive built from the
+**previous** invocation's flags.
 
-  That is the failure mode this repository is organised against, because it fails *green*: the
-  `LIBHORUS_RETRY_ANY` control arm stopped reproducing its own defect — the stale archive still
-  held the **fixed** `ipc_call_retry`, so the arm reported PASS where it must report the spin — and
-  `smoke-vfs` and `smoke-newlib` failed on a stale `hvfs.o`. Three CI jobs, and nothing in the
-  symptom pointed at the line that caused it; `origin/main` was measured on the same arm first, per
-  the rule in `CLAUDE.md` §2, which is what established the diff was to blame. `.PRECIOUS` affects
-  deletion and nothing else, so it cannot change what make decides to rebuild, and
-  `userspace-clean` now removes `*.a` and `*.stripped.elf` as well.
+That is the failure mode this repository is organised against, because it fails *green*: the
+`LIBHORUS_RETRY_ANY` control arm stopped reproducing its own defect; the stale archive still
+held the **fixed** `ipc_call_retry`, so the arm reported PASS where it must report the spin, and
+`smoke-vfs` and `smoke-newlib` failed on a stale `hvfs.o`. Three CI jobs, and nothing in the
+symptom pointed at the line that caused it; `origin/main` was measured on the same arm first,
+per the rule in `CLAUDE.md` §2, which is what established the diff was to blame. `.PRECIOUS`
+affects deletion and nothing else, so it cannot change what make decides to rebuild, and
+`userspace-clean` now removes `*.a` and `*.stripped.elf` as well.
 
   Left open and recorded here rather than fixed silently: `.build-flags` stamps `CFLAGS`/`ASFLAGS`
   but **not** `USERSPACE_CFLAGS`, and `userspace/ports/{coreutils,tcc}/*.o` survive `make clean`.
@@ -666,11 +711,11 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   table: the loader parses `PT_LOAD` and the kernel does not symbolise ring-3 faults, so the extra
   9,688 bytes are as unused as the DWARF.
 
-  The old phrasing is in `.github/doc-claims.yml`'s `forbidden` list, which immediately caught it
-  in three more places — `ROADMAP`, `LIMITATIONS` and `AUDIT` — all now corrected. **This is the
-  repository's own rule paying for itself:** re-derive every number you cite. That figure was
-  accurate about the file and misleading about the cause, and it pointed at a large migration
-  while a one-line change sat in front of it.
+The old phrasing is in `.github/doc-claims.yml`'s `forbidden` list, which immediately caught it
+in three more places (`ROADMAP`, `LIMITATIONS` and `AUDIT`) all now corrected. **This is the
+repository's own rule paying for itself:** re-derive every number you cite. That figure was
+accurate about the file and misleading about the cause, and it pointed at a large migration
+while a one-line change sat in front of it.
 
   Also measured and recorded (`LIMITATIONS` §2.17): `hello_newlib` is genuinely 1.2 MB of code
   rather than debug info, because it is linked without `--gc-sections` where the coreutils rule
@@ -685,102 +730,102 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   EXEC and never WRITE. Two tasks map the same physical pages, execute them, and neither can
   obtain a writable mapping.
 
-  **The size argument for sharing a libc is obvious; the security argument is why this is written
-  the way it is.** Sharing a library *writably* is a code-injection primitive between every task
-  that maps it — one task patches a function and another executes the patch — which is strictly
-  **worse** than the per-program static copies it would replace, because those at least isolated
-  the damage. So the interesting assertion is not that the call works, it is that the write does
-  not.
+**The size argument for sharing a libc is obvious; the security argument is why this is written
+the way it is.** Sharing a library *writably* is a code-injection primitive between every task
+that maps it (one task patches a function and another executes the patch) which is strictly
+**worse** than the per-program static copies it would replace, because those at least isolated
+the damage. So the interesting assertion is not that the call works, it is that the write does
+not.
 
   The enforcement is **S27**'s rights floor rather than the loader's intent: the primordial
   capability over those frames never held WRITE, and rights only ever narrow on delegation, so no
   descendant can carry WRITE and there is no delegation path to a writable mapping of code
   another task is running.
 
-  Falsified by `SHLIB_TEXT_WRITABLE=1` (`make smoke-shlib-writable-control`), which is **the
-  attack rather than a stand-in**: the capability carries WRITE, `shlibtest` maps the library a
-  second time writable and overwrites `shlib_magic` through that alias while executing through
-  its read+exec one, and the **peer** — which asked for nothing but read+exec, in its own address
-  space — runs the patch. `SHLIBTEST: FAIL peer-saw-patched-code`, 3 boots in 3, and
-  `smoke-shlib` red under it. **Two tasks and not one:** a single task proving it cannot write its
-  own page proves less than it looks, because the failure worth excluding is cross-task.
+Falsified by `SHLIB_TEXT_WRITABLE=1` (`make smoke-shlib-writable-control`), which is **the
+attack rather than a stand-in**: the capability carries WRITE, `shlibtest` maps the library a
+second time writable and overwrites `shlib_magic` through that alias while executing through its
+read+exec one, and the **peer** (which asked for nothing but read+exec, in its own address
+space) runs the patch. `SHLIBTEST: FAIL peer-saw-patched-code`, 3 boots in 3, and `smoke-shlib`
+red under it. **Two tasks and not one:** a single task proving it cannot write its own page
+proves less than it looks, because the failure worth excluding is cross-task.
 
-  The probe's refusal checks are skipped under the arm deliberately. They cannot pass there, and
-  stopping at the first of them would make the marker *"a writable mapping was obtainable"*
-  rather than what the other task then executes — the probe stops at its first failure, so which
-  failure it reaches is a choice about what the arm demonstrates.
+The probe's refusal checks are skipped under the arm deliberately. They cannot pass there, and
+stopping at the first of them would make the marker *"a writable mapping was obtainable"* rather
+than what the other task then executes; the probe stops at its first failure, so which failure
+it reaches is a choice about what the arm demonstrates.
 
-  **What this is not, stated because a mechanism that looked like a linker would be worse than
-  one that says what it is** (`docs/LIMITATIONS.md` §2.16): it resolves nothing by name — a caller
-  indexes a fixed export table whose address comes from the object's `e_entry`; **newlib is still
-  statically linked**, so the saving this exists for has not been taken (`coreutils_echo` is still
-  404,572 bytes, measured, and eleven such programs ship); the library gets **no ASLR**, because
-  shared text must be identical in every address space and text needing per-task relocation would
-  not be shared; and only `R_X86_64_RELATIVE` is accepted, since a half-relocated library is one
-  whose calls go somewhere nobody chose. Migrating newlib onto this is a build-system job and
-  gets its own commit.
+**What this is not, stated because a mechanism that looked like a linker would be worse than one
+that says what it is** (`docs/LIMITATIONS.md` §2.16): it resolves nothing by name, a caller
+indexes a fixed export table whose address comes from the object's `e_entry`; **newlib is still
+statically linked**, so the saving this exists for has not been taken (`coreutils_echo` is still
+404,572 bytes, measured, and eleven such programs ship); the library gets **no ASLR**, because
+shared text must be identical in every address space and text needing per-task relocation would
+not be shared; and only `R_X86_64_RELATIVE` is accepted, since a half-relocated library is one
+whose calls go somewhere nobody chose. Migrating newlib onto this is a build-system job and gets
+its own commit.
 
 - **A driver cannot map its own device's MSI-X vector table (S48).** An MSI-X table entry carries
-  a message address and a data word whose low byte is the interrupt **vector** — the same field
+  a message address and a data word whose low byte is the interrupt **vector**, the same field
   **S47** keeps out of a driver's hands. But unlike MSI's, it does *not* live in configuration
   space: it lives in a **BAR**, in ordinary device memory a driver maps page by page with
   `SYS_MAP_PHYS`.
 
-  **So S47's mechanism does not transfer.** *"The kernel programs it"* is no answer when the
-  driver can program it too, and this is the case where the previous property's shape genuinely
-  fails rather than merely needing restating. The kernel resolves the table's physical extent at
-  boot — from the capability's BAR index and offset, against the sized BAR — and
-  `iodev_allows_mmio` refuses **any page overlapping it**, to a driver holding a perfectly good
-  `CAP_IO_DEVICE` for that device, on a page inside a BAR the device declares. Authority over a
-  device is not authority over the register that decides which interrupt the machine takes.
+**So S47's mechanism does not transfer.** *"The kernel programs it"* is no answer when the
+driver can program it too, and this is the case where the previous property's shape genuinely
+fails rather than merely needing restating. The kernel resolves the table's physical extent at
+boot (from the capability's BAR index and offset, against the sized BAR) and `iodev_allows_mmio`
+refuses **any page overlapping it**, to a driver holding a perfectly good `CAP_IO_DEVICE` for
+that device, on a page inside a BAR the device declares. Authority over a device is not
+authority over the register that decides which interrupt the machine takes.
 
-  Page granularity, failing closed: a device ignoring the PCI spec's advice to give its table a
-  private 4 KiB region loses its neighbouring registers with it, because denying a driver
-  registers costs a feature and allowing the write costs the machine. READ is refused as well as
-  WRITE, so the rule is about the page rather than about writes — otherwise the next "harmless"
-  read path has a precedent. The kernel keeps its own supervisor-only mapping of the same
-  physical page, and that asymmetry is the property.
+Page granularity, failing closed: a device ignoring the PCI spec's advice to give its table a
+private 4 KiB region loses its neighbouring registers with it, because denying a driver
+registers costs a feature and allowing the write costs the machine. READ is refused as well as
+WRITE, so the rule is about the page rather than about writes, otherwise the next "harmless"
+read path has a precedent. The kernel keeps its own supervisor-only mapping of the same physical
+page, and that asymmetry is the property.
 
-  **Scope, stated plainly: MSI-X is protected but NOT enabled, and the order is deliberate.**
-  Bringing it up end to end needs per-device work that could not be *verified* here — on the one
-  MSI-X-capable device in this tree the cause-to-entry mapping lives in a register whose layout
-  was not confirmed, an attempt produced no interrupt, and an interrupt that never arrives is
-  indistinguishable from a driver that is simply wrong. Shipping a path that appears to work by
-  guesswork is how a device ends up never interrupting on real hardware, so it is not shipped.
-  While MSI-X Enable stays clear the table is inert (that bit is in configuration space), which
-  makes S48 defence in depth today rather than load-bearing — **in place before the mechanism it
-  guards, rather than remembered afterwards.** A device offering only MSI-X falls back to INTx.
+**Scope, stated plainly: MSI-X is protected but NOT enabled, and the order is deliberate.**
+Bringing it up end to end needs per-device work that could not be *verified* here: on the one
+MSI-X-capable device in this tree the cause-to-entry mapping lives in a register whose layout
+was not confirmed, an attempt produced no interrupt, and an interrupt that never arrives is
+indistinguishable from a driver that is simply wrong. Shipping a path that appears to work by
+guesswork is how a device ends up never interrupting on real hardware, so it is not shipped.
+While MSI-X Enable stays clear the table is inert (that bit is in configuration space), which
+makes S48 defence in depth today rather than load-bearing, **in place before the mechanism it
+guards, rather than remembered afterwards.** A device offering only MSI-X falls back to INTx.
 
   Falsified by `MSIX_TABLE_MAPPABLE=1` (`make smoke-net-msix-table-control`): the driver maps its
   own vector table with no syscall, no capability check and nothing to gate.
   `NETTEST: FAIL msix-table-mapped`, 3 boots in 3, and `smoke-net` red under it.
 
-  **Also found on the way:** mapping the table for the kernel *lazily*, when a device is first
-  programmed, faults — `SYS_MSI_REGISTER` runs on the calling task's cr3, and a mapping installed
-  into the kernel pml4 after that task's address space was built does not appear in it. The
-  symptom was a supervisor page fault at the table address attributed to the driver, the same
-  shape as the missing IDT gates in §2.13. The extent is known at boot, so it is mapped there.
+**Also found on the way:** mapping the table for the kernel *lazily*, when a device is first
+programmed, faults, `SYS_MSI_REGISTER` runs on the calling task's cr3, and a mapping installed
+into the kernel pml4 after that task's address space was built does not appear in it. The
+symptom was a supervisor page fault at the table address attributed to the driver, the same
+shape as the missing IDT gates in §2.13. The extent is known at boot, so it is mapped there.
 
 - **Message-signalled interrupts, and who gets to choose a vector (S47).** An MSI is not a wire:
   it is a memory **write** the device performs, carrying a data word whose low byte is the
   interrupt **vector**. So with MSI, *which interrupt does this device raise* stops being a fact
   about the board and becomes a value in a register.
 
-  That is a far sharper question than INTx posed. A device wired to INTx can only assert the line
-  firmware gave it, and the worst a malicious driver could do was subscribe to a line its device
-  does not own — which **S43** already refuses. A device with MSI raises whatever its capability
-  registers say: the timer's vector, another driver's, or an exception gate. **#GP is vector 13**,
-  and a device raising 13 at will could make any task appear to fault anywhere.
+That is a far sharper question than INTx posed. A device wired to INTx can only assert the line
+firmware gave it, and the worst a malicious driver could do was subscribe to a line its device
+does not own, which **S43** already refuses. A device with MSI raises whatever its capability
+registers say: the timer's vector, another driver's, or an exception gate. **#GP is vector 13**,
+and a device raising 13 at will could make any task appear to fault anywhere.
 
-  **So `SYS_MSI_REGISTER` (107) takes no vector argument.** It takes a `CAP_IO_DEVICE` naming the
-  device and a `CAP_NOTIFICATION` to be woken on, and nothing else. The kernel walks the PCI
-  capability list at boot, allocates a vector from a range it owns (48–63 — disjoint from the
-  legacy 32–47 block so it cannot collide with an I/O APIC pin, and below 64 so it cannot collide
-  with the LAPIC timer), programs the capability itself, and records where the interrupt goes.
-  Ring 3 has nowhere to express a preference. `SYS_DEVICE_INFO` reports *whether* a device has
-  MSI and never *where* the capability is, because that offset names the register carrying the
-  vector, and every write to it lives in `src/kernel/pci.c` — the one file that touches
-  configuration space at all.
+**So `SYS_MSI_REGISTER` (107) takes no vector argument.** It takes a `CAP_IO_DEVICE` naming the
+device and a `CAP_NOTIFICATION` to be woken on, and nothing else. The kernel walks the PCI
+capability list at boot, allocates a vector from a range it owns (48–63: disjoint from the
+legacy 32–47 block so it cannot collide with an I/O APIC pin, and below 64 so it cannot collide
+with the LAPIC timer), programs the capability itself, and records where the interrupt goes.
+Ring 3 has nowhere to express a preference. `SYS_DEVICE_INFO` reports *whether* a device has MSI
+and never *where* the capability is, because that offset names the register carrying the vector,
+and every write to it lives in `src/kernel/pci.c`; the one file that touches configuration space
+at all.
 
   This is only enforceable *because* configuration space is unreachable from ring 3 (**S43**) and
   `SYS_DEVICE_ENABLE` reaches exactly three decode bits (**S44**). **MSI is what makes that
@@ -789,12 +834,12 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   Unlike **S46** there is no masking and no acknowledgement: an MSI is edge by construction, so
   no line stays asserted and there is no livelock to prevent.
 
-  Falsified by `MSI_VECTOR_FROM_USER=1` (`make smoke-net-msi-vector-control`), which honours a
-  caller-supplied vector and has `netd` ask for 13: the NIC raises #GP at the machine, the kernel
-  processes a general-protection fault that never happened against whatever the message
-  interrupted, and the run dies. Asserted as a **fault**, 3 boots in 3, naming the task the fault
-  is attributed to rather than the flavour — a misinterpreted exception frame goes wrong in
-  whichever way it goes wrong first.
+Falsified by `MSI_VECTOR_FROM_USER=1` (`make smoke-net-msi-vector-control`), which honours a
+caller-supplied vector and has `netd` ask for 13: the NIC raises #GP at the machine, the kernel
+processes a general-protection fault that never happened against whatever the message
+interrupted, and the run dies. Asserted as a **fault**, 3 boots in 3, naming the task the fault
+is attributed to rather than the flavour, a misinterpreted exception frame goes wrong in
+whichever way it goes wrong first.
 
   **Two device models, one driver, both gated.** `make smoke-net` runs `netd` against an 82574L,
   which has an MSI capability; `make smoke-net-intx` runs the *same driver* against an 82540EM,
@@ -807,45 +852,45 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   still said a PCI interrupt line *cannot* be delivered to ring 3, two days after **S46** closed
   it and with the closure text appended directly below. The edit that should have struck them
   through was in a script that aborted before writing, while a second edit appended the closure
-  successfully — so the section asserted both. Exactly the drift `tools/check_doc_claims.py` gates
+  successfully, so the section asserted both. Exactly the drift `tools/check_doc_claims.py` gates
   numbers against and cannot gate prose against; the correction says so in place.
 
 - **§2.14's receive failure is a property of one device model, not of the driver.** The same
   `netd` and the same code path receive the ARP reply on **5 boots out of 5** against QEMU's
   82574L, and have managed it once in many attempts against the 82540EM. `make smoke-net` now
-  gates on a real ARP exchange end to end — transmit, MSI, receive — and `make smoke-net-intx`
+  gates on a real ARP exchange end to end (transmit, MSI, receive) and `make smoke-net-intx`
   keeps the older model exercised for INTx without asserting reception.
 
 - **`SYS_POLL_NOTIFY` (106): a caller can observe that a notification did NOT arrive.**
-  `sys_wait_notify`'s non-blocking twin — consume a pending badge and return 0, or report
+  `sys_wait_notify`'s non-blocking twin, consume a pending badge and return 0, or report
   `IPC_AGAIN` and never park the caller. Same `CAP_NOTIFICATION` + READ gate: being non-blocking
   changes *when* the answer comes back, never *who* may ask.
 
-  **Two things it makes possible, and the second is why it was written.** A driver servicing
-  hardware in a loop can ask "has my device notified me?" while also polling a register, instead
-  of relying on being the only runnable task — a property of the test harness rather than of the
-  system, which every driver here had been leaning on. And a test can witness the **absence** of
-  a notification.
+**Two things it makes possible, and the second is why it was written.** A driver servicing
+hardware in a loop can ask "has my device notified me?" while also polling a register, instead
+of relying on being the only runnable task: a property of the test harness rather than of the
+system, which every driver here had been leaning on. And a test can witness the **absence** of a
+notification.
 
-  That second one closed a real hole in the evidence. Properties of the form *"no event arrives
-  while X"* cannot be witnessed by a blocking wait: it either returns because the event happened
-  (the property is broken) or blocks forever (the property held, and the harness reports a
-  timeout indistinguishable from a crash). **S46**'s mask-until-acknowledged is exactly that
-  shape, and its only witness was the *consequence* — a livelock. Consequences are
-  environment-dependent in a way properties are not: QEMU storms on the 8259 and does not on the
-  I/O APIC, so moving routing left that arm unable to fail on the path the ship build uses.
+That second one closed a real hole in the evidence. Properties of the form *"no event arrives
+while X"* cannot be witnessed by a blocking wait: it either returns because the event happened
+(the property is broken) or blocks forever (the property held, and the harness reports a timeout
+indistinguishable from a crash). **S46**'s mask-until-acknowledged is exactly that shape, and
+its only witness was the *consequence*, a livelock. Consequences are environment-dependent in a
+way properties are not: QEMU storms on the 8259 and does not on the I/O APIC, so moving routing
+left that arm unable to fail on the path the ship build uses.
 
-  S46 is now falsified **directly** (`make smoke-net-mask-control`): the device's cause is
-  cleared, a second transmit re-raises the line, and while it is masked every poll must report
-  `IPC_AGAIN` — repeatedly, so it fails if the notification arrives anywhere in the window — with
-  a badge required after the ack. `NETTEST: FAIL irq-while-masked`, 3 boots in 3, on the I/O APIC
-  path. The livelock arm survives on the 8259 path, which keeps the fallback controller
-  exercised too.
+S46 is now falsified **directly** (`make smoke-net-mask-control`): the device's cause is
+cleared, a second transmit re-raises the line, and while it is masked every poll must report
+`IPC_AGAIN` (repeatedly, so it fails if the notification arrives anywhere in the window) with a
+badge required after the ack. `NETTEST: FAIL irq-while-masked`, 3 boots in 3, on the I/O APIC
+path. The livelock arm survives on the 8259 path, which keeps the fallback controller exercised
+too.
 
-  `IPC_AGAIN` rather than zero-with-a-zero-badge, so "nothing pending" is distinct from "a badge
-  of zero arrived" and cannot be confused with `SYS_ERR_PERM` (-1) by a caller testing `< 0` —
-  the same discipline `SYS_IPC_RECV` follows. The kernel had been writing the literal `-2`
-  inline; it is a named constant now, which is what stops the two halves of the ABI drifting.
+`IPC_AGAIN` rather than zero-with-a-zero-badge, so "nothing pending" is distinct from "a badge
+of zero arrived" and cannot be confused with `SYS_ERR_PERM` (-1) by a caller testing `< 0`: the
+same discipline `SYS_IPC_RECV` follows. The kernel had been writing the literal `-2` inline; it
+is a named constant now, which is what stops the two halves of the ABI drifting.
 
   Falsified by `POLL_NOTIFY_UNGATED=1` (`make smoke-captest-poll-notify-control`) →
   `CAPTEST: FAIL poll-notify-with-wrong-cap-type`. **The marker is the wrong-type check and not
@@ -855,15 +900,15 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   would otherwise have succeeded. `captest` 128 → 131.
 
 - **Interrupts route through the I/O APIC.** `src/kernel/ioapic.c` finds the unit in the MADT,
-  brings it up with **every delegatable pin masked**, and the 8259 is then fully masked — two
+  brings it up with **every delegatable pin masked**, and the 8259 is then fully masked: two
   controllers driving the same vectors would deliver every interrupt twice. Masking and EOI go
   through one entry point each, so the two controllers cannot disagree about which lines are
   live. A machine with no MADT entry stays on the PIC and says so, and that path is kept
   buildable (`IRQ_FORCE_PIC=1`) so it is exercised rather than merely present.
 
-  Every property **S46** states is preserved exactly — a line goes live when a capability is
-  accepted for it, is masked when it fires, unmasked by `SYS_IRQ_ACK`, and masked when its
-  driver dies. Only the register the mask lands in changed.
+Every property **S46** states is preserved exactly, a line goes live when a capability is
+accepted for it, is masked when it fires, unmasked by `SYS_IRQ_ACK`, and masked when its driver
+dies. Only the register the mask lands in changed.
 
   **This is the prerequisite for VT-d interrupt remapping**, which applies to messages from an
   I/O APIC or MSI and never to the 8259's direct delivery. On its own it closes nothing, and it
@@ -871,25 +916,25 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   changes the moment MSI exists, because an MSI is a memory write and a device that can DMA
   anywhere can write any vector.
 
-  **GSIs are not ISA IRQ numbers**, and assuming they were costs the timer: on QEMU's q35 the PIT
-  is on GSI 2. The MADT's Interrupt Source Overrides say where each legacy IRQ went and carry its
-  polarity and trigger mode; measured on q35, lines 5/9/10/11 are declared level-triggered
-  active-high. Where firmware is silent the kernel falls back on what the line is — ISA edge/high,
-  everything else PCI INTx level/low — because the ACPI `_PRT` that would say properly needs an
-  AML interpreter this kernel should not grow for it.
+**GSIs are not ISA IRQ numbers**, and assuming they were costs the timer: on QEMU's q35 the PIT
+is on GSI 2. The MADT's Interrupt Source Overrides say where each legacy IRQ went and carry its
+polarity and trigger mode; measured on q35, lines 5/9/10/11 are declared level-triggered
+active-high. Where firmware is silent the kernel falls back on what the line is (ISA edge/high,
+everything else PCI INTx level/low) because the ACPI `_PRT` that would say properly needs an AML
+interpreter this kernel should not grow for it.
 
-  **"Every pin starts masked" was too broad, and `smoke-preempt` caught it while `smoke` passed.**
-  The timer and the keyboard are the *kernel's own* lines, not delegatable ones — the kernel is
-  their driver. Masking the preemption tick does not produce a stricter system, it produces one
-  that never schedules, which a cooperative workload hides completely.
+**"Every pin starts masked" was too broad, and `smoke-preempt` caught it while `smoke` passed.**
+The timer and the keyboard are the *kernel's own* lines, not delegatable ones; the kernel is
+their driver. Masking the preemption tick does not produce a stricter system, it produces one
+that never schedules, which a cooperative workload hides completely.
 
-  **One arm got weaker and is recorded rather than hidden.** `IRQ_NO_MASK_ON_FIRE` reproduces a
-  livelock on the 8259 and **not** on the I/O APIC — QEMU does not storm on that path. The arm is
-  now gated on the PIC path (`IRQ_FORCE_PIC=1`), where it can still fail; the kernel logic under
-  test is identical, but the mask-on-fire property has no emulator-observable catastrophic
-  consequence on the routing the ship build uses. A direct test — "no notification arrives while
-  the line is masked" — was attempted and needs a non-blocking way to observe that a notification
-  did *not* arrive, which the ABI has no call for. `docs/LIMITATIONS.md` §2.13.
+**One arm got weaker and is recorded rather than hidden.** `IRQ_NO_MASK_ON_FIRE` reproduces a
+livelock on the 8259 and **not** on the I/O APIC; QEMU does not storm on that path. The arm is
+now gated on the PIC path (`IRQ_FORCE_PIC=1`), where it can still fail; the kernel logic under
+test is identical, but the mask-on-fire property has no emulator-observable catastrophic
+consequence on the routing the ship build uses. A direct test, "no notification arrives while
+the line is masked", was attempted and needs a non-blocking way to observe that a notification
+did *not* arrive, which the ABI has no call for. `docs/LIMITATIONS.md` §2.13.
 
 ### Fixed
 
@@ -897,51 +942,51 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   did not work; a reply *has* since been observed arriving into `netd`'s own ring, correctly
   parsed, so the receiver is not categorically broken. Adding the retry every real ARP
   implementation has did **not** make it reproduce (0 of 3 boots, 0 of 5 before), so the honest
-  state is *intermittent and not understood* rather than *absent* — and one observation is not a
+  state is *intermittent and not understood* rather than *absent*, and one observation is not a
   property, which is why nothing gates on it. The retry is kept because one request is not a
   protocol either way.
 
 - **A PCI interrupt reaches a ring-3 driver, and an unserviced one cannot livelock the machine
-  (S46).** `docs/LIMITATIONS.md` §2.13 is closed. `pic_init` programmed the 8259 master `0xFC` —
-  IRQ 0 and 1 unmasked, everything else masked including the cascade — so no PCI line could be
+  (S46).** `docs/LIMITATIONS.md` §2.13 is closed. `pic_init` programmed the 8259 master `0xFC`; 
+  IRQ 0 and 1 unmasked, everything else masked including the cascade, so no PCI line could be
   **delivered** whatever capability a driver held. A line is now unmasked when
   `SYS_IRQ_REGISTER` accepts a capability for it, which makes unmasking the capability taking
   effect in hardware rather than a boot-time constant.
 
-  **The second half is the security property.** A legacy PCI interrupt is level-triggered: the
-  device holds the line asserted until its driver services it. An EOI alone therefore means
-  immediate re-delivery, forever — ring 3 never runs, the driver never clears the device, and the
-  machine stops making progress with no software able to intervene. That is a denial of the
-  **whole machine** reachable from a capability meant to name one device. So the kernel **masks a
-  registered line when it fires**, delivers the notification, and leaves it masked until the
-  driver calls the new **`SYS_IRQ_ACK` (105)** — which keeps a broken driver's blast radius to
-  its own hardware.
+**The second half is the security property.** A legacy PCI interrupt is level-triggered: the
+device holds the line asserted until its driver services it. An EOI alone therefore means
+immediate re-delivery, forever: ring 3 never runs, the driver never clears the device, and the
+machine stops making progress with no software able to intervene. That is a denial of the
+**whole machine** reachable from a capability meant to name one device. So the kernel **masks a
+registered line when it fires**, delivers the notification, and leaves it masked until the
+driver calls the new **`SYS_IRQ_ACK` (105)**, which keeps a broken driver's blast radius to its
+own hardware.
 
-  `SYS_IRQ_ACK` is gated exactly as registration is (a `CAP_IO_DEVICE` naming a device that
-  *declares* the line), because unmasking decides that a device may interrupt this machine again.
-  Holding the right capability is still not sufficient: the registration must belong to the
-  **calling task**, so two holders of one device capability cannot acknowledge each other's
-  interrupts. And a dead driver takes its line down with it — `irq_notify_clear_task` masks on
-  teardown, since a level-triggered line left asserted with nobody to service it is the same
-  storm by another route. IRQ 0 is exempt; masking the preemption tick would stop the scheduler.
+`SYS_IRQ_ACK` is gated exactly as registration is (a `CAP_IO_DEVICE` naming a device that
+*declares* the line), because unmasking decides that a device may interrupt this machine again.
+Holding the right capability is still not sufficient: the registration must belong to the
+**calling task**, so two holders of one device capability cannot acknowledge each other's
+interrupts. And a dead driver takes its line down with it, `irq_notify_clear_task` masks on
+teardown, since a level-triggered line left asserted with nobody to service it is the same storm
+by another route. IRQ 0 is exempt; masking the preemption tick would stop the scheduler.
 
-  **THE IDT HAD NO GATES FOR VECTORS 34–47.** The stubs `isr34`–`isr47` had existed in
-  `lowlevel64.S` since the IDT was written and nothing ever installed a gate, because the PIC
-  masked every line above 1 so none could arrive. Unmasking without them is not "the interrupt is
-  ignored" — a vector with no gate raises **#GP**, attributed to whatever was interrupted, so the
-  first PCI interrupt **kills an innocent ring-3 task at a random instruction**. `netd` died with
-  `ring-3 trap vector 13` on the store immediately after enabling its device's interrupt, and the
-  store was not the problem; skipping the interrupt enable proved it was delivery, not the store.
+**THE IDT HAD NO GATES FOR VECTORS 34–47.** The stubs `isr34`–`isr47` had existed in
+`lowlevel64.S` since the IDT was written and nothing ever installed a gate, because the PIC
+masked every line above 1 so none could arrive. Unmasking without them is not "the interrupt is
+ignored": a vector with no gate raises **#GP**, attributed to whatever was interrupted, so the
+first PCI interrupt **kills an innocent ring-3 task at a random instruction**. `netd` died with
+`ring-3 trap vector 13` on the store immediately after enabling its device's interrupt, and the
+store was not the problem; skipping the interrupt enable proved it was delivery, not the store.
 
-  Falsified in both directions. `IRQ_NO_MASK_ON_FIRE=1` (`make smoke-net-irq-storm-control`)
-  asserts a **stall** rather than a marker, because a livelocked machine prints nothing more:
-  `NETTEST: PASS` reached — the DMA property still holds — and `IRQ PASS` never arriving, 3 boots
-  in 3. The authority half is witnessed in `smoke-captest`, which holds no device capability at
-  all: `IRQ_ACK_UNGATED=1` → `CAPTEST: FAIL irq-ack-without-cap-io-device`. `captest` 126 → 128.
+Falsified in both directions. `IRQ_NO_MASK_ON_FIRE=1` (`make smoke-net-irq-storm-control`)
+asserts a **stall** rather than a marker, because a livelocked machine prints nothing more:
+`NETTEST: PASS` reached (the DMA property still holds) and `IRQ PASS` never arriving, 3 boots in
+3. The authority half is witnessed in `smoke-captest`, which holds no device capability at all:
+`IRQ_ACK_UNGATED=1` → `CAPTEST: FAIL irq-ack-without-cap-io-device`. `captest` 126 → 128.
 
-  `netd` now waits on its device's interrupt instead of only polling for it. **MSI/MSI-X and
-  interrupt remapping are still absent** — the latter is now the next thing rather than a
-  hypothetical, since there is finally an interrupt to remap.
+`netd` now waits on its device's interrupt instead of only polling for it. **MSI/MSI-X and
+interrupt remapping are still absent**, the latter is now the next thing rather than a
+hypothetical, since there is finally an interrupt to remap.
 
 - **VT-d DMA remapping: a device reaches only the memory its driver mapped for it (S45).**
   The largest single gap in the model, and the one that could not be closed in software. Since
@@ -950,61 +995,61 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   nothing could: a bus-mastering device reached all of physical memory, and the descriptors
   directing it are written by its own ring-3 driver.
 
-  `src/kernel/iommu.c` brings up an Intel VT-d unit found through the DMAR table before any
-  ring-3 task exists. **Every device gets an address space of its own, and every one starts
-  EMPTY** — not an identity map of the pool, not "everything below 4 GiB". A device whose driver
-  has mapped nothing reaches nothing. That default *is* the property: an identity map would have
-  been far easier and would have made the whole mechanism decorative, since the device would
-  reach all of memory again through a translation that always says yes. `SYS_DMA_ADDR` installs
-  a mapping and carries the frame capability's own write right, so a READ-only `CAP_FRAME` gives
-  a READ-only device mapping — **S27**'s rights floor extended to hardware. Each device gets its
-  own **domain**, because sharing one would make a mapping installed for one device reachable by
-  another: **S43**'s defect one layer down, and invisible because both devices would still work.
+`src/kernel/iommu.c` brings up an Intel VT-d unit found through the DMAR table before any ring-3
+task exists. **Every device gets an address space of its own, and every one starts EMPTY**: not
+an identity map of the pool, not "everything below 4 GiB". A device whose driver has mapped
+nothing reaches nothing. That default *is* the property: an identity map would have been far
+easier and would have made the whole mechanism decorative, since the device would reach all of
+memory again through a translation that always says yes. `SYS_DMA_ADDR` installs a mapping and
+carries the frame capability's own write right, so a READ-only `CAP_FRAME` gives a READ-only
+device mapping; **S27**'s rights floor extended to hardware. Each device gets its own
+**domain**, because sharing one would make a mapping installed for one device reachable by
+another: **S43**'s defect one layer down, and invisible because both devices would still work.
 
-  **THE DRIVER HAD TO BE REWRITTEN, AND FINDING OUT WHY IS THE ENTRY WORTH READING.** `netd`
-  drove legacy virtio-net. Under VT-d it kept working **with an empty device address space** —
-  translation enabled (`GSTS=0xC0000000`), root table installed, zero faults recorded, exchange
-  completing anyway. Paravirtual virtio devices access guest memory *directly*; they are not on
-  the far side of the IOMMU unless the device negotiates `VIRTIO_F_ACCESS_PLATFORM`, and a
-  legacy virtio device has no such bit. QEMU refuses the option outright: *"VIRTIO_F_IOMMU_PLATFORM
-  was supported by neither legacy nor transitional device."*
+**THE DRIVER HAD TO BE REWRITTEN, AND FINDING OUT WHY IS THE ENTRY WORTH READING.** `netd` drove
+legacy virtio-net. Under VT-d it kept working **with an empty device address space**:
+translation enabled (`GSTS=0xC0000000`), root table installed, zero faults recorded, exchange
+completing anyway. Paravirtual virtio devices access guest memory *directly*; they are not on
+the far side of the IOMMU unless the device negotiates `VIRTIO_F_ACCESS_PLATFORM`, and a legacy
+virtio device has no such bit. QEMU refuses the option outright: *"VIRTIO_F_IOMMU_PLATFORM was
+supported by neither legacy nor transitional device."*
 
-  So the obvious gate would have been a property stated, enforced by real code, and bound to a
-  device that bypassed it — green, and proving nothing. `netd` is an **e1000** driver now: a real
-  device model whose DMA goes through the device's address space like any bus master's.
-  **Check that your witness is on the far side of the mechanism you are testing.**
+So the obvious gate would have been a property stated, enforced by real code, and bound to a
+device that bypassed it, green, and proving nothing. `netd` is an **e1000** driver now: a real
+device model whose DMA goes through the device's address space like any bus master's. **Check
+that your witness is on the far side of the mechanism you are testing.**
 
-  Falsified by `NET_IOMMU_NO_MAP=1` (`make smoke-net-iommu-control`): the same driver, the same
-  device, every capability check still run and every address still correct — only the *mappings*
-  withheld — and the device cannot read its own descriptor ring. `NETTEST: FAIL
-  dma-never-completed`, 3 boots in 3, and `smoke-net` red under it. `DMA_ADDR_NO_MAP` is a real
-  ABI flag rather than a kernel `#ifdef` on purpose: an ifdef around the map call would also
-  compile out the capability checks above it, and the arm would demonstrate something weaker.
+Falsified by `NET_IOMMU_NO_MAP=1` (`make smoke-net-iommu-control`): the same driver, the same
+device, every capability check still run and every address still correct (only the *mappings*
+withheld) and the device cannot read its own descriptor ring. `NETTEST: FAIL
+dma-never-completed`, 3 boots in 3, and `smoke-net` red under it. `DMA_ADDR_NO_MAP` is a real
+ABI flag rather than a kernel `#ifdef` on purpose: an ifdef around the map call would also
+compile out the capability checks above it, and the arm would demonstrate something weaker.
 
-  Two bugs found on the way, both worth recording. A domain-id limit computed as
-  `(uint16_t)(1u << (4 + 2*nd))` **truncated to zero** for the ND=6 that QEMU reports, so the
-  guard read `1 >= 0` and refused every domain — the same 32-bit truncation shape as issue #176,
-  and a limit must be computed in a type that can hold it. And `sys_dma_addr` reached the kernel
-  through the 3-argument `syscall()` wrapper, which never writes `rsi`, so the new flags word
-  read whatever the caller happened to leave there.
+Two bugs found on the way, both worth recording. A domain-id limit computed as `(uint16_t)(1u <<
+(4 + 2*nd))` **truncated to zero** for the ND=6 that QEMU reports, so the guard read `1 >= 0`
+and refused every domain; the same 32-bit truncation shape as issue #176, and a limit must be
+computed in a type that can hold it. And `sys_dma_addr` reached the kernel through the
+3-argument `syscall()` wrapper, which never writes `rsi`, so the new flags word read whatever
+the caller happened to leave there.
 
-  **`NET_NO_DECODE`'s `#ifdef` did not survive the rewrite**, the arm silently stopped being
-  wired, and its gate went green for the wrong reason — caught by running it. A defect flag must
-  follow every rewrite of the function it mutates, not only every split.
+**`NET_NO_DECODE`'s `#ifdef` did not survive the rewrite**, the arm silently stopped being
+wired, and its gate went green for the wrong reason, caught by running it. A defect flag must
+follow every rewrite of the function it mutates, not only every split.
 
-  **What is honestly still missing.** `netd` transmits and does **not receive**; the cause is
-  unknown and everything ruled out is written down (`docs/LIMITATIONS.md` §2.14) — it is a gap in
-  the driver, not in S45, since the transmit path exercises device-reads-memory *and*
-  device-writes-memory. There is no interrupt remapping (nothing to remap yet, §2.13). And
-  containment is now a property of the **memory** a compromised driver can reach, not of the
-  network: a compromised `netd` still speaks for this machine on the wire.
+**What is honestly still missing.** `netd` transmits and does **not receive**; the cause is
+unknown and everything ruled out is written down (`docs/LIMITATIONS.md` §2.14): it is a gap in
+the driver, not in S45, since the transmit path exercises device-reads-memory *and*
+device-writes-memory. There is no interrupt remapping (nothing to remap yet, §2.13). And
+containment is now a property of the **memory** a compromised driver can reach, not of the
+network: a compromised `netd` still speaks for this machine on the wire.
 
-- **A network driver in ring 3 — roadmap 2.6's first half (S44).** `netd`
+- **A network driver in ring 3: roadmap 2.6's first half (S44).** `netd`
   (`userspace/netd.c`) drives virtio-net over the legacy I/O BAR holding exactly two
   capabilities: a `CAP_IO_DEVICE` naming the NIC, and one delegated untyped region it builds
   its descriptor rings from. No console capability, no filesystem, no boot modules, nothing
   ambient. It resets the device, negotiates one feature, publishes two queues, and completes an
-  ARP exchange with QEMU's user-mode gateway — the reply arriving through its own receive ring.
+  ARP exchange with QEMU's user-mode gateway; the reply arriving through its own receive ring.
 
   **The assertion is on the wire.** A driver that reads its own MAC back out of device config
   has proved the BAR is mapped and nothing else; this has to transmit a frame the emulator
@@ -1012,124 +1057,123 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   layout, the bus address in every descriptor, and the used-ring protocol. Witness
   `make smoke-net`.
 
-  Two kernel mechanisms landed with it, because a DMA mechanism with no driver is authority
-  added for nobody. **`SYS_DEVICE_ENABLE` (103)** sets the three PCI decode bits of the device
-  a capability names — I/O, memory, bus master — and *nothing else in configuration space*: the
-  offset is fixed, the value is masked to three bits, and the device is the one the capability
-  named. That narrowness is load-bearing, because the BARs are in the same 256 bytes and a
-  driver that could write them could move its own BAR onto another device's registers and make
-  **S43**'s frame check a lie. **`SYS_DMA_ADDR` (104)** reports where a named device reaches a
-  named frame and requires **both** capabilities: the answer is a physical address, disclosed
-  nowhere else in this ABI, and gating on the frame alone would hand the kernel's memory layout
-  to every task that ever retyped a page. Requiring the device makes the disclosure add
-  **nothing** — a bus-mastering device holder can already read and write all of memory through
-  it. That is the whole security argument for the call, and `DMA_ADDR_FRAME_ONLY=1` is the arm.
+Two kernel mechanisms landed with it, because a DMA mechanism with no driver is authority added
+for nobody. **`SYS_DEVICE_ENABLE` (103)** sets the three PCI decode bits of the device a
+capability names (I/O, memory, bus master) and *nothing else in configuration space*: the offset
+is fixed, the value is masked to three bits, and the device is the one the capability named.
+That narrowness is load-bearing, because the BARs are in the same 256 bytes and a driver that
+could write them could move its own BAR onto another device's registers and make **S43**'s frame
+check a lie. **`SYS_DMA_ADDR` (104)** reports where a named device reaches a named frame and
+requires **both** capabilities: the answer is a physical address, disclosed nowhere else in this
+ABI, and gating on the frame alone would hand the kernel's memory layout to every task that ever
+retyped a page. Requiring the device makes the disclosure add **nothing**, a bus-mastering
+device holder can already read and write all of memory through it. That is the whole security
+argument for the call, and `DMA_ADDR_FRAME_ONLY=1` is the arm.
 
-  **What this does not establish, stated because the roadmap sentence is easy to over-read.**
-  "A network-stack compromise is contained to one address space" is **not true yet** and no
-  capability will make it true: with no IOMMU a bus-mastering device reaches all of physical
-  memory whatever its driver holds, and the descriptors directing it are written by the driver.
-  The capability decides who may turn bus mastering on and for which device — the enforceable
-  half. `docs/LIMITATIONS.md` §2.12.
+**What this does not establish, stated because the roadmap sentence is easy to over-read.** "A
+network-stack compromise is contained to one address space" is **not true yet** and no
+capability will make it true: with no IOMMU a bus-mastering device reaches all of physical
+memory whatever its driver holds, and the descriptors directing it are written by the driver.
+The capability decides who may turn bus mastering on and for which device; the enforceable half.
+`docs/LIMITATIONS.md` §2.12.
 
-  **THE BUS-MASTER CONTROL ARM WAS WRITTEN FIRST AND DOES NOT EXIST.** The obvious arm for
-  `SYS_DEVICE_ENABLE` is to clear the bus-master bit; it was written, and it **passed** with the
-  bit clear. Not a flag that failed to reach the compile — the command line carried it and the
-  boot stamped `DEFECT FLAGS: NET_NO_BUSMASTER`. Not a syscall writing nothing — measured, a
-  build asking for *no* decode bits kills the register file. **QEMU does not enforce PCI
-  bus-master enable for virtio-net**, so the arm cannot fail here, and a control arm that cannot
-  fail cannot gate — the same call `SPAWN_STAGE_UNSERIALISED` got. `NET_NO_BUSMASTER` is kept
-  ungated with that reason beside it; `NET_NO_DECODE` replaced it and tests the syscall rather
-  than the emulator's opinion of one register.
+**THE BUS-MASTER CONTROL ARM WAS WRITTEN FIRST AND DOES NOT EXIST.** The obvious arm for
+`SYS_DEVICE_ENABLE` is to clear the bus-master bit; it was written, and it **passed** with the
+bit clear. Not a flag that failed to reach the compile; the command line carried it and the boot
+stamped `DEFECT FLAGS: NET_NO_BUSMASTER`. Not a syscall writing nothing, measured, a build
+asking for *no* decode bits kills the register file. **QEMU does not enforce PCI bus-master
+enable for virtio-net**, so the arm cannot fail here, and a control arm that cannot fail cannot
+gate; the same call `SPAWN_STAGE_UNSERIALISED` got. `NET_NO_BUSMASTER` is kept ungated with that
+reason beside it; `NET_NO_DECODE` replaced it and tests the syscall rather than the emulator's
+opinion of one register.
 
-  A second thing the arms caught: **a bound is a failure budget, not a correctness parameter.**
-  The receive poll first ran 40 million iterations — irrelevant to a passing build, which leaves
-  at once, but a *failing* build spent the whole bound and outlived the harness's 40-second
-  budget, so `smoke-net-dma-control` reported a timeout rather than its own marker. A gate
-  failing indistinguishably from a hang is the failure mode `TESTS.md` keeps warning about.
+A second thing the arms caught: **a bound is a failure budget, not a correctness parameter.**
+The receive poll first ran 40 million iterations: irrelevant to a passing build, which leaves at
+once, but a *failing* build spent the whole bound and outlived the harness's 40-second budget,
+so `smoke-net-dma-control` reported a timeout rather than its own marker. A gate failing
+indistinguishably from a hang is the failure mode `TESTS.md` keeps warning about.
 
   `captest` 122 → 126 checks (both new syscalls refused to a task holding no device
   capability), `frametest` 55 → 58 (the two-capability rule, from the side that holds frames and
   no device). `SMOKE_NET=user` is new alongside `SMOKE_NET=1`: the authority gates need a device
   on the bus, this one needs something at the other end of the wire.
 
-- **A device capability names a device — roadmap 2.7, and the prerequisite 2.6 was written
+- **A device capability names a device, roadmap 2.7, and the prerequisite 2.6 was written
   against for a year (S43).** `CAP_IO_DEVICE` was a capability *type with no object*: exactly
   one existed, primordial, its `object` field permanently 0 and read by nothing, while the three
-  syscalls it gated resolved their authority from constants — a compiled-in VGA allowlist in
+  syscalls it gated resolved their authority from constants, a compiled-in VGA allowlist in
   `SYS_MAP_PHYS`, one compiled-in console port set prefilled into the TSS bitmap at boot, and a
   hardcoded pair of IRQ numbers. Holding the type **was** the authority, and the authority was
   the console. A second driver could not be given the hardware it needs without being given the
   hardware it does not.
 
-  That is finding **[C-1]**'s shape one layer down — an object named by an unmediated constant
-  instead of by the capability — so it takes [C-1]'s fix. `src/kernel/pci.c` enumerates PCI bus 0
-  at boot into an I/O-device table, alongside one non-enumerable **platform** entry for the
-  legacy console hardware; each entry declares exactly the three things these syscalls hand out,
-  which are physical frames, I/O port ranges and interrupt lines. `SYS_MAP_PHYS`,
-  `SYS_IOPORT_GRANT` and `SYS_IRQ_REGISTER` now take a **cspace slot** as their first argument,
-  resolve it through `iodev_from_slot`, and check the resource asked for against what *that*
-  device declares. **Their fixed slot-10 dispatch entries are gone**, which is part of the fix
-  rather than a tidy-up: leaving one would re-admit the old behaviour underneath the new check.
+That is finding **[C-1]**'s shape one layer down (an object named by an unmediated constant
+instead of by the capability) so it takes [C-1]'s fix. `src/kernel/pci.c` enumerates PCI bus 0
+at boot into an I/O-device table, alongside one non-enumerable **platform** entry for the legacy
+console hardware; each entry declares exactly the three things these syscalls hand out, which
+are physical frames, I/O port ranges and interrupt lines. `SYS_MAP_PHYS`, `SYS_IOPORT_GRANT` and
+`SYS_IRQ_REGISTER` now take a **cspace slot** as their first argument, resolve it through
+`iodev_from_slot`, and check the resource asked for against what *that* device declares. **Their
+fixed slot-10 dispatch entries are gone**, which is part of the fix rather than a tidy-up:
+leaving one would re-admit the old behaviour underneath the new check.
 
-  `SYS_DEVICE_INFO` (102) is new and READ-gated where the others are WRITE: a driver cannot be
-  written against a device whose BARs it cannot discover, since firmware assigns them and a
-  hardcoded address is how a driver ends up mapping whatever happens to sit there. It reports the
-  device the capability names and nothing else — there is deliberately no bus walk, because
-  holding one device must not be a way to enumerate the machine.
+`SYS_DEVICE_INFO` (102) is new and READ-gated where the others are WRITE: a driver cannot be
+written against a device whose BARs it cannot discover, since firmware assigns them and a
+hardcoded address is how a driver ends up mapping whatever happens to sit there. It reports the
+device the capability names and nothing else; there is deliberately no bus walk, because holding
+one device must not be a way to enumerate the machine.
 
-  **Index 0 is reserved and names nothing.** Two things default to zero — a task slot's
-  `io_device` and a capability's `object`, which `cap_install_from_root`'s fourth argument
-  overrides — and a 0-based table would have silently resolved both to the platform device, i.e.
-  to the console, which is the exact authority this change exists to stop handing out by default.
-  Reserving 0 makes those paths fail closed without having to be found.
+**Index 0 is reserved and names nothing.** Two things default to zero, a task slot's `io_device`
+and a capability's `object`, which `cap_install_from_root`'s fourth argument overrides, and a
+0-based table would have silently resolved both to the platform device, i.e. to the console,
+which is the exact authority this change exists to stop handing out by default. Reserving 0
+makes those paths fail closed without having to be found.
 
-  Port authority follows the capability into the TSS: the bitmap is loaded from the granted
-  device's ranges on every switch in, so a grant is to **one** device and a regrant replaces it
-  rather than accumulating. The one range no device declares is PCI configuration space — a
-  driver that could write it could move any device's BARs and make every check above decorative.
+Port authority follows the capability into the TSS: the bitmap is loaded from the granted
+device's ranges on every switch in, so a grant is to **one** device and a regrant replaces it
+rather than accumulating. The one range no device declares is PCI configuration space, a driver
+that could write it could move any device's BARs and make every check above decorative.
 
-  Witness `make smoke-devcap`: the probe holds **two** device capabilities that are copies of the
-  same primordial root, identical in type and rights and differing in exactly one field, and
-  checks the matrix in both directions on one boot. Both directions are required, because the
-  refusals alone are satisfied by a kernel that refuses everything — and by the *old* kernel,
-  which refused everything off its allowlist whatever capability you held. Falsified one arm per
-  rule: `IO_DEVICE_OBJECT_UNCHECKED=1`, `IO_DEVICE_PORTS_GLOBAL=1`, `IO_DEVICE_IRQ_UNCHECKED=1`,
-  each 3 boots in 3, each breaking exactly one marker, and `smoke-devcap` red under each.
+Witness `make smoke-devcap`: the probe holds **two** device capabilities that are copies of the
+same primordial root, identical in type and rights and differing in exactly one field, and
+checks the matrix in both directions on one boot. Both directions are required, because the
+refusals alone are satisfied by a kernel that refuses everything: and by the *old* kernel, which
+refused everything off its allowlist whatever capability you held. Falsified one arm per rule:
+`IO_DEVICE_OBJECT_UNCHECKED=1`, `IO_DEVICE_PORTS_GLOBAL=1`, `IO_DEVICE_IRQ_UNCHECKED=1`, each 3
+boots in 3, each breaking exactly one marker, and `smoke-devcap` red under each.
 
-  **The ports arm caught the probe before it caught the kernel.** Its first arrangement read the
-  NIC's *own* port under a NIC grant and then a console port; under a global bitmap the own port
-  is the one that is **denied**, so the probe died there and never reached the read that would
-  have shown the console's ports being handed over. A detector that halts truncates its own
-  evidence — `smoke-kstack-park`'s lesson, one gate over. It now reads the same port twice, under
-  two different grants, so the second fault means "the grant followed the capability" rather than
-  "port I/O is broken here".
+**The ports arm caught the probe before it caught the kernel.** Its first arrangement read the
+NIC's *own* port under a NIC grant and then a console port; under a global bitmap the own port
+is the one that is **denied**, so the probe died there and never reached the read that would
+have shown the console's ports being handed over. A detector that halts truncates its own
+evidence, `smoke-kstack-park`'s lesson, one gate over. It now reads the same port twice, under
+two different grants, so the second fault means "the grant followed the capability" rather than
+"port I/O is broken here".
 
-  A **fourth** arm lives in `smoke-captest`, and it is the one the other three cannot supply.
-  They all bypass the *object* check while the capability lookup stays; none can say whether a
-  capability is still required at all — a question this change sharpens, because removing the
-  dispatch-table entries made the handler the only gate. `IO_DEVICE_CAP_UNCHECKED=1` removes
-  that lookup and `captest`, holding no `CAP_IO_DEVICE`, maps the console's framebuffer.
-  captest gained seven checks for it (115 → 122), covering the three distinct ways to hold no
-  authority: the conventional slot never endowed, a live capability of the **wrong type**
-  (slot 3's `CAP_FRAME`, the decoy every task is born with), and a slot that never held
-  anything.
+A **fourth** arm lives in `smoke-captest`, and it is the one the other three cannot supply. They
+all bypass the *object* check while the capability lookup stays; none can say whether a
+capability is still required at all, a question this change sharpens, because removing the
+dispatch-table entries made the handler the only gate. `IO_DEVICE_CAP_UNCHECKED=1` removes that
+lookup and `captest`, holding no `CAP_IO_DEVICE`, maps the console's framebuffer. captest gained
+seven checks for it (115 → 122), covering the three distinct ways to hold no authority: the
+conventional slot never endowed, a live capability of the **wrong type** (slot 3's `CAP_FRAME`,
+the decoy every task is born with), and a slot that never held anything.
 
-  **Two syscalls were promoted from `uncovered` to `covered` as a side effect, and the coverage
-  gate is what noticed.** Moving the authority check out of the dispatch table and into the
-  handler means the central gate now admits every caller and the refusal happens *inside* —
-  so captest's new checks, which assert refusals, run those handler bodies for the first time.
-  That is `SYS_GET_LINE`'s precedent exactly: a syscall can be covered by a test that proves it
-  says no. The stale `uncovered` reasons named `IRQ_SELFTEST` as an untracked build that would
-  reach them, and went stale in the same commit that moved the gate.
+**Two syscalls were promoted from `uncovered` to `covered` as a side effect, and the coverage
+gate is what noticed.** Moving the authority check out of the dispatch table and into the
+handler means the central gate now admits every caller and the refusal happens *inside*, so
+captest's new checks, which assert refusals, run those handler bodies for the first time. That
+is `SYS_GET_LINE`'s precedent exactly: a syscall can be covered by a test that proves it says
+no. The stale `uncovered` reasons named `IRQ_SELFTEST` as an untracked build that would reach
+them, and went stale in the same commit that moved the gate.
 
   `SMOKE_NET=1` puts a virtio-net NIC on the bus for these four targets alone. The guest **fails
   rather than skips** when it finds no NIC: a second device is the whole experiment, and without
   one every refusal in the suite is vacuous and it would pass on the kernel it exists to reject.
 
-- **`fork` + `exec`, the pairing — roadmap 2.3, and the property that makes it safe (S42).**
-  Both syscalls existed and both were gated; the *sequence* — the only one a shell ever
-  performs — was not, and neither was the question of what an exec does to the capability graph.
+- **`fork` + `exec`, the pairing: roadmap 2.3, and the property that makes it safe (S42).**
+  Both syscalls existed and both were gated; the *sequence*; the only one a shell ever
+  performs, was not, and neither was the question of what an exec does to the capability graph.
 
   The answer is **nothing**: `exec_into_armed_image` rebuilds the address space and touches no
   capability, so the execed task keeps the same `serial` and the same `badge` and therefore its
@@ -1137,55 +1181,55 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   inheritance, `fork(); exec();` yields a task whose authority is still a *subtree* of its
   parent's, and **a task cannot launder delegated authority into a root of its own by execing**.
 
-  **This is an invariant written as the absence of a step**, which is the hardest kind to hold:
-  there is no line to point at, so nothing goes stale visibly and no reviewer is prompted to
-  ask. Both control arms therefore *add* one. `EXEC_RESET_CSPACE=1` discards everything above
-  the birth endowment — the "clean slate for a new image" instinct, which breaks the pairing a
-  shell needs. `EXEC_ROOT_CSPACE=1` keeps every capability and re-mints it as a **root**, and
-  that is the one this exists for: the authority is byte-for-byte identical, every functional
-  check still passes, and only the derivation graph can see that the parent's revoke no longer
-  reaches it. Finding **3.3**'s shape, one syscall over from `FORK_CSPACE_ORPHAN_COPY`.
+**This is an invariant written as the absence of a step**, which is the hardest kind to hold:
+there is no line to point at, so nothing goes stale visibly and no reviewer is prompted to ask.
+Both control arms therefore *add* one. `EXEC_RESET_CSPACE=1` discards everything above the birth
+endowment: the "clean slate for a new image" instinct, which breaks the pairing a shell needs.
+`EXEC_ROOT_CSPACE=1` keeps every capability and re-mints it as a **root**, and that is the one
+this exists for: the authority is byte-for-byte identical, every functional check still passes,
+and only the derivation graph can see that the parent's revoke no longer reaches it. Finding
+**3.3**'s shape, one syscall over from `FORK_CSPACE_ORPHAN_COPY`.
 
-  The gate revokes **three generations deep** — the driver's `CAP_UNTYPED`, the child's forked
-  copy, and what the child minted from that before execing — so the sweep has to cross both a
-  fork and an exec.
+The gate revokes **three generations deep**, the driver's `CAP_UNTYPED`, the child's forked
+copy, and what the child minted from that before execing, so the sweep has to cross both a fork
+and an exec.
 
-  **It also carries a memory claim `smoke-fork` cannot reach.** `task_teardown` does not free an
-  address space (a dead task's tree is reclaimed later, when its slot is reused), so a forked
-  child that merely exits never drops the reference `clone_user_aspace` took on each shared
-  page. An **exec** does, through `create_user_pagedir`'s reclaim — making it the only path in
-  the tree that frees a copy-on-write clone while its parent is still running, where a reference
-  dropped once too often would put a live page of the parent's on the free page stack.
-  `FORK_SHARE_WRITABLE=1` falsifies that arm with no new flag.
+**It also carries a memory claim `smoke-fork` cannot reach.** `task_teardown` does not free an
+address space (a dead task's tree is reclaimed later, when its slot is reused), so a forked
+child that merely exits never drops the reference `clone_user_aspace` took on each shared page.
+An **exec** does, through `create_user_pagedir`'s reclaim: making it the only path in the tree
+that frees a copy-on-write clone while its parent is still running, where a reference dropped
+once too often would put a live page of the parent's on the free page stack.
+`FORK_SHARE_WRITABLE=1` falsifies that arm with no new flag.
 
-  **The execed task reports through the capability graph, not the console**, and that was a
-  design correction rather than a flourish. A gate decided by matching two tasks' prose on one
-  wire is decided by whichever line the harness latches first — how `forktest`'s first version
-  printed a `FAIL` and then a `PASS`. And the console is not a channel the task is guaranteed:
-  measured, `EXEC_RESET_CSPACE=1` can still print in this selftest boot because nothing has
-  taken the console, but once a ring-3 console server owns it printing needs the delegated
-  endpoint in slot 5 — precisely what that arm discards.
+**The execed task reports through the capability graph, not the console**, and that was a design
+correction rather than a flourish. A gate decided by matching two tasks' prose on one wire is
+decided by whichever line the harness latches first, how `forktest`'s first version printed a
+`FAIL` and then a `PASS`. And the console is not a channel the task is guaranteed: measured,
+`EXEC_RESET_CSPACE=1` can still print in this selftest boot because nothing has taken the
+console, but once a ring-3 console server owns it printing needs the delegated endpoint in slot
+5, precisely what that arm discards.
 
   One thing had to be measured before any of it worked: the rendezvous mints are from **slot 0**
   because it is the only birth capability carrying `CAP_RIGHT_MINT` (slot 3 is `READ|WRITE|EXEC`,
   slot 4 `READ|WRITE`). Using slot 3 made every signal in the test fail silently.
 
-  New: `userspace/forkexectest.c`, `userspace/forkexecee.c`, `FORKEXEC_SELFTEST=1`,
-  `make smoke-forkexec` and its two control arms, and a required `forkexec` CI job. **The
-  ruleset must be synced after this merges** — `tools/check_ci_gating.py --sync-ruleset`.
+New: `userspace/forkexectest.c`, `userspace/forkexecee.c`, `FORKEXEC_SELFTEST=1`, `make
+smoke-forkexec` and its two control arms, and a required `forkexec` CI job. **The ruleset must
+be synced after this merges**, `tools/check_ci_gating.py --sync-ruleset`.
 
 ### Fixed
 
 - **Two claims in `docs/LIMITATIONS.md` outlived the code by a day.** §2.4 said *"there is no
-  `fork` — the only COW producer is the demand pager"* and §4 listed `fork` under functionality
+  `fork`; the only COW producer is the demand pager"* and §4 listed `fork` under functionality
   that does not exist, both written before #220 landed it and neither updated by it. §2.4's own
-  open question — what a COW break means for a page two tasks hold capabilities for — turns out
+  open question (what a COW break means for a page two tasks hold capabilities for) turns out
   to have been **answered** by S38 and S40 rather than left pending. Both retired phrasings are
   in `.github/doc-claims.yml`'s `forbidden:` list now, so neither can reappear.
 
 - **The count of security properties was stated in three places and derived in none.**
   `.github/invariants.yml`, `TESTS.md` and `docs/ROADMAP.md` each said *"all 43 properties"*, so
-  adding S42 made all three wrong at once — the same shape as the framepeer count one commit
+  adding S42 made all three wrong at once; the same shape as the framepeer count one commit
   earlier, and the same lesson: a checker covers exactly the claims somebody remembered to
   declare. Derived now (`security_properties`), with the deriver mirroring
   `tools/check_invariants.py`'s own row regex so the two tools cannot disagree about what a
@@ -1199,20 +1243,20 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
   | Claim | Said | Live |
   |---|---|---|
-  | `site` — QEMU integration targets | 68 | **88** |
-  | `site` — configuration/test targets in BUILDING.md | 53 | **134** |
-  | `site` — syscall numbers the ABI defines | 86 | **102** |
-  | `site` — handlers a default build installs | 75 | **84** |
-  | `SECURITY.md` / `TESTS.md` — framepeer's checks | 8 / 5 | **9** |
+  | `site`; QEMU integration targets | 68 | **88** |
+  | `site`, configuration/test targets in BUILDING.md | 53 | **134** |
+  | `site`, syscall numbers the ABI defines | 86 | **102** |
+  | `site`, handlers a default build installs | 75 | **84** |
+  | `SECURITY.md` / `TESTS.md`, framepeer's checks | 8 / 5 | **9** |
 
   The last is the instructive one: **two documents disagreed with each other and both with the
   tree.** An underived count does that as soon as the test it describes grows, and nothing
   reconciles them because nothing is comparing either to anything.
 
-  The syscall pair is the second: *"the ABI defines 86 syscall numbers … a default build installs
-  75 handlers"* — the difference between those two **is** the fail-closed claim the paragraph
-  makes, and with only one half derived the sentence could drift while still reading as
-  internally consistent. Both halves are derived now.
+The syscall pair is the second: *"the ABI defines 86 syscall numbers … a default build installs
+75 handlers"*: the difference between those two **is** the fail-closed claim the paragraph
+makes, and with only one half derived the sentence could drift while still reading as internally
+consistent. Both halves are derived now.
 
   Three new derivers (`gates`, `syscall_numbers`, `framepeer_checks`), five new declared
   occurrences, and the retired phrasings recorded in `forbidden:` so they cannot reappear.
@@ -1222,15 +1266,15 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 - **A security-invariant registry: every property in `SECURITY.md` is bound to a witness that
   exists and runs (roadmap 4.12, finding [F-4.1]).** `tools/check_invariants.py` and the required
-  `invariants` job. Six rules — a resolvable witness per property; every `make X` named is a real
+  `invariants` job. Six rules, a resolvable witness per property; every `make X` named is a real
   target; every witness target runs in CI or is excused; every control-arm flag named is in
   `DEFECT_FLAGS` so a boot under it is stamped; ids unique and contiguous; no stale exemption.
 
-  **It derives from `SECURITY.md` rather than adding an `invariants.yaml` beside it.** The table
-  already carries id, statement, enforcing code and witness — it *is* the registry. A
-  hand-maintained parallel manifest would be a second copy of claims that already exist, which is
-  **[H-3]** restated as documentation. `.github/invariants.yml` holds exemptions only and is
-  currently empty: all 43 properties resolve.
+**It derives from `SECURITY.md` rather than adding an `invariants.yaml` beside it.** The table
+already carries id, statement, enforcing code and witness: it *is* the registry. A
+hand-maintained parallel manifest would be a second copy of claims that already exist, which is
+**[H-3]** restated as documentation. `.github/invariants.yml` holds exemptions only and is
+currently empty: all 43 properties resolve.
 
   **The question it asks is the one no earlier sweep asked.** Ambient-authority sweeps looked for
   gates that were *absent*; the [H-3] sweep looked for gates that were *vacuous*. Neither would
@@ -1242,19 +1286,19 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   it to `WRITE\`, reporting a well-witnessed property as unwitnessed. The first thing anyone does
   with a checker that invents findings is learn to skim past it.
 
-  **Four rows now name the job that witnesses them** instead of saying "Rust unit tests" or
-  "Kani proofs" — the `rust` and `kani-bounded` jobs — which is strictly more informative than
-  the prose it replaced, and is why those rows needed no exemption.
+**Four rows now name the job that witnesses them** instead of saying "Rust unit tests" or "Kani
+proofs" (the `rust` and `kani-bounded` jobs) which is strictly more informative than the prose
+it replaced, and is why those rows needed no exemption.
 
-  **Every rule is falsified**, one arm each, in `tools/test_check_invariants.sh` — run in the same
-  job, on copies of the tree, and each arm required to be reported under *its own* rule rather
-  than merely to fail. R1's arm is literally S16's real prior state.
+**Every rule is falsified**, one arm each, in `tools/test_check_invariants.sh`, run in the same
+job, on copies of the tree, and each arm required to be reported under *its own* rule rather
+than merely to fail. R1's arm is literally S16's real prior state.
 
 
 - **S16 has a witness (`make smoke-fpu`).** `SECURITY.md` claimed "a task cannot read another's
   XMM register file" with a literal em-dash in its witness column, for the life of the project.
   `fpu_save` / `fpu_restore` were real code, called from `interrupt_handler64` on every ring
-  transition, and **nothing exercised them** — the **[C-1]** shape exactly: a documented property
+  transition, and **nothing exercised them**: the **[C-1]** shape exactly: a documented property
   with no test binding it to the code. Found while surveying `SECURITY.md` for roadmap 4.12's
   invariant registry, which exists to make that unrepeatable; this is the first thing it catches.
 
@@ -1267,142 +1311,142 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   SSE2 as the baseline, so the compiler may use xmm registers at any point; split across
   statements this would test whatever GCC left behind, and pass or fail on optimisation settings.
 
-  **The arm caught the test before it caught the kernel.** The first version released both tasks
-  together and the leak arm reproduced on **2 boots in 3** — because `fpupeer` samples a bounded
-  number of times, so scheduled early it could spend its whole window while `fputest` was still
-  filling its sentinel buffer, reporting "no leak" having never looked at a moment when there was
-  one. Raising the sample count would have hidden the race and left the arm's rate a property of
-  the host's timing; that is the `smoke-kstack-park` mistake. The peer is now spawned suspended
-  and released by `fputest` itself, from inside the asm block, after the sentinel is loaded and
-  before the first yield — its first sample is ordered after the load by construction.
+**The arm caught the test before it caught the kernel.** The first version released both tasks
+together and the leak arm reproduced on **2 boots in 3**, because `fpupeer` samples a bounded
+number of times, so scheduled early it could spend its whole window while `fputest` was still
+filling its sentinel buffer, reporting "no leak" having never looked at a moment when there was
+one. Raising the sample count would have hidden the race and left the arm's rate a property of
+the host's timing; that is the `smoke-kstack-park` mistake. The peer is now spawned suspended
+and released by `fputest` itself, from inside the asm block, after the sentinel is loaded and
+before the first yield; its first sample is ordered after the load by construction.
 
-  **Two arms, one per half, and they are separable** — which is the part worth recording.
-  `FPU_NO_RESTORE=1` drops the `fxrstor`, so a task inherits the previous task's physical
-  registers: the peer reads the sentinel, and the integrity check **still passes**, because
-  nothing overwrote it. `FPU_NO_SAVE=1` drops the `fxsave`, so a task is handed a stale image:
-  the integrity check fails and the leak check **still passes**, because a stale image discloses
-  nothing. One loses state, the other leaks it. A single `FPU_BROKEN` flag would have reddened
-  both markers at once and shown neither check could fail on its own.
+**Two arms, one per half, and they are separable**, which is the part worth recording.
+`FPU_NO_RESTORE=1` drops the `fxrstor`, so a task inherits the previous task's physical
+registers: the peer reads the sentinel, and the integrity check **still passes**, because
+nothing overwrote it. `FPU_NO_SAVE=1` drops the `fxsave`, so a task is handed a stale image: the
+integrity check fails and the leak check **still passes**, because a stale image discloses
+nothing. One loses state, the other leaks it. A single `FPU_BROKEN` flag would have reddened
+both markers at once and shown neither check could fail on its own.
 
 
 - **A forked child inherits its parent's capabilities as DERIVED copies (roadmap 2.3, S41).**
   `cap_clone_cspace` gives the child a copy of every capability the parent holds, in the same
-  slot, each with its **own fresh serial** and a `badge` naming the parent capability's serial —
+  slot, each with its **own fresh serial** and a `badge` naming the parent capability's serial; 
   the edge `revoke_subtree` walks. The child's authority is therefore a *subtree* of the
   parent's: fork adds no new **root** to the capability graph, and every revocation that would
   have swept the parent's capability sweeps the child's with it. Closes
   `docs/LIMITATIONS.md` §2.11, open since #220 landed the memory half the day before.
 
-  **A cspace is an array of `capability_t`, so this looks like a `memcpy`,** and that is wrong
-  in two independent directions — which is why each is a control arm rather than a sentence:
+**A cspace is an array of `capability_t`, so this looks like a `memcpy`,** and that is wrong in
+two independent directions, which is why each is a control arm rather than a sentence:
 
-  **Identical serials** (`FORK_CSPACE_FLAT_COPY=1`). `rust_cap_revoke_global`'s sweep nulls
-  every capability whose serial matches the revoked root's, in *every* cspace, because a serial
-  is supposed to name exactly one capability. Duplicate one and the child revoking its **own**
-  slot destroys the parent's — a cross-task revocation primitive available to any task that can
-  fork, which is every task. Revocation is meant to flow down the derivation tree; this makes it
-  flow sideways.
+**Identical serials** (`FORK_CSPACE_FLAT_COPY=1`). `rust_cap_revoke_global`'s sweep nulls every
+capability whose serial matches the revoked root's, in *every* cspace, because a serial is
+supposed to name exactly one capability. Duplicate one and the child revoking its **own** slot
+destroys the parent's, a cross-task revocation primitive available to any task that can fork,
+which is every task. Revocation is meant to flow down the derivation tree; this makes it flow
+sideways.
 
-  **No parent edge** (`FORK_CSPACE_ORPHAN_COPY=1`). A fresh serial with `badge` left alone is
-  not derived from anything: a second **root** of the capability graph holding the parent's
-  authority. `mark_children_of` never marks it and its serial matches no revocation root, so
-  revoking the parent's capability leaves the child's working. This is finding **3.3**'s shape —
-  a capability keyed to a serial no sweep reaches — applied to a whole cspace at once, and it is
-  the hole `docs/LIMITATIONS.md` §2.11 was opened to record.
+**No parent edge** (`FORK_CSPACE_ORPHAN_COPY=1`). A fresh serial with `badge` left alone is not
+derived from anything: a second **root** of the capability graph holding the parent's authority.
+`mark_children_of` never marks it and its serial matches no revocation root, so revoking the
+parent's capability leaves the child's working. This is finding **3.3**'s shape (a capability
+keyed to a serial no sweep reaches) applied to a whole cspace at once, and it is the hole
+`docs/LIMITATIONS.md` §2.11 was opened to record.
 
   **Neither is avoided by getting the copy right; both are avoided by not writing the copy.**
   The loop calls `rust_cap_grant_into`, which is what `SYS_CAP_GRANT` uses, so a forked
   capability and a delegated one are the same object by construction rather than by two
   implementations agreeing. **[H-3]** is what happens when they stop agreeing.
 
-  **Four things are not inherited, and each would be impersonation rather than delegation.**
-  Slots 0–3 and slot 4 are the child's own identity — the parent's slot 0 names the **parent**,
-  so copying it would mint a `CAP_TCB` over the parent that the parent never held in a
-  delegatable form, and slot 4 is the private reply endpoint whose entire value is that nobody
-  else has it (finding **C-1**). `CAP_REPLY` is skipped **by type** wherever it sits: one-shot,
-  and two holders is reply forgery. Hitting `MAX_CAPS_PER_TASK` fails the whole fork rather than
-  handing over a slot-order-dependent prefix of the parent's authority — the same all-or-nothing
-  argument **S35** makes about a partly-installed mapping.
+**Four things are not inherited, and each would be impersonation rather than delegation.** Slots
+0–3 and slot 4 are the child's own identity: the parent's slot 0 names the **parent**, so
+copying it would mint a `CAP_TCB` over the parent that the parent never held in a delegatable
+form, and slot 4 is the private reply endpoint whose entire value is that nobody else has it
+(finding **C-1**). `CAP_REPLY` is skipped **by type** wherever it sits: one-shot, and two
+holders is reply forgery. Hitting `MAX_CAPS_PER_TASK` fails the whole fork rather than handing
+over a slot-order-dependent prefix of the parent's authority; the same all-or-nothing argument
+**S35** makes about a partly-installed mapping.
 
-  **Rights are not narrowed**, unlike the console capability `SYS_SPAWN` masks to `WRITE`, and
-  that is a decision rather than an omission. Spawn hands authority to a *different program*;
-  fork's child is the same program at the same instruction. A silently reduced copy would break
-  `if (fork() == 0) serve();` with nothing to report it, and the program would have the parent
-  grant the rights back — achieving nothing but a less legible graph. `rust_cap_grant_into`
-  still intersects with the source's rights, so a copy never carries more than the parent held.
+**Rights are not narrowed**, unlike the console capability `SYS_SPAWN` masks to `WRITE`, and
+that is a decision rather than an omission. Spawn hands authority to a *different program*;
+fork's child is the same program at the same instruction. A silently reduced copy would break
+`if (fork() == 0) serve();` with nothing to report it, and the program would have the parent
+grant the rights back, achieving nothing but a less legible graph. `rust_cap_grant_into` still
+intersects with the source's rights, so a copy never carries more than the parent held.
 
-  **Witness `make smoke-fork`**, which reads the derivation graph directly with
-  `SYS_CAP_ENUMERATE` — `serial` and `badge` are the graph's nodes and edges, so the invariant is
-  checked structurally, with no rendezvous between parent and child and no timing assumption.
-  Falsified one arm per rule by `smoke-fork-cspace-flat-control` and
-  `smoke-fork-cspace-orphan-control`, both of which also redden the base gate. The four S41
-  checks deliberately do not short-circuit: an early exit on the first would leave the later ones
-  unreachable from any arm, which is a check that cannot fail.
+**Witness `make smoke-fork`**, which reads the derivation graph directly with
+`SYS_CAP_ENUMERATE`: `serial` and `badge` are the graph's nodes and edges, so the invariant is
+checked structurally, with no rendezvous between parent and child and no timing assumption.
+Falsified one arm per rule by `smoke-fork-cspace-flat-control` and
+`smoke-fork-cspace-orphan-control`, both of which also redden the base gate. The four S41 checks
+deliberately do not short-circuit: an early exit on the first would leave the later ones
+unreachable from any arm, which is a check that cannot fail.
 
 
 - **`SYS_FORK` (101): a child that gets its own copy of its parent's memory, lazily
   (roadmap 2.3, S39 and S40).** `clone_user_aspace` (`src/kernel/paging.c`) builds the child's
-  address space as a copy-on-write clone of the caller's — both trees point at the same physical
-  frames with `PAGE_WRITE` cleared and `PAGE_COW` set, refcounts raised — and leaves the break
+  address space as a copy-on-write clone of the caller's; both trees point at the same physical
+  frames with `PAGE_WRITE` cleared and `PAGE_COW` set, refcounts raised, and leaves the break
   itself to `cow_break_pte`, which was written in the previous change for a caller that did not
   yet exist. Fork adds no copying path of its own.
 
-  **The parent's leaf is downgraded too, and that is the property.** Downgrading only the
-  child's is what this looks like from outside — "the child gets copy-on-write" — and it leaves
-  the parent writing through a writable mapping of a page the child reads. That is not a copy:
-  it is one process with two schedulable contexts, sharing one stack. `FORK_SHARE_WRITABLE=1`
-  is that kernel, and the witness catches it from both sides.
+**The parent's leaf is downgraded too, and that is the property.** Downgrading only the child's
+is what this looks like from outside ("the child gets copy-on-write") and it leaves the parent
+writing through a writable mapping of a page the child reads. That is not a copy: it is one
+process with two schedulable contexts, sharing one stack. `FORK_SHARE_WRITABLE=1` is that
+kernel, and the witness catches it from both sides.
 
-  **A mapped kernel object refuses the fork outright (S40).** S38 already refuses the *break* of
-  an arena page, and leaning on it would have been leaning on a fault-time refusal: the fork
-  succeeds, two tasks exist, and whichever writes first is killed at an unpredictable later
-  instruction on a page it was entitled to write a moment before. Refusing the clone reports the
-  same policy while the caller can still act on it. The alternative that reads most reasonably —
-  clone the frame *writable-shared*, since a frame **is** shared memory — is worse: the child
-  would hold a live mapping of a kernel object that no capability of its own names, so revoking
-  the parent's `CAP_FRAME` would sweep the parent's PTE and leave the child's behind.
+**A mapped kernel object refuses the fork outright (S40).** S38 already refuses the *break* of
+an arena page, and leaning on it would have been leaning on a fault-time refusal: the fork
+succeeds, two tasks exist, and whichever writes first is killed at an unpredictable later
+instruction on a page it was entitled to write a moment before. Refusing the clone reports the
+same policy while the caller can still act on it. The alternative that reads most reasonably
+(clone the frame *writable-shared*, since a frame **is** shared memory) is worse: the child
+would hold a live mapping of a kernel object that no capability of its own names, so revoking
+the parent's `CAP_FRAME` would sweep the parent's PTE and leave the child's behind.
 
-  **Gated on the same capability as `SYS_SPAWN`** (slot 3, `WRITE|EXEC`), and deliberately not
-  `SC_NONE`. Fork names no object and a task copying itself reaches nothing new, both of which
-  are true and neither of which is the point: an ungated `SYS_FORK` would be a second way to
-  create a task standing beside a gated one, so revoking slot 3 would stop a task spawning and
-  not stop it forking — and "this task can create no more tasks" would quietly stop being true.
+**Gated on the same capability as `SYS_SPAWN`** (slot 3, `WRITE|EXEC`), and deliberately not
+`SC_NONE`. Fork names no object and a task copying itself reaches nothing new, both of which are
+true and neither of which is the point: an ungated `SYS_FORK` would be a second way to create a
+task standing beside a gated one, so revoking slot 3 would stop a task spawning and not stop it
+forking, and "this task can create no more tasks" would quietly stop being true.
 
-  **The child does not inherit its parent's cspace**, and that is recorded as a limitation
-  (`docs/LIMITATIONS.md` §2.11) rather than done quietly. Copying capabilities as they stand
-  would leave the child's keyed to a serial no revocation sweeps — finding 3.3's shape applied
-  to a whole cspace, and a revocation hole reachable from ring 3 by anything that can fork. It
-  gets its own commit. Also not inherited: the port-I/O grant, the file master key, and every
-  in-flight kernel rendezvous. The child **is** born runnable, unlike a spawned one, because
-  fork performs the child's whole endowment inside the syscall — there is no window for a
-  supervisor to lose, which is the only reason spawn suspends.
+**The child does not inherit its parent's cspace**, and that is recorded as a limitation
+(`docs/LIMITATIONS.md` §2.11) rather than done quietly. Copying capabilities as they stand would
+leave the child's keyed to a serial no revocation sweeps: finding 3.3's shape applied to a whole
+cspace, and a revocation hole reachable from ring 3 by anything that can fork. It gets its own
+commit. Also not inherited: the port-I/O grant, the file master key, and every in-flight kernel
+rendezvous. The child **is** born runnable, unlike a spawned one, because fork performs the
+child's whole endowment inside the syscall; there is no window for a supervisor to lose, which
+is the only reason spawn suspends.
 
-  **Witness `make smoke-fork`**, falsified by `smoke-fork-share-control` and
-  `smoke-fork-arena-control`, both of which also redden the base gate. **The witness had to be
-  falsified before the kernel was:** its first version had a failing child report and exit, so
-  under `FORK_SHARE_WRITABLE=1` the run printed a `FAIL` and then a `PASS` — the child had died
-  before writing the page the parent's own check reads. A failing child now dies through a null
-  write and the parent reads `TASK_EXIT_PAGEFAULT` back with `SYS_TASK_EXIT_INFO`; the manner of
-  its death is the one channel a forked child still has to its parent.
+**Witness `make smoke-fork`**, falsified by `smoke-fork-share-control` and
+`smoke-fork-arena-control`, both of which also redden the base gate. **The witness had to be
+falsified before the kernel was:** its first version had a failing child report and exit, so
+under `FORK_SHARE_WRITABLE=1` the run printed a `FAIL` and then a `PASS`: the child had died
+before writing the page the parent's own check reads. A failing child now dies through a null
+write and the parent reads `TASK_EXIT_PAGEFAULT` back with `SYS_TASK_EXIT_INFO`; the manner of
+its death is the one channel a forked child still has to its parent.
 
 ### Changed
 
 - **A page belonging to a kernel object is never copied out from under it (roadmap 2.1, S38).**
   `cow_break_pte` refuses any physical page inside the untyped arena. Roadmap 2.1 posed this as
   *"what does a COW break mean for a capability two tasks hold"*, and the answer is that it must
-  not happen — it would be **two** holes at once.
+  not happen; it would be **two** holes at once.
 
-  **Resource authority.** The shared branch calls `alloc_user_physical_page()`, the *anonymous*
-  pool. A task holding a frame capability would obtain a private writable page that **no untyped
-  region ever paid for**. Roadmap 0.3's whole premise is that creating a memory-backed object is
-  an exercise of authority the capability graph describes; a COW break conjures one outside that
-  graph, which is ambient resource — and this kernel does not have ambient anything.
+**Resource authority.** The shared branch calls `alloc_user_physical_page()`, the *anonymous*
+pool. A task holding a frame capability would obtain a private writable page that **no untyped
+region ever paid for**. Roadmap 0.3's whole premise is that creating a memory-backed object is
+an exercise of authority the capability graph describes; a COW break conjures one outside that
+graph, which is ambient resource, and this kernel does not have ambient anything.
 
-  **Identity.** The PTE would be repointed at a page no capability names. The mapping silently
-  stops being the object, and the frame's `1 + mappings` pin arithmetic stops describing reality
-  — which is precisely what `destroy_dyn_frame` reads to decide a run is collectable. A task
-  that wants a private copy retypes its own frame from its own untyped and copies the bytes:
-  explicit, budgeted, visible in the graph.
+**Identity.** The PTE would be repointed at a page no capability names. The mapping silently
+stops being the object, and the frame's `1 + mappings` pin arithmetic stops describing reality,
+which is precisely what `destroy_dyn_frame` reads to decide a run is collectable. A task that
+wants a private copy retypes its own frame from its own untyped and copies the bytes: explicit,
+budgeted, visible in the graph.
 
   **The guard covers the whole arena, not just frames.** A cnode or an endpoint has even less
   business being copied out from under its object, and a predicate answering only about frames
@@ -1410,64 +1454,63 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   `[USER_PHYS_BASE, pool ceiling)` and so shares `page_refcounts[]` with the anonymous
   allocator, which is exactly why the generic page machinery would have operated on it happily.
 
-  **NOTHING IN THE TREE REACHES THIS PATH, and that is the reason to guard it now rather than an
-  argument against.** Two things prevent it and neither is a statement about frames:
-  `user_map_frame_page` sets `PRESENT|USER[|WRITE][|NX]` and never `PAGE_COW`, and
-  `rust_validate_page_fault` admits only image, heap and stack. Both are facts about *other
-  functions* — the shape **S28** and **S30** turned out to have when someone finally looked, and
-  the shape [G-2] had for nineteen days. Roadmap 2.3's `fork` is the function that changes it,
-  and a frame mapped inside the heap window already passes the region gate today. Guarding
-  before the caller exists is the cheapest this will ever be.
+**NOTHING IN THE TREE REACHES THIS PATH, and that is the reason to guard it now rather than an
+argument against.** Two things prevent it and neither is a statement about frames:
+`user_map_frame_page` sets `PRESENT|USER[|WRITE][|NX]` and never `PAGE_COW`, and
+`rust_validate_page_fault` admits only image, heap and stack. Both are facts about *other
+functions*: the shape **S28** and **S30** turned out to have when someone finally looked, and
+the shape [G-2] had for nineteen days. Roadmap 2.3's `fork` is the function that changes it, and
+a frame mapped inside the heap window already passes the region gate today. Guarding before the
+caller exists is the cheapest this will ever be.
 
-  **The arm is aimed at the half that matters.** `COW_ARENA_UNGUARDED=1`, witnessed by a third
-  case in `nzcow_selftest` driven with a **real** `KOBJ_FRAME` at refcount **2**. A freshly
-  retyped frame sits at 1 — its permanent pin — and at 1 an unguarded break takes the
-  *sole-owner* path: it upgrades the PTE in place and allocates nothing. That would have shown a
-  read-only mapping turning writable but not a page appearing outside the untyped budget, which
-  is the half that breaks the object model. `NZCOW_SELFTEST: FAIL arena-cow-broken`, 3 boots in
-  3, and `smoke-nzcow` goes red under the same flag.
+**The arm is aimed at the half that matters.** `COW_ARENA_UNGUARDED=1`, witnessed by a third
+case in `nzcow_selftest` driven with a **real** `KOBJ_FRAME` at refcount **2**. A freshly
+retyped frame sits at 1 (its permanent pin) and at 1 an unguarded break takes the *sole-owner*
+path: it upgrades the PTE in place and allocates nothing. That would have shown a read-only
+mapping turning writable but not a page appearing outside the untyped budget, which is the half
+that breaks the object model. `NZCOW_SELFTEST: FAIL arena-cow-broken`, 3 boots in 3, and
+`smoke-nzcow` goes red under the same flag.
 
 - **[G-9]'s open remainder measured: load-independent, ~2 boots in 20, and invisible to the
   gate that runs the exact build.** A CI failure looked load-induced. It is not. A 2×2 on
-  `origin/main` — `{KSP_GUARD_INJECT, not}` × `{12 busy cores, idle}`, n=10 per cell, each boot
-  observed for a **uniform 25 s window** — gives 1/10 idle and 1/10 loaded on the clean build,
+  `origin/main`, `{KSP_GUARD_INJECT, not}` × `{12 busy cores, idle}`, n=10 per cell, each boot
+  observed for a **uniform 25 s window**, gives 1/10 idle and 1/10 loaded on the clean build,
   4/10 and 4/10 with the injection. **CPU contention changes nothing about the rate**; it
   changes whether a gate is still observing when the violation happens.
 
-  No new finding: this is the remainder of **[G-9]**, which `docs/LIMITATIONS.md` §5.2d has
-  carried as open since 2026-08-17, and the rate agrees with the "2 in 30 of these boots" the
-  `smoke-exec-reenter` target already records. The measurement adds the load result, the
-  injection's contribution (≈4×, expected — that arm parks a CPU mid-switch, which is the shape
-  that strands a claim), and the signature on a build carrying **no defect flag at all**: a CPU
-  holding a claim on one task *while running another*, at `preempt_on_tick` and
-  `enter_cpu_idle`, persisting across two audits.
+No new finding: this is the remainder of **[G-9]**, which `docs/LIMITATIONS.md` §5.2d has
+carried as open since 2026-08-17, and the rate agrees with the "2 in 30 of these boots" the
+`smoke-exec-reenter` target already records. The measurement adds the load result, the
+injection's contribution (≈4×, expected: that arm parks a CPU mid-switch, which is the shape
+that strands a claim), and the signature on a build carrying **no defect flag at all**: a CPU
+holding a claim on one task *while running another*, at `preempt_on_tick` and `enter_cpu_idle`,
+persisting across two audits.
 
-  **The methodological point is the observation window.** Every one of these gates stops at its
-  `REQUIRE_MARKER` and quits QEMU, so a violation later in the same boot is invisible *by
-  construction* rather than rarely. A first attempt at this measurement used a different marker
-  and returned 6/10 for the same cell — the instrument was moving the window, which is the
-  [G-8] trace lesson in a new place. `smoke-exec-reenter` additionally discards its per-boot
-  verdict on purpose while the finding is open, and says so inline; when the remainder closes,
-  that `rc` becomes assertable and picking it up is part of closing it.
+**The methodological point is the observation window.** Every one of these gates stops at its
+`REQUIRE_MARKER` and quits QEMU, so a violation later in the same boot is invisible *by
+construction* rather than rarely. A first attempt at this measurement used a different marker
+and returned 6/10 for the same cell; the instrument was moving the window, which is the [G-8]
+trace lesson in a new place. `smoke-exec-reenter` additionally discards its per-boot verdict on
+purpose while the finding is open, and says so inline; when the remainder closes, that `rc`
+becomes assertable and picking it up is part of closing it.
 
 - **The smoke harness threw away the diagnosis at the point of detection.** `FAIL_MARKER` is the
   specific string a gate declares as its forbidden condition; `FAULT_RE` is a blanket
   `PAGE FAULT|Exception! Vector|PANIC|Rejected by validator` every gate inherits. The blanket was
   checked **first**, and its branch printed `SMOKE FAIL: kernel fault/panic on serial` and exited
-  — no matching line, no context, log discarded.
+ : no matching line, no context, log discarded.
 
-  Both halves bit one investigation. `smoke-switch-commit` forbids `stale scheduler claim`; run
-  on `origin/main` with every core busy, six boots produced one
-  `PANIC: stale scheduler claim at preempt_on_tick` — **its own marker** — and one
-  `PANIC: unclaimed running task`. CI reported all of it identically as a generic fault, so a
-  gate catching the exact condition it exists to catch was indistinguishable from the workload's
-  deliberate page fault.
+Both halves bit one investigation. `smoke-switch-commit` forbids `stale scheduler claim`; run on
+`origin/main` with every core busy, six boots produced one `PANIC: stale scheduler claim at
+preempt_on_tick` (**its own marker**) and one `PANIC: unclaimed running task`. CI reported all
+of it identically as a generic fault, so a gate catching the exact condition it exists to catch
+was indistinguishable from the workload's deliberate page fault.
 
-  **A named detection now outranks the generic backstop**, and both failure paths print the
-  matching lines. **No verdict changes**: both statuses exit 1, so only the message differs, and
-  the one place a fault is a *success* signal — `EXPECT_FAULT` — keeps its original ordering.
-  Making the order depend on which role the fault plays is what keeps that true without
-  forbidding the combination outright.
+**A named detection now outranks the generic backstop**, and both failure paths print the
+matching lines. **No verdict changes**: both statuses exit 1, so only the message differs, and
+the one place a fault is a *success* signal (`EXPECT_FAULT`) keeps its original ordering. Making
+the order depend on which role the fault plays is what keeps that true without forbidding the
+combination outright.
 
   Demonstrated against the log that caused the confusion: old ordering scores it
   `fault (generic)`, new ordering `marker_fail (named detection)`. Under load,
@@ -1479,16 +1522,16 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   success paths and exited 0 with the named fault nowhere on the wire. `EXPECT_FAULT`
   **inverted** the verdict for a fault that happened; it never **required** one to happen.
 
-  Every user of it is a control arm whose whole purpose is that a reintroduced defect kills the
-  kernel before the login prompt — `smoke-claim-release-control`,
-  `smoke-switch-commit-control`, `smoke-resume-guard-negative-control` and the two
-  measured-boot-required arms. **All five passed whether or not their defect reproduced**, and
-  the only thing that could redden them was a boot too slow to reach the banner: failing on runs
-  that prove nothing and passing on runs that *disprove* the defect.
+Every user of it is a control arm whose whole purpose is that a reintroduced defect kills the
+kernel before the login prompt: `smoke-claim-release-control`, `smoke-switch-commit-control`,
+`smoke-resume-guard-negative-control` and the two measured-boot-required arms. **All five passed
+whether or not their defect reproduced**, and the only thing that could redden them was a boot
+too slow to reach the banner: failing on runs that prove nothing and passing on runs that
+*disprove* the defect.
 
-  **Measured, not argued.** `smoke-claim-release-control`'s kernel rebuilt with no defect flag —
-  `DEFECT FLAGS: none` on the wire — booted to `horus login:` with the guard string absent from
-  the log entirely, and the harness printed `SMOKE PASS`.
+**Measured, not argued.** `smoke-claim-release-control`'s kernel rebuilt with no defect flag
+(`DEFECT FLAGS: none` on the wire) booted to `horus login:` with the guard string absent from
+the log entirely, and the harness printed `SMOKE PASS`.
 
   *"A test that cannot fail is not a test"*, and this is the third time the shape has appeared:
   `smoke-ksp-guard` shipped a control arm with no positive counterpart, the resume guard shipped
@@ -1500,34 +1543,33 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   nothing (neither reproduced); and looking at *why the arm could go red at all* turned up an
   arm that could not go red for the right reason.
 
-  **The three outcomes are now distinguished** for the two arms asserting a scheduling-dependent
-  fault at `SMP_CPUS=4`: the fault appearing is a PASS; a run that **completes** without it is a
-  real miss and fails **at once, never retried** — retrying a miss is how an N-try loop becomes
-  a way of passing; a boot reaching neither is INCONCLUSIVE and retried up to
-  `*_CONTROL_BOOTS` (3). The other three arms keep their single boot: deterministic defects, not
-  timing-bound. Falsified all three ways.
+**The three outcomes are now distinguished** for the two arms asserting a scheduling-dependent
+fault at `SMP_CPUS=4`: the fault appearing is a PASS; a run that **completes** without it is a
+real miss and fails **at once, never retried**: retrying a miss is how an N-try loop becomes a
+way of passing; a boot reaching neither is INCONCLUSIVE and retried up to `*_CONTROL_BOOTS` (3).
+The other three arms keep their single boot: deterministic defects, not timing-bound. Falsified
+all three ways.
 
 - **`smoke-kstack-race` scored a died-in boot as a broken property.** The base arm ran one
-  session and treated two very different outcomes identically: the detector firing — *two CPUs
-  shared a kernel stack*, the property broken — and the session failing to complete, which at
+  session and treated two very different outcomes identically: the detector firing, *two CPUs
+  shared a kernel stack*, the property broken, and the session failing to complete, which at
   `-smp 4` under a window this build **deliberately widens** so it is entered on every switch
   says nothing about whether two CPUs shared anything. The second is the absence of evidence,
   and it was being scored as evidence against.
 
-  **This is the third time this lesson has had to be learned in one file.**
-  `smoke-kstack-park`'s control arm scored its own strongest reproductions as misses, and the
-  repair was to call a died-in boot *inconclusive* and boot again. `KSTACK_RACE_CONTROL_BOOTS`,
-  forty lines below this target, has carried the sample-size half since 2026-08-19. The arm next
-  door got neither — and reddened a PR whose entire kernel diff was an early return in a
-  function no live session calls.
+**This is the third time this lesson has had to be learned in one file.** `smoke-kstack-park`'s
+control arm scored its own strongest reproductions as misses, and the repair was to call a
+died-in boot *inconclusive* and boot again. `KSTACK_RACE_CONTROL_BOOTS`, forty lines below this
+target, has carried the sample-size half since 2026-08-19. The arm next door got neither, and
+reddened a PR whose entire kernel diff was an early return in a function no live session calls.
 
   Up to `KSTACK_RACE_BOOTS` (4) attempts now, stopping at the first **completed** session.
   **The property assertion is unchanged and is not weakened**: the detector fails the build on
   sight, on every attempt, and no number of retries can turn a detected race into a pass.
 
-  **The fence that makes the retry honest is that all-inconclusive FAILS.** A kernel that never
-  boots must not satisfy the gate by exhausting the loop — the obvious way for a retry to become
-  a way of not testing. Inconclusive attempts are named and tallied as they go.
+**The fence that makes the retry honest is that all-inconclusive FAILS.** A kernel that never
+boots must not satisfy the gate by exhausting the loop; the obvious way for a retry to become a
+way of not testing. Inconclusive attempts are named and tallied as they go.
 
   Falsified in all three directions, because a loop that only ever goes green is not a gate: a
   healthy build passes on the first attempt; `KSTACK_RACE_TIMEOUT=1 KSTACK_RACE_BOOTS=2` makes
@@ -1539,27 +1581,26 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   returns how many contiguous pages the `CAP_FRAME` at that slot names. This closes the gap the
   *previous* change opened and recorded: giving a frame a length meant only the task that
   retyped one knew what that length was, so a delegate had to be told out of band or discover it
-  by trial-mapping page after page — O(n) syscalls polluting an address space to learn a number
+  by trial-mapping page after page; O(n) syscalls polluting an address space to learn a number
   the kernel already had. **A capability that does not describe its own object needs a side
   channel.**
 
-  **The interesting decision is where the answer did NOT go.** `SYS_CAP_ENUMERATE` already
-  reports a capability's type, rights, serial and generation, and a length would have been one
-  more field. It lost on authority grounds: that call is gated on `CAP_DEBUG` at
-  `CAPSLOT_DEBUG`, a **cross-task observability** capability — so an ordinary task would have
-  needed a debug capability to learn about its **own** object, and `CAP_DEBUG` would have begun
-  revealing other tasks' object extents in the same change. The capability discipline answers it
-  directly: the entitlement to know how big the object is comes from holding a capability that
-  names it.
+**The interesting decision is where the answer did NOT go.** `SYS_CAP_ENUMERATE` already reports
+a capability's type, rights, serial and generation, and a length would have been one more field.
+It lost on authority grounds: that call is gated on `CAP_DEBUG` at `CAPSLOT_DEBUG`, a
+**cross-task observability** capability: so an ordinary task would have needed a debug
+capability to learn about its **own** object, and `CAP_DEBUG` would have begun revealing other
+tasks' object extents in the same change. The capability discipline answers it directly: the
+entitlement to know how big the object is comes from holding a capability that names it.
 
-  **It takes a cspace slot and never a frame index**, which is the security property rather than
-  a calling convention. The handler needs an index and the caller could just pass one — the
-  shortcut `syscall_vm.c` exists to refuse. That would be **[C-1]**'s shape, and something worse
-  besides: an **object-existence oracle**. A task holding no frame capability at all could walk
-  indices and learn which frames are live, and how large, across every task in the system — a
-  side channel on other tasks' allocation behaviour, out of a syscall that looks like it returns
-  a number. `FRAME_INFO_BY_INDEX=1` is that kernel; `FRAMETEST: FAIL
-  peer-frame-pages-not-an-index`, 3 boots in 3, `smoke-frame` red under it.
+**It takes a cspace slot and never a frame index**, which is the security property rather than a
+calling convention. The handler needs an index and the caller could just pass one; the shortcut
+`syscall_vm.c` exists to refuse. That would be **[C-1]**'s shape, and something worse besides:
+an **object-existence oracle**. A task holding no frame capability at all could walk indices and
+learn which frames are live, and how large, across every task in the system, a side channel on
+other tasks' allocation behaviour, out of a syscall that looks like it returns a number.
+`FRAME_INFO_BY_INDEX=1` is that kernel; `FRAMETEST: FAIL peer-frame-pages-not-an-index`, 3 boots
+in 3, `smoke-frame` red under it.
 
   **The arm's marker is the DELEGATE's, and it has to be.** Asked from `frametest`, which holds
   every frame in play, an index and a slot are hard to tell apart. Asked from `framepeer`, which
@@ -1567,17 +1608,16 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   are unassigned in the canonical cspace map and empty in that task, while frame indices 1 and 2
   are live because `frametest` retyped several before resuming it.
 
-  **It is not "a syscall that reads a capability"**, which `userspace/framepeer.c` argues
-  against and is right to. It reports the *object's* extent and nothing about the capability —
-  not rights, not lineage, not badge — so a holder still cannot discover what authority it has
-  without exercising it. It discloses nothing `SYS_MAP_FRAME` withholds from the same holder,
-  which could learn the same number by trial-mapping forward.
+**It is not "a syscall that reads a capability"**, which `userspace/framepeer.c` argues against
+and is right to. It reports the *object's* extent and nothing about the capability (not rights,
+not lineage, not badge) so a holder still cannot discover what authority it has without
+exercising it. It discloses nothing `SYS_MAP_FRAME` withholds from the same holder, which could
+learn the same number by trial-mapping forward.
 
-  It returns a **scalar rather than filling a caller's struct**: no user pointer means no
-  pointer to truncate, and issue #176 was a wrapper that truncated one to 32 bits. No rights
-  floor (`cap_lookup(slot, 0)`, like `SYS_UNMAP_FRAME`) — the size is not the contents, and
-  requiring `READ` would refuse a `WRITE`-only sharer the ability to learn how much it may
-  write.
+It returns a **scalar rather than filling a caller's struct**: no user pointer means no pointer
+to truncate, and issue #176 was a wrapper that truncated one to 32 bits. No rights floor
+(`cap_lookup(slot, 0)`, like `SYS_UNMAP_FRAME`); the size is not the contents, and requiring
+`READ` would refuse a `WRITE`-only sharer the ability to learn how much it may write.
 
 - **A frame capability names a run of pages, not a page (roadmap 2.1's region object, S36).**
   `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest, pages)` carves `pages` contiguous pages as **one
@@ -1591,76 +1631,74 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   mark, four things that would then have to be kept in step with the four that already exist.
   **[H-3]** is what happens when parallel copies of one idea drift apart.
 
-  **The length is the fifth argument to `SYS_RETYPE`, not a new syscall**, so one authority gate
-  covers both shapes. `pages == 0` means one page — which is what every retype written before
-  frames had a length passes — so **not one existing call site changed**. A non-zero length on a
-  class that has none is **refused, not ignored**: a caller asking for an 8-page endpoint has a
-  wrong model, and quietly handing it one endpoint leaves that model uncorrected until it
-  matters.
+**The length is the fifth argument to `SYS_RETYPE`, not a new syscall**, so one authority gate
+covers both shapes. `pages == 0` means one page (which is what every retype written before
+frames had a length passes) so **not one existing call site changed**. A non-zero length on a
+class that has none is **refused, not ignored**: a caller asking for an 8-page endpoint has a
+wrong model, and quietly handing it one endpoint leaves that model uncorrected until it matters.
 
-  **Three things the length made newly possible to get wrong**, each now enforced and the first
-  falsified. The pages must be **distinct** physical pages rather than `pages` aliases of the
-  first. The **span** must be bounded including its last byte, because an address legal for a
-  one-page frame can put a four-page run past the user half. And every page must be **pinned and
-  scrubbed** — a run pinned only at its head puts page 1 on the free page stack when the task
-  dies, and a run scrubbed only at its head leaves the rest of a buffer readable by whoever the
-  arena hands those bytes to next.
+**Three things the length made newly possible to get wrong**, each now enforced and the first
+falsified. The pages must be **distinct** physical pages rather than `pages` aliases of the
+first. The **span** must be bounded including its last byte, because an address legal for a
+one-page frame can put a four-page run past the user half. And every page must be **pinned and
+scrubbed**, a run pinned only at its head puts page 1 on the free page stack when the task dies,
+and a run scrubbed only at its head leaves the rest of a buffer readable by whoever the arena
+hands those bytes to next.
 
-  **`FRAME_PAGES_SAME_PHYS=1` is the arm, and it aims at the failure that does not announce
-  itself.** Advance the virtual cursor and forget the physical one — one of two cursors in a loop
-  that reads correctly — and nothing crashes: the caller gets exactly the pages it asked for,
-  present, writable, correctly righted, all aliasing page 0. The only way to see it is to write a
-  distinct word to each page and read them all back. `FRAMETEST: FAIL sized-pages-distinct`,
-  3 boots in 3, and `smoke-frame` goes red under it. It reddens the unmap checks too, which is
-  the defect showing rather than the test leaking: `unmap_run` withdraws page *k* by naming
-  `base + k`, and under aliasing the PTE does not hold it.
+**`FRAME_PAGES_SAME_PHYS=1` is the arm, and it aims at the failure that does not announce
+itself.** Advance the virtual cursor and forget the physical one (one of two cursors in a loop
+that reads correctly) and nothing crashes: the caller gets exactly the pages it asked for,
+present, writable, correctly righted, all aliasing page 0. The only way to see it is to write a
+distinct word to each page and read them all back. `FRAMETEST: FAIL sized-pages-distinct`, 3
+boots in 3, and `smoke-frame` goes red under it. It reddens the unmap checks too, which is the
+defect showing rather than the test leaking: `unmap_run` withdraws page *k* by naming `base +
+k`, and under aliasing the PTE does not hold it.
 
-  **The unwind is shared with `SYS_MAP_REGION`**, so a failure part-way *inside* one sized frame
-  and a failure part-way *across* a run of slots are the same code — and `FRAME_REGION_NO_ROLLBACK=1`
-  now reddens checks at both levels from one flag. **The 64-page ceiling stops being about the
-  rollback**: a run is contiguous, so page *k* is `base + k` and the unwind needs no per-page
-  state at all. `MAX_FRAME_PAGES` is 64 because `UNTYPED_ARENA_BYTES` is 4 MiB *total*.
+**The unwind is shared with `SYS_MAP_REGION`**, so a failure part-way *inside* one sized frame
+and a failure part-way *across* a run of slots are the same code, and
+`FRAME_REGION_NO_ROLLBACK=1` now reddens checks at both levels from one flag. **The 64-page
+ceiling stops being about the rollback**: a run is contiguous, so page *k* is `base + k` and the
+unwind needs no per-page state at all. `MAX_FRAME_PAGES` is 64 because `UNTYPED_ARENA_BYTES` is
+4 MiB *total*.
 
-  **Giving a frame a length silently disarmed an existing control arm**, which CI caught and the
-  local run did not. There are now two functions turning `CAP_FRAME.object` into a fact about an
-  object, and `FRAME_INDEX_UNCHECKED=1` was written when there was one: under the arm the address
-  resolver behaved as intended and the new *length* resolver applied the bound the arm exists to
-  remove, so the legacy slot-3 capability was refused at the length check and
-  `FRAMETEST: FAIL legacy-cap-mapped` stopped appearing. The arm went red for want of a failure.
-  The property was never wrong and the base gate passed all 48 checks throughout — what broke was
-  the measurement. **When you split a function a defect flag mutates, the flag has to follow every
-  piece**, and a green base arm says nothing about whether its control arm still fires.
+**Giving a frame a length silently disarmed an existing control arm**, which CI caught and the
+local run did not. There are now two functions turning `CAP_FRAME.object` into a fact about an
+object, and `FRAME_INDEX_UNCHECKED=1` was written when there was one: under the arm the address
+resolver behaved as intended and the new *length* resolver applied the bound the arm exists to
+remove, so the legacy slot-3 capability was refused at the length check and `FRAMETEST: FAIL
+legacy-cap-mapped` stopped appearing. The arm went red for want of a failure. The property was
+never wrong and the base gate passed all 48 checks throughout: what broke was the measurement.
+**When you split a function a defect flag mutates, the flag has to follow every piece**, and a
+green base arm says nothing about whether its control arm still fires.
 
-  **Known gap, recorded rather than papered over:** a delegate cannot ask how large a frame is.
-  `SYS_CAP_ENUMERATE` reports the capability, not the object behind it, so a sharer has to be
-  told the size out of band. Nothing is unsafe — mapping fails closed on an occupied or
-  out-of-span range — but a delegated buffer is less self-describing than it should be. Roadmap
-  2.1 carries it.
+**Known gap, recorded rather than papered over:** a delegate cannot ask how large a frame is.
+`SYS_CAP_ENUMERATE` reports the capability, not the object behind it, so a sharer has to be told
+the size out of band. Nothing is unsafe (mapping fails closed on an occupied or out-of-span
+range) but a delegated buffer is less self-describing than it should be. Roadmap 2.1 carries it.
 
 - **A multi-page map that reports failure now installs no page (roadmap 2.1, S35).**
   `SYS_MAP_REGION(first_slot, count, vaddr, rights)` maps `count` `CAP_FRAME`s from consecutive
-  cspace slots at consecutive pages — the dual of `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest)`,
+  cspace slots at consecutive pages; the dual of `SYS_RETYPE(untyped, KOBJ_FRAME, count, dest)`,
   which fills the run it maps. The roadmap had this item blocked on one question: *"a length
   wants a policy for partial failure part-way through a run."* This settles it as
   **all-or-nothing**, and enforces it.
 
-  **The answer is the opposite of the one already in the tree, and that is the interesting
-  part.** `untyped_retype` stops at the first failure, keeps what it made, and returns the
-  count. Copying that here was the obvious move and is wrong, because the asymmetry is in the
-  primitives rather than in taste. Retype's partial result is *complete information* — n
-  objects, each named by a capability at a slot the caller computed, all enumerable and
-  destroyable. A partial **map** is a hole in a range whose entire purpose is to be addressed as
-  a range: the caller does not learn about it at the call, it learns at some later instruction,
-  as a fault, with nothing left to say which call left it. And a PTE is authority, so a partial
-  map after a reported error hands ring 3 authority it was just told it did not get — fail-open,
-  in a syscall whose failure path is the whole point. Rollback is also exactly bounded here and
-  is not in retype: this call knows which PTEs it installed, while unwinding a retype would mean
-  destroying objects whose bytes the untyped watermark cannot reclaim.
+**The answer is the opposite of the one already in the tree, and that is the interesting part.**
+`untyped_retype` stops at the first failure, keeps what it made, and returns the count. Copying
+that here was the obvious move and is wrong, because the asymmetry is in the primitives rather
+than in taste. Retype's partial result is *complete information*: n objects, each named by a
+capability at a slot the caller computed, all enumerable and destroyable. A partial **map** is a
+hole in a range whose entire purpose is to be addressed as a range: the caller does not learn
+about it at the call, it learns at some later instruction, as a fault, with nothing left to say
+which call left it. And a PTE is authority, so a partial map after a reported error hands ring 3
+authority it was just told it did not get, fail-open, in a syscall whose failure path is the
+whole point. Rollback is also exactly bounded here and is not in retype: this call knows which
+PTEs it installed, while unwinding a retype would mean destroying objects whose bytes the
+untyped watermark cannot reclaim.
 
-  **It returns 0 or an error, never "3 of 5".** Prefix semantics would put the cleanup on a
-  caller that has just been told it failed, and a caller applying the convention every other
-  syscall here uses — treat `< 0` as the failure — would silently keep pages it believes it does
-  not have.
+**It returns 0 or an error, never "3 of 5".** Prefix semantics would put the cleanup on a caller
+that has just been told it failed, and a caller applying the convention every other syscall here
+uses (treat `< 0` as the failure) would silently keep pages it believes it does not have.
 
   **The unwind withdraws only the pages this call installed.** The pre-existing mapping that
   caused the refusal is not one of them and survives. An unwind over the whole *requested* range
@@ -1674,14 +1712,14 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   too much: `FRAMETEST: FAIL region-rollback-ate-blocker`, 3 boots in 3. Each arm fails **only**
   its own checks, and `smoke-frame` goes red under both.
 
-  **Two details the arms forced.** `frametest` blocks the **middle** of the run, so it fails at
-  page 2 of 4 — an unwind that handled only the first page, or only the last, would pass a run
-  that failed at either end. And the blocker is the run's **own** page-2 frame, because against
-  an unrelated frame `user_unmap_frame_page`'s `expect_phys` test would refuse the wide unmap by
-  itself: the check would pass under the arm and the arm would measure nothing. Aim at the range
-  logic, not at the guard underneath it. The rollback is then probed *without touching the
-  pages* — mapping over a present page is refused, so a single-page map that succeeds proves the
-  address is free, where a read would prove it by faulting and killing the task.
+**Two details the arms forced.** `frametest` blocks the **middle** of the run, so it fails at
+page 2 of 4: an unwind that handled only the first page, or only the last, would pass a run that
+failed at either end. And the blocker is the run's **own** page-2 frame, because against an
+unrelated frame `user_unmap_frame_page`'s `expect_phys` test would refuse the wide unmap by
+itself: the check would pass under the arm and the arm would measure nothing. Aim at the range
+logic, not at the guard underneath it. The rollback is then probed *without touching the pages*,
+mapping over a present page is refused, so a single-page map that succeeds proves the address is
+free, where a read would prove it by faulting and killing the task.
 
   **The per-page decision is now one function**, shared with `SYS_MAP_FRAME`. A region map that
   validated one step less than a single map would be another door of the **[H-3]** shape, and
@@ -1690,60 +1728,60 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 - **`frametest`'s check count is derived, and it had already gone stale.** `TESTS.md` said 17
   parent checks; the wire says 31. `frametest_checks` joins `captest_checks` in
   `.github/doc-claims.yml`, anchored to a line that *starts* with the call so the `static void
-  check(...)` definition is not counted — a deriver that includes its own definition is off by
+  check(...)` definition is not counted, a deriver that includes its own definition is off by
   one in a way nobody notices until the number decides something. It is quoted in `SECURITY.md`
   as S35's witness, so both occurrences are declared.
 
 - **A sixth door of [H-3]'s shape, on console input (S28).** `SYS_GET_LINE`'s dispatch entry
-  declares `SC_NONE`, so its handler is the only gate — and that gate read
+  declares `SC_NONE`, so its handler is the only gate, and that gate read
   `cap_lookup(8, READ)` with a fallback to `cap_lookup(3, READ)`, **neither type-tested**. Slot 3
   is the legacy `CAP_FRAME` `create_task` installs in every task. Measured before the change:
   `captest`, holding that decoy and no `CAP_CONSOLE`, passed the check and **blocked inside the
-  console read** — not merely eligible, actually reading what the user types.
+  console read**, not merely eligible, actually reading what the user types.
 
-  It survived because a ring-3 console server owns the UART in any live boot and
-  `console_hw_owned()` refuses first. That is a *circumstance* — the server being alive — not a
-  gate, and it is the same shape as the CSPRNG's boot ordering in #200. The `console_hw_owned()`
-  check stays: it answers "do not race the owner", and a question about racing is not an answer
-  about authority. `CAP_CONSOLE`, type-tested, no fallback.
+It survived because a ring-3 console server owns the UART in any live boot and
+`console_hw_owned()` refuses first. That is a *circumstance* (the server being alive) not a
+gate, and it is the same shape as the CSPRNG's boot ordering in #200. The `console_hw_owned()`
+check stays: it answers "do not race the owner", and a question about racing is not an answer
+about authority. `CAP_CONSOLE`, type-tested, no fallback.
 
-  **Found by looking for the class rather than the instance.** `cap_lookup` does not test type —
-  by design — so every caller must, and five call sites in this tree did not: two in the
-  `DEBUG_SHELL`-only kernel shell, one inside the retired `RAMFS_SLOT3_GATE` arm, and two in
-  `h_get_line`. Only the last were live.
+**Found by looking for the class rather than the instance.** `cap_lookup` does not test type (by
+design) so every caller must, and five call sites in this tree did not: two in the
+`DEBUG_SHELL`-only kernel shell, one inside the retired `RAMFS_SLOT3_GATE` arm, and two in
+`h_get_line`. Only the last were live.
 
-  **The arm asserts a STALL**, which the harness could not express: a task admitted to a console
-  read prints nothing, so there is no FAIL line to require, and a timeout was unconditionally a
-  failure. `tools/smoke_test.sh` gained `EXPECT_STALL`, fenced three ways — a progress marker that
-  must appear (or a kernel that never booted would satisfy it), a forbidden marker that must not,
-  and no fault. Falsified in all three directions, including that `EXPECT_STALL` without
-  `ABSENT_MARKER` is refused outright.
+**The arm asserts a STALL**, which the harness could not express: a task admitted to a console
+read prints nothing, so there is no FAIL line to require, and a timeout was unconditionally a
+failure. `tools/smoke_test.sh` gained `EXPECT_STALL`, fenced three ways: a progress marker that
+must appear (or a kernel that never booted would satisfy it), a forbidden marker that must not,
+and no fault. Falsified in all three directions, including that `EXPECT_STALL` without
+`ABSENT_MARKER` is refused outright.
 
-  **The reconciliation that entry needed and did not get.** Moving `SYS_GET_LINE`'s gate changed
-  what a test enters, and the manifest saying so — `.github/syscall-coverage.yml` — was written
-  and never committed, so the required `syscall-coverage` job held the PR red for three days on
-  exactly the drift it exists to catch: *"declared uncovered but its handler DID run"*. It is
-  `covered` now, and the reason records the distinction the whole file rests on — captest's check
-  is that a task holding no `CAP_CONSOLE` is **refused**, and a refusal decided inside the handler
-  still runs the handler. **A syscall can be covered by a test that proves it says no.**
+**The reconciliation that entry needed and did not get.** Moving `SYS_GET_LINE`'s gate changed
+what a test enters, and the manifest saying so (`.github/syscall-coverage.yml`) was written and
+never committed, so the required `syscall-coverage` job held the PR red for three days on
+exactly the drift it exists to catch: *"declared uncovered but its handler DID run"*. It is
+`covered` now, and the reason records the distinction the whole file rests on, captest's check
+is that a task holding no `CAP_CONSOLE` is **refused**, and a refusal decided inside the handler
+still runs the handler. **A syscall can be covered by a test that proves it says no.**
 
-  `docs/SYSCALLS.md` was the more serious half, because it is the ABI reference and nothing
-  pointed at it. Its `SYS_GET_LINE` row still read `slot 8 READ, else slot 3 READ` — the retired
-  authority, published as current for three days after the handler stopped honouring it. Two rows
-  beside it had been stale since 2026-08-22: `SYS_READ` still documented the `fd >= 3` slot-3 path
-  and `SYS_OPEN` was still listed as available, when **[H-3]** removed both and the same file says
-  so seventy lines higher. A reference that contradicts itself is read at the row, not the essay.
+`docs/SYSCALLS.md` was the more serious half, because it is the ABI reference and nothing
+pointed at it. Its `SYS_GET_LINE` row still read `slot 8 READ, else slot 3 READ`: the retired
+authority, published as current for three days after the handler stopped honouring it. Two rows
+beside it had been stale since 2026-08-22: `SYS_READ` still documented the `fd >= 3` slot-3 path
+and `SYS_OPEN` was still listed as available, when **[H-3]** removed both and the same file says
+so seventy lines higher. A reference that contradicts itself is read at the row, not the essay.
 
 - **A gated numerator does not gate its own remainder (S25).** Four documents state syscall
   handler-entry coverage as *"55 of 81"*, and `doc-claims` has checked both of those numbers since
-  2026-08-19. Three of them go on to say how many are left — and that number was written by hand,
+  2026-08-19. Three of them go on to say how many are left, and that number was written by hand,
   read **25** in two files and **33** in a third, and was **27** in the tree. Three figures for one
   quantity, all wrong, sitting one sentence away from a number no one could get wrong.
 
-  `site/index.html` failed the same way in prose: it credited the measurement to *"the two
-  workloads this project tracks"* when it has run over three since the boot-modules session was
-  added — on the one page a reader outside this repository ever sees. **A checked number lends its
-  credibility to the unchecked sentence beside it**, which is the mechanism, not the excuse.
+`site/index.html` failed the same way in prose: it credited the measurement to *"the two
+workloads this project tracks"* when it has run over three since the boot-modules session was
+added: on the one page a reader outside this repository ever sees. **A checked number lends its
+credibility to the unchecked sentence beside it**, which is the mechanism, not the excuse.
 
   `syscalls_uncovered` is now derived from the manifest and declared at all four occurrences, and
   both retired phrasings are in `forbidden:`. Falsified four ways against the live tree: a wrong
@@ -1752,50 +1790,50 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   reintroduction, in the file it was retired from.
 
 - **Cross-task introspection required "do you hold the audit log's keys" (roadmap 3.6, S32).**
-  `SYS_GET_TASK_INFO` accepted `CAP_USER` or `CAP_AUDIT` as well as `CAP_DEBUG` — so
+  `SYS_GET_TASK_INFO` accepted `CAP_USER` or `CAP_AUDIT` as well as `CAP_DEBUG`, so
   "do you administer users" and "do you hold the audit keys" were both answers to "may I see the
   process list". Those gates were real (finding I-1 put them there in place of an ambient uid-0
   test), which is exactly why two ambient-authority sweeps walked past them: the failure is
   **bundling**, not ambience. `CAP_DEBUG` alone now.
 
-  **The blast radius was real and is the interesting part.** `proctest` and `fsclient` had been
-  endowed with a real `CAP_AUDIT` *for this syscall*, so both were re-pointed at `CAP_DEBUG`. That
-  broke `PROC_SELFTEST: FAIL grant-rc` on the first build — `proctest`'s **delegation** test hands
-  a child a capability and watches it work through `SYS_READ_AUDIT`, so it genuinely needs a
-  `CAP_AUDIT` to delegate. Swapping it would have been least privilege applied to the wrong thing.
-  It holds both now, for two stated reasons.
+**The blast radius was real and is the interesting part.** `proctest` and `fsclient` had been
+endowed with a real `CAP_AUDIT` *for this syscall*, so both were re-pointed at `CAP_DEBUG`. That
+broke `PROC_SELFTEST: FAIL grant-rc` on the first build, `proctest`'s **delegation** test hands
+a child a capability and watches it work through `SYS_READ_AUDIT`, so it genuinely needs a
+`CAP_AUDIT` to delegate. Swapping it would have been least privilege applied to the wrong thing.
+It holds both now, for two stated reasons.
 
-  **Witnessed by the one task that can tell the acceptance sets apart**: `grantee` holds a granted
-  `CAP_AUDIT` and no `CAP_DEBUG`. It proves that capability is live via `SYS_READ_AUDIT` first —
-  so the refusal cannot be "it holds nothing" — and reads its own info successfully, so it cannot
-  be a blanket refusal either. Falsified by `TASKINFO_WIDE_AUTHORITY=1`, under which it reads
-  another task's info again.
+**Witnessed by the one task that can tell the acceptance sets apart**: `grantee` holds a granted
+`CAP_AUDIT` and no `CAP_DEBUG`. It proves that capability is live via `SYS_READ_AUDIT` first (so
+the refusal cannot be "it holds nothing") and reads its own info successfully, so it cannot be a
+blanket refusal either. Falsified by `TASKINFO_WIDE_AUTHORITY=1`, under which it reads another
+task's info again.
 
-  **captest's check ORDER turned out to be load-bearing**, and nothing said so. `fail()` calls
-  `sys_exit()`, so the suite stops at its first failing check and a control arm sees exactly one
-  marker. The cross-check added here fires under `CAP_ENUMERATE_UNGATED` as well — both halves of
-  "observing needs `CAP_DEBUG`" fail there — so sitting early in the file it pre-empted
-  `cap-enumerate-without-cap-debug`, the marker `smoke-captest-capenum-control` names, and that
-  arm timed out waiting for a line captest had exited before reaching. It sits last now, with the
-  constraint written beside it: invisible unless you already know `fail()` exits.
+**captest's check ORDER turned out to be load-bearing**, and nothing said so. `fail()` calls
+`sys_exit()`, so the suite stops at its first failing check and a control arm sees exactly one
+marker. The cross-check added here fires under `CAP_ENUMERATE_UNGATED` as well (both halves of
+"observing needs `CAP_DEBUG`" fail there) so sitting early in the file it pre-empted
+`cap-enumerate-without-cap-debug`, the marker `smoke-captest-capenum-control` names, and that
+arm timed out waiting for a line captest had exited before reaching. It sits last now, with the
+constraint written beside it: invisible unless you already know `fail()` exits.
 
 - **A monotonic clock, at the resolution `CR4.TSD` allows (roadmap 2.2, S34).**
-  `SYS_CLOCK_GETTIME` reports time since boot from the PIT tick counter — 10 ms — rather than
+  `SYS_CLOCK_GETTIME` reports time since boot from the PIT tick counter (10 ms) rather than
   from the TSC. That is a security decision, not a hardware limit: `CR4.TSD` is set precisely to
   deny ring 3 the cycle-accurate timer that cache and covert-channel attacks between mutually
   distrusting tasks lean on, and a nanosecond clock behind a syscall would hand it back through
-  the front door. It is not a claim of side-channel safety — the TSD comment already says the
-  mitigation is partial, and a counting loop still builds a finer timer — only a refusal to
+  the front door. It is not a claim of side-channel safety; the TSD comment already says the
+  mitigation is partial, and a counting loop still builds a finer timer, only a refusal to
   supply one.
 
   **The control arm's "defect" is that it is better.** `CLOCK_TSC_RESOLUTION=1` reports real
   microseconds off the calibrated TSC: more accurate, more useful, and it undoes TSD. That is the
   arm worth having, because the tempting mistake here does not look like one.
 
-  No wall clock: every id but `HORUS_CLOCK_MONOTONIC` is refused rather than approximated, since
-  nothing here reads an RTC and answering `CLOCK_REALTIME` with uptime would be a number shaped
-  like a date with nothing behind it. Ambient by design — a coarse count of time since boot is not
-  authority over an object.
+No wall clock: every id but `HORUS_CLOCK_MONOTONIC` is refused rather than approximated, since
+nothing here reads an RTC and answering `CLOCK_REALTIME` with uptime would be a number shaped
+like a date with nothing behind it. Ambient by design, a coarse count of time since boot is not
+authority over an object.
 
   **The control arm caught my own mistake, and one checker could not.** The clock's dispatch
   entry first landed inside the `#else` branch of `CAP_ENUMERATE_UNGATED`, so that build had no
@@ -1805,38 +1843,38 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   present and correct, so a syscall accidentally scoped to a defect arm's `#else` is invisible
   to it. Recorded next to the entry.
 
-  `system_ticks` is 64-bit now. At 100 Hz a `uint32_t` wraps after ~497 days, which was
-  irrelevant while nothing read it as a clock and a defect the moment something did: a monotonic
-  clock that goes backwards makes every timeout built on it fire early or never. One counter, not
-  two, so they cannot drift; `get_system_ticks()` still returns the low 32 bits for the callers
-  that only compare small deltas. `PIT_TICK_HZ` moved to `kernel.h` for the same reason — the
-  clock converts ticks to seconds with it, and the same constant in two files is a clock that
-  silently lies when one of them changes.
+`system_ticks` is 64-bit now. At 100 Hz a `uint32_t` wraps after ~497 days, which was irrelevant
+while nothing read it as a clock and a defect the moment something did: a monotonic clock that
+goes backwards makes every timeout built on it fire early or never. One counter, not two, so
+they cannot drift; `get_system_ticks()` still returns the low 32 bits for the callers that only
+compare small deltas. `PIT_TICK_HZ` moved to `kernel.h` for the same reason; the clock converts
+ticks to seconds with it, and the same constant in two files is a clock that silently lies when
+one of them changes.
 
 - **Miri over the security core, and it found UB in the tests (roadmap 3.8, S33).** 80 `unsafe`
   blocks live in `rust/src`, every one at the boundary where the C kernel hands in a pointer, and
   nothing had ever checked them for undefined behaviour. `cargo miri test` now runs on every pull
-  request — 77 tests, ~2 minutes, required, no `continue-on-error`.
+  request, 77 tests, ~2 minutes, required, no `continue-on-error`.
 
-  **Three UB sites on the first run, all of them in the harness rather than the library.** A test
-  would take `x.as_mut_ptr()`, store it in a `CSpaceDesc`, then reach the same array a second way
-  — another `as_mut_ptr()`, or a direct `table[6] = ...` — and the second access retags the array,
-  invalidating the pointer the first had already handed to the code under test. The next write
-  through it is UB. Sixteen tests in `capability.rs` had that shape, plus
-  `memory::refcount_trust_boundary`. Fixed by hoisting one pointer per array and using it
-  throughout, which is what the C caller actually does: it holds ONE `struct capability *` and
-  passes it twice — one provenance used twice, not two Rust borrows.
+**Three UB sites on the first run, all of them in the harness rather than the library.** A test
+would take `x.as_mut_ptr()`, store it in a `CSpaceDesc`, then reach the same array a second way
+(another `as_mut_ptr()`, or a direct `table[6] = ...`) and the second access retags the array,
+invalidating the pointer the first had already handed to the code under test. The next write
+through it is UB. Sixteen tests in `capability.rs` had that shape, plus
+`memory::refcount_trust_boundary`. Fixed by hoisting one pointer per array and using it
+throughout, which is what the C caller actually does: it holds ONE `struct capability *` and
+passes it twice: one provenance used twice, not two Rust borrows.
 
-  **The library was not at fault, and that was established rather than assumed.** The first fix
-  written was a library change: `rust_cap_revoke_global` rewritten to avoid `&mut`, with a
-  confident comment about why the aliasing made it necessary. Reverting **only** that change and
-  re-running Miri left it clean — so the change fixed nothing, its comment asserted something the
-  measurement disproved, and it is not in this commit. Ablate before believing your own fix.
+**The library was not at fault, and that was established rather than assumed.** The first fix
+written was a library change: `rust_cap_revoke_global` rewritten to avoid `&mut`, with a
+confident comment about why the aliasing made it necessary. Reverting **only** that change and
+re-running Miri left it clean, so the change fixed nothing, its comment asserted something the
+measurement disproved, and it is not in this commit. Ablate before believing your own fix.
 
-  `.github/miri-scope.yml` classifies every test module as run-or-excused, the job derives its
-  `--skip` flags from that file (one list, not two), and `tools/check_miri_scope.py` is falsified
-  three ways: a rotted skip entry, an excuse under eight words, and a new module — which defaults
-  to RUN, the safe direction, so nothing can be silently skipped.
+`.github/miri-scope.yml` classifies every test module as run-or-excused, the job derives its
+`--skip` flags from that file (one list, not two), and `tools/check_miri_scope.py` is falsified
+three ways: a rotted skip entry, an excuse under eight words, and a new module, which defaults
+to RUN, the safe direction, so nothing can be silently skipped.
 
 - **Two Kani proofs were excused from gating for a reason nobody had measured.** #205 put the
   two ELF validators in `manual` on the grounds that they are "corroboration, not the only
@@ -1845,92 +1883,92 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   The two revocation lineage proofs beside them were measured properly and **do not finish in
   1500 s**, so they stay manual.
 
-  **The end-to-end figure in #205 was also misleading, in an interesting direction.** It said
-  319 s for eleven harnesses; thirteen harnesses now take **196 s**. More proofs, less time —
-  what dominates is the rebuild each `cargo kani --harness` invocation may need, not the solving.
-  Both numbers are recorded rather than one, because either alone would mislead whoever budgets
-  the job next.
+**The end-to-end figure in #205 was also misleading, in an interesting direction.** It said 319
+s for eleven harnesses; thirteen harnesses now take **196 s**. More proofs, less time, what
+dominates is the rebuild each `cargo kani --harness` invocation may need, not the solving. Both
+numbers are recorded rather than one, because either alone would mislead whoever budgets the job
+next.
 
 - **`ps` required the capability that rotates the audit chain's keys (roadmap 3.6, S32).** The
-  ad-hoc root introspection was already gone — finding I-1 replaced it with a real capability
-  check — but the capability init handed the shell for `ps` was **`CAP_AUDIT`**, which also reads
+  ad-hoc root introspection was already gone, finding I-1 replaced it with a real capability
+  check, but the capability init handed the shell for `ps` was **`CAP_AUDIT`**, which also reads
   the audit log and rotates its keys. That is a *bundling* mistake rather than an ambient one:
   the gate was real, it just named far more authority than the caller needed, which is why two
   ambient-authority sweeps walked past it. `CAP_DEBUG` is observation and nothing else, minted
   **READ-only** at the root so no delegation can widen it, and the shell now holds that instead.
   The change **narrows** the shell.
 
-  **The capability graph is observable now**, which is the part of 3.6 that matters: the security
-  argument of this system is that graph, and until now it could be read in the source but not
-  asked of a running machine. `SYS_CAP_ENUMERATE` (97) reports one cspace slot's type, rights,
-  serial, badge and generation; the shell's `capview` walks it and prints the tree. `object` is
-  deliberately withheld — `serial` and `badge` **are** the edges, so derivation is fully visible
-  without naming what each node points at.
+**The capability graph is observable now**, which is the part of 3.6 that matters: the security
+argument of this system is that graph, and until now it could be read in the source but not
+asked of a running machine. `SYS_CAP_ENUMERATE` (97) reports one cspace slot's type, rights,
+serial, badge and generation; the shell's `capview` walks it and prints the tree. `object` is
+deliberately withheld: `serial` and `badge` **are** the edges, so derivation is fully visible
+without naming what each node points at.
 
-  **Falsified** by `CAP_ENUMERATE_UNGATED=1`, which removes the declared capability so the central
-  gate admits everyone; captest — holding no `CAP_DEBUG` — then reads another task's cspace. The
-  arm is aimed at the gate rather than the handler because the handler contains no authority check
-  at all, by design. Positive half: `smoke-session` runs `capview` and requires the shell's own
-  `debug r-----` entry, since "no capabilities anywhere" is what a broken readout looks like.
+**Falsified** by `CAP_ENUMERATE_UNGATED=1`, which removes the declared capability so the central
+gate admits everyone; captest (holding no `CAP_DEBUG`) then reads another task's cspace. The arm
+is aimed at the gate rather than the handler because the handler contains no authority check at
+all, by design. Positive half: `smoke-session` runs `capview` and requires the shell's own
+`debug r-----` entry, since "no capabilities anywhere" is what a broken readout looks like.
 
 - **The cspace slot map was written down twice and nothing compared them.** `CAPSLOT_DEBUG` was
   first added as **18**, which `CAPSLOT_UNTYPED` already was, so init's delegation wrote a
   `CAP_DEBUG` into the slot it keeps its `CAP_UNTYPED` in. It presented as "the capability did not
-  arrive" — the friendly version; the unfriendly one is a capability arriving where something else
+  arrive"; the friendly version; the unfriendly one is a capability arriving where something else
   was expected and being used as it. `tools/check_capslots.py` refuses a duplicate number within a
   header and a disagreement between `kernel.h` and `syscall.h`, and is falsified by both.
 
-  The syscall-coverage deriver also needed a fix this exposed: an entry written into **both** arms
-  of an `#ifdef`/`#else` — the shape a control arm takes when it changes a syscall's declared
-  capability rather than removing it — was reported as guarded *and* unclassified at once. Active
-  wins now, because the question that map answers is whether this build dispatches it.
+The syscall-coverage deriver also needed a fix this exposed: an entry written into **both** arms
+of an `#ifdef`/`#else`: the shape a control arm takes when it changes a syscall's declared
+capability rather than removing it, was reported as guarded *and* unclassified at once. Active
+wins now, because the question that map answers is whether this build dispatches it.
 
 - **Seven new proofs of the capability algebra, and the first Kani job that can fail
   (roadmap 3.5, S31).** `rust_cap_lookup` and `rust_cap_grant_into` had no harnesses at all.
   Proved now, for every input: lookup succeeds **exactly when** the capability holds every
-  requested right — an equivalence, so a lookup that refused too much fails it too, which is the
-  mutation a one-directional property misses — and never resolves an empty or out-of-range slot;
+  requested right, an equivalence, so a lookup that refused too much fails it too, which is the
+  mutation a one-directional property misses, and never resolves an empty or out-of-range slot;
   grant yields exactly `requested & source`, records its grantor as the grantee's parent with a
   fresh derived serial, refuses an invalid source **without writing anything**, and is bounded by
   the destination cspace.
 
-  **The proofs did not gate anything, and had not since they were written.** The `kani` job is
-  `workflow_dispatch`-only *and* carries `continue-on-error: true` on both of its steps: it never
-  ran on a pull request and could not have failed one. Thirteen proofs of the capability algebra,
-  none load-bearing — the `smoke-kstack-park` shape (required and unfailable at once) applied to
-  formal verification. `.github/kani-harnesses.yml` now classifies every harness, the new required
-  `kani-bounded` job runs the eleven that finish (**319 s**, measured end to end — the per-harness
-  solver times sum to about three minutes, and the gap is one rebuild per invocation), and
-  `tools/check_kani_harnesses.py` fails the build on a proof in neither list. Four are excused with
-  reasons: the serial-keyed lineage pair and the two ELF validators, which is what pushed a full
-  `cargo kani` past GitHub's 6-hour ceiling.
+**The proofs did not gate anything, and had not since they were written.** The `kani` job is
+`workflow_dispatch`-only *and* carries `continue-on-error: true` on both of its steps: it never
+ran on a pull request and could not have failed one. Thirteen proofs of the capability algebra,
+none load-bearing: the `smoke-kstack-park` shape (required and unfailable at once) applied to
+formal verification. `.github/kani-harnesses.yml` now classifies every harness, the new required
+`kani-bounded` job runs the eleven that finish (**319 s**, measured end to end; the per-harness
+solver times sum to about three minutes, and the gap is one rebuild per invocation), and
+`tools/check_kani_harnesses.py` fails the build on a proof in neither list. Four are excused
+with reasons: the serial-keyed lineage pair and the two ELF validators, which is what pushed a
+full `cargo kani` past GitHub's 6-hour ceiling.
 
-  **Every new proof was falsified by mutation** — weakening lookup's rights test to "any overlap",
-  dropping grant's `& src.rights`, zeroing the recorded parent, removing a bound — and confirmed to
-  report `VERIFICATION:- FAILED`. One mutation looked uncaught and **the mutation was wrong**: a
-  first-occurrence string replace hit `rust_cap_mint`, 77 lines above the intended
-  `rust_cap_grant_into`. That is the second time in one day that trap produced a falsely reassuring
-  arm; aimed correctly, the proof failed as it should. The checker itself was falsified four ways,
-  one per rule.
+**Every new proof was falsified by mutation**: weakening lookup's rights test to "any overlap",
+dropping grant's `& src.rights`, zeroing the recorded parent, removing a bound, and confirmed
+to report `VERIFICATION:- FAILED`. One mutation looked uncaught and **the mutation was wrong**:
+a first-occurrence string replace hit `rust_cap_mint`, 77 lines above the intended
+`rust_cap_grant_into`. That is the second time in one day that trap produced a falsely
+reassuring arm; aimed correctly, the proof failed as it should. The checker itself was falsified
+four ways, one per rule.
 
 - **A fifth door of [H-3]'s shape: syscall 14 created a task for any caller.** `SYS_EXEC_LEGACY`
-  read `{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` — cspace slot 3, the legacy
-  `CAP_FRAME` `create_task` installs in *every* task, any type — on a syscall that **creates a
+  read `{ h_exec, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }`, cspace slot 3, the legacy
+  `CAP_FRAME` `create_task` installs in *every* task, any type: on a syscall that **creates a
   task**. Measured before removal: `passwdprobe`, running as uid 1000 and holding no delegated
-  capability, called it and was handed task id 2. The task it made had no identity of its own —
+  capability, called it and was handed task id 2. The task it made had no identity of its own; 
   `create_task` assigns `state` and never `uid`/`gid`, so a new task carried whatever the slot
   held: 0 on a never-used slot, the previous occupant's uid on a reused one. Since **S18** uid 0
   confers no kernel authority, but `fs_server` enforces file permissions against the
   kernel-attested uid (**S13**/**S14**).
 
-  **It survived the [H-3] sweep because it was invisible to it.** The dispatch entry was written
-  `[14]`, a bare number, matching none of the `[SYS_NAME]` patterns that sweep, the coverage
-  manifest and every audit grep are built on — and it sat *directly beneath* the comment block
-  explaining that a slot-3 gate is not a gate. Naming it in #201 is what made it findable; this
-  commit removes it, along with `SYS_CLEAR` (5) and `SYS_SYSINFO` (6), which had no caller
-  anywhere in the tree either. `SYS_DEBUG_EXEC` (7) survives only in a `DEBUG_SHELL=1` build —
-  before this its *entry* was unconditional and only the handler body was guarded, so the ship
-  kernel dispatched it, copied 127 bytes from the caller, and returned −1.
+**It survived the [H-3] sweep because it was invisible to it.** The dispatch entry was written
+`[14]`, a bare number, matching none of the `[SYS_NAME]` patterns that sweep, the coverage
+manifest and every audit grep are built on, and it sat *directly beneath* the comment block
+explaining that a slot-3 gate is not a gate. Naming it in #201 is what made it findable; this
+commit removes it, along with `SYS_CLEAR` (5) and `SYS_SYSINFO` (6), which had no caller
+anywhere in the tree either. `SYS_DEBUG_EXEC` (7) survives only in a `DEBUG_SHELL=1` build,
+before this its *entry* was unconditional and only the handler body was guarded, so the ship
+kernel dispatched it, copied 127 bytes from the caller, and returned −1.
 
   Numbers reserved as 38–45 are. Witness `make smoke-passwd-probe` (8 checks), falsified by
   `make smoke-passwd-probe-legacy-control` (`LEGACY_SYSCALLS_PRESENT=1`), where the probe is
@@ -1944,31 +1982,31 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   precedence. Falsified both ways.
 
 - **Measured boot can be required, and then an unmeasured boot does not proceed
-  (`MEASURED_BOOT_REQUIRED=1`).** #197 fixed the CI half — `SWTPM_REQUIRED=1` stopped four gates
-  passing without measuring — but the kernel still booted happily with no TPM: PCRs unextended,
+  (`MEASURED_BOOT_REQUIRED=1`).** #197 fixed the CI half, `SWTPM_REQUIRED=1` stopped four gates
+  passing without measuring, but the kernel still booted happily with no TPM: PCRs unextended,
   volume key never sealed, S11/S12 simply not applying rather than failing closed. The flag makes
   every unavailable measured boot fatal (no TPM, locality, transport, PCR readback) and refuses
   to unlock a **persistent volume that was never sealed**. That second half is where the real
   downgrade lived: the sealed path already fails closed when the TPM denies (S12), but nothing
-  checked the reverse, so a re-formatted password-only disk made the requirement evaporate —
+  checked the reverse, so a re-formatted password-only disk made the requirement evaporate; 
   `tpm_mode == 0` turns `apply_tpm_kek_binding` into a no-op.
   **Default behaviour is unchanged** and deliberately so; this kernel is expected to boot on
   TPM-less machines. The ephemeral RAM vdisk is exempt, because its key is generated this boot
-  and discarded at power-off — there is nothing for a measurement to protect — and that exemption
+  and discarded at power-off (there is nothing for a measurement to protect) and that exemption
   is named rather than implicit, since it makes the refusal branch unreachable on an ordinary
   boot. `MEASURED_VOLUME_EXEMPT_NONE=1` removes it so the branch can be falsified.
   **Three arms**: with a TPM the machine still boots and measures (a refusal-only gate is passed
   by a kernel that halts always); without one it halts; with an unsealed volume it refuses.
-  `tools/run_with_swtpm.sh` gained `EXPECT_FAULT`, matching `smoke_test.sh` — it tested its fault
+  `tools/run_with_swtpm.sh` gained `EXPECT_FAULT`, matching `smoke_test.sh`; it tested its fault
   regex before the required marker, so on a build whose success condition IS a halt no marker
   could ever be reached. Falsified by naming a fault that never occurs: the arm times out and
   fails rather than accepting the halt that did happen.
   **Still not gated**: a persistent disk under the policy. The arm proves the refusal fires, not
-  that a real on-disk volume reaches it — stated in `docs/LIMITATIONS.md` §2.9.
+  that a real on-disk volume reaches it, stated in `docs/LIMITATIONS.md` §2.9.
 
 - **`hvfs` has users: the libc and the shell walk paths through it (roadmap 2.4).** `posix.c`
   and `shell.c` carried private copies of the walker the namespace library was written to
-  replace, and the copies had drifted — the shell resolved `.` and `..` only because it rewrote
+  replace, and the copies had drifted; the shell resolved `.` and `..` only because it rewrote
   the *string* first, which no libc program goes through, so `open("/a/../a/f")` from any
   newlib program failed with `ENOENT`. Both now call `hvfs_walk` / `hvfs_walk_parent`, and
   `libhorus.a` is linked into the newlib programs to make that possible: the Makefile note
@@ -1976,53 +2014,53 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   `libhorus.o` is named `memcpy` (the symbols are `u`- and `k`-prefixed). ~200 bytes per binary,
   one walker instead of two. The reversed decision is recorded where the old note stood.
 
-  **`fsclient.c` was never one of the three walkers**, and three documents said it was. It has
-  no walker: flat single-name lookups over a private `rpc()` whose bounded retry and selftest
-  markers `hvfs_rpc` deliberately lacks. Corrected rather than migrated — changing working code
-  to make a sentence true is the wrong direction.
+**`fsclient.c` was never one of the three walkers**, and three documents said it was. It has no
+walker: flat single-name lookups over a private `rpc()` whose bounded retry and selftest markers
+`hvfs_rpc` deliberately lacks. Corrected rather than migrated, changing working code to make a
+sentence true is the wrong direction.
 
-  **And `..` did not work below a mount root in any client.** `hvfs` resolved it by asking the
-  server to look up a `..` **entry**; `fs_server` creates none, so the branch returned `NOENT`
-  every time. Dead from the day it landed in #195, invisible because the only test touching
-  `..` used the *pinned* case, which returns before the lookup. It now pops the walker's own
-  descent stack — no round trip, and not something a server can lie about.
-  **Falsified two ways**, each aimed at one defect: `POSIX_LEGACY_WALK=1` (the private walker)
-  reddens `smoke-newlib` at `FAIL dot-here`, and `HVFS_DOTDOT_SERVER=1` (the shipped `..`
-  branch) reddens it at `FAIL dotdot-back` — specifically that marker, since `.` still resolves
-  under it and only the descending `..` does not.
+**And `..` did not work below a mount root in any client.** `hvfs` resolved it by asking the
+server to look up a `..` **entry**; `fs_server` creates none, so the branch returned `NOENT`
+every time. Dead from the day it landed in #195, invisible because the only test touching `..`
+used the *pinned* case, which returns before the lookup. It now pops the walker's own descent
+stack: no round trip, and not something a server can lie about. **Falsified two ways**, each
+aimed at one defect: `POSIX_LEGACY_WALK=1` (the private walker) reddens `smoke-newlib` at `FAIL
+dot-here`, and `HVFS_DOTDOT_SERVER=1` (the shipped `..` branch) reddens it at `FAIL
+dotdot-back`, specifically that marker, since `.` still resolves under it and only the
+descending `..` does not.
 
 - **The syscall-coverage deriver described a kernel that has never booted, in both directions.**
   It read the dispatch table as flat text, so `SYS_OPEN`, `SYS_PREEMPT_TRACE` and
-  `SYS_IRQ_POLICY_INFO` — compiled only under a defect arm or a selftest flag — counted as
+  `SYS_IRQ_POLICY_INFO` (compiled only under a defect arm or a selftest flag) counted as
   shipped; and it matched only `[SYS_NAME]`, so **seven entries written as bare numbers were
   invisible**, five of them live in the ship build. The count was 81; the ship build has 83.
   `scan_table` evaluates the preprocessor now, guarded entries are declared under a new
   `conditional:` section **with the flag that guards each** (so a syscall silently re-entering
   the shipped surface fails the build), and a bare numeric index is refused outright. The seven
-  entries are named — `SYS_YIELD` kept a name the table did not use; `SYS_CLEAR`, `SYS_SYSINFO`,
+  entries are named, `SYS_YIELD` kept a name the table did not use; `SYS_CLEAR`, `SYS_SYSINFO`,
   `SYS_DEBUG_EXEC`, `SYS_EXEC_LEGACY`, `SYS_RAMFS_CREATE`, `SYS_RAMFS_LIST` are new symbols for
   unchanged numbers. `check_doc_claims.py` imports the deriver instead of keeping a second copy
   of the regex, which had inherited both blind spots.
-  **Falsified seven ways, one arm per new rule** — and the seventh arm did not fire on its first
+  **Falsified seven ways, one arm per new rule**, and the seventh arm did not fire on its first
   attempt, because it mutated an `#ifdef` earlier in the file than the table and so tested
   nothing. It was rerun against the table region, where it does.
   **What the newly-visible entries turned out to be**: four live handlers with **no userspace
-  wrapper anywhere in the tree**, reachable only by issuing the raw number — recorded in
+  wrapper anywhere in the tree**, reachable only by issuing the raw number, recorded in
   `docs/LIMITATIONS.md` §2.10 rather than deleted, because removing a syscall is an ABI decision
   and this commit is about being able to see them.
-  The blind spot had been written down in prose beside `SYS_OPEN` since 2026-08-22 — **naming the
+  The blind spot had been written down in prose beside `SYS_OPEN` since 2026-08-22; **naming the
   wrong three**, since two of the three it named were bare numerics the regex never matched. An
   unenforced note is worth exactly that much.
 
 - **The CSPRNG was safe by boot ordering, not by construction; now it refuses (S30).**
   `RngState::fill` never consulted `seeded`. Asked for output before `entropy_init()` it would
-  have run ChaCha20 under the hardcoded startup key in `RngState::new()` — a **published**
-  constant, because the build is reproducible — and returned it as randomness. Nothing reached
+  have run ChaCha20 under the hardcoded startup key in `RngState::new()`, a **published**
+  constant, because the build is reproducible, and returned it as randomness. Nothing reached
   it: `entropy_init()` runs before the first consumer and halts if the pool did not take. That
   is an ordering fact about one call site, not a property of the RNG, and it is what a refactor
   moves; the same shape as the frame refcount in #192. `fill` now returns false and zeroes the
-  caller's buffer while unseeded, and `rust_rng_u64()` — which returned a `uint64_t` and so had
-  **nowhere to put a refusal** — became `rust_rng_u64_checked(uint64_t *)`, wrapped by
+  caller's buffer while unseeded, and `rust_rng_u64()`: which returned a `uint64_t` and so had
+  **nowhere to put a refusal**, became `rust_rng_u64_checked(uint64_t *)`, wrapped by
   `secure_random_u64()`. Both C wrappers halt on a refusal, the way `entropy_init` already did.
   **No live defect and no finding ID**; the point is that the claim is now the RNG's own.
   **Falsified three ways**: `smoke-rng-seed-control` (`RNG_UNSEEDED_LEGACY=1`, the check
@@ -2033,7 +2071,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 - **The Rust staticlib named five of its fifteen source files as prerequisites.** Editing
   `rng.rs`, `aead.rs`, `ps.rs` or nine others rebuilt nothing and the kernel linked the previous
-  `libhorus_shell.a` — a measurement taken against source the binary does not contain, the same
+  `libhorus_shell.a`, a measurement taken against source the binary does not contain, the same
   family as the `-D` flags that survived a flagless rebuild. It is `$(wildcard rust/src/*.rs)`
   now, plus `.build-flags`, so a cargo *feature* change re-runs cargo too. Found while adding
   the arm above, whose control build would otherwise have been measured on a stale library.
@@ -2045,27 +2083,27 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   the mask. GitHub publishes a `continue-on-error` job's check run as SUCCESS however its steps
   exited, so for that whole window the ruleset required a context that could only ever be green.
   It was not idle: the job **failed on `main` at 9476799**, and on `a59667ab` before it, inside
-  runs GitHub reported green — and `ruleset-audit` could not notice, because it compares context
+  runs GitHub reported green, and `ruleset-audit` could not notice, because it compares context
   *names* and a masked job publishes the right name with the wrong verdict. The mask is gone, and
   `tools/check_ci_gating.py` now **refuses any `required:` job carrying job-level
   `continue-on-error`**, so the combination cannot be reassembled. Step-level `continue-on-error`
-  is untouched and still allowed — that is how the `security` job keeps its scanners advisory
+  is untouched and still allowed: that is how the `security` job keeps its scanners advisory
   without becoming unfailable itself. **Falsified both ways**: against the tree as it stood the
   new rule names `smoke-kstack-park` and exits 1; with the mask removed it exits 0, and the
   `security` job's four step-level exemptions pass unremarked.
 
-- **The control arm's misses were the instrument, not the schedule — and `KSTACK0_PARK_TRACE`
+- **The control arm's misses were the instrument, not the schedule, and `KSTACK0_PARK_TRACE`
   turns out to cost ~40% of boots.** `smoke-kstack-park-control` failed on `main` at 9476799 with
   8 misses in 8 boots. #193 had set that budget on the reading that a miss meant one park in the
-  whole boot, so `the collision was impossible there` — and from that treated boots as independent
-  draws. They are not: those boots ended in `KERNEL FATAL EXCEPTION` and `PROC_SELFTEST: FAIL` —
+  whole boot, so `the collision was impossible there`, and from that treated boots as independent
+  draws. They are not: those boots ended in `KERNEL FATAL EXCEPTION` and `PROC_SELFTEST: FAIL`; 
   the workload **died** before a second CPU could park. Measured on the *fixed* kernel, same
   workload and host, `-smp 4`, 20 boots each: **8 of 20 died with `KSTACK0_PARK_TRACE=1` and 0 of
   20 without it** (Fisher one-sided p = 0.0016). The trace writes through `kfault_*` straight to
   COM1 from interrupt context 5–10 times a boot, and that is enough to kill the run. So the ~40%
   "pre-existing scheduler claim leak" the job's own comment cited as the reason it could not be
   required (9/20 at `-smp 4`) was a measurement of the **instrumented** build all along, and
-  [G-9]'s closure is not in question — the uninstrumented build is 0 for 20 here, consistent with
+  [G-9]'s closure is not in question; the uninstrumented build is 0 for 20 here, consistent with
   the 0-in-200 that promoted the gate.
   - The arm now treats a boot the workload died in as **inconclusive**: named, tallied, and
     re-booted rather than counted. `KSTACK_PARK_CONTROL_BOOTS` (8) counts boots that *ran to
@@ -2074,7 +2112,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
     that measured and found nothing. Nothing is weakened: the assertion is still that the defect
     MUST reproduce, and of the boots that complete it reproduced **10 out of 10**.
   - **A wrong fix was tried first and is recorded because it nearly shipped.** Counting "parked,
-    then the kernel died" as a third witness looks sound — the base arm requires the fixed build
+    then the kernel died" as a third witness looks sound; the base arm requires the fixed build
     to complete the same workload, so the pair appears to differ by exactly that. Falsifying it
     against the fixed build produced boots of 6, 10 and 8 parks and then one park and a
     `KERNEL FATAL EXCEPTION`: the identical shape, with no shared park anywhere in the build. A
@@ -2091,53 +2129,53 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   now documented** (`docs/LIMITATIONS.md` §2.8, §2.9). Ten of its twelve findings duplicate
   existing `[C-5]`, `[C-6]`, `[I-7]` or §5.4 entries and are left where they are rather than
   filed twice.
-  - **§2.8** — `RngState::fill()` did not test `seeded`, so the CSPRNG was safe by the order of
+  - **§2.8**, `RngState::fill()` did not test `seeded`, so the CSPRNG was safe by the order of
     two calls in `kernel_main` rather than by the function that could enforce it. **The audit
     overstated this**: its recommended fix ("panic or refuse output until `seeded=true`")
     already existed in `entropy_init()`, which halts if unseeded and runs before the first
-    consumer — so the claimed weak ASLR/canaries/nonces were not reachable. What remained was
+    consumer, so the claimed weak ASLR/canaries/nonces were not reachable. What remained was
     the same shape as #192's frame refcount: a safety property held up by a fact nobody
-    enforces. **Closed 2026-08-23 (S30) — see the entry at the top of this section.** Recorded
+    enforces. **Closed 2026-08-23 (S30): see the entry at the top of this section.** Recorded
     in the past tense the day it closed, because §2.8 open here and closed in
     `docs/LIMITATIONS.md` is one finding carrying two statuses, which is the drift these
     entries exist to prevent.
-  - **§2.9** — the kernel proceeds without a TPM, so S11/S12 do not apply rather than failing
+  - **§2.9**, the kernel proceeds without a TPM, so S11/S12 do not apply rather than failing
     closed. The CI half closed in #197; the kernel half is a design question and is recorded as
     one.
 - **§2.6's fix design is corrected.** It described TPM-sealing the password pepper; that was
   superseded on 2026-08-22 in favour of putting the user table inside the AEAD object store,
   where the already-sealed volume key protects the hashes and **the pepper stops needing to
-  survive the reboot at all**. Smaller, stronger, and it works without a TPM — which the sealed
+  survive the reboot at all**. Smaller, stronger, and it works without a TPM, which the sealed
   pepper did not, on the common case.
 
 
-- **`smoke-kstack-park` promoted from advisory to merge-gating**, one merge after [G-9] closed —
+- **`smoke-kstack-park` promoted from advisory to merge-gating**, one merge after [G-9] closed; 
   the shape its own exemption asked for ("promote it in the same commit that closes [G-9], and
   quote a rate"). The rate: the `PROC_SELFTEST -smp 4` workload it boots ran **0 failures in 200
   boots** after the fix (95% upper bound 1.49%), against ~45% before [G-9]'s exec and page-table
   components and ~7% after them; the gate itself passed 5 of 5 in its exact form, which at a 7%
   rate is ~70% power and is corroboration rather than evidence. **No CI exemption now stands for
-  an open defect** — the three that remain (`fuzz`, `kani`, `ruleset-audit`) are properties of
+  an open defect**; the three that remain (`fuzz`, `kani`, `ruleset-audit`) are properties of
   those tests, not of the tree.
 
 ### Fixed
 
 - **Four TPM gates could report success while measuring nothing.** `tools/smoke_tpm.sh` and
-  `tools/run_with_swtpm.sh` both `exit 0` when `swtpm` is absent — so `smoke-tpm`,
+  `tools/run_with_swtpm.sh` both `exit 0` when `swtpm` is absent, so `smoke-tpm`,
   `smoke-tpm-tamper`, `smoke-tpm-seal-roundtrip` and `smoke-tpm-seal` (a **required**
   merge-gating job carrying **S11** and **S12**) printed `SKIP` and passed. `SWTPM_REQUIRED=1`
   now makes that an error, and CI sets it on all four. Locally the skip stays, because blocking
-  a developer without swtpm buys nothing. **CI had in fact been installing swtpm all along** —
+  a developer without swtpm buys nothing. **CI had in fact been installing swtpm all along**; 
   verified against a real run's log, where the measured PCRs are present and match the
-  host-computed manifest — so this was latent rather than live; a renamed package or a changed
+  host-computed manifest, so this was latent rather than live; a renamed package or a changed
   runner image would have been enough. Falsified in a genuinely swtpm-less environment (a
   `PATH` stripped of it): skip and exit 0 without the flag, hard failure with it. **The
-  end-to-end arm is what caught the first fix being incomplete** — `smoke_tpm.sh`'s own inline
+  end-to-end arm is what caught the first fix being incomplete**, `smoke_tpm.sh`'s own inline
   guard swallowed the flag before the shared code ever saw it.
 
 ### Added
 
-- **`tools/swtpm_lib.sh`** — the swtpm lifecycle in one place (state dir, daemon, socket wait,
+- **`tools/swtpm_lib.sh`**, the swtpm lifecycle in one place (state dir, daemon, socket wait,
   teardown), shared by `run_with_swtpm.sh`, `smoke_tpm.sh` and `smoke_test.sh`'s new `TPM=1`
   mode. Any gate can now boot under an emulated TPM without a second copy of the QEMU command
   line; `KEEP_TPMSTATE` carries one TPM across two boots for sealing tests.
@@ -2147,18 +2185,18 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 
 - **The user-database persistence path had never run, and is deleted.** ~90 lines in
-  `src/kernel/kusers.c` — `users_save_to_ramfs`, `users_load_from_ramfs`, `users_persist` and
-  its four call sites, plus the integrity tag over them — removed as code that could not have
+  `src/kernel/kusers.c`: `users_save_to_ramfs`, `users_load_from_ramfs`, `users_persist` and
+  its four call sites, plus the integrity tag over them, removed as code that could not have
   worked, for three independent reasons any one of which was fatal: `ramfs_write` took no
   offset so only the last of four writes survived; nothing persisted the ramfs and the load ran
   at boot against a zeroed `.bss` table, so it opened nothing every boot since it was written;
-  and **password hashes are boot-local by construction** — `kernel_pepper` is fresh random every
+  and **password hashes are boot-local by construction**, `kernel_pepper` is fresh random every
   boot and feeds both the set and the verify, so a stored hash can never verify in the next
   boot whatever it is stored in. The honest state is now written down: accounts are seeded from
   constants each boot and last until reboot (`docs/LIMITATIONS.md` §2.6).
 - **The in-kernel ramfs left the ship build with it.** Its ring-3 surface went with **[H-3]**
   and the user database was its last real consumer, so it is now compiled only under
-  `RAMFS_SLOT3_GATE` — the control arm that restores those four gates and needs something
+  `RAMFS_SLOT3_GATE`; the control arm that restores those four gates and needs something
   behind them. Measured: **`.bss` −36,864 bytes, `.text` −4,096**. `main.c` calls
   `storage_init()` directly rather than `ramfs_init()`, which was a misnamed wrapper around it
   plus two demo files.
@@ -2166,14 +2204,14 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   asserted on the probe opening the *user database* file; with that path deleted nothing writes
   it and the check would have passed **trivially in both arms**. Retargeted to a seeded file.
   Separately, restoring the four slot-3 gates onto an *empty* store reproduced only **2 of 4**
-  doors — open and read had nothing to find — so the control build now rebuilds `ramfs_init()`
+  doors (open and read had nothing to find) so the control build now rebuilds `ramfs_init()`
   with its seeding. Both were caught by running the arm rather than by reasoning about it.
   **S28 is unchanged**: the property was never about what sat behind the gates.
 
 
 - **[H-3] Four paths into the in-kernel ramfs were gated on the [C-1] decoy, and one of them
   is where the user database lives.** `SYS_OPEN`, syscall 15 (ramfs create), syscall 16 (ramfs
-  list) and `SYS_READ`'s `fd >= 3` branch all authorised on cspace slot 3 with `SC_ANYTYPE` —
+  list) and `SYS_READ`'s `fd >= 3` branch all authorised on cspace slot 3 with `SC_ANYTYPE`; 
   and slot 3 holds the legacy `CAP_FRAME` that `create_task` installs in every task, with
   `READ|WRITE|EXEC`, asked for by nobody. A gate every task passes is not a gate. These were
   the last four still wearing the shape that made **[C-1]** reachable, and they survived
@@ -2182,7 +2220,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   present and vacuous matches neither search. Demonstrated from ring 3 as the ordinary uid-1000
   account holding no delegated capability: opened the user-database file, read bytes out of
   three ramfs files, created a file, listed the store. **Retired rather than re-gated**,
-  following syscalls 38–45 — the ramfs is a toy superseded by `fs_server`, nothing in ring 3
+  following syscalls 38–45; the ramfs is a toy superseded by `fs_server`, nothing in ring 3
   calls any of them, and an ABI kept alive for nobody is surface with no owner. `SECURITY.md`
   **S28**; witness `make smoke-passwd-probe`, falsified by `RAMFS_SLOT3_GATE=1`.
 - **`docs/LIMITATIONS.md` §1.6's "complete residual list" was not complete.** It named the four
@@ -2196,14 +2234,14 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   CPUs to reach the park path in the same boot, which is a property of the schedule rather than
   of the build: measured 2026-08-22 it reproduces **9 boots in 12** on a feature branch and
   **10 in 12** on unmodified `main`. (This entry originally added "and every miss recorded
-  exactly one park in the whole boot — `the collision was impossible there`, not merely
+  exactly one park in the whole boot: `the collision was impossible there`, not merely
   unobserved". That reading was wrong, and the entry below corrects it.) So a one-boot assertion is
   about 25% red. It now boots up to `KSTACK_PARK_CONTROL_BOOTS` (8) times and stops at the
   first reproduction, which is the shape `smoke-kstack-race-control` has carried since
   2026-08-19 for exactly this reason ("never assert a probabilistic event from one boot"); the
-  arm next door simply never got it. Nothing is weakened — the assertion is still that the
+  arm next door simply never got it. Nothing is weakened; the assertion is still that the
   defect MUST reproduce, drawn from a sample large enough to mean it. (It also claimed
-  "at 75%/boot a clean sweep of 8 is `~1 run in 65000`" — an independence argument the entry
+  "at 75%/boot a clean sweep of 8 is `~1 run in 65000`", an independence argument the entry
   below withdraws.) **Falsified in the other direction**: against the *fixed* park path
   with tracing on, 8 boots produced 32 parks and no shared stack, so the loop still goes red
   when the defect is absent rather than being a way to pass.
@@ -2217,15 +2255,15 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   the exact event asserted.
 
 - **`smoke-kstack-race` went red on `main` after the [G-9] fix, and it was a real
-  regression rather than a flake.** That fix needed one property — the claim auditor's
-  exemption must outlive the claim release — but it also moved the `g_kstack_inflight`
+  regression rather than a flake.** That fix needed one property; the claim auditor's
+  exemption must outlive the claim release, but it also moved the `g_kstack_inflight`
   clear inside the scheduler lock, which the property never required. Under
   `KSTACK_RACE_WIDEN` the wider critical section pushed the session past its 90-second
   budget and it never reached the login prompt. The bit now clears outside the lock as it
   always did; the control arm still reproduces on boot 1, so the narrower lock did not
   weaken the fix.
 - **The legacy `CAP_FRAME` in slot 3 was a decoy waiting to become a defect.** Every task is
-  born holding one — `READ|WRITE|EXEC`, object `USER_AREA_BASE`, identical in every task — and
+  born holding one (`READ|WRITE|EXEC`, object `USER_AREA_BASE`, identical in every task) and
   it is the capability that made **[C-1]** reachable when the dispatch table gated IPC on slot
   3. Giving `CAP_FRAME` a meaning put it back in play: under the obvious design, where
   `capability_t.object` holds a physical address, `SYS_MAP_FRAME(3, ...)` maps physical
@@ -2240,7 +2278,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   and `free_user_table` releases every present leaf of a dying task's page tables. Nothing
   stopped a mapped frame's bytes being handed out as an anonymous page while the untyped region
   still owned them, except that a never-allocated arena page sits at count 0 and
-  `rust_page_ref_dec` fails closed on an already-zero frame — a value nobody set on purpose
+  `rust_page_ref_dec` fails closed on an already-zero frame, a value nobody set on purpose
   holding up a safety property. The untyped region now takes a permanent reference of its own,
   every mapping adds one, and the count can never reach 0. It also gives the object GC its
   liveness test: above 1 means a live PTE somewhere, and a frame with one is not collectable.
@@ -2248,7 +2286,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   only while every region base happened to be a multiple of `KOBJ_ALIGN` (64), which nothing
   requires; at `KOBJ_FRAME`'s `PAGE_SIZE` alignment it stops being true the moment a region
   starts anywhere but a page boundary, and a misaligned "frame" would be truncated down onto
-  whatever object shares its page — cross-object aliasing that reads as data corruption rather
+  whatever object shares its page, cross-object aliasing that reads as data corruption rather
   than as a permission error. It now pads the absolute arena address, and alignment is per
   object class.
 - **A stale ABI comment claimed `SYS_DMESG` was root-only.** `include/syscall.h` documented it
@@ -2264,12 +2302,12 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   endpoint capability, so crossing a mount point is choosing a different slot. **It is a
   library, not a server, and that is the security decision**: a VFS server would have to hold a
   capability to every backing filesystem, making it the most privileged task in ring 3 and a
-  single point whose compromise is a compromise of every mount — the monolithic trust 2.4
+  single point whose compromise is a compromise of every mount; the monolithic trust 2.4
   exists to avoid. `SECURITY.md` **S29**. Longest-prefix match, `..` pinned at the mount root,
   and a mount refused unless the slot holds a usable capability.
 - **`dev_server`**, a second filesystem server serving `/dev/null` and `/dev/zero` over the
   existing `fs_proto`. What matters is what it does **not** hold: one capability, the listen end
-  of its own endpoint — no `CAP_ENCRYPTED_STORAGE`, no `CAP_BOOT_MODULE`, no `CAP_USER`. A
+  of its own endpoint: no `CAP_ENCRYPTED_STORAGE`, no `CAP_BOOT_MODULE`, no `CAP_USER`. A
   filesystem server that structurally cannot touch the encrypted store, mounted in the same
   namespace as one that can. A single server owning both necessarily holds both sets.
 - **`smoke-vfs`** (required job `vfs`), 14 checks, with control arms `VFS_FIRST_MATCH=1` and
@@ -2289,7 +2327,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 - **`SYS_CAP_MINT` is reachable from ring 3.** Syscall 4 has been in the dispatch table since
   the beginning as an unnamed numeric literal, and nothing in userspace could call it: it was
   absent from `include/syscall.h` entirely. That mattered more than it looked, because
-  `SYS_CAP_GRANT` passes `CAP_RIGHT_ALL` unconditionally — so **ring 3 had no way to reduce
+  `SYS_CAP_GRANT` passes `CAP_RIGHT_ALL` unconditionally, so **ring 3 had no way to reduce
   rights at all**, and "delegation may only ever reduce" was a property of the kernel's
   internals that no userspace program could exercise or witness. Sharing a page read-only is
   now mint-then-grant. Syscalls 4/8/9 are named constants in both headers now rather than
@@ -2299,7 +2337,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 - **`libhorus`, the shared runtime for freestanding userspace** (`include/libhorus.h`,
   `userspace/libhorus.a`). Replaces 22 hand-copied definitions across 7 files. Linked as an
-  archive so a program that uses none of it pays nothing — `captest`'s `.text` is
+  archive so a program that uses none of it pays nothing, `captest`'s `.text` is
   byte-identical to before it existed.
 - **`ipc_call_retry`** makes the IPC retry contract a library guarantee: retry only while
   `ipc_transient()`, bound even that, and return a permanent refusal unretried. The
@@ -2308,25 +2346,25 @@ compressed away. Entries here cite finding IDs; their **current** status is in
   the correct loop; it is now written once.
 - **`smoke-libhorus`** (required job `libhorus`), with control arms `LIBHORUS_RETRY_ANY=1`
   and `LIBHORUS_STRNCPY_UNTERMINATED=1`. The first executable witness that a permanent IPC
-  refusal is not retried — the property had been asserted by comments and tested by nothing.
+  refusal is not retried; the property had been asserted by comments and tested by nothing.
 - **`$(call USERPROG,name)`**, so adding a freestanding program is one line. Capability
   delegation stays hand-written in `init.c` on purpose: a macro that guessed would be a macro
   that granted.
 
 ### Changed
 
-- **[G-9] is reproducible now** — 2–4% of boots on `PROC_SELFTEST` at `-smp 4`, captured
+- **[G-9] is reproducible now**, 2–4% of boots on `PROC_SELFTEST` at `-smp 4`, captured
   per-boot (2/60, 3/80, 1/80). It previously took "eighteen boots across three builds, by hand".
 - **[G-9]'s recorded signature was wrong.** Every document described a claim held by a CPU that
   had *gone idle*. All five 2026-08-21 captures show the holder **running another live task**,
-  owing no deferred release and not impersonating — so the leak is **not** in the
+  owing no deferred release and not impersonating, so the leak is **not** in the
   deferred-release machinery, which is where the two previous fixes went.
 - Four leads killed with instruments rather than arguments (`CLAIM_TRACE=1`, zero hits in 220
   boots): deferred-slot overwrite, `sched_enter_user` owing a release, a declined release in
-  `sched_release_deferred`, and the SYSCALL fast path (unreachable — `EFER.SCE` is never set).
+  `sched_release_deferred`, and the SYSCALL fast path (unreachable, `EFER.SCE` is never set).
 - **[G-9]'s scope is wider than recorded.** The scheduler claim leak was documented against
   `PROC_SELFTEST` at `-smp 4` (~40% of boots, always task 3). On 2026-08-21 the same shape
-  appeared in the **default boot** — `init` spawning the shell, task 4, on an idled CPU — at
+  appeared in the **default boot**, `init` spawning the shell, task 4, on an idled CPU, at
   1 boot in 120. A control on the preceding commit was 0 in 270; the difference is not
   significant (Fisher p ≈ 0.31) and is recorded rather than concluded.
 - **`smoke-sched-invariants-stress`'s green runs never established what they were read as.**
@@ -2339,8 +2377,8 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 ### Fixed
 
 - **[G-9] root cause found: a switch was committed before its resume value was validated.**
-  `task_exit_switch()` returns `0` both for "nothing runnable, caller parks" and — via
-  `ksp_refuse()` — for "I already claimed `next`, but its resume value is bogus". Its three
+  `task_exit_switch()` returns `0` both for "nothing runnable, caller parks" and, via
+  `ksp_refuse()`, for "I already claimed `next`, but its resume value is bogus". Its three
   callers cannot tell those apart, so they park the CPU and the claimed task is orphaned
   forever. The resume guard added *for* [G-9] is what created this. All four switch paths now
   validate before committing. Deterministically gated by `smoke-switch-commit` /
@@ -2350,7 +2388,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 - **[G-9] is CLOSED.** Its last and largest component was not a scheduler defect at all: the
   claim auditor's own exemption, `percpu_deferred_release[]`, was cleared *before* the lock that
   drops the claim, so an audit landing in that window accused a release that was in flight. The
-  checker's second false positive — 2026-08-09 was the first, reading a deliberate impersonation
+  checker's second false positive, 2026-08-09 was the first, reading a deliberate impersonation
   as a leak. Fixed by clearing the exemption last, under the same lock. Natural rate **9 in 200
   boots → 0 in 200** (Fisher p = 0.0036); mechanism proven deterministically, **8/10 against
   0/10** with `DEFER_WINDOW_WIDEN=1` set in both arms (p ≈ 0.0007). Gated by
@@ -2358,7 +2396,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 - **`sched_enter_user()` reached ring 3 without paying its deferred release.** It carried a
   second hand-written copy of the ISR epilogue that omitted `call sched_release_deferred`, so a
-  CPU arriving there while owing a release orphaned that task's claim — and its
+  CPU arriving there while owing a release orphaned that task's claim, and its
   `g_kstack_inflight` bit, which makes the **[G-8]** detector report a collision that is not
   happening. Latent in current workloads; fixed because it is wrong, not because it explains
   the observed leak.
@@ -2367,7 +2405,7 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 - **The invariant that makes the class non-recurrable:** *a CPU in ring 3 owes no deferred
   release*, asserted in `preempt_on_tick` under `SCHED_INVARIANTS`. The periodic claim audit
-  **cannot** catch an unpaid debt — it exempts exactly that state as a legitimate mid-handover —
+  **cannot** catch an unpaid debt; it exempts exactly that state as a legitimate mid-handover; 
   so an orphaned release hides inside the exemption that keeps the auditor honest. Gated by
   `make smoke-claim-release` (required job `claim-release`), falsified by `CLAIM_RELEASE_SKIP=1`.
 - `CLAIM_TRACE=1`, an instrument recording claim provenance and reporting two orphaning events
@@ -2400,13 +2438,13 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ### Removed
 
-- `src/kernel/shell.c` and `userspace/include/captest.c` — 1396 lines of byte-identical,
+- `src/kernel/shell.c` and `userspace/include/captest.c`, 1396 lines of byte-identical,
   never-built source superseded by `src/kernel/kshell.c` and `userspace/shell.c`.
 - Three prototypes in `src/include/kernel.h` with no definition and no caller anywhere:
   `console_putc`, `console_puts`, `untyped_selftest`.
 - `tests/`. Its one file defined its own `struct capability` and its own `cap_lookup` and
-  tested those; the real `capability_t` has a `uint64_t object` and a `generation` field —
-  the use-after-revoke backstop — and the copy had neither, so no kernel regression could
+  tested those; the real `capability_t` has a `uint64_t object` and a `generation` field; 
+  the use-after-revoke backstop, and the copy had neither, so no kernel regression could
   have failed it. `tests/README.md` also claimed `make test` ran it, which nothing did. The
   binding coverage it pointed to is now listed in `TESTS.md`.
 - `.build1.sha` / `.build2.sha`, tracked since the initial commit and holding the same stale
@@ -2421,11 +2459,11 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ---
 
-## [0.1.0] — 2026-08-21
+## [0.1.0]: 2026-08-21
 
 The first tagged state of Horus: a capability-based x86-64 microkernel that boots on hardware
-and under QEMU, drops to a ring-3 shell, and runs ordinary C programs — including GNU
-coreutils and TCC — with its filesystem and console drivers in userspace.
+and under QEMU, drops to a ring-3 shell, and runs ordinary C programs (including GNU coreutils
+and TCC) with its filesystem and console drivers in userspace.
 
 **This release is research-grade.** It has not been independently audited, and
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) is the honest accounting of what it does not do.
@@ -2441,7 +2479,7 @@ Version `0.1.0` marks a coherent starting point for versioned change, not a read
   Grant pushes a capability into a supervised child, never upward.
 - Revocation is system-wide and subtree-scoped, backed by serial-keyed generation counters as
   an independent second mechanism. Both must hold. Machine-checked by Kani proofs.
-- Kernel objects — cspaces, endpoints, notifications — are carved from untyped memory via
+- Kernel objects (cspaces, endpoints, notifications) are carved from untyped memory via
   `CAP_UNTYPED` and `SYS_RETYPE`, replacing fixed `.bss` tables (**[I-7]**). `tasks[]` remains.
 - IPC is capability-addressed: every IPC syscall names a cspace slot, and the kernel derives
   the endpoint from the capability there (**[C-1]**, **[C-2]**).
@@ -2496,40 +2534,40 @@ Version `0.1.0` marks a coherent starting point for versioned change, not a read
 Security-relevant defects closed before this release. Each has a falsified witness; the
 control arm is named in [`docs/BUILDING.md`](docs/BUILDING.md).
 
-- **[C-1]**, **[C-2]** — IPC endpoints were not capability-addressed, so any ring-3 task could
+- **[C-1]**, **[C-2]**. IPC endpoints were not capability-addressed, so any ring-3 task could
   intercept or forge messages to any userspace server.
-- **[C-3]**, **[C-3.1]** — one global IRQ nesting counter shared by every CPU, incremented
+- **[C-3]**, **[C-3.1]**, one global IRQ nesting counter shared by every CPU, incremented
   non-atomically, with an unconditional `sti` on release. The lock is per-CPU and restores the
   caller's own `RFLAGS.IF`.
-- **[C-4]** — user copies truncated instead of refusing.
-- **[H-1]** — the user database still granted authority for ambient `uid == 0`, for nineteen
+- **[C-4]**, user copies truncated instead of refusing.
+- **[H-1]**, the user database still granted authority for ambient `uid == 0`, for nineteen
   days after three documents said that authority had been retired. It now tests `CAP_USER`.
-- **[H-2]** — a ring-3 write to fd 1 was appended to the kernel message ring with no authority
+- **[H-2]**, a ring-3 write to fd 1 was appended to the kernel message ring with no authority
   tested, though the *read* side had required `CAP_KERNEL_LOG` since **[I-1]**.
-- **[I-1]** — ambient `uid == 0` authority across the root-gated syscalls.
-- **[I-2]** — 32-bit truncation in the heap syscalls and the pager's region gate.
-- **[I-3]** — a revocation closure an unprivileged task could force to over-approximate,
+- **[I-1]**, ambient `uid == 0` authority across the root-gated syscalls.
+- **[I-2]**, 32-bit truncation in the heap syscalls and the pager's region gate.
+- **[I-3]**, a revocation closure an unprivileged task could force to over-approximate,
   destroying unrelated peers' authority. Now exact.
-- **[I-5]** — a single-slot endpoint, replaced by a bounded queue.
-- **[I-6]** — `this_cpu()` read LAPIC MMIO on every call.
-- **[I-10]** — the write-ahead journal had no `FLUSH CACHE` barriers and was not durable on
+- **[I-5]**, a single-slot endpoint, replaced by a bounded queue.
+- **[I-6]**, `this_cpu()` read LAPIC MMIO on every call.
+- **[I-10]**, the write-ahead journal had no `FLUSH CACHE` barriers and was not durable on
   real hardware.
-- **[I-11]** — the journal recovery test ended on a signal rather than a process exit.
-- **[G-8]** — a switch path handed a task to another CPU while the CPU making the switch was
+- **[I-11]**, the journal recovery test ended on a signal rather than a process exit.
+- **[G-8]**, a switch path handed a task to another CPU while the CPU making the switch was
   still executing on that task's kernel stack. Measured over 1600 alternating boots: the
-  pre-fix release site fails 31/800, the shipped one 0/800. A second path — every CPU whose
-  last task died parking on `tasks[0]`'s stack — was closed with it.
-- **[G-10]** — a page-table use-after-free giving a cross-address-space read/write primitive
+  pre-fix release site fails 31/800, the shipped one 0/800. A second path, every CPU whose
+  last task died parking on `tasks[0]`'s stack, was closed with it.
+- **[G-10]**, a page-table use-after-free giving a cross-address-space read/write primitive
   reachable from ring 3, plus the unserialised spawn staging around it.
-- **[G-11]** — the armed program image was ambient state, so `SYS_SUDO` would elevate whatever
+- **[G-11]**, the armed program image was ambient state, so `SYS_SUDO` would elevate whatever
   was armed to uid 0 whether or not the authenticating task had staged it.
 
 ### Known open
 
-- **[C-5]** — no independent review of security-critical changes. Single maintainer.
-- **[C-6]** — reconciling the branch ruleset to `.github/ci-gating.yml` is still a manual step
+- **[C-5]**, no independent review of security-critical changes. Single maintainer.
+- **[C-6]**, reconciling the branch ruleset to `.github/ci-gating.yml` is still a manual step
   that lags a merge.
-- **[G-9]** — a scheduler claim leaks and kernel stacks collide on the spawn/reap path under
+- **[G-9]**, a scheduler claim leaks and kernel stacks collide on the spawn/reap path under
   SMP. Two components fixed, taking it from ~45% of boots to roughly 1–2%; the rest is open.
 
 The full list, with what each means for a reader, is in

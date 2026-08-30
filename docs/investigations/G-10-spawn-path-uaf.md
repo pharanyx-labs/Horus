@@ -10,19 +10,19 @@ witness it are listed in [`../../TESTS.md`](../../TESTS.md).*
 ---
 
 **Found 2026-08-17 while narrowing [G-9]; closed 2026-08-18.** The section below is kept in the
-order it happened — the lead, then the page-table half, then the rest — because how the finding
+order it happened (the lead, then the page-table half, then the rest) because how the finding
 was narrowed is the part worth reusing.
 
-**Found 2026-08-17 while narrowing [G-9]. No witness yet — this is a lead with a mechanism.**
+**Found 2026-08-17 while narrowing [G-9]. No witness yet: this is a lead with a mechanism.**
 
-Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight is a file-scope singleton — the one ELF
+Everything `SYS_SPAWN` / `SYS_EXEC_NAMED` needs in flight is a file-scope singleton: the one ELF
 staging buffer `loader_staging` (`kernel.h:99`), the staged argv (`g_args_*`, `kspawn.c:9-12`),
-`g_spawn_stdio_spec` and `g_spawn_caller` (`kspawn.c:21-22`) — and nothing serialises two CPUs
+`g_spawn_stdio_spec` and `g_spawn_caller` (`kspawn.c:21-22`): and nothing serialises two CPUs
 through any of it. There is no lock in `loader.c` and none around `do_spawn`.
 `g_exec_reenter_task` was one instance of the pattern and is now per-CPU; the rest are not.
 
-The evidence is the [G-9] residue: 6 boots in 30 take a CPL-0 `vec=14 errc=0x2` — a supervisor
-*write* to a non-present page — at `lapic_eoi` and `interrupt_handler64`. A CPU taking an
+The evidence is the [G-9] residue: 6 boots in 30 take a CPL-0 `vec=14 errc=0x2` (a supervisor
+*write* to a non-present page) at `lapic_eoi` and `interrupt_handler64`. A CPU taking an
 interrupt on a CR3 that does not map the LAPIC is an address space that became reachable before
 `create_user_pagedir` populated its kernel half.
 
@@ -48,7 +48,7 @@ CR3UAF: freeing the address space of slot 1 while cpu 3 still has it loaded
 > *"the caller is on the kernel CR3, so the tree about to be freed is not the one any CPU is
 > walking"*
 
-— which establishes only that *this* core has left it. A CPU parked in `kernel_idle()` never
+; which establishes only that *this* core has left it. A CPU parked in `kernel_idle()` never
 reloads CR3, and `SYS_KILL` marks a task dead while it is still running in ring 3 on another
 core, while the slot allocator asks only for `state == 0`. So the frames went back to the pool
 and were handed out as ordinary pages under a live core: a cross-address-space read/write
@@ -57,13 +57,13 @@ lives in each task's own `pml4[0]` map).
 
 **Fix:** refuse to free a tree another CPU has loaded, and park it in a small fixed table
 (`pending_aspace[]`) for retry on the next rebuild rather than leaking it. Fail closed both
-ways — the overflow leaks rather than freeing in use.
+ways; the overflow leaks rather than freeing in use.
 
 | Arm | Boots | `0xFEE000B0` fault | free-in-use |
 |---|---|---|---|
-| guarded, ship config | 30 | **0** | — |
-| ship config, before the fix | 30 | 6 | — |
-| `CR3_RECLAIM_UNGUARDED=1` | 20 | — | **20** |
+| guarded, ship config | 30 | **0** |, |
+| ship config, before the fix | 30 | 6 |, |
+| `CR3_RECLAIM_UNGUARDED=1` | 20 |, | **20** |
 
 Gates: `make smoke-cr3-reclaim` (fault **absent**) and `make smoke-cr3-reclaim-control`
 (free-in-use **present**). Different markers on the two arms, deliberately: the free-in-use
@@ -77,13 +77,13 @@ that gate stays advisory.
 #### The rest of it, 2026-08-18: one half deleted, one half serialised
 
 **The authority half is gone rather than guarded.** `g_spawn_caller` and `g_spawn_stdio_spec`
-are parameters now — `do_spawn_stdio(spec)` → `do_spawn_inner(caller, spec)` →
+are parameters now: `do_spawn_stdio(spec)` → `do_spawn_inner(caller, spec)` →
 `wire_child_stdio(child, caller, spec)`. There is no window left in which a second CPU can
 redirect the read, so "the child inherited a pipe capability from a task that never spawned it"
 is unexpressible rather than unlikely. No control arm is offered for this, deliberately: the
 defect was the *existence* of the global, and a flag that put it back would be re-introducing
 the state rather than exercising a check. What is checked instead is the stronger property that
-replaced it — the parent whose cspace is read is the task that armed the image being loaded,
+replaced it; the parent whose cspace is read is the task that armed the image being loaded,
 which is [G-11]'s ownership check, and that has a control arm.
 
 **The staging window is serialised.** `spawn_stage_acquire()` / `spawn_stage_release()` bracket
@@ -102,8 +102,8 @@ assumed from the source) to make an overlap likely if one is possible:
 | serialised, `SPAWN_STAGE_WIDEN=1 SPAWN_STAGE_TRACE=1` | 8 | 8 | 112 | **0** | 0 |
 | `+ SPAWN_STAGE_UNSERIALISED=1` (control) | 8 | 7 | 102 | **0** | 0 |
 
-The trace is what explained it. The 14 windows per boot come from three tasks — the in-kernel
-driver as task 0, `init`, and the proctest driver — on three different CPUs, and they never
+The trace is what explained it. The 14 windows per boot come from three tasks (the in-kernel
+driver as task 0, `init`, and the proctest driver) on three different CPUs, and they never
 overlap because **every spawner in the tree today is `init` or one of `init`'s children**:
 `init` spawns its servers sequentially, and the driver that spawns everything else is itself one
 of those children, so it cannot be running while `init` is mid-spawn.

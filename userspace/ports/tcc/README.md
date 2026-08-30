@@ -1,8 +1,9 @@
 # TCC (Tiny C Compiler) port
 
-The unmodified TinyCC 0.9.27 x86-64 compiler, built to run as a ring-3 program on Horus — a native C compiler on the machine, no cross-toolchain required.
+The unmodified TinyCC 0.9.27 x86-64 compiler, built to run as a ring-3 program on Horus, a
+native C compiler on the machine, no cross-toolchain required.
 
-## Licence — read this first
+## Licence: read this first
 
 **This subtree is LGPL 2.1, not MIT.** Horus itself is MIT (see the repository [LICENSE](../../../LICENSE)); the files listed as *upstream* below are copyright Fabrice Bellard and the TinyCC contributors and licensed under the GNU Lesser General Public License version 2.1, whose text is in [COPYING](COPYING) here.
 
@@ -13,11 +14,16 @@ The unmodified TinyCC 0.9.27 x86-64 compiler, built to run as a ring-3 program o
 | `COPYING` | TinyCC 0.9.27 | LGPL 2.1 text |
 | `port/*` | written for Horus | MIT (as the rest of the tree) |
 
-The port glue in `port/` is Horus code and stays MIT; nothing in it is derived from TinyCC. Shipping an LGPL program alongside an MIT kernel is ordinary aggregation — the two remain separate works.
+The port glue in `port/` is Horus code and stays MIT; nothing in it is derived from TinyCC.
+Shipping an LGPL program alongside an MIT kernel is ordinary aggregation; the two remain
+separate works.
 
 ## What is vendored, and what is not
 
-Only the **x86-64 subset** is vendored: the 9 core translation units above plus the headers they need. The other-architecture back-ends (`arm*`, `c67*`, `i386-gen`, `il-*`), the PE/COFF targets (`tccpe.c`, `tcccoff.c`), and — deliberately — **`tccrun.c`** (the in-process `-run` JIT) are omitted.
+Only the **x86-64 subset** is vendored: the 9 core translation units above plus the headers they
+need. The other-architecture back-ends (`arm*`, `c67*`, `i386-gen`, `il-*`), the PE/COFF targets
+(`tccpe.c`, `tcccoff.c`), and (deliberately) **`tccrun.c`** (the in-process `-run` JIT) are
+omitted.
 
 `-run` needs writable-and-executable (RWX) memory, which Horus's W^X policy forbids by construction, so the JIT can never work here; compile-to-file is the model. Its exported symbols (`tcc_run`, `tcc_run_free`, `tcc_set_num_callers`, `tcc_backtrace`) are stubbed fail-closed in `port/horus_glue.c`.
 
@@ -29,7 +35,10 @@ Two non-obvious flags:
 - **`-DCONFIG_TCC_STATIC`** drops TCC's `<dlfcn.h>` include (no dynamic loading on Horus).
 - **No `-I include`.** TCC must resolve `<errno.h>`/`<stdio.h>` to *newlib*, not the kernel's `include/errno.h` (which defines the `SYS_ERR_*` set, not the C `errno` variable). This is the same reason the coreutils port omits it.
 
-`port/horus_glue.c` supplies only what neither newlib nor Horus's POSIX layer provides: `gettimeofday`, `execvp` (no external assembler/linker — TCC's are built in), the `dl*`/`mmap` family (unreachable, `-run` excluded), and the excluded-`tccrun` symbols. `getcwd` and file I/O come from `userspace/posix.c` + `userspace/newlib_glue*.c`.
+`port/horus_glue.c` supplies only what neither newlib nor Horus's POSIX layer provides:
+`gettimeofday`, `execvp` (no external assembler/linker; TCC's are built in), the `dl*`/`mmap`
+family (unreachable, `-run` excluded), and the excluded-`tccrun` symbols. `getcwd` and file I/O
+come from `userspace/posix.c` + `userspace/newlib_glue*.c`.
 
 ## Building and running
 
@@ -44,7 +53,11 @@ The shell runs it by name: `tcc` resolves `/bin/tcc`, the ~1 MiB image loads ove
 
 ## Not yet: compiling a full program on Horus
 
-`tcc hello.c -o hello` for arbitrary programs additionally needs the C **headers and library** (and a C runtime) provisioned onto the filesystem under `/usr/include` and `/usr/lib`, plus `libtcc1.a` (TCC's tiny runtime) built for Horus. That provisioning — and growing the store volume to hold it — is the tracked follow-up. This session lands `/bin/tcc` runnable with a man page.
+`tcc hello.c -o hello` for arbitrary programs additionally needs the C **headers and library**
+(and a C runtime) provisioned onto the filesystem under `/usr/include` and `/usr/lib`, plus
+`libtcc1.a` (TCC's tiny runtime) built for Horus. That provisioning (and growing the store
+volume to hold it) is the tracked follow-up. This session lands `/bin/tcc` runnable with a man
+page.
 
 ## Updating
 

@@ -5597,6 +5597,18 @@ smoke-kstack-park-control:
 EXEC_REENTER_RUNS ?= 20
 EXEC_REENTER_TIMEOUT ?= 180
 EXEC_REENTER_RE = exec re-entry taken by the wrong cpu
+# A boot that never printed this never reached the exec path at all, so its
+# silence on EXEC_REENTER_RE says nothing either way. See the block above
+# smoke-exec-reenter-control.
+EXEC_REENTER_LIVE_RE = PROC_SELFTEST: suspend OK
+EXEC_REENTER_MIN_CONCLUSIVE ?= 10
+# The defect flag's VALUE, so the arm can be run in its exact form against the
+# fixed kernel: `make smoke-exec-reenter-control EXEC_REENTER_CONTROL_FLAG=0`
+# must go RED. An arm that only ever runs against the build it was written for
+# has never been shown to distinguish anything. Note the knob can only ever
+# turn this arm red -- with the defect absent there are no hits and the arm
+# fails -- so it is not a way to get a green past the gate.
+EXEC_REENTER_CONTROL_FLAG ?= 1
 
 .PHONY: smoke-exec-reenter
 smoke-exec-reenter:
@@ -5644,6 +5656,15 @@ smoke-exec-reenter:
 CR3_RECLAIM_RUNS ?= 20
 CR3_RECLAIM_TIMEOUT ?= 180
 CR3_RECLAIM_RE = PAGE FAULT at 0xfee000b0
+# Same three-valued scoring as the exec arm; CR3_RECLAIM_CONTROL_BOOTS was a
+# bare literal 3 in the loop while CR3_RECLAIM_RUNS (20, the base arm's) sat
+# right beside it unused -- a drift waiting to happen.
+CR3_RECLAIM_LIVE_RE = PROC_SELFTEST: suspend OK
+CR3_RECLAIM_CONTROL_BOOTS ?= 3
+CR3_RECLAIM_MIN_CONCLUSIVE ?= 2
+# As above: CR3_RECLAIM_CONTROL_FLAG=0 runs this arm against the guarded
+# kernel and must go red.
+CR3_RECLAIM_CONTROL_FLAG ?= 1
 
 .PHONY: smoke-cr3-reclaim
 smoke-cr3-reclaim:
@@ -5671,28 +5692,47 @@ smoke-cr3-reclaim:
 .PHONY: smoke-cr3-reclaim-control
 smoke-cr3-reclaim-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=1 boot.iso
-	@log=$$(mktemp); rc=0; \
-	for i in $$(seq 1 3); do \
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=$(CR3_RECLAIM_CONTROL_FLAG)
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=$(CR3_RECLAIM_CONTROL_FLAG) boot.iso
+	@log=$$(mktemp); rc=0; hits=0; ok=0; incon=0; \
+	for i in $$(seq 1 $(CR3_RECLAIM_CONTROL_BOOTS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
 	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    if grep -qa 'CR3UAF' "$$one"; then \
+	        hits=$$((hits+1)); \
+	        echo "  boot $$i/$(CR3_RECLAIM_CONTROL_BOOTS): HIT, a tree in use was freed"; \
+	    elif grep -qa '$(CR3_RECLAIM_LIVE_RE)' "$$one"; then \
+	        ok=$$((ok+1)); \
+	        echo "  boot $$i/$(CR3_RECLAIM_CONTROL_BOOTS): clean, the reclaim path ran and freed nothing in use"; \
+	    else \
+	        incon=$$((incon+1)); \
+	        echo "  boot $$i/$(CR3_RECLAIM_CONTROL_BOOTS): INCONCLUSIVE, the workload died before the reclaim path -- not counted"; \
+	    fi; \
 	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
 	: "rc captured, not asserted on: this arm halts on purpose. rc=$$rc"; \
-	hits=$$(grep -ca 'CR3UAF' "$$log"); \
+	conc=$$((hits+ok)); \
+	if [ "$$hits" -eq 0 ] && [ "$$conc" -lt $(CR3_RECLAIM_MIN_CONCLUSIVE) ]; then \
+	    echo "CR3 RECLAIM CONTROL: FAIL - the arm never ran the experiment."; \
+	    echo "  Only $$conc of $(CR3_RECLAIM_CONTROL_BOOTS) boots reached the reclaim path; $$incon died first."; \
+	    echo "  That is a broken workload, NOT evidence that the reclaim is guarded."; \
+	    echo "  ----- tail of the last boot's serial log -----"; \
+	    tail -30 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
 	if [ "$$hits" -eq 0 ]; then \
-	    echo "CR3 RECLAIM CONTROL: FAIL - the unguarded reclaim did NOT free a tree in use."; \
+	    echo "CR3 RECLAIM CONTROL: FAIL - the unguarded reclaim did NOT free a tree in use"; \
+	    echo "  in $$conc conclusive boots ($$incon inconclusive)."; \
 	    echo "  This arm carries reachability for the pair: if the free-in-use stops"; \
 	    echo "  happening with the guard removed, smoke-cr3-reclaim proves nothing."; \
 	    echo "  Measured 2026-08-17: 20 boots in 20."; \
-	    rm -f "$$log"; exit 1; \
+	    echo "  ----- tail of the last boot's serial log -----"; \
+	    tail -30 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
 	grep -a 'CR3UAF' "$$log" | head -2 | sed 's/^/  /'; \
 	rm -f "$$log"; \
-	echo "CR3 RECLAIM CONTROL: PASS - the unguarded reclaim frees an address space in use ($$hits/3 boots)"
+	echo "CR3 RECLAIM CONTROL: PASS - the unguarded reclaim frees an address space in use ($$hits hit, $$ok clean, $$incon inconclusive of $(CR3_RECLAIM_CONTROL_BOOTS))"
 
 # ---- [G-11]: the staged image can only be spawned by the task that armed it
 #
@@ -5724,31 +5764,81 @@ smoke-spawn-owner-control:
 		tools/smoke_test.sh boot.iso
 	@echo "SPAWN OWNER CONTROL: PASS - unchecked, a foreign staged image is spawned"
 
+# ---- Why these two control arms classify every boot -----------------------
+#
+# A control arm asserts "the defect MUST reproduce". That makes a boot's
+# outcome three-valued, not two:
+#
+#   HIT           the marker appeared: the defect reproduced.
+#   CLEAN         no marker, but the workload ran to completion, so the path
+#                 WAS exercised and the defect did not fire on this boot.
+#   INCONCLUSIVE  the workload died before it could reach the path. Nothing was
+#                 measured. This is not a miss, and scoring it as one is how a
+#                 probabilistic arm invents a red run out of a dead boot.
+#
+# smoke-kstack-park-control learned that in #193 after it reddened an unrelated
+# PR; the two arms below were written from the same template and never got it.
+# They also deleted their log on the failure path, which made the two cases
+# indistinguishable after the fact: on 2026-08-30 smoke-exec-reenter-control
+# reported 0/20 on PR #258, whose kernel.elf was byte-identical to main's for
+# this configuration, and the question "did those 20 boots run at all?" could
+# not be answered because the answer had been rm -f'd.
+#
+# Read off CI rather than a laptop -- the rate that matters is the runner's --
+# the arm hit 32 times in 120 boots over the six preceding green runs of main
+# (26.7%, against the 25% recorded on 2026-08-17), so a clean sweep of 20 is
+# (1-0.267)^20 ~ 0.2% PROVIDED every boot really ran. That proviso is the whole
+# reason to classify: without it a dead-boot run and a 1-in-500 tail read
+# identically.
+#
+# Note what this does NOT do: it does not retry, and it does not lower the bar.
+# The sample is still EXEC_REENTER_RUNS boots and the assertion is still "the
+# defect must reproduce". A run where every boot died fails either way -- it
+# just now says so in a way that names the cause.
+
 .PHONY: smoke-exec-reenter-control
 smoke-exec-reenter-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=1 boot.iso
-	@log=$$(mktemp); rc=0; \
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=$(EXEC_REENTER_CONTROL_FLAG)
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=$(EXEC_REENTER_CONTROL_FLAG) boot.iso
+	@log=$$(mktemp); rc=0; hits=0; ok=0; incon=0; \
 	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
 	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    if grep -qa '$(EXEC_REENTER_RE)' "$$one"; then \
+	        hits=$$((hits+1)); \
+	        echo "  boot $$i/$(EXEC_REENTER_RUNS): HIT, the wrong CPU took the re-entry"; \
+	    elif grep -qa '$(EXEC_REENTER_LIVE_RE)' "$$one"; then \
+	        ok=$$((ok+1)); \
+	        echo "  boot $$i/$(EXEC_REENTER_RUNS): clean, the exec path ran and no CPU stole it"; \
+	    else \
+	        incon=$$((incon+1)); \
+	        echo "  boot $$i/$(EXEC_REENTER_RUNS): INCONCLUSIVE, the workload died before the exec path -- not counted"; \
+	    fi; \
 	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
 	: "rc captured, not asserted on -- this arm halts a CPU on purpose. rc=$$rc"; \
-	hits=$$(grep -ca '$(EXEC_REENTER_RE)' "$$log"); \
+	conc=$$((hits+ok)); \
+	if [ "$$hits" -eq 0 ] && [ "$$conc" -lt $(EXEC_REENTER_MIN_CONCLUSIVE) ]; then \
+	    echo "EXEC REENTER CONTROL: FAIL - the arm never ran the experiment."; \
+	    echo "  Only $$conc of $(EXEC_REENTER_RUNS) boots reached the exec path; $$incon died first."; \
+	    echo "  That is a broken workload, NOT evidence that the hand-off is safe."; \
+	    echo "  ----- tail of the last boot's serial log -----"; \
+	    tail -30 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
 	if [ "$$hits" -eq 0 ]; then \
-	    echo "EXEC REENTER CONTROL: FAIL - the shared hand-off did NOT reproduce in $(EXEC_REENTER_RUNS) boots."; \
+	    echo "EXEC REENTER CONTROL: FAIL - the shared hand-off did NOT reproduce in $$conc conclusive boots ($$incon inconclusive)."; \
 	    echo "  This arm carries reachability for the pair: if the theft stops happening with"; \
 	    echo "  the global restored, then smoke-exec-reenter's green says nothing either."; \
-	    echo "  Expected ~25%/boot (measured 5 in 20 on 2026-08-17)."; \
-	    rm -f "$$log"; exit 1; \
+	    echo "  Expected ~25%/boot (5 in 20 on 2026-08-17; 32 in 120 across CI on 2026-08-30)."; \
+	    echo "  ----- tail of the last boot's serial log -----"; \
+	    tail -30 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
 	grep -a '$(EXEC_REENTER_RE)' "$$log" | head -2 | sed 's/^/  /'; \
 	rm -f "$$log"; \
-	echo "EXEC REENTER CONTROL: PASS - the shared hand-off is taken by the wrong CPU ($$hits/$(EXEC_REENTER_RUNS) boots), as it must be"
+	echo "EXEC REENTER CONTROL: PASS - the shared hand-off is taken by the wrong CPU ($$hits hit, $$ok clean, $$incon inconclusive of $(EXEC_REENTER_RUNS)), as it must be"
 
 # Roadmap 1.3: the blocking receive really sleeps, and the wake really carries
 # the reply right. See RECVBLOCK_SELFTEST above for what the markers mean.

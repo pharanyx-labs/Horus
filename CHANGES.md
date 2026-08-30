@@ -15,7 +15,26 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two control arms scored a dead boot as a miss, and deleted the evidence either way.**
+  `smoke-exec-reenter-control` (**[G-9]**) and `smoke-cr3-reclaim-control` (**[G-10]**) treated a
+  boot's outcome as two-valued — the marker appeared or it did not — so a boot that died before
+  reaching the path under test was counted as the defect failing to reproduce. Both then ran
+  `rm -f` over the serial log on the failure path, which made the two cases indistinguishable
+  after the fact. On 2026-08-30 the exec arm reported 0/20 on PR #258, whose `kernel.elf` was
+  byte-identical to `main`'s for that configuration, and there was no way to find out whether
+  those twenty boots had run. Both arms now score every boot HIT / clean / INCONCLUSIVE, count
+  only the conclusive ones, fail with a distinct message when too few boots reached the path at
+  all, and print the tail of the log when they redden. `smoke-kstack-park-control` was given the
+  same treatment in #193; these two were written from the same template and never received it.
+  The rate itself was measured and is unchanged — 32 hits in 120 boots (26.7%) across the six
+  preceding green runs of `main`, against the 25% recorded on 2026-08-17 — so this raises no
+  bound and weakens no assertion: a run where every boot dies still fails.
+  Falsified in three directions (`TESTS.md`).
+
 ### Added
+
 
 - **`init` provisions a server on an endpoint it created** (`SECURITY.md` **S59**, roadmap 2.4),
   and the reason this had not been done is that a documented blocker was false.

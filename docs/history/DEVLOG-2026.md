@@ -19,6 +19,54 @@ which is exactly what a historical record should do and exactly why it is not au
 
 ---
 
+### Fixed: a control arm that could not tell a dead boot from a safe kernel
+
+`smoke-exec-reenter-control` went red on PR #258 on 2026-08-30 — a PR about `init`
+provisioning an endpoint, which has no plausible connection to the exec hand-off. Following
+the house rule, the same arm was built on both branches before the diff was read at all. The
+two kernels were byte-identical (`c58b6ecbdc485d4f`), which settled causation in two builds
+rather than forty boots: everything in #258 sits behind `INIT_PROVISION_SELFTEST`, undefined
+in a `PROC_SELFTEST` build.
+
+The first hypothesis was that the arm's rate had drifted — the `smoke-kstack-park` precedent,
+where a laptop-measured 25% was really ~75% red on the runner. That was **falsified**. The arm
+prints its hit count on success, so the rate is recoverable from CI's own logs: over the six
+preceding green runs of `main` it hit **32 times in 120 boots (26.7%)**, against the 25%
+recorded on 2026-08-17. The rate had not moved, and a laptop run taken afterwards agreed (5 in
+20). So `EXEC_REENTER_RUNS` was not under-provisioned and raising it would have been a fix to
+a defect that was not there. A clean sweep of 20 is `(1-0.267)^20` ≈ 0.2%.
+
+That estimate carries a proviso — *provided every boot actually ran* — and the proviso is the
+real finding. The arm scored a boot two ways: the marker appeared, or it did not. A boot that
+died before reaching the exec path was therefore counted as the defect failing to reproduce,
+which is the mistake #193 fixed in `smoke-kstack-park-control` after it reddened an unrelated
+PR. `smoke-exec-reenter-control` and `smoke-cr3-reclaim-control` were written from the same
+template and never got the lesson — the third time in this file that a repair has failed to
+propagate to the arm beside it.
+
+Worse, both arms ran `rm -f` over the serial log on the failure path. So the red run above and
+a run in which nothing booted at all printed the same four lines, and the evidence that would
+have separated them was already gone. Whether #258's twenty boots ran is now unanswerable.
+
+Both arms now score every boot HIT / clean / INCONCLUSIVE, count only the conclusive ones, and
+keep the log. Falsified in three directions rather than one, because two of them cannot
+distinguish the branch that changed: with the defect, 5 hit / 15 clean / 0 inconclusive of 20
+(pass); against the fixed kernel via the new `EXEC_REENTER_CONTROL_FLAG=0`, 0 hit / 20 clean,
+red; and with `EXEC_REENTER_TIMEOUT=2` starving every boot, 20 inconclusive, red with "the arm
+never ran the experiment" over a log tail ending at the GRUB banner. Only the third exercises
+the new branch, and under the old code it was indistinguishable from the second.
+
+Note what this does not do. It raises no bound, adds no retry, and lowers nothing: a run in
+which every boot dies fails either way. It changes red into red-that-names-the-cause. The
+`CONTROL_FLAG` knobs can only ever turn an arm red — with the defect absent there are no hits
+— so they are not a route to a green.
+
+Two counts were wrong while this was written: `CHANGES.md` and this file's own header both
+said 117 entries against 116 present. Neither was gated, so nothing compared them. Both are
+now declared in `.github/doc-claims.yml` (`devlog_entries`).
+
+---
+
 ### Added: the coverage question, applied to the gates themselves
 
 Three separate things went green for the wrong reason on 2026-08-20/21: 38 smoke targets that

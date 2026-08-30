@@ -93,10 +93,24 @@ Everything else (the shell, coreutils, tcc, user programs) is outside the TCB by
 
 The pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and is sized at boot
 from the E820 map, falling back to 64 MiB. Three regions are reserved at the base before the
-free list begins: the 8 MiB loader staging buffer, the RAM vdisk backing store, and the 4 MiB
-untyped arena (§4). All three used to be `.bss` arrays, which capped them against the
+free list begins: the 8 MiB loader staging buffer, the RAM vdisk backing store, and the untyped
+arena (§4). All three used to be `.bss` arrays, which capped them against the
 `__bss_end <= USER_PHYS_BASE` linker assertion; moving them into the pool decoupled their
 size from that ceiling entirely.
+
+**The per-task kernel stacks joined them on 2026-08-30**, by a different route: rather than the
+pool's reserve they took a region of kernel-half virtual address space under `high_pdpt[511]`,
+mapped from ordinary pool frames on first use. They were 4 MiB of `.bss` — a static array of one
+64 KiB slot per task — and were what actually pinned `MAX_TASKS` at 64, not the 72 KiB table of
+task records that `docs/LIMITATIONS.md` §3.1 had been naming. The ceiling is 256 now and the
+image is smaller than it was at 64.
+
+The arena's size is no longer a single constant. It is a **kernel reserve** derived from
+`MAX_TASKS` (the per-task cspaces, which no capability names and ring 3 cannot reach) plus a
+**fixed 3.5 MiB user half** (`UNTYPED_ROOT`, what `init` delegates). It used to be a fixed 4 MiB
+total with the reserve carved out of it, so raising the task ceiling silently shrank what
+userspace could allocate — and the user half is the number `MAX_FRAME_PAGES`' denial-of-service
+reasoning rests on.
 
 Boot-module frames are also held back from the free list; GRUB places modules wherever it likes,
 typically inside the pool, and handing one out as an anonymous user page would corrupt the image
@@ -377,7 +391,9 @@ alone was correct only while every region base happened to be a multiple of 64.
 `tasks[]` is not yet migrated: a TCB is reachable from the scheduler's hot path and from every
 trap frame. `KOBJ_CNODE` is allocatable by the kernel but refused to ring 3: no capability type
 names a CNode and no syscall installs one as a task's cspace, so minting one would be authority
-with no defined meaning.
+with no defined meaning. (The per-task kernel STACKS did move, on 2026-08-30, to a region under
+`high_pdpt[511]` — they were the 4 MiB that actually bound the task ceiling, against this
+table's 72 KiB. See §14 G-3.)
 
 **Object lifetime is capability-governed.** An object exists exactly as long as some capability
 names it. This is computed by a mark-and-sweep over the capability graph (`kobj_gc`, run from
@@ -676,9 +692,17 @@ next tick.
 
 The property is checked rather than argued: `g_kstack_inflight` carries bit *t* for the duration
 of that window on task *t*'s stack, and `interrupt_handler64` tests it on entry: one load and a
-bit test, `MAX_TASKS` being 64 so one word covers every task. Two CPUs on one kernel stack halts
-the machine with both CPU ids and the task named. That is `SECURITY.md` **S20**, gated by `make
-smoke-kstack-race` and its control arm.
+bit test. Two CPUs on one kernel stack halts the machine with both CPU ids and the task named.
+That is `SECURITY.md` **S20**, gated by `make smoke-kstack-race` and its control arm.
+
+That sentence used to end *"`MAX_TASKS` being 64 so one word covers every task"*, and it was an
+array of one `uint64_t` on that reasoning. The witness is sized from `MAX_TASKS` now, because the
+old form failed in the worst available direction: at `MAX_TASKS` 256 the `1ULL << t` selecting
+the bit is undefined for *t* ≥ 64, x86 masks the shift count to 6 bits, and the detector begins
+answering about task *t*−64 instead of refusing. No fault, no warning, and a detector that has
+gone blind is indistinguishable from a system with no defects. `make smoke-task-ceiling` asserts
+that an alias pair (255, 191) has independent bits; `KSTACK_INFLIGHT_LEGACY_WORD=1` restores the
+single word and the witness aliases.
 
 **S20 has a second path, and the bitmask cannot see it.** When a task dies and nothing else is
 runnable, the CPU parks in the ring-0 idle loop. All three fallbacks in `idt.c` used to park it
@@ -1268,10 +1292,18 @@ a live page of the parent's on the free page stack.
 **G-3: Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are carved
 from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an exercise
-of authority the capability graph describes. What remains is `tasks[]`: a TCB is reachable from
-the scheduler's hot path and from every trap frame, so migrating it is its own change, and
-reclaiming a dead task's cspace, which needs `cap_lookup`'s NULL-cspace → root-cnode fallback
-removed first.
+of authority the capability graph describes. The per-task kernel stacks followed on 2026-08-30 —
+4 MiB, and the thing that had actually been pinning `MAX_TASKS` at 64, which this entry (and
+§3.1 of `LIMITATIONS.md`) had been attributing to the 72 KiB `tasks[]` table. The ceiling is 256
+now.
+
+What remains is the half that was always the interesting one: `tasks[]` is still a fixed array,
+a TCB is reachable from the scheduler's hot path and from every trap frame, and **a TCB is not
+an object a capability names** — so the task-creating syscalls still gate on the `[C-1]` decoy in
+cspace slot 3. Reclaiming a dead task's cspace still needs `cap_lookup`'s NULL-cspace →
+root-cnode fallback removed first, and that fallback is also why `KOBJ_TASK` sequences after it
+rather than before: a task object whose cspace slot can be NULL is one the fallback turns into a
+root cnode.
 
 **G-4: Endpoints are single-slot with no queue.** *Closed 2026-08-11* (roadmap 1.3, finding
 **[I-5]**). Endpoints are bounded FIFOs of `EP_QUEUE_SLOTS` (§8), so concurrent senders enqueue

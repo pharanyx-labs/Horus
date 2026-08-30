@@ -412,6 +412,20 @@ static int resume_rsp_is_bogus(uint64_t rsp)
         rsp <  (uint64_t)(uintptr_t)ist3_stack_top)
         return 0;
 #endif
+    /* The per-task kernel stacks. They were `.bss` until the region below
+     * high_pdpt[511] replaced the static array, and the `.bss` test above was
+     * the whole bound for them -- this is the THIRD guard encoding "a kernel
+     * stack is a .bss array", after ksp_is_bogus and kern_addr_present in
+     * scheduler.c and paging.c. All three had to learn the region together, and
+     * all three failed LOUDLY rather than silently when they had not: the first
+     * boot after the move panicked here, on the first switch to task 1, with a
+     * resume value that was entirely legitimate.
+     *
+     * That is the direction this guard is built to fail in, and it is worth
+     * keeping in mind for the mirror case: a guard that had defaulted to
+     * "accept" for addresses it could not classify would have gone quiet on
+     * exactly the stacks it exists to check, and nothing would have said so. */
+    if (kstack_region_contains_ksp(rsp)) return 0;
     return 1;
 #endif
 }
@@ -766,10 +780,15 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * the failure this watches for is exactly the kind that leaves another CPU
      * halted holding the permanent one, and a guard silenced by the failure it is
      * watching for is not an instrument. */
-    uint64_t inflight = g_kstack_inflight;
-    if (inflight) {
+    {
+        /* The bit for THIS task, rather than "is any bit set anywhere" followed
+         * by a shift. The old form loaded the whole mask first, which was only
+         * possible while the mask was one word -- and while it was one word, the
+         * shift silently aliased task 64 onto task 0 the moment MAX_TASKS grew.
+         * Asking about the current task directly is the same one load and bit
+         * test, and it cannot be wrong about which task it answered for. */
         int t = get_current_task();
-        if (t > 0 && t < MAX_TASKS && ((inflight >> t) & 1ULL)) {
+        if (kstack_inflight_task(t)) {
             int me = this_cpu();
             int holder = sched_kstack_holder(t);
             if (holder >= 0 && holder != me) {
@@ -821,8 +840,9 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
      * a banner naming the stub and telling you nothing about which switch path
      * produced it. (Or earlier still, on the out->cs read just below -- rsp==4
      * faults at 0x94, which is exactly what a reproduce-and-symbolise cycle spent
-     * an hour chasing.) Every kernel stack is a .bss array, so a legal value lies
-     * in [__bss_start, __bss_end) and a returned 0/1/-1 or a wild value does not.
+     * an hour chasing.) A legal value lies in `.bss` (the AP idle and IST stacks)
+     * or in the per-task kernel-stack region; a returned 0/1/-1 or a wild value
+     * lies in neither.
      * This comment used to say "kernel stacks are higher-half, so anything below
      * that is [bogus]", which was the floor-only rationale and named the blind
      * spot without noticing it: -7 is 0xFFFF...F9, which is not below anything.

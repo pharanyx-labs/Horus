@@ -1270,7 +1270,12 @@ jobs:
     # longer on a runner; the control arm halts as soon as it reproduces and is
     # quick. Budgeted well above measured so a slow runner is not a red gate --
     # a required check that reddens for timing teaches the re-run reflex.
-    timeout-minutes: 60
+    #
+    # Raised to 90 with the three task-ceiling steps below: each is a clean
+    # build plus a boot, and the boots are short (the witness runs at
+    # scheduler_init and the two arms halt on their marker), so the added cost is
+    # three builds rather than three sessions.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1290,6 +1295,25 @@ jobs:
       # is fatal at the pre-fix release site and harmless at the shipped one.
       - name: Restore the pre-fix release site and require the race to REPRODUCE
         run: make smoke-kstack-race-control
+      # S20 AT THE NEW WIDTH. MAX_TASKS went 64 -> 256 on 2026-08-30, and both
+      # things this job rests on were sized for 64: the per-task kernel stacks
+      # (a static .bss array, one slot per task) and g_kstack_inflight (ONE
+      # uint64_t, bit t per task, whose `1ULL << t` silently aliases task 255
+      # onto task 191 above the old bound). A boot uses about six tasks, all
+      # below 64, so neither defect is reachable by anything else in this job --
+      # which is why the ceiling needs a witness of its own rather than trusting
+      # the sessions above.
+      #
+      # THREE STEPS IN THIS JOB RATHER THAN A JOB OF THEIR OWN: a new job is a
+      # new required context, and the ruleset that decides required contexts is
+      # synced by hand after the merge ([C-6]), so a new gating job would leave
+      # the ruleset one context behind until someone ran --sync-ruleset.
+      - name: An alias pair (t, t-64) has distinct stacks, cspaces and inflight bits
+        run: make smoke-task-ceiling
+      - name: Restore the single-word mask and require the witness to ALIAS
+        run: make smoke-task-ceiling-control
+      - name: Truncate the stack slot index and require the pair to SHARE a stack
+        run: make smoke-task-ceiling-stack-control
 
   smoke-cr3-reclaim:
     name: A slot's page tables are not recycled while a CPU is on them (G-10; control arm proves it)

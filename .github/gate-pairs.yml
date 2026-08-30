@@ -103,6 +103,8 @@ control_arms:
   smoke-spawn-owner-control: smoke-spawn-owner
   smoke-switch-commit-control: smoke-switch-commit
   smoke-syscall-coverage-control: smoke-syscall-coverage
+  smoke-task-ceiling-control: smoke-task-ceiling
+  smoke-task-ceiling-stack-control: smoke-task-ceiling
   smoke-vfs-mount-control: smoke-vfs
   smoke-vfs-prefix-control: smoke-vfs
 
@@ -194,6 +196,7 @@ gates:
   - smoke-stackguard
   - smoke-switch-commit
   - smoke-syscall-coverage
+  - smoke-task-ceiling
   - smoke-tcc
   - smoke-term
   - smoke-tpm

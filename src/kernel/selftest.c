@@ -121,6 +121,26 @@ void aspace_selftest(void) {
     tasks[slot].image_premap_pages = 0;   /* default 32-page premap, constant across the rebuilds below */
     tasks[slot].cr3        = 0;
 
+    /* WARM-UP, and it is not ceremony: since the per-task kernel stacks left
+     * `.bss`, create_user_pagedir binds this slot's stack on FIRST use -- eight
+     * stack pages plus the page table covering them. Those are deliberately
+     * permanent (a stack is kept for the life of the boot, like the slot's
+     * cspace), so free_user_aspace_for_test does not and must not return them,
+     * and counting them as part of an ADDRESS SPACE made this test report a
+     * 9-page leak that was not one.
+     *
+     * Building and freeing once before the accounting starts leaves the stack
+     * bound, so every count below is address-space pages and nothing else. The
+     * idempotence this relies on is itself asserted, by the rebuild loop: a
+     * second bind would show up there as a leak. */
+    create_user_pagedir((uint32_t)slot);
+    if (tasks[slot].cr3) {
+        free_user_aspace_for_test(tasks[slot].cr3);
+        tasks[slot].cr3 = 0;
+    }
+    extern uint32_t kstack_slots_mapped;
+    uint32_t kstacks_before = kstack_slots_mapped;
+
     uint32_t before_first = get_free_user_pages();
     create_user_pagedir((uint32_t)slot);
     uint32_t after_first = get_free_user_pages();
@@ -149,6 +169,16 @@ void aspace_selftest(void) {
     /* And releasing it outright must return everything the first build took. */
     free_user_aspace_for_test(tasks[slot].cr3);
     tasks[slot].cr3 = 0;
+    /* No slot may have been bound a second time. The page counts above would
+     * catch a stack allocated twice as a leak, but only by its SIZE -- this says
+     * what actually must not happen, and says it even if a future stack costs a
+     * different number of pages. */
+    if (kstack_slots_mapped != kstacks_before) {
+        print("ASPACE_SELFTEST: FAIL rebuilding an address space bound ");
+        print_decimal((uint64_t)(kstack_slots_mapped - kstacks_before));
+        print(" more kernel stacks\n");
+        return;
+    }
     uint32_t after_free = get_free_user_pages();
     if (after_free != before_first) {
         print("ASPACE_SELFTEST: FAIL free returned ");
@@ -369,34 +399,61 @@ void wx_selftest(void) {
      * bug, and it looks identical from any angle except this one. The armed
      * count is checked too: an empty loop would satisfy the absence test
      * vacuously if the stacks were never mapped in the first place. */
-    extern uint32_t kstack_guards_armed;
+    extern uint32_t kstack_slots_mapped;
     extern uint64_t kstack_guard_vaddr(int id);
-    if (kstack_guards_armed != (uint32_t)MAX_TASKS) {
-        print("WX_SELFTEST: FAIL armed ");
-        print_decimal(kstack_guards_armed);
-        print(" stack guards, expected ");
-        print_decimal((uint64_t)MAX_TASKS);
-        print("\n");
-        return;
-    }
-    /* From 0: task 0 (boot/idle/reaper) now runs on a guarded per_task_kstacks[0]
-     * too, so its guard must be absent and its stack present like the rest. */
+
+    /* THE SHAPE OF THIS CHECK CHANGED WHEN THE STACKS LEFT `.bss`, and the new
+     * shape is stronger rather than weaker.
+     *
+     * It used to require all MAX_TASKS stacks to be present, which was true only
+     * because they were a static array mapped in its entirety whether a task
+     * existed or not. Slots are bound on first use now, so "every slot is
+     * mapped" is no longer a property of a correct kernel -- asserting it would
+     * make this test fail on a healthy boot.
+     *
+     * What replaces it says MORE than the old test did, because it splits the
+     * two cases the array could not distinguish:
+     *
+     *   bound slot   -> guard ABSENT and stack PRESENT   (as before)
+     *   unbound slot -> guard ABSENT and stack ABSENT    (new: an unbound slot
+     *                   must not have been mapped by anything, which the static
+     *                   array could not express because every slot was mapped)
+     *
+     * and the counted total is cross-checked against kstack_slots_mapped, so an
+     * empty loop cannot satisfy it vacuously -- the reason the old armed-count
+     * check existed. */
+    uint32_t seen_bound = 0;
     for (int i = 0; i < MAX_TASKS; i++) {
         uint64_t guard = kstack_guard_vaddr(i);
         if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
-            print("WX_SELFTEST: FAIL stack guard still mapped for task ");
+            print("WX_SELFTEST: FAIL stack guard mapped for task ");
             print_decimal((uint64_t)i);
             print("\n");
             return;
         }
-        /* The stack itself must still be there — unmapping one page too many
-         * would take the stack with it, and every task would fault on entry. */
-        if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT)) {
-            print("WX_SELFTEST: FAIL stack base unmapped for task ");
-            print_decimal((uint64_t)i);
-            print("\n");
-            return;
+        int stack_present = (user_lookup_pte(kcr3, guard + PAGE_SIZE) & WX_PRESENT) ? 1 : 0;
+        if (stack_present) {
+            seen_bound++;
+            /* The whole stack, not just its first page: a bind that mapped one
+             * page and stopped would satisfy a single-page check and then fault
+             * the moment the stack grew past it. */
+            for (uint64_t pg = 1; pg < (uint64_t)KERNEL_STACK_SIZE / PAGE_SIZE; pg++) {
+                if (!(user_lookup_pte(kcr3, guard + PAGE_SIZE + pg * PAGE_SIZE) & WX_PRESENT)) {
+                    print("WX_SELFTEST: FAIL stack hole in task ");
+                    print_decimal((uint64_t)i);
+                    print("\n");
+                    return;
+                }
+            }
         }
+    }
+    if (seen_bound == 0 || seen_bound != kstack_slots_mapped) {
+        print("WX_SELFTEST: FAIL ");
+        print_decimal(seen_bound);
+        print(" stacks present, kstack_slots_mapped says ");
+        print_decimal(kstack_slots_mapped);
+        print("\n");
+        return;
     }
 
     /* --- Fixed (non-per-task) kernel stack guards: the BSP boot stack and the
@@ -2856,3 +2913,153 @@ void captest_selftest(void) {
     sched_enter_user(pid);   /* captest prints the PASS/FAIL marker; does not return */
 }
 #endif /* CAPTEST_SELFTEST */
+
+#ifdef TASKCEIL_SELFTEST
+/* ---- The task ceiling is real, not merely compiled -------------------------
+ *
+ * MAX_TASKS moved from 64 to 256, and "it builds and boots" is not evidence for
+ * that: a boot uses about six tasks, all of them below 64, so every defect this
+ * change could plausibly introduce lives in the range no boot visits. Three
+ * things had to scale, and each fails SILENTLY rather than loudly if it did not.
+ *
+ *  1. THE KERNEL STACKS. They left `.bss` for a region indexed by task id. A
+ *     slot-index that truncated -- or a region that wrapped -- would give task
+ *     t and task t-64 the SAME stack, and two tasks sharing one kernel stack is
+ *     S20, the exact corruption the [G-8] work exists to prevent. Nothing about
+ *     it is visible until both run at once.
+ *
+ *  2. THE INFLIGHT WITNESS. `g_kstack_inflight` was one `uint64_t` with bit t
+ *     per task. At MAX_TASKS > 64, `1ULL << t` is undefined for t >= 64 and x86
+ *     masks the shift to 6 bits, so task 64 aliases task 0. The detector then
+ *     answers about the wrong task: no report for a real collision above 63, and
+ *     a false report below it. THIS is the check that matters most, because a
+ *     detector that has gone blind looks exactly like a system with no defects.
+ *
+ *  3. THE CSPACES. The kernel reserve is derived from MAX_TASKS now rather than
+ *     carved out of a fixed total. A reserve that under-provided would halt in
+ *     create_task -- loudly, but only for the task that ran out.
+ *
+ * Each check below is stated against the ALIAS PAIR (t, t-64), because that is
+ * the pair every one of these defects makes identical.
+ */
+void taskceiling_selftest(void)
+{
+    extern uint64_t kstack_guard_vaddr(int id);
+    extern int      kstack_inflight_task(int t);
+    extern void     kstack_inflight_selftest_set(int t);
+    extern void     kstack_inflight_selftest_clear(int t);
+    extern uint32_t kstack_slots_mapped;
+    extern void     create_user_pagedir(uint32_t task_id);
+    /* Declared here rather than relying on WX_SELFTEST's file-scope defines and
+     * ASPACE_SELFTEST's prototypes: this test is built on its own, and a helper
+     * it borrowed from another flag's block would make the two flags a hidden
+     * dependency that only shows up as an implicit-declaration error. */
+    const uint64_t PRESENT = 1ULL;
+    uint64_t kcr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
+
+    print("TASKCEIL_SELFTEST: begin\n");
+
+    if (MAX_TASKS <= 64) {
+        /* Not a pass. This test's entire content is about ids above 63; if the
+         * ceiling is back at 64 there is nothing here to check and saying PASS
+         * would be a green light for a property nothing examined. */
+        print("TASKCEIL_SELFTEST: FAIL MAX_TASKS is not above 64, nothing to test\n");
+        return;
+    }
+
+    /* Pick the pair as high as the table allows, so the test exercises the top
+     * of the range rather than the first id past the old bound. */
+    const int hi = MAX_TASKS - 1;
+    const int lo = hi - 64;
+
+    /* ---- 1. distinct, mapped kernel stacks ------------------------------- */
+    uint64_t g_hi = kstack_guard_vaddr(hi);
+    uint64_t g_lo = kstack_guard_vaddr(lo);
+    if (g_hi == 0 || g_lo == 0 || g_hi == g_lo) {
+        print("TASKCEIL_SELFTEST: FAIL alias pair shares a kernel stack slot\n");
+        return;
+    }
+
+    uint32_t before = kstack_slots_mapped;
+    create_user_pagedir((uint32_t)lo);
+    create_user_pagedir((uint32_t)hi);
+    if (kstack_slots_mapped != before + 2) {
+        print("TASKCEIL_SELFTEST: FAIL binding two stacks mapped ");
+        print_decimal((uint64_t)(kstack_slots_mapped - before));
+        print(" slots\n");
+        return;
+    }
+    if (tasks[hi].kernel_stack_top == 0 || tasks[lo].kernel_stack_top == 0 ||
+        tasks[hi].kernel_stack_top == tasks[lo].kernel_stack_top) {
+        print("TASKCEIL_SELFTEST: FAIL alias pair got the same kernel_stack_top\n");
+        return;
+    }
+    /* Both stacks live, and both guards absent -- the guard being absent is what
+     * makes an overflow fault rather than land in the neighbouring slot. */
+    if (!(user_lookup_pte(kcr3, g_hi + PAGE_SIZE) & PRESENT) ||
+        !(user_lookup_pte(kcr3, g_lo + PAGE_SIZE) & PRESENT)) {
+        print("TASKCEIL_SELFTEST: FAIL a high-id kernel stack is not mapped\n");
+        return;
+    }
+    if ((user_lookup_pte(kcr3, g_hi) & PRESENT) ||
+        (user_lookup_pte(kcr3, g_lo) & PRESENT)) {
+        print("TASKCEIL_SELFTEST: FAIL a high-id stack guard is mapped\n");
+        return;
+    }
+
+    /* ---- 2. the inflight witness addresses the right task ---------------- */
+    /* Both clear to start with: this runs before any task above 63 has ever been
+     * switched to, so a set bit here would itself be the aliasing defect. */
+    if (kstack_inflight_task(hi) || kstack_inflight_task(lo)) {
+        print("TASKCEIL_SELFTEST: FAIL inflight bit set before anything ran\n");
+        return;
+    }
+    kstack_inflight_selftest_set(hi);
+    if (!kstack_inflight_task(hi)) {
+        print("TASKCEIL_SELFTEST: FAIL inflight bit for a high task does not set\n");
+        return;
+    }
+    /* THE ONE THAT WOULD HAVE CAUGHT THE OLD MASK. Under `1ULL << t` on one
+     * word, setting the bit for task hi sets the bit for task hi-64, and the
+     * [G-8] detector reports a collision for a task that is not running. */
+    if (kstack_inflight_task(lo)) {
+        print("TASKCEIL_SELFTEST: FAIL setting task ");
+        print_decimal((uint64_t)hi);
+        print(" also set task ");
+        print_decimal((uint64_t)lo);
+        print(" -- the witness aliases\n");
+        return;
+    }
+    kstack_inflight_selftest_clear(hi);
+    if (kstack_inflight_task(hi) || kstack_inflight_task(lo)) {
+        print("TASKCEIL_SELFTEST: FAIL inflight bit did not clear\n");
+        return;
+    }
+
+    /* ---- 3. cspaces exist and are distinct ------------------------------- */
+    /* create_task allocates the cspace; it also marks the slot runnable, so the
+     * state is put back afterwards -- this test must not leave two tasks the
+     * scheduler will try to run with no image behind them. */
+    create_task(hi, 0, 0, USER_AREA_BASE, 0);
+    create_task(lo, 0, 0, USER_AREA_BASE, 0);
+    tasks[hi].state = 0;
+    tasks[lo].state = 0;
+    if (!tasks[hi].cspace || !tasks[lo].cspace) {
+        print("TASKCEIL_SELFTEST: FAIL a high task id got no cspace\n");
+        return;
+    }
+    if (tasks[hi].cspace == tasks[lo].cspace) {
+        print("TASKCEIL_SELFTEST: FAIL the alias pair shares one cspace\n");
+        return;
+    }
+
+    print("TASKCEIL_SELFTEST: PASS tasks ");
+    print_decimal((uint64_t)lo);
+    print(" and ");
+    print_decimal((uint64_t)hi);
+    print(" have distinct stacks, cspaces and inflight bits (MAX_TASKS ");
+    print_decimal((uint64_t)MAX_TASKS);
+    print(")\n");
+}
+#endif

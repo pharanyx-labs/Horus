@@ -149,6 +149,10 @@ static inline void ut_unlock(void) { spin_unlock(&untyped_lock); }
  * carved from the same region never share a line, so a false-sharing stall
  * cannot turn into a cross-object timing signal under SMP. */
 #define KOBJ_ALIGN 64
+/* align_up() is a function, so it cannot appear in a _Static_assert. This is the
+ * same arithmetic as a constant expression, used only by the asserts below;
+ * both are derived from KOBJ_ALIGN so they cannot disagree about the rounding. */
+#define align_up_const(v, a)  ((((uint64_t)(v)) + (a) - 1u) & ~((uint64_t)(a) - 1u))
 
 static uint64_t kobj_size(uint32_t kobj_type, uint32_t pages) {
     switch (kobj_type) {
@@ -717,13 +721,32 @@ void untyped_init(void) {
     untypeds[UNTYPED_ROOT].in_use    = 1;
 }
 
-/* The arena must be big enough for the kernel half plus a usable user half.
- * Static, because a boot that discovers this at runtime has already committed to
- * a layout it cannot satisfy. */
-_Static_assert(UNTYPED_ARENA_BYTES >
-                   2u * MAX_TASKS * CNODE_SIZE * sizeof(capability_t),
-               "UNTYPED_ARENA_BYTES must leave a user half at least as large as "
-               "the kernel cspace reserve");
+/* The reserve must actually cover MAX_TASKS cspaces, at the alignment this
+ * file's allocator uses. Static, because a boot that discovers this at runtime
+ * has already committed to a layout it cannot satisfy -- and the failure it
+ * prevents is create_task halting the machine on a cspace it cannot allocate.
+ *
+ * THIS ASSERT CHANGED SHAPE when the arena's halves were decoupled, and the old
+ * one is worth recording because it was guarding the wrong thing. It read
+ *
+ *     UNTYPED_ARENA_BYTES > 2 * MAX_TASKS * CNODE_SIZE * sizeof(capability_t)
+ *
+ * i.e. "the user half is at least as big as the kernel half" -- a ratio between
+ * two quantities that were competing for one fixed total. It was the only thing
+ * standing between a routine MAX_TASKS bump and a silently smaller user half,
+ * and it would have fired at MAX_TASKS == 256 not because anything was wrong but
+ * because 4 MiB had stopped being enough for both. The halves are sized
+ * independently now (see UNTYPED_KERNEL_BYTES / UNTYPED_USER_BYTES), so the
+ * question worth asking is no longer "is the split fair" but "does the reserve
+ * fit what it reserves for". */
+_Static_assert(UNTYPED_KERNEL_BYTES >=
+                   (uint64_t)MAX_TASKS *
+                   align_up_const((uint64_t)CNODE_SIZE * sizeof(capability_t), KOBJ_ALIGN),
+               "UNTYPED_KERNEL_BYTES must hold MAX_TASKS cspaces at KOBJ_ALIGN");
+/* And the user half must still be able to hold the largest single object any
+ * capability can name, or MAX_FRAME_PAGES is a promise the arena cannot keep. */
+_Static_assert(UNTYPED_USER_BYTES > (uint64_t)MAX_FRAME_PAGES * PAGE_SIZE,
+               "the user half must exceed the largest frame a capability can name");
 
 /* ------------------------------------------------------------------------- *
  *  Syscall bodies.

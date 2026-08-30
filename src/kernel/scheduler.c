@@ -154,8 +154,106 @@ int task_running_cpu[MAX_TASKS];
  * corrupting itself quietly. One load and a bit test on the common path.
  *
  * KSTACK_RELEASE_EARLY=1 restores the pre-fix release site — the defect, on
- * demand — and is what `make smoke-kstack-race-control` builds. */
-volatile uint64_t g_kstack_inflight = 0;
+ * demand — and is what `make smoke-kstack-race-control` builds.
+ *
+ * ---- WHY THIS IS AN ARRAY NOW, AND WHY THAT IS NOT A DETAIL ----------------
+ *
+ * It was a single `volatile uint64_t`, and src/include/kernel.h said why in one
+ * line: "MAX_TASKS is 64, so one word covers every task exactly." That is a
+ * correctness argument resting on a constant declared in another file, and it
+ * fails in the WORST available direction. At MAX_TASKS > 64, `1ULL << t` for
+ * t >= 64 is undefined behaviour: in practice x86 masks the shift count to 6
+ * bits, so task 64 aliases task 0, task 65 aliases task 1, and so on. The
+ * detector does not stop working loudly -- it starts answering about the wrong
+ * task. Two CPUs on one kernel stack (S20) would go unreported for every task
+ * above 63, while spurious collisions would be reported for tasks below it.
+ *
+ * A silent detector is the one failure mode this witness exists to prevent, so
+ * the width is now derived from MAX_TASKS rather than assumed to match it, and
+ * the assumption is asserted at compile time below rather than written in a
+ * comment in a different file.
+ *
+ * The semantics are otherwise UNCHANGED, deliberately. The atomics stay
+ * (`__sync_fetch_and_or`/`_and` on one word), the set and clear sites stay where
+ * they are, and the bit still clears before the claim drops -- see the note in
+ * sched_release_deferred for why that order is load-bearing. This is a widening,
+ * not a redesign: the per-CPU representation that at most MAX_CPUS tasks can be
+ * inflight would permit is a change to the concurrency protocol of the file
+ * CLAUDE.md names first among the security-critical paths, and it is not needed
+ * to lift the ceiling. */
+#ifdef KSTACK_INFLIGHT_LEGACY_WORD
+/* CONTROL ARM -- never ship. The pre-2026-08-30 witness: ONE word, and the bit
+ * selected by `1ULL << t` with no bound on t.
+ *
+ * This is the defect exactly as it would have existed had MAX_TASKS been raised
+ * without touching it. `1ULL << t` for t >= 64 is undefined behaviour, and on
+ * x86 the shift count is masked to 6 bits, so task 64 aliases task 0 and task
+ * 255 aliases task 191. Nothing faults and nothing warns: the [G-8] detector
+ * simply starts answering about a different task than the one asked about,
+ * which means no report for a genuine two-CPU stack collision above task 63 and
+ * a spurious one below it.
+ *
+ * `make smoke-task-ceiling-control` requires TASKCEIL_SELFTEST to FAIL under
+ * this flag with `the witness aliases`, and `make smoke-task-ceiling` must go
+ * red under it. Kept as one element rather than a bare uint64_t so the extern
+ * declaration in kernel.h is the same in both arms -- an arm that changed the
+ * type would be testing the declaration as much as the defect. */
+volatile uint64_t g_kstack_inflight[1];
+#define KSTACK_INFLIGHT_WORD(t)  (g_kstack_inflight[0])
+#define KSTACK_INFLIGHT_BIT(t)   (1ULL << (t))
+#else
+#define KSTACK_INFLIGHT_WORDS  ((MAX_TASKS + 63) / 64)
+volatile uint64_t g_kstack_inflight[KSTACK_INFLIGHT_WORDS];
+
+/* The bit for task `t`. Both halves derived from the same expression, so a
+ * future width change cannot move one and not the other. */
+#define KSTACK_INFLIGHT_WORD(t)  (g_kstack_inflight[(unsigned)(t) >> 6])
+#define KSTACK_INFLIGHT_BIT(t)   (1ULL << ((unsigned)(t) & 63))
+#endif
+
+/* Is task `t` inflight? Callers have already bounds-checked `t`; this does not,
+ * because a bounds test it could pass silently is worse than the caller's. */
+static inline int kstack_inflight_test(int t)
+{
+    return (KSTACK_INFLIGHT_WORD(t) & KSTACK_INFLIGHT_BIT(t)) ? 1 : 0;
+}
+
+#ifdef TASKCEIL_SELFTEST
+/* Test hooks for the task-ceiling witness, and GATED so the ship kernel carries
+ * no way for anything to set this bit but the release path itself.
+ *
+ * They exist because the property that had to be re-established when the mask
+ * became an array is not observable from outside: the old `1ULL << t` aliased
+ * task 64 onto task 0 by masking the shift count, which produces no error, no
+ * fault and no wrong answer for any task below 64. The only way to witness it is
+ * to set the bit for a HIGH task and ask about its LOW alias. */
+void kstack_inflight_selftest_set(int t)
+{
+    if (t <= 0 || t >= MAX_TASKS) return;
+    __sync_fetch_and_or(&KSTACK_INFLIGHT_WORD(t), KSTACK_INFLIGHT_BIT(t));
+}
+void kstack_inflight_selftest_clear(int t)
+{
+    if (t <= 0 || t >= MAX_TASKS) return;
+    __sync_fetch_and_and(&KSTACK_INFLIGHT_WORD(t), ~KSTACK_INFLIGHT_BIT(t));
+}
+#endif
+
+/* The out-of-file caller: idt.c's ISR entry, which cannot see the macros above.
+ * A function rather than exporting the layout, so the word/bit derivation stays
+ * in exactly one place. */
+int kstack_inflight_task(int t)
+{
+    if (t <= 0 || t >= MAX_TASKS) return 0;
+    return kstack_inflight_test(t);
+}
+
+#ifndef KSTACK_INFLIGHT_LEGACY_WORD
+_Static_assert(KSTACK_INFLIGHT_WORDS * 64 >= MAX_TASKS,
+               "g_kstack_inflight must have a bit for every task: this is the "
+               "S20 witness, and a task with no bit is a task the [G-8] detector "
+               "cannot see");
+#endif
 
 #ifdef CLAIM_TRACE
 static const char *g_switch_via[MAX_CPUS];
@@ -1145,7 +1243,7 @@ static void sched_mark_kstack_inflight(int cpu, int t)
 #endif
     percpu_deferred_release[cpu] = t;
     REL_LOG(t, cpu, "defer-SET");
-    __sync_fetch_and_or(&g_kstack_inflight, 1ULL << t);
+    __sync_fetch_and_or(&KSTACK_INFLIGHT_WORD(t), KSTACK_INFLIGHT_BIT(t));
 }
 
 /* Hand task `t` over from `cpu`. Caller holds sched_raw_lock. See the long note
@@ -1224,7 +1322,7 @@ void sched_release_deferred(void)
      * budget and it never reached the login prompt. The property this function
      * had to gain is that the EXEMPTION outlives the CLAIM RELEASE; nothing about
      * it required serialising the bit too. */
-    __sync_fetch_and_and(&g_kstack_inflight, ~(1ULL << t));
+    __sync_fetch_and_and(&KSTACK_INFLIGHT_WORD(t), ~KSTACK_INFLIGHT_BIT(t));
     DEFER_WIDEN();
     sched_raw_lock();
     if (t > 0 && t < MAX_TASKS) {
@@ -1476,7 +1574,7 @@ static void sched_claim_panic(const char *what, const char *where,
     panic_str("\n  task ");      panic_dec(t);
     panic_str(": state=");      panic_dec(tasks[t].state);
     panic_str(" runnable_ctx="); panic_dec(tasks[t].runnable_ctx);
-    panic_str(" inflight=");    panic_dec((int)((g_kstack_inflight >> t) & 1));
+    panic_str(" inflight=");    panic_dec(kstack_inflight_test(t));
     panic_str("\n");
 #endif
 #ifdef CLAIM_TRACE
@@ -1674,6 +1772,20 @@ static int ksp_is_bogus(uint64_t ksp)
     if (ksp >= (uint64_t)(uintptr_t)ist1_stack_guard &&
         ksp <  (uint64_t)(uintptr_t)ist3_stack_top)
         return 0;
+    /* The per-task kernel stacks, which are no longer in `.bss` and so are not
+     * covered by the test above. Without this every legitimate resume value is
+     * rejected and no task in the system can be switched to -- which is how this
+     * was found, and is the direction worth failing in: the mirror image would
+     * have been a guard that quietly accepted the whole region.
+     *
+     * Deliberately still only a RANGE test, for the reason the comment below
+     * gives at length: it is necessary and not sufficient, and ksp_is_unmapped
+     * is what actually decides. A slot's guard page is inside this range, so a
+     * pointer that has walked into one passes here exactly as it used to pass
+     * the `.bss` test -- and is caught one function later, by asking the page
+     * tables. Widening this to exclude guards would put the real check in the
+     * weaker of the two places. */
+    if (kstack_region_contains_ksp(ksp)) return 0;
     return 1;
 }
 

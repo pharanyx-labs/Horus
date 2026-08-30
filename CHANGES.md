@@ -15,6 +15,116 @@ in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The task ceiling is 256, and what was holding it at 64 was not the table this project
+  has been naming for a month.**
+
+  `docs/LIMITATIONS.md` §3.1 said the obstacle was `tasks[]`, the TCB table, *"reachable from
+  the scheduler's hot path and from every trap frame, so migrating it is its own change"*. That
+  table is **72 KiB**. `per_task_kstacks` — a static `.bss` array of one 64 KiB slot per task,
+  declared four lines from a comment predicting exactly this — was **4 MiB**, fifty-six times
+  larger and 98% of the constraint. Migrating the TCB table would have moved the ceiling by
+  nothing.
+
+  **The chain, because no link in it is visible from the array's declaration.** `linker64.ld`
+  asserts `__bss_end - KERNEL_VMA <= 16 MiB` because the physical page pool starts at
+  `USER_PHYS_BASE`; `.bss` was 12.36 MiB, so 3.64 MiB of headroom against a 4 MiB array —
+  `MAX_TASKS` could not even be doubled. That 16 MiB is not a policy number but
+  `KERN_SPLIT_PDES` × 2 MiB, the window where the kernel's mapping uses 4 KiB pages and
+  therefore the only window in which a guard page can exist. And the headroom was not ours to
+  spend: GRUB stages the boot modules in the gap between `__bss_end` and the pool base, which
+  nothing checks.
+
+  So the stacks moved to a region under `high_pdpt[511]` — one unused PDPT entry, 1 GiB of
+  kernel-half VA inside the `pml4[256..511]` range every address space shares, so a slot is
+  visible everywhere with nothing installed per address space. **The guard page is never
+  mapped** rather than mapped and then unmapped, which removes the before-`smp_bringup`
+  ordering requirement instead of satisfying it; a slot maps 8 of its 16 pages, making the
+  unused tail a second guard against an overflow of the slot below. `.bss` is **8.57 MiB at
+  `MAX_TASKS` 256** — the image is 3.8 MiB *smaller* than it was at 64.
+
+  **Three guards encoded "a kernel stack is a `.bss` array", and all three had to learn the
+  region together.** `resume_rsp_is_bogus` (idt.c), `ksp_is_bogus` (scheduler.c) and
+  `kern_addr_present` (paging.c). They failed **loudly**: the first boot after the move
+  panicked on the first switch to task 1 with a resume value that was entirely legitimate. That
+  is the direction to fail in, and the mirror case is the one to keep in mind — a guard
+  defaulting to *accept* for addresses it could not classify would have gone quiet on exactly
+  the stacks it exists to check.
+
+- **`g_kstack_inflight` is sized from `MAX_TASKS` rather than assumed to match it.**
+
+  It was one `volatile uint64_t`, and `src/include/kernel.h` gave the reason in one line:
+  *"MAX_TASKS is 64, so one word covers every task exactly."* A correctness argument about the
+  standing witness for **S20**, in one file, resting on a constant in another — and one whose
+  failure is **silent**. At 256, `1ULL << t` is undefined for *t* ≥ 64; x86 masks the shift to
+  6 bits, so task 255 aliases task 191. The detector does not stop working, it **starts
+  answering about the wrong task**: no report for a genuine two-CPU stack collision above 63,
+  a spurious one below it, and nothing anywhere saying so.
+
+  Widened mechanically, keeping the atomics, the set and clear sites, and the deliberate
+  ordering by which the bit clears before the claim drops. A per-CPU representation would have
+  been available (at most `MAX_CPUS` tasks are ever inflight) and was **not** taken: it changes
+  the concurrency protocol of the file `CLAUDE.md` names first among the security-critical
+  paths, and it is not needed to lift a ceiling.
+
+- **The untyped arena's two halves are sized independently.** `untyped_init` splits the arena
+  into a kernel half (per-task cspaces, which no capability names and ring 3 cannot reach) and
+  a user half (`UNTYPED_ROOT`, what `init` delegates), and its own comment says why: *"a single
+  region for both would make 'userspace exhausted kernel memory' and 'the system can no longer
+  create a task' the same event."* The sizing did not honour that. The **total** was a fixed
+  4 MiB and the kernel half was carved out of it, so raising `MAX_TASKS` silently shrank what
+  userspace could allocate — still coupled, just through subtraction.
+
+  That matters because the user half is what the documented denial-of-service reasoning rests
+  on: `MAX_FRAME_PAGES` is 64 pages precisely because a frame that could span the arena would
+  starve every other object class. **A bound that moves when an unrelated constant moves is not
+  a bound.** The user half is fixed now at 3.5 MiB — exactly its value at `MAX_TASKS` 64, so no
+  published ratio changes — and the kernel reserve is derived and added on top. The
+  `_Static_assert` guarding it changed with it: it asked whether the split was *fair*, and now
+  asks whether the reserve *fits what it reserves for*.
+
+  **Falsified, one arm per rule.** A boot uses about six tasks, all below 64, so every defect
+  this change could introduce lives in the range no boot visits. `make smoke-task-ceiling`
+  asserts on the alias pair **(255, 191)** — the pair each defect makes identical — and both
+  arms were measured 2026-08-30: `KSTACK_INFLIGHT_LEGACY_WORD=1` gives `FAIL setting task 255
+  also set task 191`, `KSTACK_SLOT_INDEX_TRUNC=1` gives `FAIL alias pair shares a kernel stack
+  slot`, and the base gate goes red under each. Two arms because the first blinds the *detector*
+  for S20 and the second creates the *condition* S20 describes; one arm covering both would not
+  show the checks fail independently.
+
+  **`smoke-wx`'s stack-guard check changed shape, and says more than it did.** It required all
+  `MAX_TASKS` stacks present — true only of a static array mapped whether a task existed or not.
+  It now splits the two cases the array could not distinguish (bound: guard absent, *every* page
+  of the stack present; unbound: both absent) and cross-checks the count against
+  `kstack_slots_mapped`. It also had to move after `scheduler_init`: run earlier, nothing is
+  bound and it passed by inspecting nothing.
+
+  **`smoke-aspace`'s new assertion caught a defect in this very change.** Added to say that
+  rebuilding an address space binds no further stacks, it failed immediately:
+  `kstack_slots_mapped` incremented on every *call* rather than every *slot*, so it counted
+  binds — and the `smoke-wx` cross-check reading it was passing only because nothing had rebuilt
+  an address space before that test ran. A counter that counts the wrong noun is worse than no
+  counter when two tests read it.
+
+  **Two defects in this change were found by reading it, not by running it**, and both would
+  have passed every gate above. `create_user_pagedir`'s task-0 branch took no lock — correctly,
+  while it only computed an address into a static array; it *allocates* now, and
+  `alloc_user_physical_page` is a bare pop off `free_page_stack`. Safe today by circumstance
+  (one CPU, once, at boot), it takes `page_lock` anyway, because "safe as long as nobody calls
+  this again" is a fact about other functions. And `kstack_bind` returned early when page **0**
+  of a slot was present, so a bind that failed part-way would be reported complete by the next
+  call — a stack top for a stack full of holes, faulting in an ISR epilogue once the stack grew
+  past the last mapped page, which is [G-9]'s signature manufactured. That is the fail-open
+  **S35** names for `SYS_MAP_REGION`: a partial result reported as a whole one.
+
+  **What this does not do**, stated because a bigger number reads like a different kind of
+  thing: a TCB is still not an object a capability names. The task-creating syscalls still gate
+  on the slot-3 `[C-1]` decoy (§1.6b, audit finding 4.1), and reclaiming a dead task's cspace
+  still needs `cap_lookup`'s NULL-cspace → root-cnode fallback removed first. That fallback is
+  also why `KOBJ_TASK` sequences *after* it: a task object whose cspace slot can be NULL is a
+  task object the fallback turns into a root cnode.
+
 ### Fixed
 
 - **Thirteen syscall handlers had no test that ran them, and the argument for reaching

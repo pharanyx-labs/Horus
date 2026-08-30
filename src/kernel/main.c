@@ -454,12 +454,6 @@ void kernel_main(uint32_t mb_info) {
 #ifdef FLUSH_SELFTEST
     flush_selftest();   /* boot continues; make smoke-flush asserts on the marker */
 #endif
-#ifdef WX_SELFTEST
-    /* After paging_init (which installs the W^X tables) and after
-     * cpu_enable_protections, so CR0.WP is set and the bits it inspects are the
-     * ones actually in force. Boot continues; make smoke-wx asserts on it. */
-    wx_selftest();
-#endif   /* SMEP/SMAP — must follow feature detection */
 #ifdef RNG_UNSEEDED_PROBE
     /* [defect arm] Deliberately BEFORE the seed, which is the whole point: it
      * asks the CSPRNG for output at the one moment the pool is still the
@@ -521,6 +515,30 @@ void kernel_main(uint32_t mb_info) {
 #endif
 #endif
     scheduler_init();
+#ifdef WX_SELFTEST
+    /* After paging_init (which installs the W^X tables) and after
+     * cpu_enable_protections, so CR0.WP is set and the bits it inspects are the
+     * ones actually in force.
+     *
+     * AND AFTER scheduler_init, which is new and is the point. The per-task
+     * kernel stacks used to be a static array mapped in its entirety by the
+     * image, so their guard pages were armed before any task existed and this
+     * ran happily before scheduler_init. They are bound per task now, so run
+     * that early there is nothing bound, the guard checks iterate over an
+     * entirely absent region, and the test passes by inspecting nothing.
+     * scheduler_init's create_task(0) binds slot 0, so from here there is at
+     * least one real stack to assert about -- which is what the count check
+     * against kstack_slots_mapped exists to guarantee.
+     *
+     * Boot continues; make smoke-wx asserts on it. */
+    wx_selftest();
+#endif   /* SMEP/SMAP — must follow feature detection */
+#ifdef TASKCEIL_SELFTEST
+    /* After scheduler_init, which is what allocates task 0 and therefore what
+     * makes kstack_slots_mapped meaningful. Boot continues; make
+     * smoke-task-ceiling asserts on the marker. */
+    taskceiling_selftest();
+#endif
 #ifdef ASPACE_SELFTEST
     /* After scheduler_init: it zeroes tasks[], which would wipe the cr3 the test
      * installs. Boot continues; make smoke-aspace asserts on the marker. */

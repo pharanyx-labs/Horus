@@ -533,6 +533,11 @@ void kernel_main(uint32_t mb_info) {
      * Boot continues; make smoke-wx asserts on it. */
     wx_selftest();
 #endif   /* SMEP/SMAP — must follow feature detection */
+#ifdef CSPACE_RELEASE_SELFTEST
+    /* After scheduler_init: needs tasks[], a scratch slot and a live root cnode.
+     * Boot continues; make smoke-cspace-release asserts on the marker. */
+    cspace_release_selftest();
+#endif
 #ifdef CAPLOOKUP_SELFTEST
     /* After scheduler_init: it zeroes tasks[], and this needs a scratch slot and
      * a live root cnode. Boot continues; make smoke-cap-lookup asserts on the

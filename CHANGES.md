@@ -17,6 +17,80 @@ in this file.
 
 ### Fixed
 
+- **A dead task's capabilities outlived it, and "reclaim the cspace" turned out to be the wrong
+  instruction** (`SECURITY.md` **S56**).
+
+  `docs/LIMITATIONS.md`, `ROADMAP.md` and `ARCHITECTURE.md` all carried a line about *reclaiming
+  a dead task's cspace*, blocked on `cap_lookup`'s root-cnode fallback (removed the same day,
+  S55). Read as "give the bytes back" — which is how all three read — it is not merely
+  unimplemented but **the one thing this allocator exists to forbid**, and doing it would have
+  broken the system twice over:
+
+  - The arena is a **monotonic bump allocator**, and `untyped.c`'s header says why in as many
+    words: *"This is seL4's rule and it is a safety property, not a simplification. With a free
+    list, an object's bytes can be handed straight back out and retyped as a DIFFERENT class
+    while a stale capability still names the old address — the classic
+    type-confusion-through-reuse."*
+  - `UNTYPED_KERNEL_BYTES` is sized at **exactly `MAX_TASKS` cspaces**, and the watermark never
+    rewinds. A free-then-reallocate consumes a second cspace's worth for the same slot, so after
+    `MAX_TASKS` task deaths the reserve is exhausted and `create_task` halts the machine.
+
+  The codebase already had the right word, in `destroy_dyn_endpoint`: *"The bytes stay consumed
+  in the untyped region (bump discipline); only the **name** is reclaimed."* A cspace's bytes
+  belong to its task slot for the life of the boot, exactly as `cspace_pool[id]` did. What is
+  reclaimed is its **contents**.
+
+  **And that was the real gap, which no document had described.** `task_teardown` releases every
+  device resource a task held — its IRQ route, its MSI route, its IOMMU domain, its port grant,
+  the console, its pipe ends — and left the capabilities in place. They sat in memory from the
+  task's death until its slot was next used, which may be never.
+
+  Nothing could reach them, and **that is the part worth stating**: three separate readers each
+  avoided a dead cspace by testing `state == 0` — `mark_reachable` when deciding which retyped
+  objects are still named, `h_cap_enumerate` when reporting, `create_task` when overwriting. The
+  property *"a task's authority ends when the task does"* was held by **three readers agreeing
+  about a flag, not by the data**. A fourth reader that forgot the flag would have found a full
+  cspace, including the task's own `CAP_TCB`. That is the same shape as the `cap_lookup` fallback
+  this unblocked, and as **S38**'s arena guard, whose protections were *"circumstances rather
+  than properties"*.
+
+  `cap_release_cspace` empties it at teardown, **before `kobj_gc`** — so the object sweep sees a
+  genuinely unnamed object rather than one it is skipping on the strength of that flag, and the
+  two agree by construction rather than by coincidence. `create_task`'s zeroing stays, now
+  defending the first use of a slot rather than a dead task's leftovers.
+
+  **Witness `make smoke-cspace-release`**, which plants the primordial `CAP_CONSOLE` in a scratch
+  task and tears it down **through `task_teardown`** rather than by calling the release: a witness
+  that calls the function under test proves the function works and says nothing about whether
+  anything invokes it. It checks **every** slot rather than the planted one, and checks the cspace
+  **pointer survives** and the slot is **reusable** — a teardown that destroyed the cspace
+  outright, or a `create_task` that could no longer install anything, would satisfy the emptiness
+  check while breaking task creation. The pointer assertion is also what makes a future
+  "improvement" that frees the bytes go red.
+
+  Falsified by `CSPACE_KEEP_ON_TEARDOWN=1`: measured 2026-08-30, the dead task still holds **slot
+  0 — its own `CAP_TCB`** (`FAIL a dead task still holds capability slot 0 (type 1)`), base gate
+  red under the same flag. The marker naming slot 0 rather than the planted `CAP_CONSOLE` is the
+  loop reaching the lowest occupied slot first, and is the stronger evidence: what survives a
+  task's death is the capability naming the task itself.
+
+  **One ordering constraint came with it, and it has no gate — measured, not assumed.** The
+  release must run *after* `pipe_close_task_ends`, which walks the cspace for `CAP_PIPE` and
+  unrefs each end so the peer sees EOF; move it earlier and the peer waits forever. A comment
+  saying "do not move this" is not a gate, so `CSPACE_RELEASE_BEFORE_PIPES=1` was written to make
+  it one — and then `smoke-pipe` and `smoke-modules` (a real two-stage pipeline out of `/bin`)
+  **both passed under it**. The reason is mechanical: every pipe user in this tree closes its ends
+  explicitly (`shell.c` after the pipeline, `posix.c` on fd close), so by the time a stage dies
+  the teardown backstop has nothing to find. It exists for a task that dies *without* closing — a
+  fault, a `SYS_KILL` — and no workload here does that while holding a pipe end. The arm is kept
+  and ungated: **a control arm that cannot fail cannot gate**, the same call
+  `SPAWN_STAGE_UNSERIALISED` and `NET_NO_BUSMASTER` got.
+
+  Green against the change: `smoke`, `-captest`, `-session`, `-proc`, `-fork`, `-forkexec`,
+  `-sched-invariants`, `-cap-lookup`, `-task-ceiling`, `-vfs`, `-fs-perms`, `-pipe`, `-modules`;
+  `SMP=0` builds and boots; 94 Rust tests.
+
+
 - **`cap_lookup` fell back to the primordial root cnode, and it was two defects rather than
   the one that was documented** (`SECURITY.md` **S55**).
 

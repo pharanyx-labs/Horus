@@ -3176,3 +3176,105 @@ void caplookup_selftest(void)
     print("CAPLOOKUP_SELFTEST: PASS a cspace-less task and an out-of-range slot are both refused, and task 0 still resolves\n");
 }
 #endif
+
+#ifdef CSPACE_RELEASE_SELFTEST
+/* ---- a dead task's capabilities stop existing (roadmap 0.3, [I-7]) --------
+ *
+ * `task_teardown` releases every device resource a task held -- its IRQ route,
+ * its MSI route, its IOMMU domain, its port grant, the console, its pipe ends --
+ * and then swept the retyped objects it was the last namer of. It did not touch
+ * the cspace. The capabilities stayed in memory from the task's death until its
+ * SLOT WAS NEXT USED, which may be never.
+ *
+ * Nothing could reach them, and that is the part worth testing rather than
+ * trusting: three separate readers each avoided a dead cspace by testing
+ * `state == 0` -- `mark_reachable` when deciding which objects are still named,
+ * `h_cap_enumerate` when reporting, `create_task` when overwriting. The property
+ * was held by three readers agreeing about a flag, not by the data. This asserts
+ * it of the DATA.
+ *
+ * It goes through task_teardown rather than calling cap_release_cspace, because
+ * the claim is about the teardown path: a witness that calls the function under
+ * test proves the function works and says nothing about whether anything invokes
+ * it. Falsified by CSPACE_KEEP_ON_TEARDOWN=1, which restores the pre-fix
+ * behaviour and leaves the capabilities in place.
+ */
+void cspace_release_selftest(void)
+{
+    print("CSPACE_RELEASE_SELFTEST: begin\n");
+
+    /* A scratch slot near the top of the table: never spawned into by the boot,
+     * and given a cspace of its own by create_task. */
+    const int scratch = MAX_TASKS - 3;
+    create_task(scratch, 0, 0, USER_AREA_BASE, 0);
+    if (!tasks[scratch].cspace) {
+        print("CSPACE_RELEASE_SELFTEST: FAIL scratch task got no cspace\n");
+        return;
+    }
+
+    /* Install real authority: the primordial CAP_CONSOLE, copied from the root
+     * cnode exactly as init's delegation does. A CAP_NULL would be indetectable
+     * from a released one, so the probe has to plant something that MATTERS --
+     * this is the capability that owns the serial port and the framebuffer. */
+    const uint32_t PROBE_SLOT = CAPSLOT_CONSOLE;
+    cap_install_from_root(scratch, PROBE_SLOT, PROBE_SLOT, 0);
+    if (tasks[scratch].cspace[PROBE_SLOT].type == CAP_NULL) {
+        print("CSPACE_RELEASE_SELFTEST: FAIL could not plant a capability to release\n");
+        return;
+    }
+    uint32_t planted_type = tasks[scratch].cspace[PROBE_SLOT].type;
+
+    /* Tear it down exactly as a fault or SYS_EXIT would. state goes to 0 inside
+     * teardown; the cspace pointer is deliberately kept, because the BYTES belong
+     * to this slot for the life of the boot -- the arena never rewinds. */
+    struct task_exit_cause cause;
+    for (size_t z = 0; z < sizeof(cause); z++) ((uint8_t *)&cause)[z] = 0;
+    cause.reason = TASK_EXIT_NONE;
+    task_teardown(scratch, &cause);
+
+    if (!tasks[scratch].cspace) {
+        /* Returning the bytes is the one thing this must NOT do: the arena is a
+         * monotonic bump allocator and the kernel reserve holds exactly
+         * MAX_TASKS cspaces, so a free-then-reallocate exhausts it on the first
+         * slot reuse and create_task halts the machine. */
+        print("CSPACE_RELEASE_SELFTEST: FAIL teardown dropped the cspace pointer\n");
+        return;
+    }
+
+    /* THE CHECK. Every slot empty, not merely the one that was planted: a
+     * release that cleared the probe's slot alone would pass a narrower test
+     * while leaving every other capability the task held. */
+    for (uint32_t s = 0; s < CNODE_SIZE; s++) {
+        struct capability *c = &tasks[scratch].cspace[s];
+        if (c->type != CAP_NULL || c->serial != 0 || c->rights != 0 ||
+            c->object != 0 || c->badge != 0 || c->generation != 0) {
+            print("CSPACE_RELEASE_SELFTEST: FAIL a dead task still holds capability slot ");
+            print_decimal((uint64_t)s);
+            print(" (type ");
+            print_decimal((uint64_t)c->type);
+            print(")\n");
+            return;
+        }
+    }
+    if (tasks[scratch].caps_in_use != 0) {
+        print("CSPACE_RELEASE_SELFTEST: FAIL caps_in_use is ");
+        print_decimal((uint64_t)tasks[scratch].caps_in_use);
+        print(" for a task holding nothing\n");
+        return;
+    }
+
+    /* And the slot still WORKS. Both checks above are satisfied by a teardown
+     * that destroyed the cspace outright, or by a create_task that can no longer
+     * install anything -- either of which breaks task creation while passing.
+     * Re-create into the same slot and require the same capability to install. */
+    create_task(scratch, 0, 0, USER_AREA_BASE, 0);
+    cap_install_from_root(scratch, PROBE_SLOT, PROBE_SLOT, 0);
+    if (tasks[scratch].cspace[PROBE_SLOT].type != planted_type) {
+        print("CSPACE_RELEASE_SELFTEST: FAIL the slot cannot be used again after teardown\n");
+        return;
+    }
+    tasks[scratch].state = 0;
+
+    print("CSPACE_RELEASE_SELFTEST: PASS a dead task holds no capability, its cspace bytes stay with the slot, and the slot is reusable\n");
+}
+#endif

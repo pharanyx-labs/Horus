@@ -2639,6 +2639,15 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     /* Release any pipe ends this task still holds so the peer sees EOF/EPIPE and
      * the pipe is freed — a pipeline stage that exits (cleanly or on a fault)
      * must not wedge the stage on the other side. */
+#ifdef CSPACE_RELEASE_BEFORE_PIPES
+    /* CONTROL ARM -- never ship. Empty the cspace BEFORE the pipe ends are
+     * closed, which is the one-line move the note beside cap_release_cspace
+     * warns about: pipe_close_task_ends then finds no CAP_PIPE, no end is
+     * unreffed, the peer never sees EOF, and a pipeline stage whose partner
+     * died waits forever. A comment is not a gate, so this makes the ordering
+     * a measurement. See make smoke-pipe-cspace-order-control. */
+    cap_release_cspace(id);
+#endif
     pipe_close_task_ends(id);
 
     int w = tasks[id].waiter;
@@ -2700,14 +2709,57 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     sched_raw_unlock();
 #endif
 
-    /* A dead task's capabilities stop counting: its cspace is no longer swept by
-     * revocation and nothing in it can be used again. So this is the other point
-     * at which a retyped kernel object can lose its last name, and the sweep has
-     * to run here too — otherwise an object created by a task that then exited
-     * would live until some unrelated task happened to revoke something.
+    /* A dead task's capabilities stop EXISTING, not merely stop counting.
      *
-     * Ordering matters: state is already 0 above, so the sweep correctly treats
-     * this task's cspace as unreachable.
+     * They used to stop counting: `mark_reachable` skipped this cspace because
+     * `state` is 0, `h_cap_enumerate` refused to report it for the same reason,
+     * and `create_task` overwrote it whenever the slot was next used -- which may
+     * be never. So the capabilities themselves sat in memory between death and
+     * reuse, and "a task's authority ends when the task does" was a property held
+     * by three readers agreeing about a flag rather than by the data. A fourth
+     * reader that forgot the flag would have found a full cspace.
+     *
+     * cap_release_cspace empties it, so that reader finds nothing instead. Its
+     * BYTES stay with this slot for the life of the boot: the arena is a
+     * monotonic bump allocator by design and the kernel reserve holds exactly
+     * MAX_TASKS cspaces, so returning them is both the type-confusion this
+     * allocator exists to forbid and an exhaustion of the reserve on the first
+     * slot reuse. See the note on that function.
+     *
+     * ---- IT MUST BE LATE IN THIS FUNCTION, AND HERE IS THE BOUND -----------
+     *
+     * BEFORE kobj_gc, deliberately. This is the other point at which a retyped
+     * kernel object can lose its last name -- otherwise an object created by a
+     * task that then exited would live until some unrelated task happened to
+     * revoke something -- and with the cspace emptied first, the sweep sees an
+     * object genuinely unnamed rather than one it is skipping on the strength of
+     * `state == 0`. The two now agree by construction.
+     *
+     * AFTER pipe_close_task_ends, which is not a preference. That function walks
+     * this cspace looking for CAP_PIPE, and unrefs each end so the PEER sees
+     * EOF/EPIPE and the pipe is freed once both directions reach zero. Empty the
+     * cspace before it runs and it finds nothing: the pipe is never unreffed, the
+     * peer never sees EOF, and a pipeline stage whose partner died waits forever.
+     * That failure is silent, it is in another file, and it is one line of
+     * movement away -- so it is written down here rather than left to be
+     * rediscovered. pipe_close_task_ends is the ONLY step of this teardown that
+     * reads the cspace; every other one (the IRQ route, the MSI route, the IOMMU
+     * domain, the port grant, the console) works from tasks[id] fields that this
+     * does not touch.
+     *
+     * AND THE ORDERING HAS NO GATE, WHICH WAS MEASURED RATHER THAN ASSUMED.
+     * CSPACE_RELEASE_BEFORE_PIPES=1 exists and makes the move; both `smoke-pipe`
+     * and `smoke-modules` -- the latter running a real two-stage pipeline out of
+     * /bin -- pass under it. The reason is that every pipe user in this tree
+     * closes its ends EXPLICITLY (userspace/shell.c after the pipeline,
+     * userspace/posix.c on fd close), so by the time a stage dies there is
+     * nothing left for pipe_close_task_ends to find. That function is a backstop
+     * for a task that dies WITHOUT closing -- a fault, a SYS_KILL -- and no
+     * workload here does that while holding a pipe end.
+     *
+     * So the arm is kept and not gated: a control arm that cannot fail cannot
+     * gate, which is the same call SPAWN_STAGE_UNSERIALISED and NET_NO_BUSMASTER
+     * got. It becomes a gate the day a workload kills a task mid-pipeline.
      *
      * Safe to call with interrupts masked — task_teardown is reached from the
      * page-fault handler (idt.c), and it is the first thing on that path to take
@@ -2717,6 +2769,14 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
      * lock. Until 2026-08-18 it was instead a property of a pushfq/popfq bracket
      * inside untyped.c, which is why that bracket is gone -- see the locking note
      * at the top of that file. */
+#ifndef CSPACE_KEEP_ON_TEARDOWN
+    cap_release_cspace(id);
+#else
+    /* CONTROL ARM -- never ship. The pre-2026-08-30 behaviour: a dead task's
+     * capabilities stay in its cspace until the slot is next used. See
+     * make smoke-cspace-release-control. */
+    (void)0;
+#endif
     kobj_gc();
 }
 

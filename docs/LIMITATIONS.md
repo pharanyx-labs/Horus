@@ -1538,9 +1538,44 @@ both refusals while breaking every gate in the kernel. Falsified one arm per rul
 (`CAP_LOOKUP_ROOT_FALLBACK`, `CAP_LOOKUP_RANGE_FALLBACK`); two arms because the witness returns
 at its first failure, so an arm restoring both halves never reaches the second rule.
 
-**Reclaiming a dead task's cspace is now unblocked and is not done**: nothing yet frees one, and
-that is its own change with its own witness (a slot reused after a free must not inherit the
-previous occupant's authority).
+**Reclaiming a dead task's cspace landed on 2026-08-30, and the literal reading of that phrase
+would have broken the system.** Every document here, this one included, said "free the cspace".
+Two independent facts forbid returning its bytes:
+
+- **The arena is a monotonic bump allocator, and that is a safety property.** `untyped.c`'s own
+  header says so: *"With a free list, an object's bytes can be handed straight back out and
+  retyped as a DIFFERENT class while a stale capability still names the old address — the classic
+  type-confusion-through-reuse."* Returning a cspace's bytes reintroduces exactly that.
+- **The kernel reserve holds exactly `MAX_TASKS` cspaces.** The watermark never rewinds, so a
+  free-then-reallocate consumes a second cspace's worth for the same slot; after `MAX_TASKS` task
+  deaths the reserve is exhausted and `create_task` halts the machine, because a task with no
+  cspace must not run.
+
+The codebase already had the right word, in `destroy_dyn_endpoint`: *"The bytes stay consumed in
+the untyped region (bump discipline); only the **name** is reclaimed."* A cspace's bytes belong to
+its task slot for the life of the boot, exactly as `cspace_pool[id]` did; what is reclaimed is its
+**contents**.
+
+**And that was the real gap, which no document had described.** `task_teardown` released every
+device resource a task held — its IRQ route, its MSI route, its IOMMU domain, its port grant, the
+console, its pipe ends — and left the **capabilities** in place. They sat in memory from the
+task's death until its slot was next used, which may be never. Nothing could reach them, but only
+because three separate readers each test `state == 0`: `mark_reachable` when deciding which
+retyped objects are still named, `h_cap_enumerate` when reporting, and `create_task` when
+overwriting. **The property "a task's authority ends when the task does" was held by three readers
+agreeing about a flag, not by the data** — and a fourth reader that forgot the flag would have
+found a full cspace. That is the same shape as the `cap_lookup` fallback above, and as **S38**'s
+arena guard.
+
+`cap_release_cspace` empties it at teardown, **before** `kobj_gc`, so the sweep sees an object
+genuinely unnamed rather than one it is skipping on the strength of a flag; the two now agree by
+construction. `create_task`'s zeroing stays, defending the first use of a slot rather than a dead
+task's leftovers. Witness `make smoke-cspace-release`, which goes through `task_teardown` rather
+than calling the function — a witness that calls the function under test proves the function works
+and says nothing about whether anything invokes it — and checks the slot is still **reusable**
+afterwards, since a teardown that destroyed the cspace outright would pass the emptiness check
+while breaking task creation. Falsified by `CSPACE_KEEP_ON_TEARDOWN=1`, under which the dead task
+still holds slot 0: its own `CAP_TCB`.
 
 **And the next ceiling is now the arena's, which is why its halves were separated.** The arena is
 split into a kernel half (the per-task cspaces, which no capability names and ring 3 cannot

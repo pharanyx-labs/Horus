@@ -2113,6 +2113,12 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
  * matching consume leaks toward MAX_CAPS_PER_TASK. NOT a revoke — it forgets one
  * slot in the caller's own cspace and touches no derived capability. */
 bool cap_consume_slot(uint32_t dest_slot);
+/* Release the capabilities a dead task held (task_teardown). The cspace's BYTES
+ * stay with the slot -- the arena is a monotonic bump allocator and the kernel
+ * reserve holds exactly MAX_TASKS cspaces -- so what is reclaimed is its
+ * contents, which is what "reclaim" already means for every other object class
+ * in untyped.c. */
+void cap_release_cspace(int id);
 /* Mint the one-shot CAP_REPLY naming `sender` into TASK `pid`'s CAPSLOT_REPLY.
  *
  * The blocking-receive counterpart of the cap_install_object call at the end of
@@ -2367,6 +2373,11 @@ int kern_addr_present(uint64_t vaddr);
  * resume-%rsp range guard needs the bound and must not keep a second copy of it. */
 int kstack_region_contains_ksp(uint64_t vaddr);
 uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr);
+#ifdef CSPACE_RELEASE_SELFTEST
+/* A dead task holds no capability: task_teardown empties its cspace, while the
+ * BYTES stay with the slot (bump discipline). */
+void cspace_release_selftest(void);
+#endif
 #ifdef CAPLOOKUP_SELFTEST
 /* cap_lookup fails closed: a cspace-less task and an out-of-range slot are both
  * refused rather than resolved against the primordial root cnode. */
@@ -2461,7 +2472,7 @@ void tsd_selftest(void);
 #ifdef FS_SELFTEST
 void fs_selftest(void);
 #endif
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(CSPACE_RELEASE_SELFTEST)
 /* Shared by both FS harnesses: the newlib self-test also spawns + provisions
  * the fs_server so its client can exercise the real libc file paths. */
 int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);

@@ -470,6 +470,104 @@ bool cap_consume_slot(uint32_t dest_slot) {
     return true;
 }
 
+/* Release the capabilities a dead task held. Called from task_teardown.
+ *
+ * ---- WHAT "RECLAIM" MEANS HERE, AND WHAT IT MUST NOT MEAN -----------------
+ *
+ * `docs/LIMITATIONS.md`, `ROADMAP.md` and `ARCHITECTURE.md` all carried a line
+ * about "reclaiming a dead task's cspace", blocked on `cap_lookup`'s root-cnode
+ * fallback (removed 2026-08-30, S55). Read as "give the bytes back", that is not
+ * merely unimplemented -- it is the one thing this allocator exists to forbid,
+ * and doing it would break the system in two independent ways:
+ *
+ *  1. The arena is a MONOTONIC BUMP allocator, and `untyped.c`'s header says why
+ *     in as many words: "This is seL4's rule and it is a safety property, not a
+ *     simplification. With a free list, an object's bytes can be handed straight
+ *     back out and retyped as a DIFFERENT class while a stale capability still
+ *     names the old address -- the classic type-confusion-through-reuse."
+ *     Returning a cspace's bytes reintroduces exactly that.
+ *
+ *  2. `UNTYPED_KERNEL_BYTES` is sized at EXACTLY `MAX_TASKS` cspaces. The
+ *     watermark never rewinds, so a free-then-reallocate would consume a second
+ *     cspace's worth for the same slot and the reserve would be exhausted after
+ *     `MAX_TASKS` task deaths -- at which point `create_task` halts the machine,
+ *     because a task with no cspace must not run.
+ *
+ * The codebase already had the right word for what IS reclaimable, in
+ * `destroy_dyn_endpoint`: "The bytes stay consumed in the untyped region (bump
+ * discipline); only the name is reclaimed." A cspace's bytes belong to its task
+ * SLOT for the life of the boot, exactly as `cspace_pool[id]` did. What is
+ * reclaimed is its CONTENTS.
+ *
+ * ---- WHY THIS IS NOT ALREADY DONE BY create_task ---------------------------
+ *
+ * It is, eventually: `create_task` zeroes the whole cspace before installing the
+ * new task's capabilities, precisely so a dead task's `CAP_USER`/`CAP_CONSOLE`
+ * cannot survive into the next occupant. So the authority does end -- WHEN THE
+ * SLOT IS NEXT USED, which may be never.
+ *
+ * Between death and reuse the dead task's capabilities sit in memory, and three
+ * separate readers each avoid them by testing `state == 0`: `mark_reachable`
+ * (untyped.c) skips dead cspaces when deciding which retyped objects are still
+ * named, `h_cap_enumerate` refuses to report them, and `create_task` overwrites
+ * them. The property "a task's authority ends when the task does" is therefore
+ * held by three readers agreeing about a flag, rather than by the data. Add a
+ * fourth reader that forgets the check and it is an escalation; that is the same
+ * shape as the `cap_lookup` fallback this unblocks, and as S38's arena guard,
+ * whose protections were "circumstances rather than properties".
+ *
+ * Clearing here makes the cspace of a dead task EMPTY, so a reader that forgets
+ * the flag finds nothing rather than everything. `create_task`'s zeroing stays:
+ * it now defends against a slot that was never torn down (task 0, and the first
+ * use of any slot) rather than against a dead task's leftovers, and belt and
+ * braces on the authority of the next occupant is not where to economise.
+ *
+ * ---- ORDERING ------------------------------------------------------------
+ *
+ * task_teardown calls this BEFORE kobj_gc(). The sweep then sees an empty
+ * cspace rather than relying on `state == 0` to skip a full one, so the two
+ * agree by construction instead of by coincidence. Objects this task was the
+ * last namer of are collected on that same pass, as they already were.
+ *
+ * No authority check, and none is possible: the caller is the kernel tearing a
+ * task down, not a task acting. It is idempotent, so the double-teardown paths
+ * (SYS_EXIT racing a fault) cost a second pass and nothing else.
+ *
+ * Taking cap_lock here is safe from every teardown path, checked rather than
+ * assumed: h_exit, h_kill and h_signal hold no lock when they call
+ * task_teardown, and on the fault paths (idt.c) task_teardown is, as the note
+ * there says, "the first thing on that path to take a lock at all". It nests
+ * inside nothing -- sched_raw_lock is released before this runs and kobj_gc's
+ * ut_lock is taken after it.
+ *
+ * `SECURITY.md` **S56**. */
+void cap_release_cspace(int id)
+{
+    if (id <= 0 || id >= MAX_TASKS) return;
+
+    spin_lock(&cap_lock);
+    struct capability *cs = tasks[id].cspace;
+    if (cs) {
+        uint32_t sz = tasks[id].cspace_size ? tasks[id].cspace_size : CNODE_SIZE;
+        if (sz > CNODE_SIZE) sz = CNODE_SIZE;
+        for (uint32_t s = 0; s < sz; s++) {
+            cs[s].type       = CAP_NULL;
+            cs[s].rights     = 0;
+            cs[s].object     = 0;
+            cs[s].badge      = 0;
+            /* serial 0 is what cap_lookup reads as "empty"; a live serial on a
+             * CAP_NULL slot would look occupied to the lineage check while
+             * carrying no type. Same reason cap_consume_slot clears it. */
+            cs[s].serial     = 0;
+            cs[s].generation = 0;
+        }
+    }
+    /* The count follows the contents. Left alone it would describe a cspace that
+     * no longer holds anything, and `ps` reports it. */
+    tasks[id].caps_in_use = 0;
+    spin_unlock(&cap_lock);
+}
+
 const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
 
 /* THE RESOLVER FAILS CLOSED. It did not until 2026-08-30, and the `else` it used

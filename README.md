@@ -15,11 +15,10 @@ operating system built from the ground up.**
 [![Status: research-grade](https://img.shields.io/badge/status-research--grade-yellow)](docs/LIMITATIONS.md)
 
 Horus boots on x86-64 hardware and under QEMU, drops to a ring-3 shell, and runs ordinary C
-programs — including GNU coreutils and the Tiny C Compiler — on a microkernel whose device
-drivers and filesystem live in userspace. The security-critical parsing and validation code
-is written in memory-safe `no_std` Rust. The kernel image is byte-for-byte reproducible, the boot
-chain is measured into a TPM, and the volume encryption key is sealed against those
-measurements.
+programs (including GNU coreutils and the Tiny C Compiler) on a microkernel whose device drivers
+and filesystem live in userspace. The security-critical parsing and validation code is written
+in memory-safe `no_std` Rust. The kernel image is byte-for-byte reproducible, the boot chain is
+measured into a TPM, and the volume encryption key is sealed against those measurements.
 
 > ### Assurance status
 >
@@ -28,7 +27,7 @@ measurements.
 > review (**[C-5]**).
 >
 > What that means concretely, finding by finding, is in
-> [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — the authoritative status of every one — and
+> [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) (the authoritative status of every one) and
 > the analysis is in [`docs/AUDIT.md`](docs/AUDIT.md). The harder investigations are written
 > up in [`docs/investigations/`](docs/investigations/), including the ones this project got
 > wrong for days before getting right.
@@ -59,63 +58,62 @@ measurements.
 
 ## Why Horus
 
-Most operating systems place millions of lines of code — filesystems, network stacks,
-graphics, every device driver — inside the kernel, where a single bug compromises the whole
-machine. A microkernel puts almost none of that in privileged mode. Horus goes further and
-asks that *nothing* hold authority it was not explicitly given.
+Most operating systems place millions of lines of code (filesystems, network stacks, graphics,
+every device driver) inside the kernel, where a single bug compromises the whole machine. A
+microkernel puts almost none of that in privileged mode. Horus goes further and asks that
+*nothing* hold authority it was not explicitly given.
 
 Three principles drive every design decision.
 
-**Least privilege by construction.** Authority is a capability: an unforgeable token naming
-one object and one set of rights. There is no `root` bit that opens every door, and since
-**[H-1]** landed no kernel path grants authority for *who the caller claims to be*. A task
-can only do what it holds a capability for, and can only delegate a *subset* of what it
-holds. Three console-adjacent syscalls are still ungated by any capability — `SYS_WRITE`
-fd 1, `SYS_READ` fd 0 and `SYS_SYSINFO`; they are enumerated in
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and marked *ambient* at each entry in
-[`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated absolutely and enforced
-partially is worse than no claim. Those three are ungated *deliberately*: a terminal write, a
-terminal read and a version string are not authorities this system rations. Writing to fd 1
-no longer carries anything else with it: it once also appended to the kernel message ring,
-whose *read* side requires `CAP_KERNEL_LOG`, and that half is gated now (**[H-2]**, S23).
+**Least privilege by construction.** Authority is a capability: an unforgeable token naming one
+object and one set of rights. There is no `root` bit that opens every door, and since **[H-1]**
+landed no kernel path grants authority for *who the caller claims to be*. A task can only do
+what it holds a capability for, and can only delegate a *subset* of what it holds. Three
+console-adjacent syscalls are still ungated by any capability: `SYS_WRITE` fd 1, `SYS_READ` fd 0
+and `SYS_SYSINFO`; they are enumerated in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and
+marked *ambient* at each entry in [`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated
+absolutely and enforced partially is worse than no claim. Those three are ungated
+*deliberately*: a terminal write, a terminal read and a version string are not authorities this
+system rations. Writing to fd 1 no longer carries anything else with it: it once also appended
+to the kernel message ring, whose *read* side requires `CAP_KERNEL_LOG`, and that half is gated
+now (**[H-2]**, S23).
 
 **Fail closed.** Every syscall passes through a dispatch table with a declared capability
-requirement. An unknown, reserved, or unimplemented syscall number does not fall through to
-a handler — it returns `SYS_ERR_NOSYS`. A compile-time assertion makes it impossible to add
-a syscall number without adding its table entry.
+requirement. An unknown, reserved, or unimplemented syscall number does not fall through to a
+handler; it returns `SYS_ERR_NOSYS`. A compile-time assertion makes it impossible to add a
+syscall number without adding its table entry.
 
 **Verify, don't assert.** Claims are backed by artifacts. `kernel.elf` is verified reproducible
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
-Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured
-boot is tested by tampering and asserting the PCRs diverge.
-Capability revocation carries Kani proofs. `.github/workflows/ci.yml` runs 100 jobs, most of
-them QEMU integration self-tests. Which of them may block a merge is a decision recorded in
-`.github/ci-gating.yml` and enforced by the `ci-gating` job: every job must be listed as
-gating, or exempted with a written reason (**[C-6]**). The intended set is 102 of its 105 contexts,
-including every security test; the ruleset is reconciled to it by hand and lags whenever a
-gate is added. Read the live count from
-`gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence — the ruleset is
+Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured boot
+is tested by tampering and asserting the PCRs diverge. Capability revocation carries Kani
+proofs. `.github/workflows/ci.yml` runs 100 jobs, most of them QEMU integration self-tests.
+Which of them may block a merge is a decision recorded in `.github/ci-gating.yml` and enforced
+by the `ci-gating` job: every job must be listed as gating, or exempted with a written reason
+(**[C-6]**). The intended set is 102 of its 105 contexts, including every security test; the
+ruleset is reconciled to it by hand and lags whenever a gate is added. Read the live count from
+`gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence; the ruleset is
 reconciled by hand, so only the API knows.
 
 ---
 
 ## The long-term goal
 
-Horus is the high-assurance foundation for a complete operating system. The kernel is not
-the destination — it is the smallest thing that must be trusted so that everything above it
-need not be.
+Horus is the high-assurance foundation for a complete operating system. The kernel is not the
+destination; it is the smallest thing that must be trusted so that everything above it need not
+be.
 
 The path from here is ordered by assurance rather than by demo value:
 
 1. ~~**Make the object model true.**~~ **Done (2026-07-27):** capabilities now mediate
-   *which* object, not merely which kind — see **[C-1]**.
+   *which* object, not merely which kind: see **[C-1]**.
 2. ~~**Retire ambient `uid == 0` authority**~~ **Done (2026-07-27):** each root-gated syscall
    now demands a distinct capability, so the capability graph is a complete description of
-   who can do what — see **[I-1]**.
+   who can do what, see **[I-1]**.
 3. ~~**Kernel objects from untyped memory.**~~ **Done (2026-07-27):** `CAP_UNTYPED` +
    `SYS_RETYPE` replaced the fixed `.bss` tables for cspaces, endpoints and notifications, so
    creating a kernel object is an exercise of authority the graph describes and kernel memory
-   is accounted per task — see **[I-7]**. `tasks[]` is the remaining table.
+   is accounted per task, see **[I-7]**. `tasks[]` is the remaining table.
 4. **Real virtual-memory objects.** Frame capabilities, shared memory, `mmap`.
 5. **Userspace services on top:** a VFS with multiple filesystems, a network stack as a
    ring-3 server, a process and session model, dynamic linking.
@@ -133,35 +131,35 @@ per item.
 |---|---|
 | **Boot** | Multiboot2 via GRUB, higher-half 64-bit kernel at `KERNEL_VMA`, physical pool sized from the E820 map |
 | **Memory** | Per-task 4-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X, unmapped stack guard pages, 30-bit userspace ASLR, frame capabilities with capability-mediated shared memory, `fork` cloning an address space copy-on-write |
-| **Capabilities** | 16 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop; kernel objects — cspaces, endpoints, notifications and memory frames — retyped out of untyped memory a task must hold authority over |
+| **Capabilities** | 16 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop; kernel objects (cspaces, endpoints, notifications and memory frames) retyped out of untyped memory a task must hold authority over |
 | **Processes** | `spawn` from an embedded or caller-supplied image, exec-in-place, `fork` with a copy-on-write address space and a capability space inherited as *derived* copies, `exec` that replaces the image and touches no capability, `wait` reporting how a task died, signals with handlers and an alternate stack. **No** process groups, job control or `/proc` |
 | **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
 | **SMP** | Default on; ACPI MADT enumeration, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
 | **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, a blocking receive that sleeps on an empty queue, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
 | **Filesystem** | `fs_server` in ring 3 over an AEAD-encrypted kernel object store; POSIX rwx against kernel-attested uid/gid; write-ahead journal and mount-time fsck; double-indirect large files; a per-task VFS mount table routing paths to per-mount capabilities |
 | **Console** | `console_server` in ring 3 owning the UART and VGA framebuffer; raw terminal mode (termios + winsize) |
-| **Devices** | A `CAP_IO_DEVICE` names **one device** in a boot-time table (PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device's frames, port ranges and interrupt lines. Two ring-3 drivers: `console_server` and `netd`, an Intel e1000 driver proved by a full DMA round trip. It drives e1000 rather than virtio deliberately: a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all, so it could not witness DMA confinement. **VT-d DMA remapping**: each device gets an address space that starts **empty**, so it reaches only the frames its driver mapped. An interrupt reaches its ring-3 driver either as an **MSI on a vector the kernel chose** — the driver cannot name one — or through the I/O APIC and masked until acknowledged, so an unserviced device cannot livelock the machine. A device's **MSI-X vector table is unmappable by its driver** — it lives in a BAR, so the vector-choice question had to be answered again there. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk |
+| **Devices** | A `CAP_IO_DEVICE` names **one device** in a boot-time table (PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device's frames, port ranges and interrupt lines. Two ring-3 drivers: `console_server` and `netd`, an Intel e1000 driver proved by a full DMA round trip. It drives e1000 rather than virtio deliberately: a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all, so it could not witness DMA confinement. **VT-d DMA remapping**: each device gets an address space that starts **empty**, so it reaches only the frames its driver mapped. An interrupt reaches its ring-3 driver either as an **MSI on a vector the kernel chose** (the driver cannot name one) or through the I/O APIC and masked until acknowledged, so an unserviced device cannot livelock the machine. A device's **MSI-X vector table is unmappable by its driver**, it lives in a BAR, so the vector-choice question had to be answered again there. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk |
 | **Network** | `netd` drives an e1000 from ring 3 holding one device capability and one untyped region, and its DMA reaches only what it mapped. It is woken by its device's own interrupt and acknowledges it. It transmits; it does **not** receive yet, and there is no ARP table, IP, TCP or socket capability |
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, hierarchical rollback MAC; key material never leaves the kernel |
 | **Boot integrity** | SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 8 and 9; vdisk KEK sealed under `PolicyPCR` |
 | **Userspace** | newlib libc, a shell with pipelines, GNU coreutils, TCC |
-| **Shared libraries** | A shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. **Not** yet a dynamic linker — no symbol resolution, and newlib is still statically linked into each program |
+| **Shared libraries** | A shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. **Not** yet a dynamic linker: no symbol resolution, and newlib is still statically linked into each program |
 | **Assurance** | Every property in `SECURITY.md` is bound by CI to a witness that exists and runs (`tools/check_invariants.py`); every declared count in the docs is derived and compared; every control arm is paired with a base gate |
 | **Security core** | `no_std` Rust: ELF parsing and relocation, capability algebra, ChaCha20 CSPRNG, BLAKE2b/SHA-256, AEAD, Argon2 |
 
-**Memory is shared by capability.** A page of shared memory is a `KOBJ_FRAME` retyped out of
-an untyped region the creator holds authority over, named by a `CAP_FRAME`, and mapped with
+**Memory is shared by capability.** A page of shared memory is a `KOBJ_FRAME` retyped out of an
+untyped region the creator holds authority over, named by a `CAP_FRAME`, and mapped with
 `SYS_MAP_FRAME` into the caller's own address space. Two mutually distrusting tasks reach the
-same physical page at two virtual addresses of their own choosing, and the PTE each one gets
-is bounded by the rights on the capability it holds — so "you may read this page but not write
-it" is expressible, and is what `smoke-frame` asserts on every boot.
+same physical page at two virtual addresses of their own choosing, and the PTE each one gets is
+bounded by the rights on the capability it holds, so "you may read this page but not write it"
+is expressible, and is what `smoke-frame` asserts on every boot.
 
-**IPC is capability-addressed.** Every IPC syscall takes a cspace slot; the kernel derives
-the endpoint or notification from the capability there, checking its type, the right for the
+**IPC is capability-addressed.** Every IPC syscall takes a cspace slot; the kernel derives the
+endpoint or notification from the capability there, checking its type, the right for the
 direction, and its lineage generation. A task is born holding exactly one endpoint capability
-— its own private reply endpoint — and reaches a service only through a capability something
-delegated to it. Clients get WRITE-only capabilities, so a client can send to a server but
-can never receive its traffic or forge its replies.
+(its own private reply endpoint) and reaches a service only through a capability something
+delegated to it. Clients get WRITE-only capabilities, so a client can send to a server but can
+never receive its traffic or forge its replies.
 
 ---
 
@@ -186,8 +184,8 @@ can never receive its traffic or forge its replies.
 ```
 
 The kernel provides address spaces, threads, capabilities, IPC, and an encrypted block store
-whose keys it never releases. Everything else — naming, directories, permissions, terminal
-handling, program-loading policy — is userspace.
+whose keys it never releases. Everything else (naming, directories, permissions, terminal
+handling, program-loading policy) is userspace.
 
 Full detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -195,9 +193,9 @@ Full detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## The security model
 
-**Capabilities.** A capability is `{type, rights, object, badge, serial, generation}`. It
-lives in a per-task capability space (cspace) and is named by slot index. Userspace never
-sees the struct — only the slot number — so it cannot be forged.
+**Capabilities.** A capability is `{type, rights, object, badge, serial, generation}`. It lives
+in a per-task capability space (cspace) and is named by slot index. Userspace never sees the
+struct (only the slot number) so it cannot be forged.
 
 - **Mint** derives a child with `rights & new_rights`: delegation can only ever *reduce*
   authority.
@@ -250,7 +248,7 @@ Other useful targets:
 
 ```bash
 make smoke              # headless boot; asserts the ring-3 shell banner appears
-make test               # cargo test, then a clean rebuild — see the caveat below
+make test               # cargo test, then a clean rebuild, see the caveat below
 make SMP=0              # build without SMP
 make DEBUG_SHELL=1      # build with the in-kernel debug shell
 make reproducible-build # one SOURCE_DATE_EPOCH build; records both artifacts' hashes
@@ -263,13 +261,13 @@ someone rely on them.
 `make reproducible-build` builds **once** and records `sha256sum` for `kernel.elf` and
 `boot.iso` in `.build.sha`. The double-build-and-diff that actually establishes the property
 lives only in the `reproducible` CI job, which is a required check; locally, run the target
-twice and compare the `kernel.elf` line. Compare that line and not the file — **`boot.iso` is
-not byte-reproducible**, because grub-mkrescue stamps a wall-clock UUID into every image it
-builds. The ISO's *payload* — the kernel, every boot module, `grub.cfg` — is identical across
-builds; four grub-generated objects are not. See `docs/LIMITATIONS.md` §5.3a.
+twice and compare the `kernel.elf` line. Compare that line and not the file: **`boot.iso` is not
+byte-reproducible**, because grub-mkrescue stamps a wall-clock UUID into every image it builds.
+The ISO's *payload*; the kernel, every boot module, `grub.cfg`, is identical across builds; four
+grub-generated objects are not. See `docs/LIMITATIONS.md` §5.3a.
 
-`make test` is the Rust unit tests plus a clean rebuild. It does **not** boot QEMU, so it is
-not the full self-test sweep — use the `smoke-*` targets for that.
+`make test` is the Rust unit tests plus a clean rebuild. It does **not** boot QEMU, so it is not
+the full self-test sweep: use the `smoke-*` targets for that.
 
 Complete build documentation, including every configuration flag, in
 [`docs/BUILDING.md`](docs/BUILDING.md).
@@ -299,13 +297,13 @@ site/              the project website published to GitHub Pages
 
 Horus's assurance rests on its tests, so they are treated as first-class. Three layers:
 
-1. **Rust unit tests and Kani proofs** — `cargo test`, plus formal proofs that revocation
+1. **Rust unit tests and Kani proofs**, `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests** — the bulk of CI's 100 jobs; each boots a purpose-built
+2. **QEMU integration self-tests**, the bulk of CI's 100 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.
-3. **Scripted sessions** — Python drivers that type into the real ring-3 shell over serial
+3. **Scripted sessions**. Python drivers that type into the real ring-3 shell over serial
    and assert on the output.
 
 Several are *adversarial*: `smoke-modules-tamper` corrupts a boot module and asserts it is
@@ -331,7 +329,7 @@ more than testing that the happy path works.
 | [`TESTS.md`](TESTS.md) | Test catalogue |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute, and the invariant-preservation rules |
 | [`CHANGES.md`](CHANGES.md) | Changelog |
-| [`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md) | Development log — the reasoning behind each changelog line |
+| [`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md) | Development log; the reasoning behind each changelog line |
 
 ---
 
@@ -346,13 +344,12 @@ which invariant your change preserves, and add the test that witnesses it. See
 
 ## Security
 
-Please report vulnerabilities privately — [`SECURITY.md`](SECURITY.md) has the process and
-scope. Known unfixed issues are documented openly in
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and the current audit; Horus does not hide its
-weaknesses.
+Please report vulnerabilities privately, [`SECURITY.md`](SECURITY.md) has the process and scope.
+Known unfixed issues are documented openly in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and
+the current audit; Horus does not hide its weaknesses.
 
 ---
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT, see [`LICENSE`](LICENSE).

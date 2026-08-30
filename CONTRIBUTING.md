@@ -1,7 +1,7 @@
 # Contributing to Horus
 
-Horus is a research microkernel with meaningful work at every level — from userspace
-utilities to the capability algebra. Contributions of all sizes are welcome.
+Horus is a research microkernel with meaningful work at every level, from userspace utilities to
+the capability algebra. Contributions of all sizes are welcome.
 
 This document explains how to contribute, and the one rule that is stricter here than in most
 projects: **on security-critical paths, a change must state the invariant it preserves and
@@ -13,11 +13,11 @@ ship the test that witnesses it.**
 
 Read, in this order:
 
-1. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the system is built and why.
-2. [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — what does not work. Many good ideas are
+1. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), how the system is built and why.
+2. [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), what does not work. Many good ideas are
    already known gaps.
-3. [`docs/ROADMAP.md`](docs/ROADMAP.md) — what is planned, and in what order.
-4. [`docs/AUDIT.md`](docs/AUDIT.md) — the current audit. For the *status* of a finding, read
+3. [`docs/ROADMAP.md`](docs/ROADMAP.md), what is planned, and in what order.
+4. [`docs/AUDIT.md`](docs/AUDIT.md); the current audit. For the *status* of a finding, read
    [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), which is authoritative.
 
 If you want high-impact work, the roadmap's **Track 0** items are the ones that matter most,
@@ -50,14 +50,14 @@ make test     # the full local self-test sweep
 2. **Branch from `main`** using a conventional prefix: `feat/`, `fix/`, `docs/`, `ci/`,
    `refactor/`, `harden/`, `verify/`, `test/`, `chore/`.
 3. **Keep the change focused.** One concern per PR. Security-model changes in particular must
-   not be bundled with feature work — they need to be reviewable in isolation.
+   not be bundled with feature work; they need to be reviewable in isolation.
 4. **Run the relevant tests locally** before pushing. At minimum `make smoke` and
    `make smoke-captest`; run whichever `smoke-*` targets cover the subsystem you touched.
 5. **Open a PR** against `main` and fill in the template.
 
 `main` is protected: linear history, signed commits, no force pushes, and required status
-checks. Your commits **must be signed** — see
-[GitHub's signing guide](https://docs.github.com/en/authentication/managing-commit-signature-verification).
+checks. Your commits **must be signed**, see [GitHub's signing
+guide](https://docs.github.com/en/authentication/managing-commit-signature-verification).
 
 ---
 
@@ -68,11 +68,10 @@ Conventional-commit prefix, imperative subject, and a body that explains **why**
 ```
 fix(capability): serial-key the lineage generation backstop
 
-The generation table was keyed by `object`, so two independent capabilities
-to the same object shared a cell. The only way to keep them independent was
-to treat generation 0 as always-valid — and every capability in the running
-kernel was created with generation 0, so the backstop was dormant: a stale
-snapshot passed the check unconditionally.
+The generation table was keyed by `object`, so two independent capabilities to the same object
+shared a cell. The only way to keep them independent was to treat generation 0 as always-valid,
+and every capability in the running kernel was created with generation 0, so the backstop was
+dormant: a stale snapshot passed the check unconditionally.
 
 Key by `serial` instead and check strict equality, so each capability gets
 its own cell and gen 0 is no longer an escape hatch.
@@ -83,8 +82,8 @@ Witness: rust/src/capability.rs test_revoke_by_values_invalidates_snapshot,
          make smoke-captest.
 ```
 
-The existing history is a good model. Commit messages here routinely record what was tried,
-what failed, and why the final approach is correct — that is deliberate and worth matching.
+The existing history is a good model. Commit messages here routinely record what was tried, what
+failed, and why the final approach is correct: that is deliberate and worth matching.
 
 ---
 
@@ -97,17 +96,16 @@ list true.
 **If your change touches any of these, your PR must state the invariant it preserves and
 point at the test or proof that witnesses it:**
 
-- `src/kernel/capability.c`, `rust/src/capability.rs` — the capability algebra
-- `src/kernel/syscall*.c` — syscall dispatch and authorisation
-- `src/kernel/paging.c` — address-space isolation, user copies, W^X
-- `src/kernel/scheduler.c` — context switching, locking, flush-on-switch
-- `src/kernel/loader.c`, `rust/src/lib.rs` — ELF loading
-- `src/kernel/storage.c`, `src/kernel/crypto.c`, `src/kernel/tpm.c` — data at rest, measured boot
-- `.github/workflows/`, `Makefile`, `linker64.ld` — the build is part of the TCB
+- `src/kernel/capability.c`, `rust/src/capability.rs`; the capability algebra
+- `src/kernel/syscall*.c`, syscall dispatch and authorisation
+- `src/kernel/paging.c`, address-space isolation, user copies, W^X
+- `src/kernel/scheduler.c`, context switching, locking, flush-on-switch
+- `src/kernel/loader.c`, `rust/src/lib.rs`; ELF loading
+- `src/kernel/storage.c`, `src/kernel/crypto.c`, `src/kernel/tpm.c`, data at rest, measured boot
+- `.github/workflows/`, `Makefile`, `linker64.ld`; the build is part of the TCB
 
-**"No test exists for that" is not an exemption — it is the work.** The project's most
-serious open defect (**[C-1]**) is precisely a documented property with no test binding it to
-the code.
+**"No test exists for that" is not an exemption: it is the work.** The project's most serious
+open defect (**[C-1]**) is precisely a documented property with no test binding it to the code.
 
 If your change *weakens* an invariant deliberately (e.g. for performance), say so explicitly
 in the PR and in `docs/LIMITATIONS.md`. An honest, documented weakening is fine; a silent one
@@ -142,12 +140,12 @@ what state the CPU is in.
 
 ## Testing
 
-Three layers — see [`TESTS.md`](TESTS.md) for the full catalogue.
+Three layers, see [`TESTS.md`](TESTS.md) for the full catalogue.
 
-1. **Rust unit tests and Kani proofs** — `cargo test --manifest-path rust/Cargo.toml`.
-2. **QEMU integration self-tests** — `make smoke-<name>`. Each boots a purpose-built kernel
+1. **Rust unit tests and Kani proofs**, `cargo test --manifest-path rust/Cargo.toml`.
+2. **QEMU integration self-tests**, `make smoke-<name>`. Each boots a purpose-built kernel
    configuration and asserts a marker on the serial console.
-3. **Scripted shell sessions** — Python drivers under `tools/` that type into the real ring-3
+3. **Scripted shell sessions**. Python drivers under `tools/` that type into the real ring-3
    shell and assert on the output.
 
 **Adding a self-test.** Most follow the same shape: a `*_SELFTEST` compile flag guards a
@@ -168,7 +166,7 @@ valuable than testing that the happy path works, and this project takes that ser
 - Tests added, and the `make smoke-*` targets you ran listed in the PR body.
 - No unrelated reformatting.
 - No new warnings.
-- Documentation updated in the same PR when behaviour changes — especially
+- Documentation updated in the same PR when behaviour changes, especially
   `docs/LIMITATIONS.md` if a limitation is added or removed.
 
 ---
@@ -187,7 +185,7 @@ inside the running system is often the most useful thing you can attach.
 ## A note on review
 
 Horus is currently maintained by one person, and the branch ruleset does not require reviewer
-approval — a limitation documented honestly in [`SECURITY.md`](SECURITY.md) and tracked as
+approval, a limitation documented honestly in [`SECURITY.md`](SECURITY.md) and tracked as
 roadmap item 4.1.
 
 **If you have kernel, capability-system, or formal-methods background and would be willing to

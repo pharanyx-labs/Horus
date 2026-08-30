@@ -12,7 +12,7 @@ witness it are listed in [`../../TESTS.md`](../../TESTS.md).*
 **Found and closed 2026-08-18, while serialising [G-10]'s staging window.** Nothing recorded
 which task armed the staged image, and one syscall turns that from an oddity into a privilege
 boundary. `SYS_SUDO` re-authenticates the caller and then spawns whatever image is armed **as
-uid 0**, endowing it with `CAP_FRAME`, `CAP_USER` and a `CAP_TCB` — and the arm is a *different
+uid 0**, endowing it with `CAP_FRAME`, `CAP_USER` and a `CAP_TCB`, and the arm is a *different
 syscall* from the consume:
 
 1. task A (any task holding the spawn capability) arms its own image;
@@ -39,7 +39,7 @@ to stamp one is a broken spawn, not a silent ambient one.
 The self-test asserts **both** directions in one run: it forges the state a second task's arm
 leaves behind (a legitimately staged image whose recorded owner is another task) and requires
 the refusal, then re-arms honestly and requires the spawn to succeed. A gate that only checked
-the refusal would pass on a kernel that refused every spawn — which is the failure mode a
+the refusal would pass on a kernel that refused every spawn, which is the failure mode a
 fail-closed change is most likely to have.
 
 ---

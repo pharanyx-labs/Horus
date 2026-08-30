@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Horus — a capability-based microkernel for x86-64</title>
+<title>Horus, a capability-based microkernel for x86-64</title>
 <meta name="description" content="Horus is an x86-64 microkernel where every privileged operation requires an unforgeable token the calling program holds. The filesystem and console driver run as ordinary unprivileged programs, the security-critical parsing is memory-safe Rust, the build is reproducible, and the boot chain is measured into a TPM. Research-grade, adversarially tested, and candid about what is unfinished.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#e8eaed">
 
 <!-- Inline SVG favicon: the Eye of Horus reduced to a capability slot mark.
-     A data URI, not a file request — see the note about network requests below. -->
+     A data URI, not a file request, see the note about network requests below. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230f1418'/%3E%3Cpath d='M5 16c4-6 8-8 11-8s7 3 11 8c-4 6-8 8-11 8s-7-3-11-8z' fill='none' stroke='%23e8eaed' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23e8eaed'/%3E%3C/svg%3E">
 
-<meta property="og:title" content="Horus — a capability-based microkernel">
+<meta property="og:title" content="Horus, a capability-based microkernel">
 <meta property="og:description" content="An x86-64 microkernel where authority is a token you hold, not a bit you are. Research-grade, adversarially tested, honest about its limits.">
 <meta property="og:type" content="website">
 
 <style>
 /* ===================================================================
-   HORUS — visual direction: drafting film.
+   HORUS, visual direction: drafting film.
 
    The subject is a specification, not a novelty. Kernel projects
    default to a dark terminal aesthetic; this page deliberately does
@@ -29,14 +29,14 @@
    Three rules govern everything below, and they are semantic rather
    than decorative:
 
-     1. Dark appears exactly once — the terminal transcript. That is
+     1. Dark appears exactly once; the terminal transcript. That is
         the only place on the page where the machine speaks for
         itself, so it is the only place that looks like a machine.
      2. Colour carries meaning and nothing else. Pine green marks
         authority that is held or a claim that is witnessed. Rust
         marks a refusal or an open finding. Ultramarine is structure
         and links. No accent is ever used to decorate.
-     3. Monospace means "this is a literal name inside the system" —
+     3. Monospace means "this is a literal name inside the system"; 
         a syscall, a right, a test target, an error code. Prose is
         never set in monospace.
 
@@ -68,7 +68,7 @@
   --rule:    #c3cad1;
   --rule-2:  #d6dbe1;
 
-  /* semantics — see rule 2 above */
+  /* semantics, see rule 2 above */
   --hold:    #12594a;
   --hold-bg: #d5e6e0;
   --deny:    #99330f;
@@ -255,7 +255,7 @@ a code { background: var(--wire-bg); color: var(--wire); }
 /* ---------- section spine --------------------------------------- */
 
 .band { padding: var(--band) 0; border-top: 1px solid var(--rule); }
-/* Not `.band:first-of-type` — that resolves against the element type, and the
+/* Not `.band:first-of-type`; that resolves against the element type, and the
    hero is the first <section>, so it matched nothing and left a stray rule
    sitting just under the legend's own bottom border. */
 .hero + .band { border-top: 0; }
@@ -329,7 +329,7 @@ a code { background: var(--wire-bg); color: var(--wire); }
 }
 .walk__stage { padding: 1.5rem 1.25rem 0.5rem; }
 /* Below ~700px the diagrams would scale their labels down to a few pixels.
-   Hold them at a legible width and let the container scroll instead — the
+   Hold them at a legible width and let the container scroll instead; the
    page body must never scroll horizontally, but a diagram may. */
 .walk__stage, .fig__scroll { overflow-x: auto; }
 .walk__stage:focus-visible, .fig__scroll:focus-visible { outline: 2px solid var(--wire); outline-offset: -2px; }
@@ -379,7 +379,7 @@ a code { background: var(--wire-bg); color: var(--wire); }
 .fig svg { display: block; width: 100%; height: auto; min-width: 640px; border: 1px solid var(--rule); border-radius: 3px; background: var(--card); }
 .fig figcaption { font-size: 0.86rem; color: var(--slate); margin-top: 0.85rem; max-width: var(--measure); }
 
-/* ---------- terminal — the only dark region on the page ---------- */
+/* ---------- terminal; the only dark region on the page ---------- */
 
 .term {
   margin: 2rem 0 0;
@@ -459,7 +459,7 @@ a code { background: var(--wire-bg); color: var(--wire); }
 }
 .witness::before { content: "witnessed by "; color: var(--faint); }
 
-/* ---------- numbered sequence (boot chain — order is real) ------- */
+/* ---------- numbered sequence (boot chain, order is real) ------- */
 
 .seq { list-style: none; margin: 2rem 0 0; padding: 0; counter-reset: s; }
 .seq > li {
@@ -487,7 +487,7 @@ a code { background: var(--wire-bg); color: var(--wire); }
 .seq h3 { margin: 0.15rem 0 0.4rem; }
 .seq p { margin: 0 0 0.5rem; font-size: 0.94rem; max-width: 60ch; }
 .seq p:last-child { margin-bottom: 0; }
-/* "Falsified by …" — a note about the step, so it is set in the body face with
+/* "Falsified by …", a note about the step, so it is set in the body face with
    only the test target in mono. Prose is never set in monospace on this page. */
 .seq .falsified { font-size: 0.86rem; color: var(--hold); margin-top: 0.7rem; }
 .seq .falsified b { font-weight: 600; color: var(--hold); }
@@ -638,8 +638,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
     <p class="hero__lede">
       Horus is an operating-system kernel in which no program has any power by default.
-      Every privileged action — reading a file, talking to a driver, creating a kernel
-      object — requires the caller to hold a specific unforgeable token for it. There is
+      Every privileged action, reading a file, talking to a driver, creating a kernel
+      object, requires the caller to hold a specific unforgeable token for it. There is
       no <code>root</code> flag that opens every door, and no code path that trusts a
       caller because of who it claims to be.
     </p>
@@ -647,7 +647,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
     <p class="hero__sub">
       It is a real system, not a paper design: it boots on x86-64 hardware and under QEMU,
       drops to an unprivileged shell, and runs ordinary C programs including GNU coreutils
-      and the Tiny C Compiler — on a kernel whose filesystem and console driver are
+      and the Tiny C Compiler, on a kernel whose filesystem and console driver are
       themselves unprivileged programs. The kernel image is byte-for-byte reproducible, the boot
       chain is measured into a TPM, and the disk encryption key is sealed against those
       measurements.
@@ -663,9 +663,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
     </div>
 
     <div class="legend">
-      <div><span class="sw sw--hold"></span><i>Pine</i> — a claim with a test behind it</div>
-      <div><span class="sw sw--deny"></span><i>Rust</i> — a refusal, or an open finding</div>
-      <div><span class="sw sw--mono"></span><i>Monospace</i> — a literal name inside the system</div>
+      <div><span class="sw sw--hold"></span><i>Pine</i>, a claim with a test behind it</div>
+      <div><span class="sw sw--deny"></span><i>Rust</i>, a refusal, or an open finding</div>
+      <div><span class="sw sw--mono"></span><i>Monospace</i>, a literal name inside the system</div>
     </div>
   </section>
 
@@ -674,7 +674,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
     <div class="spine">
       <div class="rail">
         <span class="rail__tag">What it is</span>
-        <p>The problem, and the shape of the answer — no operating-systems background assumed.</p>
+        <p>The problem, and the shape of the answer: no operating-systems background assumed.</p>
       </div>
       <div>
         <h2>Most of what can compromise your machine is not the kernel's job.</h2>
@@ -688,7 +688,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             The trouble is what conventional systems put inside that boundary. Linux and Windows
             place tens of millions of lines in it: every filesystem, the network stack, the
             graphics driver, the driver for a webcam you plugged in once. A single memory-safety
-            bug anywhere in that mass is not a bug in a driver — it is total control of the
+            bug anywhere in that mass is not a bug in a driver; it is total control of the
             machine. The privileged code is enormous, so the thing you must trust is enormous.
           </p>
           <p>
@@ -713,7 +713,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p class="q">"Is this caller allowed to do this?"</p>
             <p>
               The kernel receives a request, looks up who the caller is, and consults a table of
-              rules — user IDs, group membership, file modes, whether the caller is
+              rules, user IDs, group membership, file modes, whether the caller is
               <code>root</code>. Authority is <em>ambient</em>: it comes from your identity, and
               it applies to everything you name.
             </p>
@@ -727,7 +727,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h4>How Horus decides</h4>
             <p class="q">"Does this caller hold the token for this?"</p>
             <p>
-              A program's power is the list of <strong>capabilities</strong> it holds — tokens
+              A program's power is the list of <strong>capabilities</strong> it holds, tokens
               the kernel issued, each naming exactly one object and exactly one set of rights
               over it. The kernel keeps them; a program refers to one only by its slot number,
               so it cannot forge, guess, or widen one.
@@ -743,7 +743,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <p class="note">
           Horus takes a third position too, on how the kernel is written. The C kernel is about
           23,000 lines; the code that parses untrusted bytes or enforces an algebraic security
-          property is 6,200 lines of memory-safe <code>no_std</code> Rust linked into it — ELF
+          property is 6,200 lines of memory-safe <code>no_std</code> Rust linked into it; ELF
           parsing and relocation, the capability algebra, the cryptographic primitives, the
           CSPRNG, the pointer and range validators. That split is argued empirically rather than
           aesthetically: <strong>moving the ELF loader into Rust uncovered two real
@@ -767,7 +767,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             A capability in Horus is a small record the kernel owns:
             <code>{type, rights, object, badge, serial, generation}</code>. It lives in a
             per-task <em>capability space</em> of 256 slots, and userspace only ever sees the
-            slot number. That indirection is the whole reason it cannot be forged — there is no
+            slot number. That indirection is the whole reason it cannot be forged; there is no
             struct in your address space to modify and no name to guess.
           </p>
           <p>
@@ -787,7 +787,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
                 <!-- the object -->
                 <rect x="516" y="94" width="244" height="80" rx="3" fill="#dee2e7" stroke="#0f1418" stroke-width="1.4"/>
                 <text x="538" y="122" fill="#0f1418" font-size="12.5" font-weight="600">fs_server endpoint</text>
-                <text x="538" y="142" fill="#5c6771" font-size="11">a kernel object — the only way</text>
+                <text x="538" y="142" fill="#5c6771" font-size="11">a kernel object; the only way</text>
                 <text x="538" y="158" fill="#5c6771" font-size="11">to reach the filesystem</text>
 
                 <!-- init -->
@@ -824,7 +824,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
                   <path d="M512 144 l-9 -4.5 v9 z" fill="#12594a"/>
                   <rect x="286" y="184" width="86" height="22" rx="2" fill="#d5e6e0"/>
                   <text x="296" y="199" fill="#12594a" font-size="11" font-weight="600">WRITE</text>
-                  <text x="380" y="199" fill="#5c6771" font-size="10.5">slot 9 — send only</text>
+                  <text x="380" y="199" fill="#5c6771" font-size="10.5">slot 9, send only</text>
                 </g>
 
                 <!-- refusal -->
@@ -852,7 +852,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
                   <rect x="286" y="184" width="128" height="22" rx="2" fill="#dee2e7" stroke="#7a848d" stroke-dasharray="3 2"/>
                   <text x="298" y="199" fill="#5c6771" font-size="11" font-weight="600">CAP_NULL</text>
                   <rect x="300" y="232" width="308" height="24" rx="2" fill="#d5e6e0"/>
-                  <text x="310" y="248" fill="#12594a" font-size="11" font-weight="600">SYS_CAP_REVOKE — the subtree, everywhere</text>
+                  <text x="310" y="248" fill="#12594a" font-size="11" font-weight="600">SYS_CAP_REVOKE; the subtree, everywhere</text>
                 </g>
               </g>
             </svg>
@@ -872,7 +872,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
                 When <code>init</code> starts the filesystem server, the kernel gives it a
                 capability naming that server's endpoint, carrying <code>READ</code> and
                 <code>WRITE</code>. Here <strong><code>READ</code> is the right to
-                <em>receive</em></strong> — the right that makes you the server rather than one
+                <em>receive</em></strong>, the right that makes you the server rather than one
                 of its clients.
               </p>
               <p>
@@ -897,7 +897,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <div data-note="3" hidden>
               <h4>The refusal happens before any handler runs</h4>
               <p>
-                Suppose the shell tries to <em>receive</em> on its capability — an attempt to
+                Suppose the shell tries to <em>receive</em> on its capability, an attempt to
                 read other clients' filesystem traffic, or to answer requests as though it were
                 the server. It calls <code>sys_ipc_recv(9)</code>.
               </p>
@@ -914,7 +914,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <p>
                 When <code>init</code> revokes its capability, the kernel nulls it <em>and
                 everything transitively minted from it</em>, sweeping every task's capability
-                space. The shell's slot 9 becomes <code>CAP_NULL</code> — it was not asked, and
+                space. The shell's slot 9 becomes <code>CAP_NULL</code>; it was not asked, and
                 it cannot decline.
               </p>
               <p>
@@ -932,7 +932,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <p class="note">
           This part of the system changed because an audit found it wanting. Until 2026-07-27,
           IPC endpoints were addressed by a raw integer, so any program could intercept or forge
-          messages to any server — the diagram above described the design, not the code. That
+          messages to any server; the diagram above described the design, not the code. That
           finding (<strong>C-1</strong>) is fixed, and the conformance suite that missed it was
           rebuilt and then <em>run against the vulnerable kernel</em> to prove it now detects the
           bug.
@@ -946,21 +946,21 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
     <div class="spine">
       <div class="rail">
         <span class="rail__tag">One choke point</span>
-        <p>Where the rule is enforced — the whole of it, in about twenty lines.</p>
+        <p>Where the rule is enforced; the whole of it, in about twenty lines.</p>
       </div>
       <div>
         <h2>Every syscall is authorised in the same place, before its handler runs.</h2>
         <div class="prose">
           <p>
             A security model is only worth as much as the code that enforces it. In Horus the
-            enforcement is not spread across handlers — each syscall <em>declares</em> the
+            enforcement is not spread across handlers; each syscall <em>declares</em> the
             capability it needs in a dispatch table, and one gate checks it before the handler
             exists as far as the caller is concerned.
           </p>
           <p>
             The ABI defines <strong>109 syscall numbers</strong>. The dispatch table is sized to
             the highest of them plus one, and a default build installs <strong>91
-            handlers</strong> — the remainder are reserved, or are test-only calls compiled out
+            handlers</strong>, the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
             surface exists rather than merely declining to document it.
@@ -1007,12 +1007,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <text x="390" y="204" fill="#99330f" font-weight="600">SYS_ERR_PERM</text>
               <text x="590" y="192" fill="#5c6771" font-size="10.5">no capability, wrong</text>
               <text x="590" y="206" fill="#5c6771" font-size="10.5">rights, or wrong object</text>
-              <text x="590" y="220" fill="#5c6771" font-size="10.5">type — one exit for all</text>
+              <text x="590" y="220" fill="#5c6771" font-size="10.5">type: one exit for all</text>
 
               <path d="M139 228 V258" stroke="#12594a" stroke-width="1.6"/><path d="M139 258 l-4.5 -9 h9 z" fill="#12594a"/>
 
               <rect x="24" y="258" width="230" height="34" rx="3" fill="#d5e6e0" stroke="#12594a" stroke-width="1.3"/>
-              <text x="42" y="280" fill="#12594a" font-weight="600">d-&gt;fn(r) — the handler runs</text>
+              <text x="42" y="280" fill="#12594a" font-weight="600">d-&gt;fn(r); the handler runs</text>
               <text x="278" y="280" fill="#5c6771" font-size="10.5">handlers no longer repeat the check</text>
             </g>
           </svg>
@@ -1020,7 +1020,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <figcaption>
             The gate as implemented in <code>syscall_handler()</code>. A compile-time assertion
             ties the table's size to the highest syscall number plus one, so a new syscall number
-            cannot be added without a table entry — the build fails instead of the kernel
+            cannot be added without a table entry; the build fails instead of the kernel
             silently accepting an unauthorised call.
           </figcaption>
         </figure>
@@ -1029,7 +1029,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <div class="prose">
           <p>
             The gate settles what a caller is <em>allowed</em> to do. It says nothing about who
-            the caller is — and a filesystem needs to know that, because POSIX permissions are
+            the caller is, and a filesystem needs to know that, because POSIX permissions are
             defined in terms of a user. Letting the client supply its own user ID would hand
             every program the authority the permissions exist to withhold.
           </p>
@@ -1038,7 +1038,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <code>SYS_IPC_SENDER</code> returns the user ID the <em>kernel</em> recorded for the
             sender of a message, established only by a successful login and unforgeable by the
             sender. <code>fs_server</code> authorises every file operation against that value
-            rather than against anything in the request — which is why the filesystem can enforce
+            rather than against anything in the request, which is why the filesystem can enforce
             rwx correctly while being an ordinary unprivileged program with no way to check
             identity itself.
           </p>
@@ -1060,8 +1060,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The kernel supplies address spaces, threads, capabilities, message passing, and an
             encrypted block store whose keys it never releases. Everything a user would
-            recognise as "the operating system" — file names, directories, permissions, terminal
-            behaviour, which program to load and how — lives outside it, in ordinary programs
+            recognise as "the operating system", file names, directories, permissions, terminal
+            behaviour, which program to load and how, lives outside it, in ordinary programs
             reached over message passing.
           </p>
         </div>
@@ -1075,14 +1075,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
               <!-- ring 3 -->
               <rect x="16" y="34" width="336" height="278" rx="3" fill="none" stroke="#c3cad1" stroke-width="1.3"/>
-              <text x="16" y="24" fill="#5c6771" font-size="10.5" letter-spacing="1.4">RING 3 — UNPRIVILEGED</text>
+              <text x="16" y="24" fill="#5c6771" font-size="10.5" letter-spacing="1.4">RING 3; UNPRIVILEGED</text>
 
               <rect x="32" y="50" width="304" height="44" rx="2" fill="#f2f4f6" stroke="#d6dbe1"/>
               <text x="48" y="70" fill="#0f1418" font-weight="600">shell · coreutils · tcc · your programs</text>
               <text x="48" y="86" fill="#5c6771" font-size="10.5">outside the trusted boundary by design</text>
 
               <rect x="32" y="104" width="304" height="44" rx="2" fill="#f2f4f6" stroke="#d6dbe1"/>
-              <text x="48" y="124" fill="#0f1418" font-weight="600">init — the delegation root, PID 1</text>
+              <text x="48" y="124" fill="#0f1418" font-weight="600">init; the delegation root, PID 1</text>
               <text x="48" y="140" fill="#5c6771" font-size="10.5">every capability in the system starts here</text>
 
               <rect x="32" y="158" width="146" height="138" rx="2" fill="#f2f4f6" stroke="#12594a" stroke-width="1.4"/>
@@ -1115,7 +1115,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
               <!-- ring 0 -->
               <rect x="424" y="34" width="340" height="278" rx="3" fill="#dee2e7" stroke="#0f1418" stroke-width="1.4"/>
-              <text x="424" y="24" fill="#0f1418" font-size="10.5" letter-spacing="1.4">RING 0 — THE TRUSTED BOUNDARY</text>
+              <text x="424" y="24" fill="#0f1418" font-size="10.5" letter-spacing="1.4">RING 0; THE TRUSTED BOUNDARY</text>
 
               <text x="444" y="70" fill="#0f1418">capability space, per task</text>
               <text x="444" y="94" fill="#0f1418">scheduler · preemption · SMP</text>
@@ -1148,7 +1148,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               Per-task four-level page tables, demand paging, copy-on-write, non-executable
               stacks, kernel W^X swept for violations at boot, unmapped stack guard pages, and
               30-bit address-space randomisation for user programs. <code>fork</code> clones an
-              address space by marking it copy-on-write on <em>both</em> sides — mark only the
+              address space by marking it copy-on-write on <em>both</em> sides, mark only the
               child's and the two tasks are one process sharing one stack.
             </p>
             <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-forkexec · smoke-fpu · smoke-aslr</span>
@@ -1195,7 +1195,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3>A usable userland</h3>
             <p>
               newlib as the C library, a shell with pipelines over bounded in-kernel pipes,
-              eleven ported GNU coreutils, man pages, and the Tiny C Compiler — so you can
+              eleven ported GNU coreutils, man pages, and the Tiny C Compiler, so you can
               compile a program on the machine it runs on.
             </p>
             <span class="witness">smoke-coreutils-shell · smoke-tcc</span>
@@ -1217,7 +1217,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <div class="prose">
           <p>
             The capability model governs a running system. It says nothing about how that system
-            got there — which is a separate problem with a separate answer. Each step below is
+            got there, which is a separate problem with a separate answer. Each step below is
             tested by breaking it deliberately and asserting that the next step refuses.
           </p>
         </div>
@@ -1238,7 +1238,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <p>
                 A SHA-256 manifest of every module is generated at build time and compiled
                 <em>into the kernel image</em>, so it cannot be swapped alongside the payload it
-                describes. A module that fails its hash becomes unreadable — and because
+                describes. A module that fails its hash becomes unreadable, and because
                 installing a program into <code>/bin</code> goes through that same read path, an
                 unverified module can never become a root-owned executable.
               </p>
@@ -1265,7 +1265,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
                 The volume's key-encryption key is sealed to those PCRs under a
                 <code>PolicyPCR</code> session. A measured-good boot unseals it. Change the
                 kernel or any module and the PCRs change, so the TPM will not release the key and
-                the volume stays locked — the tamper is not detected after the fact, it is
+                the volume stays locked; the tamper is not detected after the fact, it is
                 prevented from mattering.
               </p>
               <p class="falsified">
@@ -1289,7 +1289,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
         <p class="note">
           One more link in the chain is worth naming because it is where most projects are
-          weakest. The single network dependency in the build — the newlib tarball — is pinned by
+          weakest. The single network dependency in the build (the newlib tarball) is pinned by
           SHA-256, verified on every invocation rather than only after a fetch, refused
           <em>before</em> unpacking, and quarantined rather than left in place when it fails.
           <code>smoke-newlib-tamper</code> checks both directions, because a gate that refused
@@ -1311,13 +1311,13 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <div class="prose">
           <p>
             An x86-64 Linux host, Debian or Ubuntu; no cross-compiler needed. This is what the
-            boot looks like — abridged for width, and with the microsecond timestamps stripped.
+            boot looks like, abridged for width, and with the microsecond timestamps stripped.
             The real log is readable afterwards with <code>dmesg</code>.
           </p>
         </div>
 
         <div class="term">
-          <div class="term__bar"><span>ttyS0 — make run</span><span>abridged transcript</span></div>
+          <div class="term__bar"><span>ttyS0, make run</span><span>abridged transcript</span></div>
 <pre class="term__body"><span class="d">  Booting `Horus 64-bit Secure Microkernel'</span>
 <span class="g">  [ OK ]</span> boot modules verified against the embedded manifest
 <span class="d">  smp: 4 cores online</span>
@@ -1339,7 +1339,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <p class="cap">
           Log in as <code>root</code> / <code>horus</code>. Then try <code>ls /bin</code>,
           <code>ps</code>, <code>dmesg</code>, <code>man hier</code>, <code>tcc -v</code>, or
-          <code>cat /etc/motd | wc -l</code> — the pipeline runs over a real bounded in-kernel
+          <code>cat /etc/motd | wc -l</code>; the pipeline runs over a real bounded in-kernel
           pipe.
         </p>
 
@@ -1396,54 +1396,54 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><th scope="col" class="t-state">State</th><th scope="col">Subsystem</th><th scope="col">Witness</th></tr>
             </thead>
             <tbody>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability engine</strong> — mint, grant, transitive revoke, lineage generations</th><td class="t-note">safe Rust · Kani</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability-addressed IPC</strong> — every syscall names a capability slot</th><td class="t-note">smoke-captest</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability engine</strong>, mint, grant, transitive revoke, lineage generations</th><td class="t-note">safe Rust · Kani</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability-addressed IPC</strong>, every syscall names a capability slot</th><td class="t-note">smoke-captest</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">One-shot reply capabilities (<code>CAP_REPLY</code>)</th><td class="t-note">smoke-captest</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Endpoints as bounded FIFO queues (4 slots, fixed at compile time)</th><td class="t-note">smoke-fs-conc</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Untyped memory and retyping</strong> — cspaces, endpoints, notifications, memory frames</th><td class="t-note">smoke-captest · smoke-frame</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Untyped memory and retyping</strong>, cspaces, endpoints, notifications, memory frames</th><td class="t-note">smoke-captest · smoke-frame</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Preemptive scheduling, timer-driven, in ring 3</th><td class="t-note">smoke-preempt</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>SMP on by default</strong> — MADT enumeration, AP bringup, TLB-shootdown IPIs</th><td class="t-note">smoke-smp</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>SMP on by default</strong>. MADT enumeration, AP bringup, TLB-shootdown IPIs</th><td class="t-note">smoke-smp</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMT siblings parked; microarchitectural flush between distrusting tasks</th><td class="t-note">smoke-smt · smoke-flush</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> (PID 1) supervising the shell</th><td class="t-note">smoke-session</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code> — single writer, owns UART and framebuffer</th><td class="t-note">smoke-console-smp</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Raw terminal mode — termios and winsize</th><td class="t-note">smoke-term</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Shared library text, private library data</strong> &mdash; a shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. Its <em>writable</em> segment is not shared at all: each task gets a private copy, carved from the library&rsquo;s initial image and endowed read+write and never exec. The library&rsquo;s load address is drawn afresh on every boot rather than compiled in, and a task learns it only by presenting a capability over the library&rsquo;s own text &mdash; so the address of shared code is not something an attacker reads off the binary, nor something any task can simply ask for. The security argument matters more than the size one &mdash; sharing a libc&rsquo;s text is an optimisation, but sharing its data means one task reading and writing another&rsquo;s <code>errno</code>, stdio buffers and malloc arena, which is worse than the per-program static copies it replaces. The shared libc now builds, is gated, and a ring-3 task calls newlib out of it &mdash; 36 pages, 34 of shared text and 2 of per-task data, with the library&rsquo;s own reentrancy state resolving inside each task&rsquo;s private copy &mdash; and a program now links against it &mdash; ordinary C calling <code>printf</code> by name, carrying no libc of its own, 106,392 bytes static against 13,088 shared, and it is not a dynamic linker: there is no symbol resolution, and a program&rsquo;s direct reference to a libc <em>data</em> symbol cannot be redirected without a GOT</th><td class="t-note">smoke-shlib</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Device capabilities</strong> — a <code>CAP_IO_DEVICE</code> names one device in a boot-time table (a PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device&rsquo;s frames, port ranges and interrupt lines; until 2026-08-28 the capability&rsquo;s object was never read, so holding the type was holding the console. DMA is confined by VT-d since 2026-08-28 &mdash; each device gets an address space that starts empty. An interrupt reaches its ring-3 driver either as an <strong>MSI on a vector the kernel chose</strong> &mdash; an MSI&rsquo;s data word <em>is</em> the vector, so the driver is given nowhere to name one &mdash; or through the I/O APIC, masked until acknowledged so an unserviced device cannot livelock the machine. A device&rsquo;s <strong>MSI-X vector table is unmappable by its driver</strong> &mdash; it lives in a BAR rather than in configuration space, so the vector-choice question had to be answered a second time and in a different way. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk</th><td class="t-note">smoke-devcap</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>DMA confinement (VT-d)</strong> &mdash; every device has an address space of its own and <em>every one starts empty</em>, so a device reaches exactly the frames its driver mapped and faults on everything else. Not an identity map: that would have been easier and would have made the mechanism decorative. Each device gets its own domain, so a mapping made for one is unreachable by another</th><td class="t-note">smoke-net</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A network driver in ring 3</strong> &mdash; <code>netd</code> brings up an Intel e1000 holding one device capability and one untyped region, and completes a full DMA round trip: the device reads its descriptor ring, reads the packet buffer, and writes completion status back &mdash; every address of which its driver had to map. It drives e1000 rather than virtio deliberately, because a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all. It receives on the 82574L (5 boots in 5, which is what <code>smoke-net</code> gates on) and has been seen to receive exactly once on the 82540EM, so reception is a property of the device model here rather than of the driver. Nothing above Ethernet exists: no ARP table, no IP, no TCP, no socket capabilities</th><td class="t-note">smoke-net</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code>, single writer, owns UART and framebuffer</th><td class="t-note">smoke-console-smp</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Raw terminal mode, termios and winsize</th><td class="t-note">smoke-term</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Shared library text, private library data</strong>, a shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. Its <em>writable</em> segment is not shared at all: each task gets a private copy, carved from the library&rsquo;s initial image and endowed read+write and never exec. The library&rsquo;s load address is drawn afresh on every boot rather than compiled in, and a task learns it only by presenting a capability over the library&rsquo;s own text, so the address of shared code is not something an attacker reads off the binary, nor something any task can simply ask for. The security argument matters more than the size one, sharing a libc&rsquo;s text is an optimisation, but sharing its data means one task reading and writing another&rsquo;s <code>errno</code>, stdio buffers and malloc arena, which is worse than the per-program static copies it replaces. The shared libc now builds, is gated, and a ring-3 task calls newlib out of it, 36 pages, 34 of shared text and 2 of per-task data, with the library&rsquo;s own reentrancy state resolving inside each task&rsquo;s private copy, and a program now links against it, ordinary C calling <code>printf</code> by name, carrying no libc of its own, 106,392 bytes static against 13,088 shared, and it is not a dynamic linker: there is no symbol resolution, and a program&rsquo;s direct reference to a libc <em>data</em> symbol cannot be redirected without a GOT</th><td class="t-note">smoke-shlib</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Device capabilities</strong>, a <code>CAP_IO_DEVICE</code> names one device in a boot-time table (a PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device&rsquo;s frames, port ranges and interrupt lines; until 2026-08-28 the capability&rsquo;s object was never read, so holding the type was holding the console. DMA is confined by VT-d since 2026-08-28; each device gets an address space that starts empty. An interrupt reaches its ring-3 driver either as an <strong>MSI on a vector the kernel chose</strong>, an MSI&rsquo;s data word <em>is</em> the vector, so the driver is given nowhere to name one, or through the I/O APIC, masked until acknowledged so an unserviced device cannot livelock the machine. A device&rsquo;s <strong>MSI-X vector table is unmappable by its driver</strong>, it lives in a BAR rather than in configuration space, so the vector-choice question had to be answered a second time and in a different way. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk</th><td class="t-note">smoke-devcap</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>DMA confinement (VT-d)</strong>, every device has an address space of its own and <em>every one starts empty</em>, so a device reaches exactly the frames its driver mapped and faults on everything else. Not an identity map: that would have been easier and would have made the mechanism decorative. Each device gets its own domain, so a mapping made for one is unreachable by another</th><td class="t-note">smoke-net</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A network driver in ring 3</strong>, <code>netd</code> brings up an Intel e1000 holding one device capability and one untyped region, and completes a full DMA round trip: the device reads its descriptor ring, reads the packet buffer, and writes completion status back, every address of which its driver had to map. It drives e1000 rather than virtio deliberately, because a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all. It receives on the 82574L (5 boots in 5, which is what <code>smoke-net</code> gates on) and has been seen to receive exactly once on the 82540EM, so reception is a property of the device model here rather than of the driver. Nothing above Ethernet exists: no ARP table, no IP, no TCP, no socket capabilities</th><td class="t-note">smoke-net</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>fs_server</code> over an AEAD-encrypted object store</th><td class="t-note">smoke-fs</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">POSIX rwx against a kernel-attested uid, never a client-supplied one</th><td class="t-note">smoke-fs-perms</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong> — TPM 2.0 PCR 8/9, disk KEK sealed under <code>PolicyPCR</code></th><td class="t-note">smoke-tpm-seal</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong>. TPM 2.0 PCR 8/9, disk KEK sealed under <code>PolicyPCR</code></th><td class="t-note">smoke-tpm-seal</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot-module SHA-256 manifest embedded in the kernel image</th><td class="t-note">smoke-modules-tamper</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">ELF parsing and relocation in memory-safe Rust, under W^X, randomised base</th><td class="t-note">smoke-elf · smoke-elf64</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP/SMAP in CR4, kernel W^X swept, CSPRNG-reseeded stack canary, <code>CR4.TSD</code></th><td class="t-note">smoke-cpu · smoke-wx · smoke-stackguard</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The CSPRNG refuses to emit keystream before it is seeded — a draw from an unseeded pool halts the kernel rather than returning a stream derived from a published constant</th><td class="t-note">smoke-rng-seed</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Per-task VFS namespace — the shell and the libc resolve every path through one walker, over the capabilities each task already holds</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Four syscalls with no caller anywhere in the tree retired — including one that created a task on the capability every task already holds</th><td class="t-note">smoke-passwd-probe</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Kani proofs of the capability algebra that <em>gate</em> — mint, grant, lookup and revocation, over the whole input space, on every pull request</th><td class="t-note">kani-bounded</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The capability graph is observable — <code>capview</code> prints every task's slots, under a capability that observes and cannot be widened to write</th><td class="t-note">smoke-session · smoke-captest</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The security core is interpreted for undefined behaviour on every pull request — aliasing and pointer provenance across the whole C&nbsp;FFI boundary</th><td class="t-note">miri</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Monotonic clock — deliberately coarse (one timer tick), so a syscall does not hand back the cycle-accurate timer <code>CR4.TSD</code> denies; no per-task timers yet</th><td class="t-note">smoke-captest</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The CSPRNG refuses to emit keystream before it is seeded, a draw from an unseeded pool halts the kernel rather than returning a stream derived from a published constant</th><td class="t-note">smoke-rng-seed</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Per-task VFS namespace; the shell and the libc resolve every path through one walker, over the capabilities each task already holds</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Four syscalls with no caller anywhere in the tree retired, including one that created a task on the capability every task already holds</th><td class="t-note">smoke-passwd-probe</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Kani proofs of the capability algebra that <em>gate</em>, mint, grant, lookup and revocation, over the whole input space, on every pull request</th><td class="t-note">kani-bounded</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The capability graph is observable; <code>capview</code> prints every task's slots, under a capability that observes and cannot be widened to write</th><td class="t-note">smoke-session · smoke-captest</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The security core is interpreted for undefined behaviour on every pull request, aliasing and pointer provenance across the whole C&nbsp;FFI boundary</th><td class="t-note">miri</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Monotonic clock, deliberately coarse (one timer tick), so a syscall does not hand back the cycle-accurate timer <code>CR4.TSD</code> denies; no per-task timers yet</th><td class="t-note">smoke-captest</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">newlib libc, shell pipelines over in-kernel pipes, eleven coreutils, TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Programs and man pages loaded from the filesystem as boot modules</th><td class="t-note">smoke-modules</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Forward-secure audit log — history before a compromise cannot be rewritten</th><td class="t-note">cargo test</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Reproducible builds</strong> — <code>kernel.elf</code> byte-for-byte deterministic; the ISO is not, and the reason is grub's, not ours</th><td class="t-note">required CI check</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Forward-secure audit log, history before a compromise cannot be rewritten</th><td class="t-note">cargo test</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Reproducible builds</strong>, <code>kernel.elf</code> byte-for-byte deterministic; the ISO is not, and the reason is grub's, not ours</th><td class="t-note">required CI check</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot interrupt policy recorded and gated at five named milestones</th><td class="t-note">smoke-irq-policy</td></tr>
 
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">IPC receive — bounded queues, one-shot reply capabilities, and a receive that sleeps on an empty queue rather than polling it</th><td class="t-note">smoke-recvblock</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle — retyped objects are destroyed; well-known service objects and <code>tasks[]</code> are still static</th><td class="t-note">roadmap 0.3</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Crash-atomic filesystem — write-ahead journal, mount-time fsck, and ATA <code>FLUSH CACHE</code> barriers bracketing the commit record</th><td class="t-note">smoke-fs-wal-flush · smoke-fs-wal-order</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Copy-on-write — zero-page and generic breaks both tested; the only producer is the demand pager, and nothing breaks COW over a shared frame yet</th><td class="t-note">smoke-cow · smoke-nzcow</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Process control — spawn, exec, kill, wait, signals with mask and altstack; no <code>fork</code>, no job control</th><td class="t-note">smoke-proc</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling — a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">IPC receive, bounded queues, one-shot reply capabilities, and a receive that sleeps on an empty queue rather than polling it</th><td class="t-note">smoke-recvblock</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle, retyped objects are destroyed; well-known service objects and <code>tasks[]</code> are still static</th><td class="t-note">roadmap 0.3</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Crash-atomic filesystem, write-ahead journal, mount-time fsck, and ATA <code>FLUSH CACHE</code> barriers bracketing the commit record</th><td class="t-note">smoke-fs-wal-flush · smoke-fs-wal-order</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Copy-on-write, zero-page and generic breaks both tested; the only producer is the demand pager, and nothing breaks COW over a shared frame yet</th><td class="t-note">smoke-cow · smoke-nzcow</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Process control, spawn, exec, kill, wait, signals with mask and altstack; no <code>fork</code>, no job control</th><td class="t-note">smoke-proc</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling, a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong> — frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; copy-on-write over a kernel object is refused by design</th><td class="t-note">smoke-frame</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong> — <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child inherits its parent's capabilities as <em>derived</em> copies, so revoking one still sweeps the child's; <code>exec</code> then replaces the image and touches no capability, so <code>fork(); exec();</code> cannot turn delegated authority into a root of its own; there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock — no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong> — a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc — every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Networking — no drivers, no stack, no sockets</th><td class="t-note">roadmap 2.6</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, USB, sound, graphics beyond VGA text, interrupt remapping</th><td class="t-note">—</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong>, frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; copy-on-write over a kernel object is refused by design</th><td class="t-note">smoke-frame</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong>, <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child inherits its parent's capabilities as <em>derived</em> copies, so revoking one still sweeps the child's; <code>exec</code> then replaces the image and touches no capability, so <code>fork(); exec();</code> cannot turn delegated authority into a root of its own; there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
+              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock: no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
+              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong>, a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
+              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc, every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
+              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Networking: no drivers, no stack, no sockets</th><td class="t-note">roadmap 2.6</td></tr>
+              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, USB, sound, graphics beyond VGA text, interrupt remapping</th><td class="t-note">; </td></tr>
             </tbody>
           </table>
         </div>
@@ -1451,7 +1451,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <p class="note">
           Hard compile-time ceilings still apply: 64 tasks, 256 capability slots per task, a
           256-byte message, a 16 MiB volume. <code>tasks[]</code> is the significant table still
-          in <code>.bss</code> — a task control block is reachable from the scheduler's hot path
+          in <code>.bss</code>, a task control block is reachable from the scheduler's hot path
           and from every trap frame, so moving it to untyped memory is its own piece of work.
         </p>
       </div>
@@ -1463,7 +1463,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
     <div class="spine">
       <div class="rail">
         <span class="rail__tag">Method</span>
-        <p>How the claims above are established — and the several times this project got it wrong.</p>
+        <p>How the claims above are established, and the several times this project got it wrong.</p>
       </div>
       <div>
         <h2>A test that cannot fail on the bug it targets is not evidence.</h2>
@@ -1480,7 +1480,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The defect is deliberately reintroduced and the suite must go red. This is not
             ceremony. The first draft of the capability conformance suite asserted
-            <code>&lt; 0</code> rather than an exact error code — and <em>passed with the
+            <code>&lt; 0</code> rather than an exact error code, and <em>passed with the
             vulnerable IPC handler restored</em>, because <code>sys_ipc_recv</code> returns
             <code>-2</code> for an empty mailbox, so a negative return could not distinguish "the
             kernel refused me" from "I was allowed to read and there was nothing there". The
@@ -1491,7 +1491,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             passed by a kernel whose <code>SYS_RETYPE</code> denied everything unconditionally,
             so the untyped-memory checks also assert that a held capability really does produce
             usable, mutually distinct objects. One check was <strong>renamed</strong> after
-            falsification showed it did not test what its name claimed — a green check whose name
+            falsification showed it did not test what its name claimed, a green check whose name
             overstates it is worse than no check, because it is a claim nobody will re-derive.
           </p>
 
@@ -1501,12 +1501,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             security property in <code>SECURITY.md</code> is now checked by CI against the tree:
             a property whose witness names nothing runnable fails the build, and so does a
             witness naming a target that does not exist, a target no workflow runs, or a
-            defect-reproducing flag that would go unstamped at boot. The table is the registry —
+            defect-reproducing flag that would go unstamped at boot. The table is the registry; 
             there is deliberately no second copy of these claims to drift from the first.
           </p>
           <p>
-            It was written because of what it found. One property — <em>a task cannot read
-            another's XMM register file</em> — had carried an em-dash where its witness should
+            It was written because of what it found. One property; <em>a task cannot read
+            another's XMM register file</em>, had carried an em-dash where its witness should
             be, against code that was real and ran on every ring transition. No earlier sweep
             caught it: they looked for gates that were <strong>missing</strong> or
             <strong>vacuous</strong>, and this one was neither. It was present, correct, and
@@ -1519,7 +1519,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             as one passing run. The reason is specific: under QEMU's TCG each guest CPU is a host
             thread, so on an idle many-core workstation the scheduling windows never open and a
             <em>failing</em> kernel scored 10 out of 10 green. The bug only appears where guest
-            CPUs outnumber host cores — which is exactly what a CI runner is. The stress
+            CPUs outnumber host cores, which is exactly what a CI runner is. The stress
             harnesses build once and boot the same ISO many times with QEMU pinned to a small set
             of host CPUs.
           </p>
@@ -1536,7 +1536,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <code>smoke-console-smp</code> failed about a third of the time for months and was
             treated as noise; it was correctly reporting an intermittent <strong>kernel
             deadlock</strong>. Later, a scheduler invariant checker accused a correct kernel of a
-            capability leak and blocked a roadmap item for a fortnight — the checker's model of
+            capability leak and blocked a roadmap item for a fortnight; the checker's model of
             "what this CPU is running" was the thing that was wrong. <strong>A checker reporting
             a violation is making a claim about the code, and it can be the one at
             fault.</strong>
@@ -1545,7 +1545,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
         <div class="tablewrap" style="margin-top:2rem">
           <table class="table--method">
-            <caption>Measured, not asserted — figures exactly as recorded in the repository.</caption>
+            <caption>Measured, not asserted, figures exactly as recorded in the repository.</caption>
             <thead>
               <tr><th scope="col">Change</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">How it was measured</th></tr>
             </thead>
@@ -1597,8 +1597,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               Fixed 2026-08-22, and worth reading as a pattern rather than a bug. Every task in
               Horus is born holding a capability in slot 3 that names a fixed memory window and
-              authorises nothing. Four ways into the kernel's internal filesystem &mdash;
-              including the file the user database is written to &mdash; checked for
+              authorises nothing. Four ways into the kernel's internal filesystem; 
+              including the file the user database is written to, checked for
               <em>a capability in slot 3, of any type</em>. Every task passed. A gate everyone
               passes is not a gate.
             </p>
@@ -1634,7 +1634,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">C-6</span>Which tests gate a merge is reconciled by hand</h3>
             <p>
               Until 2026-08-15, <strong>not one of the 22 required status checks was a security
-              gate</strong> — including <code>smoke-captest</code>, the capability conformance
+              gate</strong>, including <code>smoke-captest</code>, the capability conformance
               suite that is the named witness for eight of the security properties on this page.
               That is exactly how the 2026-07 critical finding survived every automated gate.
               Promoting it helped; it did not fix the mechanism that produced the omission.
@@ -1642,7 +1642,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               The required list lived only in a branch ruleset that no commit touches, so every
               job added to the workflow landed in the advisory set <em>by default</em> and
-              nothing asked whether it should have. It cost a security gate twice — once for
+              nothing asked whether it should have. It cost a security gate twice, once for
               <code>smoke-captest</code>, and again on 2026-08-16 when the two journal
               durability gates landed advisory in the very commit that fixed the defect they
               witness.
@@ -1650,7 +1650,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               Since 2026-08-16 the decision is checked in. Every job in all three workflows must
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
-              the build if any is in neither — there is no default, because defaulting was the
+              the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
               intended set is 102 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
@@ -1662,7 +1662,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               one line that tells GitHub to report it green whatever its steps did; the change
               that promoted it edited the decision file and the ruleset and never opened the
               workflow, and a later change rewrote that job's <em>name</em> one line above to
-              delete the word ADVISORY — and left the line. It was not idle: the job failed twice
+              delete the word ADVISORY, and left the line. It was not idle: the job failed twice
               on the main branch inside runs reported green, and the daily ruleset audit could not
               see it, because that audit compares the <em>names</em> of checks and a masked job
               publishes the right name with the wrong verdict. Since 2026-08-22 the classifier
@@ -1673,13 +1673,13 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               The ruleset was synced toward that set on 2026-08-16, from <strong>22 required
               checks</strong>, so every security test named above blocks a merge. The first
               attempt required three checks the main branch could not yet produce, which blocks
-              every pull request on a check that never reports — promotion has to lag the job
+              every pull request on a check that never reports, promotion has to lag the job
               landing by one merge, and a tool now enforces that.
             </p>
             <p>
               <strong>It is not closed yet, but the last gap now has a mechanism.</strong>
               Reading a ruleset needs the <code>Administration</code> permission, which is not
-              among the scopes a workflow token can be granted at all — so CI proved the
+              among the scopes a workflow token can be granted at all, so CI proved the
               classification was complete, never that the ruleset matched it, and the two could
               diverge through a single change in the web UI with nothing noticing. A scheduled
               job now re-checks that daily, authenticating as a GitHub App scoped to this one
@@ -1689,22 +1689,22 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               administration access to cause. <strong>That app went live on 2026-08-19</strong>:
               the scheduled run that morning read the ruleset and reported it matching, where the
               run a day earlier had failed on the missing credentials. It failed loudly rather
-              than skipping for every day it was unconfigured — an audit that quietly skips when
-              unconfigured is a check that cannot fail — which is why the day it started working
+              than skipping for every day it was unconfigured, an audit that quietly skips when
+              unconfigured is a check that cannot fail, which is why the day it started working
               is visible at all.
             </p>
             <p>
               <strong>What is left of this finding is the other half.</strong> Writing the
               required list back needs an administrator's credentials, so it stays a human step:
               a change that adds a gating job leaves the list one entry behind until someone
-              runs the sync afterwards. The daily audit does not remove that lag — it makes it
+              runs the sync afterwards. The daily audit does not remove that lag; it makes it
               visible the next morning instead of indefinitely.
             </p>
             <p>
               <strong>The same class of drift, in the documents themselves, is now gated too.</strong>
               An audit on 2026-08-19 found nine stale numbers across five files in one morning,
               while two other files carried them correctly. The house rule to re-derive every
-              number had been written down the whole time — a rule only a reader enforces fails
+              number had been written down the whole time, a rule only a reader enforces fails
               silently. Each derivable count and every place stating it is now declared in one
               file, computed from the source, and compared on every merge. Reword a sentence so
               a declared claim vanishes and that fails too, because a check deleted along with
@@ -1712,7 +1712,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-8</span>Two CPUs on one kernel stack — closed, both paths</h3>
+            <h3><span class="id">G-8</span>Two CPUs on one kernel stack, closed, both paths</h3>
             <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-08-two-cpus-one-kernel-stack.md">Read the full investigation &rarr;</a></p>
             <p>
               <strong>Closed 2026-08-17.</strong> For eight days the SMP session soak failed at
@@ -1722,13 +1722,13 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               interrupt-handler frames on that task's kernel stack</em>. A CPU that took the task
               inside that window resumed it to ring 3, and its very next trap re-entered the
               interrupt handler on the same stack, at the same depth, running the same functions
-              — rewriting exactly the words the first CPU had not finished reading.
+             , rewriting exactly the words the first CPU had not finished reading.
             </p>
             <p>
               The exactness is why it hid. Two CPUs running the same code at the same depth put
               the <em>same</em> return addresses and the <em>same</em> stack canary back into
               their own slots, so every frame validates and every return goes where it should.
-              Only the data differs — and the first datum out is the resume stack pointer the
+              Only the data differs, and the first datum out is the resume stack pointer the
               interrupt epilogue is about to load. That accounts for the whole recorded
               signature: a plausible word from the wrong context, a canary that passed, and a
               scheduler invariant that read perfectly consistent.
@@ -1738,7 +1738,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               worth publishing.</strong> The project had recorded that the shared-stack
               hypothesis had "nothing observed supporting it", because the one capture taken at
               the right moment showed the task claimed by exactly the CPU running it. A
-              deliberately reproduced collision prints that same consistent line — because it is
+              deliberately reproduced collision prints that same consistent line, because it is
               true. The task really is running on one CPU. The other one is merely still
               leaving, and no amount of that instrument would ever have said so.
             </p>
@@ -1747,7 +1747,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               the interrupt epilogue's first instruction on the new one. The property is checked
               on every interrupt rather than argued for, and it is
               <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">S20</a> in
-              the property table. Two gates settle it in seconds instead of at one boot in 150 —
+              the property table. Two gates settle it in seconds instead of at one boot in 150; 
               a widened-window build with the fix, which must complete a session, and the same
               widened window with the old release site, which must reproduce the collision. The
               soak job gates a merge again.
@@ -1755,7 +1755,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               <strong>The second path, closed the same day.</strong> When a task died and nothing
               else was runnable, the fault path resumed that CPU on <em>task 0's</em> kernel stack
-              — and every CPU taking that path landed on the same one. This was first written up
+             , and every CPU taking that path landed on the same one. This was first written up
               here as a lead with no witness. It has one now, and the interesting part is how it
               was nearly missed: on a healthy session the path is <strong>never entered</strong>,
               0 parks in 3 boots, which reads as "unreachable". On a workload that kills tasks on
@@ -1765,7 +1765,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               Closing it turned up something else. The per-CPU idle stacks the kernel parks on had
-              <strong>no guard page</strong> — so the claim that every kernel stack sits above an
+              <strong>no guard page</strong>, so the claim that every kernel stack sits above an
               unmapped guard was false, and had been false independently of this finding, because
               the scheduler has always parked idle CPUs there. They are guarded now, using each
               slot's first page so the stack top does not move and the boot trampoline needs no
@@ -1774,11 +1774,11 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-9</span>A scheduler claim that leaked — closed, and the last component was the checker</h3>
+            <h3><span class="id">G-9</span>A scheduler claim that leaked, closed, and the last component was the checker</h3>
             <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-09-scheduler-claim-leak.md">Read the full investigation &rarr;</a></p>
             <p>
               <strong>The last component was not a scheduler bug at all.</strong> The checker that
-              watches for a leaked claim exempts one while the CPU holding it is mid-handover — and
+              watches for a leaked claim exempts one while the CPU holding it is mid-handover, and
               it tracked that exemption in a variable the release path cleared <em>before</em> it
               took the lock that actually drops the claim. For the width of a lock acquisition the
               claim was held, unexempt, and already being released. A core auditing in that window
@@ -1790,7 +1790,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               The natural event appeared on about one boot in twenty-two, with enough variance that
               two hundred boots could not tell four percent from six. So the window was widened
               deliberately and set in <em>both</em> arms: with the fix, ten boots of ten are silent;
-              without it, eight of ten accuse. That pair is the evidence — the clean two hundred
+              without it, eight of ten accuse. That pair is the evidence; the clean two hundred
               boots that followed only bound the rate, they do not prove a zero.
             </p>
             <p>
@@ -1803,8 +1803,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               <strong>Wider than first recorded, 21 August 2026.</strong> That 40% was measured
               against a spawn-and-reap stress workload, and the finding was written as though
-              that workload were the whole of it. It is not: the same leak — a claim left behind
-              by a core that then went idle — turned up in the <em>ordinary boot</em>, with no
+              that workload were the whole of it. It is not: the same leak, a claim left behind
+              by a core that then went idle, turned up in the <em>ordinary boot</em>, with no
               test workload at all, at about one boot in 120. The mechanism is unchanged and the
               rate is far lower, but the blast radius is the normal path rather than a stress
               driver. Its gate stays merge-blocking: a red run there is a reproduction worth
@@ -1817,7 +1817,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               and it was read on the way out of <em>every system call on every CPU</em>, with
               nothing checking that the exec belonged to the CPU reading it. A core that had
               nothing to do with the exec would take the note, claim that task, install its
-              address space and resume the trap frame the exec had just fabricated — while the
+              address space and resume the trap frame the exec had just fabricated, while the
               core that actually ran the exec was still executing on that very frame. One race,
               and it accounts for all three recorded symptoms: a leaked claim, a task running
               with no claim, and two CPUs on one kernel stack.
@@ -1830,8 +1830,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               <strong>This is a narrowing, not a close, and the difference is the point.</strong>
-              The workload still fails 2 boots in 30 — a claim leaked before any exec runs, and a
-              bogus stack pointer handed back by the dispatcher — so the finding stays
+              The workload still fails 2 boots in 30, a claim leaked before any exec runs, and a
+              bogus stack pointer handed back by the dispatcher, so the finding stays
               open and the gate whose red flag started all this stays advisory rather than being
               promoted back on a partial fix. Three earlier explanations for this defect were
               published-in-progress and were all wrong; each looked right when read and was killed
@@ -1844,11 +1844,11 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">G-10</span>The spawn path was written for one core</h3>
             <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-10-spawn-path-uaf.md">Read the full investigation &rarr;</a></p>
             <p>
-              <strong>Found 2026-08-17, closed 2026-08-18</strong> — while narrowing the finding
+              <strong>Found 2026-08-17, closed 2026-08-18</strong>, while narrowing the finding
               above.
-              Everything spawning or exec'ing a program needs while it is in flight — the buffer
+              Everything spawning or exec'ing a program needs while it is in flight; the buffer
               the executable is staged in, the argument vector, the standard-I/O wiring, the
-              identity of the spawning task — was a single process-wide variable, and nothing
+              identity of the spawning task, was a single process-wide variable, and nothing
               serialised two CPUs through any of it. The exec note above was one instance of that
               pattern; the rest are dealt with below.
             </p>
@@ -1856,7 +1856,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               The correctness consequence was visible already: an address space could become
               reachable before its kernel half had been built, which is what a supervisor
               write-fault in the interrupt-acknowledge path looks like. The consequence that
-              mattered more was about authority — the spawning task's identity was written at the
+              mattered more was about authority; the spawning task's identity was written at the
               start of a spawn and read much later, so a child's standard I/O could be wired from
               <em>the wrong parent's</em> capability space. That is authority inherited from a
               task that never spawned it, which is precisely what this kernel exists to make
@@ -1865,7 +1865,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               <strong>The sharpest of those singletons is now fixed, and it was a memory-safety
               hole rather than a tidiness problem.</strong> When a task slot was reused, the
-              kernel reclaimed the previous occupant's page tables — justified by a comment
+              kernel reclaimed the previous occupant's page tables, justified by a comment
               reasoning that the caller was on the kernel's own address space, so nobody could
               be walking the tree. That is true of the core doing the reclaim and false of the
               others: a CPU parked in the idle loop never reloads its address-space register, and
@@ -1877,7 +1877,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               The freed frames went straight back to the pool and were handed out as ordinary
               pages to other tasks, while the first core carried on reading and writing through
               tables that had come to describe somebody else's memory. That is a
-              cross-address-space read/write primitive reachable from an unprivileged program —
+              cross-address-space read/write primitive reachable from an unprivileged program; 
               no capability required, only the ability to get itself killed at the right moment.
               It surfaced as a supervisor write fault on the interrupt-acknowledge register,
               which lives in each task's own low mapping and vanished when its entry was
@@ -1898,22 +1898,22 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               standard-I/O request are arguments passed down the call chain now, not globals read
               back later, so a child inheriting standard I/O from the wrong parent's capability
               space stops being unlikely and becomes unsayable. The staging buffer and argument
-              vector keep one copy — a copy per core is real memory for state that belongs to a
-              spawn, not to a core — and every window from arming an image to consuming it is held
+              vector keep one copy, a copy per core is real memory for state that belongs to a
+              spawn, not to a core, and every window from arming an image to consuming it is held
               under one lock instead.
             </p>
             <p>
               <strong>And the honest part: the race this closes cannot be reached by anything
               this system can currently boot.</strong> Rather than quote a rate that does not
-              exist, the window was instrumented — every entry, and every arrival that finds
-              another core already inside — and then deliberately held open for millions of
+              exist, the window was instrumented, every entry, and every arrival that finds
+              another core already inside, and then deliberately held open for millions of
               cycles. Across 16 boots at four cores, the window was entered 214 times and
               <strong>never once</strong> by two cores at the same time. The reason is structural:
               every task that spawns anything today is the init process or one of its children,
               so the busiest spawner cannot be running while init is mid-spawn. Two concurrent
               spawners is a property of the operating system this is becoming, not of the one it
               is. So no test claims a rate here, and the arm that removes the lock is kept for the
-              day a workload has two live spawners — a control arm that cannot fail is not
+              day a workload has two live spawners, a control arm that cannot fail is not
               evidence.
             </p>
             <p>
@@ -1925,7 +1925,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">G-11</span>The armed program image belonged to nobody</h3>
             <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-11-armed-image-ownership.md">Read the full investigation &rarr;</a></p>
             <p>
-              <strong>Found and closed 2026-08-18</strong>, while serialising the window above —
+              <strong>Found and closed 2026-08-18</strong>, while serialising the window above; 
               and it is the more serious of the two. A program image is staged in one shared
               buffer, and nothing recorded which task had staged it. One system call turns that
               from an oddity into a privilege boundary: <code>sudo</code> re-authenticates the
@@ -1936,18 +1936,18 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               So one task arms its own program; a second task types its own correct password; and
               the second task's successful <code>sudo</code> launches the <em>first</em> task's
               program with root's identity and capabilities. Neither party fails a permission
-              check. The authority comes from the pairing — the classic confused deputy, and the
+              check. The authority comes from the pairing; the classic confused deputy, and the
               same shape as this kernel's oldest defect: authority a caller is trusted for
               <em>having</em> rather than for holding a capability to.
             </p>
             <p>
               Arming an image now records the task that armed it, and consuming one refuses any
-              other — fail closed, including for an image with no recorded owner, so forgetting to
+              other, fail closed, including for an image with no recorded owner, so forgetting to
               record one breaks the spawn instead of quietly restoring the old behaviour. The
               refusal is audited rather than logged as a failure: a correct password about to
               elevate somebody else's program is the event worth keeping. The witness asserts both
-              directions in a single boot — a forged foreign owner must be refused, and the task's
-              own image must still spawn — because a check that refuses everything is not a check.
+              directions in a single boot, a forged foreign owner must be refused, and the task's
+              own image must still spawn, because a check that refuses everything is not a check.
               Removing the check on demand spawns the foreign image on every boot, 3 in 3.
             </p>
           </li>
@@ -1956,7 +1956,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
               <strong>65 of 91</strong> system calls have their handler actually executed by the
-              three workloads this project tracks — a scripted end-to-end session, the
+              three workloads this project tracks, a scripted end-to-end session, the
               permission conformance suite, and the boot-modules session. The other 26 are each
               listed with a written reason.
             </p>
@@ -1966,12 +1966,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <em>refusal</em> suite by design: it checks that a program without permission is
               turned away, and a refusal is decided before the call's body ever runs. So two
               calls could be named by the suite, counted as tested, and have their implementation
-              never once execute — which is precisely what happened, and why a fault reproducible
+              never once execute, which is precisely what happened, and why a fault reproducible
               for every fixed variable in the system survived a hundred passing checks.
             </p>
             <p>
               The build can now record the first time each call's body is entered and say so on
-              the wire, and a checked-in file classifies all 76 — covered, or not covered with a
+              the wire, and a checked-in file classifies all 76, covered, or not covered with a
               reason. The check fails if a call is in neither list, if a covered one stops being
               exercised, if an uncovered one starts being exercised and its reason has gone
               stale, or if the recording produced nothing at all. That last case is the one that
@@ -1980,7 +1980,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               It deliberately does not demand all 76. That would be a large amount of
               test-writing wearing the costume of a guarantee. What it demands is that the number
-              be decided rather than drifting, and that every gap be written down — the same
+              be decided rather than drifting, and that every gap be written down; the same
               bargain this project already makes with which tests are allowed to block a merge.
               Two of the gaps are cheap: a family of calls is untested only because the scripted
               session never runs a command pipeline, which is a gap in the script rather than in
@@ -1991,8 +1991,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">#176</span>The kernel was handed an address nobody asked for</h3>
             <p>
               <strong>Found and closed 2026-08-20</strong>, while writing the witness for the
-              finding below. Two system calls — reading the kernel log, and fetching the audit
-              digest — took the address of the caller's buffer and threw away its upper half
+              finding below. Two system calls, reading the kernel log, and fetching the audit
+              digest, took the address of the caller's buffer and threw away its upper half
               before handing it to the kernel. The registers that carry it are twice that wide,
               so nothing required the loss; it was a stray cast. The kernel then did exactly what
               it was told, with an address the program had never named.
@@ -2000,7 +2000,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               It survived because of <em>where</em> things live. Programs are loaded at a random
               address far above the four-gigabyte line, so every fixed variable in every program
-              was affected, always — while a temporary on the call stack sits low enough to be
+              was affected, always, while a temporary on the call stack sits low enough to be
               untouched, and every caller in the system happened to use one. The two conformance
               checks that name these calls both test that a program <em>without</em> permission
               is refused, and a refusal is decided before the address is ever looked at. So a
@@ -2009,7 +2009,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               It was also not safe-by-default, which is the part worth being plain about. The
-              symptom that exposed it — a refusal — is what happens when nothing occupies the
+              symptom that exposed it (a refusal) is what happens when nothing occupies the
               truncated address. When something does, and the low addresses are occupied by the
               stack and the heap, the kernel writes its data into a page of the program's memory
               that the program never nominated. It stays inside that one program and reaches no
@@ -2019,20 +2019,20 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The repair is one cast in each call. The part that matters is the check that now
-              refuses to build the system if any such call narrows an address again — decided by
+              refuses to build the system if any such call narrows an address again, decided by
               reading the source, so it covers every one of them, including calls nothing uses
               yet, rather than only those some test happens to exercise. The obvious way to
               defeat a per-call check is to weaken the shared helper they all use, so that is
               checked separately. And the test that first hit this now deliberately uses a fixed
               variable rather than a temporary, with an explicit assertion that it really does
-              sit above the line — so the day it stops testing this, it fails instead of quietly
+              sit above the line, so the day it stops testing this, it fails instead of quietly
               passing.
             </p>
             <p>
               The first diagnosis was wrong, and the correction is on the public issue. The
               kernel appeared to disagree with the processor about the program's memory map;
               measurement showed the two agreed exactly, and the kernel was faithfully consulting
-              a different address. The observations were right and the conclusion was not — it
+              a different address. The observations were right and the conclusion was not; it
               pointed at the memory-management code for a defect that lived in a header.
             </p>
           </li>
@@ -2044,7 +2044,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               runs <code>dmesg</code> only if it holds the capability for it. Writing to that same
               log required nothing whatsoever. Every ordinary write to standard output was appended
               to the log on its way to the terminal, so any program at all could put lines into
-              <code>dmesg</code> that a reader cannot tell apart from the kernel's own — and could
+              <code>dmesg</code> that a reader cannot tell apart from the kernel's own, and could
               push 16 KiB of noise through to evict every real line, since the log is a fixed ring
               that overwrites its oldest entries.
             </p>
@@ -2057,7 +2057,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The two destinations are now gated differently, which is the distinction the old code
-              never drew. The bytes still reach the terminal with no permission asked — writing to
+              never drew. The bytes still reach the terminal with no permission asked, writing to
               your own screen is not an authority this system rations. They reach the kernel's log
               only if the program holds the log capability <em>with the write right</em>. The gate
               asks the capability graph and nothing else; asking the user id here would have
@@ -2073,20 +2073,20 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The witness is a program that is <em>given</em> the log capability and still refused.
-              It holds the read right — so it can read the ring back and check its own work — and
+              It holds the read right (so it can read the ring back and check its own work) and
               is denied the direction it was not given, which is a stronger claim than a program
               holding nothing being denied everything. It pushes 28800 bytes through standard
               output, more than the ring holds, and requires both that none of it appears in the
               log and that a marker placed there beforehand survives. Both are checked before
               either is reported, so removing the gate on demand reproduces both failures at once,
-              3 boots in 3 — a fix that only rate-limited would keep the marker and still forge.
+              3 boots in 3, a fix that only rate-limited would keep the marker and still forge.
             </p>
           </li>
           <li>
             <h3><span class="id">1.3</span>Priority inheritance is inexpressible</h3>
             <p>
               Endpoints are bounded FIFO queues, reply capabilities are one-shot, and
-              <code>SYS_IPC_RECV_BLOCK</code> sleeps on an empty queue — a server with no work is
+              <code>SYS_IPC_RECV_BLOCK</code> sleeps on an empty queue, a server with no work is
               off the run queue rather than spinning. What is still missing is priority
               inheritance: the kernel records that a task is waiting on an endpoint, which is the
               prerequisite, but nothing propagates priority along that edge, and there are no task
@@ -2097,8 +2097,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">iso</span>The ISO does not rebuild to the same bytes</h3>
             <p>
               <strong>Found 2026-08-19</strong>, by fixing the step that had been hiding it. The
-              kernel image is byte-for-byte reproducible and gated on every merge. The ISO — the
-              thing anyone would actually download — is not, and the cause is not this project's
+              kernel image is byte-for-byte reproducible and gated on every merge. The ISO; the
+              thing anyone would actually download, is not, and the cause is not this project's
               code: <code>grub-mkrescue</code> stamps a marker named for the wall-clock second
               into every image it builds, and embeds that identifier in the three EFI loaders it
               generates. Extract two ISOs of one build and diff them and every file this project
@@ -2107,7 +2107,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               It went unseen because the step that recorded the build's hashes could not fail.
               It hashed two artifacts over a build that made only one, discarded the error naming
-              the missing file, discarded the exit status, and announced success — so the record
+              the missing file, discarded the exit status, and announced success, so the record
               had always held a single line and the ISO had never been compared to anything. That
               step now refuses an incomplete build and writes nothing when it refuses, with the
               old behaviour kept as a switch that must reproduce the failure on demand.
@@ -2133,16 +2133,16 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">misc</span>Smaller sharp edges, all tracked</h3>
             <p>
               User copies clamp and return success rather than refusing (C-4). The heap syscalls
-              do 32-bit arithmetic on 64-bit bounds — latent until the user address space widens
+              do 32-bit arithmetic on 64-bit bounds, latent until the user address space widens
               past 4 GiB (I-2). The revocation closure was bounded at 256 entries and
               over-approximated on overflow, which an unprivileged task could force as a
-              denial-of-service against a peer's independent capability to the same object — it
+              denial-of-service against a peer's independent capability to the same object; it
               marks in place and iterates to a fixpoint since 2026-08-16, so it is exact at any
               subtree size (I-3).
               There are no tagged releases, no signed artifacts and no SLSA provenance, so a third
               party cannot verify that a <code>boot.iso</code> came from this repository's CI
               (I-9). A frame spans at most 64 pages, which is the untyped arena's bound rather
-              than the design's — that arena is 4 MiB in total and shared with every other kernel
+              than the design's; that arena is 4 MiB in total and shared with every other kernel
               object, so a frame able to span it would be a denial-of-service against every other
               object class dressed up as a feature. Formal verification is
               narrow: Kani covers revocation, and the TLA+ specifications are committed but not
@@ -2156,8 +2156,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             Horus boots, runs an unprivileged <code>init</code> that supervises an unprivileged
             shell, and enforces capability-based access control end to end, including across the
-            IPC namespace. The infrastructure around it — reproducible builds, measured boot,
-            adversarial CI, formal proofs — is substantially more mature than the kernel it
+            IPC namespace. The infrastructure around it, reproducible builds, measured boot,
+            adversarial CI, formal proofs, is substantially more mature than the kernel it
             verifies.
           </p>
           <p>
@@ -2180,7 +2180,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <h2>A feature built on an unenforced foundation adds surface without adding capability.</h2>
         <div class="prose">
           <p>
-            <strong>Track 0 — making the object model true — is complete.</strong> IPC is
+            <strong>Track 0: making the object model true, is complete.</strong> IPC is
             capability-addressed, ambient <code>uid == 0</code> authority is retired, and creating
             a kernel object is now an exercise of authority the capability graph describes.
           </p>
@@ -2192,16 +2192,16 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </p>
           <p>
             <strong>Track 2 grows the operating system on top of that:</strong> frame capabilities
-            and shared memory, a monotonic clock and timers, a real process and session model —
-            <code>fork</code> and the capability space a child inherits are in — a VFS with
+            and shared memory, a monotonic clock and timers, a real process and session model; 
+            <code>fork</code> and the capability space a child inherits are in, a VFS with
             several filesystems, dynamic linking, and a network stack as an unprivileged server
-            holding one network card&rsquo;s capability &mdash; a sentence that only became sayable
+            holding one network card&rsquo;s capability, a sentence that only became sayable
             on 2026-08-28, when a device capability started naming a device instead of conferring
             the console.
           </p>
           <p>
             The single highest-leverage change is not technical. It is finding a second reviewer
-            for the capability paths — automated verification has already been pushed about as far
+            for the capability paths, automated verification has already been pushed about as far
             as it goes without one.
           </p>
         </div>
@@ -2242,7 +2242,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 /* The walkthrough stepper. The SVG's visible layers are selected purely by the
    wrapper's data-step attribute in CSS, so this only has to move that attribute,
    swap the caption, and keep aria-current honest. With JS disabled the page
-   still shows step 1 and reads correctly — the diagram degrades to a diagram. */
+   still shows step 1 and reads correctly; the diagram degrades to a diagram. */
 (function () {
   var walk = document.getElementById('walk');
   if (!walk) return;

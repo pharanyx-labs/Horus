@@ -43,9 +43,9 @@ counts:
     derive: all_jobs
     occurrences:
       - file: TESTS.md
-        pattern: 'below — \*\*(\d+)\*\* jobs'
+        pattern: 'below: \*\*(\d+)\*\* jobs'
       - file: docs/LIMITATIONS.md
-        pattern: 'one more — \*\*(\d+)\*\* across the three'
+        pattern: 'one more: \*\*(\d+)\*\* across the three'
       - file: docs/ROADMAP.md
         pattern: '\((\d+) jobs, \d+ contexts'
 
@@ -132,7 +132,7 @@ counts:
       - file: TESTS.md
         pattern: 'currently \*\*empty\*\*: all (\d+) properties'
       - file: docs/ROADMAP.md
-        pattern: '\*\*empty\*\* — all (\d+) properties name a witness'
+        pattern: '\*\*empty\*\*[,:] all (\d+) properties name a witness'
   - id: gates
     describe: base gates — smoke-* targets that are not control arms
     derive: gates
@@ -151,7 +151,7 @@ counts:
     derive: syscalls_covered
     occurrences:
       - file: SECURITY.md
-        pattern: 'Currently \*\*(\d+) of \d+\*\* — the property'
+        pattern: 'Currently \*\*(\d+) of \d+\*\*: the property'
       - file: TESTS.md
         pattern: 'Currently \*\*(\d+) of \d+\*\* implemented syscalls'
       - file: docs/LIMITATIONS.md
@@ -191,7 +191,7 @@ counts:
       - file: SECURITY.md
         pattern: 'classifies all (\d+) implemented syscalls'
       - file: SECURITY.md
-        pattern: 'Currently \*\*\d+ of (\d+)\*\* — the property'
+        pattern: 'Currently \*\*\d+ of (\d+)\*\*: the property'
       - file: TESTS.md
         pattern: 'Currently \*\*\d+ of (\d+)\*\* implemented syscalls'
       - file: docs/LIMITATIONS.md
@@ -340,7 +340,11 @@ forbidden:
       imprecise: DMA is bounded by nothing only once BUS MASTERING is enabled,
       which is itself a capability-gated act since S44. The distinction is the
       whole point of SYS_DEVICE_ENABLE -- who may turn it on, and for what.
-  - pattern: 'Device delegation — `console_server` only'
+  # The separator is a character class since 2026-08-30: the house style removed
+  # em dashes, so a reintroduction of this claim would be written with a comma or
+  # a colon and a pattern anchored on the dash would never fire. A ratchet that
+  # can only catch the OLD punctuation of a retired claim is not a ratchet.
+  - pattern: 'Device delegation\s*[—,;:]\s*`console_server` only'
     reason: >-
       docs/SYSCALLS.md's heading until 2026-08-28. The device syscalls are not
       console_server's: they take a cspace slot naming any CAP_IO_DEVICE, and a
@@ -378,7 +382,7 @@ forbidden:
       2026-08-28. Two documents disagreeing with each other and both with the
       tree is what an underived count does once the test it describes grows.
       Derived now (`framepeer_checks`).
-  - pattern: 'There is\s+no `fork` — the only COW producer is the demand pager'
+  - pattern: 'There is\s+no `fork`\s*[—,;:]\s*the only COW producer is the demand pager'
     reason: >-
       docs/LIMITATIONS.md 2.4 said this for a day after SYS_FORK landed (#220), and
       2.4 is the section a reader consults to find out whether COW has a second
@@ -524,7 +528,7 @@ forbidden:
       The repository layout table advertised tests/ as dead weight. Either it is
       wired to a target or it does not belong in the table. Corrected 2026-08-21.
 
-  - pattern: 'This table is the complete list — if you'
+  - pattern: 'This table is the complete list\s*[—,;:]\s*if you'
     reason: >-
       docs/BUILDING.md asserted its defect-flag table was complete while three
       DEFECT_FLAGS members had no row (RESUME_RSP_INJECT, RESUME_RSP_INJECT_PRECLAIM,

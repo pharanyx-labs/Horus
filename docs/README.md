@@ -9,51 +9,50 @@ Technical documentation for the Horus microkernel. Start with the
 
 **Understanding the system**
 
-1. **[ARCHITECTURE.md](ARCHITECTURE.md)** — How Horus is built and why. Boot and memory
+1. **[ARCHITECTURE.md](ARCHITECTURE.md)**. How Horus is built and why. Boot and memory
    layout, the C/Rust split, capabilities, paging, scheduling, SMP, IPC, the syscall layer,
    userspace servers, storage, trusted boot, side-channel posture, and the known
    architectural gaps.
 
-2. **[SYSCALLS.md](SYSCALLS.md)** — The complete syscall ABI: calling convention, the
+2. **[SYSCALLS.md](SYSCALLS.md)**. The complete syscall ABI: calling convention, the
    capability-checked dispatch table, every syscall with its authorisation requirement, and
    how to add one.
 
-3. **[../SECURITY.md](../SECURITY.md)** — The threat model, the adversaries considered and
+3. **[../SECURITY.md](../SECURITY.md)**. The threat model, the adversaries considered and
    excluded, the security properties Horus claims with the witness for each, and the
    vulnerability reporting process.
 
 **Evaluating the system**
 
-4. **[LIMITATIONS.md](LIMITATIONS.md)** — What does not work, what is not enforced, and where
+4. **[LIMITATIONS.md](LIMITATIONS.md)**. What does not work, what is not enforced, and where
    the documentation used to overstate the case. This is the authoritative status of every
    finding. Read it before drawing any conclusion about Horus's readiness.
 
-5. **[AUDIT.md](AUDIT.md)** — The current security audit (2026-08-30). Its predecessors are
+5. **[AUDIT.md](AUDIT.md)**. The current security audit (2026-08-30). Its predecessors are
    **[history/AUDIT-2026-07.md](history/AUDIT-2026-07.md)**, the 2026-07-27 audit, which itself
    carries the July 2026 one as its Appendix A.
 
 **Working on the system**
 
-6. **[BUILDING.md](BUILDING.md)** — Toolchain, build targets, configuration flags, running
+6. **[BUILDING.md](BUILDING.md)**. Toolchain, build targets, configuration flags, running
    under QEMU and on hardware, reproducible builds, boot modules, troubleshooting. Its
    defect-flag table is the index of the control arms, and CI checks that it is complete.
 
-7. **[../TESTS.md](../TESTS.md)** — The test catalogue and what each test proves.
+7. **[../TESTS.md](../TESTS.md)**. The test catalogue and what each test proves.
 
-8. **[../CONTRIBUTING.md](../CONTRIBUTING.md)** — Workflow, code style, and the
+8. **[../CONTRIBUTING.md](../CONTRIBUTING.md)**. Workflow, code style, and the
    invariant-preservation rule for security-critical paths.
 
-9. **[ROADMAP.md](ROADMAP.md)** — The prioritised plan toward a complete operating system,
+9. **[ROADMAP.md](ROADMAP.md)**. The prioritised plan toward a complete operating system,
    ordered by assurance value.
 
 ---
 
 ## Investigations
 
-The forensic record of the harder findings — how each was narrowed, which hypotheses were
-wrong, and how the rate was measured. Kept in full because in a security project the
-reasoning is the evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md),
-not here.
+The forensic record of the harder findings, how each was narrowed, which hypotheses were wrong,
+and how the rate was measured. Kept in full because in a security project the reasoning is the
+evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md), not here.
 
 | Investigation | Status |
 |---|---|
@@ -74,7 +73,7 @@ not here.
 | [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log: 117 narrative entries, newest first |
 | [`../CHANGES.md`](../CHANGES.md) | The changelog |
 
-The TLA+ specifications are **not yet model-checked in CI** — see roadmap item 3.5.
+The TLA+ specifications are **not yet model-checked in CI**, see roadmap item 3.5.
 
 ---
 
@@ -82,7 +81,7 @@ The TLA+ specifications are **not yet model-checked in CI** — see roadmap item
 
 These documents are rewritten rather than patched when they drift from the code. The previous
 set claimed IPC was "capability-gated" when the kernel did not in fact bind endpoints to
-capabilities — precisely the kind of overstatement that makes documentation dangerous in a
+capabilities, precisely the kind of overstatement that makes documentation dangerous in a
 security project.
 
 Three classes of claim are now checked rather than promised, because each had already gone

@@ -461,6 +461,77 @@ is still a thing a person has to remember to ask.
 
 ---
 
+### 1.10 A gate is classified as a control arm by its NAME, and four are misnamed
+
+*Found 2026-08-30 by audit.*
+
+`tools/check_gate_pairs.py` decides whether a `smoke-*` target is a control arm by testing
+whether the string `control` appears in its name. Four falsification arms are named otherwise
+and are therefore counted as **base gates**:
+
+```
+smoke-kfault-legacy          smoke-resume-guard-nofloor
+smoke-resume-guard-legacy    smoke-resume-guard-preclaim
+```
+
+Both figures this produces are **published and gated by `doc-claims`** — 69 control arms and 97
+base gates as of 2026-08-30 — so a documented count rests on a string match. The true split is
+73 and 93. Nothing is unprotected as a result: every one of the four is invoked by CI and
+asserts its marker exactly as a `-control` arm would. What is wrong is the count and the tally
+of base gates lacking an arm, which reads as 59 and is really 55.
+
+**The obvious fix does not work, and that is the interesting part.** Classifying by what a
+target *builds* — does its recipe set a member of `DEFECT_FLAGS`? — finds 87 rather than 69, and
+over-counts for a reason the flag list itself explains: `DEFECT_FLAGS` holds instruments and
+policy opt-ins as well as defects. `KSTACK_RACE_WIDEN`, `RNG_UNSEEDED_PROBE`, `SYSCALL_COVERAGE`
+and `KSTACK0_PARK_TRACE` are each described in `CLAUDE.md` as *"not a defect"*, and two of them
+are deliberately set in **both** arms, which is what makes those pairs a measurement.
+`smoke-heap64` and `smoke-rng-seed` are base gates that boot a defect-exposing configuration on
+purpose. So a build-based classifier trades a heuristic that is wrong about four targets for one
+that is wrong about eighteen.
+
+**What would actually fix it** is to stop inferring: name each arm and its base gate explicitly,
+the way `.github/ci-gating.yml` names every job rather than guessing from the workflow. That is a
+manifest and a migration, not a checker edit, and it is recorded here rather than done in the
+same pass that found it — the judgement about which flags are defects already exists in prose in
+`CLAUDE.md`'s table and belongs to the maintainer, not to a regex.
+
+
+### 1.11 The `enforced by` column of the property table is parsed and discarded
+
+*Found 2026-08-30 by audit.*
+
+`tools/check_invariants.py` reads each row of `SECURITY.md`'s table as
+`(statement, enforced_by, witness)` and binds only the third:
+
+```python
+_stmt, _enf, wit = sec[sid]
+```
+
+`_enf` is never used again. So the middle column — the one that says *which code makes this
+true* — can name a function that does not exist, or one that no longer does what the row claims,
+and all six rules still pass. The witness half is checked thoroughly; the mechanism half is
+prose.
+
+The other direction is unchecked too: **21 of the 56 S-numbers appear nowhere in `src/`,
+`rust/`, `userspace/`, `include/`, `tools/` or the `Makefile`**, so the code enforcing them
+carries no note that it does. 35 do, which makes it a convention that is followed about three
+times in five.
+
+**Not all 21 are the same, and the difference is what stops this being a single fix.** S17
+(reproducible builds), S22 (documented numbers match the tree), S31 (Kani proofs), S33 (Miri),
+S54 (`unsafe` states its obligations) are properties *of the build and the tooling*; there is no
+kernel site for them to be cited from, and requiring one would produce a comment written to
+satisfy a checker. The rest — S3, S4, S6, S7, S8, S10, S13a, S13b, S15, S19, S21, S23, S24, S32,
+S34, S38 — each have a specific enforcing site that simply does not name the property it carries,
+which is the traceability gap: someone editing `rust_cap_revoke_global` cannot see from the code
+that S3 depends on it.
+
+This is a **traceability** gap and not an enforcement one: every one of those properties is
+enforced by code that exists and witnessed by a gate that runs. What is missing is the link back,
+in the direction a person reads when they are about to change something.
+
+
 ## 2. Correctness limitations
 
 ### 2.0 ~~Spinlock interrupt state is global, and the bug is load-bearing~~ — **FIXED 2026-08-11** — **[C-3]**, **[C-3.1]**

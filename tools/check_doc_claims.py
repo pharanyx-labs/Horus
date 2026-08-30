@@ -70,6 +70,7 @@ HISTORICAL = "docs/history/"
 MAKEFILE = "Makefile"
 GATE_PAIRS_YML = ".github/gate-pairs.yml"
 CAPTEST = "userspace/captest.c"
+DEVLOG = "docs/history/DEVLOG-2026.md"
 FRAMETEST = "userspace/frametest.c"
 
 
@@ -167,6 +168,13 @@ def derive():
         "security_properties": _grep_count(
             str(Path(__file__).resolve().parent.parent / "SECURITY.md"),
             r"^\|\s*S\d+[a-z]?\s*\|"),
+        # DEVLOG entries. Declared 2026-08-30: CHANGES.md's header cited 117
+        # against a file holding 116, and nothing compared them. That header
+        # calls the log "evidence, not commentary", which is exactly why its
+        # size should not be a number somebody typed once. Entries are `### `
+        # headings -- the file has no `## ` level at all, so anchoring on `###`
+        # is anchoring on the entry, not on a nesting depth that might change.
+        "devlog_entries": _grep_count(DEVLOG, r"^### "),
         "captest_checks": _grep_count(CAPTEST, r"\s*check\("),
         # frametest's parent-side checks. Declared 2026-08-27 because this exact
         # number had already gone stale: TESTS.md said 17 while the wire said 31.

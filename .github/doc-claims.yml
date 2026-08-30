@@ -133,6 +133,14 @@ counts:
         pattern: 'currently \*\*empty\*\*: all (\d+) properties'
       - file: docs/ROADMAP.md
         pattern: '\*\*empty\*\*[,:] all (\d+) properties name a witness'
+  - id: devlog_entries
+    describe: dated entries in docs/history/DEVLOG-2026.md
+    derive: devlog_entries
+    occurrences:
+      - file: CHANGES.md
+        pattern: '(\d+) entries recording what was'
+      - file: docs/history/DEVLOG-2026.md
+        pattern: 'how Horus was built: (\d+) entries'
   - id: gates
     describe: base gates — smoke-* targets that are not control arms
     derive: gates

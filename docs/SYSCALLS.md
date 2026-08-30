@@ -94,6 +94,7 @@ no userspace wrapper anywhere in this tree. A bare numeric index is now refused 
 | 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights; withdraws the **whole run** |
 | 99 | `SYS_MAP_REGION` | `first_slot`, `count`, `vaddr`, `rights` | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
 | 100 | `SYS_FRAME_PAGES` | `frame_slot` | `CAP_FRAME` at `frame_slot`, any rights |
+| 109 | `SYS_UNTYPED_SPLIT` | `src_slot`, `dest_slot`, `bytes` | `CAP_UNTYPED` + WRITE at `src_slot`. Carves `bytes` off that region and mints a **derived** `CAP_UNTYPED` over the sub-region into `dest_slot`. The parent's watermark advances past the carve, so a split **spends** budget rather than creating it (**S58**), and it is what makes **S57**'s "a task given a small region can spawn a bounded number of times" mintable — granting a `CAP_UNTYPED` names the *same* region and shares the whole budget |
 | 101 | `SYS_FORK` |, | `CAP_UNTYPED` at `CAPSLOT_UNTYPED` (`CAP_RIGHT_WRITE`) — the same authority `SYS_SPAWN` requires, because both create a task and a task's cspace is carved from it (**S57**) |
 
 Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and

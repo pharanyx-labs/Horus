@@ -165,6 +165,18 @@ static uint64_t kobj_size(uint32_t kobj_type, uint32_t pages) {
          * size that is checked in only one of two paths is checked in neither. */
         case KOBJ_FRAME:        return (pages == 0 || pages > MAX_FRAME_PAGES)
                                            ? 0 : (uint64_t)pages * PAGE_SIZE;
+        /* The whole task table, allocated once at boot by tasks_init(). Not
+         * reachable from SYS_RETYPE -- the type is above KOBJ_TYPE_MAX, which is
+         * what untyped_retype bounds against -- so this arm serves kobj_alloc's
+         * kernel-internal caller alone. */
+        case KOBJ_TASKTABLE:    return (uint64_t)MAX_TASKS * sizeof(tcb_t);
+        /* The three per-boot tables that scale with the task count. Sized from
+         * MAX_TASKS for the same reason the table above is: they are allocated
+         * once, before g_max_tasks is derived from what the reserve holds, so the
+         * reserve must be able to satisfy the provisioned maximum. */
+        case KOBJ_REVOKE_SPACES:    return ((uint64_t)MAX_TASKS + 1) * sizeof(cspace_desc_t);
+        case KOBJ_TASK_RUNNING_CPU: return (uint64_t)MAX_TASKS * sizeof(int);
+        case KOBJ_KSTACK_INFLIGHT:  return (uint64_t)((MAX_TASKS + 63) / 64) * sizeof(uint64_t);
         default:                return 0;
     }
 }
@@ -539,7 +551,7 @@ static void mark_reachable(uint8_t *ep_marks, uint8_t *nt_marks, uint8_t *fr_mar
     for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++) nt_marks[i] = 0;
     for (int i = 0; i < MAX_DYN_FRAMES; i++)        fr_marks[i] = 0;
 
-    for (int t = 0; t < MAX_TASKS; t++) {
+    for (int t = 0; t < g_max_tasks; t++) {
         if (tasks[t].state == 0 || !tasks[t].cspace) continue;
         uint32_t sz = tasks[t].cspace_size ? tasks[t].cspace_size : CNODE_SIZE;
         if (sz > CNODE_SIZE) sz = CNODE_SIZE;
@@ -562,7 +574,7 @@ static void destroy_dyn_endpoint(int i) {
      * otherwise wait forever on an object nothing can ever send to. Waking it is
      * the fail-closed choice: it resumes and sees its call did not complete. */
     int w = e->blocked_waiter;
-    if (w > 0 && w < MAX_TASKS && tasks[w].state != 0) {
+    if (w > 0 && w < g_max_tasks && tasks[w].state != 0) {
         tasks[w].state        = TASK_RUNNABLE;
         tasks[w].runnable_ctx = 1;
         tasks[w].blocked_on   = -1;
@@ -580,7 +592,7 @@ static void destroy_dyn_notification(int i) {
     struct notification *n = (struct notification *)dyn_notifs[i].mem;
     if (!n) return;
     int w = n->blocked_waiter;
-    if (w > 0 && w < MAX_TASKS && tasks[w].state != 0) {
+    if (w > 0 && w < g_max_tasks && tasks[w].state != 0) {
         tasks[w].state           = TASK_RUNNABLE;
         tasks[w].runnable_ctx    = 1;
         tasks[w].blocked_on_notif = -1;
@@ -704,7 +716,17 @@ void untyped_init(void) {
      * out of a bounded region that the kernel's own bootstrap does not share. A
      * single region for both would make "userspace exhausted kernel memory" and
      * "the system can no longer create a task" the same event. */
-    uint64_t kernel_half = (uint64_t)MAX_TASKS * align_up((uint64_t)CNODE_SIZE * sizeof(capability_t), KOBJ_ALIGN);
+    /* UNTYPED_KERNEL_BYTES, not a second copy of the arithmetic.
+     *
+     * This line recomputed the reserve from CNODE_SIZE directly, which was
+     * harmless while the macro said the same thing -- and stopped being harmless
+     * the moment the macro grew the TCB table's allowance. The two then described
+     * one quantity differently: the reserve was built 2 MiB and everything that
+     * reasoned about it thought 2.5 MiB, and the boot provisioned 191 tasks where
+     * it should have provisioned 256. That is [H-3]'s shape in the sizing of the
+     * region this file exists to manage, and the only durable fix is that there
+     * is one expression, in the header, that both the size and the checks read. */
+    uint64_t kernel_half = UNTYPED_KERNEL_BYTES;
     /* Round the split to a page so the two regions never share a frame. */
     kernel_half = align_up(kernel_half, PAGE_SIZE);
 
@@ -719,6 +741,47 @@ void untyped_init(void) {
     untypeds[UNTYPED_ROOT].watermark = 0;
     untypeds[UNTYPED_ROOT].objects   = 0;
     untypeds[UNTYPED_ROOT].in_use    = 1;
+}
+
+/* How many tasks the kernel reserve this boot ACTUALLY built can carry.
+ *
+ * This is what makes the task count a property of the machine rather than of the
+ * image. `untyped_init` sizes the reserve from constants today, but the arena it
+ * sits in is pool memory whose extent comes from the E820 map, so a boot on a
+ * small machine gets a smaller reserve and therefore fewer tasks -- and every
+ * bound in the kernel follows, because tasks_init derives g_max_tasks from this.
+ *
+ * The divisor is the per-task cost of the FIXED tables: one cspace, plus the TCB
+ * table's per-task slice, plus the per-task words of the three tables that scale
+ * with the count. Deriving it from the same kobj_size() the allocator uses is
+ * what keeps the two from drifting -- a capacity computed from a second copy of
+ * the arithmetic is a number that is right until somebody edits one of them.
+ *
+ * The BYTES ALREADY SPENT are subtracted, because this is asked after the tables
+ * are carved: the watermark has moved, and answering from the region's total
+ * would promise capacity that is no longer there. */
+int untyped_reserve_task_capacity(void)
+{
+    struct untyped *u = &untypeds[UNTYPED_KERNEL];
+    if (!u->in_use || u->size <= u->watermark) return 0;
+
+    /* ONE CSPACE, and nothing else. The first draft added the per-task slices of
+     * the TCB table, task_running_cpu and the revocation buffer -- and those
+     * bytes are already spent, by the up-front table allocations this function
+     * subtracts through the watermark. Counting them again charged every task
+     * twice and under-reported the capacity by a third. What is still owed per
+     * task, after the tables exist, is the cspace create_task will carve. */
+    uint64_t per_task = align_up(kobj_size(KOBJ_CNODE, 1), KOBJ_ALIGN);
+    if (per_task == 0) return 0;
+
+    uint64_t avail = u->size - u->watermark;
+    uint64_t n = avail / per_task;
+    /* The tables above were already carved for the PROVISIONED maximum, so the
+     * remaining bytes are what is left for cspaces. Cap at MAX_TASKS: the caller
+     * clamps too, and a bound stated in both places is one that cannot be
+     * widened by editing one of them. */
+    if (n > (uint64_t)MAX_TASKS) n = MAX_TASKS;
+    return (int)n;
 }
 
 /* The reserve must actually cover MAX_TASKS cspaces, at the alignment this
@@ -769,6 +832,135 @@ static int untyped_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out)
      * cannot reach the kernel's cspace reserve even if one ever appeared. */
     if (c->object == UNTYPED_KERNEL)  return -1;
     if (out) *out = (uint32_t)c->object;
+    return 0;
+}
+
+/* SPLIT A REGION: carve `bytes` off the caller's untyped and mint a CAP_UNTYPED
+ * naming the sub-region into `dest_slot`.
+ *
+ * ---- WHY THIS EXISTS: IT REPAIRS AN OVERCLAIM -----------------------------
+ *
+ * S57 (2026-08-30) made creating a task cost untyped memory, and stated the
+ * property as "a task endowed with none cannot spawn, and a task given a SMALL
+ * REGION can spawn a bounded number of times". The first half was true and
+ * witnessed. The second half was not implementable: SYS_CAP_GRANT of a
+ * CAP_UNTYPED copies a capability naming the SAME region, so init handing the
+ * shell untyped handed it init's entire budget. There was no way to give a task
+ * a small region, so the sentence described a capability nobody could mint.
+ *
+ * That is the shape this project keeps finding -- a property asserted in prose
+ * that no code makes true -- and it is worse here for having been written by the
+ * commit that introduced the gate. This is the missing half.
+ *
+ * ---- THE BYTES COME OUT OF THE PARENT, WHICH IS THE WHOLE POINT ------------
+ *
+ * The sub-region is taken from the parent's own unallocated tail and the
+ * parent's watermark advances past it, so a split SPENDS budget rather than
+ * creating it. Two tasks holding the parent and the child cannot together carve
+ * more than the parent could alone, and that holds transitively: a child may
+ * split again, and the arithmetic is the same one bump allocator each time.
+ *
+ * The region is NOT returned when the child dies. That is the same monotonic
+ * bump discipline every other allocation here obeys, and for the same reason --
+ * reclaiming bytes while a stale capability might still name them is the
+ * type-confusion this allocator exists to forbid. A split is a permanent
+ * transfer of budget, which is what makes it an honest accounting primitive
+ * rather than a loan.
+ *
+ * ---- THE CAPABILITY IS DERIVED, NOT A NEW ROOT ----------------------------
+ *
+ * Minted through the same derivation SYS_CAP_MINT uses, so the child's
+ * CAP_UNTYPED carries the parent capability's serial as its badge. Revoking the
+ * parent's untyped sweeps the child's with it (S3/S4). A fresh root here would
+ * be finding 3.3's shape: authority that survives the revocation of the
+ * authority it came from.
+ *
+ * Rights are the parent's, INTERSECTED with what a sub-region can mean -- never
+ * widened. A caller holding a READ-only untyped cannot split a WRITE one out of
+ * it.
+ *
+ * `SECURITY.md` **S58**.
+ */
+int untyped_split(uint32_t src_slot, uint32_t dest_slot, uint64_t bytes)
+{
+    if (bytes == 0) return SYS_ERR_INVAL;
+    if (dest_slot >= CNODE_SIZE) return SYS_ERR_INVAL;
+    /* KERNEL_RESERVED_CAPS: the low slots are the kernel's endowment and are not
+     * a caller's to overwrite -- the same floor cap_mint enforces. */
+    if (dest_slot < KERNEL_RESERVED_CAPS) return SYS_ERR_PERM;
+
+    /* WRITE on the source: splitting consumes the region, exactly as retyping
+     * does, so it takes the right that means "may spend this". */
+    uint32_t parent = 0;
+    if (untyped_from_slot(src_slot, CAP_RIGHT_WRITE, &parent) != 0)
+        return SYS_ERR_PERM;
+
+    ut_lock();
+    struct untyped *pu = &untypeds[parent];
+
+    /* Page-align the carve. A region whose base is not page-aligned cannot back
+     * a KOBJ_FRAME, and a sub-region that silently could not hold the one object
+     * class with an alignment requirement would be a capability that means less
+     * than it says. */
+    uint64_t start = align_up(pu->watermark, PAGE_SIZE);
+    uint64_t take  = align_up(bytes, PAGE_SIZE);
+
+    /* Overflow before bounds: `take` is caller-influenced, and start+take must
+     * not wrap past the check that follows it. */
+    if (take < bytes || start + take < start) { ut_unlock(); return SYS_ERR_INVAL; }
+    if (start + take > pu->size)               { ut_unlock(); return SYS_ERR_NOMEM; }
+
+    /* A free descriptor. The table bounds how many regions the kernel can NAME;
+     * the arena bounds how much any authority can SPEND, and only the second is
+     * a security property -- the same split of concerns dyn_ep_alloc_index makes
+     * for endpoints. */
+    int child = -1;
+    for (int i = 0; i < MAX_UNTYPED; i++) {
+        if (!untypeds[i].in_use) { child = i; break; }
+    }
+    if (child < 0) { ut_unlock(); return SYS_ERR_NOMEM; }
+
+    /* Advance the parent FIRST. If anything below fails, the bytes stay spent
+     * rather than being handed out twice -- the safe direction, and the same one
+     * untyped_bump takes. */
+#ifdef UNTYPED_SPLIT_FREE_BYTES
+    /* CONTROL ARM -- never ship. The parent's watermark is NOT advanced, so the
+     * sub-region is handed out while the parent still believes those bytes are
+     * its own to spend. Two capabilities then name overlapping memory, and the
+     * next object either of them carves lands on top of the other's: the
+     * type-confusion this allocator's bump discipline exists to forbid, reached
+     * through the syscall that is supposed to SPEND budget rather than mint it.
+     *
+     * It is also S57's accounting made a lie -- "a task given a small region can
+     * spawn a bounded number of times" holds only if the giving costs something.
+     * See make smoke-captest-split-control. */
+    (void)0;
+#else
+    pu->watermark = start + take;
+#endif
+
+    untypeds[child].base      = pu->base + start;
+    untypeds[child].size      = take;
+    untypeds[child].watermark = 0;
+    untypeds[child].objects   = 0;
+    untypeds[child].in_use    = 1;
+    ut_unlock();
+
+    /* Derive the capability. cap_mint_untyped_child performs the same derivation
+     * SYS_CAP_MINT does -- own serial, parent's serial as badge -- so the child
+     * region's capability is a subtree of the parent's and a revoke sweeps it. */
+    if (cap_mint_untyped_child(src_slot, dest_slot, (uint32_t)child) != 0) {
+        /* The descriptor is released; the BYTES are not returned, because the
+         * watermark never rewinds. A caller that could not receive the capability
+         * has still spent the budget, which is the honest outcome under bump
+         * discipline -- the alternative is a rewind that a concurrent carve
+         * could interleave with. */
+        ut_lock();
+        untypeds[child].in_use = 0;
+        untypeds[child].base = untypeds[child].size = untypeds[child].watermark = 0;
+        ut_unlock();
+        return SYS_ERR_PERM;
+    }
     return 0;
 }
 

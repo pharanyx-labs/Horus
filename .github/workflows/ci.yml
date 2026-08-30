@@ -439,6 +439,14 @@ jobs:
       # satisfying it.
       - name: Control arm — a refused capability operation that halts instead of returning
         run: make smoke-captest-mint-hang-control
+      # S57 claimed "a task given a small region can spawn a bounded number of
+      # times" and nothing could mint a small region: granting a CAP_UNTYPED
+      # named the SAME region, so a delegate shared its grantor's whole budget.
+      # SYS_UNTYPED_SPLIT carves one, and the property that makes it accounting
+      # rather than conjuring is that the PARENT PAYS. This arm stops the
+      # parent's watermark advancing, so the split mints memory instead.
+      - name: Control arm — a split that does not charge the parent
+        run: make smoke-captest-split-control
       # cap_lookup is the function every capability gate in this kernel resolves
       # through, and it used to end in an unconditional fallback to the
       # PRIMORDIAL root cnode -- reached both by a task with no cspace and by one

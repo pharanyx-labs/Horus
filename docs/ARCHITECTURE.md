@@ -1289,7 +1289,7 @@ drops the reference `clone_user_aspace` took on each shared page. An **exec** do
 clone while its parent is still running, and a reference dropped once too often there would put
 a live page of the parent's on the free page stack.
 
-**G-3: Kernel objects are fixed-size `.bss` tables.** *Largely closed* (roadmap 0.3, finding
+**G-3: Kernel objects are fixed-size `.bss` tables.** *Closed 2026-08-30* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are carved
 from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an exercise
 of authority the capability graph describes. The per-task kernel stacks followed on 2026-08-30 —
@@ -1304,10 +1304,13 @@ with none cannot create one, and the five task-creating syscalls no longer autho
 `[C-1]` decoy in cspace slot 3. `SYS_EXEC_NAMED`/`SYS_EXEC_IMAGE` are not untyped-gated: they
 replace the caller's own image, create no task and touch no capability (**S42**).
 
-What remains is **storage**: `tasks[]` is still a fixed array, and a TCB is reachable from the
-scheduler's hot path and from every trap frame. That is a compile-time ceiling (§3.1), not a
-property anything asserts — and the ceiling work established that this table was never what bound
-it. Reclaiming a dead task's cspace needed `cap_lookup`'s NULL-cspace → root-cnode
+**The storage half closed on the same day**, and with it the finding. `tasks[]` is carved from
+the kernel's untyped reserve rather than declared in `.bss` — the last object class outside the
+retyping discipline — and `g_max_tasks` is derived at boot from the reserve that exists, so the
+task count is a property of the machine rather than of the image. What would actually have capped
+that count was not this table at all but the revocation sweep's `cspace_desc_t
+spaces[MAX_TASKS + 1]` **on the kernel stack**: 19% of one at 256 tasks and an overflow at 2048,
+unmeasured until it was looked for. It is allocated now. Reclaiming a dead task's cspace needed `cap_lookup`'s NULL-cspace → root-cnode
 fallback removed first; that closed on 2026-08-30, and it was two defects rather than one — the
 documented cspace-less case, and a slot past the end of the caller's own cspace resolving as
 `root_cnode[slot]`, the same escalation reached by arithmetic. Both were unreachable by

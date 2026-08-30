@@ -430,7 +430,7 @@ static void h_exec(struct interrupt_frame64 *r) {
     }
 
     int new_id = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
+    for (int i = 1; i < g_max_tasks; i++) {
         if (tasks[i].state == 0) {
             new_id = i;
             break;
@@ -476,7 +476,7 @@ static void h_exit(struct interrupt_frame64 *r) {
  * CAP_USER admin authority (slot 6). */
 static int task_kill_authorized(int target) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) return 0;
+    if (cur <= 0 || cur >= g_max_tasks) return 0;
 
     struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
     if (admin && admin->type == CAP_USER) return 1;
@@ -498,7 +498,7 @@ static int task_kill_authorized(int target) {
  * behaves like SYS_EXIT (interrupt_handler64 redirects on the state==0 return). */
 static void h_kill(struct interrupt_frame64 *r) {
     int target = (int)r->rbx;
-    if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
+    if (target <= 0 || target >= g_max_tasks || tasks[target].state == 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL;
         return;
     }
@@ -524,7 +524,7 @@ static void signal_interrupt_wait(int t) {
     struct interrupt_frame64 *f = (struct interrupt_frame64 *)tasks[t].saved_ksp;
     if (!f) return;
     f->rax = (uint64_t)(uint32_t)SYS_ERR_INTR;
-    for (int w = 1; w < MAX_TASKS; w++) {
+    for (int w = 1; w < g_max_tasks; w++) {
         if (tasks[w].waiter == t) { tasks[w].waiter = -1; break; }
     }
     tasks[t].state        = TASK_RUNNABLE;
@@ -543,7 +543,7 @@ static void signal_interrupt_wait(int t) {
 static void h_signal(struct interrupt_frame64 *r) {
     int target      = (int)r->rbx;
     uint32_t signum = r->rcx;
-    if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
+    if (target <= 0 || target >= g_max_tasks || tasks[target].state == 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
     if (signum == 0 || signum > SIG_MAX) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
@@ -576,7 +576,7 @@ static void h_signal(struct interrupt_frame64 *r) {
  * scheduler a null frame. */
 void h_task_resume(struct interrupt_frame64 *r) {
     int target = (int)r->rbx;
-    if (target <= 0 || target >= MAX_TASKS || tasks[target].state == 0) {
+    if (target <= 0 || target >= g_max_tasks || tasks[target].state == 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
     if (!task_kill_authorized(target)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
@@ -593,7 +593,7 @@ void h_task_resume(struct interrupt_frame64 *r) {
 static void h_wait(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     int tid = r->rbx;
-    if (tid < 0 || tid >= MAX_TASKS || tid == cur) { r->rax = (uint32_t)-1; return; }
+    if (tid < 0 || tid >= g_max_tasks || tid == cur) { r->rax = (uint32_t)-1; return; }
     if (tasks[tid].state == TASK_DEAD) {
         /* Already gone: satisfied without blocking — so task_teardown never got
          * to hand us the cause. Take it from the corpse instead. Safe precisely
@@ -615,7 +615,7 @@ static void h_task_info(struct interrupt_frame64 *r) {
     int tid = r->rbx;
     struct task_info *out = (struct task_info*)(addr_t)r->rcx;
 
-    if (tid < 0 || tid >= MAX_TASKS) {
+    if (tid < 0 || tid >= g_max_tasks) {
         r->rax = -1;
         return;
     }
@@ -773,7 +773,7 @@ static void h_cap_enumerate(struct interrupt_frame64 *r) {
     uint32_t slot = (uint32_t)r->rcx;
     struct cap_info *out = (struct cap_info *)(addr_t)r->rdx;
 
-    if (tid < 0 || tid >= MAX_TASKS || slot >= CNODE_SIZE) {
+    if (tid < 0 || tid >= g_max_tasks || slot >= CNODE_SIZE) {
         r->rax = (uint32_t)SYS_ERR_INVAL;
         return;
     }
@@ -913,7 +913,7 @@ static void h_cap_grant(struct interrupt_frame64 *r) {
     uint32_t src_slot  = r->rcx;
     uint32_t dest_slot = r->rdx;
 
-    if (target <= 0 || target >= MAX_TASKS || target == cur || tasks[target].state == 0) {
+    if (target <= 0 || target >= g_max_tasks || target == cur || tasks[target].state == 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
     }
     if (src_slot >= CNODE_SIZE || dest_slot >= CNODE_SIZE) {
@@ -1014,7 +1014,7 @@ static void h_sigaction(struct interrupt_frame64 *r) {
      * below 4 GiB. */
     uint64_t handler = r->rbx;
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     if (handler != 0 && !rust_signal_handler_addr_ok(handler,
                                                      tasks[cur].image_base,
                                                      tasks[cur].image_end)) {
@@ -1039,7 +1039,7 @@ static void h_sigreturn_stub(struct interrupt_frame64 *r) {
  * SIG_KILL can never be blocked. Returns the previous blocked mask. Self-only. */
 static void h_sigmask(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint32_t how  = r->rbx;
     uint32_t mask = r->rcx;
     uint32_t old  = tasks[cur].sig_mask;
@@ -1062,7 +1062,7 @@ static void h_sigmask(struct interrupt_frame64 *r) {
  * (SS_ONSTACK) — all three fail closed. Returns SYS_OK or a negative SYS_ERR_*. */
 static void h_sigaltstack(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     uint64_t sp   = r->rbx;   /* the altstack pointer; a user address, now possibly high */
     uint32_t size = r->rcx;
 
@@ -1204,6 +1204,17 @@ static void h_retype(struct interrupt_frame64 *r) {
  * rcx = user struct untyped_info *. Lets a task see how much of its own kernel
  * memory budget it has spent — a budget it cannot observe is one it cannot
  * manage. Same slot-is-the-gate discipline as SYS_RETYPE. */
+/* SYS_UNTYPED_SPLIT (109). Carve a sub-region off the caller's untyped.
+ *
+ * `bytes` arrives as a 64-bit value in rdx and is used unclamped HERE on
+ * purpose: untyped_split bounds it against the parent region's remaining extent
+ * and refuses an overflow before the bound, so clamping here would only hide
+ * which of the two a caller tripped. The one thing this must not do is truncate
+ * it -- issue #176 was exactly that, in a wrapper. */
+static void h_untyped_split(struct interrupt_frame64 *r) {
+    r->rax = (uint32_t)untyped_split((uint32_t)r->rbx, (uint32_t)r->rcx, r->rdx);
+}
+
 static void h_untyped_info(struct interrupt_frame64 *r) {
     struct untyped_info info;
     int rc = untyped_info((uint32_t)r->rbx, &info);
@@ -1242,7 +1253,7 @@ static void h_irq_policy_info(struct interrupt_frame64 *r) {
  * has completed yields reason == TASK_EXIT_NONE rather than a stale answer. */
 static void h_task_exit_info(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     if (copy_to_user((void *)(addr_t)r->rbx, &tasks[cur].wait_exit_info,
                      sizeof(struct task_exit_info)) != 0) {
         r->rax = (uint32_t)SYS_ERR_FAULT; return;
@@ -1257,7 +1268,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 109
+#define SYSCALL_TABLE_SIZE 110
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1493,6 +1504,10 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * dispatch-table type check could only test the type, and CAP_FRAME is not
      * the authority -- being the library's frame is. */
     [SYS_SHLIB_INFO]              = { h_shlib_info,              SC_NONE, 0, SC_ANYTYPE },
+    /* SC_NONE: the authority is the CAP_UNTYPED the caller NAMES at src_slot,
+     * resolved in untyped_split -- the same reason SYS_RETYPE is SC_NONE. A fixed
+     * dispatch slot would gate on a capability other than the one being spent. */
+    [SYS_UNTYPED_SPLIT]            = { h_untyped_split,           SC_NONE, 0, SC_ANYTYPE },
     /* Pipes: authorization is the pipe-end capability passed as the slot argument,
      * validated in the handler (cap_lookup with the direction's right), so no fixed
      * table slot. SYS_PIPE/STDIO_INFO are self-scoped (own cspace / own tcb). */
@@ -1574,7 +1589,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_SHLIB_INFO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNTYPED_SPLIT + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 
@@ -1619,7 +1634,7 @@ static inline void syscov_note(uint32_t num) { (void)num; }
 #endif
 
 void syscall_handler(struct interrupt_frame64 *r) {
-    if (get_current_task() < MAX_TASKS) {
+    if (get_current_task() < g_max_tasks) {
         tasks[get_current_task()].in_kernel = 1;
     }
 
@@ -1644,7 +1659,7 @@ void syscall_handler(struct interrupt_frame64 *r) {
         d->fn(r);
     }
 
-    if (get_current_task() < MAX_TASKS) {
+    if (get_current_task() < g_max_tasks) {
         tasks[get_current_task()].in_kernel = 0;
     }
 }

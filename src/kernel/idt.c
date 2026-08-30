@@ -197,7 +197,6 @@ extern void isr40(void); extern void isr41(void); extern void isr42(void); exter
 extern void isr44(void); extern void isr45(void); extern void isr46(void); extern void isr47(void);
 extern void isr128(void);
 
-extern tcb_t tasks[MAX_TASKS];
 
 #ifdef SMP
 extern void lapic_eoi(void);                    /* scheduler.c */
@@ -228,7 +227,7 @@ void segfault_park(void);
  * from running; sigreturn clears the on-stack flag. */
 int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
                              uint32_t signum, uint64_t fault_addr) {
-    if (cur <= 0 || cur >= MAX_TASKS) return 0;
+    if (cur <= 0 || cur >= g_max_tasks) return 0;
     if ((frame->cs & 3) == 0)         return 0;   /* ring-0 fault: never */
     if (tasks[cur].in_signal)         return 0;   /* fault inside handler -> kill */
     /* uint64_t: sig_handler is a full user code address, and narrowing it here
@@ -485,7 +484,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
     uint64_t vec2 = (vector == 0x80) ? 0x80 : g[15];
 
     int cur = get_current_task();
-    if ((frame->cs & 3) != 0 && cur > 0 && cur < MAX_TASKS) {
+    if ((frame->cs & 3) != 0 && cur > 0 && cur < g_max_tasks) {
         tasks[cur].eip = frame->rip;
         tasks[cur].esp = frame->rsp;
     }
@@ -554,7 +553,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
         irq_milestone("first-syscall-entry");
 #endif
         int scur = get_current_task();
-        if ((uint32_t)frame->rax == SYS_SIGRETURN && scur > 0 && scur < MAX_TASKS
+        if ((uint32_t)frame->rax == SYS_SIGRETURN && scur > 0 && scur < g_max_tasks
             && tasks[scur].in_signal) {
             /* Handled ahead of the dispatch, not via the syscall table:
              * restoring the pre-signal context replaces the ENTIRE live trap
@@ -595,7 +594,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
         /* SYS_IPC_CALL / SYS_WAIT_NOTIFY / SYS_WAIT: handlers set pending_block
          * only. ipc_block_switch saves the frame first, then publishes the
          * waiter so a cross-CPU wake cannot race a null/stale saved_ksp. */
-        if (ipc_caller > 0 && ipc_caller < MAX_TASKS) {
+        if (ipc_caller > 0 && ipc_caller < g_max_tasks) {
             int st = (int)tasks[ipc_caller].state;
             if (tasks[ipc_caller].pending_block != 0 ||
                 st == TASK_BLOCKED_IPC || st == TASK_BLOCKED_NOTIF ||
@@ -888,7 +887,7 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
         kfault_str("\nPANIC: dispatcher returned a bogus resume rsp=");
         kfault_hex(rsp);
         kfault_str(" task=");          kfault_task(cur);
-        if (cur >= 0 && cur < MAX_TASKS) {
+        if (cur >= 0 && cur < g_max_tasks) {
             kfault_str(" state=");         kfault_dec((int)tasks[cur].state);
             kfault_str(" pending_block="); kfault_dec((int)tasks[cur].pending_block);
         }
@@ -1162,7 +1161,7 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
      * task — its own image, heap and stack — so it is both the correct gate and
      * the value `allowed` needs below. It cannot over-admit the way an address
      * window could: the kernel's .bss is not in any task's user regions. */
-    bool allowed = (cur > 0 && cur < MAX_TASKS) &&
+    bool allowed = (cur > 0 && cur < g_max_tasks) &&
         rust_validate_page_fault(fault_addr, err,
                                  tasks[cur].image_base, tasks[cur].image_end,
                                  tasks[cur].heap_start,

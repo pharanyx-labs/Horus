@@ -152,8 +152,17 @@ extern uint8_t *g_vdisk_backing;                             /* set at boot -> P
 /* One cspace, rounded as untyped.c's allocator will round it (KOBJ_ALIGN, 64).
  * Kept in step with that file by the _Static_assert there, which recomputes the
  * reserve from the same inputs and fails the build if this under-provides. */
+/* Per-TCB allowance for the task table, which tasks_init() carves from the
+ * kernel reserve. A compile-time bound because POOL_RESERVE_PAGES must be one,
+ * and `sizeof(tcb_t)` is not available this early in the header -- so it is
+ * checked instead: a _Static_assert beside the tcb_t definition fails the build
+ * if the real size ever exceeds it. Generous (a tcb_t is ~1.2 KiB today) so an
+ * ordinary field addition does not redden the build, and tight enough that the
+ * assert fires long before the reserve is actually short. */
+#define TCB_BYTES_RESERVED      2048u
 #define UNTYPED_KERNEL_BYTES    ((uint64_t)MAX_TASKS * \
-                                 (((CNODE_SIZE * 32u) + 63u) & ~63u))
+                                 ((((CNODE_SIZE * 32u) + 63u) & ~63u) + \
+                                  TCB_BYTES_RESERVED))
 /* The user half: fixed, and the number every published arena bound refers to. */
 #define UNTYPED_USER_BYTES      (3u * 1024u * 1024u + 512u * 1024u)
 #define UNTYPED_ARENA_BYTES     (UNTYPED_KERNEL_BYTES + UNTYPED_USER_BYTES)
@@ -583,6 +592,21 @@ struct notification *notification_by_index(uint32_t idx);
 #define KOBJ_ENDPOINT           2    /* struct endpoint                          */
 #define KOBJ_NOTIFICATION       3    /* struct notification                      */
 #define KOBJ_FRAME              4    /* one PAGE_SIZE frame, mappable into ring 3 */
+/* The task table: one contiguous block of MAX_TASKS tcb_t (roadmap 0.3, [I-7]).
+ *
+ * ABOVE KOBJ_TYPE_MAX DELIBERATELY, so SYS_RETYPE cannot name it. Every type at
+ * or below that bound is retypable from ring 3; this one is kernel bootstrap
+ * memory, allocated once by tasks_init() before any task exists. A ring-3 caller
+ * asking for it would be asking to conjure a second task table, which has no
+ * meaning -- and `untyped_retype` refuses any type it does not recognise rather
+ * than falling through, so keeping it out of the range IS the refusal. */
+#define KOBJ_TASKTABLE          5
+/* Per-boot kernel tables sized from g_max_tasks, all above KOBJ_TYPE_MAX so
+ * SYS_RETYPE cannot name any of them: the revocation sweep's descriptor buffer,
+ * the scheduler's per-task claim array, and the S20 inflight witness. */
+#define KOBJ_REVOKE_SPACES      6
+#define KOBJ_TASK_RUNNING_CPU   7
+#define KOBJ_KSTACK_INFLIGHT    8
 #define KOBJ_TYPE_MAX           4
 
 /* ---- Frame objects (roadmap 2.1, audit finding F-2.1) ---------------------
@@ -656,7 +680,18 @@ int phys_in_untyped_arena(uint64_t phys);
  * the DESCRIPTORS, not the memory they govern — one descriptor can name an
  * arbitrarily large region. Index 0 is the kernel's own bootstrap region and no
  * capability is ever minted for it. */
-#define MAX_UNTYPED             8
+/* How many untyped REGIONS the kernel can name at once. Two are the boot split
+ * (kernel reserve and user root); the rest are sub-regions SYS_UNTYPED_SPLIT
+ * carves, so this is the ceiling on how finely a budget can be subdivided.
+ *
+ * Raised from 8 on 2026-08-30, when splitting landed: 8 left six splits for the
+ * whole system, which is not enough for the delegation pattern the syscall
+ * exists to support. The array is `struct untyped untypeds[MAX_UNTYPED]`, ~40
+ * bytes each, so 64 costs 2.5 KiB -- and the distinction that makes that
+ * acceptable is the one this file already draws for endpoints and frames: the
+ * TABLE bounds how many regions the kernel can NAME, the ARENA bounds how much
+ * any authority can SPEND, and only the second is a security property. */
+#define MAX_UNTYPED             64
 #define UNTYPED_KERNEL          0    /* kernel bootstrap: per-task cspaces. Unreachable from ring 3. */
 #define UNTYPED_ROOT            1    /* the user-facing region; init holds the primordial cap */
 
@@ -900,6 +935,7 @@ void users_init(void);
 
 #define SYS_MSI_REGISTER      107   /* (dev_slot, notif_slot, badge) -> 0; route the named device's message-signalled interrupt to a notification the caller holds. NOTE: no vector argument -- the kernel allocates it and programs the device, because an MSI's data word IS the vector and a driver that could choose one could raise any interrupt on the machine (S47). */
 #define SYS_SHLIB_INFO        108   /* (frame_slot, struct shlib_info*) -> 0; where the shared library is loaded THIS BOOT. The base is drawn from the ASLR source rather than compiled in, so a program cannot assume it -- and the answer is gated on a CAP_FRAME + READ naming one of the library's own TEXT frames, because the base is the address of code every task executes and telling an uncapable caller would defeat the randomisation. */
+#define SYS_UNTYPED_SPLIT     109   /* (src_slot, dest_slot, bytes) -> 0; carve `bytes` off the CAP_UNTYPED at `src_slot` and mint a CAP_UNTYPED naming the sub-region into `dest_slot` (roadmap 0.3). The bytes come OUT OF THE PARENT -- its watermark advances past them -- so a split spends budget rather than creating it, and the child capability is DERIVED (own serial, parent's serial as badge) so revoking the parent sweeps it. Needs CAP_UNTYPED + WRITE at `src_slot`; rights are the parent's and are never widened. This is what makes S57's "a task given a small region can spawn a bounded number of times" expressible: before it, granting a CAP_UNTYPED named the SAME region, so a delegate shared its grantor's whole budget. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
@@ -1443,7 +1479,40 @@ typedef struct tcb {
     uint8_t  padding[8];
 } tcb_t;
 
-extern tcb_t tasks[MAX_TASKS];
+/* The task table is carved from the kernel's untyped reserve, and the reserve is
+ * sized at compile time from TCB_BYTES_RESERVED because POOL_RESERVE_PAGES must
+ * be a constant. This is the check that keeps the two honest: grow a tcb_t past
+ * the allowance and the build fails here, naming the reason, rather than the
+ * boot failing later in tasks_init with the reserve one block short. */
+_Static_assert(sizeof(tcb_t) <= TCB_BYTES_RESERVED,
+               "tcb_t outgrew TCB_BYTES_RESERVED: raise it (and the untyped "
+               "kernel reserve grows with it), or shrink the TCB");
+
+/* The task table: one contiguous block of MAX_TASKS tcb_t, carved from the
+ * kernel's untyped reserve by tasks_init() rather than declared in `.bss`
+ * (roadmap 0.3, finding [I-7]). A POINTER, so `tasks[id].field` is unchanged at
+ * every one of its call sites; NULL until tasks_init() runs, which is
+ * immediately after untyped_init() and before anything references a task. */
+extern tcb_t *tasks;
+/* Tasks provisioned this boot. Every runtime bound reads this; MAX_TASKS is the
+ * compile-time provisioning input alone and nothing branches on it. */
+extern int g_max_tasks;
+/* Carve the task table. Call once, after untyped_init() and before
+ * scheduler_init(). Halts if the reserve cannot satisfy it. */
+void tasks_init(void);
+/* How many tasks the kernel untyped reserve this boot can carry (untyped.c). */
+int  untyped_reserve_task_capacity(void);
+/* Carve `bytes` off the CAP_UNTYPED at `src_slot` and mint a DERIVED CAP_UNTYPED
+ * naming the sub-region into `dest_slot`. The parent's watermark advances past
+ * the bytes, so a split spends budget rather than creating it. */
+int  untyped_split(uint32_t src_slot, uint32_t dest_slot, uint64_t bytes);
+/* Mint the capability for a sub-region untyped_split just carved: own serial,
+ * the parent capability's serial as badge, the parent's rights unwidened. */
+int  cap_mint_untyped_child(uint32_t src_slot, uint32_t dest_slot, uint32_t child_index);
+/* Does a kernel-stack region of `n` slots fit its one PDPT entry? (paging.c) */
+int  kstack_region_fits(int n);
+/* Allocate the capability layer's per-boot tables (capability.c). */
+void cap_tables_init(void);
 
 
 /* Lineage/generation tracking is owned by the safe-Rust authority
@@ -1843,7 +1912,7 @@ void sched_enable_preemption(void);
  * wrong task instead of refusing. Use kstack_inflight_test() rather than
  * indexing this directly; scheduler.c derives the word and the bit from one
  * expression and asserts the width at compile time. */
-extern volatile uint64_t g_kstack_inflight[];
+extern volatile uint64_t *g_kstack_inflight;
 /* Is task `t` in the deferred-release window on some CPU's kernel stack? The
  * caller bounds-checks `t`. */
 int kstack_inflight_task(int t);

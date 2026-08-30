@@ -82,6 +82,9 @@ static void check(int ok, const char *what) {
 #define SLOT_RETYPED_EP3 42  /* a third, never received on: proves endpoint
                               * authority does not imply reply authority */
 #define SLOT_EMPTY_HI   200  /* never populated */
+#define SLOT_SPLIT      50   /* destination for SYS_UNTYPED_SPLIT (section 14) */
+#define SLOT_SPLIT_EP   51   /* an endpoint retyped FROM the split sub-region   */
+#define SLOT_SPLIT2     52   /* a second split destination, for the refusals    */
 
 /* Non-blocking probe: SYS_WAIT_NOTIFY on a slot that holds no CAP_NOTIFICATION
  * must be refused outright (it returns before any blocking decision is made), so
@@ -1120,6 +1123,81 @@ void _start(void) {
     check(sys_ipc_reply(SLOT_FRAME, "x", 1) == SYS_ERR_PERM,
           "ipc-reply-accepted-a-frame-capability-as-an-endpoint");
 #endif /* SYSCOV_PROBES_ABSENT */
+
+
+    /* ---- 14. a budget can be SUBDIVIDED, not only shared ---------------- */
+
+    /* S57 said a task given a SMALL REGION can spawn a bounded number of times.
+     * That was not implementable when it was written: SYS_CAP_GRANT of a
+     * CAP_UNTYPED copies a capability naming the SAME region, so a delegate got
+     * its grantor's entire budget and "small region" named nothing anybody could
+     * mint. SYS_UNTYPED_SPLIT is the missing half, and these checks are what
+     * make the sentence true rather than aspirational.
+     *
+     * THE PARENT MUST PAY. Every check below is about that: a split that handed
+     * out a region without charging the parent would be memory conjured from a
+     * syscall, which is exactly what roadmap 0.3 exists to prevent. */
+    out("CAPTEST: untyped-split\n");
+    {
+        struct untyped_info before, after, child;
+        check(sys_untyped_info(SLOT_UNTYPED, &before) == 0,
+              "untyped-info-before-split-failed");
+
+        const uint64_t TAKE = 64u * 1024u;
+        check(sys_untyped_split(SLOT_UNTYPED, SLOT_SPLIT, TAKE) == 0,
+              "untyped-split-refused-for-a-region-that-had-room");
+
+        /* The child exists and is the size asked for (rounded up to a page --
+         * a sub-region that could not back a frame would mean less than it
+         * says). */
+        check(sys_untyped_info(SLOT_SPLIT, &child) == 0,
+              "split-child-has-no-readable-info");
+        check(child.size >= TAKE, "split-child-smaller-than-requested");
+        check(child.watermark == 0, "split-child-born-with-bytes-spent");
+
+        /* THE PARENT SHRANK BY AT LEAST WHAT THE CHILD GOT. Stated as an
+         * inequality rather than equality because the carve is page-aligned, so
+         * the parent may lose alignment padding as well -- but it must never
+         * lose LESS than it handed over, which is the direction that would mean
+         * the split created memory. */
+        check(sys_untyped_info(SLOT_UNTYPED, &after) == 0,
+              "untyped-info-after-split-failed");
+        check(after.free + child.size <= before.free,
+              "split-did-not-charge-the-parent");
+
+        /* And the child is spendable: a region that cannot be retyped from is a
+         * budget in name only. Both refusals below are otherwise satisfied by a
+         * split that hands back a dead region. */
+        check(sys_retype(SLOT_SPLIT, KOBJ_ENDPOINT, 1, SLOT_SPLIT_EP) == 1,
+              "split-child-cannot-be-retyped-from");
+
+        /* A split larger than the region has left is refused, and refused
+         * WITHOUT charging: the caller asked for something it could not pay for
+         * and must be no poorer for having asked. */
+        struct untyped_info pre_fail, post_fail;
+        check(sys_untyped_info(SLOT_SPLIT, &pre_fail) == 0, "child-info-failed");
+        check(sys_untyped_split(SLOT_SPLIT, SLOT_SPLIT2, pre_fail.size * 4) < 0,
+              "oversized-split-accepted");
+        check(sys_untyped_info(SLOT_SPLIT, &post_fail) == 0, "child-info-failed-2");
+        check(post_fail.free == pre_fail.free,
+              "refused-split-charged-the-caller-anyway");
+
+        /* A slot holding no untyped cannot split, and neither can one holding a
+         * capability of the wrong type -- the [C-1] shape, asked of this syscall
+         * as captest asks it of every other. */
+        check(sys_untyped_split(SLOT_EMPTY_HI, SLOT_SPLIT2, 4096) == SYS_ERR_PERM,
+              "split-from-an-empty-slot-succeeded");
+        check(sys_untyped_split(SLOT_FRAME, SLOT_SPLIT2, 4096) == SYS_ERR_PERM,
+              "split-from-a-frame-capability-succeeded");
+        /* A kernel-reserved destination is refused: the low slots are the
+         * kernel's endowment, not a caller's to overwrite. */
+        check(sys_untyped_split(SLOT_UNTYPED, 1, 4096) == SYS_ERR_PERM,
+              "split-into-a-kernel-reserved-slot-succeeded");
+        /* Zero bytes is a caller bug, refused rather than treated as a no-op --
+         * a zero-length region would be a capability that can never be spent. */
+        check(sys_untyped_split(SLOT_UNTYPED, SLOT_SPLIT2, 0) == SYS_ERR_INVAL,
+              "zero-length-split-accepted");
+    }
 
     /* ---- done -------------------------------------------------------- */
 

@@ -958,8 +958,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>109 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>91
+            The ABI defines <strong>110 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>92
             handlers</strong>, the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1355,7 +1355,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <div>
 <pre class="code"><span class="c"># check the claims on this page</span>
 <span class="p">$</span> make smoke                 <span class="c"># boot to ring-3 login</span>
-<span class="p">$</span> make smoke-captest         <span class="c"># 158 capability checks</span>
+<span class="p">$</span> make smoke-captest         <span class="c"># 174 capability checks</span>
 <span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
 <span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
 <span class="p">$</span> make reproducible-build    <span class="c"># <span class="x">run twice, diff the record</span></span></pre>
@@ -1363,7 +1363,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 176 test targets, and the troubleshooting
+          Every configuration flag, every one of the 177 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1449,15 +1449,20 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Hard compile-time ceilings still apply: 256 tasks, 256 capability slots per task, a
-          256-byte message, a 16 MiB volume. The task ceiling was 64 until 2026-08-30, and what
-          held it there was not the table of task records this note used to blame: that table is
-          72 KiB, while the per-task kernel stacks beside it were a 4 MiB static array — fifty-six
-          times larger, and against an image budget with 3.6 MiB left. Moving the stacks to a
-          region of their own lifted the ceiling fourfold and made the image 3.8 MiB
-          <em>smaller</em>. What remains is the part that was always the interesting half: a task
-          is still not an object named by a capability, and a bigger number is not a different
-          kind of thing.
+          Compile-time ceilings still apply to most of the system: 256 capability slots per
+          task, a 256-byte message, a 16 MiB volume. The number of <em>tasks</em> is no longer
+          among them &mdash; it is worked out at boot from the memory the machine actually has.
+          <br><br>
+          Getting there is a small lesson in taking a codebase's own account of itself on trust.
+          The ceiling was 64, and every document here blamed the table of task records: 72 KiB.
+          Beside it sat the per-task kernel stacks, a 4 MiB static array &mdash; fifty-six times
+          larger, and the actual constraint. Moving those lifted the ceiling fourfold and made the
+          image <em>smaller</em>. Then the table itself moved, into the same memory every other
+          kernel object is allocated from, so creating a task costs something a program has to
+          hold permission for. And the thing that would genuinely have capped the count next was
+          neither: a scratch buffer in the revocation code, sized by the task count and placed on
+          a 32 KiB kernel stack &mdash; a fifth of it at 256 tasks, and past the end of it at 2048.
+          Nobody had measured it. Three obstacles, and the first two guesses were both wrong.
         </p>
       </div>
     </div>
@@ -1973,7 +1978,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>Thirteen system calls still have no test that runs them</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>78 of 91</strong> system calls have their handler actually executed by the
+              <strong>79 of 92</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
               permission conformance suite, and the boot-modules session. The other 13 are each
               listed with a written reason.

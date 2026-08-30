@@ -136,7 +136,7 @@ void h_map_phys(struct interrupt_frame64 *r) {
      * frame to verify it, holds no port grant). Both self-tests report via the
      * kernel console, so neither may lose ownership of it. */
     if (rc == 0 && paddr >= 0xB8000ULL && paddr < 0xBA000ULL &&
-        cur > 0 && cur < MAX_TASKS && tasks[cur].io_device == IODEV_PLATFORM) {
+        cur > 0 && cur < g_max_tasks && tasks[cur].io_device == IODEV_PLATFORM) {
         console_set_owner(cur);
     }
 }
@@ -155,7 +155,7 @@ void h_map_phys(struct interrupt_frame64 *r) {
  * next in/out succeeds without waiting for a reschedule. */
 void h_ioport_grant(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     uint32_t dev_slot = (uint32_t)r->rbx;
     uint64_t index = IODEV_NONE;
@@ -195,7 +195,7 @@ void h_ioport_grant(struct interrupt_frame64 *r) {
  * when the task exits (irq_notify_clear_task from task_teardown). */
 void h_irq_register(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     uint32_t dev_slot = (uint32_t)r->rbx;
     int irq = (int)r->rcx;
@@ -443,7 +443,7 @@ void h_dma_addr(struct interrupt_frame64 *r) {
  * the other is mid-service on. */
 void h_irq_ack(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     int irq = (int)r->rcx;
 #ifndef IRQ_ACK_UNGATED
@@ -489,7 +489,7 @@ void h_irq_ack(struct interrupt_frame64 *r) {
  * prevent. See src/kernel/msi.c. */
 void h_msi_register(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     uint64_t devindex = IODEV_NONE;
     const struct io_device *d =

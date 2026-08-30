@@ -132,7 +132,7 @@ int pipe_write(int idx, const uint8_t *src, uint32_t len) {
  * kernel context on the dead task's slot). Nulls the cap and unrefs the end so
  * the peer sees EOF/EPIPE and the pipe is freed once both directions reach 0. */
 void pipe_close_task_ends(int task_id) {
-    if (task_id <= 0 || task_id >= MAX_TASKS) return;
+    if (task_id <= 0 || task_id >= g_max_tasks) return;
     capability_t *cs = tasks[task_id].cspace;
     if (!cs) return;
     uint32_t sz = tasks[task_id].cspace_size ? tasks[task_id].cspace_size : CNODE_SIZE;

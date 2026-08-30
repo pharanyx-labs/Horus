@@ -152,7 +152,7 @@ int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot)
  * (reply in mailbox / target already dead / badge pending). Returns 1 if the
  * task is now blocked (caller should switch away), 0 to resume the same frame. */
 int ipc_publish_pending_block(int cur) {
-    if (cur <= 0 || cur >= MAX_TASKS) return 0;
+    if (cur <= 0 || cur >= g_max_tasks) return 0;
     uint32_t kind = tasks[cur].pending_block;
     if (kind == 0) return 0;
 
@@ -229,7 +229,7 @@ int ipc_publish_pending_block(int cur) {
              * exception — "a receiver holds its reply right before it is
              * schedulable". An invariant with one documented exception is one a
              * later change quietly widens. */
-            if (recv_wait && sender > 0 && sender < MAX_TASKS)
+            if (recv_wait && sender > 0 && sender < g_max_tasks)
                 cap_install_reply_for(cur, sender);
             tasks[cur].state        = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
@@ -249,7 +249,7 @@ int ipc_publish_pending_block(int cur) {
     if (kind == TASK_BLOCKED_WAIT) {
         int tid = tasks[cur].blocked_on;
         /* Re-check: target may have exited after the handler looked. */
-        if (tid < 0 || tid >= MAX_TASKS || tasks[tid].state == TASK_DEAD) {
+        if (tid < 0 || tid >= g_max_tasks || tasks[tid].state == TASK_DEAD) {
             tasks[cur].pending_block = 0;
             f->rax = 0;
             tasks[cur].state        = TASK_RUNNABLE;
@@ -304,7 +304,7 @@ int ipc_publish_pending_block(int cur) {
 /* Undo a published block when the scheduler cannot switch away (no other
  * runnable task). Clears waiter links so we do not leave a dangling publish. */
 void ipc_unpublish_block(int cur) {
-    if (cur <= 0 || cur >= MAX_TASKS) return;
+    if (cur <= 0 || cur >= g_max_tasks) return;
     int st = (int)tasks[cur].state;
     if (st == TASK_BLOCKED_IPC) {
         int ep = tasks[cur].blocked_on;
@@ -319,7 +319,7 @@ void ipc_unpublish_block(int cur) {
         tasks[cur].ipc_recv_block = 0;
     } else if (st == TASK_BLOCKED_WAIT) {
         int tid = tasks[cur].blocked_on;
-        if (tid >= 0 && tid < MAX_TASKS && tasks[tid].waiter == cur)
+        if (tid >= 0 && tid < g_max_tasks && tasks[tid].waiter == cur)
             tasks[tid].waiter = -1;
         tasks[cur].blocked_on = -1;
     } else if (st == TASK_BLOCKED_NOTIF) {
@@ -361,7 +361,7 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * wait -- ipc_publish_pending_block only parks a caller on an EMPTY endpoint,
      * completing inline otherwise -- so this tightens the guard for the blocking
      * receive without changing the SYS_IPC_CALL path at all. */
-    if (waiter > 0 && waiter < MAX_TASKS &&
+    if (waiter > 0 && waiter < g_max_tasks &&
             tasks[waiter].state == TASK_BLOCKED_IPC && ep_empty(e)) {
         if (auth.valid && !cap_revalidate(3, CAP_RIGHT_WRITE, &auth)) { ipc_unlock(); return -1; }
 
@@ -534,7 +534,7 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
      * receives twice without replying has abandoned the older request, and the
      * older caller is woken by its own timeout/teardown path rather than left
      * nameable forever. */
-    if (sender > 0 && sender < MAX_TASKS)
+    if (sender > 0 && sender < g_max_tasks)
         cap_install_object(CAPSLOT_REPLY, CAP_REPLY, (uint64_t)sender,
                            CAP_RIGHT_WRITE, 0);
     return len;
@@ -563,7 +563,7 @@ int sys_notify(uint32_t notif_slot, uint32_t badge) {
     n->pending_badge |= badge;
 
     int waiter = n->blocked_waiter;
-    if (waiter > 0 && waiter < MAX_TASKS &&
+    if (waiter > 0 && waiter < g_max_tasks &&
             tasks[waiter].state == TASK_BLOCKED_NOTIF) {
         uint32_t b = n->pending_badge;
         n->pending_badge    = 0;
@@ -805,7 +805,7 @@ void h_ipc_recv_block(struct interrupt_frame64 *r) {
     if (!e) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)-1; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)-1; return; }
 
     for (;;) {
         ipc_lock();
@@ -875,7 +875,7 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
     struct endpoint *e = endpoint_by_index(ep);
     if (!e) { r->rax = (uint32_t)-1; return; }
     int t = e->last_sender;
-    if (t <= 0 || t >= MAX_TASKS || tasks[t].state == 0) { r->rax = (uint32_t)-1; return; }
+    if (t <= 0 || t >= g_max_tasks || tasks[t].state == 0) { r->rax = (uint32_t)-1; return; }
     if (r->rcx) {
         uint32_t g = tasks[t].gid;
         if (copy_to_user((void *)(addr_t)r->rcx, &g, sizeof(g)) != 0) { r->rax = (uint32_t)-1; return; }
@@ -941,7 +941,7 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
     int t = (int)rc_cap->object;
-    if (t <= 0 || t >= MAX_TASKS || tasks[t].state == TASK_DEAD || tasks[t].state == 0) {
+    if (t <= 0 || t >= g_max_tasks || tasks[t].state == TASK_DEAD || tasks[t].state == 0) {
         /* Client gone: nothing to deliver, and the right dies with it — leaving
          * it installed would let a later, unrelated task id reuse land on a
          * capability minted for a task that no longer exists. */

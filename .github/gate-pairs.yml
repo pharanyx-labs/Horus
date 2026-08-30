@@ -37,6 +37,7 @@ control_arms:
   smoke-captest-getline-control: smoke-captest
   smoke-captest-irq-ack-control: smoke-captest
   smoke-captest-mint-hang-control: smoke-captest
+  smoke-captest-split-control: smoke-captest
   smoke-cap-lookup-control: smoke-cap-lookup
   smoke-cap-lookup-range-control: smoke-cap-lookup
   smoke-cspace-release-control: smoke-cspace-release

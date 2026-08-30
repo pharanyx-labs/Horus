@@ -220,8 +220,10 @@ Measured 2026-08-30 with `tools/check_base_gate_reddens.sh`: **30 of 30 pairs go
 thirty-first drives a `cargo` feature rather than a `-D` flag and is exercised separately.
 
 **The control arms themselves were not separately re-run, and the reason is worth stating.** CI
-runs 164 of the 166 smoke targets on every pull request, so the five green runs this audit
-produced measured every arm on the current tree. The two exemptions are verified non-stale by
+ran 164 of the 166 smoke targets on every pull request **as this audit was written**, so the five
+green runs it produced measured every arm on the tree as it then stood. (Stated in the past tense
+because both figures move whenever a target lands, and a dated audit that reads as present tense
+is what put its predecessor into `docs/history/`.) The two exemptions are verified non-stale by
 `check_gate_pairs.py` and each names the stronger form that CI does run. Re-running them locally
 would have added hours and no evidence.
 

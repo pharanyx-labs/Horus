@@ -1431,9 +1431,12 @@ jobs:
   syscall-coverage:
     name: "Which syscall handlers a test actually enters is decided, not drifting"
     runs-on: ubuntu-latest
-    # Two clean builds and two full workloads (a scripted ring-3 session, then
-    # the conformance suite). The session is the long pole.
-    timeout-minutes: 45
+    # SIX clean builds and six full workloads: three per arm (a scripted ring-3
+    # session, the conformance suite, and the boot-modules session), and the
+    # control arm rebuilds all three. The sessions are the long pole. This said
+    # "two clean builds and two full workloads" until 2026-08-30, when the target
+    # had run three since the modules session was added.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1450,6 +1453,17 @@ jobs:
       # handler bodies actually run and fails on drift in EITHER direction.
       - name: Measure handler entry and diff against the manifest
         run: make smoke-syscall-coverage
+      # The falsifying arm for the 2026-08-30 SC_NONE promotions. Without it, a
+      # promotion captest's probes EARNED is indistinguishable from one that was
+      # free all along, and deleting the probes would leave this gate green.
+      #
+      # A STEP IN THIS JOB RATHER THAN A JOB OF ITS OWN, deliberately: a new job
+      # is a new required context, and the ruleset that decides required contexts
+      # is synced by hand after the merge ([C-6]), so a new gating job leaves the
+      # ruleset one context behind until someone runs --sync-ruleset. A step adds
+      # the check without adding that lag.
+      - name: Remove the probes and require the gate to name exactly its twelve
+        run: make smoke-syscall-coverage-control
 
   gate-pairs:
     name: "Every control arm has a base gate, and every gate runs"

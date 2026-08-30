@@ -941,6 +941,186 @@ void _start(void) {
     check(sys_ipc_send(203, "x", 1) != 0,
           "read-only-minted-endpoint-accepted-a-send");
 
+    /* ---- 13. a handler the dispatch table admits everyone into --------- */
+
+#ifndef SYSCOV_PROBES_ABSENT
+    /* THE DISPATCH TABLE IS NOT THE ONLY GATE, AND FOR THESE ENTRIES IT IS NOT A
+     * GATE AT ALL. An `SC_NONE` row means the central check in syscall_handler
+     * admits every caller and whatever authority the call needs is tested inside
+     * the handler -- so the handler BODY is reachable from ring 3 by a task
+     * holding nothing. That is a deliberate design (the device family moved this
+     * way with S43, because a gate on a fixed slot cannot ask which device a
+     * capability names), and it is also where an unentered handler is most
+     * expensive: S52 was four ways for an unprivileged task to wedge the machine,
+     * sitting behind three SC_NONE rows nothing had ever executed.
+     *
+     * .github/syscall-coverage.yml measures which handler BODIES a tracked
+     * workload enters, and its reasons for these had all described why the
+     * SUCCESS path was not reached -- no CAP_UNTYPED to retype a frame from, no
+     * pipeline in the session, login reads its password elsewhere. That is the
+     * distinction the manifest's own header says it exists to prevent: none of
+     * those sentences is about whether the body runs, and for an SC_NONE row the
+     * body runs for anybody who asks.
+     *
+     * So these probes enter twelve of them. Every one asserts that the answer
+     * COMES BACK -- S52's question rather than the usual one -- and every one is
+     * chosen to leave this task's state exactly as it found it: brk(0) is the
+     * QUERY form and does not move the break, the sigaction probe takes the
+     * refusal path and returns before sig_handler is written, and the unmap and
+     * region probes name slots holding nothing. This section happens to be last
+     * today, so nothing would observe a side effect anyway -- which is exactly
+     * why the discipline is written down here rather than relied on, since the
+     * next section added below it would inherit the damage silently.
+     *
+     * Falsified by SYSCOV_PROBES_ABSENT=1, which compiles this section out: the
+     * coverage gate must then go red naming these syscalls as listed-covered and
+     * not entered. Without that arm a promotion that was free all along -- some
+     * other workload already entering the body -- would look identical to one
+     * these probes earned. */
+    out("CAPTEST: sc-none-handler-probes\n");
+
+    /* (a) The frame family. Its dispatch rows carry no slot and no type, so the
+     * whole authority is `cap_lookup` + a CAP_FRAME type test inside each
+     * handler -- and a task holding nothing reaches all four of them. */
+
+    /* An empty slot names no capability, so the lookup fails and the handler
+     * refuses. This is the reachability claim in its plainest form: slot 200 has
+     * never held anything, and the call still had to run a handler to say so. */
+    check(sys_frame_pages(SLOT_EMPTY_HI) == SYS_ERR_PERM,
+          "frame-pages-on-empty-slot-not-refused");
+    check(sys_unmap_frame(SLOT_EMPTY_HI, 0x30000000UL) == SYS_ERR_PERM,
+          "unmap-frame-on-empty-slot-not-refused");
+    check(sys_map_frame(SLOT_EMPTY_HI, 0x30000000UL, CAP_RIGHT_READ) == SYS_ERR_PERM,
+          "map-frame-on-empty-slot-not-refused");
+
+    /* The legacy slot-3 CAP_FRAME is the interesting one, because it passes the
+     * type test. It is [C-1]'s decoy: a live capability of exactly the right type
+     * whose `object` is USER_AREA_BASE, a virtual address rather than an index
+     * into the frame table. What refuses it is the BOUND -- frame_phys_by_index
+     * answers 0 for anything outside the table -- and not an allowlist, which is
+     * the whole reason S26 is a property rather than a coincidence. Under
+     * FRAME_INDEX_UNCHECKED=1 this capability maps physical 0x400000 instead. */
+    check(sys_frame_pages(SLOT_FRAME) < 0,
+          "frame-pages-answered-for-the-legacy-decoy");
+    check(sys_map_frame(SLOT_FRAME, 0x30000000UL, CAP_RIGHT_READ) < 0,
+          "map-frame-accepted-the-legacy-decoy");
+
+    /* W^X, refused before any capability is consulted: the request is incoherent
+     * on its face, so there is nothing to look up. Checked here rather than left
+     * to frametest because it is the one refusal on this path that does not
+     * depend on holding -- or not holding -- anything. */
+    check(sys_map_frame(SLOT_EMPTY_HI, 0x30000000UL,
+                        CAP_RIGHT_WRITE | CAP_RIGHT_EXEC) == SYS_ERR_INVAL,
+          "map-frame-accepted-write-plus-exec");
+
+    /* A run of zero frames is refused outright rather than treated as a no-op.
+     * SYS_MAP_REGION checks the shape of the whole run before touching anything
+     * (S35's all-or-nothing rests on that), so this returns without reaching a
+     * capability at all. */
+    check(sys_map_region(SLOT_EMPTY_HI, 0, 0x30000000UL, CAP_RIGHT_READ) == SYS_ERR_INVAL,
+          "map-region-accepted-a-zero-length-run");
+    check(sys_map_region(SLOT_EMPTY_HI, 1, 0x30000000UL, CAP_RIGHT_READ) < 0,
+          "map-region-on-empty-slot-not-refused");
+
+    /* (b) SYS_READ, and NOT through fd 0. The first draft of this probe read fd
+     * 0 and HUNG THE GATE, which is worth recording because it corrects an
+     * assumption this file could easily have shipped: SYS_GET_LINE is `covered`
+     * by a refusal, so fd 0 looked like the same shape. It is not. h_get_line
+     * tests CAP_CONSOLE inside the handler and refuses captest outright;
+     * h_read's fd 0 branch tests no authority at all -- it is ambient console
+     * input -- and its only early return is console_hw_owned(). No ring-3 server
+     * owns the UART in the captest image, so the call went to console_getc()
+     * and waited for a keystroke that never came. A syscall that blocks cannot
+     * be probed by a test that has to finish; SYS_GET_PASS has no non-blocking
+     * branch at all and stays uncovered for that reason, written down in the
+     * manifest rather than left as the reason it looks like.
+     *
+     * fd >= 3 is the branch that matters anyway. It is the fourth [H-3] door --
+     * the one the kernel's own comment calls "the one that MOVES BYTES" -- and
+     * `cap_lookup(3, CAP_RIGHT_READ)` was satisfied by the legacy CAP_FRAME
+     * every task is born holding, so it handed the in-kernel ramfs to any
+     * caller. It was retired on 2026-08-22 to a fail-closed SYS_ERR_NOSYS with
+     * the live branch kept under RAMFS_SLOT3_GATE, and nothing has checked since
+     * that the ship build still refuses it. */
+    {
+        char lb[8];
+        check(sys_read(3, lb, sizeof(lb)) == SYS_ERR_NOSYS,
+              "read-fd3-ramfs-door-not-closed");
+        /* Neither an input fd nor the retired range: refused as a bad argument,
+         * which is the fail-closed default an unhandled fd must take. */
+        check(sys_read(1, lb, sizeof(lb)) == -1,
+              "read-fd1-not-refused");
+    }
+
+    /* (c) Calls that answer about the CALLER, where there is no authority to
+     * test because a task asking about itself is not asking for anything. The
+     * assertion is that the answer returns and is stable; asserting a particular
+     * value would be asserting how init spawned this task, which is not this
+     * file's business. Two reads rather than one, because a handler that wedged
+     * or corrupted the frame would not produce the same answer twice. */
+    check(sys_spawn_arg() == sys_spawn_arg(),
+          "spawn-arg-not-stable-across-two-reads");
+
+    /* brk(0) is the QUERY form: it returns the current break without moving it,
+     * so this reads captest's heap without disturbing whatever allocates from it.
+     * SYS_BRK's uncovered reason was that newlib's allocator uses SYS_SBRK and
+     * "brk is the unused half of the pair" -- a statement about callers, which is
+     * not the same statement as whether the handler runs. */
+    {
+        void *b1 = sys_brk((void *)0);
+        void *b2 = sys_brk((void *)0);
+        check(b1 != (void *)0, "brk-query-returned-a-null-break");
+        check(b1 == b2, "brk-query-moved-the-break");
+    }
+
+    {
+        struct task_exit_info tei;
+        check(sys_task_exit_info(&tei) == 0,
+              "task-exit-info-refused-a-task-asking-about-itself");
+    }
+
+    /* (d) Signal registration, whose gate is that a handler address must lie
+     * inside the CALLER'S OWN image -- a bound, not a capability, and the reason
+     * it is SC_NONE. Address 0x1000 is below every image this loader places, so
+     * the REFUSAL path is the one taken, which is the deliberate choice twice
+     * over: it exercises rust_signal_handler_addr_ok, the check that is actually
+     * the gate, and it returns before `sig_handler` is assigned, so the probe
+     * cannot leave this task holding a handler it did not have. (captest installs
+     * none of its own, so a success would be harmless too -- but "harmless
+     * because nothing else uses it" is a fact about the rest of the file, and
+     * facts like that stop being true when somebody edits the rest of the file.) */
+    check((int)syscall(SYS_SIGACTION, 0x1000ULL, 0, 0) == SYS_ERR_INVAL,
+          "sigaction-accepted-a-handler-outside-our-own-image");
+
+    /* SYS_SIGRETURN reaches its dispatch-table stub only when the caller is NOT
+     * inside a handler -- interrupt_handler64 intercepts it ahead of the table
+     * when `in_signal` is set, because resuming replaces the entire live trap
+     * frame and has nothing to do with the table's return convention. captest is
+     * not in a handler, so this is the stub, and the stub exists to refuse
+     * exactly this: a resume with nothing to resume to. */
+    check((int)syscall(SYS_SIGRETURN, 0, 0, 0) == SYS_ERR_INVAL,
+          "sigreturn-outside-a-handler-not-refused");
+
+    /* (e) A RETIRED syscall, still holding its ABI slot. Registering a userspace
+     * block backend meant the kernel calling ring-3 function pointers from ring
+     * 0 -- an SMEP violation and a TCB escape -- so syscall 46 was reduced to a
+     * body that returns SYS_ERR_NOSYS and its userspace wrapper was deleted. The
+     * number stays reserved so it cannot be reused. Nothing had ever checked
+     * that it still fails closed, and a reserved number that quietly starts
+     * answering is the fail-open this repository reserves numbers to prevent. */
+    check((int)syscall(SYS_REGISTER_STORAGE_BACKEND, 0, 0, 0) == SYS_ERR_NOSYS,
+          "retired-storage-backend-syscall-answered");
+
+    /* (f) SYS_IPC_REPLY resolves its endpoint from the capability's own object
+     * through ipc_ep_from_slot, which is [C-1]'s fix: the authority is the
+     * capability, not the slot number. Both doors into it, an empty slot and a
+     * live capability of the wrong type, refuse inside the handler. */
+    check(sys_ipc_reply(SLOT_EMPTY_HI, "x", 1) == SYS_ERR_PERM,
+          "ipc-reply-on-empty-slot-not-refused");
+    check(sys_ipc_reply(SLOT_FRAME, "x", 1) == SYS_ERR_PERM,
+          "ipc-reply-accepted-a-frame-capability-as-an-endpoint");
+#endif /* SYSCOV_PROBES_ABSENT */
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

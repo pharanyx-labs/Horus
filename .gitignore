@@ -150,8 +150,11 @@ tamper.iso
 # Kept only when a run fails; uploaded as a CI artifact, never committed.
 soak-evidence/
 
-# syscall-coverage serial transcripts (make smoke-syscall-coverage); evidence, never committed
-.syscov-evidence/
+# syscall-coverage serial transcripts (make smoke-syscall-coverage, and the
+# -control arm's own directory); evidence, never committed. A glob rather than
+# two literals, so the next arm that keeps transcripts is covered on the day it
+# lands rather than the day someone notices it in `git status`.
+.syscov-evidence*/
 
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
 .build-flags

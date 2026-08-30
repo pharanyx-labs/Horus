@@ -405,9 +405,10 @@ a page at the bogus address and reported success.
 
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
-**Measured 2026-08-20**, and gated since: **65 of 91** implemented syscalls have their handler
+**Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
+2026-08-30, and gated since: **78 of 91** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 26 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 13 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing.** On 2026-08-29 three of the
@@ -418,7 +419,7 @@ with interrupts masked, which any unprivileged ring-3 task could trigger in one 
 build known in this tree" since 2026-08-22. Nothing ran them, so nothing found it. They are on
 the `covered` list now because the fix is not finished until something enters the handler.
 
-So the standing risk is not hypothetical: a defect in any of those 26 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 13 handlers is invisible in
 the same way issue #176 was, and in the way S52 just was. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
 the capability gate returns before the handler runs. Both syscalls were named by the suite;
@@ -429,11 +430,62 @@ even establish the refusal comes back.
 direction, so the number cannot quietly fall. It deliberately does not require all of them; that
 would be a large body of test-writing disguised as a gate. Property **S25**.
 
-**Two of the 26 are cheap and worth doing next.** The pipe family and `SYS_STDIO_INFO` are
-uncovered only because `tools/session_test.py` runs no pipeline, a gap in the workload, not the
-kernel. And the `uncovered` reasons that name another build which *would* reach a syscall are
-**hypotheses this manifest has not measured**; promoting them should be a measurement, not an
-edit to the reason.
+**Thirteen were promoted on 2026-08-30, and what made them promotable was one structural fact
+nobody had asked the list about.** Twelve of the 26 carried `SC_NONE` dispatch rows. An
+`SC_NONE` row means the central check in `syscall_handler` admits every caller and whatever
+authority the call needs is tested *inside* the handler, so the handler body is reachable from
+ring 3 by a task holding nothing at all: a `captest` probe that proves the call says no is a
+probe that ran the body. That argument is not new here. It is the one that promoted
+`SYS_GET_LINE` on 2026-08-24, the device family on 2026-08-28, and S52's capability trio on
+2026-08-29, each written into the manifest as "the same structural reason". What had not
+happened was asking it of the whole list.
+
+**The manifest had drifted in its reasons while enforcing itself perfectly on its numbers**, and
+that is the part worth keeping. Its `uncovered` entries described why each call's *success* path
+was not reached — no `CAP_UNTYPED` to retype a frame from, no pipeline in the session, login
+reads its password elsewhere. Every one of those sentences was true, and none of them is about
+whether the body runs, which is the distinction the file's own header says it exists to
+preserve. Two were also false: `captest` holds a `CAP_UNTYPED` and retypes from it, and
+`SYS_FRAME_PAGES`' entry claimed the legacy slot-3 capability was "refused before the handler
+body would report anything" when its row admits every caller. The count those sentences
+surrounded was gated and correct throughout; the reasoning was not gated and was wrong.
+
+**The thirteenth was a gap in the workload rather than in the kernel**, which is the shape this
+paragraph used to claim for the pipe family — accurately when it was written, and stale from the
+day #179 closed it. `SYS_FS_INODE_FREE` is gated on `CAP_ENCRYPTED_STORAGE`, which `fs_server`
+holds and calls on its unlink path, so the handler was one shell command away from running on
+every session boot and nothing had issued it: the scenario created files and never destroyed
+one. `tools/session_test.py` now runs `rm` and asserts with `stat` that the name stops
+resolving.
+
+**Two SC_NONE handlers were deliberately not promoted, and they are the boundary of the
+technique.** `SYS_GET_PASS` blocks — its only early return is `console_hw_owned()`, no ring-3
+server owns the UART in the `captest` image, and the first draft of its probe hung the gate for
+the full timeout. It looks identical to `SYS_GET_LINE` from the dispatch table; the difference
+is that `h_get_line` tests `CAP_CONSOLE` inside the handler and refuses outright, where this one
+tests no authority at all. `SYS_SHLIB_INFO` would enter a body that returns at its first line,
+because `shlib_active()` is false in every tracked image, so covering it would raise this
+number without ever running the gate the syscall is interesting for. **"The body was entered"
+stops being coverage when the body is one branch of a feature that is compiled out.**
+
+**Falsified by `SYSCOV_PROBES_ABSENT=1`**, which compiles the probes out; `make
+smoke-syscall-coverage` must then go red naming *exactly* the twelve, and
+`make smoke-syscall-coverage-control` asserts that set rather than merely asserting a failure.
+The arm rebuilds and reboots all three workloads even though the flag changes only `captest`,
+because running the one arm would leave the other two transcripts missing and redden the gate
+without the defect contributing anything. Without the arm, a promotion the probes earned would
+be indistinguishable from one that was free all along.
+
+**What is left is thirteen, in three groups, and the grouping is the useful part** because it
+says what each would cost. Six have a real capability in their dispatch row, so the table
+refuses before the handler runs and `captest` holds neither `CAP_AUDIT` nor
+`CAP_ENCRYPTED_STORAGE` — covering one needs a probe task that holds exactly one of them, not a
+wider `captest`. Among those is `SYS_AUDIT_DIGEST`, **one of the two wrappers issue #176 was
+about**, whose sibling `SYS_DMESG` has been covered since this manifest existed: the defect that
+motivated the whole file still sits behind a handler nothing enters. Five carry the slot-3
+`[C-1]` decoy (§1.6b), which is not a gate, so `captest` passes the table check and is stopped
+by the opposite problem — the call would *succeed*, replacing or duplicating the caller. Two are
+the SC_NONE pair above.
 
 ### 1.9 ~~S16 had no witness at all~~: CLOSED 2026-08-28
 

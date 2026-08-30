@@ -456,6 +456,16 @@ jobs:
         run: make smoke-cap-lookup-control
       - name: Control arm — the out-of-range half, which the first arm cannot reach
         run: make smoke-cap-lookup-range-control
+      # task_teardown released every device resource a task held -- IRQ route, MSI
+      # route, IOMMU domain, port grant, console, pipe ends -- and left its
+      # CAPABILITIES in place until the slot was next used, which may be never.
+      # Nothing could reach them, but only because three separate readers each
+      # test `state == 0`; the property was held by those readers agreeing about
+      # a flag rather than by the data.
+      - name: A dead task holds no capability
+        run: make smoke-cspace-release
+      - name: Control arm — keep them on teardown and require the dead task to still hold one
+        run: make smoke-cspace-release-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)

@@ -110,7 +110,8 @@ DEFECT_FLAGS = \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
-	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK
+	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CSPACE_KEEP_ON_TEARDOWN \
+	CSPACE_RELEASE_BEFORE_PIPES
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1826,6 +1827,34 @@ endif
 # rather than resolved against the primordial root cnode, and task 0 must still
 # resolve. Manufactures both conditions, because create_task makes neither
 # reachable -- which is the whole reason the fallback survived.
+# CSPACE_RELEASE_SELFTEST=1 drives the witness that a dead task holds no
+# capability: plant the primordial CAP_CONSOLE in a scratch slot, tear the task
+# down, and require every slot of its cspace to be empty -- while the cspace
+# POINTER survives, because the bytes belong to the slot for the life of the boot.
+CSPACE_RELEASE_SELFTEST ?= 0
+ifeq ($(CSPACE_RELEASE_SELFTEST),1)
+CFLAGS  += -DCSPACE_RELEASE_SELFTEST
+ASFLAGS += -DCSPACE_RELEASE_SELFTEST
+endif
+
+# CSPACE_KEEP_ON_TEARDOWN=1 restores the pre-2026-08-30 teardown, which left a
+# dead task's capabilities in its cspace until the slot was next used.
+CSPACE_KEEP_ON_TEARDOWN ?= 0
+ifeq ($(CSPACE_KEEP_ON_TEARDOWN),1)
+CFLAGS  += -DCSPACE_KEEP_ON_TEARDOWN
+ASFLAGS += -DCSPACE_KEEP_ON_TEARDOWN
+endif
+
+# CSPACE_RELEASE_BEFORE_PIPES=1 moves the cspace release ahead of
+# pipe_close_task_ends, so the dying task's CAP_PIPE entries are gone before
+# anything looks for them and the peer never sees EOF. The ordering constraint,
+# made falsifiable -- a comment saying "do not move this" is not a gate.
+CSPACE_RELEASE_BEFORE_PIPES ?= 0
+ifeq ($(CSPACE_RELEASE_BEFORE_PIPES),1)
+CFLAGS  += -DCSPACE_RELEASE_BEFORE_PIPES
+ASFLAGS += -DCSPACE_RELEASE_BEFORE_PIPES
+endif
+
 CAPLOOKUP_SELFTEST ?= 0
 ifeq ($(CAPLOOKUP_SELFTEST),1)
 CFLAGS  += -DCAPLOOKUP_SELFTEST
@@ -2846,6 +2875,27 @@ smoke-aspace:
 # cap_lookup fails closed. The condition is manufactured, because create_task
 # makes neither branch reachable -- which is exactly why the fallback survived
 # long enough to be the stated blocker on reclaiming a dead task's cspace.
+# A dead task holds no capability. The BYTES are not returned and must not be:
+# the arena is a monotonic bump allocator (type-confusion-through-reuse is what
+# that forbids) and the kernel reserve holds exactly MAX_TASKS cspaces, so a
+# free-then-reallocate exhausts it on the first slot reuse.
+smoke-cspace-release:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1
+	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CSPACE_RELEASE_SELFTEST: PASS' \
+		FAIL_MARKER='CSPACE_RELEASE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm: teardown leaves the capabilities in place, so the dead
+# task still holds the primordial CAP_CONSOLE.
+smoke-cspace-release-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 CSPACE_KEEP_ON_TEARDOWN=1
+	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 CSPACE_KEEP_ON_TEARDOWN=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CSPACE_RELEASE_SELFTEST: FAIL a dead task still holds capability slot' \
+		tools/smoke_test.sh boot.iso
+
 smoke-cap-lookup:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1

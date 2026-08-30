@@ -41,6 +41,7 @@ control_arms:
   smoke-cap-lookup-control: smoke-cap-lookup
   smoke-cap-lookup-range-control: smoke-cap-lookup
   smoke-cspace-release-control: smoke-cspace-release
+  smoke-init-provision-control: smoke-init-provision
   smoke-proc-spawn-decoy-control: smoke-proc
   smoke-captest-poll-notify-control: smoke-captest
   smoke-claim-release-control: smoke-claim-release
@@ -155,6 +156,7 @@ gates:
   - smoke-fs-wal-order
   - smoke-heap64
   - smoke-init-fs
+  - smoke-init-provision
   - smoke-iommu-teardown
   - smoke-ioport
   - smoke-irq

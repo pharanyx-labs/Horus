@@ -98,6 +98,10 @@ extern uint8_t embedded_console_server_bin_end[];
 extern uint8_t embedded_fsclient_bin_start[];
 extern uint8_t embedded_fsclient_bin_end[];
 #endif
+#ifdef INIT_PROVISION_SELFTEST
+extern uint8_t embedded_dev_server_bin_start[];
+extern uint8_t embedded_dev_server_bin_end[];
+#endif
 #ifdef PROC_SELFTEST
 extern uint8_t embedded_exectest_bin_start[];
 extern uint8_t embedded_exectest_bin_end[];
@@ -132,6 +136,14 @@ static const struct embedded_binary embedded_binaries[] = {
     /* fsclient: spawned by name from init to drive the delegated fs_server over
      * IPC. INIT_FS_SELFTEST only. */
     { "fsclient",  embedded_fsclient_bin_start, embedded_fsclient_bin_end },
+#endif
+#ifdef INIT_PROVISION_SELFTEST
+    /* dev_server: spawned BY NAME from init, onto an endpoint init retyped out
+     * of its own untyped rather than one the kernel minted at boot (roadmap 2.4,
+     * S59). Spawnable by name only in this build -- the ship image does not
+     * carry a second filesystem server, which is the separate decision the VFS
+     * item records. */
+    { "dev_server", embedded_dev_server_bin_start, embedded_dev_server_bin_end },
 #endif
 #ifdef PROC_SELFTEST
     /* exectest: spawnable by name so the proc self-test can launch a child that

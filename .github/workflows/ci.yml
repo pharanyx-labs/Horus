@@ -1570,6 +1570,14 @@ jobs:
       # all satisfied by a checker that rejects everything.
       - name: Falsify every rule of the evidence checker
         run: ./tools/test_check_gate_evidence.sh
+      # The code graph is local-only (gitignored), so CI cannot check it. What CI
+      # CAN check is the half that goes stale silently: if the extern "C" export
+      # pattern stops matching, tools/ffi_edges.py injects nothing, and the graph
+      # quietly returns to reporting "no callers" for every Rust function the
+      # kernel calls -- which is the defect it was written for, restored, with no
+      # error anywhere. See CLAUDE.md §0.
+      - name: The FFI boundary is still visible to the graph tooling
+        run: python3 tools/ffi_edges.py --selftest
 
   defer-exemption:
     name: "The claim audit's exemption outlives the release it exempts (G-9; control arm proves it)"

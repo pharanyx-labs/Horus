@@ -14,6 +14,29 @@ compressed away. Entries here cite finding IDs; their **current** status is in
 
 ## [Unreleased]
 
+### Changed
+
+- **`docs/AUDIT.md` is now the 2026-08-30 audit; its predecessor moved to
+  `docs/history/AUDIT-2026-07.md`.** The move is the fix for a defect that document had, not
+  filing: while it sat in `docs/` it was a status-bearing file that no `counts` claim covered and
+  no exemption excused, so it drifted, and this audit found seven finding statuses in it
+  disagreeing with `LIMITATIONS.md` plus one contradicting itself. `docs/history/` is where frozen
+  records live and is the one directory `tools/check_doc_claims.py` deliberately does not scan,
+  because a dated record asserts what was true when written and that is its content. Nothing in it
+  was rewritten; only the dated framing was added.
+
+  Inbound links updated in `README.md`, `docs/README.md`, `CONTRIBUTING.md` and
+  `docs/SYSCALLS.md`. `CONTRIBUTING.md` said `AUDIT.md` held "the open findings" and now points at
+  `LIMITATIONS.md` for status, which is the rule the rest of the tree already follows.
+
+- **The public security issue template advertised a fixed defect as an open one.**
+  `.github/ISSUE_TEMPLATE/security_report.md` told reporters that **[C-1]** was a known weakness,
+  that IPC endpoints "are not capability-addressed", and that reports of it were duplicates. [C-1]
+  was fixed on 2026-07-27. So for a month the one document a would-be reporter reads first
+  described the IPC transport as ambient and invited duplicate reports of a defect that no longer
+  existed. It now names the findings that *are* open, which are [C-5], [C-6] and [I-7]. Ratcheted.
+
+
 ### Added
 
 - **`tools/check_base_gate_reddens.sh`** — measures the direction nobody measured.

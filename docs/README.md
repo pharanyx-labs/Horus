@@ -28,8 +28,9 @@ Technical documentation for the Horus microkernel. Start with the
    the documentation used to overstate the case. This is the authoritative status of every
    finding. Read it before drawing any conclusion about Horus's readiness.
 
-5. **[AUDIT.md](AUDIT.md)** — The full security and engineering audit, with the July 2026
-   predecessor audit as Appendix A.
+5. **[AUDIT.md](AUDIT.md)** — The current security audit (2026-08-30). Its predecessors are
+   **[history/AUDIT-2026-07.md](history/AUDIT-2026-07.md)**, the 2026-07-27 audit, which itself
+   carries the July 2026 one as its Appendix A.
 
 **Working on the system**
 

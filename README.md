@@ -326,7 +326,7 @@ more than testing that the happy path works.
 | [`docs/BUILDING.md`](docs/BUILDING.md) | Build, configure, run, reproduce |
 | [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | Honest accounting of what does not work or is not enforced |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Prioritised plan toward a complete OS |
-| [`docs/AUDIT.md`](docs/AUDIT.md) | The full security and engineering audit |
+| [`docs/AUDIT.md`](docs/AUDIT.md) | The current security audit (2026-08-30); predecessors in [`docs/history/`](docs/history/) |
 | [`docs/investigations/`](docs/investigations/) | How the harder findings were narrowed, and which hypotheses were wrong |
 | [`TESTS.md`](TESTS.md) | Test catalogue |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute, and the invariant-preservation rules |

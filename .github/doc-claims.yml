@@ -231,6 +231,13 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'most notably \*\*\[C-1\]\*\*: IPC endpoints are not'
+    reason: >-
+      The public security issue template told reporters that [C-1] was a known
+      open weakness and that reports of it were duplicates. It was fixed on
+      2026-07-27, so for a month the template invited duplicate reports of a
+      defect that no longer existed, and described the IPC transport as ambient
+      when it had been capability-addressed since July. Corrected 2026-08-30.
   - pattern: 'rulesets/19007209'
     reason: >-
       Ruleset 19007209 was deleted during the 2026-08-29 identity rewrite and
@@ -526,9 +533,11 @@ forbidden:
 
   - pattern: 'docs/AUDIT-2026-07(-27)?\.md|docs/proposals/console-server\.md'
     reason: >-
-      The two audits were merged into docs/AUDIT.md (the July 2026 one is Appendix A)
+      The two audits were merged into one file (the July 2026 one is its Appendix A)
       and the console-server document moved to docs/design/, since it describes what
-      was built rather than a proposal. Corrected 2026-08-21.
+      was built rather than a proposal. Corrected 2026-08-21. Still forbidden after
+      2026-08-30: that merged file now lives at docs/history/AUDIT-2026-07.md, so
+      the path this pattern names is wrong twice over.
 
   - pattern: '^\| after \| 30 \| \*\*0\*\* \|$'
     reason: >-

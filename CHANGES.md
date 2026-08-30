@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 118 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 119 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,20 @@ in this file.
 ## [Unreleased]
 
 ### Fixed
+
+- **`smoke-exec-reenter-control`'s rate was measured on green runs only.** A green run of this arm
+  is by definition a run with at least one hit, so sampling green runs excludes every 0-hit run by
+  construction — the event under investigation could not appear in the evidence gathered about it.
+  The figure recorded in #259 (32 in 120, 26.7%) was biased upward by that conditioning. Over all
+  ten runs including the red one it is **43 hits in 200 boots, 21.5%**, which makes a clean sweep
+  of 20 a 0.79% event — about one PR in 127, not the one in 500 the biased figure implied. A
+  0-hit sweep is now followed by up to `EXEC_REENTER_EXTRA` (15) boots stopping at the first hit,
+  putting the false-red rate at 0.03%; the first 20 always run, so the rate stays comparable
+  across CI runs, which is the only reason this gate was diagnosable. Falsified against the fixed
+  kernel: no hits in 35 boots either, so the extension is not a retry that launders a miss.
+  The accompanying claim that the per-run spread showed a runner-dependent rate is **withdrawn**:
+  chi-square 13.66 on 9 df is p = 0.14, and ten runs cannot resolve a 1.5× variance ratio.
+
 
 - **Two required gates passed on twenty boots that never happened.** `smoke-exec-reenter`
   (**[G-9]**) and `smoke-cr3-reclaim` (**[G-10]**) assert that a marker is *absent* and, for a
@@ -56,9 +70,12 @@ in this file.
   only the conclusive ones, fail with a distinct message when too few boots reached the path at
   all, and print the tail of the log when they redden. `smoke-kstack-park-control` was given the
   same treatment in #193; these two were written from the same template and never received it.
-  The rate itself was measured and is unchanged — 32 hits in 120 boots (26.7%) across the six
-  preceding green runs of `main`, against the 25% recorded on 2026-08-17 — so this raises no
-  bound and weakens no assertion: a run where every boot dies still fails.
+  The rate was measured at 32 hits in 120 boots (26.7%) across the six preceding green runs of
+  `main`, and read as unchanged against the 25% recorded on 2026-08-17. **That figure was biased
+  and the reading was wrong** — see the entry above: sampling green runs conditions on `hits ≥ 1`.
+  The unbiased rate is 21.5% and the bound *did* need raising. What stands from this change is
+  the classification and the retained evidence, which raise no bound and weaken no assertion: a
+  run where every boot dies still fails.
   Falsified in three directions (`TESTS.md`).
 
 ### Added

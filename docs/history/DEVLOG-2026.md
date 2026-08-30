@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 118 entries, newest first, each explaining what
+The narrative record of how Horus was built: 119 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,52 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Changed: the rate that justified leaving a gate's bound alone was measured on green runs
+
+Two days of this work rested on a number that was measured wrong, and the way it was wrong is
+worth more than the number.
+
+Investigating why `smoke-exec-reenter-control` reddened PR #258, the arm's rate was read off CI:
+it prints its hit count on success, so the logs carry it. Six consecutive green runs of `main`
+gave 32 hits in 120 boots, 26.7%, against the 25% recorded on 2026-08-17. That agreement was
+taken as confirmation the rate had not drifted, and the conclusion drawn was that
+`EXEC_REENTER_RUNS` was correctly provisioned and raising it would fix a defect that was not
+there.
+
+**The sample was conditioned on the outcome.** A green run of this arm is by definition a run
+with at least one hit. Sampling only green runs therefore excludes every 0-hit run by
+construction -- the exact event being investigated could not appear in the evidence gathered
+about it. The agreement with 25% was not confirmation; both figures were drawn the same biased
+way.
+
+Including the red run and every run since gives **43 hits in 200 boots across ten runs, 21.5%**.
+At 21.5% a clean sweep of 20 is `(1-0.215)^20` = 0.79%, about one PR in 127 -- not the 0.2% (one
+in 500) that the biased figure implied. On a required gate that is a spurious red roughly every
+four months of steady work, which is not acceptable and is not what "correctly provisioned"
+means.
+
+A second claim made along the way was also too strong. The observations
+(6, 5, 4, 6, 3, 8, 0, 2, 5, 4) have sample variance 5.12 against a binomial 3.38, a ratio of
+1.52, and this was described as the data not supporting a fixed p -- runner-dependent rates, the
+`smoke-kstack-park` story again. The dispersion test says otherwise: chi-square 13.66 on 9
+degrees of freedom is p = 0.14, nowhere near significant. Ten runs cannot resolve a 1.5x variance
+ratio. The honest statement is that the pooled rate is 21.5% and the spread is consistent with
+chance.
+
+The repair keeps the measurement and fixes the bound. The first `EXEC_REENTER_RUNS` boots always
+run, so the hit count stays comparable across CI runs -- that comparability is the only reason
+this gate was diagnosable at all, and an early-exit loop would have destroyed it. Only when that
+sweep finds nothing do up to `EXEC_REENTER_EXTRA` (15) further boots follow, stopping at the
+first hit, so the common case costs nothing and the false-red rate falls to 0.03%. It is not a
+retry that launders a real miss: on a kernel without the defect there are no hits in 35 boots
+either, which is what the `EXEC_REENTER_CONTROL_FLAG=0` arm asserts and was run to confirm.
+
+The lesson generalises past this gate. **Reading a rate off historical CI logs samples only the
+runs that were kept, and for a gate the runs that were kept are the ones that passed.** Any rate
+derived that way is conditioned on the gate's own verdict.
 
 ---
 
@@ -87,6 +133,11 @@ preceding green runs of `main` it hit **32 times in 120 boots (26.7%)**, against
 recorded on 2026-08-17. The rate had not moved, and a laptop run taken afterwards agreed (5 in
 20). So `EXEC_REENTER_RUNS` was not under-provisioned and raising it would have been a fix to
 a defect that was not there. A clean sweep of 20 is `(1-0.267)^20` ≈ 0.2%.
+
+> **Superseded the same day.** That sample was six *green* runs, which conditions on `hits >= 1`
+> and excludes every 0-hit run by construction. The unbiased rate over ten runs is 21.5%, a clean
+> sweep of 20 is 0.79%, and the bound *did* need raising. The measurement above is left as taken;
+> the inference drawn from it is withdrawn. See the entry on green-run sampling.
 
 That estimate carries a proviso — *provided every boot actually ran* — and the proviso is the
 real finding. The arm scored a boot two ways: the marker appeared, or it did not. A boot that

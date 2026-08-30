@@ -22,6 +22,13 @@ mktree () {           # $1 = scratch dir
   for f in gate-exceptions.yml invariants.yml; do
     [ -f "$ROOT/.github/$f" ] && cp "$ROOT/.github/$f" "$1/.github/"
   done
+  # R7 asks whether the `enforced by` column names code that exists, so the
+  # scratch tree needs a corpus. Without one the rule SKIPS -- a partial tree
+  # cannot answer the question, and answering "no" there would fail every other
+  # arm for the wrong reason -- which would make an R7 arm silently vacuous.
+  mkdir -p "$1/src" "$1/rust"
+  cp -r "$ROOT/src/kernel" "$1/src/" 2>/dev/null
+  cp -r "$ROOT/rust/src" "$1/rust/" 2>/dev/null
   return 0
 }
 
@@ -99,6 +106,39 @@ arm R6 "an exemption that has outlived its reason" \
 # R6b -- an exemption for an id that is not in the table at all.
 arm R6 "an exemption for an unknown invariant id" \
   "printf 'exempt:\n  S999:\n    witnessed_by: nothing at all\n    reason: >-\n      this identifier does not appear anywhere in the security property table\n' > .github/invariants.yml"
+
+# R7 -- the `enforced by` column names code that does not exist. Parsed into a
+# variable and never used until 2026-08-30, so a row could name a function that
+# had been renamed or deleted and every other rule still passed: the witness half
+# of the table checked thoroughly and the mechanism half taken on trust.
+arm R7 "an enforced-by column naming a function that does not exist" \
+  "python3 - <<'P'
+import re
+ls=open('SECURITY.md',encoding='utf-8').read().split('\n')
+for i,l in enumerate(ls):
+    if l.startswith('| S3 |'):
+        c=l.split('|')
+        c[3]=c[3].replace('rust_cap_revoke_global','rust_cap_revoke_renamed_away')
+        ls[i]='|'.join(c); break
+else: raise SystemExit(1)
+open('SECURITY.md','w',encoding='utf-8').write('\n'.join(ls))
+P"
+
+
+# R8 -- a property cited nowhere in the code that carries it. The reverse of R7,
+# and the half a reader needs when they are about to CHANGE something: 20 of 56
+# S-numbers appeared nowhere outside prose until 2026-08-30, so somebody editing
+# rust_cap_revoke_global could not see that S3 and S4 depended on it.
+arm R8 "a property cited nowhere in the shipping tree" \
+  "python3 - <<'P'
+import re,os
+# Remove every mention of S38 from the copied sources, leaving the row in place.
+for dp,_d,ns in os.walk('src'):
+    for n in ns:
+        if not n.endswith(('.c','.h')): continue
+        q=os.path.join(dp,n); t=open(q,encoding='utf-8',errors='ignore').read()
+        if 'S38' in t: open(q,'w',encoding='utf-8').write(t.replace('S38','S-redacted'))
+P"
 
 echo
 echo "arms caught: $PASSES   not caught: $FAILS"

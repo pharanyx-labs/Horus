@@ -1,0 +1,205 @@
+# Which smoke-* target is a control arm, and which base gate each one extends.
+#
+# WHY THIS FILE EXISTS. tools/check_gate_pairs.py used to decide "is this a
+# control arm" by testing whether the string `control` appeared in the target
+# NAME. Four falsification arms are named otherwise -- smoke-kfault-legacy and
+# the three smoke-resume-guard-{legacy,nofloor,preclaim} -- and were counted as
+# base gates. Nothing was left unprotected by that: all four run in CI and assert
+# their markers exactly as a `-control` arm does. What was wrong was the COUNT,
+# and both figures it produced are published and gated by doc-claims, so a
+# documented number rested on a string match.
+#
+# WHY IT IS DECLARED RATHER THAN DERIVED. Three derivations were tried and each
+# is wrong in a different direction, measured 2026-08-30:
+#
+#   by NAME       69 arms, missing the four above
+#   by BUILD      87, because DEFECT_FLAGS holds instruments and policy opt-ins
+#                 as well as defects. KSTACK_RACE_WIDEN, RNG_UNSEEDED_PROBE,
+#                 SYSCALL_COVERAGE and KSTACK0_PARK_TRACE are each called "not a
+#                 defect" in CLAUDE.md, and two are deliberately set in BOTH arms
+#                 of a pair. smoke-heap64 and smoke-rng-seed are base gates that
+#                 boot a defect-exposing configuration on purpose.
+#   by ASSERTION  17 disagreements: many arms drive a bespoke script rather than
+#                 tools/smoke_test.sh, so there is no marker to read.
+#
+# The distinction is a statement about INTENT -- does this target exist to prove
+# the defect reproduces, or to prove the property holds -- and intent is not
+# recoverable from the Makefile. So it is written down, the same bargain
+# .github/ci-gating.yml makes for jobs: a target may be either, but not
+# silently. check_gate_pairs.py fails the build if any smoke-* target is absent
+# from this file, so a new one cannot inherit a classification by being named
+# like an old one.
+
+control_arms:
+  smoke-captest-capenum-control: smoke-captest
+  smoke-captest-clock-control: smoke-captest
+  smoke-captest-devcap-control: smoke-captest
+  smoke-captest-getline-control: smoke-captest
+  smoke-captest-irq-ack-control: smoke-captest
+  smoke-captest-mint-hang-control: smoke-captest
+  smoke-captest-poll-notify-control: smoke-captest
+  smoke-claim-release-control: smoke-claim-release
+  smoke-cr3-reclaim-control: smoke-cr3-reclaim
+  smoke-defect-flags-control: smoke-defect-flags
+  smoke-defect-flags-rebuild-control: smoke-defect-flags-rebuild
+  smoke-defer-exemption-control: smoke-defer-exemption
+  smoke-devcap-irq-control: smoke-devcap
+  smoke-devcap-object-control: smoke-devcap
+  smoke-devcap-ports-control: smoke-devcap
+  smoke-exec-reenter-control: smoke-exec-reenter
+  smoke-fork-arena-control: smoke-fork
+  smoke-fork-cspace-flat-control: smoke-fork
+  smoke-fork-cspace-orphan-control: smoke-fork
+  smoke-fork-share-control: smoke-fork
+  smoke-forkexec-reset-control: smoke-forkexec
+  smoke-forkexec-root-control: smoke-forkexec
+  smoke-fpu-leak-control: smoke-fpu
+  smoke-fpu-save-control: smoke-fpu
+  smoke-frame-dma-control: smoke-frame
+  smoke-frame-index-control: smoke-frame
+  smoke-frame-info-control: smoke-frame
+  smoke-frame-pages-control: smoke-frame
+  smoke-frame-region-control: smoke-frame
+  smoke-frame-region-wide-control: smoke-frame
+  smoke-frame-rights-control: smoke-frame
+  smoke-fs-wal-flush-control: smoke-fs-wal-flush
+  smoke-fs-wal-order-control: smoke-fs-wal-order
+  smoke-iommu-teardown-control: smoke-iommu-teardown
+  smoke-kfault-legacy: smoke-kfault
+  smoke-klog-forge-abi-control: smoke-klog-forge
+  smoke-klog-forge-control: smoke-klog-forge
+  smoke-ksp-guard-control: smoke-ksp-guard
+  smoke-kstack-park-control: smoke-kstack-park
+  smoke-kstack-race-control: smoke-kstack-race
+  smoke-libhorus-retry-control: smoke-libhorus
+  smoke-libhorus-strncpy-control: smoke-libhorus
+  smoke-measured-boot-required-control: smoke-measured-boot-required
+  smoke-measured-boot-required-volume-control: smoke-measured-boot-required
+  smoke-net-decode-control: smoke-net
+  smoke-net-iommu-control: smoke-net
+  smoke-net-irq-storm-control: smoke-net
+  smoke-net-mask-control: smoke-net
+  smoke-net-msi-vector-control: smoke-net
+  smoke-net-msix-table-control: smoke-net
+  smoke-newlib-dotdot-control: smoke-newlib
+  smoke-newlib-walk-control: smoke-newlib
+  smoke-nzcow-arena-control: smoke-nzcow
+  smoke-passwd-probe-control: smoke-passwd-probe
+  smoke-passwd-probe-legacy-control: smoke-passwd-probe
+  smoke-proc-taskinfo-control: smoke-proc
+  smoke-repro-sha-control: smoke-repro-sha
+  smoke-resume-guard-ist-control: smoke-resume-guard-ist
+  smoke-resume-guard-legacy: smoke-resume-guard
+  smoke-resume-guard-negative-control: smoke-resume-guard-negative
+  smoke-resume-guard-nofloor: smoke-resume-guard
+  smoke-resume-guard-preclaim: smoke-resume-guard
+  smoke-rng-seed-control: smoke-rng-seed
+  smoke-shlib-aslr-control: smoke-shlib-aslr
+  smoke-shlib-data-init-control: smoke-shlib
+  smoke-shlib-data-shared-control: smoke-shlib
+  smoke-shlib-info-control: smoke-shlib
+  smoke-shlib-info-object-control: smoke-shlib
+  smoke-shlib-writable-control: smoke-shlib
+  smoke-spawn-owner-control: smoke-spawn-owner
+  smoke-switch-commit-control: smoke-switch-commit
+  smoke-vfs-mount-control: smoke-vfs
+  smoke-vfs-prefix-control: smoke-vfs
+
+# Base gates: the targets that assert a property HOLDS. Listed rather than
+# inferred as "everything else", because defaulting an unclassified target to
+# "gate" is exactly the failure this file fixes: an arm silently counted as a
+# gate is an arm nobody notices is missing its pair.
+gates:
+  - smoke-aslr
+  - smoke-aspace
+  - smoke-captest
+  - smoke-claim-release
+  - smoke-console
+  - smoke-console-isolation
+  - smoke-console-smp
+  - smoke-console-smp-stress
+  - smoke-coreutils-shell
+  - smoke-cow
+  - smoke-cpu
+  - smoke-cr3-reclaim
+  - smoke-defect-flags
+  - smoke-defect-flags-rebuild
+  - smoke-defer-exemption
+  - smoke-devcap
+  - smoke-e820
+  - smoke-elf
+  - smoke-elf64
+  - smoke-exec-reenter
+  - smoke-flush
+  - smoke-fork
+  - smoke-forkexec
+  - smoke-fpu
+  - smoke-frame
+  - smoke-fs
+  - smoke-fs-conc
+  - smoke-fs-large
+  - smoke-fs-perms
+  - smoke-fs-persist
+  - smoke-fs-wal
+  - smoke-fs-wal-flush
+  - smoke-fs-wal-order
+  - smoke-heap64
+  - smoke-init-fs
+  - smoke-iommu-teardown
+  - smoke-ioport
+  - smoke-irq
+  - smoke-irq-policy
+  - smoke-kfault
+  - smoke-klog-forge
+  - smoke-ksp-guard
+  - smoke-kstack-park
+  - smoke-kstack-race
+  - smoke-libhorus
+  - smoke-mapphys
+  - smoke-measured-boot-required
+  - smoke-modules
+  - smoke-modules-tamper
+  - smoke-net
+  - smoke-net-intx
+  - smoke-newlib
+  - smoke-newlib-tamper
+  - smoke-notify
+  - smoke-nzcow
+  - smoke-passwd-probe
+  - smoke-percpu
+  - smoke-pipe
+  - smoke-preempt
+  - smoke-proc
+  - smoke-recvblock
+  - smoke-recvblock-smp
+  - smoke-repro-sha
+  - smoke-resume-guard
+  - smoke-resume-guard-ist
+  - smoke-resume-guard-negative
+  - smoke-rng-seed
+  - smoke-sched-invariants
+  - smoke-sched-invariants-stress
+  - smoke-session
+  - smoke-session-smp
+  - smoke-session-smp-soak
+  - smoke-shlib
+  - smoke-shlib-aslr
+  - smoke-shlibc
+  - smoke-shlibc-link
+  - smoke-signal
+  - smoke-smp
+  - smoke-smt
+  - smoke-spawn-owner
+  - smoke-stackguard
+  - smoke-switch-commit
+  - smoke-syscall-coverage
+  - smoke-tcc
+  - smoke-term
+  - smoke-tpm
+  - smoke-tpm-seal
+  - smoke-tpm-seal-roundtrip
+  - smoke-tpm-tamper
+  - smoke-tsd
+  - smoke-vfs
+  - smoke-wx
+  - smoke-wx-smp

@@ -300,6 +300,8 @@ static void wx_walk(uint64_t table_phys, int level, int w, int nx) {
     }
 }
 
+/* Carries S8: no kernel page is simultaneously writable and executable. Sweeps
+ * every leaf PTE rather than sampling, and S9's guard pages with it. */
 void wx_selftest(void) {
     extern uint64_t pml4[512];
     extern uint8_t __text_start[], __text_end[];

@@ -17,6 +17,48 @@ in this file.
 
 ### Fixed
 
+- **The two assurance gaps this audit recorded rather than closed are now closed**
+  (`docs/LIMITATIONS.md` §1.10 and §1.11, both rewritten as CLOSED).
+
+  **§1.10, a gate was classified as a control arm by its NAME.** `check_gate_pairs.py` tested for
+  the substring `control`, so four falsification arms named otherwise counted as base gates, and
+  both figures it produced are published and gated: 69 arms and 97 gates against a true **73 and
+  93**. The `doc-claims` job caught both the moment the classification became honest, which is
+  the gate doing its job on a number that had been wrong for weeks.
+
+  Three derivations were tried and each is wrong differently, measured: by **name** 69, missing
+  the four; by **build** 87, because `DEFECT_FLAGS` holds instruments and policy opt-ins as well
+  as defects, four of which `CLAUDE.md` calls *"not a defect"* and two of which are deliberately
+  set in **both** arms of a pair; by **assertion** 17 disagreements, because many arms drive a
+  bespoke script and have no marker to read. The distinction is a statement about *intent*, which
+  is not recoverable from the Makefile, so `.github/gate-pairs.yml` now names all 166 targets:
+  each arm with the base gate it extends, and each gate. A target in neither list fails the build
+  instead of inheriting a classification by being named like an old one, which is the same bargain
+  `ci-gating.yml` makes for jobs.
+
+  **§1.11, the `enforced by` column was parsed and discarded.** `check_invariants.py` bound only
+  the witness, so the column naming the code that makes a property true could name a function
+  that had been renamed or deleted and all six rules still passed: the witness half checked
+  thoroughly, the mechanism half taken on trust. **R7** validates it, 236 tokens, all resolving
+  when the rule was added. **R8** covers the reverse, which is the half a reader needs when
+  changing something: 20 of 56 S-numbers appeared nowhere outside prose, so somebody editing
+  `rust_cap_revoke_global` could not see that S3 and S4 depended on it. **All 56 are cited at
+  their enforcing site now.**
+
+  There is no exemption list for R8, and that is a finding rather than an omission. Five
+  properties looked as though they had no site, being about the build rather than the kernel:
+  reproducible images, documented numbers, Kani, Miri, and `unsafe` documentation. Each turned
+  out to have one, the tool that enforces it. A property with nowhere to be cited from is a
+  property nothing enforces.
+
+  Falsified: `test_check_gate_pairs.sh` is new with **seven** arms, and
+  `test_check_invariants.sh` grows from eight to **ten**. Both include an arm asserting an
+  unmutated tree PASSES, because the "is it caught" arms are otherwise satisfied by a checker
+  that rejects everything.
+
+
+### Fixed
+
 - **`main` went red because a repository this project does not use returned 403.** On
   2026-08-30 `packages.microsoft.com` answered 403 for a few minutes. `apt-get update` exits
   non-zero when **any** configured repository fails, including the vendor lists GitHub's runner

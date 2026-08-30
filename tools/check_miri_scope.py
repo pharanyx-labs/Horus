@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Fail the build if a Rust test module is neither run under Miri nor excused.
+"""Carries SECURITY.md S33: the security core's unsafe FFI code is free of the
+undefined behaviour Miri detects.
+
+Fail the build if a Rust test module is neither run under Miri nor excused.
 
 Miri is the only check in this tree that looks for undefined behaviour, and the
 `unsafe` it exists for is spread across four modules at the C FFI boundary. A new

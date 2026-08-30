@@ -326,6 +326,9 @@ static void h_brk(struct interrupt_frame64 *r) {
  *
  * Witness: `make smoke-klog-forge`. Falsified by `KLOG_WRITE_UNGATED=1`
  * (`make smoke-klog-forge-control`), which restores the unconditional append. */
+/* Carries S23: a ring-3 task cannot forge entries into the kernel message ring,
+ * nor evict what is already there. The console write stays ungated; the klog
+ * append below is what requires CAP_KERNEL_LOG with WRITE ([H-2]). */
 static void h_write(struct interrupt_frame64 *r) {
     int fd = r->rbx;
     void *buf = (void*)(addr_t)r->rcx;
@@ -709,6 +712,8 @@ static void h_task_info(struct interrupt_frame64 *r) {
  * timer interrupt only ever increments, widened to 64 bits on 2026-08-24
  * because at 100 Hz a u32 wraps after ~497 days, and a clock that goes
  * backwards makes every timeout built on it fire early or never. */
+/* Carries S34: a clock is available to ring 3 without restoring the timer
+ * CR4.TSD denies. The resolution is deliberately a whole tick. */
 static void h_clock_gettime(struct interrupt_frame64 *r) {
     uint32_t clock_id = (uint32_t)r->rbx;
     struct horus_timespec *out = (struct horus_timespec *)(addr_t)r->rcx;
@@ -759,6 +764,8 @@ static void h_clock_gettime(struct interrupt_frame64 *r) {
  * too would make this syscall a task-existence oracle for a caller that holds
  * CAP_DEBUG but was refused task info -- a combination that should not arise,
  * but the cheaper answer is not to depend on that. */
+/* Carries S32: the capability graph is observable, under an authority that
+ * observes and nothing more. */
 static void h_cap_enumerate(struct interrupt_frame64 *r) {
     int      tid  = (int)r->rbx;
     uint32_t slot = (uint32_t)r->rcx;
@@ -1562,6 +1569,9 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
  * fill in. (C cannot check the function pointer itself in a static assert; a
  * still-missing entry stays NULL and fails closed at runtime, and adding an
  * entry past the array bound is already a hard compiler error.) */
+/* Carries S6: an unknown or reserved syscall number cannot reach a handler.
+ * The bound check in syscall_handler fails closed at runtime; this assertion is
+ * what stops a new number being added without its table entry. */
 _Static_assert(SYSCALL_TABLE_SIZE == SYS_SHLIB_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");

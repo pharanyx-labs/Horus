@@ -49,6 +49,9 @@ int staged_owner_task = -1;
 /* Commit an arm: publish the staged image together with its owner. The only way
  * to set program_armed, so an image cannot become consumable without recording
  * who armed it. */
+/* Carries S21: a program image can only be spawned by the task that armed it.
+ * staged_owner_task is the whole mechanism, and [G-11] is what happens without
+ * it: SYS_SUDO consumed whatever image was armed, by whoever armed it. */
 void loader_arm_commit(void) {
     staged_owner_task = get_current_task();
     program_armed = 1;

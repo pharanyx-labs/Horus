@@ -1625,6 +1625,17 @@ property was broken. `tools/check_base_gate_reddens.sh` derives the pairs from
 on purpose: each pair is a clean rebuild plus a boot, so the sweep is hours, and it belongs
 before promoting an arm or during an audit rather than on every pull request.
 
+**Which smoke target is a control arm is declared, not inferred, since 2026-08-30.**
+`.github/gate-pairs.yml` names all 166 targets: each control arm with the base gate it extends,
+and each base gate. `check_gate_pairs.py` refuses a target in neither list. It replaced a
+substring test for `control` in the target name, which missed four arms and made two published
+counts wrong (69/97 against a true 73/93). Falsified seven ways by `tools/test_check_gate_pairs.sh`.
+
+**The property table's `enforced by` column is validated, and every S-number is cited from the
+code that carries it, since 2026-08-30.** `check_invariants.py` gained R7 (every backticked path
+and identifier in that column must exist; 236 tokens) and R8 (every S-number must appear in the
+shipping tree; 20 of 56 did not). Ten arms in `tools/test_check_invariants.sh`, one per rule.
+
 **No build depends on a repository this project does not use, gated since 2026-08-30.**
 `tools/check_apt_hardening.py` (required job `apt-hardening`) refuses a raw `apt-get` in any
 workflow: every install goes through `.github/actions/apt`, which strips the runner image's

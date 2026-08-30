@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 117 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 118 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,34 @@ in this file.
 ## [Unreleased]
 
 ### Fixed
+
+- **Two required gates passed on twenty boots that never happened.** `smoke-exec-reenter`
+  (**[G-9]**) and `smoke-cr3-reclaim` (**[G-10]**) assert that a marker is *absent* and, for a
+  documented and still-correct reason, do not assert any boot's exit status — so an absence over
+  boots that never ran satisfied them. Demonstrated by starving the boot timeout: `make
+  smoke-exec-reenter EXEC_REENTER_TIMEOUT=2` exited 0 with `PASS - no CPU took another CPU's exec
+  re-entry in 20 boots at -smp 4`, every boot having died at GRUB; `smoke-cr3-reclaim` likewise.
+  Both now count boots that reached the path and refuse to conclude below a floor, which keeps the
+  ~7% stall tolerance the marker-only assertion exists for. Falsified both ways: starved, red with
+  `the gate never ran the experiment`; unstarved, PASS over 20 live boots.
+- **`smoke-defer-exemption-control` discarded every boot into `grep -q`.** A boot that died and a
+  boot that ran cleanly were the same observation and the failure message could name neither. It
+  now captures, classifies HIT / clean / INCONCLUSIVE, and prints each attempt's tail. Found by
+  sweeping for the shape fixed in #259 rather than by it failing.
+
+### Added
+
+- **`tools/check_gate_evidence.py`, required via the existing `gate-pairs` job.** Every `smoke-*`
+  target that boots more than once must be declared in `.github/gate-evidence.yml`: either with
+  the marker and floor it uses to count live boots — both real Makefile variables, the marker read
+  by a `grep` and the floor compared against in a numeric test — or with a written reason naming
+  the mechanism it uses instead. Declarative rather than inferred, because the sweep that found
+  the defect flagged six targets and **four were false positives**, each establishing liveness
+  correctly in a different way; a checker that rejected those would have been routed around.
+  Falsified six ways, and rule 3 failed first: it accepted a floor that was merely *present* in
+  the recipe, which a floor quoted in the failure message satisfies while the comparison beside it
+  reads `-lt 0`.
+
 
 - **Two control arms scored a dead boot as a miss, and deleted the evidence either way.**
   `smoke-exec-reenter-control` (**[G-9]**) and `smoke-cr3-reclaim-control` (**[G-10]**) treated a

@@ -1555,6 +1555,21 @@ jobs:
       # six "is it caught" arms are satisfied by a checker that rejects everything.
       - name: Falsify every rule of the checker
         run: ./tools/test_check_gate_pairs.sh
+      # A gate that boots N times and asserts a marker is ABSENT is satisfied by
+      # N boots that never happened. On 2026-08-30 both halves of the [G-9] pair
+      # were in that state: with the boot timeout starved to 2s, every boot died
+      # at GRUB and `make smoke-exec-reenter` still exited 0 reporting "no CPU
+      # took another CPU's exec re-entry in 20 boots at -smp 4". Two required
+      # gates, green, over twenty boots that did not occur.
+      - name: Refuse a multi-boot gate that cannot tell a dead boot from a pass
+        run: python3 tools/check_gate_evidence.py
+      # Six arms. Rule 3 is the one that matters and it is the one that failed
+      # first: the rule accepted the floor being merely PRESENT in the recipe,
+      # which a floor quoted in the failure message satisfies. The sixth arm
+      # asserts the unmutated tree passes, since five "is it caught" arms are
+      # all satisfied by a checker that rejects everything.
+      - name: Falsify every rule of the evidence checker
+        run: ./tools/test_check_gate_evidence.sh
 
   defer-exemption:
     name: "The claim audit's exemption outlives the release it exempts (G-9; control arm proves it)"

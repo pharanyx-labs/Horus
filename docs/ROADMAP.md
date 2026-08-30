@@ -106,6 +106,11 @@ is the precondition for any confinement, sandboxing, or MAC story.
 `.bss` arrays under a hard 16 MiB linker ceiling. No retyping discipline, no per-task
 kernel-memory accounting, hard ceiling on system size.
 
+*This list was missing the one that actually bound the ceiling.* `per_task_kstacks` — one 64 KiB
+`.bss` slot per task — was **4 MiB**, against a `tasks[]` of 72 KiB. Moving the table this
+paragraph names would have shifted the limit by nothing. See `docs/LIMITATIONS.md` §3.1 for the
+chain, and for why the 16 MiB ceiling is `KERN_SPLIT_PDES` rather than a policy number.
+
 **Change.** Follow seL4. `CAP_UNTYPED` names a physical region; `SYS_RETYPE(untyped, type,
 count, dest_slots)` carves typed objects (TCB, CNode, Endpoint, Notification, Frame, PageTable)
 out of it. Objects are destroyed when the last capability to them is revoked.
@@ -147,6 +152,20 @@ capability type names it and no syscall installs one as a task's cspace, so mint
 authority with no defined meaning (revisit with 2.3). Reclaiming a dead task's cspace needs
 `cap_lookup`'s NULL-cspace → root-cnode fallback removed first, or freeing one would be an
 authority escalation rather than a crash.
+
+**The MEMORY half of this remainder closed on 2026-08-30, and the AUTHORITY half did not.** The
+per-task kernel stacks left `.bss` for a region under `high_pdpt[511]`, `g_kstack_inflight` stopped
+being one word sized by an assumption about `MAX_TASKS`, the arena's kernel and user halves were
+given independent sizes, and the ceiling went 64 → 256 with the image 3.8 MiB *smaller* than
+before. Witness `make smoke-task-ceiling`, falsified one arm per rule.
+
+That is a bigger number, not a different kind of thing, and this item stays `◧` for exactly that
+reason. What keeps **[I-7]** open is unchanged: a TCB is not an object a capability names, so the
+task-creating syscalls still gate on the slot-3 decoy (`docs/LIMITATIONS.md` §1.6b, and the
+2026-08-30 audit's finding 4.1), and `cap_lookup`'s fallback still has to go before a dead task's
+cspace can be reclaimed. `KOBJ_TASK` is the remaining work, and it sequences *after* that
+fallback rather than before it — a task object whose cspace slot can be NULL is a task object the
+fallback turns into a root cnode.
 
 ---
 
@@ -1492,7 +1511,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 167 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 74 of them control arms that must reproduce a defect |
+| ✅ | 170 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 76 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---
@@ -1515,7 +1534,8 @@ been pushed about as far as it goes without one, and 4.1 now says so without als
 `CODEOWNERS` repair that landed a month ago.
 
 **Track 0 is complete** (0.1, 0.2, 0.3 all landed 2026-07-27), with 0.3 marked `◧` for the
-`tasks[]` remainder that keeps **[I-7]** open. The object model is true: IPC is
+`tasks[]` remainder that keeps **[I-7]** open — the *authority* half of it since 2026-08-30, the
+memory half having closed with the task ceiling going 64 → 256. The object model is true: IPC is
 capability-addressed, ambient root authority is retired, and creating a kernel object is an
 exercise of authority the capability graph describes.
 

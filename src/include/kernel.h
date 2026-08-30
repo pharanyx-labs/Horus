@@ -118,10 +118,45 @@ extern uint8_t *g_vdisk_backing;                             /* set at boot -> P
  * table is a hard ceiling on system size that costs image budget whether or not
  * it is used. Pool RAM costs neither.
  *
- * 4 MiB holds 512 CNodes, or ~15000 endpoints, against the 512 KiB of `.bss` the
- * static cspace_pool alone used to cost. Sized generously because it is pool
- * frames out of a ~495 MiB E820 pool, not image bytes. */
-#define UNTYPED_ARENA_BYTES     (4u * 1024u * 1024u)
+ * Sized generously because it is pool frames out of a ~495 MiB E820 pool, not
+ * image bytes.
+ *
+ * ---- THE TWO HALVES ARE SIZED SEPARATELY, AND THAT IS THE POINT -----------
+ *
+ * untyped_init splits this arena once, at boot, into a KERNEL half (the per-task
+ * cspaces, which no capability ever names and ring 3 cannot reach) and a USER
+ * half (UNTYPED_ROOT, which init holds and delegates onward). The comment there
+ * gives the reason: a single region for both would make "userspace exhausted
+ * kernel memory" and "the system can no longer create a task" the same event.
+ *
+ * The sizing did not honour that separation. The TOTAL was a fixed 4 MiB and the
+ * kernel half was carved out of it, so the user half was the remainder -- and
+ * raising MAX_TASKS silently SHRANK what userspace could ever allocate. The two
+ * were still coupled, just through subtraction rather than through sharing, and
+ * a `_Static_assert` in untyped.c was the only thing standing between a routine
+ * ceiling bump and a quietly tighter security bound.
+ *
+ * That matters because the user half is the number the documented denial-of-
+ * service reasoning rests on: `MAX_FRAME_PAGES` is 64 pages (256 KiB) precisely
+ * because a frame that could span the arena would starve every other object
+ * class (docs/LIMITATIONS.md, and S36). A bound that moves when an unrelated
+ * constant moves is not a bound.
+ *
+ * So the USER half is now the fixed quantity -- 3.5 MiB, exactly what it was at
+ * MAX_TASKS == 64, so no documented ratio changes -- and the kernel reserve is
+ * DERIVED from MAX_TASKS and added on top. Raising the task ceiling now costs
+ * pool frames, which are plentiful, and costs userspace nothing at all. */
+#define CNODE_SIZE              256
+#define MAX_TASKS               256
+
+/* One cspace, rounded as untyped.c's allocator will round it (KOBJ_ALIGN, 64).
+ * Kept in step with that file by the _Static_assert there, which recomputes the
+ * reserve from the same inputs and fails the build if this under-provides. */
+#define UNTYPED_KERNEL_BYTES    ((uint64_t)MAX_TASKS * \
+                                 (((CNODE_SIZE * 32u) + 63u) & ~63u))
+/* The user half: fixed, and the number every published arena bound refers to. */
+#define UNTYPED_USER_BYTES      (3u * 1024u * 1024u + 512u * 1024u)
+#define UNTYPED_ARENA_BYTES     (UNTYPED_KERNEL_BYTES + UNTYPED_USER_BYTES)
 #define UNTYPED_ARENA_PAGES     (UNTYPED_ARENA_BYTES / PAGE_SIZE)
 extern uint8_t *g_untyped_arena;   /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES + VDISK_BYTES) */
 
@@ -191,8 +226,9 @@ void storage_tpm_kek_selftest(void);
  * even a tiny E820 pool still boots with the historical headroom. */
 #define PHYS_POOL_MIN_PAGES     (4096 + POOL_RESERVE_PAGES)   /* floor: 16 MiB usable + reserves */
 #define PHYS_POOL_CEIL          0x40000000ULL       /* pool top must stay < 1 GiB (PHYS_KVA) */
-#define CNODE_SIZE              256
-#define MAX_TASKS               64
+/* CNODE_SIZE and MAX_TASKS moved ABOVE the untyped arena (see there): the
+ * arena's kernel reserve is derived from them now rather than competing with
+ * them for a fixed total. */
 #define MAX_CAPS_PER_TASK       128
 #define KERNEL_RESERVED_CAPS    4
 #define MAX_REV_SETS            8
@@ -1797,9 +1833,20 @@ void sched_enable_preemption(void);
  * stack. interrupt_handler64 tests it on entry: a CPU arriving in an ISR for a
  * task another CPU has not finished leaving means two CPUs on one kernel stack,
  * which is memory corruption in progress and halts. One load and a bit test on
- * the common path; MAX_TASKS is 64, so one word covers every task exactly.
- * sched_kstack_holder() names the other CPU and is for the report only. */
-extern volatile uint64_t g_kstack_inflight;
+ * the common path. sched_kstack_holder() names the other CPU and is for the
+ * report only.
+ *
+ * AN ARRAY, sized from MAX_TASKS. This line used to read "MAX_TASKS is 64, so
+ * one word covers every task exactly" -- a correctness argument about a witness
+ * in one file, resting on a constant in another, and one whose failure is
+ * SILENT: at MAX_TASKS > 64 the shift wraps and the detector answers about the
+ * wrong task instead of refusing. Use kstack_inflight_test() rather than
+ * indexing this directly; scheduler.c derives the word and the bit from one
+ * expression and asserts the width at compile time. */
+extern volatile uint64_t g_kstack_inflight[];
+/* Is task `t` in the deferred-release window on some CPU's kernel stack? The
+ * caller bounds-checks `t`. */
+int kstack_inflight_task(int t);
 void sched_release_deferred(void);
 int  sched_kstack_holder(int t);
 
@@ -2316,7 +2363,17 @@ int  user_protect_page(uint64_t vaddr, int writable, int executable);
  * guards: guard pages live inside .bss and are armed by being made ABSENT, so
  * only a page-table question can tell a real stack from the guard beside it. */
 int kern_addr_present(uint64_t vaddr);
+/* Is `vaddr` inside the per-task kernel-stack region (paging.c)? The scheduler's
+ * resume-%rsp range guard needs the bound and must not keep a second copy of it. */
+int kstack_region_contains_ksp(uint64_t vaddr);
 uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr);
+#ifdef TASKCEIL_SELFTEST
+/* Witness that MAX_TASKS > 64 is real: an alias pair (t, t-64) must have
+ * distinct kernel stacks, distinct cspaces, and independent inflight bits.
+ * Declared out here rather than beside aspace_selftest, which is inside
+ * `#ifdef ASPACE_SELFTEST` -- a flag this build does not set. */
+void taskceiling_selftest(void);
+#endif
 #ifdef ELF_SELFTEST
 void elf_loader_selftest(void);
 #endif

@@ -109,7 +109,7 @@ DEFECT_FLAGS = \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
-	SYSCOV_PROBES_ABSENT
+	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1815,6 +1815,35 @@ CFLAGS  += -DASPACE_SELFTEST
 ASFLAGS += -DASPACE_SELFTEST
 endif
 
+# TASKCEIL_SELFTEST=1 drives the task-ceiling witness: an alias pair (t, t-64)
+# must have distinct kernel stacks, distinct cspaces and independent inflight
+# bits. Adds two gated test hooks in scheduler.c for setting the inflight bit,
+# which is why it is a flag and not always on -- the ship kernel must carry no
+# way to set that bit but the release path itself.
+TASKCEIL_SELFTEST ?= 0
+ifeq ($(TASKCEIL_SELFTEST),1)
+CFLAGS  += -DTASKCEIL_SELFTEST
+ASFLAGS += -DTASKCEIL_SELFTEST
+endif
+
+# KSTACK_INFLIGHT_LEGACY_WORD=1 restores the pre-2026-08-30 single-word inflight
+# mask, whose `1ULL << t` aliases task t onto task t-64 at MAX_TASKS > 64. The
+# defect the ceiling lift would have introduced, on demand.
+KSTACK_INFLIGHT_LEGACY_WORD ?= 0
+ifeq ($(KSTACK_INFLIGHT_LEGACY_WORD),1)
+CFLAGS  += -DKSTACK_INFLIGHT_LEGACY_WORD
+ASFLAGS += -DKSTACK_INFLIGHT_LEGACY_WORD
+endif
+
+# KSTACK_SLOT_INDEX_TRUNC=1 truncates the kernel-stack slot index to 6 bits, so
+# task t and task t-64 share one kernel stack: S20 by construction rather than
+# by race.
+KSTACK_SLOT_INDEX_TRUNC ?= 0
+ifeq ($(KSTACK_SLOT_INDEX_TRUNC),1)
+CFLAGS  += -DKSTACK_SLOT_INDEX_TRUNC
+ASFLAGS += -DKSTACK_SLOT_INDEX_TRUNC
+endif
+
 # NZCOW_SELFTEST=1 makes kernel_main (after paging_init) drive the generic,
 # non-zero copy-on-write break end-to-end: private copy on the shared write, and
 # an in-place upgrade for the sole owner, with correct refcounts. Prints
@@ -2777,6 +2806,43 @@ smoke-aspace:
 	@$(MAKE) --no-print-directory ASPACE_SELFTEST=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ASPACE_SELFTEST: PASS' \
 		FAIL_MARKER='ASPACE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The task ceiling is real, not merely compiled. A boot uses about six tasks, all
+# of them below 64, so every defect the MAX_TASKS 64 -> 256 change could
+# introduce lives in the range no boot visits -- and each of them (an aliased
+# kernel stack, an aliased inflight bit, a short cspace reserve) is silent rather
+# than loud. This drives the top of the range instead.
+smoke-task-ceiling:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TASKCEIL_SELFTEST: PASS' \
+		FAIL_MARKER='TASKCEIL_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm. Restores the single-word inflight mask, under which
+# setting task 255's bit also sets task 191's -- so the gate above must go RED,
+# and it must go red naming the ALIASING rather than any other check, which is
+# why this greps for the marker instead of accepting any failure.
+smoke-task-ceiling-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_INFLIGHT_LEGACY_WORD=1
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_INFLIGHT_LEGACY_WORD=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TASKCEIL_SELFTEST: FAIL setting task 255 also set task 191' \
+		tools/smoke_test.sh boot.iso
+
+# The second falsifying arm, for the other rule. KSTACK_INFLIGHT_LEGACY_WORD
+# blinds the DETECTOR for S20; this creates the CONDITION S20 describes -- two
+# tasks permanently bound to one kernel stack. Two arms rather than one because
+# the checks must be shown to fail independently: with only the first, nothing
+# establishes that the stack-distinctness check can fire at all.
+smoke-task-ceiling-stack-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_SLOT_INDEX_TRUNC=1
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_SLOT_INDEX_TRUNC=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TASKCEIL_SELFTEST: FAIL alias pair shares a kernel stack slot' \
+		tools/smoke_test.sh boot.iso
 
 # Drive the generic (non-zero) copy-on-write break end-to-end: a shared, non-zero
 # COW frame (refcount 2) aliased by two PTEs; the first write must copy to a

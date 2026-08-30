@@ -1428,14 +1428,15 @@ with the library's capabilities.
 
 | Resource | Limit | Where |
 |---|---|---|
-| Tasks | 64 | `MAX_TASKS` |
+| Tasks | 256 | `MAX_TASKS` |
 | Capabilities per task | 128 in use, 256 slots | `MAX_CAPS_PER_TASK`, `CNODE_SIZE` |
 | CPUs | 4 | `MAX_CPUS` |
 | Static endpoints (well-known + per-task reply) | 128 | `MAX_ENDPOINTS` |
 | Retyped endpoint descriptors | 256 | `MAX_DYN_ENDPOINTS`, indices from `DYN_EP_BASE` |
 | Static notifications | 64 | `MAX_NOTIFICATIONS` |
 | Retyped notification descriptors | 256 | `MAX_DYN_NOTIFICATIONS`, indices from `DYN_NOTIF_BASE` |
-| Untyped arena | 4 MiB | `UNTYPED_ARENA_BYTES` |
+| Untyped arena, user half | 3.5 MiB | `UNTYPED_USER_BYTES` |
+| Untyped arena, kernel cspace reserve | 2 MiB (`MAX_TASKS` x 8 KiB) | `UNTYPED_KERNEL_BYTES` |
 | IPC message | 256 bytes | `IPC_MSG_MAX` |
 | Boot modules | 48 | `MAX_BOOT_MODULES` |
 | Volume | 16 MiB | `BLOCKS_PER_DISK` |
@@ -1447,7 +1448,7 @@ until 2026-08-15. Both halves had been false since **[I-7]** landed on 2026-07-2
 document whose §1.2 records the fix.*
 
 There **is** a retyping discipline. `CAP_UNTYPED` + `SYS_RETYPE` carve cspaces, endpoints and
-notifications out of a 4 MiB arena (`src/kernel/untyped.c`), so creating a kernel object is an
+notifications out of the arena (`src/kernel/untyped.c`), so creating a kernel object is an
 exercise of authority the capability graph describes and the memory is attributable to the task
 that holds the untyped capability. The static tables survive as a **shim** below `DYN_EP_BASE`
 / `DYN_NOTIF_BASE` for the well-known service objects and the per-task reply endpoints, which
@@ -1455,11 +1456,63 @@ the boot protocol names positionally; `endpoint_by_index()` is the single resolv
 indexes `endpoints[]` directly any more. The dynamic ceilings above bound only the descriptor
 arrays, not the objects.
 
-What remains genuinely fixed-size is `tasks[]`, a TCB is reachable from the scheduler's hot path
-and from every trap frame, so migrating it is its own change, and reclaiming a dead task's
-cspace additionally needs `cap_lookup`'s NULL-cspace → root-cnode fallback removed first. **An
-OS cannot have a compile-time limit of 64 tasks**: that is the remaining structural obstacle to
-Horus becoming general-purpose, and it is the last piece of **[I-7]**.
+**The task ceiling moved from 64 to 256 on 2026-08-30, and what was actually holding it down was
+not what this section said.** It named `tasks[]` — the TCB table — as the thing to migrate. That
+table is **72 KiB** at 64 tasks. `per_task_kstacks`, a static `.bss` array of one 64 KiB slot per
+task, was **4 MiB**: fifty-six times larger, and 98% of the constraint. Migrating the TCB table
+would have moved the ceiling by nothing at all.
+
+The chain, since none of its links is visible from the array's declaration:
+
+- `linker64.ld` asserts `__bss_end - KERNEL_VMA <= 16 MiB`, because the physical page pool starts
+  at `USER_PHYS_BASE` and nothing else stops the image growing into it. `.bss` was 12.36 MiB, so
+  a 4 MiB array left 3.64 MiB of headroom — `MAX_TASKS` could not even be **doubled**.
+- That 16 MiB is not a policy number. It is `KERN_SPLIT_PDES` (8) × 2 MiB: the window where the
+  kernel's own mapping uses 4 KiB pages rather than 2 MiB ones, and therefore the only window in
+  which a guard page can be expressed at all.
+- The headroom was not free either. GRUB stages the boot modules in the gap between `__bss_end`
+  and the pool base, and nothing checks that. Growing `.bss` toward the assert eats the staging
+  area silently.
+
+So the stacks left `.bss` for a region of their own under `high_pdpt[511]` — one previously
+unused PDPT entry, 1 GiB of kernel-half VA, inside the `pml4[256..511]` range every address
+space shares, so a slot is visible everywhere with nothing to install per address space. Slots
+are bound on first use and kept for the life of the boot (the lifetime the array had), the guard
+page is **never mapped** rather than mapped and then unmapped — which removes the
+before-`smp_bringup` ordering requirement instead of satisfying it — and a slot maps 8 of its 16
+pages, making the unused tail a second guard against an overflow of the slot below. `.bss` fell
+to **8.57 MiB even with `MAX_TASKS` at 256**, so the image is 3.8 MiB *smaller* than it was at 64.
+
+**Three things scaled with the ceiling, and all three fail silently rather than loudly**, which
+is why `make smoke-task-ceiling` exists: a boot uses about six tasks, all below 64, so every
+defect this change could introduce lives in the range no boot visits. The witness asserts on the
+alias pair (255, 191) — the pair each defect makes identical — and is falsified in two
+directions (`KSTACK_INFLIGHT_LEGACY_WORD`, `KSTACK_SLOT_INDEX_TRUNC`).
+
+The sharpest was `g_kstack_inflight`, the standing witness for **S20**: one `uint64_t`, bit *t*
+per task, with `src/include/kernel.h` explaining in one line that *"MAX_TASKS is 64, so one word
+covers every task exactly"*. A correctness argument about a witness in one file, resting on a
+constant in another. At 256, `1ULL << t` is undefined for *t* ≥ 64 and x86 masks the shift to 6
+bits, so the detector does not stop working — **it starts answering about the wrong task**, with
+no report for a genuine collision above 63 and a spurious one below it. It is an array sized from
+`MAX_TASKS` now, with the width asserted at compile time.
+
+**What is left of [I-7] is the part that was always the interesting half**: a TCB is not a
+capability-named object. `tasks[]` is still a fixed array, reclaiming a dead task's cspace still
+needs `cap_lookup`'s NULL-cspace → root-cnode fallback removed first, and the task-creating
+syscalls still gate on the slot-3 decoy (§1.6b). A 256-task ceiling is a bigger number, not a
+different kind of thing; what makes it a different kind of thing is `KOBJ_TASK`.
+
+**And the next ceiling is now the arena's, which is why its halves were separated.** The arena is
+split into a kernel half (the per-task cspaces, which no capability names and ring 3 cannot
+reach) and a user half (`UNTYPED_ROOT`, what `init` delegates onward) — and the sizing did not
+honour that split. The **total** was a fixed 4 MiB and the kernel half was carved out of it, so
+raising `MAX_TASKS` silently **shrank what userspace could ever allocate**. That matters because
+the user half is the number the documented denial-of-service reasoning rests on: `MAX_FRAME_PAGES`
+is 64 pages precisely because a frame that could span the arena would starve every other object
+class. A bound that moves when an unrelated constant moves is not a bound. The user half is the
+fixed quantity now — 3.5 MiB, exactly what it was at `MAX_TASKS` 64, so no documented ratio
+changes — and the kernel reserve is derived from `MAX_TASKS` and added on top.
 
 ### 3.2 ~~`this_cpu()` reads LAPIC MMIO on every call~~: **[I-6]**, fixed
 

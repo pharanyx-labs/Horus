@@ -305,7 +305,12 @@ static void defer_aspace_reclaim(uint64_t cr3)
     }
     /* Full: leak this one. Bounded and deliberate -- never free in use. */
 }
-static void kstack_guards_init(void);   /* defined below per_task_kstacks */
+static void kstack_region_init(void);   /* defined with the kernel-stack region */
+/* The region's two predicates, forward-declared because kern_addr_present sits
+ * above the region's definition and must delegate to them -- see the branch at
+ * the top of that function for why it cannot answer for a stack itself. */
+static int kstack_region_contains(uint64_t vaddr);
+static int kstack_addr_present(uint64_t vaddr);
 static void kern_fixed_stack_guards_init(void);   /* BSP boot + IST stack guards */
 
 /* ---- The kernel's own view ------------------------------------------------
@@ -346,11 +351,17 @@ static void kern_fixed_stack_guards_init(void);   /* BSP boot + IST stack guards
  * quietly hitting whatever happened to be there.
  */
 
-/* [0, 16 MiB): the kernel image (~1..15.4 MiB) plus slack to USER_PHYS_BASE.
- * Only PDE 0 strictly needs splitting for the section boundaries, but
- * per_task_kstacks spans PDEs 0..2 and guard pages will need those at 4 KiB
- * too; splitting the whole 16 MiB costs 5 extra pages and removes "which PDE is
- * this address in" from every later question. */
+/* [0, 16 MiB): the kernel image plus slack to USER_PHYS_BASE.
+ * Only PDE 0 strictly needs splitting for the section boundaries, but the
+ * guarded stacks that remain in `.bss` -- ap_idle_stacks (smp.c) and ap_ist
+ * (gdt.c) -- need 4 KiB granularity wherever they land, and so do the fixed
+ * stacks from multiboot.S; splitting the whole 16 MiB costs 5 extra pages and
+ * removes "which PDE is this address in" from every later question.
+ *
+ * The per-task kernel stacks used to be the reason this number mattered most:
+ * they spanned PDEs 0..2 and were 4 MiB of the image. They now live in their own
+ * region at high_pdpt[511] and are no longer part of this window, or of the
+ * `.bss` budget the linker asserts on. See the kernel-stack region below. */
 #define KERN_SPLIT_PDES  8
 
 /* Map physical [start, end) with `flags` in a directory built by build_pd().
@@ -401,11 +412,13 @@ static int kern_page_set_absent(uint64_t vaddr) {
 /* Is the kernel's own mapping of `vaddr` PRESENT?
  *
  * Mirrors kern_page_set_absent()'s walk exactly, and exists for the resume-%rsp
- * guards. A range check cannot answer this question: the three guarded stack
- * arrays -- per_task_kstacks (above), ap_idle_stacks (smp.c) and ap_ist (gdt.c)
- * -- all live INSIDE [__bss_start, __bss_end), and their guard pages are armed by
- * making the page absent rather than by moving it somewhere a bounds test could
- * see. So a stack pointer that has walked off one stack and into the next slot's
+ * guards. A range check cannot answer this question: the guarded stack arrays
+ * that remain in the image -- ap_idle_stacks (smp.c) and ap_ist (gdt.c) -- live
+ * INSIDE [__bss_start, __bss_end), and their guard pages are armed by making the
+ * page absent rather than by moving it somewhere a bounds test could see. The
+ * per-task stacks are no longer among them: their region is outside `.bss`
+ * entirely and is resolved by the kstack_region_contains branch below, which is
+ * the ONLY thing that can answer for them. So a stack pointer that has walked off one stack and into the next slot's
  * guard page passes every address-range test there is, and then takes a
  * not-present supervisor write the moment the ISR epilogue pushes to it.
  *
@@ -423,6 +436,21 @@ static int kern_page_set_absent(uint64_t vaddr) {
  * refuses it rather than resuming on it. */
 int kern_addr_present(uint64_t vaddr) {
     extern uint64_t high_pdpt[512];
+    /* The kernel-stack region is NOT an identity map of physical memory, so the
+     * virt_to_phys walk below cannot resolve it -- it would compute a physical
+     * address from a virtual one that has no such relationship and then index
+     * the image's page directory with it, which answers a different question
+     * about a different page.
+     *
+     * This branch is load-bearing rather than tidy. Every per-task kernel stack
+     * lives in that region since the stacks left `.bss`, so without it this
+     * function returns 0 for EVERY legitimate kernel stack pointer, and
+     * ksp_is_unmapped -- the [G-9] producer-side guard -- refuses every task
+     * switch in the system. That direction fails loudly, which is the good one.
+     * The bad one is the mirror image: had this returned 1 by default for
+     * unresolvable addresses, the guard would have gone silently blind on the
+     * exact addresses it exists to check. See kstack_addr_present. */
+    if (kstack_region_contains(vaddr)) return kstack_addr_present(vaddr);
     uint64_t phys = virt_to_phys(vaddr);
     if ((phys >> 21) >= KERN_SPLIT_PDES) return 0;
 
@@ -651,10 +679,15 @@ void paging_init(void) {
      * it to AP_CR3_CELL), so they inherit whatever view exists at that moment
      * and need no fixup of their own. */
     kernel_remap_init();
-    /* Needs the 4 KiB kernel mapping kernel_remap_init just installed, and must
-     * stay ahead of smp_bringup() for the same reason it does: the APs inherit
-     * this CR3, so a guard unmapped now needs no cross-CPU shootdown. */
-    kstack_guards_init();
+    /* Install the kernel-stack region's page directory at high_pdpt[511]. Must
+     * stay ahead of smp_bringup() -- the APs load the BSP's live CR3, so they
+     * inherit the entry rather than needing it propagated -- and ahead of
+     * scheduler_init, whose create_task(0) is the first caller of kstack_bind.
+     *
+     * Nothing is unmapped here any more, so unlike the guard pass this replaces
+     * it carries no shootdown requirement of its own: the region's guards are
+     * pages that are never mapped, not pages that stop being mapped. */
+    kstack_region_init();
     kern_fixed_stack_guards_init();
 #ifdef SMP
     {   /* Per-CPU ring-0 idle/park stacks (smp.c). Same one-pass arming, same
@@ -673,64 +706,265 @@ void paging_init(void) {
     return;
 }
 
-/* Per-task kernel stacks (4 MiB of .bss, at KERNEL_VMA + ~1.5 MiB).
+/* ---- The kernel-stack region (roadmap 0.3 / finding [I-7]) ----------------
  *
- * This array used to sit at [1.46, 5.43) MiB — inside the user window — and its
- * top edge was the floor of the kernel's always-critical globals, exposed as
- * kernel_lowmem_critical_floor() so the heap allocator and image ASLR could
- * refuse to place user pages over kernel state. With the kernel at KERNEL_VMA
- * no kernel address is a user address, so that function and its guards are gone. */
-static uint8_t per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2] __attribute__((aligned(4096)));
+ * WHY THE STACKS LEFT `.bss`, AND WHAT THAT WAS ACTUALLY COSTING.
+ *
+ * `per_task_kstacks[MAX_TASKS][KERNEL_STACK_SIZE * 2]` was a static array: 4 MiB
+ * of `.bss` present in the image whether one task ran or sixty-four did. It was
+ * 98% of what pinned MAX_TASKS at 64, and the ceiling table in
+ * docs/LIMITATIONS.md attributed that to `tasks[]` -- which is 72 KiB, 56 times
+ * smaller. Migrating the TCB table would not have moved the limit at all.
+ *
+ * The binding constraint was a chain, and it is worth writing down because none
+ * of its links is obvious from the array's declaration:
+ *
+ *   - linker64.ld asserts `__bss_end - KERNEL_VMA <= 0x1000000` (16 MiB), because
+ *     the physical page pool starts at USER_PHYS_BASE and nothing else stops the
+ *     image growing into it. `.bss` was already 12.36 MiB: 3.64 MiB of headroom
+ *     against a 4 MiB array, so MAX_TASKS could not even be DOUBLED.
+ *   - That 16 MiB is not a policy number. It is KERN_SPLIT_PDES (8) x 2 MiB --
+ *     the window where the kernel's own mapping uses 4 KiB pages instead of
+ *     2 MiB ones, and therefore the only window in which a guard page can be
+ *     expressed at all.
+ *   - And the headroom is not even ours to spend: GRUB stages the boot modules
+ *     in the gap between `__bss_end` and the pool base (see mb_record_module,
+ *     "in practice just below the 16 MiB pool base"). Growing `.bss` toward the
+ *     assert eats the module staging area, and nothing checks THAT.
+ *
+ * So growing `.bss` was the wrong direction, and raising the assert only moves
+ * a collision nobody detects. The stacks go somewhere else instead.
+ *
+ * WHERE. `high_pdpt` had exactly two live entries -- [2], the PHYS_KVA window,
+ * and [510], the kernel's own image mapping. [511] was free: one untouched GiB
+ * of kernel-half VA at KSTACK_REGION_VMA, enough for 16384 slots. Crucially it
+ * is in the half that `pml4[256..511]` copies into EVERY address space (see
+ * user_pte_slot's "the hard line" comment), so a mapping installed here is
+ * visible to every task, present and future, with nothing to install per
+ * address space and nothing to keep in step.
+ *
+ * THE GUARD PAGE IS NEVER MAPPED, rather than mapped and then unmapped.
+ * kstack_guards_init used to walk the array at boot calling
+ * kern_page_set_absent, and its comment explained the timing requirement: it had
+ * to run before smp_bringup so the cleared entry was inherited into every AP's
+ * CR3 "with no shootdown". Absence-from-birth removes the requirement instead of
+ * satisfying it -- there is no window in which the guard is live, and a slot
+ * created long after the APs are up is as guarded as one created at boot.
+ *
+ * NOTHING HERE IS EVER UNMAPPED, and that is what makes it safe to allocate at
+ * any time. On x86 adding a mapping needs no TLB shootdown; only removing one or
+ * reducing its permissions does. A slot is allocated on first use and kept for
+ * the life of the boot -- exactly the lifetime `per_task_kstacks[id]` had, and
+ * exactly the bargain create_task already strikes for a task's cspace (see the
+ * comment there about why freeing it would be an authority escalation). A reused
+ * task slot gets the same stack, as before.
+ *
+ * A SLOT MAPS 8 OF ITS 16 PAGES. The layout is [guard][32 KiB stack][7 pages],
+ * and only the guard and the stack have ever been meaningful: the tail existed
+ * because the array's stride was KERNEL_STACK_SIZE * 2. Leaving it unmapped
+ * makes it a second guard -- against an overflow of the slot BELOW, which
+ * previously ran into this slot's tail and corrupted nothing detectable -- and
+ * halves the physical memory a task's stack costs.
+ */
+#define KSTACK_REGION_VMA   0xFFFFFFFFC0000000ULL   /* high_pdpt[511], 1 GiB */
+#define KSTACK_SLOT_BYTES   ((uint64_t)KERNEL_STACK_SIZE * 2)
+#define KSTACK_SLOT_PAGES   (KSTACK_SLOT_BYTES / PAGE_SIZE)          /* 16 */
+#define KSTACK_STACK_PAGES  ((uint64_t)KERNEL_STACK_SIZE / PAGE_SIZE) /* 8  */
 
-/* Count of stack guards actually unmapped; read by the gated self-test, which
- * would otherwise pass just as happily if this loop never ran. */
-uint32_t kstack_guards_armed = 0;
+/* Slots are addressed by task id, so the region must span MAX_TASKS of them.
+ * A compile-time check rather than a runtime one: this is arithmetic over
+ * constants, and the failure it prevents is a slot aliasing the next PDPT
+ * entry's address space, which has no owner and no fault to report. */
+_Static_assert(KSTACK_SLOT_BYTES * MAX_TASKS <= (1ULL << 30),
+               "the kernel-stack region is one PDPT entry (1 GiB); "
+               "MAX_TASKS * KSTACK_SLOT_BYTES no longer fits");
+_Static_assert(KSTACK_STACK_PAGES + 1 <= KSTACK_SLOT_PAGES,
+               "a slot must hold its guard page plus its stack");
 
-#ifdef WX_SELFTEST
-/* per_task_kstacks is file-local and should stay that way; the self-test needs
- * the guard address without the array coming with it. Gated, so the ship build
- * does not carry an accessor into the kernel's stacks at all. */
+/* Count of slots whose stack is mapped. Read by the gated self-test, which would
+ * otherwise pass just as happily if nothing here ever ran -- the same reason
+ * kstack_guards_armed existed for the static array it replaces. */
+uint32_t kstack_slots_mapped = 0;
+
+static uint64_t kstack_slot_base(uint32_t id) {
+#ifdef KSTACK_SLOT_INDEX_TRUNC
+    /* CONTROL ARM -- never ship. Truncate the slot index to 6 bits, so task t
+     * and task t-64 resolve to ONE kernel stack.
+     *
+     * This is S20 by construction rather than by race: two tasks do not merely
+     * collide on a stack under some interleaving, they are permanently bound to
+     * the same pages. It is the shape a slot index would take if the region had
+     * been sized for 64 slots and the ceiling raised without it -- and it is
+     * silent, because a boot uses six low task ids and never revisits one 64
+     * apart from another.
+     *
+     * `make smoke-task-ceiling-stack-control` requires TASKCEIL_SELFTEST to FAIL
+     * naming the shared slot; `make smoke-task-ceiling` must go red under it.
+     * A separate arm from KSTACK_INFLIGHT_LEGACY_WORD deliberately: that one
+     * blinds the DETECTOR for S20, this one creates the CONDITION S20 describes,
+     * and a single arm covering both would not show that the two checks fail
+     * independently. */
+    return KSTACK_REGION_VMA + (uint64_t)(id & 63u) * KSTACK_SLOT_BYTES;
+#else
+    return KSTACK_REGION_VMA + (uint64_t)id * KSTACK_SLOT_BYTES;
+#endif
+}
+
+/* The guard is the first page of the slot; the stack sits immediately above it
+ * and grows DOWN onto it. Exposed for the self-test, and used by the binder. */
 uint64_t kstack_guard_vaddr(int id) {
     if (id < 0 || id >= MAX_TASKS) return 0;
-    return (uint64_t)(uintptr_t)per_task_kstacks[id];
+    return kstack_slot_base((uint32_t)id);
 }
-#endif
 
-/* Unmap the guard page below every task's kernel stack.
+/* Walk to the page table covering `vaddr` inside the region, allocating the
+ * intermediate levels on the way. Returns NULL if a level cannot be allocated.
  *
- * create_user_pagedir has always carved a page off the bottom of each stack
- * area and called it a guard, but only ever used it to offset stack_base — the
- * page stayed mapped and its present bit was never touched. So a kernel stack
- * overflow ran straight through the "guard" into the next task's stack and
- * corrupted it silently, which is the failure the guard exists to make loud.
- * The name was there; the protection was not.
- *
- * Doing it here rather than per-task is what keeps it simple: the stacks are a
- * static array that never moves, so their guards are a property of the image,
- * not of any task. One pass at boot, before the APs exist, means no TLB
- * shootdown and nothing to redo when a task slot is reused.
- *
- * Slot 0 is included: task 0 (the boot/idle/reaper) now runs on
- * per_task_kstacks[0] too — create_user_pagedir binds its stack above this same
- * guard — so its kernel stack is guarded like every other task's. It used to
- * keep a separate, unguarded task0_kernel_stack, which is why slot 0 was skipped
- * and its guard left mapped. The array is in the 4 KiB-mapped kernel window
- * (KERN_SPLIT_PDES), so every slot's guard, including 0, is unmappable. */
-static void kstack_guards_init(void) {
-    for (int i = 0; i < MAX_TASKS; i++) {
-        if (kern_page_set_absent((uint64_t)(uintptr_t)per_task_kstacks[i]) == 0)
-            kstack_guards_armed++;
+ * The PD is allocated by kstack_region_init and never replaced; the page tables
+ * beneath it are allocated on demand, one per 2 MiB (32 slots). */
+static uint64_t *kstack_pt_for(uint64_t vaddr, int allocate) {
+    extern uint64_t high_pdpt[512];
+    uint64_t pdpte = high_pdpt[511];
+    if (!(pdpte & PAGE_PRESENT)) return (uint64_t *)0;
+    uint64_t *pd = (uint64_t *)PHYS_KVA(pdpte & PTE_ADDR_MASK);
+
+    uint64_t pdi = (vaddr >> 21) & 511;
+    uint64_t pde = pd[pdi];
+    if (!(pde & PAGE_PRESENT)) {
+        if (!allocate) return (uint64_t *)0;
+        uint64_t pt_phys = (uint64_t)alloc_user_physical_page();
+        if (pt_phys == 0) return (uint64_t *)0;
+        uint64_t *npt = (uint64_t *)PHYS_KVA(pt_phys);
+        for (int i = 0; i < 512; i++) npt[i] = 0;
+        /* No NX on the directory entry: NX is carried by the leaves, and a
+         * cleared NX here would not grant execute to a leaf that sets it. */
+        pd[pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITE;
+        pde = pd[pdi];
     }
+    /* A 2 MiB mapping here would mean somebody else claimed the region; refuse
+     * rather than treating the PDE's frame as a page table. */
+    if (pde & PAGE_PS) return (uint64_t *)0;
+    return (uint64_t *)PHYS_KVA(pde & PTE_ADDR_MASK);
+}
+
+/* Build the region's page directory and install it at high_pdpt[511].
+ *
+ * Called from kernel_remap_init, so it runs on the boot CPU before any AP
+ * exists and before any user address space is built -- which is what makes the
+ * entry inherited rather than propagated. */
+static void kstack_region_init(void) {
+    extern uint64_t high_pdpt[512];
+    uint64_t pd_phys = (uint64_t)alloc_user_physical_page();
+    if (pd_phys == 0) {
+        /* Before any task can run, so there is nothing to report to and nothing
+         * that could continue: every kernel stack in the system comes from here.
+         */
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+    uint64_t *pd = (uint64_t *)PHYS_KVA(pd_phys);
+    for (int i = 0; i < 512; i++) pd[i] = 0;
+    high_pdpt[511] = pd_phys | PAGE_PRESENT | PAGE_WRITE;
+}
+
+/* Ensure task `id`'s kernel stack is mapped, and return its TOP (the value
+ * kernel_stack_top wants), or 0 on failure.
+ *
+ * Idempotent: a slot already mapped is returned as-is, which is what makes a
+ * reused task slot inherit the same stack rather than leaking a new one.
+ *
+ * CALLERS MUST HOLD page_lock. It allocates -- page tables on the first slot in
+ * each 2 MiB, and one frame per stack page -- and alloc_user_physical_page is a
+ * bare pop off free_page_stack with no locking of its own. All three call sites
+ * take it: create_user_pagedir's task-0 branch (which had no lock before this
+ * function existed, and gained one for exactly this reason), its main path, and
+ * clone_user_aspace.
+ *
+ * kstack_region_init has already run, so this never has to build the region's
+ * page directory -- only the tables beneath it and the leaves. */
+static uint64_t kstack_bind(uint32_t id) {
+    if (id >= MAX_TASKS) return 0;
+    uint64_t base  = kstack_slot_base(id);
+    uint64_t stack = base + PAGE_SIZE;          /* skip the guard */
+
+    /* Map whatever is missing, and report a slot bound only if this call is what
+     * bound it. Two things had to be got right here and the first draft got both
+     * wrong; both are worth recording because the failures look nothing alike.
+     *
+     * THE COUNTER MUST COUNT SLOTS, NOT CALLS. create_user_pagedir runs again for
+     * every rebuild of a task's address space; the loop below correctly skips the
+     * pages already present, and the first draft incremented anyway. So
+     * kstack_slots_mapped grew by one per REBUILD, and the W^X self-test's
+     * cross-check against it was passing only because nothing had rebuilt an
+     * address space before that test ran. The aspace self-test's new assertion
+     * caught it on the first boot. A counter that counts the wrong noun is worse
+     * than no counter when two tests read it.
+     *
+     * AND "BOUND" MUST MEAN EVERY PAGE, NOT THE FIRST. The first draft returned
+     * early when page 0 was present. A bind that failed part-way -- a page table
+     * or a frame it could not allocate -- leaves pages 0..k mapped and returns 0,
+     * and the NEXT call for that slot would see page 0, declare the slot bound,
+     * and hand back a stack top for a stack full of holes. The task then runs
+     * until its stack grows past page k and takes a not-present supervisor write
+     * inside an ISR epilogue: [G-9]'s signature, manufactured. That is the same
+     * fail-open S35 names for SYS_MAP_REGION -- a partial result reported as a
+     * whole one -- so the early return is gone and a partial slot is simply
+     * completed by the next call. */
+    int mapped_any = 0;
+
+    for (uint64_t p = 0; p < KSTACK_STACK_PAGES; p++) {
+        uint64_t va = stack + p * PAGE_SIZE;
+        uint64_t *pt = kstack_pt_for(va, 1);
+        if (!pt) return 0;
+        uint64_t *pte = &pt[(va >> 12) & 511];
+        if (*pte & PAGE_PRESENT) continue;      /* already bound */
+        uint64_t frame = (uint64_t)alloc_user_physical_page();
+        if (frame == 0) return 0;
+        /* Supervisor (no PAGE_USER), writable, and NX: a kernel stack is data.
+         * The 2 MiB tail of the kernel's own view is NX for the same reason --
+         * a supervisor RWX alias is a W^X hole wherever it is, and SMEP does not
+         * apply to a supervisor mapping. */
+        *pte = frame | PAGE_PRESENT | PAGE_WRITE | PAGE_NX;
+        /* The entry is new, so no other CPU can hold a stale translation for it:
+         * x86 needs a shootdown to REMOVE or downgrade a mapping, never to add
+         * one. invlpg locally anyway, because this CPU may have taken a fault on
+         * the address while it was absent. */
+        __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
+        mapped_any = 1;
+    }
+    if (mapped_any) kstack_slots_mapped++;
+    return stack + KERNEL_STACK_SIZE - 16;
+}
+
+/* Is `vaddr` inside the kernel-stack region?
+ *
+ * Exported as kstack_region_contains_ksp for scheduler.c's ksp_is_bogus, which
+ * needs the same bound and must not carry a second copy of the arithmetic --
+ * a range test that disagreed with the region's real extent would reject live
+ * stacks or admit addresses that are not stacks at all. */
+static int kstack_region_contains(uint64_t vaddr) {
+    return vaddr >= KSTACK_REGION_VMA &&
+           vaddr <  KSTACK_REGION_VMA + KSTACK_SLOT_BYTES * MAX_TASKS;
+}
+
+/* Is the region's mapping of `vaddr` present? The region is not an identity map
+ * of physical memory, so kern_addr_present's virt_to_phys walk cannot answer
+ * this and must delegate here. */
+int kstack_region_contains_ksp(uint64_t vaddr) { return kstack_region_contains(vaddr); }
+
+static int kstack_addr_present(uint64_t vaddr) {
+    uint64_t *pt = kstack_pt_for(vaddr, 0);
+    if (!pt) return 0;
+    return (pt[(vaddr >> 12) & 511] & PAGE_PRESENT) ? 1 : 0;
 }
 
 /* The BSP boot stack and the three boot IST fault stacks are fixed, single
- * purpose stacks defined in multiboot.S, outside the per_task_kstacks array.
+ * purpose stacks defined in multiboot.S, outside the per-task stack region.
  * Each is laid out above a page-aligned guard page there; this unmaps those
  * guards so an overflow of the boot/idle stack or of a fault handler's IST stack
  * faults instead of silently corrupting adjacent .bss/.data or the TSS. They all
  * live in the kernel image below KERN_SPLIT_PDES, so the guards are 4 KiB pages
- * that kern_page_set_absent can clear — the same requirement per_task_kstacks
- * meets. IST1 (#DF/#GP/#PF) is used on every demand page fault and every ring-3
+ * that kern_page_set_absent can clear. The per-task stacks used to meet that
+ * same requirement; they now sidestep it, by never mapping the guard at all. IST1 (#DF/#GP/#PF) is used on every demand page fault and every ring-3
  * fault-signal delivery, so its guard is exercised constantly, not just in
  * theory. */
 uint32_t fixed_stack_guards_armed = 0;
@@ -1073,14 +1307,33 @@ void create_user_pagedir(uint32_t task_id) {
     if (task_id == 0) {
         /* Task 0 runs on the kernel's own address space (cr3 = 0 means "keep the
          * kernel pml4"), but it still needs a kernel stack for the reaper/idle
-         * path. Bind it to per_task_kstacks[0], above the guard page
-         * kstack_guards_init unmaps, so an overflow of task 0 faults on the guard
-         * instead of running into whatever .bss follows — the same protection
-         * every other task's stack already had. */
+         * path. Bind it to kernel-stack slot 0, above that slot's guard page,
+         * so an overflow of task 0 faults on the guard rather than running into
+         * whatever follows — the same protection every other task's stack has. */
         tasks[task_id].cr3 = 0;
-        uint8_t *stack_area = per_task_kstacks[0];
-        uint64_t stack_base = (uint64_t)stack_area + PAGE_SIZE;   /* skip the guard */
-        tasks[task_id].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
+        /* UNDER page_lock, which this branch did not previously need. It used to
+         * compute an address into a static array and take no lock at all; it now
+         * ALLOCATES -- page tables and stack frames -- and
+         * alloc_user_physical_page is a bare pop off free_page_stack with no
+         * internal locking, so every caller must hold this.
+         *
+         * Today the lock is uncontended by construction: this branch runs once,
+         * from scheduler_init's create_task(0), on the boot CPU before any AP
+         * exists. Taking it anyway is the difference between "safe" and "safe as
+         * long as nobody ever calls this again", and the second is the kind of
+         * fact about other functions that this file has been bitten by before
+         * (see the COW arena guard, whose two protections were circumstances
+         * rather than properties). */
+        spin_lock(&page_lock);
+        uint64_t top0 = kstack_bind(0);
+        spin_unlock(&page_lock);
+        if (top0 == 0) {
+            /* Task 0 is the boot/idle/reaper and there is no scheduler yet to
+             * report to. Every other failure path here has somewhere to return
+             * an error; this one has nowhere to return it TO. */
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+        tasks[task_id].kernel_stack_top = top0;
         return;
     }
 
@@ -1270,15 +1523,21 @@ void create_user_pagedir(uint32_t task_id) {
     /* The stack must be large enough for the deepest in-kernel call chain —
      * notably the Argon2id password hash run from SYS_AUTH, which stacks several
      * 1 KiB blocks and overflowed the old 8 KiB stack (login hung). */
-    uint8_t *stack_area = per_task_kstacks[task_id];
-    /* The first page of the area is the guard, unmapped once at boot by
-     * kstack_guards_init. The stack starts above it and grows down onto it, so
-     * an overflow faults on the guard instead of reaching the previous task's
-     * stack. Nothing to do per task: the guard is a property of the static
-     * array, and a reused slot inherits the same absent page. */
-    uint64_t guard_vaddr = (uint64_t)stack_area;
-    uint64_t stack_base = guard_vaddr + PAGE_SIZE;
-    tasks[task_id].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
+    /* The first page of the slot is the guard and is never mapped; the stack
+     * starts above it and grows down onto it, so an overflow faults instead of
+     * reaching the slot below. kstack_bind is idempotent, so a reused task slot
+     * inherits the same stack -- the lifetime the static array had. */
+    uint64_t ktop = kstack_bind(task_id);
+    if (ktop == 0) {
+        /* Leave kernel_stack_top at 0 rather than at a stale value from the
+         * slot's previous occupant. A task with no kernel stack must not be
+         * resumable, and 0 is what the resume-%rsp guard refuses; a stale top
+         * would be a live stack this task does not own. */
+        tasks[task_id].kernel_stack_top = 0;
+        spin_unlock(&page_lock);
+        return;
+    }
+    tasks[task_id].kernel_stack_top = ktop;
     spin_unlock(&page_lock);
 }
 
@@ -1491,12 +1750,14 @@ int clone_user_aspace(uint32_t child, uint64_t parent_cr3) {
 
     tasks[child].cr3 = child_phys;
 
-    /* Same kernel stack binding create_user_pagedir performs: the first page of
-     * per_task_kstacks[child] is the guard kstack_guards_init unmapped once at
-     * boot, and the stack starts above it. */
-    uint8_t *stack_area = per_task_kstacks[child];
-    uint64_t stack_base = (uint64_t)stack_area + PAGE_SIZE;
-    tasks[child].kernel_stack_top = stack_base + KERNEL_STACK_SIZE - 16;
+    /* Same kernel stack binding create_user_pagedir performs. */
+    uint64_t ktop = kstack_bind((uint32_t)child);
+    if (ktop == 0) {
+        tasks[child].kernel_stack_top = 0;
+        spin_unlock(&page_lock);
+        return -1;
+    }
+    tasks[child].kernel_stack_top = ktop;
 
     spin_unlock(&page_lock);
     return 0;

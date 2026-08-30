@@ -1363,7 +1363,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 167 test targets, and the troubleshooting
+          Every configuration flag, every one of the 170 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1449,10 +1449,15 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Hard compile-time ceilings still apply: 64 tasks, 256 capability slots per task, a
-          256-byte message, a 16 MiB volume. <code>tasks[]</code> is the significant table still
-          in <code>.bss</code>, a task control block is reachable from the scheduler's hot path
-          and from every trap frame, so moving it to untyped memory is its own piece of work.
+          Hard compile-time ceilings still apply: 256 tasks, 256 capability slots per task, a
+          256-byte message, a 16 MiB volume. The task ceiling was 64 until 2026-08-30, and what
+          held it there was not the table of task records this note used to blame: that table is
+          72 KiB, while the per-task kernel stacks beside it were a 4 MiB static array — fifty-six
+          times larger, and against an image budget with 3.6 MiB left. Moving the stacks to a
+          region of their own lifted the ceiling fourfold and made the image 3.8 MiB
+          <em>smaller</em>. What remains is the part that was always the interesting half: a task
+          is still not an object named by a capability, and a bigger number is not a different
+          kind of thing.
         </p>
       </div>
     </div>
@@ -1471,7 +1476,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 93 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 94 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

@@ -1297,10 +1297,17 @@ of authority the capability graph describes. The per-task kernel stacks followed
 §3.1 of `LIMITATIONS.md`) had been attributing to the 72 KiB `tasks[]` table. The ceiling is 256
 now.
 
-What remains is the half that was always the interesting one: `tasks[]` is still a fixed array,
-a TCB is reachable from the scheduler's hot path and from every trap frame, and **a TCB is not
-an object a capability names** — so the task-creating syscalls still gate on the `[C-1]` decoy in
-cspace slot 3. Reclaiming a dead task's cspace needed `cap_lookup`'s NULL-cspace → root-cnode
+**The authority half closed on 2026-08-30** (**S57**). Creating a task is now an exercise of
+untyped authority like every other kernel object: `SYS_SPAWN`, `SYS_SPAWN_IMAGE` and `SYS_FORK`
+carve the child's cspace out of the region the caller's `CAP_UNTYPED` names, so a task endowed
+with none cannot create one, and the five task-creating syscalls no longer authorise on the
+`[C-1]` decoy in cspace slot 3. `SYS_EXEC_NAMED`/`SYS_EXEC_IMAGE` are not untyped-gated: they
+replace the caller's own image, create no task and touch no capability (**S42**).
+
+What remains is **storage**: `tasks[]` is still a fixed array, and a TCB is reachable from the
+scheduler's hot path and from every trap frame. That is a compile-time ceiling (§3.1), not a
+property anything asserts — and the ceiling work established that this table was never what bound
+it. Reclaiming a dead task's cspace needed `cap_lookup`'s NULL-cspace → root-cnode
 fallback removed first; that closed on 2026-08-30, and it was two defects rather than one — the
 documented cspace-less case, and a slot past the end of the caller's own cspace resolving as
 `root_cnode[slot]`, the same escalation reached by arithmetic. Both were unreachable by

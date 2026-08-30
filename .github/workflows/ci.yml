@@ -990,6 +990,15 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot PROC_SELFTEST kernel and assert SYS_EXIT + capability-gated SYS_KILL work
         run: make smoke-proc
+      # Audit finding 4.1. The five task-creating syscalls authorised on cspace
+      # slot 3 with SC_ANYTYPE, which create_task fills in EVERY task with
+      # READ|WRITE|EXEC -- so the check could not fail and any task could spawn.
+      # Creating a task now carves the child's cspace out of the CALLER's untyped
+      # region, so a task endowed with none cannot create one. This arm restores
+      # the decoy; `grantee`, which proctest deliberately does not endow, can then
+      # spawn and says so.
+      - name: Control arm — restore the slot-3 decoy and require a cspace-less child to spawn
+        run: make smoke-proc-spawn-decoy-control
       # Roadmap 3.6, second half. Cross-task introspection required CAP_DEBUG
       # *specifically* from 2026-08-24; before that CAP_USER ("do you administer
       # users") or CAP_AUDIT ("do you hold the audit log's keys") also answered

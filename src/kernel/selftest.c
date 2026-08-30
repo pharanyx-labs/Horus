@@ -1441,6 +1441,13 @@ void proc_selftest(void) {
     cap_install_from_root(a, CAPSLOT_DEBUG, 18, 0);  /* CAP_DEBUG: read task info  */
     cap_install_from_root(a, 7, 7, 0);               /* CAP_AUDIT: the grant test  */
     cap_install_from_root(a, 16, 0, (uint32_t)loop_id);  /* CAP_TCB -> captest   */
+    /* CAP_UNTYPED: proctest SPAWNS (sigwaiter, grantee), and since 2026-08-30 a
+     * task's cspace is carved from the caller's untyped region -- so a task with
+     * none cannot create one. This endowment is the statement "proctest may
+     * create tasks", which is exactly the authority audit finding 4.1 said the
+     * slot-3 decoy was failing to express. Its child `grantee` is deliberately
+     * NOT given one, and asserts it cannot spawn. */
+    cap_install_from_root(a, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
     tasks[a].uid = 0;
 
     selftest_resume_all();
@@ -3041,8 +3048,10 @@ void taskceiling_selftest(void)
     /* create_task allocates the cspace; it also marks the slot runnable, so the
      * state is put back afterwards -- this test must not leave two tasks the
      * scheduler will try to run with no image behind them. */
-    create_task(hi, 0, 0, USER_AREA_BASE, 0);
-    create_task(lo, 0, 0, USER_AREA_BASE, 0);
+    /* UNTYPED_KERNEL: this is kernel-initiated creation, not a ring-3 spawn,
+     * so it is charged to the reserve exactly as scheduler_init's task 0 is. */
+    create_task(hi, 0, 0, USER_AREA_BASE, 0, UNTYPED_KERNEL);
+    create_task(lo, 0, 0, USER_AREA_BASE, 0, UNTYPED_KERNEL);
     tasks[hi].state = 0;
     tasks[lo].state = 0;
     if (!tasks[hi].cspace || !tasks[lo].cspace) {
@@ -3206,7 +3215,7 @@ void cspace_release_selftest(void)
     /* A scratch slot near the top of the table: never spawned into by the boot,
      * and given a cspace of its own by create_task. */
     const int scratch = MAX_TASKS - 3;
-    create_task(scratch, 0, 0, USER_AREA_BASE, 0);
+    create_task(scratch, 0, 0, USER_AREA_BASE, 0, UNTYPED_KERNEL);
     if (!tasks[scratch].cspace) {
         print("CSPACE_RELEASE_SELFTEST: FAIL scratch task got no cspace\n");
         return;
@@ -3267,7 +3276,7 @@ void cspace_release_selftest(void)
      * that destroyed the cspace outright, or by a create_task that can no longer
      * install anything -- either of which breaks task creation while passing.
      * Re-create into the same slot and require the same capability to install. */
-    create_task(scratch, 0, 0, USER_AREA_BASE, 0);
+    create_task(scratch, 0, 0, USER_AREA_BASE, 0, UNTYPED_KERNEL);
     cap_install_from_root(scratch, PROBE_SLOT, PROBE_SLOT, 0);
     if (tasks[scratch].cspace[PROBE_SLOT].type != planted_type) {
         print("CSPACE_RELEASE_SELFTEST: FAIL the slot cannot be used again after teardown\n");

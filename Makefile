@@ -111,7 +111,7 @@ DEFECT_FLAGS = \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CSPACE_KEEP_ON_TEARDOWN \
-	CSPACE_RELEASE_BEFORE_PIPES
+	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1855,6 +1855,15 @@ CFLAGS  += -DCSPACE_RELEASE_BEFORE_PIPES
 ASFLAGS += -DCSPACE_RELEASE_BEFORE_PIPES
 endif
 
+# SPAWN_SLOT3_DECOY_GATE=1 restores the pre-2026-08-30 gate on the task-creating
+# syscalls: cspace slot 3 with SC_ANYTYPE, which create_task fills in every task,
+# so the check cannot fail and any task can spawn.
+SPAWN_SLOT3_DECOY_GATE ?= 0
+ifeq ($(SPAWN_SLOT3_DECOY_GATE),1)
+CFLAGS  += -DSPAWN_SLOT3_DECOY_GATE
+ASFLAGS += -DSPAWN_SLOT3_DECOY_GATE
+endif
+
 CAPLOOKUP_SELFTEST ?= 0
 ifeq ($(CAPLOOKUP_SELFTEST),1)
 CFLAGS  += -DCAPLOOKUP_SELFTEST
@@ -2879,6 +2888,16 @@ smoke-aspace:
 # the arena is a monotonic bump allocator (type-confusion-through-reuse is what
 # that forbids) and the kernel reserve holds exactly MAX_TASKS cspaces, so a
 # free-then-reallocate exhausts it on the first slot reuse.
+# The falsifying arm for the task-creation gate. Restores the slot-3 decoy; the
+# child spawned WITHOUT a CAP_UNTYPED can then spawn, and grantee says so.
+smoke-proc-spawn-decoy-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SPAWN_SLOT3_DECOY_GATE=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SPAWN_SLOT3_DECOY_GATE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL spawn-without-untyped' \
+		tools/smoke_test.sh boot.iso
+
 smoke-cspace-release:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1

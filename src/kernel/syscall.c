@@ -444,7 +444,9 @@ static void h_exec(struct interrupt_frame64 *r) {
     /* Premap stays at the fixed base and the default size (this path loads a
      * small non-relocated image); the user-supplied load_base only drives the
      * entry/eip, as before. */
-    create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP, USER_AREA_BASE, 0);
+    /* SYS_EXEC_LEGACY, retired and compiled only under LEGACY_SYSCALLS_PRESENT.
+     * UNTYPED_KERNEL keeps the defect arm building; it is not a shipping path. */
+    create_task(new_id, load_base + entry_offset, DEMO_TASK_STACK_TOP, USER_AREA_BASE, 0, UNTYPED_KERNEL);
 
     tasks[new_id].heap_start = USER_HEAP_BASE + new_id * 0x10000;
     tasks[new_id].heap_current = tasks[new_id].heap_start;
@@ -1377,8 +1379,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_NOTIFY]                   = { h_notify,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_WAIT_NOTIFY]              = { h_wait_notify,             SC_NONE, 0, SC_ANYTYPE },
     [SYS_RECEIVE_PROGRAM]          = { h_receive_program,         3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
-    [SYS_SPAWN]                    = { h_spawn,                   3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
-    [SYS_EXEC_NAMED]               = { h_exec_named,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_SPAWN]                    = { h_spawn,                   SC_NONE, 0, SC_ANYTYPE }, /* CAP_UNTYPED, resolved in the handler: creating a task costs a cspace */
+    [SYS_EXEC_NAMED]               = { h_exec_named,              SC_NONE, 0, SC_ANYTYPE }, /* self only: replaces the CALLER's image, creates no task */
     [SYS_CAP_GRANT]                = { h_cap_grant,               SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
     [SYS_SIGNAL]                   = { h_signal,                  SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */
     [SYS_SIGMASK]                  = { h_sigmask,                 SC_NONE, 0, SC_ANYTYPE }, /* self: block/unblock own signals */
@@ -1387,7 +1389,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     /* execve-from-fd: spawn/exec a caller-supplied program image. Same slot-3
      * WRITE|EXEC gate as SYS_SPAWN / SYS_EXEC_NAMED; the image is validated by the
      * loader (arm_image_from_user -> try_elf_load) exactly like a named binary. */
-    [SYS_SPAWN_IMAGE]              = { h_spawn_image,             3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_SPAWN_IMAGE]              = { h_spawn_image,             SC_NONE, 0, SC_ANYTYPE }, /* CAP_UNTYPED, resolved in the handler */
     /* Same entry as SYS_SPAWN, and deliberately not SC_NONE. Read that as
      * consistency rather than as enforcement: slot 3 holds the CAP_FRAME
      * create_task gives EVERY task, with exactly READ|WRITE|EXEC, so WRITE|EXEC
@@ -1402,8 +1404,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * caller's own address space and cspace, and a spawn endows a child from
      * what the spawner holds and never more (S41, S42). See
      * docs/LIMITATIONS.md 1.6b. */
-    [SYS_FORK]                     = { h_fork,                    3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
-    [SYS_EXEC_IMAGE]               = { h_exec_image,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+    [SYS_FORK]                     = { h_fork,                    SC_NONE, 0, SC_ANYTYPE }, /* CAP_UNTYPED, resolved in the handler */
+    [SYS_EXEC_IMAGE]               = { h_exec_image,              SC_NONE, 0, SC_ANYTYPE }, /* self only, as SYS_EXEC_NAMED */
     [SYS_SIGALTSTACK]              = { h_sigaltstack,             SC_NONE, 0, SC_ANYTYPE }, /* self: register own altstack */
     /* Zero-trust identity: a receiver reads the kernel-attested uid of an
      * endpoint's last sender. Slot-3 READ (same as SYS_IPC_RECV) so only a

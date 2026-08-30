@@ -172,13 +172,28 @@ being one word sized by an assumption about `MAX_TASKS`, the arena's kernel and 
 given independent sizes, and the ceiling went 64 → 256 with the image 3.8 MiB *smaller* than
 before. Witness `make smoke-task-ceiling`, falsified one arm per rule.
 
-That is a bigger number, not a different kind of thing, and this item stays `◧` for exactly that
-reason. What keeps **[I-7]** open is unchanged: a TCB is not an object a capability names, so the
-task-creating syscalls still gate on the slot-3 decoy (`docs/LIMITATIONS.md` §1.6b, and the
-2026-08-30 audit's finding 4.1), and `cap_lookup`'s fallback still has to go before a dead task's
-cspace can be reclaimed. `KOBJ_TASK` is the remaining work, and it sequences *after* that
-fallback rather than before it — a task object whose cspace slot can be NULL is a task object the
-fallback turns into a root cnode.
+That is a bigger number, not a different kind of thing, and this item stays `◧` — but the reason
+changed later the same day, and it is worth being exact about what is left.
+
+**The accounting half closed**, which is this item's own premise. Creating a task is now an
+exercise of authority the capability graph describes (**S57**): `SYS_SPAWN`, `SYS_SPAWN_IMAGE`
+and `SYS_FORK` carve the child's cspace out of the region the caller's `CAP_UNTYPED` names, so a
+task endowed with none cannot create one. The five task-creating syscalls no longer authorise on
+the slot-3 `[C-1]` decoy, and `docs/LIMITATIONS.md` §1.6b is closed.
+
+**The premise that had kept it open was wrong.** §1.6b said the authority *"would have to name a
+task object, which does not yet exist as a kernel object"*. A task has been named by `CAP_TCB`
+all along — and a capability naming the task could not gate its *creation* in any case, because
+nobody can hold one to a task that does not exist yet. The authority is the **resource**, and the
+resource is untyped memory, exactly as it is for every other kernel object here.
+
+**What is left is storage, not authority.** `tasks[]` is still a fixed array: a compile-time
+ceiling, now 256 rather than 64, tracked as a **scale** limitation (§3.1) rather than as a
+property anything asserts. Whether it is worth moving is an open question rather than an assumed
+yes — at `MAX_TASKS` 256 the table is 288 KiB against 7.4 MiB of `.bss` headroom, and the ceiling
+work established that this table was never what bound the ceiling. A `KOBJ_TASK` retyped from
+untyped would make the storage match the object model; it would not make any security property
+true that **S57** has not already made true.
 
 ---
 
@@ -1485,7 +1500,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 58 properties name a witness that resolves.
+**empty**, all 59 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1524,7 +1539,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 175 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 79 of them control arms that must reproduce a defect |
+| ✅ | 176 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 80 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---
@@ -1547,8 +1562,10 @@ been pushed about as far as it goes without one, and 4.1 now says so without als
 `CODEOWNERS` repair that landed a month ago.
 
 **Track 0 is complete** (0.1, 0.2, 0.3 all landed 2026-07-27), with 0.3 marked `◧` for the
-`tasks[]` remainder that keeps **[I-7]** open — the *authority* half of it since 2026-08-30, the
-memory half having closed with the task ceiling going 64 → 256. The object model is true: IPC is
+`tasks[]` remainder that keeps **[I-7]** open — which since 2026-08-30 is *storage alone*: the
+memory half closed with the task ceiling going 64 → 256, and the authority half with **S57**,
+where creating a task became an exercise of untyped authority rather than something every task
+could do for free. The object model is true: IPC is
 capability-addressed, ambient root authority is retired, and creating a kernel object is an
 exercise of authority the capability graph describes.
 

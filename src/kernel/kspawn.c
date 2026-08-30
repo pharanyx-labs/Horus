@@ -306,7 +306,75 @@ static void wire_child_stdio(int child, int caller, uint32_t spec) {
     }
 }
 
-static int do_spawn_inner(int caller, uint32_t stdio_spec) {
+/* THE GATE ON CREATING A TASK (audit finding 4.1, roadmap 0.3, finding [I-7]).
+ *
+ * Until 2026-08-30 the five task-creating syscalls authorised on cspace slot 3
+ * with SC_ANYTYPE, and `create_task` installs a CAP_FRAME there in EVERY task
+ * with exactly READ|WRITE|EXEC. By S28 that is not a gate: it is satisfied by a
+ * capability nobody asked for and everybody has -- [C-1]'s decoy, one table
+ * over. It conferred nothing (a spawn endows a child only from what the spawner
+ * holds, S41/S42), so it was dead weight rather than a hole; the harm was that
+ * two comments described it as enforcement.
+ *
+ * What makes it a gate is that creating a task COSTS something a capability
+ * names. A task's cspace is a KOBJ_CNODE, and every other kernel object in this
+ * system is carved from an untyped region by an authority that holds one --
+ * roadmap 0.3's premise, that "creating a kernel object is an exercise of
+ * authority the capability graph describes". Tasks were the exception. They are
+ * not now: the child's cspace comes out of the region the caller's CAP_UNTYPED
+ * names, so a task endowed with no untyped cannot spawn, and a task given a
+ * small region can spawn a bounded number of times. That is exactly the property
+ * finding 4.1 asked for -- "a task could be spawned without the right to spawn
+ * further tasks" -- and it needs no new object class to express.
+ *
+ * WHY A FIXED SLOT IS LEGITIMATE HERE and was not for slot 3. The defect in the
+ * slot-3 gate is not that the slot number is fixed; it is that the slot is
+ * ALWAYS OCCUPIED, by a capability the kernel installs itself, so the test
+ * cannot fail. CAPSLOT_UNTYPED is empty unless somebody delegated a CAP_UNTYPED
+ * into it, and the type is checked, so the test means what it says -- the same
+ * bargain CAPSLOT_CONSOLE, CAPSLOT_DEBUG and CAPSLOT_USER already make. The
+ * rights floor is WRITE because creating an object consumes the region.
+ *
+ * Returns 0 and sets *out_index on success; SYS_ERR_PERM if the caller holds no
+ * untyped. Task 0 is not special-cased: it is the kernel's own idle/reaper task
+ * and does not issue syscalls.
+ *
+ * `SECURITY.md` **S57**.
+ */
+static int spawn_untyped_region(uint32_t *out_index)
+{
+#ifdef SPAWN_SLOT3_DECOY_GATE
+    /* CONTROL ARM -- never ship. The pre-2026-08-30 gate: cspace slot 3 with
+     * SC_ANYTYPE, which create_task fills in EVERY task with READ|WRITE|EXEC.
+     * The lookup succeeds for everybody, so the check cannot fail and any task
+     * can spawn -- and the child is charged to the kernel reserve rather than to
+     * the caller. See make smoke-proc-spawn-decoy-control. */
+    struct capability *d = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
+    if (!d) return SYS_ERR_PERM;
+    *out_index = UNTYPED_KERNEL;
+    return 0;
+#else
+    struct capability *c = cap_lookup(CAPSLOT_UNTYPED, CAP_RIGHT_WRITE);
+    if (!c || c->type != CAP_UNTYPED) return SYS_ERR_PERM;
+    if (c->object >= MAX_UNTYPED)     return SYS_ERR_PERM;
+    *out_index = (uint32_t)c->object;
+    return 0;
+#endif
+}
+
+int spawn_untyped_region_for(int task, uint32_t *out_index)
+{
+    /* Same rule as spawn_untyped_region, for a caller that is current but is
+     * resolving on another file's behalf (h_sudo). `task` is checked against the
+     * current one rather than trusted: cap_lookup resolves the CURRENT task's
+     * cspace, so a `task` that is not current would silently answer about
+     * somebody else. */
+    if (task != get_current_task()) return SYS_ERR_PERM;
+    return spawn_untyped_region(out_index);
+}
+
+
+static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_index) {
     if (!program_armed) {
         return -1;
     }
@@ -331,7 +399,12 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec) {
      * present). Computed from the still-armed staged image, before the address
      * space is built. */
     create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base,
-                staged_image_span_pages());
+                staged_image_span_pages(), untyped_index);
+    /* create_task leaves state 0 when it could not carve the child's cspace out
+     * of `untyped_index` -- the caller has spent its region. Unwind rather than
+     * proceed: a task with no cspace must never run (S55 refuses its every
+     * lookup, and before S55 it would have resolved the ROOT cnode). */
+    if (tasks[new_id].state == 0) return -2;
 
     load_staged_image_into(new_id, load_base);
 
@@ -426,9 +499,19 @@ static void grant_child_tcb_cap(int spawner, int pid) {
  * the duration and restores the caller's address space + current task on return,
  * so SYS_SPAWN works from ring 3 and the caller continues. The caller is also
  * granted a CAP_TCB to the new child. */
+int do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index);
+
+/* Kernel-initiated spawn: the boot shell launching init, and h_sudo re-launching
+ * the shell. Charged to UNTYPED_KERNEL, which is not delegable and is sized at
+ * exactly MAX_TASKS cspaces -- see create_task. */
 int do_spawn(void) { return do_spawn_stdio(0); }
 
-int do_spawn_stdio(uint32_t stdio_spec) {
+int do_spawn_stdio(uint32_t stdio_spec) { return do_spawn_charged(stdio_spec, UNTYPED_KERNEL); }
+
+/* Ring-3-initiated spawn: `untyped_index` is the region the CALLER's CAP_UNTYPED
+ * names, so the child's cspace comes out of the parent's budget. The gate is the
+ * resolution of that capability in the handler; this is where it is spent. */
+int do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index) {
     extern uint64_t pml4[];
     uint64_t caller_cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(caller_cr3));
@@ -473,7 +556,7 @@ int do_spawn_stdio(uint32_t stdio_spec) {
      * an enter() in loader.c paired with an exit() here would be exactly the kind
      * of split bracket that rots. */
     sched_impersonate_enter();
-    int pid = do_spawn_inner(caller_task, stdio_spec);
+    int pid = do_spawn_inner(caller_task, stdio_spec, untyped_index);
     set_current_task(caller_task);
     sched_impersonate_exit();
     if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
@@ -530,17 +613,25 @@ int do_spawn_stdio(uint32_t stdio_spec) {
  * clone of the caller's. Returns the child's tid to the parent and 0 to the
  * child, from the same instruction, POSIX-fashion.
  *
- * GATED EXACTLY AS SYS_SPAWN IS -- slot 3, WRITE|EXEC -- and that choice is the
- * point rather than a copied line. The tempting reading is that fork needs no
- * capability at all: it names no object, and a task copying ITSELF reaches
- * nothing it could not already reach. Both halves of that are true and it is
- * still the wrong conclusion, because it would make SYS_FORK a SECOND way to
- * bring a task into existence, ungated, standing beside the one that is gated.
- * Revoking a task's slot-3 capability would then stop it spawning and not stop
- * it forking, and the property "this task can create no more tasks" -- which is
- * what that revocation means -- would quietly stop being true. A new path to an
- * existing capability's effect inherits that capability's gate; anything else is
- * a widening dressed as an omission.
+ * GATED EXACTLY AS SYS_SPAWN IS, and that choice is the point rather than a
+ * copied line. The tempting reading is that fork needs no capability at all: it
+ * names no object, and a task copying ITSELF reaches nothing it could not
+ * already reach. Both halves of that are true and it is still the wrong
+ * conclusion, because it would make SYS_FORK a SECOND way to bring a task into
+ * existence, ungated, standing beside the one that is gated. Revoke a task's
+ * authority to create tasks and it would stop spawning but not stop forking, so
+ * "this task can create no more tasks" would quietly stop being true. A new path
+ * to an existing capability's effect inherits that capability's gate; anything
+ * else is a widening dressed as an omission.
+ *
+ * UNTIL 2026-08-30 THAT SHARED GATE WAS SLOT 3, WRITE|EXEC, AND IT WAS VACUOUS.
+ * create_task installs a CAP_FRAME there in every task with exactly those
+ * rights, so the revocation this paragraph reasoned about was one nobody could
+ * perform: every task could spawn and every task could fork. The shared
+ * capability is CAP_UNTYPED now (S57) -- a task's cspace is carved from it, so
+ * the authority to create a task is the authority to spend kernel memory, which
+ * is delegable, revocable and bounded. The reasoning above was right all along;
+ * it just described a gate that was not there.
  *
  * What the gate does NOT have to do is bound the child's authority, because the
  * child is born with the same endowment create_task gives every task (its own
@@ -595,6 +686,13 @@ void h_fork(struct interrupt_frame64 *r) {
     uint64_t parent_cr3 = tasks[parent].cr3;
     if (parent_cr3 == 0) { r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return; }
 
+    /* A fork creates a task, so it is charged exactly as a spawn is. Resolved
+     * before the staging lock, so a caller with no untyped never takes it. */
+    uint32_t untyped_index;
+    if (spawn_untyped_region(&untyped_index) != 0) {
+        r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return;
+    }
+
     uint64_t caller_cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(caller_cr3));
     uint64_t kcr3 = virt_to_phys(pml4);
@@ -627,7 +725,15 @@ void h_fork(struct interrupt_frame64 *r) {
      * paying a page-table build for. clone_user_aspace reclaims the tree on the
      * slot exactly as create_user_pagedir would. */
     create_task(child, tasks[parent].eip, 0, tasks[parent].image_base,
-                tasks[parent].image_premap_pages);
+                tasks[parent].image_premap_pages, untyped_index);
+    /* As do_spawn_inner: a parent that has spent its region cannot fork.
+     * create_task leaves state 0 in that case, and the staging lock is held --
+     * release it on the way out, exactly as the clone failure below does. */
+    if (tasks[child].state == 0) {
+        spawn_stage_release();
+        r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
+        return;
+    }
 
     int rc = clone_user_aspace((uint32_t)child, parent_cr3);
     if (rc != 0) {
@@ -982,6 +1088,8 @@ void h_exec_image(struct interrupt_frame64 *r) {
  * ebx=image, ecx=len, edx=one-word spawn arg, esi=argv, edi=argc. Returns the
  * child pid, or a negative SYS_ERR_*. Slot-3 WRITE|EXEC enforced by the table. */
 void h_spawn_image(struct interrupt_frame64 *r) {
+    uint32_t ut;
+    if (spawn_untyped_region(&ut) != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     spawn_stage_acquire();
     int rc = arm_image_from_user(r->rbx, r->rcx, 0);
     if (rc != 0) {
@@ -997,7 +1105,7 @@ void h_spawn_image(struct interrupt_frame64 *r) {
      * wire_child_stdio, which wires the child's fd0/fd1 to THIS caller's pipe
      * ends. 0 = console default. It travels as an argument rather than in a
      * global for the reason wire_child_stdio's header note gives. */
-    int pid = do_spawn_stdio((uint32_t)r->r8);   /* consumes the armed image */
+    int pid = do_spawn_charged((uint32_t)r->r8, ut);   /* consumes the armed image */
     g_args_argc = 0;            /* drop staging if the spawn failed before consuming it */
     spawn_stage_release();
     if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;
@@ -1006,6 +1114,10 @@ void h_spawn_image(struct interrupt_frame64 *r) {
 
 
 void h_spawn(struct interrupt_frame64 *r) {
+    /* Resolve the caller's untyped BEFORE anything is armed or staged: the
+     * refusal must cost nothing and leave no staging behind. */
+    uint32_t ut;
+    if (spawn_untyped_region(&ut) != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     char name[32];
     if (r->rbx) {
         uint32_t len = r->rcx ? r->rcx : 31u;
@@ -1033,7 +1145,7 @@ void h_spawn(struct interrupt_frame64 *r) {
      * child exists; do_spawn_inner marshals it onto the child's stack. Read here
      * while the caller is still current so copy_from_user hits its memory. */
     stage_spawn_args(r->rsi, r->rdi);
-    int pid = do_spawn();
+    int pid = do_spawn_charged(0, ut);
     g_args_argc = 0;   /* drop staging if the spawn failed before consuming it */
     spawn_stage_release();
     /* Hand the child its one-word spawn argument (edx), retrievable via

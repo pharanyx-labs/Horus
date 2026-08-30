@@ -151,20 +151,36 @@ undocumented site had been missed by hand.
 
 Each of these is a real gap whose repair is a judgement the maintainer should make.
 
-### 4.1 The task-creating syscalls are gated on the `[C-1]` decoy (`LIMITATIONS.md` §1.6b)
+*All three were fixed within the day this audit was published — 4.2 and 4.3 in #251, and 4.1 in
+the task-creation work of 2026-08-30. This section is kept as written, with each entry marked, so
+the record of what was found and what was deferred at the time stays legible; the strike-throughs
+are the only additions.*
 
-`SYS_SPAWN`, `SPAWN_IMAGE`, `EXEC_NAMED`, `EXEC_IMAGE` and `FORK` authorise on cspace slot 3 with
+### 4.1 ~~The task-creating syscalls are gated on the `[C-1]` decoy~~ (`LIMITATIONS.md` §1.6b), **fixed 2026-08-30**
+
+*As found:* `SYS_SPAWN`, `SPAWN_IMAGE`, `EXEC_NAMED`, `EXEC_IMAGE` and `FORK` authorise on cspace slot 3 with
 `SC_ANYTYPE`, and `create_task` installs a `CAP_FRAME` there in **every** task with exactly
 `READ|WRITE|EXEC`. By **S28** that is not a gate. It is **[H-3]**'s shape, one table over.
 
 **Not an escalation.** Unlike [H-3], where the decoy bought reach into the in-kernel ramfs, these
 confer nothing the caller already lacked: a fork copies the caller's own address space and
-cspace, and a spawn endows a child from what the spawner holds (**S41**, **S42**). The entries
-were left in place because the shape is right and the authority that belongs there would have to
-name a task object, which does not exist while `tasks[]` is `.bss` (**[I-7]**). The two comments
-that described it as a gate, in disagreement with each other, were corrected.
+cspace, and a spawn endows a child from what the spawner holds (**S41**, **S42**). The two
+comments that described it as a gate, in disagreement with each other, were corrected at the
+time.
 
-### 4.2 A gate is classified as a control arm by its name (`LIMITATIONS.md` §1.10)
+**Fixed 2026-08-30** (**S57**), and the reasoning recorded here for deferring it was wrong. This
+audit said the authority "would have to name a task object, which does not exist while `tasks[]`
+is `.bss`". A task **is** already named by a capability — `CAP_TCB` carries a task id — so the
+object existed; and a capability naming the task cannot gate its *creation* in any case, since
+nobody can hold one to a task that does not exist yet. **The authority is the resource.** A
+task's cspace is a `KOBJ_CNODE`, so `SYS_SPAWN`, `SYS_SPAWN_IMAGE` and `SYS_FORK` now carve it
+from the region the caller's `CAP_UNTYPED` names: a task endowed with none cannot create one.
+`SYS_EXEC_NAMED`/`SYS_EXEC_IMAGE` are excluded deliberately — they replace the caller's own image
+and create no task, so a region they do not consume would be a second vacuous check. Witness
+`make smoke-proc` (`grantee`, spawned without untyped, must be refused), falsified by
+`SPAWN_SLOT3_DECOY_GATE=1`.
+
+### 4.2 ~~A gate is classified as a control arm by its name~~ (`LIMITATIONS.md` §1.10), **fixed 2026-08-30 (#251)**
 
 `check_gate_pairs.py` tests whether the string `control` appears in the target name. Four
 falsification arms are named otherwise and count as base gates. Both resulting figures are
@@ -175,7 +191,7 @@ holds instruments and policy opt-ins as well as defects, four of which `CLAUDE.m
 calls *"not a defect"*. That trades being wrong about four targets for being wrong about
 eighteen. The real fix is a manifest naming each pair, the way `ci-gating.yml` names every job.
 
-### 4.3 The `enforced by` column is parsed and discarded (`LIMITATIONS.md` §1.11)
+### 4.3 ~~The `enforced by` column is parsed and discarded~~ (`LIMITATIONS.md` §1.11), **fixed 2026-08-30 (#251)**
 
 `check_invariants.py` reads each row as `(statement, enforced_by, witness)` and binds only the
 witness. So the column naming the code that makes a property true can name a function that does

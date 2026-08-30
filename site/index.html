@@ -1363,7 +1363,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 175 test targets, and the troubleshooting
+          Every configuration flag, every one of the 176 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1621,6 +1621,19 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <em>second</em> bug means only the last of four writes to that file survives. The
               hashes were one bug-fix away from being world-readable. The four doors are now
               removed outright rather than re-gated.
+            </p>
+            <p>
+              <strong>The same shape had a second home, and it took until 2026-08-30 to find and
+              close.</strong> The five calls that create a task &mdash; spawn, fork, and their
+              variants &mdash; checked the same slot 3, so every task in the system could create
+              tasks and the check could not fail. It gave away nothing, because a spawned child
+              is only ever endowed from what its parent holds; what it gave away was the
+              <em>description</em>, and two comments in the source disagreed with each other about
+              a restriction neither of them enforced. The fix was not a better check but a real
+              cost: a task's capability table is kernel memory, and creating one is now paid for
+              out of the memory budget the parent holds a capability to. A task given no such
+              budget cannot create tasks &mdash; which is what that check had always claimed to
+              mean.
             </p>
           </li>
           <li>

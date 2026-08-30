@@ -916,7 +916,7 @@ void users_init(void);
 #define SYS_UNMAP_FRAME        96   /* (frame_slot, vaddr) -> 0; remove that mapping. The PTE must name this capability's own frame. */
 #define SYS_MAP_REGION         99   /* (first_slot, count, vaddr, rights) -> 0; map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages (roadmap 2.1). ALL OR NOTHING: any page that cannot be mapped withdraws every page the call already mapped, so a caller holding an error holds the address space it started with. The argument for that policy, and why it is the opposite of SYS_RETYPE's, is at the handler in syscall_vm.c. */
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); the length of the frame the CAP_FRAME at `frame_slot` names (roadmap 2.1). Authority is that capability, resolved in syscall_vm.c -- never a frame index the caller supplies, which would be finding C-1's shape and an object-existence oracle over other tasks' frames. */
-#define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate the caller's address space copy-on-write (roadmap 2.3). Carries the same dispatch entry as SYS_SPAWN, slot 3 with WRITE|EXEC -- which is not a gate: slot 3 is the CAP_FRAME every task is born holding, so every caller satisfies it (S28, docs/LIMITATIONS.md 1.6b). This line said "No capability of its own" until 2026-08-29, which contradicted the table while being closer to the truth about what it enforces. What bounds a fork is not the entry but the operation: the child gets a copy of the caller's own address space and cspace, never more (S39, S41). The child is endowed exactly as SYS_SPAWN endows one -- never more than the caller holds. Refuses while the caller has a CAP_FRAME mapped; see clone_user_aspace in paging.c. */
+#define SYS_FORK              101   /* () -> child tid in the parent, 0 in the child; duplicate the caller's address space copy-on-write (roadmap 2.3). Requires a CAP_UNTYPED at CAPSLOT_UNTYPED, the same authority SYS_SPAWN requires: a fork creates a task, and a task's cspace is carved from that region, so a caller holding none is refused (S57). Until 2026-08-30 it carried SYS_SPAWN's slot-3 entry, which was not a gate -- slot 3 is the CAP_FRAME every task is born holding, so every caller satisfied it (S28) -- and this line said "No capability of its own" until 2026-08-29, contradicting the table while being closer to the truth about what was then enforced. Both are now the same statement. What bounds a fork is still the operation as well as the gate: the child gets a copy of the caller's own address space and cspace, never more (S39, S41). Refuses while the caller has a CAP_FRAME mapped; see clone_user_aspace in paging.c. */
 #define SYS_CLOCK_GETTIME      98   /* (clock_id, struct horus_timespec*) -> 0; monotonic time since boot (roadmap 2.2). No capability: coarse by design, see the struct. */
 #define SYS_CAP_ENUMERATE      97   /* (tid, slot, struct cap_info*) -> 0; read one capability slot of task `tid` (roadmap 3.6). CAP_DEBUG (READ) at CAPSLOT_DEBUG. Reports type/rights/serial/badge/generation and whether the slot is occupied; see struct cap_info for what it deliberately does not report. */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
@@ -2696,8 +2696,24 @@ int kernel_argon2id(const uint8_t *pwd, size_t plen,
 int  ramfs_list(char *buf, size_t buflen);
 
 
+/* `untyped_index` is the region the new task's cspace is CARVED FROM, which is
+ * what makes creating a task an exercise of authority rather than something
+ * every task can do for free (roadmap 0.3, finding [I-7], audit 4.1). A ring-3
+ * spawn passes the region its own CAP_UNTYPED names, so the child is charged to
+ * the parent and a task holding no untyped cannot spawn. Kernel-initiated
+ * creation passes UNTYPED_KERNEL, which is not delegable and is sized at exactly
+ * MAX_TASKS cspaces. See the note in create_task. */
 void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base,
-                 uint32_t premap_pages);
+                 uint32_t premap_pages, uint32_t untyped_index);
+/* Spawn charged to `untyped_index`: the region the CALLER's CAP_UNTYPED names.
+ * do_spawn()/do_spawn_stdio() are the kernel-initiated forms and pass
+ * UNTYPED_KERNEL; every post-boot creation should use this instead (S57). */
+int  do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index);
+/* Resolve `task`'s CAP_UNTYPED region for a task-creating syscall. `task` must be
+ * the current one -- cap_lookup answers about the current cspace, so anything
+ * else would silently resolve somebody else's. 0 on success, SYS_ERR_PERM if the
+ * caller holds none. */
+int  spawn_untyped_region_for(int task, uint32_t *out_index);
 void create_user_pagedir(uint32_t id);
 /* Pages the currently-armed staged image will occupy once loaded (its PT_LOAD
  * span), so the image-window premap can be sized to the whole image. 0 callers

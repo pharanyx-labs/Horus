@@ -94,7 +94,7 @@ no userspace wrapper anywhere in this tree. A bare numeric index is now refused 
 | 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights; withdraws the **whole run** |
 | 99 | `SYS_MAP_REGION` | `first_slot`, `count`, `vaddr`, `rights` | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
 | 100 | `SYS_FRAME_PAGES` | `frame_slot` | `CAP_FRAME` at `frame_slot`, any rights |
-| 101 | `SYS_FORK` |, | the **same slot-3 capability as `SYS_SPAWN`** (`CAP_RIGHT_WRITE \| CAP_RIGHT_EXEC`) |
+| 101 | `SYS_FORK` |, | `CAP_UNTYPED` at `CAPSLOT_UNTYPED` (`CAP_RIGHT_WRITE`) — the same authority `SYS_SPAWN` requires, because both create a task and a task's cspace is carved from it (**S57**) |
 
 Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and
 here the alternative is not hypothetical: **every task is born holding a `CAP_FRAME` in slot
@@ -213,10 +213,16 @@ has a `CAP_FRAME` mapped (**S40**).
 stating.** The tempting reading is that fork needs no capability: it names no object, and a task
 copying *itself* reaches nothing it could not already reach. Both halves are true and the
 conclusion is still wrong, because an ungated `SYS_FORK` would be a **second way to bring a task
-into existence** standing beside a gated one. Revoking a task's slot-3 capability would then
-stop it spawning and not stop it forking, and "this task can create no more tasks" (which is
-what that revocation means) would quietly stop being true. A new path to an existing
-capability's effect inherits that capability's gate.
+into existence** standing beside a gated one. Revoke a task's authority to create tasks and it
+would stop spawning but not stop forking, so "this task can create no more tasks" would quietly
+stop being true. A new path to an existing capability's effect inherits that capability's gate.
+
+**Since 2026-08-30 that shared capability is `CAP_UNTYPED`, and the gate is real for the first
+time** (**S57**, `docs/LIMITATIONS.md` §1.6b). It was cspace **slot 3** with `SC_ANYTYPE` — which
+`create_task` fills in every task with `READ|WRITE|EXEC`, so the check could not fail and the
+paragraph above described a revocation nobody could perform. A task's cspace is a `KOBJ_CNODE`
+and is now carved from the region the caller's `CAP_UNTYPED` names, so the authority to create a
+task is the authority to spend kernel memory — which is delegable, revocable, and bounded.
 
 **The child inherits the caller's capabilities as derived copies** (**S41**), in the same slots
 and with the same rights. Each copy has its **own serial** and names the caller's capability as
@@ -278,11 +284,19 @@ the new stack. The **previous** address space is reclaimed, which matters when t
 itself a fork: it is the only path in the tree that frees a copy-on-write clone while its parent
 is still running.
 
-**Both are gated on the same slot-3 `WRITE|EXEC` capability as `SYS_SPAWN`**, for the reason
-`SYS_FORK` is: replacing a task's image is a way of putting a program on a CPU, and a new path
-to a gated effect inherits the gate. An image supplied by the caller (`SYS_EXEC_IMAGE`) is
-validated by the same loader as a named one (W^X, bounds, fail-closed relocations) because the
-bytes are untrusted in both cases.
+**Neither is capability-gated, and since 2026-08-30 that is a decision rather than an accident.**
+They used to carry the same slot-3 `WRITE|EXEC` entry as `SYS_SPAWN`, on the reasoning that
+"replacing a task's image is a way of putting a program on a CPU, and a new path to a gated
+effect inherits the gate". That reasoning is right about `SYS_FORK`, which *creates* a task, and
+wrong here: an exec replaces the **caller's own** image, creates no task, and touches no
+capability (**S42** — the execed task keeps its serial, its badge and its place in the derivation
+graph). There is nothing to charge and no authority to confer, so the untyped gate that
+`SYS_SPAWN` and `SYS_FORK` now carry (**S57**) would be a second vacuous check standing where the
+first one stood. They are `SC_NONE` and self-only: `h_exec_named` operates on
+`get_current_task()` and can reach no other task.
+
+An image supplied by the caller (`SYS_EXEC_IMAGE`) is validated by the same loader as a named one
+(W^X, bounds, fail-closed relocations) because the bytes are untrusted in both cases.
 
 **Errors** (the image is left intact, and the call returns): `SYS_ERR_NOENT` (no embedded binary
 by that name. `SYS_ERR_INVAL`) the supplied image failed validation. Past the point of no return
@@ -335,13 +349,13 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 | 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` |
 | 19 | `SYS_EXEC` | `load_base`, `entry` | slot 3: WRITE\|EXEC |
 | 20 | `SYS_GETPID` |, | none (self-authorising) |
-| 28 | `SYS_SPAWN` |, | slot 3: WRITE\|EXEC |
+| 28 | `SYS_SPAWN` |, | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |
 | 63 | `SYS_KILL` | `tid` | `CAP_TCB` for target, or `CAP_USER` |
-| 64 | `SYS_EXEC_NAMED` | `name` | slot 3: WRITE\|EXEC |
+| 64 | `SYS_EXEC_NAMED` | `name` | none (self): replaces the caller's own image, creates no task |
 | 68 | `SYS_SPAWN_ARG` |, | none (self) |
 | 69 | `SYS_GET_ARGV` | `char ***out` | none (self) |
-| 70 | `SYS_SPAWN_IMAGE` | `image`, `len`, `arg`, `argv`, `argc` | slot 3: WRITE\|EXEC |
-| 71 | `SYS_EXEC_IMAGE` | `image`, `len`, `0`, `argv`, `argc` | slot 3: WRITE\|EXEC |
+| 70 | `SYS_SPAWN_IMAGE` | `image`, `len`, `arg`, `argv`, `argc` | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |
+| 71 | `SYS_EXEC_IMAGE` | `image`, `len`, `0`, `argv`, `argc` | none (self), as `SYS_EXEC_NAMED` |
 | 27 | `SYS_RECEIVE_PROGRAM` | `struct program_header *` | slot 3: WRITE\|EXEC |
 
 `SYS_GET_TASK_INFO` reports `cr3` as 0 deliberately (disclosing the page-table physical base

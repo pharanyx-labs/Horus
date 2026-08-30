@@ -227,6 +227,25 @@ static int launch_shell(void) {
      * WIDENING versus the uid==0 gate being removed, which is precisely the
      * mistake smoke-session caught when CAP_KERNEL_LOG was delegated. */
     if (sys_cap_grant(sh, CAP_SLOT_USER, CAPSLOT_USER) != 0) return -7;
+    /* CAP_UNTYPED, and this grant is what lets the shell run `spawn` at all.
+     *
+     * Creating a task carves the child's cspace out of an untyped region since
+     * 2026-08-30 (audit finding 4.1, roadmap 0.3): a task holding no CAP_UNTYPED
+     * cannot spawn, fork or spawn an image. The five task-creating syscalls used
+     * to authorise on cspace slot 3, which `create_task` fills in EVERY task, so
+     * every task could spawn and the check could not fail.
+     *
+     * THE GRANT IS THE POINT, NOT A WORKAROUND FOR THE GATE. It makes "may this
+     * task create tasks?" a question with an answer that is written down here and
+     * revocable, rather than one the kernel answers yes to for everybody. The
+     * shell needs it because `spawn` is a shell command; a server that should
+     * never fork is now simply not given one, and nothing else has to change.
+     *
+     * It is the same region init holds -- there is no region splitting yet, so a
+     * delegate shares the budget rather than getting a sub-budget. Bounded
+     * per-delegate accounting is what a `SYS_UNTYPED_SPLIT` would buy, and is not
+     * needed for the authority property this closes. */
+    if (sys_cap_grant(sh, CAPSLOT_UNTYPED, CAPSLOT_UNTYPED) != 0) return -9;
     /* The shell's console capability is granted above; resuming only now is what
      * guarantees it can never start writing before it holds one. That race is
      * what made the shell come up silent under SMP and time out CI. */

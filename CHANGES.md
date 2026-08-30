@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 119 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 120 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,28 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **`gitleaks` and `cargo-audit` findings now fail the build** (roadmap **4.3**). Both are
+  reproducible — gitleaks matches fixed patterns against this repository and its history,
+  cargo-audit resolves a lockfile against a dated advisory database — so a finding from either is
+  a fact about this tree rather than an artifact of a ruleset that moved under us. They run in
+  their own CI step *above* the advisory one, so `continue-on-error` cannot hide them, and a
+  failure names which of the two fired. Semgrep and Trivy stay advisory as planned; `cppcheck` and
+  `flawfinder` stay advisory because both pipe into `head` and discard the status regardless.
+  `cargo-audit`'s previous wording was worse than `|| true`: `|| echo "cargo-audit not installed
+  or no advisories found"` named two conditions needing opposite responses, so a **missing
+  scanner reported as a clean scan** and a real advisory printed the reassuring half and exited 0.
+  Its installation test now asks whether `cargo audit` *runs*, not whether a binary of that name
+  is on `PATH` — presence says nothing about the subcommand working.
+  `gitleaks` gained `--redact` in the same change, because the gate now actually runs on a public
+  repository and an unredacted detector would print the secret it just found into a world-readable
+  log. Falsified five ways (`tools/test_security_gates.sh`), including that redaction. The planted
+  credential is assembled from fragments at runtime: writing it as a literal would put a
+  detectable secret in this repository's history permanently and `make gitleaks` would fail on
+  every future run — the test breaking the thing it tests. No new CI job, so the required-context
+  set is unchanged at 103 and no ruleset sync is needed.
 
 ### Fixed
 

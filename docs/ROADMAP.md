@@ -1501,8 +1501,16 @@ that nothing yet enforces.
 
   Until then, `python3 tools/check_ci_gating.py --check-ruleset` is the check, and it has to be
   run deliberately. Read the count from the API, never from this paragraph.
-- **4.3 ⬜ Hard-fail `gitleaks` and `cargo-audit`** (keep Semgrep/Trivy advisory until their
-  false-positive rate on a freestanding kernel is characterised).
+- **4.3 ✅ Hard-fail `gitleaks` and `cargo-audit`** (2026-08-30). Both run in their own step
+  above the advisory one, so `continue-on-error` cannot hide a finding. Semgrep and Trivy stay
+  advisory as planned, until their false-positive rate on a freestanding kernel is characterised;
+  `cppcheck` and `flawfinder` stay advisory too, since both pipe into `head` and discard the exit
+  status regardless. Falsified five ways (`tools/test_security_gates.sh`), including the arm for
+  the wording that was actually there: `cargo audit || echo "cargo-audit not installed or no
+  advisories found"` reported a **missing scanner as a clean scan**, which is worse than
+  `|| true` because the two conditions it names need opposite responses. `gitleaks` gained
+  `--redact` in the same change: the gate now runs on a public repository, so an unredacted
+  finding would print the secret it just found into a world-readable log.
 
 ### P1
 

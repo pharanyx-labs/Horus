@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 119 entries, newest first, each explaining what
+The narrative record of how Horus was built: 120 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,58 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Changed: two scanners that could not fail, and the one whose wording was worse than `|| true`
+
+Roadmap 4.3, and the interesting part is not the promotion but what each scanner's escape hatch
+actually said.
+
+`gitleaks` ended in `|| true`: honest, visible, and obviously a hole. `cargo-audit` ended in
+`|| echo "cargo-audit not installed or no advisories found"`, which is worse. The message names
+two conditions that need **opposite** responses — one is "nothing to do", the other is "your scan
+did not happen" — and it printed the reassuring one in both cases while exiting 0. A real advisory
+against a dependency would have scrolled past as good news. That is the same defect as the gates
+fixed earlier this week: a check whose failure and whose absence are indistinguishable in its
+output.
+
+Its installation test now asks whether `cargo audit` **runs**, rather than whether a binary named
+`cargo-audit` sits on `PATH`. The first version of this change tested for the binary, which is the
+wrong question: presence says nothing about whether the subcommand works, and it also made the
+falsification arm impossible to write, since you cannot make a file on `PATH` not exist.
+
+Three things surfaced only by running the targets rather than parsing them.
+
+**The recipe comments broke the shell.** `: "... ends in `|| echo ...`"` — the backticks inside a
+`:` no-op became command substitution and the target died with "EOF in backquote substitution".
+`make -n` printed it happily and the YAML parsed; only an actual run failed. Recipe comments in
+this file must not contain backticks.
+
+**The Makefile aborts at parse time without a toolchain.** The arm for "cargo-audit is missing"
+first emptied `PATH`, which tripped `cargo not found. Install Rust` — a different failure that
+would have let the arm pass for the wrong reason. Stubbing `cargo` to answer everything except
+`audit` tripped the *next* guard, on the bare-metal rust target. The arm now stubs `cargo` as a
+pass-through to the real one, failing only on `audit`, which also makes it deterministic whether
+or not cargo-audit is installed on the machine running it.
+
+**A test that plants a secret can poison the repository it tests.** gitleaks scans git *history*.
+Writing a detectable credential into `tools/test_security_gates.sh` would have made every future
+`make gitleaks` fail on the test's own source, permanently, with no way to remove it short of
+rewriting history. The planted value is assembled from fragments at runtime that do not match the
+pattern individually. Verified the only way that means anything: `make gitleaks` against the real
+tree with the harness committed — 891 commits scanned, no leaks found.
+
+`--redact` was added in the same change and is not cosmetic. The gate previously never failed, so
+its output was never anyone's problem; now that it runs and fails on a public repository, an
+unredacted finding prints the secret it just found into a world-readable log. **Promoting a
+detector to gating changes what its output costs.** One of the five arms asserts the value does
+not appear.
+
+No new CI job: both scanners run as a step inside the already-required `security` job, so the
+required-context set stays at 103 and no ruleset sync is needed. The step sits *above* the
+advisory one, because a hard gate below a `continue-on-error` step is only as hard as what runs
+after it.
 
 ---
 

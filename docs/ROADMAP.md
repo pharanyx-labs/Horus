@@ -1355,7 +1355,7 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The intended set is **102 required, 3 exempted** (102 jobs, 105 contexts (re-derive it with
+The intended set is **103 required, 3 exempted** (103 jobs, 106 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
 evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on), and
 `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an

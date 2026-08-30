@@ -15,6 +15,50 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`main` went red because a repository this project does not use returned 403.** On
+  2026-08-30 `packages.microsoft.com` answered 403 for a few minutes. `apt-get update` exits
+  non-zero when **any** configured repository fails, including the vendor lists GitHub's runner
+  image ships and Horus has never used, so a job that installs `binutils` and QEMU from the
+  Ubuntu archive and nothing else exited 100 and took the run with it.
+
+  **Not a flake, a fleet-wide fragility.** 87 of the 101 jobs ran a bare `sudo apt-get update`.
+  With N jobs each carrying probability p of a transient vendor failure, the run reddens at
+  1-(1-p)^N, and N was 87. One job failing is enough.
+
+  **And it had already been diagnosed once.** The `security` job carried a retry loop and a
+  comment recording that *"the apt step in this repo's CI has flaked twice in one day"*. The fix
+  was applied in the job where it was noticed and never carried to the other 86: a lesson learned
+  in one arm and not swept to its siblings, which is a failure mode this repository has recorded
+  before.
+
+  Every install now goes through `.github/actions/apt`, which **removes the vendor lists** before
+  updating (verified: every package any job installs comes from the stock Ubuntu archive, and no
+  job adds a repository of its own) and **retries** what remains. There is no `|| true`: if the
+  Ubuntu archive is genuinely unreachable the job still fails, because an install that reports
+  success having installed nothing is the shape §1 forbids.
+
+  **Gated so an eighty-eighth job cannot reintroduce it.** `tools/check_apt_hardening.py`
+  (required job `apt-hardening`) refuses a raw `apt-get` in any workflow, which is how the first
+  86 came to look alike: each was copied from an older one. It found two more in `codeql.yml`
+  that the manual sweep had missed. Falsified five ways, including one arm for the single
+  exemption and one for the unmutated tree, since four "is it caught" arms are satisfied by a
+  checker that rejects everything.
+
+  Verified environmental rather than assumed: the failed job was re-run with **no code change**
+  and passed.
+
+  **The first version of this fix was worse than the outage, and CI caught it.** It stripped
+  `/etc/apt/sources.list.d/*.sources` by filename, and on Ubuntu 24.04 the **main archive lives
+  there**, as `ubuntu.sources` in deb822 format. Every job then failed with *"Package
+  'build-essential' has no installation candidate"*: a runner with no repositories at all. The
+  strip is by **content** now, keeping any source that serves `ubuntu.com` and dropping the rest,
+  with a guard that fails immediately if nothing survives rather than 200 lines later at the
+  install. The lesson is the one this audit keeps finding: a checker that verifies the strip
+  *exists* says nothing about whether the build still works, and only the build says that.
+
+
 ### Changed
 
 - **Every tracked document rewritten to British English with no em dashes**, per a house-style

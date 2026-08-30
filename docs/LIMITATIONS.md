@@ -1866,10 +1866,18 @@ job's log, never from this paragraph.
 Two counts moved in the right direction since. `strict_required_status_checks_policy` is now
 **true**, so a stale-base merge is no longer permitted. And the `security` job is a required
 check whose scanner-presence step no longer carries `continue-on-error` (#154), so the job goes
-red if the scanners are absent: a job that structurally could not fail now can. The scanners'
-**findings** remain advisory, deliberately: five of the six swallow their exit status inside
-`make security`, and the sixth (`semgrep --config=auto`) fetches rules from a registry that
-changes with no commit here. Gating on content is what pinning those rulesets would unlock.
+red if the scanners are absent: a job that structurally could not fail now can. **`gitleaks` and `cargo-audit` findings now fail the build** (roadmap 4.3, 2026-08-30). Both are
+reproducible — gitleaks matches fixed patterns against this repository and its history, and
+cargo-audit resolves a lockfile against a dated advisory database — so a finding from either is a
+fact about this tree rather than an artifact of a ruleset that moved. They run in their own step
+above the advisory one, so `continue-on-error` cannot hide them.
+
+The remaining four scanners' **findings** stay advisory, deliberately: `trivy` exits 0 on
+findings, `cppcheck` and `flawfinder` pipe into `head` which discards the status, and
+`semgrep --config=auto` fetches rules from a registry that changes with no commit here. Gating on
+their content is what pinning those rulesets would unlock. Note that `cargo-audit` still depends
+on an external advisory feed, so it can redden without a change here — that is accepted
+deliberately: a newly disclosed advisory against a dependency *is* news about this tree.
 
 ### 5.2b ~~One required check is nondeterministic by construction~~ (**FIXED 2026-08-16**)
 **[I-11]**

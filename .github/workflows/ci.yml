@@ -2830,18 +2830,36 @@ jobs:
       #                which scans workflow files and host tooling for CI hygiene
       #                (mutable action tags, curl|sh) rather than kernel defects
       #   trivy        exits 0 on findings (no --exit-code)
-      #   gitleaks     `|| true`
       #   cppcheck     `| head -80 || true` -- the pipe discards the status anyway
       #   flawfinder   `| head -60 || true` -- likewise
-      #   cargo-audit  `|| echo ...`
       #
-      # So five of six scanners swallow their result inside the Makefile, and the
-      # sixth is the least reproducible. Gating on findings today would redden the
-      # pipeline on upstream rule drift while adding no real coverage -- the exact
-      # press-re-run reflex that let the smoke-console-smp deadlock survive months
-      # of CI (docs/LIMITATIONS.md 5.2c). Pinning the rulesets is what unlocks
-      # gating on content; until then this job gates on the scan having HAPPENED.
-      - name: Run security checks (findings advisory -- see note above)
+      # Gating these on findings would redden the pipeline on upstream rule drift
+      # while adding no real coverage -- the exact press-re-run reflex that let
+      # the smoke-console-smp deadlock survive months of CI (docs/LIMITATIONS.md
+      # 5.2c). Pinning the rulesets is what unlocks gating on their content.
+      #
+      # gitleaks and cargo-audit are NO LONGER in that list (roadmap 4.3). Both
+      # are reproducible: gitleaks matches fixed patterns against this repository
+      # and its history, and cargo-audit resolves a lockfile against a dated
+      # advisory database. Neither depends on a registry ruleset that can change
+      # under us in the way `semgrep --config=auto` does, so a finding from
+      # either is a fact about this tree and gets to fail the build. They run in
+      # their own step ABOVE the advisory one, so a real finding cannot be hidden
+      # by continue-on-error, and so a failure names which of the two fired.
+      - name: Secrets and dependency advisories must fail the build (roadmap 4.3)
+        run: make gitleaks cargo-audit
+
+      # A scanner promoted to gating on the strength of "it exits non-zero now"
+      # has not been shown to exit non-zero. Five arms: a planted credential must
+      # fail gitleaks, an innocuous tree must not, the finding must be REDACTED
+      # (the gate runs on a public repo, so an unredacted detector is itself the
+      # disclosure), a failing cargo audit must fail the target, and a MISSING
+      # cargo-audit must fail rather than report a clean scan -- which is exactly
+      # what the old `|| echo "not installed or no advisories found"` did.
+      - name: Falsify both promoted scanners
+        run: ./tools/test_security_gates.sh
+
+      - name: Run remaining security checks (findings advisory -- see note above)
         continue-on-error: true
         run: make security
 

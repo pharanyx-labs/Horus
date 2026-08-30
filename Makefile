@@ -108,7 +108,8 @@ DEFECT_FLAGS = \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
-	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY
+	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
+	SYSCOV_PROBES_ABSENT
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -680,6 +681,24 @@ CFLAGS += -DSYSCALL_COVERAGE
 endif
 
 SYSCALL_PTR_TRUNC32 ?= 0
+
+# SYSCOV_PROBES_ABSENT=1 compiles captest's section 13 out: the probes that enter
+# the twelve SC_NONE handler bodies promoted to `covered` on 2026-08-30. Under it
+# `make smoke-syscall-coverage` must go RED, naming each of them as declared
+# covered with a handler that never ran.
+#
+# THIS ARM MEASURES SOMETHING THE GATE ALONE CANNOT. Without it, a promotion the
+# probes earned is indistinguishable from one that was free all along -- some
+# other tracked workload already entering the body, in which case the probes are
+# decoration and the coverage gate would stay green if they were deleted. The arm
+# is what turns "captest enters these twelve" into a measurement rather than a
+# coincidence of it also being true.
+#
+# Userspace-only, so it is applied to USERSPACE_CFLAGS at top level, after that
+# variable's `=` assignment and outside any other flag's ifeq -- see the comment
+# beside SYSCALL_PTR_TRUNC32 there, which is the arm that was first written in
+# the wrong place and silently did nothing.
+SYSCOV_PROBES_ABSENT ?= 0
 
 KLOG_WRITE_UNGATED ?= 0
 ifeq ($(KLOG_WRITE_UNGATED),1)
@@ -2157,6 +2176,11 @@ endif
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
 USERSPACE_CFLAGS += -DSYSCALL_PTR_TRUNC32
 endif
+# captest's section-13 arm, and it needs exactly the placement above for exactly
+# the reason recorded there.
+ifeq ($(SYSCOV_PROBES_ABSENT),1)
+USERSPACE_CFLAGS += -DSYSCOV_PROBES_ABSENT
+endif
 # netd's two control arms, HERE for the same reason and not one line earlier.
 # Both live in userspace/netd.c, so they are userspace flags; putting them beside
 # their `?= 0` defaults several hundred lines up would have them overwritten by
@@ -3572,6 +3596,70 @@ smoke-syscall-coverage:
 	echo "syscov: serial transcripts kept in $$cov/"; \
 	python3 tools/check_syscall_coverage.py "$$cov/session.log" "$$cov/captest.log" \
 	    "$$cov/modules.log"
+
+# ---- the falsifying arm for the 2026-08-30 SC_NONE promotions ---------------
+#
+# SYSCOV_PROBES_ABSENT=1 compiles captest's section 13 out. The gate above must
+# then go RED, and it must go red for the RIGHT REASON -- which is why this
+# asserts the exact SET of syscalls the checker names, not merely that it failed.
+#
+# ALL THREE WORKLOADS ARE REBUILT AND REBOOTED, even though the flag only changes
+# captest. Running the captest arm alone would leave the other two transcripts
+# missing, so the checker would also report the eight syscalls only the modules
+# session enters -- and the arm would go red without the defect contributing
+# anything. A control arm that fails for a reason unrelated to its defect
+# witnesses nothing; this is the same trap a refusal test falls into when the
+# ungated path could not have succeeded either.
+#
+# THE THREE `|| true` BELOW ARE ON THE WORKLOADS, NOT ON AN ASSERTION, and they
+# are copied deliberately from the base gate above rather than being a weakening
+# introduced here. What this measures is which handler bodies got ENTERED, which
+# the serial transcript records whether or not the workload went on to pass: a
+# session that fails its last step has still driven every syscall up to that
+# point, and gating on its exit status would turn a coverage gate into a
+# duplicate of smoke-session. The assertion is the checker run below, which is
+# `if`-guarded and carries no `|| true` at all.
+SYSCOV_CONTROL_EXPECTED = \
+	SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY SYS_MAP_FRAME SYS_MAP_REGION \
+	SYS_READ SYS_REGISTER_STORAGE_BACKEND SYS_SIGACTION SYS_SIGRETURN \
+	SYS_SPAWN_ARG SYS_TASK_EXIT_INFO SYS_UNMAP_FRAME
+
+smoke-syscall-coverage-control:
+	@set -eu; \
+	cov="$(SYSCOV_EVIDENCE_DIR)-control"; rm -rf "$$cov"; mkdir -p "$$cov"; \
+	$(MAKE) --no-print-directory clean; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 boot.iso; \
+	SESSION_SERIAL_LOG="$$cov/session.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
+	    python3 tools/session_test.py boot.iso >/dev/null 2>&1 || true; \
+	$(MAKE) --no-print-directory clean; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 CAPTEST_SELFTEST=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 CAPTEST_SELFTEST=1 boot.iso; \
+	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
+	    tools/smoke_test.sh boot.iso > "$$cov/captest.log" 2>&1 || true; \
+	$(MAKE) --no-print-directory clean; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 boot.iso; \
+	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
+	    tools/modules_session.py boot.iso >/dev/null 2>&1 || true; \
+	echo "syscov-control: serial transcripts kept in $$cov/"; \
+	if python3 tools/check_syscall_coverage.py "$$cov/session.log" "$$cov/captest.log" \
+	       "$$cov/modules.log" > "$$cov/checker.out" 2>&1; then \
+	    echo "CONTROL FAIL: the coverage gate PASSED with captest section 13 compiled out"; \
+	    cat "$$cov/checker.out"; \
+	    exit 1; \
+	fi; \
+	got=$$(grep -o 'SYS_[A-Z0-9_]* is declared covered but its handler never ran' \
+	         "$$cov/checker.out" | awk '{print $$1}' | sort -u | tr '\n' ' '); \
+	want=$$(echo $(SYSCOV_CONTROL_EXPECTED) | tr ' ' '\n' | sort -u | tr '\n' ' '); \
+	if [ "$$got" != "$$want" ]; then \
+	    echo "CONTROL FAIL: the arm reddened the gate, but not for its own defect."; \
+	    echo "  expected exactly: $$want"; \
+	    echo "  checker named   : $$got"; \
+	    cat "$$cov/checker.out"; \
+	    exit 1; \
+	fi; \
+	echo "CONTROL PASS: section 13 removed, and the coverage gate names exactly its twelve"
 
 # The three transcripts are KEPT rather than made in a mktemp that the shell
 # deletes on the way out. A failure here is "which syscall stopped being

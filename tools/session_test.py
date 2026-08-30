@@ -371,8 +371,28 @@ def run():
         s.send("stat note"); s.expect("regular file", STEP_TIMEOUT)
         s.expect("-rw-r--r--", STEP_TIMEOUT)   # symbolic mode column
         s.expect("root@horus#", STEP_TIMEOUT)
+        # `rm` is here for a coverage reason as much as a functional one, and the
+        # reason is worth stating. SYS_FS_INODE_FREE sat in the `uncovered` list of
+        # .github/syscall-coverage.yml with the reason "fs_server inode teardown;
+        # not reached by either workload's file operations" -- true, and a gap in
+        # THIS SCENARIO rather than in the kernel: fs_server holds the
+        # CAP_ENCRYPTED_STORAGE the syscall is gated on and calls it on the unlink
+        # path (fs_server.c, FS_OP_UNLINK), so the handler was one shell command
+        # away from being entered on every run and nothing had issued it. The
+        # scenario created files and never destroyed one.
+        s.send("rm note3"); s.expect("rm: removed note3", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        # The name must be GONE, asked of the server rather than inferred from
+        # rm's own success message -- which is the shell reporting what it
+        # believes it asked for. `stat` re-walks the path, so a "removed" that
+        # left the directory entry behind fails here. (`ls` would be the weaker
+        # check: "note" is a prefix of "note3", so a listing that still contained
+        # note3 satisfies any expect() for the file that legitimately remains.)
+        s.send("stat note3"); s.expect("stat: not found", STEP_TIMEOUT)
+        step("rm unlinks a file and the name no longer resolves")
+        s.expect("root@horus#", STEP_TIMEOUT)
         s.send("cd /")                            # back to root for the logout below
-        step("filesystem coreutils (cd/pwd/ls -l/cp/mv/wc/stat) work as root")
+        step("filesystem coreutils (cd/pwd/ls -l/cp/mv/wc/stat/rm) work as root")
 
         # --- 4b. dmesg prints the kernel boot log; root is allowed -------
         s.expect("root@horus#", STEP_TIMEOUT)

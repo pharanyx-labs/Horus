@@ -172,8 +172,6 @@ counts:
         pattern: 'The other (\d+) are listed in `\.github/syscall-coverage\.yml`'
       - file: docs/LIMITATIONS.md
         pattern: 'a defect in any of those (\d+) handlers'
-      - file: docs/LIMITATIONS.md
-        pattern: '\*\*Two of the (\d+) are cheap'
       - file: site/index.html
         pattern: 'The other (\d+) are each'
 
@@ -231,6 +229,35 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'The pipe family and `SYS_STDIO_INFO` are[\s\n]+uncovered only because'
+    reason: >-
+      docs/LIMITATIONS.md 1.8 nominated these as the two cheap coverage gaps
+      "worth doing next" -- and #179 had already closed them, promoting the four
+      pipe syscalls and SYS_STDIO_INFO to `covered` by adding the boot-modules
+      session. The sentence went on recommending finished work. Its neighbour in
+      the same paragraph called the `uncovered` reasons "hypotheses this manifest
+      has not measured" when the manifest's own header records all ten measured
+      on 2026-08-20 -- the same PR closed both halves and neither was rewritten.
+      Corrected 2026-08-30.
+  - pattern: 'hypotheses this manifest has not measured'
+    reason: >-
+      The other half of the paragraph above, and the more misleading half: it
+      told a reader not to trust reasons that had been measured and rewritten a
+      week earlier. Corrected 2026-08-30.
+  - pattern: 'no program in a tracked image holds a CAP_UNTYPED'
+    reason: >-
+      .github/syscall-coverage.yml gave this as the reason the frame syscalls
+      were uncovered. It is false: captest is a tracked workload, holds
+      CAP_UNTYPED at CAPSLOT_UNTYPED, and retypes endpoints from it in its own
+      section 9. The true reason was that nothing had asked whether the HANDLER
+      was entered, which for an SC_NONE row it is for any caller at all.
+      Corrected 2026-08-30.
+  - pattern: 'the legacy slot-3 decoy is refused before the handler body'
+    reason: >-
+      SYS_FRAME_PAGES' uncovered reason, and exactly backwards: its dispatch row
+      is SC_NONE, so nothing is refused before the handler -- the refusal is the
+      handler's own type test. A reason that inverts where a gate lives is worse
+      than no reason. Corrected 2026-08-30.
   - pattern: 'most notably \*\*\[C-1\]\*\*: IPC endpoints are not'
     reason: >-
       The public security issue template told reporters that [C-1] was a known

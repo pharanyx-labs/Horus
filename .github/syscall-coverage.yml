@@ -35,15 +35,23 @@
 # IRQ_POLICY_AUDIT does not drive SYS_IRQ_POLICY_INFO. Two more, SYS_EXEC and
 # SYS_EXEC_IMAGE, are reached by no build known in this tree.
 #
-# The six confirmed are NOT promoted to `covered`, and the reason is a cost
+# The confirmed ones are NOT promoted to `covered`, and the reason is a cost
 # judgement rather than a doubt: `covered` means "a TRACKED arm enters it", and
-# each of those builds is a full kernel build plus a boot. PROC_SELFTEST is the
-# only one worth its cost (4 promotions, 21 syscalls entered) and it is the one
-# that must not be added yet -- its workload still trips [G-9] on ~7% of boots,
-# so it would make this gate intermittently red for a reason that is not about
-# coverage. IRQ_SELFTEST buys one promotion for a full build and PREEMPT_SELFTEST
-# buys exactly one. Promoting them is a follow-up to closing [G-9], and the
-# measurements above are what that follow-up should start from.
+# each of those builds is a full kernel build plus a boot on every run.
+#
+# WHAT ADDING ONE WOULD BUY IS NOW ALMOST NOTHING, and that is the 2026-08-30
+# sweep's doing rather than a change of mind. PROC_SELFTEST was the one worth its
+# cost at 4 promotions; three of its four (SYS_SIGACTION, SYS_SPAWN_ARG,
+# SYS_TASK_EXIT_INFO) are SC_NONE and were promoted that day from captest for the
+# price of a probe, leaving it SYS_EXEC_NAMED alone. IRQ_SELFTEST is at zero --
+# both syscalls it was cited for were promoted on 2026-08-28 when the device gate
+# moved into the handlers. FORK_SELFTEST and SHLIB_SELFTEST would buy one each.
+# Read those numbers off the `uncovered` entries below, which name the build for
+# each; do not copy them from this paragraph, which has been wrong before.
+#
+# PROC_SELFTEST additionally must not be added yet: its workload still trips
+# [G-9] on ~7% of boots, so it would make this gate intermittently red for a
+# reason that is not about coverage.
 
 # Compiled only under a flag, so no tracked workload can enter them and neither
 # `covered` nor `uncovered` can describe them. Declaring them here is what keeps
@@ -97,6 +105,67 @@ conditional:
       MEASURED 2026-08-20: NOT entered even by an IRQ_POLICY_AUDIT=1 boot, which an earlier entry claimed would reach it. Nothing in that image calls it
 
 covered:
+  # Promoted 2026-08-30. All twelve are `SC_NONE` dispatch rows, and that single
+  # structural fact is the whole reason they could be promoted at once: an
+  # SC_NONE row means the central check in syscall_handler admits every caller
+  # and whatever authority the call needs is tested INSIDE the handler. So the
+  # handler body is reachable from ring 3 by a task holding nothing, and a
+  # captest probe that proves the call says no is a probe that ran the body.
+  #
+  # That is not a new argument here. It is the one that carried SYS_GET_LINE in
+  # 2026-08-24, the device family in 2026-08-28, and S52's cap trio in
+  # 2026-08-29 -- three promotions in a row, each written up below as "the same
+  # structural reason". What had not happened was ASKING THE QUESTION OF THE
+  # WHOLE LIST. Of the 26 syscalls sitting in `uncovered`, fourteen were SC_NONE,
+  # and their reasons had all been written about the SUCCESS path instead: no
+  # CAP_UNTYPED to retype a frame from, no pipeline in the session, login reads
+  # its password elsewhere. Every one of those sentences is true and none of
+  # them is about whether the body runs -- which is the distinction the header
+  # of this file says the file exists to preserve. It had drifted in its own
+  # reasons while enforcing itself perfectly on its numbers.
+  #
+  # Two of the fourteen are NOT promoted, and they are why this was measured
+  # rather than argued:
+  #   - SYS_GET_PASS blocks. See its entry below; the first draft of the probe
+  #     hung the gate.
+  #   - SYS_SHLIB_INFO would enter a body that returns at its first line,
+  #     because shlib_active() is false in every tracked image. Entering it
+  #     would raise this file's number without running the gate the syscall is
+  #     interesting for. See its entry below.
+  # Those two are the boundary of the technique, and stating it is the point:
+  # "the body was entered" stops being coverage when the body is one branch of
+  # a feature that is compiled out.
+  #
+  # Witness: captest section 13. Falsified by SYSCOV_PROBES_ABSENT=1, which
+  # compiles that section out and must turn this gate red naming these twelve --
+  # without which a promotion that was free all along would look identical to
+  # one the probes earned.
+  - SYS_READ                 # fd 3 (the retired [H-3] ramfs door) and fd 1
+  - SYS_BRK                  # brk(0), the query form, which does not move it
+  - SYS_SIGACTION            # a handler address outside the caller's own image
+  - SYS_SIGRETURN            # the table stub: a resume with nothing to resume to
+  - SYS_SPAWN_ARG            # answers about the caller; read twice for stability
+  - SYS_TASK_EXIT_INFO       # likewise
+  - SYS_IPC_REPLY            # empty slot and wrong-type slot, both refused
+  - SYS_MAP_FRAME            # empty slot, the legacy slot-3 decoy, and W^X
+  - SYS_UNMAP_FRAME          # empty slot
+  - SYS_MAP_REGION           # a zero-length run, and an empty slot
+  - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy
+  - SYS_REGISTER_STORAGE_BACKEND  # retired syscall 46; must still fail closed
+
+  # Promoted 2026-08-30, and by a different route from the twelve above: this one
+  # was never a question of authority. Its reason said "fs_server inode teardown;
+  # not reached by either workload's file operations", which was true and was a
+  # gap in THE SCENARIO. fs_server holds the CAP_ENCRYPTED_STORAGE the syscall is
+  # gated on and calls it on the unlink path, so the handler was one shell command
+  # away from running on every session boot -- the scenario created files (mkdir,
+  # echo >, cp, mv) and never destroyed one. tools/session_test.py now runs `rm`
+  # and asserts with `stat` that the name stops resolving.
+  #
+  # This is the shape LIMITATIONS.md 1.8 meant by "a gap in the workload, not the
+  # kernel". SYS_FS_INODE_LINK is the same shape and is NOT done, because no shell
+  # command makes a hard link; it needs a new command, not a new line in a test.
+  - SYS_FS_INODE_FREE
   # Promoted 2026-08-29 with S52, and the promotion is the point rather than a
   # side effect. All three were listed below as "not entered by any tracked
   # workload, and by no build known in this tree" -- and all three reached a
@@ -205,72 +274,60 @@ covered:
   - SYS_IPC_RECV_BLOCK
 
 uncovered:
-  # ---- The five added on 2026-08-22 (roadmap 2.1) -------------------------
+  # Thirteen left, and after the 2026-08-30 sweep they fall into exactly three
+  # groups. The grouping is the useful part: it says what each one would COST to
+  # cover, which is the question this file is asked when somebody wants the
+  # number to go up.
   #
-  # Three of these are not new syscalls. SYS_CAP_MINT, SYS_CAP_TRANSFER and
-  # SYS_CAP_MOVE have had handlers since the beginning, but their dispatch-table
-  # entries were bare numeric literals -- `[4]`, `[8]`, `[9]` -- and this file's
-  # checker derives "implemented" from `[SYS_NAME] = { handler`. So all three
-  # were invisible to it: handlers nothing classified, nothing measured, and no
-  # question this file could fail on. That is the [C-6] shape applied to itself,
-  # and it is why the implemented count moved 76 -> 81 in a change that added two
-  # syscalls. Naming them in the table is what made them countable.
-  SYS_SHLIB_INFO: >-
-    MEASURED 2026-08-29: not entered by any tracked workload, and cannot be --
-    the shared library is only loaded in SHLIB_SELFTEST builds, and none of the
-    three tracked images builds one. It IS entered on every boot of that build,
-    by both shlibtest and shlibpeer, which is what make smoke-shlib asserts; its
-    refusals have arms of their own (SHLIB_INFO_UNGATED, SHLIB_INFO_TYPE_ONLY).
-    It moves to `covered` when the shared library becomes part of an ordinary
-    image, which is roadmap 2.5's remaining half.
-
-  SYS_MAP_FRAME: >-
-    MEASURED 2026-08-22: not entered by the tracked workloads -- no program in a tracked image holds a CAP_UNTYPED to retype a frame from. Entered by FRAME_SELFTEST, which is its gate (make smoke-frame, plus both control arms). Not promoted to `covered` for the same cost reason as the six confirmed above: `covered` means a TRACKED arm enters it, and adding a fourth workload here is a full kernel build plus a boot on every run
-  SYS_UNMAP_FRAME: >-
-    MEASURED 2026-08-22: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME. Entered by FRAME_SELFTEST, where framepeer withdraws its own mapping and is then refused the second attempt
-  SYS_FRAME_PAGES: >-
-    MEASURED 2026-08-27: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME -- no program in a tracked image holds a CAP_FRAME it retyped, and the legacy slot-3 decoy is refused before the handler body would report anything. Entered by FRAME_SELFTEST on both sides: frametest asks about its own frames, framepeer asks about the one delegated to it. Gated by make smoke-frame and smoke-frame-info-control
-  SYS_FORK: >-
-    MEASURED 2026-08-28: not entered by the tracked workloads -- nothing in a tracked image forks, because fork's only client so far is its own witness. Entered by FORK_SELFTEST, which is its gate (make smoke-fork, plus both control arms: smoke-fork-share-control and smoke-fork-arena-control). Not promoted to `covered` for the same cost reason as its neighbours: `covered` means a TRACKED arm enters it, and adding a workload here is a full kernel build plus a boot on every run
-  SYS_MAP_REGION: >-
-    MEASURED 2026-08-27: not entered by the tracked workloads, for the same reason as SYS_MAP_FRAME -- no program in a tracked image holds a CAP_UNTYPED to retype the run from. Entered by FRAME_SELFTEST, which is its gate (make smoke-frame, plus both control arms: smoke-frame-region-control and smoke-frame-region-wide-control). Not promoted to `covered` for the same cost reason as its neighbours: `covered` means a TRACKED arm enters it
-  SYS_READ: >-
-    fd 0 refuses under console_hw_owned() for the same reason as SYS_GET_LINE, and neither workload drives an fd>=3 ramfs read
-  SYS_EXEC: >-
-    MEASURED 2026-08-20: NOT entered by any of PROC_SELFTEST, SIGNAL_SELFTEST, PREEMPT_SELFTEST, IRQ_SELFTEST or IRQ_POLICY_AUDIT. No build in this tree is known to reach it
-  SYS_IPC_REPLY: >-
-    servers in this tree reply through the reply-capability path, not this call
-  SYS_RECEIVE_PROGRAM: >-
-    receives a program image over IPC; no tracked workload provisions a program this way
-  SYS_GET_PASS: >-
-    the same kernel-side console-input path; login reads the password through console_server, not through the kernel
-  SYS_ROTATE_KEYS: >-
-    rotates the audit-chain keys and needs CAP_AUDIT, which captest does not hold -- it asserts the refusal, which returns before the handler
+  # (1) THE CENTRAL GATE RETURNS FIRST. These have a real capability in their
+  # dispatch row -- a slot, a rights floor and a type -- so syscall_handler
+  # refuses an unauthorised caller before the handler body runs. That is issue
+  # #176's shape exactly, and it is the group where "captest asserts the refusal"
+  # is worth nothing: the refusal is the table's, not the handler's. Covering one
+  # means a task that HOLDS the capability calling it, and captest deliberately
+  # holds neither CAP_AUDIT nor CAP_ENCRYPTED_STORAGE. Endowing it with them to
+  # raise this number would widen the authority of the one task in this tree whose
+  # job is to hold as little as possible, so none of these moves without a
+  # separate probe task that holds exactly one of them.
   SYS_READ_AUDIT: >-
-    needs CAP_AUDIT; captest holds none and asserts the REFUSAL, which returns before the handler -- exactly the shape that hid issue #176
-  SYS_REGISTER_STORAGE_BACKEND: >-
-    fs_server storage wiring; runs during provisioning boots, not these
-  SYS_BLOCK_READ: >-
-    a raw block read through the storage backend; the tracked workloads reach storage through fs_server's higher-level calls instead
-  SYS_BLOCK_WRITE: >-
-    a raw block write through the storage backend; the tracked workloads reach storage through fs_server's higher-level calls instead
+    dispatch row (slot 7, READ, CAP_AUDIT). captest holds no CAP_AUDIT, so its check asserts a refusal the TABLE issues and the handler never runs -- exactly the shape that hid issue #176. init holds the capability and the shell does not: it was narrowed to CAP_DEBUG on 2026-08-23 precisely so `ps` could not also read the audit log, so no tracked workload can reach this without undoing that narrowing
   SYS_AUDIT_DIGEST: >-
-    as SYS_READ_AUDIT, and one of the two wrappers issue #176 was about
-  SYS_SIGACTION: >-
-    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot -- NOT by SIGNAL_SELFTEST=1, which this entry previously claimed. That build passes while entering only syscalls 0 and 11, so it never drives sigaction at all
-  SYS_SIGRETURN: >-
-    MEASURED 2026-08-20: NOT entered by a SIGNAL_SELFTEST=1 boot, which this entry previously claimed. That build passes while entering only syscalls 0 and 11
-  SYS_FS_INODE_FREE: >-
-    fs_server inode teardown; not reached by either workload's file operations
-  SYS_BRK: >-
-    newlib's allocator uses SYS_SBRK (17), which IS covered; brk is the unused half of the pair
-  SYS_EXEC_NAMED: >-
-    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not promoted to `covered` because that build is not a tracked arm -- see the note on measured-but-untracked below
-  SYS_SPAWN_ARG: >-
-    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not a tracked arm
-  SYS_EXEC_IMAGE: >-
-    MEASURED 2026-08-20: NOT entered by any of the five selftest builds tried. No build in this tree is known to reach it
+    dispatch row (slot 7, READ, CAP_AUDIT), as SYS_READ_AUDIT. It is also ONE OF THE TWO WRAPPERS ISSUE #176 WAS ABOUT, and the other (SYS_DMESG) has been covered since the manifest existed -- so the defect that motivated this whole file still sits behind a handler nothing enters. That is not an argument for entering it cheaply; it is the reason a probe task holding one CAP_AUDIT is worth writing
+  SYS_ROTATE_KEYS: >-
+    dispatch row (slot 8, READ, CAP_CONSOLE), and that row is only the first of two checks -- do_rotate_keys additionally requires CAP_ENCRYPTED_STORAGE before it does anything. captest holds neither
+  SYS_BLOCK_READ: >-
+    dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE). A raw block read beneath the filesystem; the tracked workloads reach storage through fs_server's higher-level calls, and fs_server itself has no reason to bypass its own layer
+  SYS_BLOCK_WRITE: >-
+    dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE), as SYS_BLOCK_READ
   SYS_FS_INODE_LINK: >-
-    links an inode into a directory; neither workload creates a hard link
-  SYS_TASK_EXIT_INFO: >-
-    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot. Not a tracked arm
+    dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE). fs_server HOLDS that capability, so unlike its neighbours in this group the gate would pass -- the gap is that nothing asks it to make a hard link. Its sibling SYS_FS_INODE_FREE was in this position until 2026-08-30 and moved for the price of one `rm` in the session; this one needs a shell command that does not exist, which is a feature rather than a test
+
+  # (2) THE GATE IS THE [C-1] DECOY, AND THE CALL WOULD SUCCEED. These carry
+  # (slot 3, WRITE|EXEC, SC_ANYTYPE) -- the legacy CAP_FRAME every task is born
+  # holding, which is not a gate at all (docs/LIMITATIONS.md 1.6b, and the
+  # 2026-08-30 audit's finding 4.1). So captest PASSES the table check on all
+  # five. What stops a probe is the opposite of the group above: not that the
+  # call would be refused, but that it would WORK -- replacing the caller's image
+  # or duplicating the caller -- and a conformance suite that execs itself away
+  # has no section 14. They are covered by their own selftest builds instead,
+  # which are full kernel builds plus a boot and are therefore not tracked arms.
+  SYS_FORK: >-
+    MEASURED 2026-08-28: not entered by the tracked workloads -- nothing in a tracked image forks, because fork's only client so far is its own witness. Entered by FORK_SELFTEST, which is its gate (make smoke-fork, plus four control arms). A captest probe would pass the slot-3 check and then actually fork captest
+  SYS_EXEC_NAMED: >-
+    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot, which is not a tracked arm. Also gated by make smoke-forkexec since 2026-08-28 (S42). A probe would replace captest's image
+  SYS_EXEC: >-
+    MEASURED 2026-08-20: NOT entered by any of PROC_SELFTEST, SIGNAL_SELFTEST, PREEMPT_SELFTEST, IRQ_SELFTEST or IRQ_POLICY_AUDIT. No build in this tree is known to reach it, and it has no userspace wrapper -- a live handler with no caller, which is the state SYS_EXEC_LEGACY, SYS_CLEAR and SYS_SYSINFO were retired from on 2026-08-23
+  SYS_EXEC_IMAGE: >-
+    MEASURED 2026-08-20: NOT entered by any of the five selftest builds tried. No build in this tree is known to reach it, as SYS_EXEC
+  SYS_RECEIVE_PROGRAM: >-
+    receives a program image over IPC; no tracked workload provisions a program this way. Same dispatch row as its neighbours here, so the same two facts hold: the slot-3 check does not stop a caller, and a successful call arms an image
+
+  # (3) SC_NONE, AND STILL NOT PROBEABLE. The sweep of 2026-08-30 promoted twelve
+  # SC_NONE handlers on the argument that the dispatch table admits everyone, so
+  # a refusal test runs the body. These two are where that argument stops, and
+  # they are recorded at length because the argument is otherwise a licence to
+  # promote anything.
+  SYS_GET_PASS: >-
+    SC_NONE, so the body IS reachable by any caller -- and it BLOCKS. Its only early return is console_hw_owned(), and no ring-3 server owns the UART in the captest image, so the call reaches console_getc() and waits for a keystroke. MEASURED 2026-08-30, by writing the probe: it hung smoke-captest for the full 40s timeout with no marker. This is the difference from SYS_GET_LINE, which looks identical from the dispatch table and is `covered`: h_get_line tests CAP_CONSOLE inside the handler and refuses captest outright, where h_read's fd 0 branch and this one test no authority at all. Covering it needs a workload where a console server owns the UART, or a non-blocking branch this syscall does not have
+  SYS_SHLIB_INFO: >-
+    SC_NONE, so a probe would enter the body -- and the body returns at its FIRST LINE, because shlib_active() is false in every tracked image. Marking it covered on that basis would raise this file's number without ever running the capability gate the syscall is interesting for (S51, plus the SHLIB_INFO_UNGATED and SHLIB_INFO_TYPE_ONLY arms). "The body was entered" stops being coverage when the body is one branch of a feature compiled out, and this is the entry that says so. It IS entered on every boot of a SHLIB_SELFTEST build, by both shlibtest and shlibpeer, which is what make smoke-shlib asserts. It moves to `covered` when the shared library becomes part of an ordinary image, which is roadmap 2.5's remaining half

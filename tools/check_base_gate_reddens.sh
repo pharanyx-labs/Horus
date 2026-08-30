@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Measure the direction nobody measures: does the BASE gate go red under the flag?
 #
-# docs/BUILDING.md makes this claim 31 times -- "`make smoke-X` must go red under
+# docs/BUILDING.md makes this claim 32 times -- "`make smoke-X` must go red under
 # it" -- and until 2026-08-30 NOTHING tested it. Not a target, not a CI job, not a
 # checker. Thirty-one written assertions with no measurement behind any of them.
+# (Thirty-one when this was written; the thirty-second, SYSCOV_PROBES_ABSENT, was
+# added later the same day and measured through this script before it landed. The
+# count is derived below rather than read from here -- do not trust this line.)
 #
 # WHY IT IS NOT IMPLIED BY THE CONTROL ARM. A control arm builds WITH the flag and
 # asserts a FAIL marker appears. The base gate builds WITHOUT it and asserts PASS.

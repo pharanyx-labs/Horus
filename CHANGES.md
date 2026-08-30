@@ -17,6 +17,77 @@ in this file.
 
 ### Fixed
 
+- **Thirteen syscall handlers had no test that ran them, and the argument for reaching
+  twelve of them was already written in the manifest three times over.**
+
+  `.github/syscall-coverage.yml` measures which syscall **handler bodies** a tracked workload
+  enters, a distinction it exists to preserve because `captest` is a refusal suite and a
+  central capability check returns before the handler runs, which is how issue #176 hid behind
+  a hundred passing checks. Twelve of its 26 `uncovered` entries carried `SC_NONE` dispatch
+  rows. An `SC_NONE` row means there **is** no central check: the authority depends on which
+  object the caller names, so it is tested inside the handler, and the body is therefore
+  reachable from ring 3 by a task holding nothing at all. A probe proving the call says no is
+  a probe that ran it.
+
+  That argument promoted `SYS_GET_LINE` on 2026-08-24, the device family on 2026-08-28 and
+  S52's capability trio on 2026-08-29, each recorded in the manifest as *"the same structural
+  reason"*. **Nobody had asked it of the whole list.** `captest` section 13 asks it: seventeen
+  probes over eleven handlers, entering twelve. **65 → 78 of 91.**
+
+  **The manifest had drifted in its reasons while enforcing itself perfectly on its numbers.**
+  Its `uncovered` entries described why each call's *success* path was not reached, no
+  `CAP_UNTYPED` to retype a frame from, no pipeline in the session, login reads its password
+  elsewhere. All true; none about whether the body runs. Two were also false: `captest` holds
+  a `CAP_UNTYPED` and retypes from it in its own section 9, and `SYS_FRAME_PAGES`' entry said
+  the legacy slot-3 capability was *"refused before the handler body would report anything"*
+  when its row admits every caller. The four counts these sentences surrounded were gated by
+  `doc-claims` and were correct throughout. The reasoning was not gated and was wrong.
+
+  **The thirteenth was a gap in the workload rather than in the kernel.** `SYS_FS_INODE_FREE`
+  is gated on `CAP_ENCRYPTED_STORAGE`, which `fs_server` holds and calls on its unlink path,
+  so the handler was one shell command away from running on every session boot and nothing had
+  issued it: the scenario created files (`mkdir`, `echo >`, `cp`, `mv`) and never destroyed
+  one. `tools/session_test.py` now runs `rm` and asserts with `stat` that the name stops
+  resolving, rather than trusting `rm`'s own success message.
+
+  **Two SC_NONE handlers were deliberately not promoted, and both were found by trying.**
+  `SYS_GET_PASS` blocks: its only early return is `console_hw_owned()`, no ring-3 server owns
+  the UART in the `captest` image, and the first draft of its probe hung the gate for the full
+  40-second timeout with no marker. It looks identical to `SYS_GET_LINE` from the dispatch
+  table; the difference is that `h_get_line` tests `CAP_CONSOLE` inside the handler where
+  `h_read`'s fd 0 branch tests no authority at all, which is worth knowing on its own. The
+  probe reads fd 3 instead and asserts the retired **[H-3]** ramfs door, the one the kernel's
+  own comment calls *"the one that MOVES BYTES"*, still answers `SYS_ERR_NOSYS`, a branch
+  nothing had checked since it was shut. `SYS_SHLIB_INFO` would enter a body that returns at
+  its first line because `shlib_active()` is false in every tracked image. **"The body was
+  entered" stops being coverage when the body is one branch of a feature compiled out.**
+
+  Also checked for the first time: syscall 46 (`SYS_REGISTER_STORAGE_BACKEND`), retired
+  because registering a userspace block backend meant the kernel calling ring-3 function
+  pointers from ring 0, still fails closed. Its `uncovered` reason had described the mechanism
+  as though it existed.
+
+  **Falsified by `SYSCOV_PROBES_ABSENT=1`.** `make smoke-syscall-coverage-control` compiles
+  section 13 out and requires the checker to name **exactly** those twelve, failing on more or
+  fewer rather than merely on a red gate. Measured 2026-08-30: base arm `handler entered
+  (measured): 78` = `declared covered: 78`; control arm `CONTROL PASS: section 13 removed, and
+  the coverage gate names exactly its twelve`. Both arms rebuild and reboot all three
+  workloads though the flag changes only `captest`, because running the one arm leaves the
+  other two transcripts missing and the checker then also names the eight syscalls only the
+  modules session enters, reddening the gate without the defect contributing anything.
+  **Without the arm, a promotion the probes earned is indistinguishable from one that was free
+  all along.** It runs as a step in the existing `syscall-coverage` job rather than as a job of
+  its own, so it adds no required context and no ruleset sync (**[C-6]**).
+
+  `docs/LIMITATIONS.md` §1.8's closing paragraph nominated the pipe family and
+  `SYS_STDIO_INFO` as *"the two cheap ones worth doing next"* and called the `uncovered`
+  reasons *"hypotheses this manifest has not measured"*. **#179 had closed both halves**,
+  promoting the pipe family via the boot-modules session and measuring all ten hypotheses on
+  2026-08-20. The section had gone on recommending finished work and disparaging measurements
+  it already contained. Both phrasings are now in `doc-claims.yml`'s `forbidden:` ratchet,
+  along with the two false manifest reasons.
+
+
 - **The two assurance gaps this audit recorded rather than closed are now closed**
   (`docs/LIMITATIONS.md` §1.10 and §1.11, both rewritten as CLOSED).
 

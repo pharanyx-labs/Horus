@@ -102,6 +102,7 @@ control_arms:
   smoke-shlib-writable-control: smoke-shlib
   smoke-spawn-owner-control: smoke-spawn-owner
   smoke-switch-commit-control: smoke-switch-commit
+  smoke-syscall-coverage-control: smoke-syscall-coverage
   smoke-vfs-mount-control: smoke-vfs
   smoke-vfs-prefix-control: smoke-vfs
 

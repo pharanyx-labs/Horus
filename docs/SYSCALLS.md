@@ -303,7 +303,7 @@ no return there is no error path: the caller's image is gone.
 > `SYS_IPC_RECV`, `SYS_IPC_RECV_BLOCK`, `SYS_IPC_REPLY_TO`, and `SYS_IPC_SENDER` all require it, and clients are
 > minted `WRITE`-only. Replies land on the caller's private per-task reply endpoint, which no
 > other task can name. Fixed 2026-07-27 — see **[C-1]** in
-> [`AUDIT.md`](AUDIT.md).
+> [`history/AUDIT-2026-07.md`](history/AUDIT-2026-07.md).
 
 ## Return values
 

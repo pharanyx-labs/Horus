@@ -62,6 +62,34 @@ void _start(void) {
     }
     if (leaked) { report("PROC_SELFTEST: FAIL grant-authz\n"); sys_exit(); }
 
+    /* (c) A TASK SPAWNED WITHOUT A CAP_UNTYPED CANNOT CREATE TASKS.
+     *
+     * This is the property audit finding 4.1 asked for, stated from the only
+     * place that can witness it: a task that was spawned and deliberately NOT
+     * endowed with untyped memory. proctest holds a CAP_UNTYPED and does not
+     * delegate it here, so we are exactly "a task spawned without the right to
+     * spawn further tasks".
+     *
+     * Until 2026-08-30 all three of these SUCCEEDED. The five task-creating
+     * syscalls authorised on cspace slot 3, which create_task fills in EVERY
+     * task with READ|WRITE|EXEC, so the check could not fail and every task in
+     * the system could spawn. Creating a task now carves the child's cspace out
+     * of the caller's untyped region, so holding none is a refusal by
+     * construction rather than by a check somebody remembered to write.
+     *
+     * SYS_ERR_PERM specifically, not merely "failed": a spawn can fail for want
+     * of a slot, a bad name or an unarmed image, and none of those would say
+     * anything about authority. The distinction is the test. */
+    if (sys_spawn_named("hello") != SYS_ERR_PERM) {
+        report("PROC_SELFTEST: FAIL spawn-without-untyped\n"); sys_exit();
+    }
+    if ((int)syscall(SYS_FORK, 0, 0, 0) != SYS_ERR_PERM) {
+        report("PROC_SELFTEST: FAIL fork-without-untyped\n"); sys_exit();
+    }
+    if ((int)syscall(SYS_SPAWN_IMAGE, 0, 0, 0) != SYS_ERR_PERM) {
+        report("PROC_SELFTEST: FAIL spawn-image-without-untyped\n"); sys_exit();
+    }
+
     report("PROC_SELFTEST: grant OK\n");
     sys_exit();
 }

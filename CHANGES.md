@@ -17,6 +17,84 @@ in this file.
 
 ### Fixed
 
+- **Creating a task was the one kernel object anybody could make for free**
+  (`SECURITY.md` **S57**, `docs/LIMITATIONS.md` §1.6b, audit finding 4.1).
+
+  `SYS_SPAWN`, `SYS_SPAWN_IMAGE`, `SYS_EXEC_NAMED`, `SYS_EXEC_IMAGE` and `SYS_FORK` authorised on
+  cspace **slot 3** with `SC_ANYTYPE` — and `create_task` installs a `CAP_FRAME` there in **every**
+  task with exactly `READ|WRITE|EXEC`. By **S28** that is not a gate: it is `[C-1]`'s decoy one
+  table over, satisfied by a capability nobody asked for and everybody has. It conferred nothing
+  (a spawn endows a child only from what the spawner holds, **S41**/**S42**), so it was dead
+  weight rather than a hole — but two comments in two files described it as enforcement, and
+  `SYSCALLS.md` reasoned at length about revoking a capability that could not be revoked.
+
+  **The premise recorded for why this could not be fixed was wrong, in two ways.**
+  `docs/LIMITATIONS.md` §1.6b said the fix needed *"a `CAP_TCB`-shaped authority to create tasks"*
+  and was blocked because *"the capability would have to name something, and the thing it would
+  name does not yet exist as a kernel object"*. But a task **is** already named by a capability —
+  `CAP_TCB` carries a task id and a spawner gets one per child — so the object existed all along.
+  And a capability naming the task could not gate its *creation* in any case: nobody can hold one
+  to a task that does not exist yet.
+
+  **The authority is the resource.** A task's cspace is a `KOBJ_CNODE`, and every other kernel
+  object in this system is carved from an untyped region by an authority that holds one — roadmap
+  0.3's premise, that *"creating a kernel object is an exercise of authority the capability graph
+  describes"*. Tasks were the one exception. `SYS_SPAWN`, `SYS_SPAWN_IMAGE` and `SYS_FORK` now
+  resolve the caller's `CAP_UNTYPED` and carve the child's cspace **out of that region**, so a
+  task endowed with none cannot create one and a task given a small region can spawn a bounded
+  number of times. That is exactly what finding 4.1 asked for — *"a task could be spawned without
+  the right to spawn further tasks"* — and it needed no new object class.
+
+  **The charge is the allocation, deliberately.** Debiting a counter while still carving from the
+  kernel reserve would have been easier and would have been two descriptions of one quantity: the
+  **[H-3]** shape. The bytes the child's cspace occupies are the bytes the parent paid.
+
+  **Two of the five are deliberately not untyped-gated, and the split is the point.**
+  `SYS_EXEC_NAMED` and `SYS_EXEC_IMAGE` replace the **caller's own** image, create no task and
+  touch no capability (**S42**). There is nothing to charge, so gating them on a region they do
+  not consume would be a second vacuous check standing exactly where the first one stood. They
+  are `SC_NONE` and self-only, and `SYSCALLS.md` now says so instead of reasoning about a gate
+  they never had.
+
+  **Why a fixed slot is legitimate here and was not for slot 3.** The defect in the old gate is
+  not that the slot number is fixed — `CAPSLOT_CONSOLE`, `CAPSLOT_DEBUG` and `CAPSLOT_USER` all
+  are. It is that slot 3 is **always occupied**, by a capability the kernel installs itself, so
+  the test could not fail. `CAPSLOT_UNTYPED` is empty unless somebody delegated into it, and the
+  type is checked.
+
+  **It changed the running system, not only a check.** `init` now delegates `CAP_UNTYPED` to the
+  shell, because `spawn` is a shell command and a task with no untyped cannot spawn; `proctest`
+  gets one because it spawns children. Each grant is the point rather than a workaround: "may
+  this task create tasks?" is now a question with a written, revocable answer, where before every
+  task could and no grant expressed anything. Kernel-initiated creation (task 0, `init`, the boot
+  shell, `SYS_SUDO`'s relaunch) is charged to `UNTYPED_KERNEL`, which is not delegable and is
+  sized at exactly `MAX_TASKS` cspaces, so no ring-3 allocation pattern can starve it.
+
+  **Witness `make smoke-proc`.** `grantee` is spawned by `proctest` and deliberately **not**
+  endowed — it is literally a task spawned without the right to spawn further tasks — and
+  requires `SYS_SPAWN`, `SYS_FORK` and `SYS_SPAWN_IMAGE` to return `SYS_ERR_PERM`. That error
+  specifically: a spawn can fail for want of a slot or a bad name, and neither says anything
+  about authority. Falsified by `SPAWN_SLOT3_DECOY_GATE=1`
+  (`make smoke-proc-spawn-decoy-control`), which restores the slot-3 check: the un-endowed child
+  then spawns and reports `FAIL spawn-without-untyped`, base gate red under the same flag. **The
+  arm is what shows the old gate was vacuous rather than merely different** — the un-endowed
+  child passes it.
+
+  **[I-7] narrows rather than closes, and the remainder changed kind.** Its security content is
+  gone: the accounting half closed here, and the memory half closed earlier the same day with the
+  task ceiling going 64 → 256. What is left is `tasks[]` being a fixed array — a compile-time
+  ceiling, tracked as a **scale** limitation in §3.1 rather than as a property anything asserts.
+  Whether it is worth moving is now an open question rather than an assumed yes: at `MAX_TASKS`
+  256 the table is 288 KiB against 7.4 MiB of `.bss` headroom, and the ceiling work established
+  that this table was never what bound the ceiling. A `KOBJ_TASK` retyped from untyped would make
+  the storage match the object model; it would not make any security property true that S57 has
+  not already made true.
+
+  Green: `smoke`, `-session`, `-captest`, `-fork`, `-forkexec`, `-proc`, `-modules`, `-pipe`,
+  `-vfs`, `-frame`, `-shlib`, `-cap-lookup`, `-cspace-release`, `-task-ceiling`; `SMP=0` builds
+  and boots.
+
+
 - **A dead task's capabilities outlived it, and "reclaim the cspace" turned out to be the wrong
   instruction** (`SECURITY.md` **S56**).
 

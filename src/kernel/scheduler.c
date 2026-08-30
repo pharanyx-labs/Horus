@@ -356,7 +356,7 @@ void scheduler_init(void) {
         tasks[i].auth_lockout_until = 0;
     }
 
-    create_task(0, 0, 0, 0, 0);   /* task 0: no image, default premap */
+    create_task(0, 0, 0, 0, 0, UNTYPED_KERNEL);   /* task 0: no image, default premap */
 
     tasks[0].uid = 0;
     tasks[0].gid = 0;
@@ -411,8 +411,9 @@ void scheduler_init(void) {
 }
 
 void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
-                 uint32_t premap_pages) {
+                 uint32_t premap_pages, uint32_t untyped_index) {
     if (id >= MAX_TASKS) return;
+    if (untyped_index >= MAX_UNTYPED) return;
 
     /* Record the (possibly ASLR-randomized) image base before create_user_pagedir
      * runs, so it premaps the image window at the right virtual address. Default
@@ -487,12 +488,43 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
 
 create_user_pagedir(id);
 
-    /* The task's cspace is a KOBJ_CNODE carved from the kernel's untyped region
+    /* The task's cspace is a KOBJ_CNODE carved from an untyped region
      * (roadmap 0.3, finding I-7). It used to be `static struct capability
      * cspace_pool[MAX_TASKS][256]` — 512 KiB of `.bss` charged against the
      * `__bss_end <= USER_PHYS_BASE` linker ASSERT, present in the image whether
      * or not a single task ever ran, and a hard ceiling of MAX_TASKS cspaces that
      * could only be raised by spending more of the 16 MiB image budget.
+     *
+     * ---- WHICH REGION, AND WHY THAT IS THE WHOLE POINT ---------------------
+     *
+     * `untyped_index` names it, and it is what makes creating a task an exercise
+     * of authority the capability graph describes rather than something every
+     * task can do for free. A ring-3 spawn passes the region its own CAP_UNTYPED
+     * names, so the child's cspace is CHARGED to the parent: spend the region and
+     * you can no longer spawn. That is the property audit finding 4.1 asked for --
+     * "a task could be spawned without the right to spawn further tasks" -- and
+     * it holds by construction, because a task endowed with no CAP_UNTYPED has
+     * nothing to carve a child's cspace out of.
+     *
+     * The charge IS the allocation. It would have been easier to debit a counter
+     * and keep carving from the kernel reserve, and that would have been two
+     * descriptions of one quantity -- the [H-3] shape this project keeps finding.
+     * The bytes the child's cspace occupies are the bytes the parent paid.
+     *
+     * ---- WHY UNTYPED_KERNEL STILL ALLOCATES ONCE PER SLOT ------------------
+     *
+     * Kernel-initiated creation (task 0, init, the boot shell) passes
+     * UNTYPED_KERNEL, which is sized at EXACTLY MAX_TASKS cspaces and is not
+     * delegable, so no ring-3 allocation pattern can starve task creation. That
+     * sizing only works if a slot's cspace is allocated once and kept: carving a
+     * fresh one on every kernel-initiated spawn into a reused slot would exhaust
+     * the reserve, and create_task halts when it cannot allocate.
+     *
+     * A caller's own region has no such sizing and is meant to be spent, so a
+     * ring-3 spawn takes fresh bytes every time. The previous occupant's cspace
+     * is simply gone -- it was never reclaimable (bump discipline), and fresh
+     * bytes make "a reused slot inherits nothing" structural rather than a
+     * consequence of the zeroing below.
      *
      * Allocated once per task id and kept for the life of the boot, which is
      * exactly the lifetime cspace_pool[id] had. Freeing it at teardown would be a
@@ -501,8 +533,21 @@ create_user_pagedir(id);
      * cspace on a slot anything still consults would be an authority ESCALATION,
      * not a crash. Reclaiming cspaces needs that fallback removed first; it is
      * not blocking the memory model this change is about. */
-    if (!tasks[id].cspace) {
-        void *cn = kobj_alloc(UNTYPED_KERNEL, KOBJ_CNODE, 0, 0);
+    /* Fresh bytes for a ring-3 region; allocate-once for the kernel reserve. */
+    int want_fresh = (untyped_index != UNTYPED_KERNEL);
+    if (!tasks[id].cspace || want_fresh) {
+        void *cn = kobj_alloc(untyped_index, KOBJ_CNODE, 0, 0);
+        if (!cn && untyped_index != UNTYPED_KERNEL) {
+            /* A caller that has spent its region cannot create a task. This is
+             * the refusal the whole change exists to make possible, so it is a
+             * RETURN and not the halt below: the caller is ring 3, it asked for
+             * something it could not pay for, and it is told so. Leaving the
+             * slot's previous cspace in place would hand the new task the dead
+             * occupant's storage, so the slot is left unusable and do_spawn
+             * unwinds it. */
+            tasks[id].state = 0;
+            return;
+        }
         if (!cn) {
             /* The kernel reserve is sized for MAX_TASKS cspaces by construction
              * (untyped_init), so this is unreachable rather than a resource
@@ -592,7 +637,7 @@ create_user_pagedir(id);
 }
 
 void create_user_task(int id, addr_t entry, addr_t stack_top) {
-    create_task(id, entry, stack_top, USER_AREA_BASE, 0);   /* flat: default premap */
+    create_task(id, entry, stack_top, USER_AREA_BASE, 0, UNTYPED_KERNEL);   /* flat: default premap */
 }
 
 

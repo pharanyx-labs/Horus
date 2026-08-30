@@ -524,7 +524,27 @@ void h_sudo(struct interrupt_frame64 *r) {
         return;
     }
 
-    int pid = do_spawn();
+    /* CHARGED TO THE CALLER, not to the kernel reserve. SYS_SUDO is ring-3
+     * initiated -- the shell asks for it, holding its own CAP_UNTYPED -- so the
+     * task it creates is the caller's to pay for, exactly as SYS_SPAWN's is
+     * (S57). Routing it through the kernel reserve instead would have been the
+     * easy line and would have been wrong twice: the reserve is sized at exactly
+     * MAX_TASKS cspaces on the assumption that it is drawn on ONCE PER SLOT at
+     * boot, and repeated sudo into recycled slots is not that; and a task whose
+     * cspace came from the reserve, occupying a slot whose next occupant is
+     * charged elsewhere, is the sort of cross-region tenancy a future
+     * untyped-region reset would have to reason about. Keeping every post-boot
+     * creation on the caller's region means kernel-initiated creation is boot
+     * only, into fresh slots, and no kernel task's cspace ever lives in a
+     * delegated region. */
+    uint32_t sudo_ut;
+    if (spawn_untyped_region_for(get_current_task(), &sudo_ut) != 0) {
+        spawn_stage_release();
+        audit_log(AUDIT_SUDO, 0, 0, "sudo refused: caller holds no CAP_UNTYPED");
+        r->rax = (uint32_t)SYS_ERR_PERM;
+        return;
+    }
+    int pid = do_spawn_charged(0, sudo_ut);
     spawn_stage_release();
     if (pid > 0) {
         tasks[pid].uid = 0;

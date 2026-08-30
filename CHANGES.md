@@ -15,6 +15,24 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`tools/graph_refresh.sh` and `tools/ffi_edges.py`: the code graph can now see the C ↔ Rust
+  boundary.** graphify extracts each language separately, so a C function calling a
+  `#[no_mangle] pub extern "C"` Rust function produced **no edge at all**. Since `CLAUDE.md` §0
+  makes the graph the mandatory first step before reading any source, that was not a missing
+  detail but a confident wrong answer before anyone had read a line — and it gave one:
+  `graphify explain rust_cap_lookup` listed only unit tests and Kani harnesses as callers, when
+  `src/kernel/capability.c` calls it on every capability check the kernel performs. 96 edges are
+  now injected in both directions; `--check` asserts they are present after every refresh, and
+  the CI-side `--selftest` asserts the export pattern still matches the tree, because the
+  injector's worst failure is silence. The graph itself stays gitignored and local.
+  Two defects were found and fixed in the tool while writing it, both by checking rather than
+  assuming: node labels carry a trailing `()`, so the first version matched nothing and blamed
+  the wrong cause; and judging a call by line shape **fabricated 22 edges** out of `kernel.h`'s
+  multi-line prototypes, each attributed to whatever callable sat nearest above — a struct, in
+  most cases. Calls are now told from declarations by the token preceding the symbol.
+
 ### Changed
 
 - **`gitleaks` and `cargo-audit` findings now fail the build** (roadmap **4.3**). Both are

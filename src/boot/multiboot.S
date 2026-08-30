@@ -837,15 +837,22 @@ embedded_libhorustest_bin_start:
 embedded_libhorustest_bin_end:
 #endif
 
-#ifdef VFS_SELFTEST
-/* Roadmap 2.4: a second filesystem server holding nothing but its own endpoint,
- * and the client that mounts both it and fs_server into one namespace. */
+/* Roadmap 2.4: a second filesystem server holding nothing but its own endpoint.
+ * Embedded for TWO builds, and the split is deliberate. VFS_SELFTEST mounts it
+ * beside fs_server to prove two paths reach two tasks; INIT_PROVISION_SELFTEST
+ * has ring-3 init bring it up on an endpoint init RETYPED from its own untyped,
+ * which is the provisioning half (S59). The client that mounts both belongs to
+ * the first only, so it stays inside the narrower guard below. */
+#if defined(VFS_SELFTEST) || defined(INIT_PROVISION_SELFTEST)
 .align 16
 .global embedded_dev_server_bin_start
 embedded_dev_server_bin_start:
 .incbin "userspace/dev_server.bin"
 .global embedded_dev_server_bin_end
 embedded_dev_server_bin_end:
+#endif
+
+#ifdef VFS_SELFTEST
 .align 16
 .global embedded_vfstest_bin_start
 embedded_vfstest_bin_start:

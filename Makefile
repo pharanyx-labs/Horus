@@ -111,7 +111,8 @@ DEFECT_FLAGS = \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CSPACE_KEEP_ON_TEARDOWN \
-	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES
+	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
+	INIT_PROVISION_NO_UNTYPED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -304,6 +305,31 @@ ifeq ($(INIT_FS_SELFTEST),1)
 CFLAGS  += -DINIT_FS_SELFTEST
 ASFLAGS += -DINIT_FS_SELFTEST
 INIT_FS_SELFTEST_DEP = userspace/fsclient.bin
+endif
+
+# INIT_PROVISION_SELFTEST=1 has ring-3 init RETYPE an endpoint out of its own
+# CAP_UNTYPED, provision dev_server on it, keep a WRITE-only mint, and drive a
+# request across it. Every other server init launches is delegated an endpoint
+# the KERNEL minted into init's cspace at boot; this one does not exist until
+# init makes it, which is what "provision a mount" requires (roadmap 2.4, S59).
+#
+# docs/ROADMAP.md said init could not do this because it "holds no CAP_UNTYPED".
+# It holds one, and had throughout -- see that file for the measurement.
+INIT_PROVISION_SELFTEST ?= 0
+ifeq ($(INIT_PROVISION_SELFTEST),1)
+CFLAGS  += -DINIT_PROVISION_SELFTEST
+ASFLAGS += -DINIT_PROVISION_SELFTEST
+INIT_PROVISION_SELFTEST_DEP = userspace/dev_server.bin
+endif
+
+# INIT_PROVISION_NO_UNTYPED=1 has init retype from a slot holding no CAP_UNTYPED
+# -- the state roadmap 2.4 asserted init was permanently in. The endpoint is
+# never created and the server is never reachable, which is what shows the
+# provisioning DEPENDS on the capability rather than happening anyway.
+INIT_PROVISION_NO_UNTYPED ?= 0
+ifeq ($(INIT_PROVISION_NO_UNTYPED),1)
+CFLAGS  += -DINIT_PROVISION_NO_UNTYPED
+ASFLAGS += -DINIT_PROVISION_NO_UNTYPED
 endif
 
 # PERSIST_SELFTEST=1 builds the FS self-test client in reboot-persistence mode: it
@@ -2115,7 +2141,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2323,6 +2349,19 @@ USERSPACE_CFLAGS_32 = -m32 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
 # userspace build of init must see it too (kernel CFLAGS alone won't reach it).
 ifeq ($(INIT_FS_SELFTEST),1)
 USERSPACE_CFLAGS += -DINIT_FS_SELFTEST
+endif
+# init.c is RING 3, so the flag has to reach USERSPACE_CFLAGS as well as CFLAGS.
+# Setting only the latter compiles the probe out and it prints nothing at all --
+# no PASS and no FAIL, which reads as a hang rather than as a missing flag. This
+# is the trap SYSCALL_PTR_TRUNC32's comment records ("first written and silently
+# did nothing"), walked into again on 2026-08-30 and caught by the gate's own
+# timeout. Placement matters for the same reason it does there: after
+# USERSPACE_CFLAGS is assigned with `=`, and outside any other flag's ifeq.
+ifeq ($(INIT_PROVISION_SELFTEST),1)
+USERSPACE_CFLAGS += -DINIT_PROVISION_SELFTEST
+endif
+ifeq ($(INIT_PROVISION_NO_UNTYPED),1)
+USERSPACE_CFLAGS += -DINIT_PROVISION_NO_UNTYPED
 endif
 ifeq ($(PERSIST_SELFTEST),1)
 USERSPACE_CFLAGS += -DPERSIST_SELFTEST
@@ -2916,6 +2955,28 @@ smoke-captest-split-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 UNTYPED_SPLIT_FREE_BYTES=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL split-did-not-charge-the-parent' \
+		tools/smoke_test.sh boot.iso
+
+# init provisions a server on an endpoint it MADE, not one it was handed
+# (roadmap 2.4, S59). Every other server init launches gets a primordial endpoint
+# the kernel minted into init's cspace at boot; this one is retyped from init's
+# own untyped, so it does not exist until init creates it.
+smoke-init-provision:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1
+	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='INIT_PROVISION: PASS' \
+		FAIL_MARKER='INIT_PROVISION: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm: init retypes from a slot with no CAP_UNTYPED in it, so the
+# endpoint is never made and provisioning stops at step 1.
+smoke-init-provision-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 INIT_PROVISION_NO_UNTYPED=1
+	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 INIT_PROVISION_NO_UNTYPED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='INIT_PROVISION: FAIL provisioning stopped at step 1' \
 		tools/smoke_test.sh boot.iso
 
 smoke-cspace-release:

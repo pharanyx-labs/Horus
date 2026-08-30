@@ -2558,6 +2558,15 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot INIT_FS_SELFTEST kernel and assert the fs_server works when init spawns and endows it
         run: make smoke-init-fs
+      # Roadmap 2.4. Every other server init launches gets an endpoint the KERNEL
+      # minted into its cspace at boot; this one init retypes from its own
+      # untyped, so the object does not exist until init makes it. ROADMAP.md
+      # said init could not do this because it "holds no CAP_UNTYPED" -- it holds
+      # one, and had all along.
+      - name: init provisions a server on an endpoint it created
+        run: make smoke-init-provision
+      - name: Control arm — deny init the untyped and the endpoint is never made
+        run: make smoke-init-provision-control
 
   smoke-newlib-tamper:
     name: Supply-chain falsification (a tampered newlib tarball is refused)

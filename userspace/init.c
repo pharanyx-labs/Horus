@@ -135,6 +135,12 @@ static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 #define INIT_NOTIFY         15   /* CAP_NOTIFICATION fs-ready rendezvous             */
 #define INIT_KERNEL_LOG     CAPSLOT_KERNEL_LOG   /* CAP_KERNEL_LOG  -> the shell     */
 #define INIT_BOOT_MODULE    CAPSLOT_BOOT_MODULE  /* CAP_BOOT_MODULE -> fs_server     */
+/* Slots for an endpoint init MAKES rather than one it was handed. Above the
+ * primordial endowment on purpose: nothing installs these at boot, so a build
+ * where the retype below fails leaves them empty and every use of them is
+ * refused, rather than silently resolving something the kernel put there. */
+#define INIT_DEV_LISTEN     40   /* CAP_ENDPOINT, retyped: READ|WRITE (listen) */
+#define INIT_DEV_CLIENT     41   /* the same endpoint, WRITE only (init as client) */
 
 /* Launch the userspace fs_server and provision it entirely by delegation: init
  * grants the server all four capabilities it needs — the coarse IPC gate (slot
@@ -162,6 +168,121 @@ static int launch_fs_server(void) {
     if (sys_task_resume(srv) != 0) return -7;
     return srv;
 }
+
+#ifdef INIT_PROVISION_SELFTEST
+#include "fs_proto.h"
+#include "libhorus.h"
+
+/* PROVISION A SERVER ON AN ENDPOINT INIT CREATED (roadmap 2.4, S59).
+ *
+ * Every other launcher here delegates an endpoint init was HANDED: kshell
+ * installs FS_EP_REQ and CON_EP_REQ into init's cspace from the root cnode at
+ * boot, and launch_fs_server passes one of them on. That is delegation, and it
+ * is bounded by what the kernel decided to mint before ring 3 existed.
+ *
+ * This one is different in the way that matters for a mount table: the endpoint
+ * DOES NOT EXIST AT BOOT. init retypes a KOBJ_ENDPOINT out of the untyped region
+ * its own CAP_UNTYPED names, so the object is paid for from a budget init holds
+ * a capability for, and the capability naming it is derived from that untyped
+ * rather than installed by the kernel. A supervisor that can do this can bring up
+ * a filesystem server nobody anticipated at build time, which is what "provision
+ * a mount" means.
+ *
+ * `docs/ROADMAP.md` 2.4 said init could not do this, and gave as the reason that
+ * it "holds no CAP_UNTYPED". It holds one; the claim was stale rather than
+ * subtle, and the measurement that settled it is quoted in that file.
+ *
+ * INIT KEEPS A WRITE-ONLY MINT AND ACTS AS THE CLIENT, which is not a shortcut
+ * to avoid writing a probe: it is the tightest statement of the property. The
+ * server got READ (the receive right) and init kept WRITE (the send right), so a
+ * completed round trip proves BOTH halves of the endpoint reached the task that
+ * should have it -- and proves init did not keep the receive right for itself,
+ * because a request it could dequeue would answer itself.
+ *
+ * Returns the server's task id, or a negative value naming the step that failed.
+ *
+ * `SECURITY.md` **S59**.
+ */
+static int launch_dev_server(void) {
+#ifdef INIT_PROVISION_NO_UNTYPED
+    /* CONTROL ARM -- never ship. Retype from a slot init holds no CAP_UNTYPED in,
+     * which is the state roadmap 2.4 asserted init was permanently in. The
+     * endpoint is never created, so the provisioning stops at step 1 and the
+     * server is never reachable.
+     *
+     * This is what makes the gate a measurement rather than an observation: with
+     * it, "init provisioned a server" is shown to DEPEND on init holding untyped
+     * memory, instead of being something that happened to work. See
+     * make smoke-init-provision-control. */
+    if (sys_retype(INIT_DEV_CLIENT, KOBJ_ENDPOINT, 1, INIT_DEV_LISTEN) != 1) return -1;
+#else
+    /* The endpoint, carved from init's own budget. One object, and the retype
+     * returns the count it made. */
+    if (sys_retype(CAPSLOT_UNTYPED, KOBJ_ENDPOINT, 1, INIT_DEV_LISTEN) != 1) return -1;
+#endif
+
+    /* A WRITE-only copy for init to speak through. Minted BEFORE the listen
+     * right is granted away, because a mint needs the source capability and
+     * SYS_CAP_GRANT is a delegation rather than a move -- but doing it in this
+     * order also means init never holds two send rights it has to reason about. */
+    if (sys_cap_mint(INIT_DEV_CLIENT, INIT_DEV_LISTEN, CAP_RIGHT_WRITE) != 0) return -2;
+
+    int srv = sys_spawn_named("dev_server");
+    if (srv <= 0) return -3;
+    /* The LISTEN right, to the server and to nobody else. */
+    if (sys_cap_grant(srv, INIT_DEV_LISTEN, CAPSLOT_FS_LISTEN) != 0) return -4;
+    if (sys_task_resume(srv) != 0) return -5;
+    return srv;
+}
+
+/* Drive one request across the endpoint init made, and report what came back.
+ *
+ * FS_OP_STAT on the root inode, because that is the operation `hvfs_mount`
+ * itself performs to decide whether a mount can be installed -- so a server that
+ * answers this is a server a mount table can actually mount. */
+static void init_provision_probe(void) {
+    int srv = launch_dev_server();
+    if (srv <= 0) {
+        /* NAME THE STEP. launch_dev_server returns a distinct negative per stage
+         * (-1 retype, -2 mint, -3 spawn, -4 grant, -5 resume) and a failure that
+         * did not say which is a failure that costs a bisect to read. */
+        report("INIT_PROVISION: FAIL provisioning stopped at step ");
+        report(srv == -1 ? "1 (retype the endpoint)\n"
+             : srv == -2 ? "2 (mint the client copy)\n"
+             : srv == -3 ? "3 (spawn dev_server)\n"
+             : srv == -4 ? "4 (grant the listen right)\n"
+             : srv == -5 ? "5 (resume the server)\n"
+                         : "unknown\n");
+        return;
+    }
+
+    struct fs_request  rq;
+    struct fs_response rp;
+    umemset(&rq, 0, sizeof(rq));
+    rq.magic = FS_PROTO_MAGIC;
+    rq.op    = FS_OP_STAT;
+    /* dev_server's root inode is 0 (DEV_INO_ROOT). Written as 1 in the first
+     * draft, which the server answered with SYS_ERR_NOENT -- and the check
+     * caught it, because it asserts the reply is a mountable DIRECTORY rather
+     * than merely that a reply arrived. A probe that only checked "something
+     * came back" would have passed against the wrong inode. */
+    rq.ino   = 0;
+
+    /* ipc_call_retry: retry on a transient only, and bounded -- the contract
+     * libhorus owns so each program stops re-deriving it (roadmap 2.5). The
+     * server was resumed a moment ago and may not have reached its recv yet. */
+    int rc = ipc_call_retry(INIT_DEV_CLIENT, 0, &rq, sizeof(rq), &rp);
+    if (rc < 0) {
+        report("INIT_PROVISION: FAIL no reply across the endpoint init made\n");
+        return;
+    }
+    if (rp.magic != FS_PROTO_MAGIC || rp.rc != 0 || rp.type != FS_TYPE_DIR) {
+        report("INIT_PROVISION: FAIL server answered, but not as a mountable root\n");
+        return;
+    }
+    report("INIT_PROVISION: PASS init retyped an endpoint, provisioned a server on it, and reached it\n");
+}
+#endif /* INIT_PROVISION_SELFTEST */
 
 /* Launch the userspace console_server and delegate it exactly what it needs: the
  * coarse IPC gate (its slot 3, so it can recv requests / reply / notify) and the
@@ -259,6 +380,14 @@ void _start(void) {
     int srv = launch_fs_server();
     if (srv < 0) report("init: WARNING fs_server provisioning failed\n");
     else         report("init: fs_server launched and provisioned\n");
+
+#ifdef INIT_PROVISION_SELFTEST
+    /* After fs_server, so the ordinary boot is unchanged and this is additive:
+     * the property under test is about an endpoint init MAKES, not about the
+     * primordial ones, and running it first would prove the same thing while
+     * perturbing a boot path several gates depend on. */
+    init_provision_probe();
+#endif
 
 #ifdef INIT_FS_SELFTEST
     /* Boot-time FS integration test: prove init brings up fs_server by delegation

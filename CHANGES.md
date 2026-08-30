@@ -15,7 +15,69 @@ in this file.
 
 ## [Unreleased]
 
-### Fixed
+### Added
+
+- **`init` provisions a server on an endpoint it created** (`SECURITY.md` **S59**, roadmap 2.4),
+  and the reason this had not been done is that a documented blocker was false.
+
+  `docs/ROADMAP.md` said: *"**`init` cannot provision a mount yet.** It holds no `CAP_UNTYPED`,
+  so it cannot retype an endpoint for a new server; the gate uses root-cnode endpoint
+  capabilities instead. Giving the delegation root that authority is a real widening and belongs
+  in its own commit."*
+
+  Two of those four clauses were false. `init` holds a `CAP_UNTYPED` at `CAPSLOT_UNTYPED` —
+  `kshell.c` installs it at boot with a comment saying so, and `init` grants it onward to the
+  shell, which it could not do without holding it. **Measured before writing any code**, by
+  asking `init` to do the thing it was said to be incapable of:
+
+  ```
+  PROBE: untyped_info rc=0 (init HOLDS a CAP_UNTYPED)
+  PROBE: retype endpoint from init's own untyped -> OK
+  PROBE: second endpoint -> OK
+  ```
+
+  What was accurate is the *observation*: the VFS gate does install `dev_server`'s listen
+  capability from the root cnode. The *explanation* was wrong, and so was the conclusion — the
+  "real widening" that supposedly needed its own commit had already happened, so nothing was
+  waiting on it. **A blocker nobody re-tests is indistinguishable from a real one**, and this one
+  had been stale long enough to be the reason the item read as expensive.
+
+  `launch_dev_server` retypes a `KOBJ_ENDPOINT` out of the untyped region `init`'s own capability
+  names, hands the listen right to the server it spawns, and keeps a `WRITE`-only mint. The
+  endpoint **does not exist at boot** and is not in the root cnode: it is paid for from a budget
+  `init` holds a capability for, which is what "provision" was supposed to mean. A supervisor
+  that can do this can bring up a filesystem server nobody anticipated at build time.
+
+  **`init` is its own client, and that is the tightest statement rather than a shortcut.** The
+  server got `READ` and `init` kept `WRITE`, so a completed `FS_OP_STAT` round trip proves both
+  halves of the endpoint reached the task that should hold them — and proves `init` did not keep
+  the receive right, because a request it could dequeue would answer itself. `FS_OP_STAT` on the
+  root inode specifically: it is the operation `hvfs_mount` performs to decide whether a mount
+  can be installed, so a server that answers it is one a mount table can mount.
+
+  Falsified by `INIT_PROVISION_NO_UNTYPED=1` (`make smoke-init-provision-control`), which
+  retypes from a slot holding no `CAP_UNTYPED` — the state 2.4 asserted was permanent — and the
+  provisioning stops at step 1 with the server never reachable; base gate red under the flag.
+
+  **Four defects while building it, each caught by a different mechanism:**
+
+  - The flag reached `CFLAGS` but **not `USERSPACE_CFLAGS`**, so the ring-3 probe compiled out
+    and printed *nothing at all* — no PASS and no FAIL, which reads as a hang rather than a
+    missing flag. That is the trap `SYSCALL_PTR_TRUNC32`'s own comment records as *"first
+    written and silently did nothing"*, walked into again and caught by the gate's timeout.
+  - A failure that did not name **which step** cost a rebuild to read; the message names the
+    stage now (retype / mint / spawn / grant / resume).
+  - A scripted edit put the externs **inside** a neighbouring `#ifdef`, caught by
+    `unterminated #ifdef`.
+  - The probe used inode **1** for `dev_server`'s root, which is `0`. The check caught it
+    because it asserts the reply is a mountable **directory** rather than merely that a reply
+    arrived — a probe testing only "something came back" would have passed against the wrong
+    inode.
+
+  This unblocks the rest of 2.4 (mount/unmount syscalls, `/proc`) and 2.3's last bullet
+  (namespace inheritance across `spawn`), none of which needed the authority change that was
+  never actually required.
+
 
 - **[I-7] is closed**, and the three things that closed it were each, at some point, blamed on
   the wrong thing.

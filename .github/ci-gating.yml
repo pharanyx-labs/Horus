@@ -175,6 +175,14 @@ required:
   # lock requirement is visible from the signature. The check proves only that an
   # obligation is written, never that it is true; Miri and Kani test the code
   # beneath it, and its own three arms are falsified in the same job.
+  # Gating. main went red on 2026-08-30 because packages.microsoft.com answered
+  # 403 and `apt-get update` exits non-zero when any configured repository fails,
+  # including vendor lists this project has never used. 87 of 101 jobs ran a bare
+  # apt-get, so the run reddened at 1-(1-p)^87 rather than p. The retry that would
+  # have absorbed it existed in ONE job, added when "the apt step has flaked twice
+  # in one day", and was never carried to the other 86. This gate is what stops an
+  # eighty-eighth job reintroducing the fragility by copying an older one.
+  - apt-hardening
   - unsafe-safety
   # Gating. It carries S28: a gate satisfied by a capability every task already
   # holds is not a gate. [H-3] was four of them, on the path to the user

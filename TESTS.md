@@ -1222,10 +1222,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **100** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **101** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **102** jobs, **105** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **103** jobs, **106** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1277,7 +1277,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **102 required contexts and 3 reasoned exemptions** (read off
+The intended set is **103 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1624,6 +1624,18 @@ property was broken. `tools/check_base_gate_reddens.sh` derives the pairs from
 `docs/BUILDING.md` (not a copy of them) and runs each one; every pair reddened. It is not in CI
 on purpose: each pair is a clean rebuild plus a boot, so the sweep is hours, and it belongs
 before promoting an arm or during an audit rather than on every pull request.
+
+**No build depends on a repository this project does not use, gated since 2026-08-30.**
+`tools/check_apt_hardening.py` (required job `apt-hardening`) refuses a raw `apt-get` in any
+workflow: every install goes through `.github/actions/apt`, which strips the runner image's
+vendor repository lists before updating and retries what remains. It exists because `main` went
+red when `packages.microsoft.com` answered 403 and `apt-get update` exited 100 in a job that
+installs binutils and QEMU from the Ubuntu archive and nothing else. 87 of 101 jobs ran a bare
+`apt-get`, so the run reddened at 1-(1-p)^87 rather than p. The check found two calls in
+`codeql.yml` the manual sweep had missed. Falsified five ways by
+`tools/test_check_apt_hardening.sh`, including an arm for the one exemption (it must still strip)
+and an arm for the unmutated tree, because four "is it caught" arms are satisfied by a checker
+that rejects everything.
 
 **Every ABI struct is identical in both headers, gated since 2026-08-30.**
 `tools/check_abi_structs.py` runs beside `check_capslots.py` and compares the seven structs that

@@ -1,0 +1,90 @@
+name: Install apt packages
+description: >-
+  Install Ubuntu-archive packages on a runner, without letting a vendor
+  repository we do not use decide whether the build runs.
+
+inputs:
+  packages:
+    description: Space-separated package list, all from the stock Ubuntu archive.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install ${{ inputs.packages }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # WHY THIS ACTION EXISTS.
+        #
+        # `apt-get update` exits non-zero if ANY configured repository fails,
+        # including ones this project has never used. GitHub's runner image ships
+        # with vendor lists for Microsoft, Google and others in
+        # /etc/apt/sources.list.d. On 2026-08-30 packages.microsoft.com answered
+        # 403 for a few minutes, `apt-get update` exited 100, and `main` went red
+        # in a job that installs binutils and QEMU from the Ubuntu archive and
+        # nothing else.
+        #
+        # 87 of this workflow's jobs ran a bare `sudo apt-get update`, so any one
+        # of them could redden the whole run. The `security` job had already been
+        # given a retry loop, with a comment recording that "the apt step in this
+        # repo's CI has flaked twice in one day" -- and the lesson was never
+        # carried to the other 86. This action is that lesson, applied once, in a
+        # place the other jobs share.
+        #
+        # Two measures, in order of how much they buy:
+        #
+        #   1. REMOVE the vendor lists. Every package any Horus job installs comes
+        #      from the stock Ubuntu archive (verified across the whole workflow:
+        #      binutils, build-essential, make, texinfo, xorriso, grub-pc-bin,
+        #      grub-common, mtools, qemu-system-x86, swtpm, swtpm-tools, python3,
+        #      cppcheck, flawfinder), and no job adds a repository of its own. A
+        #      third party being down is therefore not a fact about this build,
+        #      and should not be able to stop it.
+        #
+        #   2. RETRY what is left. The Ubuntu archive itself can flake, and a
+        #      retry is the honest response to a transient network failure.
+        #
+        # What this deliberately does NOT do is tolerate failure. There is no
+        # `|| true` here: if the archive is genuinely unreachable, `apt-get
+        # update` fails after three attempts and the job fails with it. Masking
+        # that would produce a job that installs nothing and reports success,
+        # which is the shape CLAUDE.md section 1 forbids and which this
+        # workflow's own security job was rescued from.
+        # Remove the vendor lists, and ONLY those. This is deliberately not
+        # `rm /etc/apt/sources.list.d/*`: on Ubuntu 24.04 the MAIN ARCHIVE lives
+        # there too, as ubuntu.sources in deb822 format, and deleting it leaves a
+        # runner with no repositories at all. The first version of this action did
+        # exactly that and every job failed with "Package 'build-essential' has no
+        # installation candidate" -- a self-inflicted outage worse than the one it
+        # was written to prevent, caught by CI before it could merge.
+        #
+        # So the rule is by CONTENT, not by filename: a source that serves
+        # ubuntu.com stays, anything else goes.
+        for f in /etc/apt/sources.list.d/*; do
+          [ -e "$f" ] || continue
+          if ! grep -qi 'ubuntu\.com' "$f"; then
+            echo "dropping vendor source: $f"
+            sudo rm -f "$f"
+          fi
+        done
+
+        # Fail loudly here rather than 200 lines later at the install, if the
+        # strip ever removes everything again.
+        if ! grep -rqi 'ubuntu\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+          echo "no Ubuntu archive remains after stripping vendor sources" >&2
+          exit 1
+        fi
+
+        retry() {
+          for i in 1 2 3; do
+            "$@" && return 0
+            echo "attempt $i failed: $*" >&2
+            sleep 5
+          done
+          return 1
+        }
+
+        retry sudo apt-get update
+        retry sudo apt-get install -y --no-install-recommends ${{ inputs.packages }}

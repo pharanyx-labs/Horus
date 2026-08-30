@@ -162,6 +162,9 @@ pub unsafe extern "C" fn rust_audit_fs_genesis(
 /// `key32`/`head32`/`out_mac32` must each point to 32 readable+writable bytes;
 /// `event` must be valid for `event_len` (may be null iff `event_len == 0`).
 #[no_mangle]
+/// Carries S19: audit history committed before a kernel compromise cannot be
+/// forged or rewritten afterwards, because each record is chained under a key
+/// the previous step erased.
 pub unsafe extern "C" fn rust_audit_fs_record(
     key32: *mut u8,
     seq: u64,

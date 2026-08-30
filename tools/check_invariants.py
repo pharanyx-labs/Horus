@@ -32,7 +32,8 @@ banner will not stamp it, and a measurement taken under it cannot be told apart
 from one taken without it. That is how a stale KSP_GUARD_INJECT once turned a [G-9]
 campaign into a false reproduction.
 """
-import os, re, sys
+import os, re, subprocess, sys
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -145,14 +146,88 @@ def witness_tokens(cell, targets, jobs):
     flags = set(re.findall(r"`([A-Z][A-Z0-9_]{3,})=1`", cell))
     return mk, jb, flags
 
+# Files the `enforced by` column may name, and the corpus its identifiers must
+# appear in. Deliberately the shipping tree only: a property enforced solely by
+# something in docs/ is not enforced.
+_CODE_ROOTS = ["src", "rust", "userspace", "include", "tools", "Makefile"]
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def code_corpus():
+    """Every shipping source file, read from ROOT rather than the CWD.
+
+    Walked rather than listed with `git ls-files`, so this works in the scratch
+    tree tools/test_check_invariants.sh builds, which is a copy and not a
+    repository. Returns "" when no code root is present, and R7 then skips: a
+    partial tree cannot answer whether an identifier exists, and answering "no"
+    there would make every other arm of the harness fail for the wrong reason.
+    """
+    out = []
+    for root in _CODE_ROOTS:
+        full = os.path.join(ROOT, root)
+        if os.path.isfile(full):
+            out.append(Path(full).read_text(encoding="utf-8", errors="ignore"))
+            continue
+        for dirpath, _dirs, names in os.walk(full):
+            for n in names:
+                if not n.endswith((".c", ".h", ".rs", ".S", ".py", ".sh", ".ld")):
+                    continue
+                try:
+                    out.append(Path(dirpath, n).read_text(encoding="utf-8",
+                                                          errors="ignore"))
+                except OSError:
+                    pass
+    return "\n".join(out)
+
+
+def enforcement_tokens(cell):
+    """Backticked things in the `enforced by` column that name something real.
+
+    Only tokens that LOOK like code are returned: a bare identifier of four
+    characters or more, or a path. Prose in backticks, operators and short words
+    are skipped, because the point is to catch a named function that no longer
+    exists, not to police the writing.
+    """
+    paths, idents = set(), set()
+    for tok in re.findall(r"`([^`]+)`", cell):
+        if "/" in tok and "." in tok:
+            paths.add(tok.split("#")[0])
+            continue
+        head = tok.split(".")[0].split("(")[0].strip()
+        if _IDENT.match(head) and len(head) >= 4:
+            idents.add(head)
+    return paths, idents
+
+
 def main():
     sec, order = parse_security()
     targets, jobs, flags_ok = make_targets(), ci_jobs(), defect_flags()
     ci, exc, exempt = ci_text(), gate_exceptions(), manifest()
     problems = []
 
+    corpus = code_corpus()
+
     for sid in order:
-        _stmt, _enf, wit = sec[sid]
+        _stmt, enf, wit = sec[sid]
+
+        # R7 -- the `enforced by` column must name code that exists.
+        #
+        # It was parsed into a variable and never used until 2026-08-30, so a row
+        # could name a function that had been renamed or deleted and all six other
+        # rules still passed. That is the witness half of this table checked
+        # thoroughly and the mechanism half taken on trust, which is the wrong way
+        # round: a witness that runs against code that no longer does what the row
+        # claims is the exact shape of [H-1].
+        paths, idents = enforcement_tokens(enf) if corpus else (set(), set())
+        for pth in sorted(paths):
+            if not os.path.exists(os.path.join(ROOT, pth)):
+                problems.append(f"R7 {sid}: `enforced by` names {pth}, which does not exist")
+        for ident in sorted(idents):
+            if not re.search(r"(?<![\w])" + re.escape(ident) + r"(?![\w])", corpus):
+                problems.append(
+                    f"R7 {sid}: `enforced by` names `{ident}`, which appears nowhere "
+                    f"in the shipping tree")
+
         mk, jb, flags = witness_tokens(wit, targets, jobs)
 
         # R2 — a witness naming a target that does not exist is worse than none:
@@ -170,6 +245,24 @@ def main():
         for f in sorted(flags):
             if f not in flags_ok:
                 problems.append(f"R4 {sid}: control arm `{f}=1` is not in DEFECT_FLAGS, so a boot under it is not stamped")
+
+        # R8 — the property must be cited from the code that carries it.
+        #
+        # The reverse of R7, and the half a reader needs when they are about to
+        # CHANGE something rather than audit it. 20 of 56 S-numbers appeared
+        # nowhere outside prose until 2026-08-30, so somebody editing
+        # `rust_cap_revoke_global` could not see from the code that S3 and S4
+        # depend on it. Every one is cited now; this keeps it that way.
+        #
+        # No exemption list, deliberately. The five properties that looked like
+        # they had no site -- reproducible builds, documented numbers, Kani, Miri,
+        # `unsafe` documentation -- each turned out to have one: the tool that
+        # enforces them. A property with nowhere to be cited from is a property
+        # nothing enforces, which is a finding rather than an exemption.
+        if corpus and not re.search(r"(?<![\w])" + re.escape(sid) + r"(?![\w])", corpus):
+            problems.append(
+                f"R8 {sid}: cited nowhere in the shipping tree, so the code that "
+                f"carries it does not say so")
 
         # R1 — the rule this exists for.
         resolved = bool((mk & targets) or jb)

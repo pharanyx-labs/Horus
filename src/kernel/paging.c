@@ -1065,6 +1065,9 @@ int user_unmap_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t expect_phys
     return 0;
 }
 
+/* Carries S15: an address-space slot rebuilt after task death leaks nothing.
+ * The reclaim guard below also carries [G-10], which is the same slot reused
+ * while another CPU still had its tables in CR3. */
 void create_user_pagedir(uint32_t task_id) {
     if (task_id >= MAX_TASKS) return;
     if (task_id == 0) {
@@ -1548,6 +1551,8 @@ void switch_cr3(addr_t cr3) {
  * W^X is preserved: the NX bit is re-derived from `fault_addr` (the low-12-bit
  * flag copy drops bit 63). Returns 0 on success, or -3 on out-of-memory with the
  * PTE and refcount left exactly as they were. The caller does the invlpg. */
+/* Carries S38: a page belonging to a kernel object is never copied out from
+ * under it. The arena guard below is the enforcement. */
 static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
     uint64_t pte      = *pte_slot;
     uint64_t old_phys = pte & PTE_ADDR_MASK;
@@ -2021,6 +2026,10 @@ int user_protect_page(uint64_t vaddr, int writable, int executable) {
 }
 
 
+/* Carries S7 (a user pointer cannot address kernel memory) and S24 (the kernel
+ * never reads or writes a user address the caller did not name). Both are
+ * enforced by the software page-walk below requiring PAGE_USER on every page,
+ * never by trusting the pointer. */
 static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int need_write) {
     if (n == 0) return 0;
     int cur = get_current_task();

@@ -3,19 +3,29 @@
 
 The control-arm discipline is this project's answer to "would this gate fail if
 the property broke". It only works if the pairs stay intact, and nothing checked
-that until now. On 2026-08-21 `smoke-ksp-guard-control` was found to have no
+that until 2026-08-21, when `smoke-ksp-guard-control` was found to have no
 positive counterpart at all: an arm that proved the guard COULD fire, with
 nothing asking whether it stayed silent on a legal value. That is the same
 missing direction which let the resume-%rsp guard ship a bound rejecting the IST
 stacks and redden ten CI gates at once.
 
-Four rules, each of which has been violated at least once in this tree:
+CLASSIFICATION IS DECLARED, NOT INFERRED, since 2026-08-30. This file used to
+decide "is this a control arm" by testing for the substring `control` in the
+target NAME, and four falsification arms are named otherwise, so they counted as
+base gates and both published figures were wrong. Three derivations were tried
+and each fails differently (see the header of .github/gate-pairs.yml); the
+distinction is a statement about INTENT and is not recoverable from the Makefile.
+So every smoke-* target is named in that manifest, and rule 5 below refuses one
+that is not.
+
+Five rules, each of which has been violated at least once in this tree:
 
   1. every control arm extends a base gate that exists   (the orphan above)
   2. every control arm is actually invoked by CI          (an arm nobody runs rots)
   3. every gate is invoked by CI or another target, or is
      listed in .github/gate-exceptions.yml with a reason  (silent local-only gates)
   4. an exception names a real target and gives a reason  (no empty placeholders)
+  5. every smoke-* target is classified in gate-pairs.yml (no silent default)
 
 Exit 0 if sound, 1 otherwise.
 """
@@ -28,6 +38,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MAKEFILE = ROOT / "Makefile"
 EXCEPTIONS = ROOT / ".github" / "gate-exceptions.yml"
+PAIRS = ROOT / ".github" / "gate-pairs.yml"
 WORKFLOWS = [
     ROOT / ".github" / "workflows" / "ci.yml",
     ROOT / ".github" / "workflows" / "codeql.yml",
@@ -38,8 +49,20 @@ WORKFLOWS = [
 def main():
     mk = MAKEFILE.read_text()
     targets = sorted(set(re.findall(r"^(smoke-[a-z0-9-]+):", mk, re.M)))
-    controls = [t for t in targets if "control" in t]
-    gates = [t for t in targets if "control" not in t]
+
+    pairs = yaml.safe_load(PAIRS.read_text()) or {}
+    declared_arms = pairs.get("control_arms") or {}
+    declared_gates = list(pairs.get("gates") or [])
+
+    # Rule 5. A target absent from the manifest would otherwise be classified by
+    # a default, and every default is wrong for some target: that is the whole
+    # reason this file no longer guesses.
+    unclassified = [t for t in targets
+                    if t not in declared_arms and t not in declared_gates]
+    stale = [t for t in list(declared_arms) + declared_gates if t not in targets]
+
+    controls = [t for t in targets if t in declared_arms]
+    gates = [t for t in targets if t in declared_gates]
 
     ci_text = "\n".join(w.read_text() for w in WORKFLOWS if w.exists())
     run_in_ci = set(re.findall(r"make\s+(smoke-[a-z0-9-]+)", ci_text))
@@ -53,18 +76,30 @@ def main():
 
     problems = []
 
-    # 1. no orphan control arms
+    # 5. everything is classified, and nothing stale is classified
+    for t in unclassified:
+        problems.append(
+            f"{t}: not classified in .github/gate-pairs.yml -- say whether it is "
+            f"a control arm (and which gate it extends) or a base gate. It is not "
+            f"inferred, because every default is wrong for some target"
+        )
+    for t in stale:
+        problems.append(f"{t}: classified in gate-pairs.yml but no such Makefile target")
+
+    # 1. no orphan control arms: the declared base must be a declared gate
     for c in controls:
-        # the base is the longest gate name this control arm extends
-        base = None
-        for g in gates:
-            if c.startswith(g + "-") and (base is None or len(g) > len(base)):
-                base = g
-        if base is None:
+        base = declared_arms.get(c)
+        if base in (None, "", "none"):
             problems.append(
                 f"{c}: control arm with no base gate -- it proves the check CAN "
                 f"fire, and nothing asks whether it stays silent when it should"
             )
+        elif base not in declared_gates:
+            problems.append(
+                f"{c}: names `{base}` as its base gate, which is not a declared gate"
+            )
+        elif base not in targets:
+            problems.append(f"{c}: names `{base}` as its base gate, which does not exist")
 
     # 2. control arms must run
     for c in controls:

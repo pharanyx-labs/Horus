@@ -172,6 +172,7 @@ static int module_name_eq(const char *a, const char *b) {
  *
  * Returns the number of modules that failed verification.
  */
+/* Carries S10: a boot module that fails its hash check cannot be executed. */
 uint32_t boot_module_verify_all(void) {
     uint32_t failed = 0;
 

@@ -1466,6 +1466,13 @@ jobs:
       # that once let the resume-%rsp guard reject the IST stacks.
       - name: Refuse an orphan control arm, or a gate nobody runs
         run: python3 tools/check_gate_pairs.py
+      # Five rules, and until 2026-08-30 rule 1 inferred the classification from
+      # the target NAME, which was wrong for four arms and made two published
+      # counts wrong with it. Seven arms: one per rule, one for a manifest entry
+      # whose target is gone, and one asserting an unmutated tree PASSES, since
+      # six "is it caught" arms are satisfied by a checker that rejects everything.
+      - name: Falsify every rule of the checker
+        run: ./tools/test_check_gate_pairs.sh
 
   defer-exemption:
     name: "The claim audit's exemption outlives the release it exempts (G-9; control arm proves it)"

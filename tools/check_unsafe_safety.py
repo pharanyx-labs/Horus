@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fail the build if a production `unsafe` in the security core has no `# Safety`.
 
+Carries SECURITY.md S54: every `unsafe` in the security core states what its
+caller must uphold.
+
 CLAUDE.md section 7 requires: "`unsafe` only at the FFI boundary, with a
 `# Safety` comment stating the caller's obligations." That rule was asserted and
 not enforced. The 2026-08-29 audit counted 29 of 49 production `unsafe` blocks

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fail the build when a document states a number the tree contradicts.
 
+Carries SECURITY.md S22: a number stated in the documentation matches the tree
+it describes.
+
 Every count written into a document in this repository has gone stale within
 days. The 2026-08-19 audit found nine wrong across five files -- CI job counts,
 context counts, the required set, the capability-suite check count -- while two
@@ -65,8 +68,18 @@ CLAIMS_YML = ".github/doc-claims.yml"
 # excluded from it too, by never declaring an occurrence in it.
 HISTORICAL = "docs/history/"
 MAKEFILE = "Makefile"
+GATE_PAIRS_YML = ".github/gate-pairs.yml"
 CAPTEST = "userspace/captest.c"
 FRAMETEST = "userspace/frametest.c"
+
+
+def _gate_pairs():
+    """The declared classification of every smoke-* target.
+
+    Read rather than inferred: see the header of .github/gate-pairs.yml for the
+    three derivations that were tried and how each one is wrong.
+    """
+    return yaml.safe_load(Path(GATE_PAIRS_YML).read_text()) or {}
 
 
 def _grep_count(path, pattern):
@@ -130,15 +143,19 @@ def derive():
         # ^smoke-<name>: in the Makefile. The inner target of a control arm is
         # deliberately NOT named smoke-* so it does not inflate this.
         "smoke_targets": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*:"),
-        "control_arms": _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*-control[a-z0-9-]*:"),
-        # Base gates: every smoke-* target that is not a control arm. This is the
-        # number a reader means by "integration targets that boot a kernel and
-        # assert a marker" -- the control arms are the falsification OF those, and
-        # counting them together conflates the two layers. Declared 2026-08-28
-        # because site/index.html had said 68 since the count was 68, with nothing
-        # to notice it becoming 88.
-        "gates": (_grep_count(MAKEFILE, r"smoke-[a-z0-9-]*:")
-                  - _grep_count(MAKEFILE, r"smoke-[a-z0-9-]*-control[a-z0-9-]*:")),
+        # Read from .github/gate-pairs.yml rather than matched out of target
+        # NAMES. Until 2026-08-30 both of these were a substring test for
+        # `control`, which missed four arms that are named otherwise
+        # (smoke-kfault-legacy and the three smoke-resume-guard-*), so the two
+        # published figures were 69 and 97 against a true 73 and 93. A documented
+        # count must not rest on a naming convention; check_gate_pairs.py refuses
+        # a target that the manifest does not classify.
+        "control_arms": len(_gate_pairs().get("control_arms") or {}),
+        # Base gates: the targets that assert a property HOLDS. The control arms
+        # are the falsification OF those, and counting them together conflates the
+        # two layers. Declared 2026-08-28 because site/index.html had said 68
+        # since the count was 68, with nothing to notice it becoming 88.
+        "gates": len(_gate_pairs().get("gates") or []),
         # SECURITY.md's S-numbered rows. Declared 2026-08-28 for the reason
         # `framepeer_checks` was: four files state it (.github/invariants.yml's
         # header, TESTS.md, docs/ROADMAP.md, and CHANGES.md's entry for the day

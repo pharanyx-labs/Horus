@@ -546,6 +546,9 @@ unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_s
 /// # Safety
 /// `spaces` must be null or point to `space_count` valid `CSpaceDesc`s whose
 /// `caps`/`size` describe live arrays. Called under `cap_lock`.
+/// Carries S3 (a revoke reaches the whole derivation subtree) and S4 (it
+/// reaches nothing else: no ancestor, sibling or independent peer). The
+/// exactness half is what `--features=revoke_legacy_bounded` falsifies.
 #[cfg(not(feature = "revoke_legacy_bounded"))]
 unsafe fn revoke_subtree(
     spaces: *const CSpaceDesc,
@@ -1857,6 +1860,8 @@ mod tests {
 // ---------------------------------------------------------------------------
 // Formal verification (Kani bounded model checking).
 //
+// Carries SECURITY.md S31: the capability algebra's authority invariants are
+// proved over the whole input space rather than sampled.
 // These #[kani::proof] harnesses are compiled ONLY under `cargo kani` (the
 // `kani` cfg); they are invisible to the normal build, `cargo test`, clippy,
 // and the kernel link. Where a unit test in the module above samples a handful

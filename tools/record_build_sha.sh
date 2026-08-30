@@ -1,4 +1,6 @@
 #!/bin/sh
+# Carries SECURITY.md S17: the shipped kernel image corresponds to the published
+# source. This records the hash; the `reproducible` CI job is what compares two.
 # Record the SHA-256 of every artifact a reproducible build must cover.
 #
 # This is a script rather than a line in the Makefile because the line it

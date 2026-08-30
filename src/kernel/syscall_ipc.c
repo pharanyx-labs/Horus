@@ -116,6 +116,10 @@ static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender) {
 
 /* Resolve an endpoint capability slot to the endpoint index it names.
  * Returns 0 and writes *out_ep on success; negative on any failure. */
+/* Carries S13a: a task can operate on an IPC object only through a capability
+ * naming it. This resolver IS the gate for every SC_NONE entry in the IPC
+ * block of the dispatch table, which is why finding [C-1] was a defect here
+ * rather than in any individual handler. */
 int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
     struct capability *c = cap_lookup(slot, need_rights);
     if (!c || c->type != CAP_ENDPOINT) return -1;
@@ -894,6 +898,8 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
  * momentarily not TASK_BLOCKED_IPC; it will be, so retry. On a single CPU the
  * sender is always already blocked by the time the server runs, so no retry
  * occurs. Mirrors the blocked-waiter delivery in sys_ipc_send. */
+/* Carries S13b: a client cannot intercept or forge a server's replies. The
+ * reply capability is one-shot and per-task, which is what [C-1] lacked. */
 void h_ipc_reply_to(struct interrupt_frame64 *r) {
     const void *msg = (const void *)(addr_t)r->rcx;
     size_t len      = (size_t)r->rdx;

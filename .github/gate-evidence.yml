@@ -1,0 +1,103 @@
+# Liveness classification for smoke targets that boot more than once.
+#
+# THE DEFECT THIS EXISTS TO PREVENT
+#
+# A gate that boots N times and asserts a marker is ABSENT says nothing at all
+# if those N boots never happened. On 2026-08-30 both halves of the [G-9] pair
+# were measured with the boot timeout starved to 2 seconds, so every boot died
+# at GRUB:
+#
+#   make smoke-exec-reenter EXEC_REENTER_TIMEOUT=2
+#     -> rc=0, "EXEC REENTER: PASS - no CPU took another CPU's exec re-entry
+#        in 20 boots at -smp 4"
+#   make smoke-cr3-reclaim CR3_RECLAIM_TIMEOUT=2
+#     -> rc=0, "CR3 RECLAIM: PASS"
+#
+# Two merge-blocking gates, green, asserting a property over twenty boots that
+# did not occur. Both captured each boot's exit status into `rc` and
+# deliberately did not assert it -- for a documented and still-correct reason,
+# that the workload stalls on causes outside the property and gating on
+# completion would make each gate a detector for that instead. The repair is
+# not to assert completion but to FLOOR the number of boots that reached the
+# path, which keeps the tolerance and removes the vacuum.
+#
+# WHY THIS FILE IS DECLARATIVE
+#
+# The sweep that found those two flagged six targets, and four were false
+# positives: smoke-session-smp-soak, smoke-kstack-park-control,
+# smoke-claim-release-control and smoke-switch-commit-control all establish
+# liveness correctly, in four different ways -- a per-run exit status plus a
+# check-count floor, inline good/bad attempt counting, and retry-on-inconclusive
+# with the completed-but-clean case called out as "a real miss and is not
+# retried". A checker inferring intent from shell shape would reject all four,
+# and a checker people route around is worse than no checker. So each target
+# DECLARES its mechanism and tools/check_gate_evidence.py verifies the
+# declaration is actually wired into the recipe.
+#
+# Adding a smoke target that boots more than once means adding it here.
+
+# Targets that establish liveness by counting boots that printed a marker and
+# refusing to conclude below a floor. Both names must be Makefile variables AND
+# be referenced by the target's own recipe -- a floor defined and never read is
+# the failure mode this half of the checker is for.
+liveness:
+  smoke-exec-reenter:
+    marker: EXEC_REENTER_LIVE_RE
+    floor: EXEC_REENTER_MIN_LIVE
+  smoke-cr3-reclaim:
+    marker: CR3_RECLAIM_LIVE_RE
+    floor: CR3_RECLAIM_MIN_LIVE
+  smoke-exec-reenter-control:
+    marker: EXEC_REENTER_LIVE_RE
+    floor: EXEC_REENTER_MIN_CONCLUSIVE
+  smoke-cr3-reclaim-control:
+    marker: CR3_RECLAIM_LIVE_RE
+    floor: CR3_RECLAIM_MIN_CONCLUSIVE
+  smoke-defer-exemption-control:
+    marker: DEFER_EXEMPTION_LIVE_RE
+    floor: DEFER_EXEMPTION_MIN_LIVE
+
+# Targets that establish liveness another way. A reason here must say WHICH
+# mechanism, specifically enough that a reader can check it against the recipe.
+exempt:
+  smoke-session-smp-soak: >
+    Asserts every run's exit status AND that the run made at least
+    SOAK_MIN_CHECKS checks, reporting a run that exits 0 with too few checks as
+    VACUOUS in its own right. It also keeps per-run serial logs in
+    SOAK_EVIDENCE_DIR rather than a temporary file. This is the pattern the
+    other targets were measured against.
+  smoke-kstack-park-control: >
+    Counts attempts as good or bad inline, prints "attempt N: INCONCLUSIVE, the
+    workload died after K park(s) -- not counted", and asserts only over boots
+    that ran to completion. Repaired in #193 for exactly the defect this file
+    is about.
+  smoke-kstack-race: >
+    Asserts the session's exit status per attempt, retries on INCONCLUSIVE, and
+    tails the log on every failure path.
+  smoke-kstack-race-control: >
+    Asserts the session's exit status per attempt and tails the log on failure;
+    a completed session with no race is a real miss, not a retry.
+  smoke-claim-release-control: >
+    Retries only when the boot reached neither the fault nor the banner, and
+    treats a run that COMPLETED without the fault as a real miss that is not
+    retried. Prints the last two lines of every attempt.
+  smoke-switch-commit-control: >
+    Same mechanism as smoke-claim-release-control: retry on inconclusive only,
+    a completed run without the stale claim is a real miss, and every attempt's
+    tail is printed.
+  smoke-fs-persist: >
+    Boots twice by writing the invocation out rather than looping, and asserts
+    each boot's exit status directly (no captured-but-unasserted rc), so a boot
+    that dies fails the target rather than being scored as a miss. The second
+    boot's REQUIRE_MARKER is what makes persistence observable at all.
+  smoke-fs-wal: >
+    Same shape as smoke-fs-persist: two written-out boots, each one's exit
+    status asserted directly.
+  smoke-syscall-coverage: >
+    Boots the workloads in sequence and asserts each one's exit status; the
+    coverage transcript is then diffed against .github/syscall-coverage.yml, so
+    a boot that died produces a missing transcript and a diff failure rather
+    than a silent pass.
+  smoke-syscall-coverage-control: >
+    Same as smoke-syscall-coverage. Both arms rebuild all three workloads, and a
+    boot that dies costs its transcript, which the checker requires.

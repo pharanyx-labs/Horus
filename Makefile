@@ -5602,6 +5602,15 @@ EXEC_REENTER_RE = exec re-entry taken by the wrong cpu
 # smoke-exec-reenter-control.
 EXEC_REENTER_LIVE_RE = PROC_SELFTEST: suspend OK
 EXEC_REENTER_MIN_CONCLUSIVE ?= 10
+# The BASE gate's floor. It asserts the wrong-CPU report is ABSENT and, for the
+# reason recorded beside it, does not assert any boot's exit status -- so with
+# nothing else in the way a run in which every boot died at GRUB satisfied it:
+# zero boots, zero markers, "PASS - no CPU took another CPU's exec re-entry in
+# 20 boots at -smp 4". Demonstrated on 2026-08-30 with EXEC_REENTER_TIMEOUT=2,
+# which exits 0. Requiring a floor of boots that reached the path keeps the
+# tolerance the marker-only assertion was for (the workload stalls ~7% of boots
+# on causes outside this property) while making the vacuous case impossible.
+EXEC_REENTER_MIN_LIVE ?= 10
 # The defect flag's VALUE, so the arm can be run in its exact form against the
 # fixed kernel: `make smoke-exec-reenter-control EXEC_REENTER_CONTROL_FLAG=0`
 # must go RED. An arm that only ever runs against the build it was written for
@@ -5615,24 +5624,34 @@ smoke-exec-reenter:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 boot.iso
-	@log=$$(mktemp); rc=0; \
+	@log=$$(mktemp); rc=0; live=0; \
 	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
 	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    grep -qa '$(EXEC_REENTER_LIVE_RE)' "$$one" && live=$$((live+1)); \
 	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
 	: "rc is captured and deliberately NOT the assertion: the rest of [G-9]"; \
 	: "still stalls 2 in 30 of these boots, and gating on completion would"; \
 	: "make this pair a detector for that, not a witness. rc=$$rc"; \
+	: "But an ABSENCE assertion over boots that never happened is vacuous, so"; \
+	: "the boots that reached the path are counted and floored instead."; \
 	hits=$$(grep -ca '$(EXEC_REENTER_RE)' "$$log"); \
 	if [ "$$hits" -ne 0 ]; then \
 	    echo "EXEC REENTER: FAIL - the exec hand-off was taken by the wrong CPU ($$hits/$(EXEC_REENTER_RUNS) boots)"; \
 	    grep -a -A 1 '$(EXEC_REENTER_RE)' "$$log" | head -6 | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
+	if [ "$$live" -lt $(EXEC_REENTER_MIN_LIVE) ]; then \
+	    echo "EXEC REENTER: FAIL - the gate never ran the experiment."; \
+	    echo "  Only $$live of $(EXEC_REENTER_RUNS) boots reached the exec path (floor is $(EXEC_REENTER_MIN_LIVE))."; \
+	    echo "  The wrong-CPU report being absent from boots that did not happen says nothing."; \
+	    echo "  ----- tail of the last boot's serial log -----"; \
+	    tail -30 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
 	rm -f "$$log"; \
-	echo "EXEC REENTER: PASS - no CPU took another CPU's exec re-entry in $(EXEC_REENTER_RUNS) boots at -smp 4"
+	echo "EXEC REENTER: PASS - no CPU took another CPU's exec re-entry in $$live live boots of $(EXEC_REENTER_RUNS) at -smp 4"
 
 # ---- [G-10]: a slot's page tables are not recycled while a CPU is on them
 #
@@ -5662,6 +5681,8 @@ CR3_RECLAIM_RE = PAGE FAULT at 0xfee000b0
 CR3_RECLAIM_LIVE_RE = PROC_SELFTEST: suspend OK
 CR3_RECLAIM_CONTROL_BOOTS ?= 3
 CR3_RECLAIM_MIN_CONCLUSIVE ?= 2
+# The base gate's floor, for the reason given at EXEC_REENTER_MIN_LIVE.
+CR3_RECLAIM_MIN_LIVE ?= 10
 # As above: CR3_RECLAIM_CONTROL_FLAG=0 runs this arm against the guarded
 # kernel and must go red.
 CR3_RECLAIM_CONTROL_FLAG ?= 1
@@ -5671,23 +5692,33 @@ smoke-cr3-reclaim:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
-	@log=$$(mktemp); rc=0; \
+	@log=$$(mktemp); rc=0; live=0; \
 	for i in $$(seq 1 $(CR3_RECLAIM_RUNS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
 	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    grep -qa '$(CR3_RECLAIM_LIVE_RE)' "$$one" && live=$$((live+1)); \
 	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
 	: "rc captured, not asserted on: the rest of [G-9] still fails ~7% of these"; \
 	: "boots and this gate is not about that. rc=$$rc"; \
+	: "The live count is the floor that stops an absence assertion being made"; \
+	: "over boots that never ran -- see EXEC_REENTER_MIN_LIVE."; \
 	hits=$$(grep -ca '$(CR3_RECLAIM_RE)' "$$log"); \
 	if [ "$$hits" -ne 0 ]; then \
 	    echo "CR3 RECLAIM: FAIL - the LAPIC page vanished from a live address space ($$hits/$(CR3_RECLAIM_RUNS) boots)"; \
 	    grep -a -A 4 '$(CR3_RECLAIM_RE)' "$$log" | head -8 | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
+	if [ "$$live" -lt $(CR3_RECLAIM_MIN_LIVE) ]; then \
+	    echo "CR3 RECLAIM: FAIL - the gate never ran the experiment."; \
+	    echo "  Only $$live of $(CR3_RECLAIM_RUNS) boots reached the reclaim path (floor is $(CR3_RECLAIM_MIN_LIVE))."; \
+	    echo "  No fault in boots that did not happen is not evidence of no fault."; \
+	    echo "  ----- tail of the last boot's serial log -----"; \
+	    tail -30 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
 	rm -f "$$log"; \
-	echo "CR3 RECLAIM: PASS - no recycled page table faulted in $(CR3_RECLAIM_RUNS) boots at -smp 4"
+	echo "CR3 RECLAIM: PASS - no recycled page table faulted in $$live live boots of $(CR3_RECLAIM_RUNS) at -smp 4"
 
 .PHONY: smoke-cr3-reclaim-control
 smoke-cr3-reclaim-control:
@@ -5890,6 +5921,8 @@ smoke-exec-reenter-control:
 #   widened + pre-fix order : 8 of 10 boots panic
 #   widened + fixed order   : 0 of 10          (Fisher p ~ 0.0007)
 #   natural rate            : 9/200 -> 0/200   (Fisher p ~ 0.0036)
+DEFER_EXEMPTION_LIVE_RE = PROC_SELFTEST: suspend OK
+DEFER_EXEMPTION_MIN_LIVE ?= 3
 DEFER_EXEMPTION_BOOTS ?= 8
 .PHONY: smoke-defer-exemption
 smoke-defer-exemption:
@@ -5911,17 +5944,38 @@ smoke-defer-exemption-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 DEFER_CLEAR_EARLY=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 DEFER_CLEAR_EARLY=1 boot.iso
-	@n=0; hit=0; \
+	@n=0; hit=0; live=0; incon=0; \
+	: "The boot's output is CAPTURED rather than piped into grep -q. Piping it"; \
+	: "discarded every boot: a boot that died at GRUB and a boot that ran"; \
+	: "cleanly without the stale claim were the same observation, and the"; \
+	: "failure message could name neither. Same defect as the exec and cr3"; \
+	: "arms, found in the same sweep on 2026-08-30."; \
 	while [ $$n -lt $(DEFER_EXEMPTION_BOOTS) ]; do \
 	    n=$$((n+1)); \
-	    if SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso 2>&1 \
-	         | grep -q 'stale scheduler claim'; then \
-	        echo "[defer] reproduced on boot $$n of $(DEFER_EXEMPTION_BOOTS)"; hit=1; break; \
+	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso 2>&1); \
+	    if echo "$$out" | grep -q 'stale scheduler claim'; then \
+	        echo "  boot $$n/$(DEFER_EXEMPTION_BOOTS): HIT, a stale claim reached ring 3"; \
+	        hit=1; break; \
+	    elif echo "$$out" | grep -q '$(DEFER_EXEMPTION_LIVE_RE)'; then \
+	        live=$$((live+1)); \
+	        echo "  boot $$n/$(DEFER_EXEMPTION_BOOTS): clean, the workload ran and left no stale claim"; \
+	    else \
+	        incon=$$((incon+1)); \
+	        echo "  boot $$n/$(DEFER_EXEMPTION_BOOTS): INCONCLUSIVE, the workload died before the defer path -- not counted"; \
 	    fi; \
+	    echo "$$out" | tail -3 | sed 's/^/      /'; \
 	done; \
+	if [ $$hit -eq 0 ] && [ $$live -lt $(DEFER_EXEMPTION_MIN_LIVE) ]; then \
+	    echo "DEFER CONTROL: FAIL - the arm never ran the experiment."; \
+	    echo "  Only $$live of $$n boots reached the defer path; $$incon died first."; \
+	    echo "  That is a broken workload, NOT evidence that the pre-fix order is safe."; \
+	    exit 1; \
+	fi; \
 	if [ $$hit -eq 0 ]; then \
-	    echo "DEFER CONTROL: FAIL - the pre-fix order did not reproduce in $$n boots"; exit 1; \
-	fi
+	    echo "DEFER CONTROL: FAIL - the pre-fix order did not reproduce in $$live conclusive boots of $$n ($$incon inconclusive)"; \
+	    exit 1; \
+	fi; \
+	echo "DEFER CONTROL: PASS - the pre-fix order left a stale claim on boot $$n of $(DEFER_EXEMPTION_BOOTS) ($$live clean, $$incon inconclusive before it)"
 
 .PHONY: smoke-switch-commit
 smoke-switch-commit:

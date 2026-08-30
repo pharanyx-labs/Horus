@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 117 entries, newest first, each explaining what
+The narrative record of how Horus was built: 118 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,58 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Fixed: two required gates that passed on boots that never happened
+
+The repair in #259 raised an obvious question that #259 did not ask: if a *control* arm could not
+tell a dead boot from a real miss, what about the *base* gates beside it? Sweeping for the shape
+rather than waiting for a failure found something worse than the original.
+
+`smoke-exec-reenter` and `smoke-cr3-reclaim` assert that a marker is **absent**. Both capture each
+boot's exit status into `rc` and deliberately do not assert it — for a reason that is documented,
+was correct when written and is still correct: the workload stalls ~7% of boots on causes outside
+the property, and gating on completion would make each gate a detector for that instead. But an
+absence assertion over boots that never happened is vacuous, and nothing else stood in the way.
+Starving the boot timeout so every boot dies at GRUB:
+
+    make smoke-exec-reenter EXEC_REENTER_TIMEOUT=2
+      -> rc=0, "EXEC REENTER: PASS - no CPU took another CPU's exec re-entry in 20 boots at -smp 4"
+    make smoke-cr3-reclaim CR3_RECLAIM_TIMEOUT=2
+      -> rc=0, "CR3 RECLAIM: PASS"
+
+Two merge-blocking gates, green, asserting a property over twenty boots that did not occur. This
+is strictly worse than what #259 fixed: that was a spurious red, which is noisy but self-
+announcing. This is a silent green, and a silent green on a required gate is indistinguishable
+from working.
+
+The repair is not to assert completion — that would discard the tolerance the marker-only
+assertion exists for — but to count the boots that reached the path and refuse to conclude below a
+floor (10 of 20). The tolerance survives; the vacuum does not. Falsified in both directions:
+starved, red with "the gate never ran the experiment"; unstarved, PASS over 20 live boots.
+
+The same sweep found `smoke-defer-exemption-control` piping every boot into `grep -q` and keeping
+nothing, which is the #259 defect exactly. Three instances of one shape, in three arms nobody had
+connected.
+
+**What this cost to find, and why the checker is declarative.** The sweep flagged six targets and
+**four were false positives**: `smoke-session-smp-soak`, `smoke-kstack-park-control`,
+`smoke-claim-release-control` and `smoke-switch-commit-control` all establish liveness correctly,
+in four different ways — a per-run exit status plus a check-count floor, inline good/bad attempt
+counting, and retry-on-inconclusive with the completed-but-clean case explicitly called out as "a
+real miss and is not retried". A checker inferring intent from shell shape would reject all four,
+and a checker that people route around is worse than none. So `tools/check_gate_evidence.py` reads
+a declaration and verifies it is wired into the recipe, the same call `check_gate_pairs.py` made
+when its own rule 1 turned out to be inferring from target names.
+
+**The checker's own rule 3 was wrong on the first run**, and its falsification harness is what
+said so. The rule required the declared floor to be *referenced* by the recipe; the mutation
+replaced the comparison with `-lt 0` and left the floor named in the failure message ("floor is
+$(EXEC_REENTER_MIN_LIVE)"), and the rule passed. A floor quoted in an echo is exactly as broken as
+one never mentioned. The rule now requires the floor to appear in a numeric shell test and the
+marker to be read by a grep. Six arms: five mutations plus the unmutated tree, because five "is it
+caught" arms are all satisfied by a checker that rejects everything.
 
 ---
 

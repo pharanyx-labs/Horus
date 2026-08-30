@@ -111,7 +111,7 @@ DEFECT_FLAGS = \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CSPACE_KEEP_ON_TEARDOWN \
-	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE
+	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1864,6 +1864,15 @@ CFLAGS  += -DSPAWN_SLOT3_DECOY_GATE
 ASFLAGS += -DSPAWN_SLOT3_DECOY_GATE
 endif
 
+# UNTYPED_SPLIT_FREE_BYTES=1 makes SYS_UNTYPED_SPLIT hand out a sub-region
+# WITHOUT advancing the parent's watermark, so the split mints memory instead of
+# spending it and two capabilities name overlapping bytes.
+UNTYPED_SPLIT_FREE_BYTES ?= 0
+ifeq ($(UNTYPED_SPLIT_FREE_BYTES),1)
+CFLAGS  += -DUNTYPED_SPLIT_FREE_BYTES
+ASFLAGS += -DUNTYPED_SPLIT_FREE_BYTES
+endif
+
 CAPLOOKUP_SELFTEST ?= 0
 ifeq ($(CAPLOOKUP_SELFTEST),1)
 CFLAGS  += -DCAPLOOKUP_SELFTEST
@@ -2896,6 +2905,17 @@ smoke-proc-spawn-decoy-control:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SPAWN_SLOT3_DECOY_GATE=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL spawn-without-untyped' \
+		tools/smoke_test.sh boot.iso
+
+# The falsifying arm for SYS_UNTYPED_SPLIT. Without the parent's watermark
+# advancing, the split creates memory rather than moving it -- and captest's
+# "split-did-not-charge-the-parent" check is what says so.
+smoke-captest-split-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 UNTYPED_SPLIT_FREE_BYTES=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 UNTYPED_SPLIT_FREE_BYTES=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL split-did-not-charge-the-parent' \
 		tools/smoke_test.sh boot.iso
 
 smoke-cspace-release:

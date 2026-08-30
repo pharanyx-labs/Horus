@@ -17,6 +17,99 @@ in this file.
 
 ### Fixed
 
+- **[I-7] is closed**, and the three things that closed it were each, at some point, blamed on
+  the wrong thing.
+
+  The finding's own words were *"no retyping discipline, no per-task kernel-memory accounting,
+  hard ceiling on system size"*. The discipline landed for cspaces, endpoints and notifications
+  in July; the accounting landed with **S57** earlier on 2026-08-30. This is the rest.
+
+  **The TCB table left `.bss`.** `tcb_t tasks[MAX_TASKS]` was the last kernel object class
+  outside the retyping discipline, and four documents called moving it "its own change with its
+  own tests" for a month. It is `tcb_t *tasks` now, one contiguous block carved from the kernel's
+  untyped reserve by `tasks_init()`. All 785 `tasks[id].field` sites compile unchanged, because
+  indexing a pointer is identical syntax — the change is tractable *because* it is a pointer and
+  not an array of pointers, which would have been `tasks[id]->field` at every one of them and an
+  extra indirection on the scheduler's hot path for no property anybody asked for.
+
+  **The task count became a property of the machine.** `g_max_tasks` is derived at boot from the
+  reserve `untyped_init` actually built; 127 bounds across fourteen files read it. `MAX_TASKS`
+  survives only as the compile-time input that *provisions* the reserve — nothing branches on it.
+  The boot reports what it arrived at, so the derivation is observable rather than asserted.
+
+  **And what would actually have capped the ceiling was not `tasks[]`.** The revocation sweep
+  declared `cspace_desc_t spaces[MAX_TASKS + 1]` **on the kernel stack**, which nobody had
+  measured:
+
+  | `MAX_TASKS` | sweep's stack use | of a 32 KiB kernel stack |
+  |---|---|---|
+  | 256 | 6,168 B | 19% |
+  | 1024 | 24,600 B | 75% |
+  | 2048 | 49,176 B | **150% — overflow** |
+
+  So the 64 → 256 raise had already spent a fifth of a kernel stack in the revoke path, and it is
+  why a runtime count could only ever have adjusted the ceiling *downward* while that array
+  stayed there. It is one allocated buffer now, shared under the `cap_lock` the sweep already
+  holds throughout. `task_running_cpu` and the S20 inflight witness moved with it.
+
+  **This is the second time in this finding that the named obstacle was not the real one** — the
+  first was `tasks[]` (72 KiB) being blamed for `per_task_kstacks` (4 MiB) — and both times the
+  answer came from measuring rather than from reading the code's own account of itself.
+
+- **`SYS_UNTYPED_SPLIT`: a budget can be subdivided, not only shared** (**S58**), and it repairs
+  an overclaim rather than adding a feature.
+
+  **S57 shipped with a sentence nothing made true.** It said *"a task given a small region can
+  spawn a bounded number of times"* — and `SYS_CAP_GRANT` of a `CAP_UNTYPED` copies a capability
+  naming the **same** region, so a delegate received its grantor's entire budget and "a small
+  region" named something nobody could mint. The gate was real and the bound was not. That is the
+  failure mode this project's documentation rules exist to prevent, committed by the commit that
+  introduced the gate, which is why it is named here rather than quietly corrected.
+
+  The bytes come **out of the parent**: its watermark advances past the carve before the child
+  capability exists, so two tasks holding parent and child cannot together carve more than the
+  parent could alone — transitively, since it is one bump allocator each time. The child
+  capability is **derived** (own serial, the parent's serial as `badge`), so revoking the parent
+  sweeps it; a fresh root would be finding 3.3's shape. Rights are the parent's and never
+  widened. The region is not returned when the child dies, because reclaiming bytes a stale
+  capability might still name is the type-confusion the bump discipline exists to forbid: a split
+  is a permanent transfer of budget, not a loan.
+
+  Falsified by `UNTYPED_SPLIT_FREE_BYTES=1`, which stops the parent's watermark advancing so the
+  split mints memory instead of spending it: `CAPTEST: FAIL split-did-not-charge-the-parent`,
+  base gate red under the same flag.
+
+  **Four defects were introduced by this work and caught before it landed**, three of them by
+  machinery rather than by reading:
+
+  - **A self-deadlock.** `cap_mint_untyped_child` called `cap_alloc_fresh_serial()` while holding
+    `cap_lock`, and that function takes `cap_lock` — a spinlock with no recursion, interrupts
+    masked. **S52's exact shape**, reintroduced by the commit adding the split, and it presented
+    as `smoke-captest` timing out with no FAIL marker. The serial is hoisted above the lock now,
+    as every other mint site already does.
+  - **A drifted constant.** `untyped.c` recomputed the kernel reserve from `CNODE_SIZE` instead
+    of reading `UNTYPED_KERNEL_BYTES`; the two diverged the moment the macro grew a TCB
+    allowance, and the boot provisioned **191** tasks where it should have provisioned 256.
+    **[H-3]**'s shape, in the sizing of the region that file exists to manage.
+  - **A control arm that stopped compiling.** `KSTACK_INFLIGHT_LEGACY_WORD` kept an array type
+    against the new pointer. **A control arm that does not build is a gate that cannot fail** —
+    worse than one that fails for the wrong reason. Both arms share the shipped type now, so the
+    arm differs from the kernel only in its indexing, which is what it is for.
+  - **`SMP=0` broke at the linker.** Two SMP-only variables were being allocated unconditionally.
+    That build is gated *because* it has silently broken before; here it broke loudly.
+
+  Green: `smoke`, `-session`, `-captest` (**174 checks**), `-proc`, `-fork`, `-forkexec`,
+  `-task-ceiling` + both arms, `-cspace-release` + arm, `-cap-lookup` + both arms, `-wx`,
+  `-wx-smp`, `-sched-invariants`, `-aspace`, `-kstack-race` + arm, `-spawn-owner`, `-frame`,
+  `-vfs`, `-modules`, `-pipe`, `-proc-spawn-decoy-control`; `SMP=0` builds and boots; 94 Rust
+  tests.
+
+  **A first attempt at closing [I-7] was reverted.** It argued that the remaining `tasks[]` array
+  is "a scale limitation, not a property anything asserts" — true as far as it went, and still a
+  way of renaming a problem rather than fixing one. The difference is worth recording because the
+  reclassifying version would have read almost identically in this file.
+
+
 - **Creating a task was the one kernel object anybody could make for free**
   (`SECURITY.md` **S57**, `docs/LIMITATIONS.md` §1.6b, audit finding 4.1).
 

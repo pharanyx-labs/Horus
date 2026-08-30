@@ -14,7 +14,7 @@ int this_cpu_lapic(void);
 #ifdef SMP
 void percpu_id_verify_self(void);
 extern volatile unsigned percpu_id_verified;
-extern int task_running_cpu[MAX_TASKS];
+extern int *task_running_cpu;
 extern volatile int smp_sched_enabled;   /* scheduler.c: master switch for the SMP branch */
 /* scheduler.c: "this CPU is parked in an idle loop and holds no task context".
  * preempt_on_tick consults it to decide whether a ring-0 tick may switch this CPU
@@ -390,7 +390,7 @@ void smp_bringup(void) {
      * branch) because the BSP's own preempt_on_tick consults task_running_cpu[]
      * even when there are no APs — leaving it zero would read as "task N running
      * on CPU 0" and break single-CPU scheduling. */
-    for (int i = 0; i < MAX_TASKS; i++) task_running_cpu[i] = -1;
+    for (int i = 0; i < g_max_tasks; i++) task_running_cpu[i] = -1;
 
     /* Ask ACPI how many CPUs actually exist. On success we wake and wait for
      * exactly that many; a uniprocessor skips AP bringup entirely (no trampoline

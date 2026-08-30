@@ -453,7 +453,7 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-08-30, and gated since: **78 of 91** implemented syscalls have their handler
+2026-08-30, and gated since: **79 of 92** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 13 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -1475,7 +1475,7 @@ with the library's capabilities.
 
 | Resource | Limit | Where |
 |---|---|---|
-| Tasks | 256 | `MAX_TASKS` |
+| Tasks | 256 **provisioned**, derived at boot | `g_max_tasks` (from the reserve; `MAX_TASKS` provisions it) |
 | Capabilities per task | 128 in use, 256 slots | `MAX_CAPS_PER_TASK`, `CNODE_SIZE` |
 | CPUs | 4 | `MAX_CPUS` |
 | Static endpoints (well-known + per-task reply) | 128 | `MAX_ENDPOINTS` |
@@ -1483,7 +1483,8 @@ with the library's capabilities.
 | Static notifications | 64 | `MAX_NOTIFICATIONS` |
 | Retyped notification descriptors | 256 | `MAX_DYN_NOTIFICATIONS`, indices from `DYN_NOTIF_BASE` |
 | Untyped arena, user half | 3.5 MiB | `UNTYPED_USER_BYTES` |
-| Untyped arena, kernel cspace reserve | 2 MiB (`MAX_TASKS` x 8 KiB) | `UNTYPED_KERNEL_BYTES` |
+| Untyped regions namable at once | 64 | `MAX_UNTYPED` |
+| Untyped arena, kernel reserve | 2.5 MiB (`MAX_TASKS` x (8 KiB cspace + 2 KiB TCB)) | `UNTYPED_KERNEL_BYTES` |
 | IPC message | 256 bytes | `IPC_MSG_MAX` |
 | Boot modules | 48 | `MAX_BOOT_MODULES` |
 | Volume | 16 MiB | `BLOCKS_PER_DISK` |
@@ -1544,10 +1545,44 @@ bits, so the detector does not stop working — **it starts answering about the 
 no report for a genuine collision above 63 and a spurious one below it. It is an array sized from
 `MAX_TASKS` now, with the width asserted at compile time.
 
-**What is left of [I-7] is the part that was always the interesting half**: a TCB is not a
-capability-named object. `tasks[]` is still a fixed array and the task-creating syscalls still
-gate on the slot-3 decoy (§1.6b). A 256-task ceiling is a bigger number, not a different kind
-of thing; what makes it a different kind of thing is `KOBJ_TASK`.
+**[I-7] closed on 2026-08-30, and the three things that closed it are worth separating** because
+each was blamed on the wrong thing at some point.
+
+**The TCB table left `.bss`.** `tcb_t tasks[MAX_TASKS]` was the last kernel object class outside
+the retyping discipline — every other one (cspaces, endpoints, notifications, frames) had moved
+years of commits earlier, and this table was described in four documents as "its own change with
+its own tests" for a month. It is `tcb_t *tasks`, one contiguous block carved from the kernel's
+untyped reserve by `tasks_init()`. All 785 `tasks[id].field` sites compile unchanged, because
+array indexing on a pointer is identical syntax — the change is tractable precisely because it is
+a pointer rather than an array of pointers, which would have been `tasks[id]->field` at every one
+of them and an extra indirection on the scheduler's hot path.
+
+**The count became a property of the machine.** `g_max_tasks` is derived at boot from the reserve
+`untyped_init` actually built, and 127 bounds across fourteen files read it. `MAX_TASKS` survives
+only as the compile-time input that PROVISIONS the reserve; nothing branches on it. The boot
+reports the number it arrived at (`tasks: 256 provisioned from the kernel untyped reserve`), so
+the derivation is observable rather than asserted.
+
+**And the thing that would actually have capped it was not `tasks[]` at all.** The revocation
+sweep declared `cspace_desc_t spaces[MAX_TASKS + 1]` **on the kernel stack**, which nobody had
+measured:
+
+| `MAX_TASKS` | sweep's stack use | of a 32 KiB kernel stack |
+|---|---|---|
+| 256 | 6,168 B | 19% |
+| 512 | 12,312 B | 38% |
+| 1024 | 24,600 B | 75% |
+| 2048 | 49,176 B | **150% — overflow** |
+
+So the 64 → 256 raise had already spent a fifth of a kernel stack in the revoke path, and the
+guard page below it was what stood between the next raise and silent corruption of the adjacent
+slot. It is one allocated buffer now, shared under the `cap_lock` the sweep already holds
+throughout. `task_running_cpu` and the S20 inflight witness moved with it.
+
+**What remains is a provisioning constant, not a ceiling anything asserts.** `MAX_TASKS` sizes
+the reserve; raising it costs pool frames rather than image budget, and no linker assert
+constrains it. That is a scale parameter of the same kind as `BLOCKS_PER_DISK`, and it is listed
+in the table above rather than tracked as a finding.
 
 **The prerequisite named here for a month closed on 2026-08-30, and it was two defects rather
 than one.** `cap_lookup` — the function every capability gate in this kernel resolves through —

@@ -15,7 +15,6 @@ _Static_assert(__builtin_offsetof(capability_t, serial)     == 20, "cap.serial o
 _Static_assert(__builtin_offsetof(capability_t, generation) == 24, "cap.generation offset");
 _Static_assert(CAP_NULL == 0, "CAP_NULL must be 0 (matches Rust)");
 
-extern tcb_t tasks[MAX_TASKS];
 
 #define CNODE_SIZE 256
 #define KERNEL_RESERVED_CAPS 4
@@ -327,8 +326,7 @@ void cap_init(void) {
  * and by the FS/process-control self-test harnesses; root_cnode is otherwise
  * file-private. */
 int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object) {
-    extern tcb_t tasks[MAX_TASKS];
-    if (pid < 0 || pid >= MAX_TASKS || slot >= CNODE_SIZE || root_slot >= CNODE_SIZE) return -1;
+    if (pid < 0 || pid >= g_max_tasks || slot >= CNODE_SIZE || root_slot >= CNODE_SIZE) return -1;
     if (!tasks[pid].cspace) return -1;
     uint32_t serial = cap_alloc_fresh_serial();
     spin_lock(&cap_lock);
@@ -404,8 +402,8 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
  * ambient-authority coupling roadmap 0.2 removed. The accounting (caps_in_use on
  * a NULL -> occupied transition, the ceiling) is the receiver's and is kept. */
 bool cap_install_reply_for(int pid, int sender) {
-    if (pid <= 0 || pid >= MAX_TASKS) return false;
-    if (sender <= 0 || sender >= MAX_TASKS) return false;
+    if (pid <= 0 || pid >= g_max_tasks) return false;
+    if (sender <= 0 || sender >= g_max_tasks) return false;
     uint32_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
     spin_lock(&cap_lock);
     struct capability *cspace = tasks[pid].cspace;
@@ -543,7 +541,7 @@ bool cap_consume_slot(uint32_t dest_slot) {
  * `SECURITY.md` **S56**. */
 void cap_release_cspace(int id)
 {
-    if (id <= 0 || id >= MAX_TASKS) return;
+    if (id <= 0 || id >= g_max_tasks) return;
 
     spin_lock(&cap_lock);
     struct capability *cs = tasks[id].cspace;
@@ -566,6 +564,22 @@ void cap_release_cspace(int id)
      * no longer holds anything, and `ps` reports it. */
     tasks[id].caps_in_use = 0;
     spin_unlock(&cap_lock);
+}
+
+/* Descriptor buffer for the revocation sweep (see rust_cap_revoke_global's use).
+ * Allocated by cap_tables_init() from the kernel reserve, g_max_tasks + 1 long.
+ * Shared rather than per-call because the sweep holds cap_lock throughout. */
+static cspace_desc_t *g_revoke_spaces;
+
+/* Allocate the capability layer's per-boot tables. Called from tasks_init(),
+ * immediately after the task count is known and before any task exists. Halts on
+ * failure: a kernel that cannot build its revocation sweep cannot enforce
+ * revocation, and running without it would be a silent loss of S3/S4. */
+void cap_tables_init(void)
+{
+    void *m = kobj_alloc(UNTYPED_KERNEL, KOBJ_REVOKE_SPACES, 0, 0);
+    if (!m) { for (;;) { __asm__ volatile("cli; hlt"); } }
+    g_revoke_spaces = (cspace_desc_t *)m;
 }
 
 const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
@@ -799,6 +813,73 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
     return ok;
 }
 
+/* Mint the capability for a sub-region carved by untyped_split.
+ *
+ * NOT a general-purpose "mint over an arbitrary object". It exists because the
+ * child region's OBJECT is a number untyped_split just allocated, which
+ * rust_cap_mint cannot produce -- that path copies the source's object by
+ * design, since a mint that could retarget an object would be a way to name
+ * something the caller was never given. So the derivation is done here, with
+ * the object supplied by the one caller that has just created it, and the
+ * function is static to that use.
+ *
+ * DERIVED, not a root. Own serial, and the PARENT capability's serial as badge,
+ * so the child sits in the derivation graph beneath the untyped it came from and
+ * a revoke of the parent sweeps it (S3/S4). A fresh root here would be finding
+ * 3.3's shape: authority outliving the authority it came from.
+ *
+ * RIGHTS ARE THE PARENT'S, never widened -- the delegation rule this whole
+ * system rests on. A READ-only untyped splits into a READ-only sub-region, which
+ * cannot then be retyped from (retype needs WRITE); that is a capability that
+ * can be inspected and passed on but not spent, and it is the correct meaning
+ * rather than an oversight. */
+int cap_mint_untyped_child(uint32_t src_slot, uint32_t dest_slot, uint32_t child_index)
+{
+    /* THE SERIAL IS ALLOCATED BEFORE THE LOCK, and this is not a style choice.
+     * cap_alloc_fresh_serial takes cap_lock itself, and cap_lock is a plain
+     * spinlock with no recursion: calling it from inside the critical section
+     * below deadlocks the CPU with interrupts masked -- which is S52's exact
+     * shape, "a refusal that never returns is a kernel wedge". The first draft
+     * did precisely that and hung smoke-captest for the full timeout with no
+     * marker, which is how it was found. Every other mint site in this tree
+     * (kusers.c's sudo path, kshell.c's endowment) hoists the serial for the
+     * same reason; this one now matches them.
+     *
+     * A serial allocated and then not used costs nothing: the counter is
+     * monotonic and gaps in it carry no meaning. */
+    uint32_t serial = cap_alloc_fresh_serial();
+
+    spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return -1; }
+
+    struct capability *src = kcap_lookup(src_slot, CAP_RIGHT_WRITE);
+    if (!src || src->type != CAP_UNTYPED) { spin_unlock(&cap_lock); return -1; }
+    if (dest_slot >= CNODE_SIZE || dest_slot < KERNEL_RESERVED_CAPS) {
+        spin_unlock(&cap_lock); return -1;
+    }
+
+    int cur = get_current_task();
+    struct capability *cs = tasks[cur].cspace;
+    uint32_t sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+    if (!cs || dest_slot >= sz) { spin_unlock(&cap_lock); return -1; }
+
+    bool was_null = (cs[dest_slot].type == CAP_NULL);
+    if (was_null && tasks[cur].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock); return -1;
+    }
+
+    cs[dest_slot].type       = CAP_UNTYPED;
+    cs[dest_slot].rights     = src->rights;          /* never widened */
+    cs[dest_slot].object     = child_index;
+    cs[dest_slot].badge      = src->serial;          /* the derivation edge */
+    cs[dest_slot].serial     = serial;
+    cs[dest_slot].generation = rust_lineage_current(serial);
+    if (was_null) tasks[cur].caps_in_use++;
+
+    spin_unlock(&cap_lock);
+    return 0;
+}
+
 bool cap_transfer(uint32_t dest_slot, uint32_t src_slot) {
     spin_lock(&cap_lock);
     if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
@@ -866,7 +947,7 @@ bool cap_move(uint32_t dest_slot, uint32_t src_slot) {
  * Returns false on a missing/invalid source, an out-of-range slot, a missing
  * cspace, or when the target is at its capability ceiling. */
 bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
-    if (target_pid <= 0 || target_pid >= MAX_TASKS) return false;
+    if (target_pid <= 0 || target_pid >= g_max_tasks) return false;
     if (src_slot >= CNODE_SIZE || dest_slot >= CNODE_SIZE) return false;
 
     spin_lock(&cap_lock);
@@ -995,8 +1076,8 @@ bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint3
  * in the parent.
  */
 int cap_clone_cspace(int parent, int child) {
-    if (parent <= 0 || parent >= MAX_TASKS) return -1;
-    if (child  <= 0 || child  >= MAX_TASKS) return -1;
+    if (parent <= 0 || parent >= g_max_tasks) return -1;
+    if (child  <= 0 || child  >= g_max_tasks) return -1;
     if (parent == child) return -1;
 
     spin_lock(&cap_lock);
@@ -1102,7 +1183,7 @@ int cap_clone_cspace(int parent, int child) {
  * FORK_CSPACE arms give: a reader diffing them against the real path should see
  * two policies over one walk, not two different algorithms. */
 void cap_exec_mutate_cspace(int t) {
-    if (t <= 0 || t >= MAX_TASKS) return;
+    if (t <= 0 || t >= g_max_tasks) return;
 
     spin_lock(&cap_lock);
     capability_t *cs = tasks[t].cspace;
@@ -1182,9 +1263,30 @@ bool cap_revoke(uint32_t slot) {
      * another task's CNode could outlive its parent. The whole sweep runs under
      * cap_lock so the snapshot of tasks[] is stable.
      */
-    cspace_desc_t spaces[MAX_TASKS + 1];
+    /* THE SWEEP'S DESCRIPTOR BUFFER, ALLOCATED RATHER THAN ON THE STACK.
+     *
+     * `cspace_desc_t spaces[MAX_TASKS + 1]` until 2026-08-30, which is 24 bytes
+     * per task on the KERNEL STACK -- and the kernel stack is 32 KiB. Measured
+     * at the ceilings this project has actually shipped:
+     *
+     *     MAX_TASKS  256 ->  6,168 B   19% of a kernel stack
+     *                512 -> 12,312 B   38%
+     *               1024 -> 24,600 B   75%
+     *               2048 -> 49,176 B  150%  -- overflow
+     *
+     * So this array, not the TCB table, was the thing that would have decided how
+     * far the task ceiling could go, and nobody had measured it. It is also why a
+     * runtime task count could only ever have adjusted the ceiling DOWNWARD while
+     * it stayed here: a count above MAX_TASKS would have overrun a stack array.
+     *
+     * One buffer, allocated at boot for g_max_tasks + 1 entries, shared by every
+     * sweep. Sharing is safe by the lock this function already requires: the
+     * whole sweep runs under cap_lock, which is what makes its snapshot of
+     * tasks[] stable in the first place, so two sweeps cannot be in flight. The
+     * +1 is the kernel root cnode, which is not any task's cspace. */
+    cspace_desc_t *spaces = g_revoke_spaces;
     uint32_t nspaces = 0;
-    for (int t = 0; t < MAX_TASKS; t++) {
+    for (int t = 0; t < g_max_tasks; t++) {
         if (tasks[t].state == 0 || !tasks[t].cspace) continue;
         spaces[nspaces].caps = tasks[t].cspace;
         spaces[nspaces].size = tasks[t].cspace_size ? tasks[t].cspace_size : CNODE_SIZE;

@@ -277,7 +277,7 @@ static void wire_child_stdio(int child, int caller, uint32_t spec) {
     tasks[child].stdio_flags = 0;
     if (spec == 0) return;
 
-    if (caller <= 0 || caller >= MAX_TASKS) return;
+    if (caller <= 0 || caller >= g_max_tasks) return;
     capability_t *pcs = tasks[caller].cspace;     /* spawner */
     capability_t *ccs = tasks[child].cspace;      /* child   */
     if (!pcs || !ccs) return;
@@ -380,7 +380,7 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
     }
 
     int new_id = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
+    for (int i = 1; i < g_max_tasks; i++) {
         if (tasks[i].state == 0) {
             new_id = i;
             break;
@@ -475,7 +475,7 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
  * cspace slot at or above 16, clear of the reserved low slots, with a fresh
  * serial so cap_lookup accepts it. No-op for the kernel/idle spawner. */
 static void grant_child_tcb_cap(int spawner, int pid) {
-    if (spawner <= 0 || spawner >= MAX_TASKS || pid <= 0 || pid >= MAX_TASKS) return;
+    if (spawner <= 0 || spawner >= g_max_tasks || pid <= 0 || pid >= g_max_tasks) return;
     capability_t *cs = tasks[spawner].cspace;
     if (!cs) return;
     for (uint32_t s = 16; s < tasks[spawner].cspace_size; s++) {
@@ -681,7 +681,7 @@ int do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index) {
 void h_fork(struct interrupt_frame64 *r) {
     extern uint64_t pml4[];
     int parent = get_current_task();
-    if (parent <= 0 || parent >= MAX_TASKS) { r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return; }
+    if (parent <= 0 || parent >= g_max_tasks) { r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return; }
 
     uint64_t parent_cr3 = tasks[parent].cr3;
     if (parent_cr3 == 0) { r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return; }
@@ -700,7 +700,7 @@ void h_fork(struct interrupt_frame64 *r) {
     spawn_stage_acquire();
 
     int child = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
+    for (int i = 1; i < g_max_tasks; i++) {
         if (tasks[i].state == 0) { child = i; break; }
     }
     if (child < 0) {
@@ -1020,7 +1020,7 @@ static void exec_into_armed_image(void) {
  * exec tail. Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
 void h_exec_named(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     if (!r->rbx) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     char name[32];
@@ -1065,7 +1065,7 @@ void h_exec_named(struct interrupt_frame64 *r) {
  * Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
 void h_exec_image(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     spawn_stage_acquire();
     int rc = arm_image_from_user(r->rbx, r->rcx, 0);
@@ -1108,7 +1108,7 @@ void h_spawn_image(struct interrupt_frame64 *r) {
     int pid = do_spawn_charged((uint32_t)r->r8, ut);   /* consumes the armed image */
     g_args_argc = 0;            /* drop staging if the spawn failed before consuming it */
     spawn_stage_release();
-    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;
+    if (pid > 0 && pid < g_max_tasks) tasks[pid].spawn_arg = r->rdx;
     r->rax = (uint32_t)pid;
 }
 
@@ -1150,7 +1150,7 @@ void h_spawn(struct interrupt_frame64 *r) {
     spawn_stage_release();
     /* Hand the child its one-word spawn argument (edx), retrievable via
      * SYS_SPAWN_ARG. Zero for callers that don't pass one. */
-    if (pid > 0 && pid < MAX_TASKS) tasks[pid].spawn_arg = r->rdx;
+    if (pid > 0 && pid < g_max_tasks) tasks[pid].spawn_arg = r->rdx;
     /* Don't switch to the child here: do_spawn returns with the caller restored
      * as the current task, and the child (runnable) is picked up by the timer.
      * The old cooperative schedule() mis-handles a ring-3 caller mid-syscall. */

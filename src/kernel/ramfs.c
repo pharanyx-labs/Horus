@@ -100,7 +100,6 @@ int ramfs_write(int fd, const void* buf, size_t len) {
 int ramfs_create(const char* name, int mode) { (void)mode;
     if (find_file(name) >= 0) return -1;
 
-    extern tcb_t tasks[MAX_TASKS];
 
     for (int i = 0; i < MAX_FILES; i++) {
         if (!ramfs_files[i].in_use) {

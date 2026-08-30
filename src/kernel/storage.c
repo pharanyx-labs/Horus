@@ -1719,11 +1719,10 @@ int storage_rekey(const char *new_password, size_t plen)
 
 int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len)
 {
-    extern tcb_t tasks[MAX_TASKS];
 
     extern uint8_t kernel_pepper[16];
 
-    if (get_current_task() < 0 || get_current_task() >= MAX_TASKS) return -1;
+    if (get_current_task() < 0 || get_current_task() >= g_max_tasks) return -1;
 
     
     if (get_current_task() != 0 && !has_encrypted_storage_cap()) {
@@ -1753,9 +1752,8 @@ int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t ma
 
 int do_rotate_keys(void)
 {
-    extern tcb_t tasks[MAX_TASKS];
 
-    if (get_current_task() < 0 || get_current_task() >= MAX_TASKS) return -1;
+    if (get_current_task() < 0 || get_current_task() >= g_max_tasks) return -1;
     if (!tasks[get_current_task()].has_file_key) return -2;
     if (get_current_task() != 0 && !has_encrypted_storage_cap()) return -4;
 

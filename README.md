@@ -113,10 +113,11 @@ The path from here is ordered by assurance rather than by demo value:
 3. ~~**Kernel objects from untyped memory.**~~ **Done (2026-07-27):** `CAP_UNTYPED` +
    `SYS_RETYPE` replaced the fixed `.bss` tables for cspaces, endpoints and notifications, so
    creating a kernel object is an exercise of authority the graph describes and kernel memory
-   is accounted per task, see **[I-7]**. Since 2026-08-30 that includes creating a **task**: a
-   spawn carves the child's cspace from the caller's own untyped, so a task holding none cannot
-   spawn (**S57**). `tasks[]` is the remaining table, and what remains of it is a compile-time
-   ceiling rather than an authority question.
+   is accounted per task, see **[I-7]** (closed 2026-08-30). Since then that includes creating a
+   **task**: a spawn carves the child's cspace from the caller's own untyped, so a task holding
+   none cannot spawn (**S57**), and `SYS_UNTYPED_SPLIT` hands a delegate a bounded share rather
+   than the whole budget (**S58**). The TCB table is carved from untyped too, and how many tasks
+   exist is derived at boot from the memory that is there.
 4. **Real virtual-memory objects.** Frame capabilities, shared memory, `mmap`.
 5. **Userspace services on top:** a VFS with multiple filesystems, a network stack as a
    ring-3 server, a process and session model, dynamic linking.

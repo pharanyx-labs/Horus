@@ -87,7 +87,6 @@ static bool has_console_cap(void) {
 }
 #endif
 
-extern tcb_t tasks[MAX_TASKS];
 
 #ifdef DEBUG_SHELL
 char cmd_history[HISTORY_SIZE][CMD_MAX];
@@ -149,7 +148,7 @@ int process_user_command(const char *cmd) {
         println("PID  UID    NAME            STATE  HEAP      CAPS  FLAGS");
         set_text_colour(0x0F);
         int cur = get_current_task();
-        for (int i = 0; i < MAX_TASKS; i++) {
+        for (int i = 0; i < g_max_tasks; i++) {
             if (tasks[i].state != 0) {
                 if (!can_see_all && i != cur) continue;
                 if (i < 10) print(" ");
@@ -220,7 +219,7 @@ int process_user_command(const char *cmd) {
         while (*p == ' ') p++;
         while (*p >= '0' && *p <= '9') { id = id * 10 + (*p - '0'); p++; }
 
-        if (id == 0 || id >= MAX_TASKS) {
+        if (id == 0 || id >= g_max_tasks) {
             println("Invalid task id");
             return -1;
         }
@@ -230,7 +229,7 @@ int process_user_command(const char *cmd) {
         }
         if (tasks[id].waiter >= 0) {
             int w = tasks[id].waiter;
-            if (w < MAX_TASKS && tasks[w].state == TASK_BLOCKED_WAIT) {
+            if (w < g_max_tasks && tasks[w].state == TASK_BLOCKED_WAIT) {
                 tasks[w].state        = TASK_RUNNABLE;
                 tasks[w].runnable_ctx = 1;
             }

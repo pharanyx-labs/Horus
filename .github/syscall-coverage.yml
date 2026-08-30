@@ -271,6 +271,11 @@ covered:
   - SYS_TASK_RESUME
   - SYS_RETYPE
   - SYS_UNTYPED_INFO
+  # Added 2026-08-30 with SYS_UNTYPED_SPLIT itself. captest section 14 splits a
+  # sub-region off its own CAP_UNTYPED, retypes from the child, and checks the
+  # parent was charged -- so the handler is entered on the SUCCESS path as well
+  # as by its four refusals, which is the stronger form of covered.
+  - SYS_UNTYPED_SPLIT
   - SYS_IPC_RECV_BLOCK
 
 uncovered:

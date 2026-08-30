@@ -184,6 +184,7 @@ struct audit_event {
 #define SYS_FRAME_PAGES       100   /* (frame_slot) -> pages (>0); how many contiguous pages the CAP_FRAME at `frame_slot` names. Authority is that capability; no rights floor, because the size is not the contents. Discloses nothing SYS_MAP_FRAME does not already disclose to the same holder. */
 #define SYS_DEVICE_INFO       102   /* (dev_slot, struct dev_info*) -> 0; what the device named by the CAP_IO_DEVICE at dev_slot declares: ids, MMIO ranges, port ranges, IRQ lines. CAP_IO_DEVICE + READ in dev_slot, and it reports THAT device only. */
 #define SYS_SHLIB_INFO        108   /* (frame_slot, struct shlib_info*) -> 0; where the shared library is loaded. CAP_FRAME + READ naming one of the library's own TEXT frames -- the base is randomised per boot, and telling an uncapable caller would defeat that. */
+#define SYS_UNTYPED_SPLIT     109   /* (src_slot, dest_slot, bytes) -> 0; carve `bytes` off the CAP_UNTYPED at `src_slot` and mint a CAP_UNTYPED naming the sub-region into `dest_slot` (roadmap 0.3). The bytes come OUT OF THE PARENT -- its watermark advances past them -- so a split spends budget rather than creating it, and the child capability is DERIVED (own serial, parent's serial as badge) so revoking the parent sweeps it. Needs CAP_UNTYPED + WRITE at `src_slot`; rights are the parent's and are never widened. This is what makes S57's "a task given a small region can spawn a bounded number of times" expressible: before it, granting a CAP_UNTYPED named the SAME region, so a delegate shared its grantor's whole budget. */
 #define SYS_DEVICE_ENABLE     103   /* (dev_slot, flags) -> 0; set the named device's PCI decode bits (DEV_ENABLE_*). CAP_IO_DEVICE + WRITE. */
 #define SYS_MSI_REGISTER      107   /* (dev_slot, notif_slot, badge) -> 0; route the named device's MSI to a notification. No vector argument, deliberately. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN if none. sys_wait_notify's non-blocking twin; same CAP_NOTIFICATION + READ gate. */
@@ -700,6 +701,19 @@ static inline int sys_retype_sized(int untyped_slot, int count, int dest_slot,
 
 /* How much of the region named at `untyped_slot` (needs READ) is left. A budget
  * a task cannot observe is one it cannot manage. */
+/* Carve `bytes` off the CAP_UNTYPED at `src_slot`, minting a CAP_UNTYPED naming
+ * the sub-region into `dest_slot`. Returns 0, or a negative SYS_ERR_*.
+ *
+ * The bytes come out of the parent: its budget shrinks by what the child gets,
+ * so two tasks holding parent and child cannot together carve more than the
+ * parent could alone. This is how a supervisor hands a task a BOUNDED share of
+ * kernel memory -- and therefore a bounded number of tasks it can create (S57),
+ * since a task's cspace is charged to the untyped it holds. Granting a
+ * CAP_UNTYPED instead shares the whole region. */
+static inline int sys_untyped_split(int src_slot, int dest_slot, uint64_t bytes) {
+    return (int)syscall(SYS_UNTYPED_SPLIT, (uint32_t)src_slot, (uint32_t)dest_slot, bytes);
+}
+
 static inline int sys_untyped_info(int untyped_slot, struct untyped_info *out) {
     return (int)syscall(SYS_UNTYPED_INFO, (uint32_t)untyped_slot,
                         (uint64_t)(uintptr_t)out, 0);

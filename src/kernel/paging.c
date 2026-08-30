@@ -1,7 +1,6 @@
 #include "kernel.h"
 
 extern uint8_t stack_top[];
-extern tcb_t tasks[MAX_TASKS];
 
 #define PAGE_PRESENT   (1 << 0)
 #define PAGE_WRITE     (1 << 1)
@@ -775,6 +774,23 @@ void paging_init(void) {
  * A compile-time check rather than a runtime one: this is arithmetic over
  * constants, and the failure it prevents is a slot aliasing the next PDPT
  * entry's address space, which has no owner and no fault to report. */
+/* Does a kernel-stack region of `n` slots fit in its one PDPT entry (1 GiB)?
+ *
+ * A RUNTIME CHECK now, because the task count is runtime. It was a
+ * _Static_assert against MAX_TASKS, which stopped being the operative number
+ * when g_max_tasks started deciding how many slots are addressed. tasks_init
+ * HALTS on a false answer rather than clamping: a task whose slot fell outside
+ * the region would alias another task's kernel stack, which is S20 by
+ * construction -- exactly what KSTACK_SLOT_INDEX_TRUNC exists to reproduce. */
+int kstack_region_fits(int n)
+{
+    if (n <= 0) return 0;
+    return (uint64_t)n * KSTACK_SLOT_BYTES <= (1ULL << 30);
+}
+
+/* The PROVISIONING check: MAX_TASKS slots must fit even though g_max_tasks
+ * decides how many are used, because the region is laid out for the maximum.
+ * kstack_region_fits() above is the runtime companion. */
 _Static_assert(KSTACK_SLOT_BYTES * MAX_TASKS <= (1ULL << 30),
                "the kernel-stack region is one PDPT entry (1 GiB); "
                "MAX_TASKS * KSTACK_SLOT_BYTES no longer fits");
@@ -813,7 +829,7 @@ static uint64_t kstack_slot_base(uint32_t id) {
 /* The guard is the first page of the slot; the stack sits immediately above it
  * and grows DOWN onto it. Exposed for the self-test, and used by the binder. */
 uint64_t kstack_guard_vaddr(int id) {
-    if (id < 0 || id >= MAX_TASKS) return 0;
+    if (id < 0 || id >= g_max_tasks) return 0;
     return kstack_slot_base((uint32_t)id);
 }
 
@@ -882,7 +898,7 @@ static void kstack_region_init(void) {
  * kstack_region_init has already run, so this never has to build the region's
  * page directory -- only the tables beneath it and the leaves. */
 static uint64_t kstack_bind(uint32_t id) {
-    if (id >= MAX_TASKS) return 0;
+    if (id >= (uint32_t)g_max_tasks) return 0;
     uint64_t base  = kstack_slot_base(id);
     uint64_t stack = base + PAGE_SIZE;          /* skip the guard */
 
@@ -942,8 +958,17 @@ static uint64_t kstack_bind(uint32_t id) {
  * a range test that disagreed with the region's real extent would reject live
  * stacks or admit addresses that are not stacks at all. */
 static int kstack_region_contains(uint64_t vaddr) {
+    /* g_max_tasks, not MAX_TASKS: the bound is what this boot PROVISIONED, and a
+     * slot above it is never bound, so an address there is genuinely not a kernel
+     * stack. That makes the test tighter rather than looser -- a pointer that
+     * walked past the last live slot is now refused by the range check as well as
+     * by the page tables, where before it would have been admitted by the range
+     * and caught only by kstack_addr_present.
+     *
+     * Safe before tasks_init: g_max_tasks is statically MAX_TASKS until then, so
+     * the early bound is the wider one and no live address is excluded. */
     return vaddr >= KSTACK_REGION_VMA &&
-           vaddr <  KSTACK_REGION_VMA + KSTACK_SLOT_BYTES * MAX_TASKS;
+           vaddr <  KSTACK_REGION_VMA + KSTACK_SLOT_BYTES * (uint64_t)g_max_tasks;
 }
 
 /* Is the region's mapping of `vaddr` present? The region is not an identity map
@@ -1197,7 +1222,7 @@ static int user_map_fresh_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t flag
  * the console server is pinned; see the RFC.) Returns 0 on success. */
 int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
                          uint64_t writable) {
-    if (task_id >= MAX_TASKS) return -1;
+    if (task_id >= (uint32_t)g_max_tasks) return -1;
     uint64_t pml4_phys = tasks[task_id].cr3;
     if (pml4_phys == 0) return -1;   /* task 0 / kernel address space: never a target */
 
@@ -1237,7 +1262,7 @@ int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
  * without that CPU first loading this CR3, which reloads the TLB anyway. */
 int user_map_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
                         uint32_t eff_rights) {
-    if (task_id >= MAX_TASKS) return -1;
+    if (task_id >= (uint32_t)g_max_tasks) return -1;
     uint64_t pml4_phys = tasks[task_id].cr3;
     if (pml4_phys == 0) return -1;   /* task 0 / kernel address space: never a target */
 
@@ -1276,7 +1301,7 @@ int user_map_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
  * frame capability for at all. Requiring the PTE to name the capability's own
  * frame makes the operation reach exactly what the caller was entitled to map. */
 int user_unmap_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t expect_phys) {
-    if (task_id >= MAX_TASKS) return -1;
+    if (task_id >= (uint32_t)g_max_tasks) return -1;
     uint64_t pml4_phys = tasks[task_id].cr3;
     if (pml4_phys == 0) return -1;
 
@@ -1303,7 +1328,7 @@ int user_unmap_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t expect_phys
  * The reclaim guard below also carries [G-10], which is the same slot reused
  * while another CPU still had its tables in CR3. */
 void create_user_pagedir(uint32_t task_id) {
-    if (task_id >= MAX_TASKS) return;
+    if (task_id >= (uint32_t)g_max_tasks) return;
     if (task_id == 0) {
         /* Task 0 runs on the kernel's own address space (cr3 = 0 means "keep the
          * kernel pml4"), but it still needs a kernel stack for the reaper/idle
@@ -1645,7 +1670,7 @@ void create_user_pagedir(uint32_t task_id) {
  *
  * The caller holds no lock; page_lock is taken here. */
 int clone_user_aspace(uint32_t child, uint64_t parent_cr3) {
-    if (child == 0 || child >= MAX_TASKS) return -1;
+    if (child == 0 || child >= (uint32_t)g_max_tasks) return -1;
     if (parent_cr3 == 0) return -1;
 
     spin_lock(&page_lock);
@@ -2024,7 +2049,7 @@ int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
      * the fault handler turns it into a SIGSEGV, rather than silently backing an
      * arbitrary address with a fresh page. */
     int tid_g = get_current_task();
-    if (tid_g <= 0 || tid_g >= MAX_TASKS ||
+    if (tid_g <= 0 || tid_g >= g_max_tasks ||
         /* The heap bounds are passed FULL WIDTH. They used to be cast to
          * uint32_t here while `rust_validate_page_fault` declares them u64
          * (finding [I-2], roadmap 1.5) -- so for a heap above 4 GiB the gate
@@ -2259,7 +2284,7 @@ uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr) {
  * absent or not a 4 KiB leaf. */
 int user_protect_page(uint64_t vaddr, int writable, int executable) {
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) return -1;
+    if (cur <= 0 || cur >= g_max_tasks) return -1;
     uint64_t cr3 = tasks[cur].cr3;
     if (cr3 == 0) return -1;
 
@@ -2294,7 +2319,7 @@ int user_protect_page(uint64_t vaddr, int writable, int executable) {
 static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int need_write) {
     if (n == 0) return 0;
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) return -1;
+    if (cur <= 0 || cur >= g_max_tasks) return -1;
     uint64_t ucr3 = tasks[cur].cr3;
     if (ucr3 == 0) return -1;
     if (!is_canonical_address(uaddr) || (uaddr + n) < uaddr) return -1;

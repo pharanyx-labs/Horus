@@ -95,12 +95,19 @@ minted by `init` and delegated to exactly the server that needs it. Remove the r
 **Security impact.** Makes the capability graph a *complete* description of authority, which
 is the precondition for any confinement, sandboxing, or MAC story.
 
-### 0.3 ◧ Kernel objects from untyped memory (`CAP_UNTYPED`) (**[I-7]**) *landed 2026-07-27*
+### 0.3 ✅ Kernel objects from untyped memory (`CAP_UNTYPED`) (**[I-7]**) *landed 2026-07-27, completed 2026-08-30*
 
-> **Marked `◧`, not `✅`, as of 2026-08-17.** The item's goal landed in full and is gated. But
-> `SECURITY.md` lists **[I-7]** as an open finding and `LIMITATIONS.md` §3.1 documents the
-> remainder, so a `✅` here made one finding carry two statuses in two files. The remainder is
-> named in "Not migrated" below and is revisited by 2.3.
+> **Marked `◧` from 2026-08-17 to 2026-08-30, and the rule that held it there was right.**
+> `SECURITY.md` listed **[I-7]** as open and `LIMITATIONS.md` §3.1 documented a remainder, so a
+> `✅` would have made one finding carry two statuses in two files. What changed is the finding:
+> the remainder closed in code, and this marker moved in the same commit.
+>
+> **A first attempt closed it by RECLASSIFICATION and was reverted.** The argument was that the
+> remaining `tasks[]` array is "a scale limitation, not a property anything asserts" -- true as
+> far as it went, and still a way of renaming a problem rather than fixing one. What landed
+> instead is the TCB table carved from untyped, the count derived at boot, and the
+> stack-allocated array that would actually have capped the ceiling moved off the stack. Worth
+> recording because the reclassifying version would have read almost identically in a changelog.
 
 **Problem.** `tasks[64]`, `endpoints[64]`, `notifications[64]`, `cspace_pool[64][256]` are
 `.bss` arrays under a hard 16 MiB linker ceiling. No retyping discipline, no per-task
@@ -187,13 +194,27 @@ all along — and a capability naming the task could not gate its *creation* in 
 nobody can hold one to a task that does not exist yet. The authority is the **resource**, and the
 resource is untyped memory, exactly as it is for every other kernel object here.
 
-**What is left is storage, not authority.** `tasks[]` is still a fixed array: a compile-time
-ceiling, now 256 rather than 64, tracked as a **scale** limitation (§3.1) rather than as a
-property anything asserts. Whether it is worth moving is an open question rather than an assumed
-yes — at `MAX_TASKS` 256 the table is 288 KiB against 7.4 MiB of `.bss` headroom, and the ceiling
-work established that this table was never what bound the ceiling. A `KOBJ_TASK` retyped from
-untyped would make the storage match the object model; it would not make any security property
-true that **S57** has not already made true.
+**And the bound that gate promised became mintable** (**S58**). S57 said "a task given a small
+region can spawn a bounded number of times", and nothing could give a task a small region:
+`SYS_CAP_GRANT` of a `CAP_UNTYPED` names the SAME region, so a delegate received its grantor's
+whole budget. `SYS_UNTYPED_SPLIT` carves a sub-region and charges the parent's watermark for it.
+The overclaim was shipped by the commit that introduced the gate, which is why it is named here
+rather than quietly corrected.
+
+**The storage half closed too, and the ceiling with it.** `tasks[]` is carved from the kernel's
+untyped reserve rather than declared in `.bss` — the last object class outside the retyping
+discipline — and `g_max_tasks` is derived at boot from the reserve that exists, with 127 bounds
+across fourteen files reading it. `MAX_TASKS` is the provisioning constant and nothing branches
+on it.
+
+**What actually capped the ceiling was not `tasks[]`.** The revocation sweep held
+`cspace_desc_t spaces[MAX_TASKS + 1]` on the KERNEL STACK: 19% of one at 256 tasks, 75% at 1024,
+an overflow at 2048. Nobody had measured it, and it is why a runtime count could only ever have
+adjusted the ceiling downward while it stayed there. It is one allocated buffer now, shared under
+the `cap_lock` the sweep already holds throughout. **This is the second time in this item that
+the named obstacle was not the real one** — the first was `tasks[]` being blamed for
+`per_task_kstacks`, 72 KiB against 4 MiB — and both times the answer came from measuring rather
+than from reading the code's own account of itself.
 
 ---
 
@@ -1500,7 +1521,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 59 properties name a witness that resolves.
+**empty**, all 60 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1539,7 +1560,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 176 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 80 of them control arms that must reproduce a defect |
+| ✅ | 177 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 81 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---
@@ -1561,13 +1582,13 @@ change remains finding a second reviewer for the capability paths; automated ver
 been pushed about as far as it goes without one, and 4.1 now says so without also asking for a
 `CODEOWNERS` repair that landed a month ago.
 
-**Track 0 is complete** (0.1, 0.2, 0.3 all landed 2026-07-27), with 0.3 marked `◧` for the
-`tasks[]` remainder that keeps **[I-7]** open — which since 2026-08-30 is *storage alone*: the
-memory half closed with the task ceiling going 64 → 256, and the authority half with **S57**,
-where creating a task became an exercise of untyped authority rather than something every task
-could do for free. The object model is true: IPC is
-capability-addressed, ambient root authority is retired, and creating a kernel object is an
-exercise of authority the capability graph describes.
+**Track 0 is complete** (0.1, 0.2, 0.3 all landed 2026-07-27; 0.3 completed 2026-08-30 when
+**[I-7]** closed). The object model is true: IPC is capability-addressed, ambient root authority
+is retired, and creating a kernel object is an exercise of authority the capability graph
+describes — including creating a **task**, which was the last exception (**S57**), with the
+budget for it subdividable so the bound is expressible (**S58**). The TCB table is carved from
+untyped like every other object class, and the task count is derived at boot from the reserve
+that exists rather than compiled in.
 
 **Track 1 is complete** except 1.2 and 1.7, both `◧`: 1.1 landed 2026-08-11, then 1.3, 1.4, 1.5,
 1.55 and 1.6 followed. 1.2's performance goal was met by other means and its remaining reason to

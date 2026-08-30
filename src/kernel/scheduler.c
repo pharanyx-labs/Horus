@@ -1,6 +1,52 @@
 #include "kernel.h"
 
-tcb_t tasks[MAX_TASKS];
+/* THE TASK TABLE, CARVED FROM UNTYPED MEMORY (roadmap 0.3, finding [I-7]).
+ *
+ * `tcb_t tasks[MAX_TASKS]` until 2026-08-30: 288 KiB of `.bss` at MAX_TASKS 256,
+ * present in the image whether one task ran or none, and the last kernel object
+ * class that was not carved from an untyped region. Every other one -- cspaces,
+ * endpoints, notifications, frames -- had moved; the TCB was the exception the
+ * finding named, and every document in this tree described moving it as "its own
+ * change with its own tests" for a month.
+ *
+ * IT IS A POINTER, NOT AN ARRAY OF POINTERS, and that is what makes this a
+ * tractable change rather than a rewrite. `tasks[id].field` is identical syntax
+ * over a pointer, so all 785 references in this tree compile unchanged; an array
+ * of per-task pointers would have been `tasks[id]->field` at every one of them,
+ * and would have put an extra indirection on the scheduler's hot path and on
+ * every trap frame for no property anybody asked for.
+ *
+ * ONE CONTIGUOUS BLOCK, FROM THE KERNEL RESERVE. A TCB must exist before any
+ * task does -- task 0 is created by scheduler_init, before ring 3 exists at all
+ * -- so the table is kernel bootstrap memory in exactly the sense the per-task
+ * cspaces are, and comes from the same non-delegable UNTYPED_KERNEL region. No
+ * ring-3 allocation pattern can starve it, which is the property that region
+ * exists for.
+ *
+ * What a task COSTS its creator is unchanged and is charged elsewhere: the
+ * child's cspace comes out of the caller's own region (S57). The table is the
+ * kernel's provisioning; the cspace is the caller's bill.
+ *
+ * NULL until tasks_init() runs, and that is safe by the hardware rather than by
+ * a check: nothing between the start of kernel_main and untyped_init touches
+ * tasks[] (verified function by function, not assumed), and a stray access
+ * through a NULL base faults on an unmapped low address immediately. A silent
+ * wrong answer is not among the outcomes. */
+tcb_t *tasks;
+
+/* HOW MANY TASKS THIS BOOT PROVISIONED (roadmap 0.3, finding [I-7]).
+ *
+ * Every runtime decision reads this; MAX_TASKS is now only the compile-time
+ * PROVISIONING input that sizes the reserve, and nothing branches on it. The
+ * difference matters because "how many tasks can exist" stopped being a property
+ * of the image and became a property of the machine: tasks_init() derives this
+ * from the kernel reserve that untyped_init actually built, which is itself
+ * sized from the physical pool E820 reported.
+ *
+ * `int`, matching the `int` task ids every scheduler loop uses, so a bound test
+ * is a plain signed comparison with no cast at the call site. The few unsigned
+ * callers cast explicitly, which is visible rather than silent. */
+int g_max_tasks = MAX_TASKS;
 int current_task = 0;
 int percpu_current_task[MAX_CPUS];
 
@@ -106,7 +152,9 @@ volatile int percpu_real_task[MAX_CPUS];
  * was in flight, possibly including a lock it still holds. Fix the abandonment
  * first; treat a stale claim as a symptom to be diagnosed, never as a value to be
  * quietly corrected. */
-int task_running_cpu[MAX_TASKS];
+/* Which CPU currently claims each task, allocated with the task table rather
+ * than declared. See tasks_init. */
+int *task_running_cpu;
 
 /* ---- THE CLAIM ENDS LATER THAN THE SWITCH DOES -----------------------------
  *
@@ -195,15 +243,22 @@ int task_running_cpu[MAX_TASKS];
  *
  * `make smoke-task-ceiling-control` requires TASKCEIL_SELFTEST to FAIL under
  * this flag with `the witness aliases`, and `make smoke-task-ceiling` must go
- * red under it. Kept as one element rather than a bare uint64_t so the extern
- * declaration in kernel.h is the same in both arms -- an arm that changed the
- * type would be testing the declaration as much as the defect. */
-volatile uint64_t g_kstack_inflight[1];
+ * red under it.
+ *
+ * THE SAME TYPE AS THE SHIPPED ARM, which is the discipline this arm has always
+ * kept and which had to be re-established when the witness stopped being a
+ * `.bss` array: it was `volatile uint64_t g_kstack_inflight[1]` against a
+ * shipped pointer, so the arm did not COMPILE -- and a control arm that does not
+ * build is a gate that cannot fail, which is worse than one that fails for the
+ * wrong reason. Both arms are now a pointer into the same allocation, and the
+ * defect is purely the word/bit selection below: strictly tighter than before,
+ * because the arm no longer differs from the shipped kernel in its storage. */
+volatile uint64_t *g_kstack_inflight;
 #define KSTACK_INFLIGHT_WORD(t)  (g_kstack_inflight[0])
 #define KSTACK_INFLIGHT_BIT(t)   (1ULL << (t))
 #else
 #define KSTACK_INFLIGHT_WORDS  ((MAX_TASKS + 63) / 64)
-volatile uint64_t g_kstack_inflight[KSTACK_INFLIGHT_WORDS];
+volatile uint64_t *g_kstack_inflight;
 
 /* The bit for task `t`. Both halves derived from the same expression, so a
  * future width change cannot move one and not the other. */
@@ -229,12 +284,12 @@ static inline int kstack_inflight_test(int t)
  * to set the bit for a HIGH task and ask about its LOW alias. */
 void kstack_inflight_selftest_set(int t)
 {
-    if (t <= 0 || t >= MAX_TASKS) return;
+    if (t <= 0 || t >= g_max_tasks) return;
     __sync_fetch_and_or(&KSTACK_INFLIGHT_WORD(t), KSTACK_INFLIGHT_BIT(t));
 }
 void kstack_inflight_selftest_clear(int t)
 {
-    if (t <= 0 || t >= MAX_TASKS) return;
+    if (t <= 0 || t >= g_max_tasks) return;
     __sync_fetch_and_and(&KSTACK_INFLIGHT_WORD(t), ~KSTACK_INFLIGHT_BIT(t));
 }
 #endif
@@ -244,7 +299,7 @@ void kstack_inflight_selftest_clear(int t)
  * in exactly one place. */
 int kstack_inflight_task(int t)
 {
-    if (t <= 0 || t >= MAX_TASKS) return 0;
+    if (t <= 0 || t >= g_max_tasks) return 0;
     return kstack_inflight_test(t);
 }
 
@@ -332,8 +387,82 @@ struct endpoint endpoints[MAX_ENDPOINTS];
  * compare small deltas. */
 uint64_t system_ticks = 0;
 
+/* Carve the task table out of the kernel's untyped reserve. Called from
+ * kernel_main immediately after untyped_init(), which is the first moment an
+ * arena exists, and before anything can reference a task.
+ *
+ * Halts rather than returning an error: every task in the system lives here, so
+ * a boot that cannot allocate it has nothing to fall back to and nowhere to
+ * report. untyped_init sizes the reserve to include this block by construction,
+ * so the failure is unreachable rather than a resource limit -- the same
+ * bargain, and the same halt, that create_task makes for a cspace. */
+void tasks_init(void) {
+    void *tbl = kobj_alloc(UNTYPED_KERNEL, KOBJ_TASKTABLE, 0, 0);
+    if (!tbl) { for (;;) { __asm__ volatile("cli; hlt"); } }
+    tasks = (tcb_t *)tbl;
+
+#ifdef SMP
+    /* GUARDED TO MATCH THEIR DECLARATIONS, which have always been inside this
+     * same #ifdef: `task_running_cpu` records a cross-CPU claim and
+     * `g_kstack_inflight` is the S20 witness for two CPUs on one kernel stack --
+     * a uniprocessor kernel has neither, and nothing in one reads either.
+     *
+     * Allocating them unconditionally broke the SMP=0 build outright, at the
+     * LINKER rather than the compiler, and `make SMP=0` is the regression gate
+     * that caught it. CLAUDE.md keeps that build gated precisely because it has
+     * silently broken before; here it broke loudly, which is the good case. */
+    void *rcp = kobj_alloc(UNTYPED_KERNEL, KOBJ_TASK_RUNNING_CPU, 0, 0);
+    void *ifl = kobj_alloc(UNTYPED_KERNEL, KOBJ_KSTACK_INFLIGHT, 0, 0);
+    if (!rcp || !ifl) { for (;;) { __asm__ volatile("cli; hlt"); } }
+    task_running_cpu  = (int *)rcp;
+    g_kstack_inflight = (volatile uint64_t *)ifl;
+#endif
+
+    /* The capability layer's own per-boot table (the revocation sweep's
+     * descriptor buffer). Allocated HERE, with the rest, and before the capacity
+     * below is derived -- untyped_reserve_task_capacity answers from what the
+     * reserve has LEFT, so a table carved afterwards would be capacity this
+     * function had already promised to tasks. */
+    cap_tables_init();
+
+    /* THE COUNT COMES FROM THE MEMORY, NOT FROM THE CONSTANT.
+     *
+     * untyped_reserve_task_capacity() answers how many tasks the reserve
+     * untyped_init actually built can carry -- and that reserve is sized from the
+     * physical pool E820 reported, so this is a property of the machine. On a
+     * boot where the pool is small the system provisions fewer tasks and every
+     * bound in the kernel follows; MAX_TASKS is the provisioning input and
+     * nothing branches on it.
+     *
+     * Clamped to the provisioned maximum because the three tables above were
+     * sized for it before this number existed -- allocation has to precede the
+     * count that the allocation is measured against, and the clamp is what makes
+     * that ordering safe rather than a buffer overrun waiting for a large pool.
+     * At least one task, because task 0 is the kernel's own. */
+    int cap = untyped_reserve_task_capacity();
+    if (cap > MAX_TASKS) cap = MAX_TASKS;
+    if (cap < 1)         cap = 1;
+    g_max_tasks = cap;
+
+    /* The kernel-stack region is addressed by task id and is one PDPT entry.
+     * This was a _Static_assert against MAX_TASKS; with the count runtime it has
+     * to be a runtime check, and it is a HALT rather than a clamp: a task whose
+     * stack slot fell outside the region would alias another task's stack, which
+     * is S20 by construction. */
+    if (!kstack_region_fits(g_max_tasks)) {
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+
+#ifdef SMP
+    for (int i = 0; i < g_max_tasks; i++) task_running_cpu[i] = -1;
+    /* One word under the legacy arm, ceil(n/64) otherwise -- and the loop is
+     * written so the arm's single word is zeroed too rather than skipped. */
+    for (int i = 0; i < (g_max_tasks + 63) / 64; i++) g_kstack_inflight[i] = 0;
+#endif
+}
+
 void scheduler_init(void) {
-    for (int i = 0; i < MAX_TASKS; i++) {
+    for (int i = 0; i < g_max_tasks; i++) {
         tasks[i].state = 0;
         tasks[i].esp = 0;
         tasks[i].eip = 0;
@@ -412,7 +541,7 @@ void scheduler_init(void) {
 
 void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
                  uint32_t premap_pages, uint32_t untyped_index) {
-    if (id >= MAX_TASKS) return;
+    if (id >= g_max_tasks) return;
     if (untyped_index >= MAX_UNTYPED) return;
 
     /* Record the (possibly ASLR-randomized) image base before create_user_pagedir
@@ -433,7 +562,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
      * its previous occupant. With the lock in task_teardown above, this should
      * already hold -- the assertion under SCHED_INVARIANTS below says so out loud
      * rather than letting a silent inheritance become the next four-day search. */
-    if (id > 0 && id < MAX_TASKS) { task_running_cpu[id] = -1; REL_LOG(id, this_cpu(), "create_task/reuse"); }
+    if (id > 0 && id < g_max_tasks) { task_running_cpu[id] = -1; REL_LOG(id, this_cpu(), "create_task/reuse"); }
 #endif
 #if defined(SMP) && defined(SCHED_INVARIANTS)
     /* ---- A REUSED SLOT MUST NOT INHERIT A CLAIM ----------------------------
@@ -452,7 +581,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
      * probe that "fired zero times in 20 boots". Twenty boots against a ~2% event
      * is roughly 33% power: that measurement could not have distinguished absence
      * from bad luck, and it was read as absence. */
-    if (id > 0 && id < MAX_TASKS && task_running_cpu[id] >= 0) {
+    if (id > 0 && id < g_max_tasks && task_running_cpu[id] >= 0) {
         print("\nPANIC: reused task slot "); print_decimal((uint64_t)id);
         print(" still claimed by cpu "); print_decimal((uint64_t)task_running_cpu[id]);
         print(" (that cpu is running ");
@@ -766,7 +895,7 @@ void kfault_dec(int v)         { panic_dec(v); }
  * thing that runs off the end of .bss. */
 void kfault_task(int t) {
     kfault_dec(t);
-    if (t < 0 || t >= MAX_TASKS) return;
+    if (t < 0 || t >= g_max_tasks) return;
     panic_str(" '");
     for (unsigned i = 0; i < sizeof(tasks[t].name) && tasks[t].name[i]; i++)
         panic_ch(tasks[t].name[i]);
@@ -806,7 +935,7 @@ void kfault_pf_err(uint64_t err) {
 void kfault_claims(int task) {
 #ifdef SMP
     panic_str("\n  claim: task ");     panic_dec(task);
-    panic_str(" running_cpu=");        panic_dec((task >= 0 && task < MAX_TASKS)
+    panic_str(" running_cpu=");        panic_dec((task >= 0 && task < g_max_tasks)
                                                  ? task_running_cpu[task] : -1);
     panic_str("  percpu_current=[");
     for (int c = 0; c < MAX_CPUS; c++) {
@@ -902,7 +1031,7 @@ static void watchdog_dump(int seq) {
 #else
     panic_str("uniprocessor; current="); panic_dec(current_task); panic_str("\n");
 #endif
-    for (int t = 0; t < MAX_TASKS; t++) {
+    for (int t = 0; t < g_max_tasks; t++) {
         if (tasks[t].state == 0) continue;
         panic_str("task "); panic_dec(t);
         panic_str(" '");
@@ -1115,7 +1244,7 @@ static inline uint64_t task_kstack_top(int id) {
  * are the 64-bit user segments, IF is set so the task is itself preemptible,
  * and all GP registers start zeroed. */
 void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
-    if (id < 0 || id >= MAX_TASKS) return;
+    if (id < 0 || id >= g_max_tasks) return;
     uint64_t top = task_kstack_top(id) & ~0xFULL;
     struct interrupt_frame64 *f =
         (struct interrupt_frame64 *)(top - sizeof(struct interrupt_frame64));
@@ -1221,7 +1350,7 @@ static unsigned        g_claimlog_i[MAX_TASKS];
 static volatile unsigned g_claimlog_clock;
 
 static void claimlog(int t, int cpu, int val, const char *site) {
-    if (t <= 0 || t >= MAX_TASKS) return;
+    if (t <= 0 || t >= g_max_tasks) return;
     unsigned i = g_claimlog_i[t] % CLAIMLOG_N;
     g_claimlog[t][i].seq  = __sync_add_and_fetch(&g_claimlog_clock, 1);
     g_claimlog[t][i].cpu  = cpu;
@@ -1242,7 +1371,7 @@ static void claimlog_dump(int t) {
     }
 }
 static void claim_note(int t, int c, const char *site) {
-    if (t > 0 && t < MAX_TASKS) { g_claim_site[t] = site; g_claim_site_cpu[t] = c; }
+    if (t > 0 && t < g_max_tasks) { g_claim_site[t] = site; g_claim_site_cpu[t] = c; }
 }
 static int sched_running_on(int c);   /* defined with the claim auditor below */
 /* Instrument, not a defect arm. Nothing here changes behaviour; it reports.
@@ -1282,7 +1411,7 @@ static void claim_trace_defer(int cpu, int t)
  * writing over them. Caller holds sched_raw_lock. */
 static void sched_mark_kstack_inflight(int cpu, int t)
 {
-    if (cpu < 0 || cpu >= MAX_CPUS || t <= 0 || t >= MAX_TASKS) return;
+    if (cpu < 0 || cpu >= MAX_CPUS || t <= 0 || t >= g_max_tasks) return;
 #ifdef CLAIM_TRACE
     claim_trace_defer(cpu, t);
 #endif
@@ -1298,7 +1427,7 @@ static void sched_release_outgoing(int cpu, int t)
     sched_mark_kstack_inflight(cpu, t);
 #ifdef KSTACK_RELEASE_EARLY
     /* The defect: published as claimable while this CPU is still on its stack. */
-    if (t > 0 && t < MAX_TASKS) task_running_cpu[t] = -1;
+    if (t > 0 && t < g_max_tasks) task_running_cpu[t] = -1;
 #endif
 }
 
@@ -1370,7 +1499,7 @@ void sched_release_deferred(void)
     __sync_fetch_and_and(&KSTACK_INFLIGHT_WORD(t), ~KSTACK_INFLIGHT_BIT(t));
     DEFER_WIDEN();
     sched_raw_lock();
-    if (t > 0 && t < MAX_TASKS) {
+    if (t > 0 && t < g_max_tasks) {
         /* Record what the branch below actually sees. Inference has now been
          * wrong twice about this value; log it rather than deduce it. */
 #ifdef CLAIM_TRACE
@@ -1548,7 +1677,7 @@ int sched_kstack_holder(int t)
 extern int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
                                     uint32_t signum, uint64_t fault_addr);
 static void deliver_pending_signal(uint64_t frame_ptr, int tid) {
-    if (tid <= 0 || tid >= MAX_TASKS) return;
+    if (tid <= 0 || tid >= g_max_tasks) return;
     uint32_t deliverable = tasks[tid].pending_sigs & ~tasks[tid].sig_mask;
     if (deliverable == 0) return;
     struct interrupt_frame64 *f = (struct interrupt_frame64 *)frame_ptr;
@@ -1715,7 +1844,7 @@ static void sched_assert_claims(const char *where) {
      * reputation for crying wolf, and this file already records what that cost:
      * a correct kernel accused of a capability leak, blocking a roadmap item for a
      * fortnight. A documented exception belongs in the checker. */
-    for (int t = 1; t < MAX_TASKS; t++) {
+    for (int t = 1; t < g_max_tasks; t++) {
         if (tasks[t].state == 0) continue;
         int c = task_running_cpu[t];
         if (c < 0) continue;
@@ -1745,7 +1874,7 @@ static void sched_assert_claims(const char *where) {
      *    select it and two cores execute one kernel stack concurrently. */
     for (int c = 0; c < MAX_CPUS; c++) {
         int t = sched_running_on(c);            /* the real task; see above */
-        if (t <= 0 || t >= MAX_TASKS) continue;
+        if (t <= 0 || t >= g_max_tasks) continue;
         if (tasks[t].state == 0) continue;      /* teardown window; see above */
         int seen = task_running_cpu[t];         /* snapshot; see above */
         if (seen != c) {
@@ -1881,7 +2010,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if ((interrupted_cs & 3) != 3) return frame_rsp;   /* only preempt ring 3 */
 
     int cur = get_current_task();
-    if (cur <= 0 || cur >= MAX_TASKS) return frame_rsp;
+    if (cur <= 0 || cur >= g_max_tasks) return frame_rsp;
 
     /* Deliver any signal queued for the running task before it resumes. */
     deliver_pending_signal(frame_rsp, cur);
@@ -1889,8 +2018,8 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     /* Round-robin: the next runnable user task (id != 0) with a resumable
      * context. */
     int next = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
-        int cand = (cur + i) % MAX_TASKS;
+    for (int i = 1; i < g_max_tasks; i++) {
+        int cand = (cur + i) % g_max_tasks;
         if (cand == 0 || cand == cur) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
             && tasks[cand].saved_ksp) {
@@ -2026,7 +2155,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 
     /* Defensively claim the task we are currently running, so another CPU cannot
      * grab a task that was launched onto this CPU outside the timer path. */
-    if (cur > 0 && cur < MAX_TASKS && task_running_cpu[cur] < 0) {
+    if (cur > 0 && cur < g_max_tasks && task_running_cpu[cur] < 0) {
         task_running_cpu[cur] = cpu;
         CLAIM_NOTE(cur, cpu, "preempt_on_tick/defensive");
     }
@@ -2038,12 +2167,12 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
      * place, so both the save-and-switch and the no-switch return below carry the
      * redirected frame. Safe under the raw lock: the delivery helper takes no lock
      * and touches only tasks[cur] plus this CPU's own frame. */
-    if (ring3 && cur > 0 && cur < MAX_TASKS)
+    if (ring3 && cur > 0 && cur < g_max_tasks)
         deliver_pending_signal(frame_rsp, cur);
 
     int next = -1;
-    for (int i = 1; i <= MAX_TASKS; i++) {
-        int cand = (cur + i) % MAX_TASKS;
+    for (int i = 1; i <= g_max_tasks; i++) {
+        int cand = (cur + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
             tasks[cand].runnable_ctx && tasks[cand].saved_ksp && task_running_cpu[cand] < 0) {
@@ -2055,7 +2184,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 
     /* Save + release the outgoing task if it was a real user task in ring 3. A
      * ring-0 (idle) context is stateless and simply abandoned. */
-    if (cur > 0 && cur < MAX_TASKS && ring3) {
+    if (cur > 0 && cur < g_max_tasks && ring3) {
         tasks[cur].saved_ksp    = frame_rsp;
         tasks[cur].runnable_ctx = 1;
         sched_release_outgoing(cpu, cur);
@@ -2165,7 +2294,7 @@ static uint64_t enter_cpu_idle(int cpu) {
  * Syscall handlers now only set pending_block (+ object fields); this path
  * owns both the save and the publish. */
 uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
-    if (blocked_task <= 0 || blocked_task >= MAX_TASKS) return frame_rsp;
+    if (blocked_task <= 0 || blocked_task >= g_max_tasks) return frame_rsp;
 
     /* (1) Frame first — wakers must never see a published waiter without this. */
     tasks[blocked_task].saved_ksp = frame_rsp;
@@ -2190,8 +2319,8 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     sched_release_outgoing(cpu, blocked_task);   /* blocking: release it, once off its stack */
 
     int next = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
-        int cand = (blocked_task + i) % MAX_TASKS;
+    for (int i = 1; i < g_max_tasks; i++) {
+        int cand = (blocked_task + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
                 tasks[cand].runnable_ctx && tasks[cand].saved_ksp && task_running_cpu[cand] < 0) {
@@ -2262,8 +2391,8 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     return ksp;
 #else
     int next = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
-        int cand = (blocked_task + i) % MAX_TASKS;
+    for (int i = 1; i < g_max_tasks; i++) {
+        int cand = (blocked_task + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
                 tasks[cand].runnable_ctx && tasks[cand].saved_ksp) {
@@ -2328,7 +2457,7 @@ void fpu_init_template(void) {
 }
 
 void fpu_task_init(int id) {
-    if (id < 0 || id >= MAX_TASKS) return;
+    if (id < 0 || id >= g_max_tasks) return;
     for (int i = 0; i < 512; i++) tasks[id].fpu_state[i] = g_fpu_template[i];
 }
 
@@ -2357,14 +2486,14 @@ void fpu_task_init(int id) {
  * Neither arm is the other's mirror -- one loses state, one leaks it -- which is
  * why a single "FPU_BROKEN" flag would have been a worse pair of arms than two. */
 void fpu_save(int id) {
-    if (id <= 0 || id >= MAX_TASKS) return;
+    if (id <= 0 || id >= g_max_tasks) return;
 #ifndef FPU_NO_SAVE
     __asm__ volatile ("fxsave (%0)" :: "r"(tasks[id].fpu_state) : "memory");
 #endif
 }
 
 void fpu_restore(int id) {
-    if (id <= 0 || id >= MAX_TASKS) return;
+    if (id <= 0 || id >= g_max_tasks) return;
 #ifndef FPU_NO_RESTORE
     __asm__ volatile ("fxrstor (%0)" :: "r"(tasks[id].fpu_state) : "memory");
 #endif
@@ -2415,7 +2544,7 @@ void __attribute__((noreturn)) kernel_idle(void) {
  * task, then runs the same pop+iretq epilogue as isr_common_stub64 so first
  * entry matches every later resume. Does not return. */
 void __attribute__((noreturn)) sched_enter_user(int tid) {
-    if (tid <= 0 || tid >= MAX_TASKS ||
+    if (tid <= 0 || tid >= g_max_tasks ||
         !tasks[tid].runnable_ctx || !tasks[tid].saved_ksp || !tasks[tid].cr3) {
         kernel_idle();
     }
@@ -2437,7 +2566,7 @@ void __attribute__((noreturn)) sched_enter_user(int tid) {
      * claiming `tid` and moving percpu_current_task[] onto it. */
     {
         int prev = percpu_current_task[cpu];
-        if (prev > 0 && prev < MAX_TASKS && prev != tid &&
+        if (prev > 0 && prev < g_max_tasks && prev != tid &&
             tasks[prev].state != 0 && task_running_cpu[prev] == cpu) {
             panic_begin();
             panic_str("\nCLAIMTRACE: sched_enter_user(task "); panic_dec(tid);
@@ -2538,15 +2667,15 @@ void __attribute__((noreturn)) sched_enter_user(int tid) {
  * and switch to another runnable user task if one exists; otherwise resume the
  * same frame. Returns the kernel %rsp for the ISR epilogue. */
 uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
-    if (cur <= 0 || cur >= MAX_TASKS) return frame_rsp;
+    if (cur <= 0 || cur >= g_max_tasks) return frame_rsp;
 
 #ifdef SMP
     sched_raw_lock();
     int cpu = this_cpu();
 #endif
     int next = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
-        int cand = (cur + i) % MAX_TASKS;
+    for (int i = 1; i < g_max_tasks; i++) {
+        int cand = (cur + i) % g_max_tasks;
         if (cand == 0 || cand == cur) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
             tasks[cand].runnable_ctx && tasks[cand].saved_ksp
@@ -2630,7 +2759,7 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
  * reselect it. The caller (SYS_EXIT / SYS_KILL) is responsible for switching the
  * CPU away from the task if it happens to be the one currently running. */
 void task_teardown(int id, const struct task_exit_cause *cause) {
-    if (id <= 0 || id >= MAX_TASKS) return;
+    if (id <= 0 || id >= g_max_tasks) return;
 
     /* Record the cause BEFORE anything else can fail or switch away: this is the
      * only account of why the task died, and the paths that reach here (a ring-3
@@ -2696,7 +2825,7 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     pipe_close_task_ends(id);
 
     int w = tasks[id].waiter;
-    if (w >= 0 && w < MAX_TASKS) {
+    if (w >= 0 && w < g_max_tasks) {
         /* Unblock a SYS_WAIT waiter: make it runnable and resumable so the
          * scheduler resumes it via the trap frame ipc_block_switch saved when it
          * blocked (it returns from SYS_WAIT with eax already 0). */
@@ -2837,8 +2966,8 @@ uint64_t task_exit_switch(int dead) {
     int cpu = this_cpu();
 #endif
     int next = -1;
-    for (int i = 1; i < MAX_TASKS; i++) {
-        int cand = (dead + i) % MAX_TASKS;
+    for (int i = 1; i < g_max_tasks; i++) {
+        int cand = (dead + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
             && tasks[cand].saved_ksp
@@ -2954,7 +3083,7 @@ uint64_t task_exit_switch(int dead) {
  * stack, hand the saved frame to the ISR epilogue) but re-enters the *same* task
  * rather than switching away. Returns the kernel %rsp for the ISR epilogue. */
 uint64_t exec_reenter_switch(int t) {
-    if (t <= 0 || t >= MAX_TASKS) return 0;
+    if (t <= 0 || t >= g_max_tasks) return 0;
 #ifdef SMP
     sched_raw_lock();
     int cpu = this_cpu();
@@ -3151,7 +3280,7 @@ int get_current_task(void) {
  * the `prev` user task it last ran. Switches to the kernel idle task (next <= 0)
  * and same-task resumes do not flush. Pure — no side effects. */
 int sched_domain_switch_would_flush(int prev_user_task, int next_task) {
-    return next_task > 0 && next_task < MAX_TASKS && prev_user_task != next_task;
+    return next_task > 0 && next_task < g_max_tasks && prev_user_task != next_task;
 }
 
 void set_current_task(int v) {
@@ -3200,7 +3329,7 @@ void set_current_task(int v) {
          * exists precisely to say so. Without this exclusion the probe fires on
          * 39 boots in 40 on perfectly correct code, which is how a probe earns a
          * reputation for crying wolf. */
-        if (prev > 0 && prev < MAX_TASKS && prev != v &&
+        if (prev > 0 && prev < g_max_tasks && prev != v &&
             tasks[prev].state != 0 &&
             task_running_cpu[prev] == c &&
             percpu_impersonating[c] == 0 &&
@@ -3231,7 +3360,7 @@ void set_current_task(int v) {
     /* Single switch chokepoint: load this CPU's TSS I/O bitmap with the ports of
      * the device the incoming task holds a grant for; every other task gets
      * iomap_base past the limit, so a ring-3 in/out #GPs. */
-    tss_set_io_device((v > 0 && v < MAX_TASKS) ? tasks[v].io_device : IODEV_NONE);
+    tss_set_io_device((v > 0 && v < g_max_tasks) ? tasks[v].io_device : IODEV_NONE);
 }
 
 /* Open/close a declared impersonation window: see the long note on

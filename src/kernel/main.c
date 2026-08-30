@@ -5,7 +5,6 @@
 
 /* Absolute symbol from linker64.ld; its ADDRESS is the linker's KERNEL_VMA. */
 extern char __kernel_vma_from_linker[];
-extern tcb_t tasks[MAX_TASKS];
 extern int current_task;
 extern void set_tss_kernel_stack(uintptr_t);
 extern uint8_t gdt64_start[];
@@ -352,6 +351,18 @@ void kernel_main(uint32_t mb_info) {
      * scheduler_init, whose create_task(0) allocates the first cspace out of it.
      * Nothing between the two allocates a kernel object. */
     untyped_init();
+    /* The task table, carved from the reserve untyped_init just sized for it
+     * (roadmap 0.3, [I-7]). HERE and not later: `tasks` is NULL until this runs,
+     * and everything from scheduler_init onward dereferences it. Nothing between
+     * kernel_main's first statement and this line touches a task -- checked
+     * function by function rather than assumed -- and a stray access through a
+     * NULL base faults on an unmapped low address at once, so the ordering fails
+     * loudly if it is ever broken. */
+    tasks_init();
+    kmsg_begin();
+    print("tasks: ");
+    print_decimal((uint64_t)g_max_tasks);
+    print(" provisioned from the kernel untyped reserve\n");
 
     /* Measured boot (roadmap 2.2): record the reproducible boot hash chain — a
      * kernel-identity token and the just-verified boot-module manifest — into the

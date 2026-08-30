@@ -12,7 +12,7 @@
  * the harness equivalent of the SYS_TASK_RESUME a ring-3 supervisor issues.
  * Only tasks with a fabricated context are touched. */
 __attribute__((unused)) static void selftest_resume_all(void) {
-    for (int t = 1; t < MAX_TASKS; t++)
+    for (int t = 1; t < g_max_tasks; t++)
         if (tasks[t].state && tasks[t].saved_ksp) tasks[t].runnable_ctx = 1;
 }
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
@@ -58,10 +58,11 @@ void spawn_owner_selftest(void) {
         return;
     }
 
-    /* Somebody else armed it. MAX_TASKS-1 is never spawned into during a normal
+    /* Somebody else armed it. The top provisioned slot is never spawned into
+     * during a normal
      * boot, so this names a task that is not the consumer without disturbing a
      * live one. */
-    staged_owner_task = MAX_TASKS - 1;
+    staged_owner_task = g_max_tasks - 1;
     int refused = do_spawn();
     if (refused > 0) {
         spawn_stage_release();
@@ -112,7 +113,7 @@ void spawn_owner_selftest(void) {
  * rather than on the code path means a reclaim that frees only *some* of the
  * tree still fails — which a "did we call free" check would not catch. */
 void aspace_selftest(void) {
-    const int slot = MAX_TASKS - 1;   /* never spawned into during a normal boot */
+    const int slot = g_max_tasks - 1;   /* never spawned into during a normal boot */
 
     print("ASPACE_SELFTEST: begin\n");
 
@@ -423,7 +424,7 @@ void wx_selftest(void) {
      * empty loop cannot satisfy it vacuously -- the reason the old armed-count
      * check existed. */
     uint32_t seen_bound = 0;
-    for (int i = 0; i < MAX_TASKS; i++) {
+    for (int i = 0; i < g_max_tasks; i++) {
         uint64_t guard = kstack_guard_vaddr(i);
         if (user_lookup_pte(kcr3, guard) & WX_PRESENT) {
             print("WX_SELFTEST: FAIL stack guard mapped for task ");
@@ -2967,17 +2968,17 @@ void taskceiling_selftest(void)
 
     print("TASKCEIL_SELFTEST: begin\n");
 
-    if (MAX_TASKS <= 64) {
+    if (g_max_tasks <= 64) {
         /* Not a pass. This test's entire content is about ids above 63; if the
          * ceiling is back at 64 there is nothing here to check and saying PASS
          * would be a green light for a property nothing examined. */
-        print("TASKCEIL_SELFTEST: FAIL MAX_TASKS is not above 64, nothing to test\n");
+        print("TASKCEIL_SELFTEST: FAIL the provisioned task count is not above 64, nothing to test\n");
         return;
     }
 
     /* Pick the pair as high as the table allows, so the test exercises the top
      * of the range rather than the first id past the old bound. */
-    const int hi = MAX_TASKS - 1;
+    const int hi = g_max_tasks - 1;
     const int lo = hi - 64;
 
     /* ---- 1. distinct, mapped kernel stacks ------------------------------- */
@@ -3067,8 +3068,8 @@ void taskceiling_selftest(void)
     print_decimal((uint64_t)lo);
     print(" and ");
     print_decimal((uint64_t)hi);
-    print(" have distinct stacks, cspaces and inflight bits (MAX_TASKS ");
-    print_decimal((uint64_t)MAX_TASKS);
+    print(" have distinct stacks, cspaces and inflight bits (tasks provisioned: ");
+    print_decimal((uint64_t)g_max_tasks);
     print(")\n");
 }
 #endif
@@ -3118,7 +3119,7 @@ void caplookup_selftest(void)
 
     /* A scratch slot at the top of the table: high enough that nothing the boot
      * has spawned occupies it, and never made runnable. */
-    const int scratch = MAX_TASKS - 2;
+    const int scratch = g_max_tasks - 2;
     int saved_cur = get_current_task();
     struct capability *saved_cspace = tasks[scratch].cspace;
     uint32_t saved_size = tasks[scratch].cspace_size;
@@ -3214,7 +3215,7 @@ void cspace_release_selftest(void)
 
     /* A scratch slot near the top of the table: never spawned into by the boot,
      * and given a cspace of its own by create_task. */
-    const int scratch = MAX_TASKS - 3;
+    const int scratch = g_max_tasks - 3;
     create_task(scratch, 0, 0, USER_AREA_BASE, 0, UNTYPED_KERNEL);
     if (!tasks[scratch].cspace) {
         print("CSPACE_RELEASE_SELFTEST: FAIL scratch task got no cspace\n");

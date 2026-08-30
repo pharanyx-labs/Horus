@@ -37,6 +37,8 @@ control_arms:
   smoke-captest-getline-control: smoke-captest
   smoke-captest-irq-ack-control: smoke-captest
   smoke-captest-mint-hang-control: smoke-captest
+  smoke-cap-lookup-control: smoke-cap-lookup
+  smoke-cap-lookup-range-control: smoke-cap-lookup
   smoke-captest-poll-notify-control: smoke-captest
   smoke-claim-release-control: smoke-claim-release
   smoke-cr3-reclaim-control: smoke-cr3-reclaim
@@ -115,6 +117,7 @@ control_arms:
 gates:
   - smoke-aslr
   - smoke-aspace
+  - smoke-cap-lookup
   - smoke-captest
   - smoke-claim-release
   - smoke-console

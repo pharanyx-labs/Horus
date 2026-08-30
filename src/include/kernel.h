@@ -2367,6 +2367,11 @@ int kern_addr_present(uint64_t vaddr);
  * resume-%rsp range guard needs the bound and must not keep a second copy of it. */
 int kstack_region_contains_ksp(uint64_t vaddr);
 uint64_t user_lookup_pte(uint64_t cr3, uint64_t vaddr);
+#ifdef CAPLOOKUP_SELFTEST
+/* cap_lookup fails closed: a cspace-less task and an out-of-range slot are both
+ * refused rather than resolved against the primordial root cnode. */
+void caplookup_selftest(void);
+#endif
 #ifdef TASKCEIL_SELFTEST
 /* Witness that MAX_TASKS > 64 is real: an alias pair (t, t-64) must have
  * distinct kernel stacks, distinct cspaces, and independent inflight bits.

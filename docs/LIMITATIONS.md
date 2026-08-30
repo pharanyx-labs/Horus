@@ -1498,10 +1498,49 @@ no report for a genuine collision above 63 and a spurious one below it. It is an
 `MAX_TASKS` now, with the width asserted at compile time.
 
 **What is left of [I-7] is the part that was always the interesting half**: a TCB is not a
-capability-named object. `tasks[]` is still a fixed array, reclaiming a dead task's cspace still
-needs `cap_lookup`'s NULL-cspace → root-cnode fallback removed first, and the task-creating
-syscalls still gate on the slot-3 decoy (§1.6b). A 256-task ceiling is a bigger number, not a
-different kind of thing; what makes it a different kind of thing is `KOBJ_TASK`.
+capability-named object. `tasks[]` is still a fixed array and the task-creating syscalls still
+gate on the slot-3 decoy (§1.6b). A 256-task ceiling is a bigger number, not a different kind
+of thing; what makes it a different kind of thing is `KOBJ_TASK`.
+
+**The prerequisite named here for a month closed on 2026-08-30, and it was two defects rather
+than one.** `cap_lookup` — the function every capability gate in this kernel resolves through —
+ended in an unconditional fallback:
+
+```c
+if (cspace && slot < cspace_sz) { ...the caller's own cspace... }
+else                            { ...root_cnode...              }
+```
+
+The half this document described is the first: a task with **no cspace** resolved every slot
+against the primordial root cnode, which is why freeing a dead task's cspace would have been an
+authority escalation rather than a crash. The half nobody had written down is the second: a task
+asking for a slot **past the end of its own cspace** was handed `root_cnode[slot]` — the identical
+escalation, reached by arithmetic instead of by a null pointer, and needing no missing cspace at
+all.
+
+**Both were unreachable, and both by circumstance rather than by property.** The first needs
+`create_task` to keep halting rather than run a task whose cspace allocation failed; the second
+needs it to keep setting `cspace_size = CNODE_SIZE` for every task — one assignment, in another
+file, whose being a constant is the whole of the argument. Neither is a statement about
+`cap_lookup`.
+
+**The rule that replaced it was already in the file.** `caller_has_authority()` encodes
+`cur == 0 || tasks[cur].cspace != NULL` for the *mutating* operations, precisely so the
+`cspace == root_cnode` rights exemption in `cap_mint`/`cap_transfer` provably means "kernel
+only". Task 0 is the kernel boot/idle/reaper task and legitimately has no cspace of its own;
+every other task without one is now refused, and a slot past the caller's own cspace is out of
+range rather than a reason to consult somebody else's.
+
+Witness `make smoke-cap-lookup`, which **manufactures** both conditions — a refusal test whose
+ungated path could not have succeeded witnesses nothing — and checks the third direction too,
+that task 0 still resolves, since a `cap_lookup` returning NULL for everything would satisfy
+both refusals while breaking every gate in the kernel. Falsified one arm per rule
+(`CAP_LOOKUP_ROOT_FALLBACK`, `CAP_LOOKUP_RANGE_FALLBACK`); two arms because the witness returns
+at its first failure, so an arm restoring both halves never reaches the second rule.
+
+**Reclaiming a dead task's cspace is now unblocked and is not done**: nothing yet frees one, and
+that is its own change with its own witness (a slot reused after a free must not inherit the
+previous occupant's authority).
 
 **And the next ceiling is now the arena's, which is why its halves were separated.** The arena is
 split into a kernel half (the per-task cspaces, which no capability names and ring 3 cannot

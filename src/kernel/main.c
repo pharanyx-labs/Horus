@@ -533,6 +533,12 @@ void kernel_main(uint32_t mb_info) {
      * Boot continues; make smoke-wx asserts on it. */
     wx_selftest();
 #endif   /* SMEP/SMAP — must follow feature detection */
+#ifdef CAPLOOKUP_SELFTEST
+    /* After scheduler_init: it zeroes tasks[], and this needs a scratch slot and
+     * a live root cnode. Boot continues; make smoke-cap-lookup asserts on the
+     * marker. */
+    caplookup_selftest();
+#endif
 #ifdef TASKCEIL_SELFTEST
     /* After scheduler_init, which is what allocates task 0 and therefore what
      * makes kstack_slots_mapped meaningful. Boot continues; make

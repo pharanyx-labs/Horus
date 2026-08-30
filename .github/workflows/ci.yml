@@ -439,6 +439,23 @@ jobs:
       # satisfying it.
       - name: Control arm — a refused capability operation that halts instead of returning
         run: make smoke-captest-mint-hang-control
+      # cap_lookup is the function every capability gate in this kernel resolves
+      # through, and it used to end in an unconditional fallback to the
+      # PRIMORDIAL root cnode -- reached both by a task with no cspace and by one
+      # asking past the end of its own. Neither was reachable, and neither by a
+      # property of cap_lookup: both rest on what create_task happens to do, in
+      # another file. The witness manufactures both conditions, because a refusal
+      # test whose ungated path could not have succeeded witnesses nothing.
+      #
+      # THREE STEPS IN THIS JOB, not a job of their own: a new job is a new
+      # required context, and the ruleset is synced by hand after the merge
+      # ([C-6]), so a new gating job would leave it one context behind.
+      - name: A cspace-less task and an out-of-range slot are both refused
+        run: make smoke-cap-lookup
+      - name: Control arm — restore the fallback and require the escalation
+        run: make smoke-cap-lookup-control
+      - name: Control arm — the out-of-range half, which the first arm cannot reach
+        run: make smoke-cap-lookup-range-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)

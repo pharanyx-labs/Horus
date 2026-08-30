@@ -109,7 +109,8 @@ DEFECT_FLAGS = \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
-	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC
+	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
+	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1820,6 +1821,36 @@ endif
 # bits. Adds two gated test hooks in scheduler.c for setting the inflight bit,
 # which is why it is a flag and not always on -- the ship kernel must carry no
 # way to set that bit but the release path itself.
+# CAPLOOKUP_SELFTEST=1 drives the fail-closed witness for cap_lookup: a
+# cspace-less task and a slot past the caller's own cspace must both be refused
+# rather than resolved against the primordial root cnode, and task 0 must still
+# resolve. Manufactures both conditions, because create_task makes neither
+# reachable -- which is the whole reason the fallback survived.
+CAPLOOKUP_SELFTEST ?= 0
+ifeq ($(CAPLOOKUP_SELFTEST),1)
+CFLAGS  += -DCAPLOOKUP_SELFTEST
+ASFLAGS += -DCAPLOOKUP_SELFTEST
+endif
+
+# CAP_LOOKUP_ROOT_FALLBACK=1 restores the pre-2026-08-30 `else` in cap_lookup, so
+# a task with no cspace -- or one asking past the end of its own -- resolves
+# against the root cnode and holds every capability the kernel minted at boot.
+CAP_LOOKUP_ROOT_FALLBACK ?= 0
+ifeq ($(CAP_LOOKUP_ROOT_FALLBACK),1)
+CFLAGS  += -DCAP_LOOKUP_ROOT_FALLBACK
+ASFLAGS += -DCAP_LOOKUP_ROOT_FALLBACK
+endif
+
+# CAP_LOOKUP_RANGE_FALLBACK=1 restores only the OUT-OF-RANGE half of that `else`:
+# the caller keeps its cspace, and a slot past the end of it resolves against the
+# root cnode. Separate because the witness stops at its first failure, so the arm
+# above never reaches the range check.
+CAP_LOOKUP_RANGE_FALLBACK ?= 0
+ifeq ($(CAP_LOOKUP_RANGE_FALLBACK),1)
+CFLAGS  += -DCAP_LOOKUP_RANGE_FALLBACK
+ASFLAGS += -DCAP_LOOKUP_RANGE_FALLBACK
+endif
+
 TASKCEIL_SELFTEST ?= 0
 ifeq ($(TASKCEIL_SELFTEST),1)
 CFLAGS  += -DTASKCEIL_SELFTEST
@@ -2812,6 +2843,39 @@ smoke-aspace:
 # introduce lives in the range no boot visits -- and each of them (an aliased
 # kernel stack, an aliased inflight bit, a short cspace reserve) is silent rather
 # than loud. This drives the top of the range instead.
+# cap_lookup fails closed. The condition is manufactured, because create_task
+# makes neither branch reachable -- which is exactly why the fallback survived
+# long enough to be the stated blocker on reclaiming a dead task's cspace.
+smoke-cap-lookup:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CAPLOOKUP_SELFTEST: PASS' \
+		FAIL_MARKER='CAPLOOKUP_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm. Restores the fallback; the cspace-less probe then resolves a
+# live primordial CAP_CONSOLE, and the witness must say so by name. Without it,
+# "the lookup returned NULL" is equally consistent with an empty slot.
+smoke-cap-lookup-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_ROOT_FALLBACK=1
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_ROOT_FALLBACK=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPLOOKUP_SELFTEST: FAIL cspace-less task resolved a primordial capability' \
+		tools/smoke_test.sh boot.iso
+
+# The second arm, for the rule the first cannot reach. The witness returns at its
+# first failure, so under CAP_LOOKUP_ROOT_FALLBACK the cspace-less probe fails and
+# the range check never runs. This one leaves that probe passing and breaks only
+# the range rule.
+smoke-cap-lookup-range-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_RANGE_FALLBACK=1
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_RANGE_FALLBACK=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPLOOKUP_SELFTEST: FAIL a slot past the caller' \
+		tools/smoke_test.sh boot.iso
+
 smoke-task-ceiling:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1

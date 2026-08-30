@@ -3063,3 +3063,116 @@ void taskceiling_selftest(void)
     print(")\n");
 }
 #endif
+
+#ifdef CAPLOOKUP_SELFTEST
+/* ---- cap_lookup fails closed (roadmap 0.3 / finding [I-7]) -----------------
+ *
+ * `cap_lookup` is the function every capability gate in this kernel resolves
+ * through, and until 2026-08-30 it ended in an unconditional fallback:
+ *
+ *     if (cspace && slot < cspace_sz) { ...the caller's own cspace... }
+ *     else                            { ...root_cnode...              }
+ *
+ * so a task with no cspace, or one asking past the end of its own, resolved
+ * against the PRIMORDIAL root cnode -- CAP_TCB over task 0, the console, the
+ * kernel log, the user database, the encrypted object store.
+ *
+ * THE POINT OF THIS TEST IS THAT NOTHING COULD REACH IT. `create_task` halts
+ * rather than run a task whose cspace allocation failed, and it sets
+ * `cspace_size = CNODE_SIZE` for every task, so neither branch was live. Both
+ * facts are about `create_task`, in another file; neither is a property of
+ * `cap_lookup`. A refusal test needs the ungated path to succeed or it witnesses
+ * nothing, so this MANUFACTURES the condition -- a scratch task slot with its
+ * cspace nulled, and a second with a deliberately short one -- and asks the
+ * resolver directly.
+ *
+ * Falsified by CAP_LOOKUP_ROOT_FALLBACK=1, which restores the `else`: under it
+ * both probes resolve a live primordial capability and this test FAILS naming
+ * which one. Without that arm, "the lookup returned NULL" is equally consistent
+ * with a slot that was simply empty.
+ */
+void caplookup_selftest(void)
+{
+    print("CAPLOOKUP_SELFTEST: begin\n");
+
+    /* Slot 8 is CAP_CONSOLE in the root cnode -- a live primordial capability,
+     * which is what makes a successful lookup here an escalation rather than a
+     * lookup of nothing. Asserted rather than assumed: if the root cnode ever
+     * stops holding one here, every check below would pass for the wrong
+     * reason. */
+    const uint32_t PRIMORDIAL_SLOT = CAPSLOT_CONSOLE;
+    const capability_t *root = cap_root_cnode_ref();
+    if (!root || root[PRIMORDIAL_SLOT].type == CAP_NULL) {
+        print("CAPLOOKUP_SELFTEST: FAIL root cnode holds nothing at the probe slot\n");
+        return;
+    }
+
+    /* A scratch slot at the top of the table: high enough that nothing the boot
+     * has spawned occupies it, and never made runnable. */
+    const int scratch = MAX_TASKS - 2;
+    int saved_cur = get_current_task();
+    struct capability *saved_cspace = tasks[scratch].cspace;
+    uint32_t saved_size = tasks[scratch].cspace_size;
+    /* uint32_t, matching tcb.state. It was uint8_t in the first draft, which
+     * restores a TRUNCATED value -- harmless only while every state fits in a
+     * byte, which is a fact about the enum rather than about this code. */
+    uint32_t saved_state = tasks[scratch].state;
+
+    /* ---- 1. no cspace at all -------------------------------------------- */
+    tasks[scratch].cspace      = (struct capability *)0;
+    tasks[scratch].cspace_size = 0;
+    tasks[scratch].state       = 0;          /* never schedulable */
+    set_current_task(scratch);
+    struct capability *c1 = cap_lookup(PRIMORDIAL_SLOT, 0);
+    set_current_task(saved_cur);
+
+    if (c1 != (struct capability *)0) {
+        tasks[scratch].cspace = saved_cspace;
+        tasks[scratch].cspace_size = saved_size;
+        tasks[scratch].state = saved_state;
+        print("CAPLOOKUP_SELFTEST: FAIL cspace-less task resolved a primordial capability\n");
+        return;
+    }
+
+    /* ---- 2. past the end of its own cspace ------------------------------- */
+    /* The half nobody had written down. A cspace SHORTER than CNODE_SIZE and a
+     * slot beyond it took the same `else`, so the caller was handed
+     * root_cnode[slot] -- the identical escalation reached by arithmetic rather
+     * than by a null pointer, and needing no missing cspace at all. */
+    static struct capability tiny[CNODE_SIZE];
+    for (int i = 0; i < CNODE_SIZE; i++) {
+        tiny[i].type = CAP_NULL; tiny[i].rights = 0; tiny[i].object = 0;
+        tiny[i].badge = 0; tiny[i].serial = 0; tiny[i].generation = 0;
+    }
+    tasks[scratch].cspace      = tiny;
+    tasks[scratch].cspace_size = PRIMORDIAL_SLOT;   /* the probe slot is PAST the end */
+    set_current_task(scratch);
+    struct capability *c2 = cap_lookup(PRIMORDIAL_SLOT, 0);
+    set_current_task(saved_cur);
+
+    tasks[scratch].cspace      = saved_cspace;
+    tasks[scratch].cspace_size = saved_size;
+    tasks[scratch].state       = saved_state;
+
+    if (c2 != (struct capability *)0) {
+        print("CAPLOOKUP_SELFTEST: FAIL a slot past the caller's cspace resolved in the root cnode\n");
+        return;
+    }
+
+    /* ---- 3. and the resolver still WORKS -------------------------------- */
+    /* Both refusals above are satisfied by a cap_lookup that returns NULL for
+     * everything, which would break every gate in the kernel while passing this
+     * test. Task 0 holds no cspace of its own and legitimately resolves against
+     * the root cnode -- the rule caller_has_authority() already encodes for the
+     * mutating operations -- so asking as task 0 must SUCCEED. */
+    set_current_task(0);
+    struct capability *c3 = cap_lookup(PRIMORDIAL_SLOT, 0);
+    set_current_task(saved_cur);
+    if (c3 == (struct capability *)0) {
+        print("CAPLOOKUP_SELFTEST: FAIL task 0 can no longer reach the root cnode\n");
+        return;
+    }
+
+    print("CAPLOOKUP_SELFTEST: PASS a cspace-less task and an out-of-range slot are both refused, and task 0 still resolves\n");
+}
+#endif

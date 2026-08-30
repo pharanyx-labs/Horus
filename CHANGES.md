@@ -15,6 +15,67 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cap_lookup` fell back to the primordial root cnode, and it was two defects rather than
+  the one that was documented** (`SECURITY.md` **S55**).
+
+  `cap_lookup` is the single resolver every capability gate in this kernel goes through, and it
+  ended in an unconditional fallback:
+
+  ```c
+  if (cspace && slot < cspace_sz) { ...the caller's own cspace... }
+  else                            { ...root_cnode...              }
+  ```
+
+  The half this project had written down — in `scheduler.c`, `LIMITATIONS.md`, `ROADMAP.md` and
+  `ARCHITECTURE.md`, as the stated blocker on reclaiming a dead task's cspace and therefore on
+  the last of **[I-7]** — is the first: a task with **no cspace** resolved every slot against the
+  primordial root cnode. `CAP_TCB` over task 0, `CAP_CONSOLE`, `CAP_KERNEL_LOG`, `CAP_USER`,
+  `CAP_ENCRYPTED_STORAGE`.
+
+  The half nobody had written down is the second: a task asking for a slot **past the end of its
+  own cspace** was handed `root_cnode[slot]`. The identical escalation, reached by arithmetic
+  rather than by a null pointer, and needing no missing cspace at all — only a cspace shorter
+  than `CNODE_SIZE`.
+
+  **Both were unreachable, and both by circumstance rather than by property.** The first needs
+  `create_task` to keep halting rather than run a task whose cspace allocation failed; the second
+  needs it to keep setting `cspace_size = CNODE_SIZE` for every task — a single assignment, in
+  another file, whose being a constant is the whole of the argument. Neither is a statement about
+  `cap_lookup`, and this is the distinction that keeps costing: it is the same shape as **S38**'s
+  arena guard, whose two protections were *"circumstances rather than properties"*, and as the
+  `[C-1]` decoy, which was a live capability of the right type standing in for a gate.
+
+  **The rule that replaced it was already in the file.** `caller_has_authority()` encodes
+  `cur == 0 || tasks[cur].cspace != NULL` for the *mutating* operations, precisely so that the
+  `cspace == root_cnode` rights exemption in `cap_mint`/`cap_transfer` provably means "kernel
+  only". Task 0 is the boot/idle/reaper and legitimately has no cspace of its own; every other
+  task without one is refused now, and a slot past the caller's own cspace is out of range rather
+  than a reason to consult somebody else's. The reader had the rule and the resolver did not.
+
+  **Witness `make smoke-cap-lookup`, which manufactures both conditions** — a scratch task slot
+  with its cspace nulled, and one with a deliberately short cspace — because a refusal test whose
+  ungated path could not have succeeded witnesses nothing. It checks a third direction too, that
+  **task 0 still resolves**: both refusals are satisfied by a `cap_lookup` that returns NULL for
+  everything, which would pass this test while breaking every gate in the kernel.
+
+  **Falsified one arm per rule**, and two arms rather than one for a specific reason: the witness
+  returns at its **first** failure, so an arm restoring the whole `else` never reaches the range
+  check. `CAP_LOOKUP_ROOT_FALLBACK=1` gives `FAIL cspace-less task resolved a primordial
+  capability`; `CAP_LOOKUP_RANGE_FALLBACK=1` restores only the out-of-range half and gives `FAIL
+  a slot past the caller's cspace resolved in the root cnode`; the base gate is red under each.
+  The arms' ordering is what shows the two rules fail independently — the same reason the
+  device-capability family needs three flags rather than one.
+
+  **This unblocks reclaiming a dead task's cspace and does not do it.** Nothing frees one yet;
+  that is its own change with its own witness (a reused slot must not inherit the previous
+  occupant's authority). `KOBJ_TASK`'s ordering constraint — a task object whose cspace slot can
+  be NULL is one the fallback turns into a root cnode — is discharged.
+
+  Verified against the fail-closed resolver: `smoke-captest`, `-session`, `-fork`, `-forkexec`,
+  `-proc`, `-frame`, `-vfs`, `-fs-perms`, all green.
+
 ### Changed
 
 - **The task ceiling is 256, and what was holding it at 64 was not the table this project

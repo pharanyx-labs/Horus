@@ -149,9 +149,13 @@ capability-type check together with the kernel-reserve guard, and `kobj_gc` itse
 **Not migrated.** `tasks[]`, a TCB is reachable from the scheduler's hot path and from every
 trap frame. Retyping a `KOBJ_CNODE` from ring 3 is refused: the object is allocatable but no
 capability type names it and no syscall installs one as a task's cspace, so minting one would be
-authority with no defined meaning (revisit with 2.3). Reclaiming a dead task's cspace needs
+authority with no defined meaning (revisit with 2.3). Reclaiming a dead task's cspace needed
 `cap_lookup`'s NULL-cspace → root-cnode fallback removed first, or freeing one would be an
-authority escalation rather than a crash.
+authority escalation rather than a crash. **That fallback went on 2026-08-30**
+(`make smoke-cap-lookup`), and it was two defects rather than one: the documented cspace-less
+case, and a slot past the end of the caller's own cspace resolving as `root_cnode[slot]` — the
+same escalation by arithmetic rather than by a null pointer. Reclaiming a cspace is unblocked
+and is not done; nothing frees one yet.
 
 **The MEMORY half of this remainder closed on 2026-08-30, and the AUTHORITY half did not.** The
 per-task kernel stacks left `.bss` for a region under `high_pdpt[511]`, `g_kstack_inflight` stopped
@@ -1472,7 +1476,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 56 properties name a witness that resolves.
+**empty**, all 57 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1511,7 +1515,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 170 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 76 of them control arms that must reproduce a defect |
+| ✅ | 173 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 78 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

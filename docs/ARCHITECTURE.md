@@ -1300,10 +1300,13 @@ now.
 What remains is the half that was always the interesting one: `tasks[]` is still a fixed array,
 a TCB is reachable from the scheduler's hot path and from every trap frame, and **a TCB is not
 an object a capability names** — so the task-creating syscalls still gate on the `[C-1]` decoy in
-cspace slot 3. Reclaiming a dead task's cspace still needs `cap_lookup`'s NULL-cspace →
-root-cnode fallback removed first, and that fallback is also why `KOBJ_TASK` sequences after it
-rather than before: a task object whose cspace slot can be NULL is one the fallback turns into a
-root cnode.
+cspace slot 3. Reclaiming a dead task's cspace needed `cap_lookup`'s NULL-cspace → root-cnode
+fallback removed first; that closed on 2026-08-30, and it was two defects rather than one — the
+documented cspace-less case, and a slot past the end of the caller's own cspace resolving as
+`root_cnode[slot]`, the same escalation reached by arithmetic. Both were unreachable by
+circumstance (what `create_task` happens to do) rather than by any property of `cap_lookup`.
+Reclaiming a cspace is unblocked and not yet done, and `KOBJ_TASK`'s ordering constraint — a task
+object whose cspace slot can be NULL is one the fallback turns into a root cnode — is discharged.
 
 **G-4: Endpoints are single-slot with no queue.** *Closed 2026-08-11* (roadmap 1.3, finding
 **[I-5]**). Endpoints are bounded FIFOs of `EP_QUEUE_SLOTS` (§8), so concurrent senders enqueue

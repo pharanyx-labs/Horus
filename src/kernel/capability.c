@@ -472,16 +472,92 @@ bool cap_consume_slot(uint32_t dest_slot) {
 
 const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
 
+/* THE RESOLVER FAILS CLOSED. It did not until 2026-08-30, and the `else` it used
+ * to have was reached two different ways -- only one of which anybody had
+ * written down.
+ *
+ *     if (cspace && slot < cspace_sz) { ...the caller's own cspace... }
+ *     else                            { ...root_cnode...              }
+ *
+ * (1) A task with NO CSPACE resolved every slot against the primordial root
+ *     cnode: CAP_TCB over task 0, the console, the kernel log, the user
+ *     database, the object store. `scheduler.c` names this and calls it what it
+ *     is -- "a freed-and-nulled cspace on a slot anything still consults would
+ *     be an authority ESCALATION, not a crash" -- and it is the stated reason a
+ *     dead task's cspace cannot be reclaimed, which keeps [I-7] open.
+ *
+ * (2) A task asking for a slot PAST ITS OWN CSPACE got `root_cnode[slot]`. That
+ *     one was not documented anywhere. It is the same escalation reached by
+ *     arithmetic rather than by a null pointer, and it needs no missing cspace
+ *     at all -- only a cspace shorter than CNODE_SIZE.
+ *
+ * BOTH WERE UNREACHABLE, AND BOTH BY CIRCUMSTANCE RATHER THAN BY PROPERTY, which
+ * is the distinction this repository keeps paying to learn. (1) needs
+ * `create_task` to keep halting rather than run a task whose cspace allocation
+ * failed. (2) needs `create_task` to keep setting `cspace_size = CNODE_SIZE` for
+ * every task -- a single assignment, in another file, whose being a constant is
+ * the whole of the argument. Neither is a statement about `cap_lookup`, and
+ * `cap_lookup` is the function every capability gate in the kernel resolves
+ * through.
+ *
+ * TASK 0 IS THE ONE LEGITIMATE CALLER OF THE ROOT CNODE, and the rule is not new
+ * here: `caller_has_authority()` below already encodes exactly it (`cur == 0 ||
+ * tasks[cur].cspace != NULL`) for the mutating operations, so that the
+ * "cspace == root_cnode" rights exemption in `cap_mint`/`cap_transfer` provably
+ * means "kernel only". The reader had it and the resolver did not; now both do.
+ *
+ * The generation check stays where it was: a capability that resolves but whose
+ * generation is stale is refused, so a revoked slot cannot be used through a
+ * pointer obtained before the revoke.
+ *
+ * `SECURITY.md` **S55**. */
 struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
     if (slot >= CNODE_SIZE) return NULL;
-    struct capability *cspace = tasks[get_current_task()].cspace;
-    uint32_t cspace_sz = tasks[get_current_task()].cspace_size ? tasks[get_current_task()].cspace_size : CNODE_SIZE;
-    struct capability *p = NULL;
-    if (cspace && slot < cspace_sz) {
-        p = rust_cap_lookup(cspace, cspace_sz, slot, required_rights);
-    } else {
-        p = rust_cap_lookup(root_cnode, CNODE_SIZE, slot, required_rights);
+
+    int cur = get_current_task();
+    struct capability *cspace = tasks[cur].cspace;
+    uint32_t cspace_sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+
+    if (!cspace) {
+#ifdef CAP_LOOKUP_ROOT_FALLBACK
+        /* CONTROL ARM -- never ship. The pre-2026-08-30 fallback: a task with no
+         * cspace resolves against the primordial root cnode and holds every
+         * capability the kernel minted at boot. See make
+         * smoke-captest-cspaceless-control. */
+        cspace = root_cnode;
+        cspace_sz = CNODE_SIZE;
+#else
+        /* Task 0 is the kernel boot/idle/reaper task and has no cspace of its
+         * own by design; every other task without one is refused rather than
+         * handed the root cnode. */
+        if (cur != 0) return NULL;
+        cspace = root_cnode;
+        cspace_sz = CNODE_SIZE;
+#endif
     }
+
+    /* Past the end of the caller's OWN cspace is out of range, not a reason to
+     * consult somebody else's. `rust_cap_lookup` bounds-checks against the size
+     * it is given, so refusing here is belt and braces -- and it is the belt that
+     * used to be the escalation, because the size it was given in that branch was
+     * the ROOT cnode's. */
+#ifdef CAP_LOOKUP_RANGE_FALLBACK
+    /* CONTROL ARM -- never ship. The OUT-OF-RANGE half of the old `else`, on its
+     * own: the caller keeps its cspace, and only a slot past the end of it
+     * resolves against the root cnode.
+     *
+     * A second arm because the selftest stops at its FIRST failure, so under
+     * CAP_LOOKUP_ROOT_FALLBACK -- which restores both halves -- the cspace-less
+     * probe fails first and the range check is never reached. With only that arm,
+     * nothing establishes that the range check can fire at all; the ordering of
+     * the arms is what shows the two rules fail independently. See
+     * make smoke-cap-lookup-range-control. */
+    if (slot >= cspace_sz) { cspace = root_cnode; cspace_sz = CNODE_SIZE; }
+#else
+    if (slot >= cspace_sz) return NULL;
+#endif
+
+    struct capability *p = rust_cap_lookup(cspace, cspace_sz, slot, required_rights);
     if (p && !capability_validate_generation(p)) return NULL;
     return p;
 }

@@ -525,6 +525,11 @@ void kernel_main(uint32_t mb_info) {
     storage_init();
 #endif
 #endif
+#ifdef KEYSLOT_SELFTEST
+    /* After storage_init so a device is registered; before scheduler_init so the
+     * whole test runs on the boot CPU with nothing else touching the volume. */
+    keyslot_selftest();
+#endif
     scheduler_init();
 #ifdef WX_SELFTEST
     /* After paging_init (which installs the W^X tables) and after

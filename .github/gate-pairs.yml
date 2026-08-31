@@ -39,6 +39,7 @@ control_arms:
   smoke-captest-mint-hang-control: smoke-captest
   smoke-captest-split-control: smoke-captest
   smoke-captest-lookup-type-control: smoke-captest
+  smoke-keyslots-control: smoke-keyslots
   smoke-cap-lookup-control: smoke-cap-lookup
   smoke-cap-lookup-range-control: smoke-cap-lookup
   smoke-cspace-release-control: smoke-cspace-release
@@ -133,6 +134,7 @@ gates:
   - smoke-coreutils-shell
   - smoke-cow
   - smoke-cpu
+  - smoke-keyslots
   - smoke-cr3-reclaim
   - smoke-defect-flags
   - smoke-defect-flags-rebuild

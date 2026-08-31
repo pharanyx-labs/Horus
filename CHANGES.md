@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 121 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 122 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,29 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Added
+
+- **LUKS-style key slots: several passwords open one volume** (`SECURITY.md` **S61**, on-disk
+  format v7). The volume key was wrapped exactly once, so exactly one password could ever open a
+  volume and a second user's `storage_unlock` return value was discarded — recorded in
+  `docs/LIMITATIONS.md` 2.6 as orthogonal and pre-existing, and now closed. Up to
+  `HORUS_KEYSLOTS` (8) independent AEAD wraps of `disk_key[32]` plus the owner's uid live in a
+  reserved region, each under a KEK from its own password and its own Argon2id salt.
+  **The cryptography is unchanged** — the same `derive_kek` and the same seal/open as the single
+  wrap it replaces, only more of them; §5.4 records unaudited from-scratch crypto as this tree's
+  largest real risk and a new construction here would add to it.
+  The uid is sealed *inside* the slot, so a stolen disk shows how many slots are active and
+  nothing about whose they are, and a slot that opens says who opened it. Two consequences are
+  forced rather than chosen and are documented as such: revocation is **by slot index**, because
+  finding a slot by uid would need that user's password; and the **last active slot cannot be
+  removed**, because a volume with no slots is unreachable rather than deleted, which looks like
+  success. Timing is stated rather than claimed away: a wrong password costs one derivation per
+  *active* slot and a right one stops early, as in LUKS.
+  Witness `make smoke-keyslots` — two boots on one image, where boot 1 also requires the new
+  password to open the volume *in the boot that added it*, so a boot-2 failure cannot be read as
+  "never worked". Falsified by `KEYSLOT_REMOVE_NOOP=1`, whose marker is the **password** still
+  opening rather than the slot count, since the count drops either way.
 
 ### Changed
 

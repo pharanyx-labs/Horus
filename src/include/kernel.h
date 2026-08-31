@@ -13,6 +13,14 @@ typedef uint64_t vaddr_t;
 
 
 #define BLOCK_SIZE              512
+
+/* Key slots: how many passwords may open one volume, and the region they live
+ * in. Eight is a prototype's answer, not a protocol limit -- the cost of a slot
+ * is one Argon2id derivation on a FAILED unlock (a successful one stops at the
+ * slot that opens), so the number trades multi-user reach against how long a
+ * wrong password takes to reject. */
+#define HORUS_KEYSLOTS          8
+#define KEYSLOT_BLOCKS          2
 /* 32768 blocks x 512 B = 16 MiB volume (~14 MiB usable after metadata/journal/
  * inode-table/bitmap overhead). The DATA allocator uses a multi-block bitmap
  * (storage.c), so the data region is no longer capped at one bitmap block's 4096
@@ -1612,9 +1620,45 @@ typedef struct fs_superblock {
     uint16_t tpm_priv_len;           /* bytes of TPM2B_PRIVATE in the blob block */
     uint16_t _tpm_pad2;
     uint64_t tpm_blob_block;         /* block holding pub||priv (0 if none) */
+    /* v7: LUKS-style key slots. Until 2026-08-31 the volume key was wrapped
+     * exactly once, by a KEK derived from ONE password plus the kek_salt above,
+     * so exactly one password could ever open the volume -- a second user's
+     * storage_unlock return value was discarded (docs/LIMITATIONS.md 2.6). The
+     * wrap now lives in an array of slots in its own region, because eight of
+     * them do not fit in a 512-byte superblock; the same reason tpm_blob_block
+     * points elsewhere. kek_salt and wrapped_key_* above are UNUSED from v7 and
+     * kept only so the struct's layout does not shift. */
+    uint64_t keyslot_start;          /* first block of the key-slot region */
+    uint32_t keyslot_blocks;         /* blocks in it (KEYSLOT_BLOCKS) */
+    uint32_t _keyslot_pad;
 } fs_superblock_t;
 _Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
                "fs_superblock must fit in one block");
+
+/* One password's route to the volume key (SECURITY.md **S61**). The plaintext sealed here is
+ * disk_key[32] || uid[4]: the UID is inside the AEAD rather than beside it, so
+ * a stolen disk does not reveal which accounts exist, and a slot that opens
+ * says WHO opened it. That is what lets login become unlock-then-identify
+ * instead of identify-then-unlock -- the ordering docs/LIMITATIONS.md 2.6 needs
+ * for account persistence, obtained as a property of the slot rather than as a
+ * workaround.
+ *
+ * Nothing about the cryptography changes: the same derive_kek (Argon2id, or
+ * HKDF for the high-entropy vdisk) and the same AEAD seal/open as the single
+ * wrap it replaces. Only the NUMBER of wraps is new. That is deliberate --
+ * docs/LIMITATIONS.md 5.4 records unaudited from-scratch crypto as the largest
+ * real risk in this tree, and a new construction here would add to it. */
+typedef struct fs_keyslot {
+    uint8_t  active;                 /* 0 = free; a freed slot is zeroed whole */
+    uint8_t  _pad[3];
+    uint32_t _reserved;
+    uint8_t  kek_salt[32];           /* per-slot Argon2id salt */
+    uint8_t  nonce[12];
+    uint8_t  ct[36];                 /* AEAD ct of disk_key[32] || uid[4] */
+    uint8_t  tag[16];
+} fs_keyslot_t;
+_Static_assert(sizeof(fs_keyslot_t) * HORUS_KEYSLOTS <= KEYSLOT_BLOCKS * BLOCK_SIZE,
+               "the key-slot array must fit in its reserved region");
 
 typedef struct on_disk_inode {
     uint64_t size;
@@ -2415,6 +2459,21 @@ int  storage_unlock(const char *password, size_t plen);
  * Requires storage to already be unlocked (disk_key in RAM).  Generates fresh
  * kek_salt + nonce for forward security, then writes the updated superblock. */
 int  storage_rekey(const char *new_password, size_t plen);
+/* v7 key slots -- up to HORUS_KEYSLOTS passwords open one volume. Adding
+ * requires the volume already unlocked (equivalent to holding the key);
+ * removal is BY INDEX because the uid is sealed inside the slot, and the last
+ * active slot cannot be removed. */
+int  storage_keyslot_add(const char *new_password, size_t nlen, uint32_t uid,
+                         uint32_t *slot_out);
+int  storage_keyslot_remove(uint32_t idx);
+int  storage_keyslot_count(void);
+uint32_t storage_unlocked_uid(void);
+uint32_t storage_unlocked_slot(void);
+#ifdef KEYSLOT_SELFTEST
+int  storage_keyslot_probe(const char *password, size_t plen,
+                           uint32_t *uid_out, uint32_t *idx_out);
+void keyslot_selftest(void);
+#endif
 int  storage_read_file_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block, void *buf);
 int  storage_write_file_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block, const void *buf);
 mounted_fs_t *storage_get_mounted_fs(void);

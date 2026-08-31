@@ -34,7 +34,18 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 }
 
 #define STORAGE_MAGIC   0x48534653
-#define STORAGE_VERSION 6   /* v6: adds measured-boot TPM sealing (tpm_mode + blob block).
+/* Which slot opened the volume this boot, and the uid sealed inside it. Set by
+ * storage_unlock; read by storage_unlock_as so login can identify the caller
+ * from the slot that opened rather than from a name it has not verified. */
+static uint32_t g_unlocked_slot = 0;
+static uint32_t g_unlocked_uid  = 0;
+
+#define STORAGE_VERSION 7   /* v7: LUKS-style key slots -- up to HORUS_KEYSLOTS passwords
+                             * open one volume, each wrapping disk_key||uid in its own slot.
+                             * A v6 volume is refused at mount, as every earlier version
+                             * already was: the check is `version != STORAGE_VERSION`, so
+                             * there is no compatibility path to write and none is pretended.
+                             * v6: adds measured-boot TPM sealing (tpm_mode + blob block).
                              * A version bump reformats older volumes at first login,
                              * as every prior bump has (v4->v5 did the same). */
 
@@ -1033,6 +1044,136 @@ int storage_dir_add(struct mounted_fs *mfs, uint64_t dir_ino, const char *name,
     return 0;
 }
 
+/* Defined below; declared here so the slot helpers can sit beside the wrap they
+ * generalise rather than being separated from it by the KEK derivation. */
+static int derive_kek(const char *password, size_t plen,
+                      const uint8_t *kek_salt, uint8_t *kek32);
+static int apply_tpm_kek_binding(struct block_device *bd,
+                                 const struct fs_superblock *sb, uint8_t *kek32);
+
+/* ---- key slots (SECURITY.md S61) ----------------------------------------
+ *
+ * The slot region is plaintext on disk in the sense that its BYTES are readable;
+ * every slot's payload is AEAD-sealed under a password-derived KEK, so what a
+ * stolen disk yields is a set of opaque wraps and nothing about how many
+ * accounts exist beyond how many slots are marked active.
+ */
+static int keyslots_read(struct block_device *bd, const struct fs_superblock *sb,
+                         fs_keyslot_t *out)
+{
+    if (!bd || !bd->read_block || sb->keyslot_start == 0) return -1;
+    uint8_t blk[BLOCK_SIZE];
+    uint8_t *dst = (uint8_t *)out;
+    for (uint32_t i = 0; i < KEYSLOT_BLOCKS; i++) {
+        if (bd->read_block(bd, sb->keyslot_start + i, blk) != 0) return -1;
+        uint32_t off = i * BLOCK_SIZE;
+        uint32_t len = sizeof(fs_keyslot_t) * HORUS_KEYSLOTS;
+        if (off >= len) break;
+        uint32_t n = (len - off) < BLOCK_SIZE ? (len - off) : BLOCK_SIZE;
+        my_memcpy(dst + off, blk, n);
+    }
+    return 0;
+}
+
+static int keyslots_write(struct block_device *bd, const struct fs_superblock *sb,
+                          const fs_keyslot_t *in)
+{
+    if (!bd || !bd->write_block || sb->keyslot_start == 0) return -1;
+    uint8_t blk[BLOCK_SIZE];
+    const uint8_t *src = (const uint8_t *)in;
+    uint32_t len = sizeof(fs_keyslot_t) * HORUS_KEYSLOTS;
+    for (uint32_t i = 0; i < KEYSLOT_BLOCKS; i++) {
+        secure_zero(blk, sizeof(blk));
+        uint32_t off = i * BLOCK_SIZE;
+        if (off < len) {
+            uint32_t n = (len - off) < BLOCK_SIZE ? (len - off) : BLOCK_SIZE;
+            my_memcpy(blk, src + off, n);
+        }
+        if (bd->write_block(bd, sb->keyslot_start + i, blk) != 0) return -1;
+    }
+    return 0;
+}
+
+/* Seal disk_key||uid into `slot` under a KEK derived from `password`. The KEK
+ * expansion and AEAD call are copied from the single-wrap path they replace,
+ * deliberately unchanged. */
+static int keyslot_seal(struct block_device *bd, const struct fs_superblock *sb,
+                        fs_keyslot_t *slot, const char *password, size_t plen,
+                        const uint8_t *disk_key, uint32_t uid)
+{
+    secure_random_bytes(slot->kek_salt, sizeof(slot->kek_salt));
+    secure_random_bytes(slot->nonce,    sizeof(slot->nonce));
+
+    uint8_t kek[32];
+    if (derive_kek(password, plen, slot->kek_salt, kek) != 0) return -1;
+    if (apply_tpm_kek_binding(bd, sb, kek) != 0) { secure_zero(kek, 32); return -1; }
+
+    uint8_t wrap_keys[64];
+    {
+        const char *label = "horus-wrap-v1";
+        uint8_t info[13]; size_t n = 0;
+        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+        if (rust_hkdf_sha256(kek, 32, slot->kek_salt, sizeof(slot->kek_salt),
+                             info, n, wrap_keys, 64) != 0) {
+            secure_zero(kek, 32); return -1;
+        }
+    }
+    secure_zero(kek, sizeof(kek));
+
+    my_memcpy(slot->ct, disk_key, 32);
+    slot->ct[32] = (uint8_t)(uid & 0xFF);
+    slot->ct[33] = (uint8_t)((uid >> 8) & 0xFF);
+    slot->ct[34] = (uint8_t)((uid >> 16) & 0xFF);
+    slot->ct[35] = (uint8_t)((uid >> 24) & 0xFF);
+    int rc = rust_aead_seal(wrap_keys, wrap_keys + 32, slot->nonce,
+                            sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                            slot->ct, sizeof(slot->ct), slot->tag);
+    secure_zero(wrap_keys, sizeof(wrap_keys));
+    if (rc != 0) { secure_zero(slot->ct, sizeof(slot->ct)); return -1; }
+    slot->active = 1;
+    return 0;
+}
+
+/* Try one slot. 0 on success, with disk_key32 and *uid_out filled. */
+static int keyslot_open(struct block_device *bd, const struct fs_superblock *sb,
+                        const fs_keyslot_t *slot, const char *password, size_t plen,
+                        uint8_t *disk_key32, uint32_t *uid_out)
+{
+    if (!slot->active) return -1;
+
+    uint8_t kek[32];
+    if (derive_kek(password, plen, slot->kek_salt, kek) != 0) return -1;
+    if (apply_tpm_kek_binding(bd, sb, kek) != 0) { secure_zero(kek, 32); return -1; }
+
+    uint8_t wrap_keys[64];
+    {
+        const char *label = "horus-wrap-v1";
+        uint8_t info[13]; size_t n = 0;
+        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+        if (rust_hkdf_sha256(kek, 32, slot->kek_salt, sizeof(slot->kek_salt),
+                             info, n, wrap_keys, 64) != 0) {
+            secure_zero(kek, 32); return -1;
+        }
+    }
+    secure_zero(kek, sizeof(kek));
+
+    uint8_t pt[36];
+    my_memcpy(pt, slot->ct, sizeof(pt));
+    int rc = rust_aead_open(wrap_keys, wrap_keys + 32, slot->nonce,
+                            sb->volume_key_salt, sizeof(sb->volume_key_salt),
+                            pt, sizeof(pt), slot->tag);
+    secure_zero(wrap_keys, sizeof(wrap_keys));
+    if (rc != 0) { secure_zero(pt, sizeof(pt)); return -1; }
+
+    my_memcpy(disk_key32, pt, 32);
+    if (uid_out) {
+        *uid_out = (uint32_t)pt[32] | ((uint32_t)pt[33] << 8) |
+                   ((uint32_t)pt[34] << 16) | ((uint32_t)pt[35] << 24);
+    }
+    secure_zero(pt, sizeof(pt));
+    return 0;
+}
+
 /* Derive a 32-byte Key Encryption Key from password + kek_salt.
  * No kernel_pepper: the KEK must reproduce from the same inputs across reboots.
  * Domain-separated from the login hash by the different salt length (32B vs 32B
@@ -1155,8 +1296,12 @@ static int storage_format_sealed(struct block_device *bd,
      * blob (used only in tpm_mode; zeroed otherwise). Kept in the layout
      * unconditionally so geometry does not depend on whether a TPM is present. */
     uint64_t tpm_blob_block = 1 + META_BLOCKS_COUNT;
-    /* Write-ahead redo log sits right after the TPM blob block. */
-    sb.journal_start      = tpm_blob_block + 1;
+    /* v7: the key-slot region follows the TPM blob block, for the same reason
+     * that block exists -- eight wraps do not fit in a 512-byte superblock. */
+    sb.keyslot_start      = tpm_blob_block + 1;
+    sb.keyslot_blocks     = KEYSLOT_BLOCKS;
+    /* Write-ahead redo log sits right after the key slots. */
+    sb.journal_start      = sb.keyslot_start + KEYSLOT_BLOCKS;
     sb.journal_blocks     = JOURNAL_BLOCKS;
     uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
 
@@ -1216,7 +1361,6 @@ static int storage_format_sealed(struct block_device *bd,
      * across reboots.  KEK is expanded to 64 bytes via HKDF then used as the
      * enc_key||mac_key pair for the wrapping AEAD. */
     secure_random_bytes(sb.kek_salt,          sizeof(sb.kek_salt));
-    secure_random_bytes(sb.wrapped_key_nonce, sizeof(sb.wrapped_key_nonce));
 
     /* v6 — opt into TPM sealing for a persistent volume when a TPM is present. The
      * ephemeral high-entropy vdisk never seals (its key is a per-boot throwaway).
@@ -1230,35 +1374,23 @@ static int storage_format_sealed(struct block_device *bd,
         return -1;
     }
     {
-        uint8_t kek[32];
-        if (derive_kek(password, plen, sb.kek_salt, kek) != 0) {
+        /* v7 -- seal disk_key into SLOT 0 rather than into the superblock. The
+         * formatting password becomes the first of up to HORUS_KEYSLOTS that can
+         * open this volume; uid 0 because whoever formats it is root here. Every
+         * other slot is left zeroed, which is what `active == 0` means. */
+        fs_keyslot_t slots[HORUS_KEYSLOTS];
+        secure_zero(slots, sizeof(slots));
+        if (keyslot_seal(bd, &sb, &slots[0], password, plen, disk_key, 0) != 0) {
             secure_zero(disk_key, sizeof(disk_key));
+            secure_zero(slots, sizeof(slots));
             return -1;
         }
-        /* Two-factor in TPM mode: fold in the just-sealed secret (no-op otherwise). */
-        if (apply_tpm_kek_binding(bd, &sb, kek) != 0) {
-            secure_zero(kek, sizeof(kek));
+        if (keyslots_write(bd, &sb, slots) != 0) {
             secure_zero(disk_key, sizeof(disk_key));
+            secure_zero(slots, sizeof(slots));
             return -1;
         }
-        uint8_t wrap_keys[64];
-        {
-            const char *label = "horus-wrap-v1";
-            uint8_t info[13]; size_t n = 0;
-            for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
-            if (rust_hkdf_sha256(kek, 32, sb.kek_salt, sizeof(sb.kek_salt),
-                                 info, n, wrap_keys, 64) != 0) {
-                secure_zero(kek, sizeof(kek));
-                secure_zero(disk_key, sizeof(disk_key));
-                return -2;
-            }
-        }
-        secure_zero(kek, sizeof(kek));
-        my_memcpy(sb.wrapped_key_ct, disk_key, 32);
-        rust_aead_seal(wrap_keys, wrap_keys + 32, sb.wrapped_key_nonce,
-                       sb.volume_key_salt, sizeof(sb.volume_key_salt),
-                       sb.wrapped_key_ct, 32, sb.wrapped_key_tag);
-        secure_zero(wrap_keys, sizeof(wrap_keys));
+        secure_zero(slots, sizeof(slots));
     }
 
     /* Compute the initial metadata HMAC over an all-zeros g_block_meta[] so
@@ -1405,45 +1537,46 @@ int storage_unlock(const char *password, size_t plen)
     }
 #endif
 
-    /* Step 1 — Derive KEK from password + stable on-disk salt (no kernel_pepper). */
-    uint8_t kek[32];
-    if (derive_kek(password, plen, sb->kek_salt, kek) != 0) return -3;
-
-    /* Step 1b — v6 TPM mode: fold in the sealed second factor. The TPM releases it
-     * only under a measured-good boot (PolicyPCR(PCR8,PCR9)); a tampered/unmeasured
-     * boot is refused here, so the wrong KEK is produced and disk_key never unwraps
-     * — the volume stays locked, the same outcome as a wrong password. */
-    if (apply_tpm_kek_binding(mfs->bd, sb, kek) != 0) {
-        secure_zero(kek, sizeof(kek));
-        return -8;
-    }
-
-    /* Step 2 — Expand KEK → enc_key[32] || mac_key[32] for wrapping AEAD. */
-    uint8_t wrap_keys[64];
-    {
-        const char *label = "horus-wrap-v1";
-        uint8_t info[13]; size_t n = 0;
-        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
-        if (rust_hkdf_sha256(kek, 32, sb->kek_salt, sizeof(sb->kek_salt),
-                             info, n, wrap_keys, 64) != 0) {
-            secure_zero(kek, sizeof(kek));
-            return -4;
-        }
-    }
-    secure_zero(kek, sizeof(kek));
-
-    /* Step 3 — AEAD-open the wrapped disk_key.
-     * Tag mismatch → wrong password or tampered header; deny without revealing which. */
+    /* Steps 1-3 — find the slot this password opens.
+     *
+     * Every slot is an independent wrap of the SAME disk_key under a KEK derived
+     * from its own salt, so there is no way to tell which slot a password belongs
+     * to without deriving. Active slots are tried in order and the first that
+     * opens wins; inactive ones cost nothing, so a single-password volume does
+     * exactly the one Argon2id it did before key slots existed.
+     *
+     * TIMING, STATED RATHER THAN CLAIMED AWAY: a wrong password costs one
+     * derivation per ACTIVE slot, a right one stops early, so an observer who can
+     * time a login learns roughly which slot index opened. LUKS has the same
+     * property. It is not constant-time and this comment does not pretend it is;
+     * making it so would mean always deriving every slot, which multiplies the
+     * cost of the common case by HORUS_KEYSLOTS to hide an index from an observer
+     * who, in the login case, is the person supplying the password.
+     *
+     * A tag mismatch is indistinguishable from a wrong password by construction,
+     * so a failed unlock says only "no slot opened" and never which slot came
+     * closest. */
     uint8_t disk_key[32];
-    my_memcpy(disk_key, sb->wrapped_key_ct, 32);
-    if (rust_aead_open(wrap_keys, wrap_keys + 32, sb->wrapped_key_nonce,
-                       sb->volume_key_salt, sizeof(sb->volume_key_salt),
-                       disk_key, 32, sb->wrapped_key_tag) != 0) {
-        secure_zero(disk_key,   sizeof(disk_key));
-        secure_zero(wrap_keys,  sizeof(wrap_keys));
-        return -5;
+    uint32_t slot_uid = 0;
+    {
+        fs_keyslot_t slots[HORUS_KEYSLOTS];
+        if (keyslots_read(mfs->bd, sb, slots) != 0) {
+            secure_zero(slots, sizeof(slots));
+            return -3;
+        }
+        int opened = -1;
+        for (uint32_t i = 0; i < HORUS_KEYSLOTS; i++) {
+            if (keyslot_open(mfs->bd, sb, &slots[i], password, plen,
+                             disk_key, &slot_uid) == 0) { opened = (int)i; break; }
+        }
+        secure_zero(slots, sizeof(slots));
+        if (opened < 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -5;
+        }
+        g_unlocked_slot = (uint32_t)opened;
+        g_unlocked_uid  = slot_uid;
     }
-    secure_zero(wrap_keys, sizeof(wrap_keys));
 
     /* Step 4 — Store plaintext disk_key in RAM; derive volume_key + meta_mac_key. */
     my_memcpy(mfs->disk_key, disk_key, 32);
@@ -1673,48 +1806,170 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
     }
 }
 
+#ifdef KEYSLOT_SELFTEST
+/* Does this password open the volume, and if so which slot and whose uid?
+ *
+ * SELFTEST ONLY, and the guard is the point. It answers exactly what a real
+ * unlock answers, so it leaks nothing new -- but it does so WITHOUT taking the
+ * unlock path's state change, which is what makes it useful here: storage_unlock
+ * is idempotent, so once one password has opened the volume no second password
+ * can be tested in the same boot, and "several passwords open this volume" is
+ * precisely the property under test. It also bypasses whatever rate limiting the
+ * login path grows, which is why it is not compiled into a shipping kernel.
+ */
+int storage_keyslot_probe(const char *password, size_t plen,
+                          uint32_t *uid_out, uint32_t *idx_out)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted) return -1;
+    fs_keyslot_t slots[HORUS_KEYSLOTS];
+    if (keyslots_read(mfs->bd, &mfs->sb, slots) != 0) return -1;
+
+    uint8_t dk[32]; uint32_t uid = 0; int found = -1;
+    for (uint32_t i = 0; i < HORUS_KEYSLOTS; i++) {
+        if (keyslot_open(mfs->bd, &mfs->sb, &slots[i], password, plen, dk, &uid) == 0) {
+            found = (int)i; break;
+        }
+    }
+    secure_zero(dk, sizeof(dk));
+    secure_zero(slots, sizeof(slots));
+    if (found < 0) return -1;
+    if (uid_out) *uid_out = uid;
+    if (idx_out) *idx_out = (uint32_t)found;
+    return 0;
+}
+#endif
+
+/* Add a password that also opens this volume, and return its slot index.
+ *
+ * AUTHORITY: the volume must already be unlocked, which means the caller has
+ * already presented a password that opens it. That is the whole gate, and it is
+ * the right one -- disk_key is what a new slot wraps, so being able to add a
+ * slot is exactly equivalent to already holding the key.
+ *
+ * The uid is sealed INSIDE the slot, so it is not discoverable from the disk.
+ * The caller is expected to remember the returned index (the user table does),
+ * because nothing else can find this slot again without its password.
+ */
+int storage_keyslot_add(const char *new_password, size_t nlen, uint32_t uid,
+                        uint32_t *slot_out)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted || !mfs->unlocked) return -1;
+    if (!new_password || nlen == 0)      return -1;
+    struct fs_superblock *sb = &mfs->sb;
+
+    fs_keyslot_t slots[HORUS_KEYSLOTS];
+    if (keyslots_read(mfs->bd, sb, slots) != 0) return -2;
+
+    int free_idx = -1;
+    for (uint32_t i = 0; i < HORUS_KEYSLOTS; i++)
+        if (!slots[i].active) { free_idx = (int)i; break; }
+    if (free_idx < 0) { secure_zero(slots, sizeof(slots)); return -3; }  /* full */
+
+    if (keyslot_seal(mfs->bd, sb, &slots[free_idx], new_password, nlen,
+                     mfs->disk_key, uid) != 0) {
+        secure_zero(slots, sizeof(slots));
+        return -4;
+    }
+    int rc = keyslots_write(mfs->bd, sb, slots);
+    secure_zero(slots, sizeof(slots));
+    if (rc != 0) return -5;
+    if (slot_out) *slot_out = (uint32_t)free_idx;
+    return 0;
+}
+
+/* Revoke one slot by index. The password it held stops opening this volume and
+ * every other slot is untouched -- that is the property key slots exist for.
+ *
+ * BY INDEX, NOT BY UID, and that is forced rather than chosen: the uid lives
+ * inside the AEAD, so finding "this user's slot" would need that user's
+ * password. Whoever adds a slot records its index (the user table does); a slot
+ * whose index is forgotten can only be cleared by wiping the region.
+ *
+ * REFUSES THE LAST ACTIVE SLOT. Removing it would leave a volume whose key
+ * nothing on earth can unwrap -- the data is not deleted, it is beyond reach,
+ * which is worse than a refusal because it looks like it worked. */
+int storage_keyslot_remove(uint32_t idx)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted || !mfs->unlocked) return -1;
+    if (idx >= HORUS_KEYSLOTS)           return -1;
+    struct fs_superblock *sb = &mfs->sb;
+
+    fs_keyslot_t slots[HORUS_KEYSLOTS];
+    if (keyslots_read(mfs->bd, sb, slots) != 0) return -2;
+    if (!slots[idx].active) { secure_zero(slots, sizeof(slots)); return -3; }
+
+    uint32_t active = 0;
+    for (uint32_t i = 0; i < HORUS_KEYSLOTS; i++) if (slots[i].active) active++;
+    if (active <= 1) { secure_zero(slots, sizeof(slots)); return -4; }
+
+#ifdef KEYSLOT_REMOVE_NOOP
+    /* CONTROL ARM -- never ship. Revocation that reports success and leaves the
+     * slot openable. A revoked password still unlocks the volume, and nothing
+     * says so: the count still drops if you only look at the flag, which is why
+     * the witness probes the PASSWORD rather than counting slots. */
+    (void)idx;
+#else
+    secure_zero(&slots[idx], sizeof(slots[idx]));   /* whole slot, not just the flag */
+#endif
+    int rc = keyslots_write(mfs->bd, sb, slots);
+    secure_zero(slots, sizeof(slots));
+    return rc == 0 ? 0 : -5;
+}
+
+/* How many slots can currently open this volume. Observability for the witness;
+ * it reveals a count, never a uid. */
+int storage_keyslot_count(void)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted || !mfs->unlocked) return -1;
+    fs_keyslot_t slots[HORUS_KEYSLOTS];
+    if (keyslots_read(mfs->bd, &mfs->sb, slots) != 0) return -1;
+    int n = 0;
+    for (uint32_t i = 0; i < HORUS_KEYSLOTS; i++) if (slots[i].active) n++;
+    secure_zero(slots, sizeof(slots));
+    return n;
+}
+
+/* The uid sealed in the slot that opened this volume, and that slot's index.
+ * Meaningful only after a successful storage_unlock. */
+uint32_t storage_unlocked_uid(void)  { return g_unlocked_uid;  }
+uint32_t storage_unlocked_slot(void) { return g_unlocked_slot; }
+
 int storage_rekey(const char *new_password, size_t plen)
 {
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
-
     struct fs_superblock *sb = &mfs->sb;
 
-    /* Fresh salt + nonce so the old wrapped key is immediately invalidated. */
-    uint8_t new_kek_salt[32], new_nonce[12];
-    secure_random_bytes(new_kek_salt, sizeof(new_kek_salt));
-    secure_random_bytes(new_nonce,    sizeof(new_nonce));
-
-    uint8_t kek[32];
-    if (derive_kek(new_password, plen, new_kek_salt, kek) != 0) return -2;
-
-    uint8_t wrap_keys[64];
-    {
-        const char *label = "horus-wrap-v1";
-        uint8_t info[13]; size_t n = 0;
-        for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
-        if (rust_hkdf_sha256(kek, 32, new_kek_salt, sizeof(new_kek_salt),
-                             info, n, wrap_keys, 64) != 0) {
-            secure_zero(kek, sizeof(kek));
-            return -3;
-        }
+    /* v7: rekey the slot THIS boot opened, not "the" wrap -- there is no longer
+     * a single one. Every other slot keeps working, which is the point of slots:
+     * one user changing their password must not lock everybody else out. Before
+     * key slots this function rewrote the volume's only wrap, so it could not
+     * tell the two apart. */
+    fs_keyslot_t slots[HORUS_KEYSLOTS];
+    if (keyslots_read(mfs->bd, sb, slots) != 0) return -2;
+    if (g_unlocked_slot >= HORUS_KEYSLOTS || !slots[g_unlocked_slot].active) {
+        secure_zero(slots, sizeof(slots));
+        return -2;
     }
-    secure_zero(kek, sizeof(kek));
 
-    uint8_t new_ct[32], new_tag[16];
-    my_memcpy(new_ct, mfs->disk_key, 32);
-    rust_aead_seal(wrap_keys, wrap_keys + 32, new_nonce,
-                   sb->volume_key_salt, sizeof(sb->volume_key_salt),
-                   new_ct, 32, new_tag);
-    secure_zero(wrap_keys, sizeof(wrap_keys));
+    fs_keyslot_t fresh;
+    secure_zero(&fresh, sizeof(fresh));
+    if (keyslot_seal(mfs->bd, sb, &fresh, new_password, plen,
+                     mfs->disk_key, g_unlocked_uid) != 0) {
+        secure_zero(slots, sizeof(slots));
+        secure_zero(&fresh, sizeof(fresh));
+        return -3;
+    }
+    slots[g_unlocked_slot] = fresh;
+    secure_zero(&fresh, sizeof(fresh));
 
-    my_memcpy(sb->kek_salt,          new_kek_salt, 32);
-    my_memcpy(sb->wrapped_key_nonce, new_nonce,    12);
-    my_memcpy(sb->wrapped_key_ct,    new_ct,       32);
-    my_memcpy(sb->wrapped_key_tag,   new_tag,      16);
-
-    mfs->bd->write_block(mfs->bd, 0, sb);
-    return 0;
+    int rc = keyslots_write(mfs->bd, sb, slots);
+    secure_zero(slots, sizeof(slots));
+    return rc == 0 ? 0 : -4;
 }
 
 int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len)

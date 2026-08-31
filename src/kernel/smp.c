@@ -464,6 +464,16 @@ void smp_bringup(void) {
     { extern void storage_vdisk_bound_selftest(void);
       storage_vdisk_bound_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(SHRINK_SELFTEST)
+    /* Gated: a volume is never served on a disk too small to hold it (S68). */
+    { extern void shrink_selftest(void); shrink_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
+#elif defined(BIGVOL_SELFTEST)
+    /* Gated: a 16 GiB volume formats, mounts, survives a reboot and holds a file
+     * whose offsets are past the old 1.00 GiB double-indirect ceiling. The
+     * end-to-end gate for the storage track. */
+    { extern void bigvol_selftest(void); bigvol_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(FSCKREF_SELFTEST)
     /* Gated: fsck must not free the blocks of a LIVE file. Two boots -- boot 1
      * writes a file reaching into the double-indirect tree, boot 2 unlocks

@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 129 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 130 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,71 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **A volume is 16 GiB, and its size comes from the disk** (**S68**, stage 4 of
+  `docs/design/meta-cache-merkle.md`). `BLOCKS_PER_DISK` is 4,194,304 — but it is now a
+  **ceiling**, not every volume's size: `g_ata_bd.total_blocks` is read from ATA IDENTIFY words
+  60–61 and clamped to it. It used to be the constant, so every ATA volume was laid out as
+  though the medium held exactly that many blocks whatever it held — wrong in both directions,
+  and it is why raising the constant would otherwise have made every persistence gate allocate
+  16 GiB. A disk reporting fewer sectors than a volume already on it is refused at mount rather
+  than served in part.
+- **Files reach past 1 GiB.** An inode gained `triple_indirect`, so the mapping is 12 direct
+  plus single-, double- and triple-indirect trees of 512 fan-out: 512 GiB, which means a file is
+  bounded by the volume rather than by the mapping. A 16 GiB volume whose files capped at
+  1.00 GiB would have had the mapping, not the disk, as the thing a user ran into. The three
+  indirect levels are one loop rather than three copies — a third transcription of the same code
+  is where a slip lands in the level nothing exercises until a file is a gigabyte long.
+- **Inode scaling.** `INODES_PER_BLOCK` 2 → 16 (an inode is 248 bytes; at 4 KiB, two per block
+  left each one 2048 bytes and made the table eight times the size it needed to be). The inode
+  bitmap spans blocks, as the data bitmap already did — it was one block, capping *any* volume
+  at 32768 inodes however large the disk. The inode table is no longer zeroed wholly at format;
+  `storage_alloc_inode` zeros a table block the first time an inode in it is allocated, which
+  the bitmap already knows.
+- **`storage_free_inode_blocks` runs as several transactions.** One atomic free of a large file
+  touches more bitmap blocks than the journal can hold — at 16 GiB the data bitmap spans 128
+  blocks against `JOURNAL_DATA_MAX` of 16 — so a single-transaction free would not merely be
+  expensive, it would **overflow and abort**, leaving the file whole and the caller told it was
+  deleted. The inode is killed first, in a transaction of its own, so a crash anywhere after
+  that leaves the dangling inode fsck repairs; the other order leaves freed blocks a live inode
+  still points at.
+- **The fsck sweep runs when the volume says it was interrupted**, not at every mount — the
+  journal replayed, or `sb.needs_fsck` (raised across the multi-transaction free). It walked the
+  whole inode table every time, which at 16 GiB is megabytes of PIO reads before the login
+  prompt on a boot where nothing was wrong. **Gating it defanged the S67 gate in the same
+  change** — `smoke-fsck-refs` passed without running fsck at all — so the witness now asserts
+  `storage_fsck_runs() != 0` and arms `needs_fsck` the way a crash would.
+- **Test images are sparse and no longer track the ceiling.** `PERSIST_BLOCKS` is a fixed
+  32768 (128 MiB) and images are made with `truncate`; `dd count=N` at a 16 GiB ceiling would
+  write sixteen real gigabytes of zeros before every persistence gate.
+- **Format version v12.** An inode gained a field and sixteen now share a block, and the inode
+  bitmap spans blocks — a v11 volume read as v12 would find its inode table where its block
+  bitmap is.
+
+  *Recorded, not fixed:* `storage_alloc_block` rescans the data bitmap from block 0 on every
+  allocation, which at a nearly-full 16 GiB volume is up to 128 block reads per allocation. It
+  was invisible at 128 MiB, where the bitmap is one block. `docs/LIMITATIONS.md` 3.5 says what
+  the fix is and why it is not in this change: nothing in this tree fills a 16 GiB volume, so
+  there is no measurement to improve on and no gate that would notice a regression.
+
+### Added
+
+- **`make smoke-fs-shrink`** — S68's other half, which `smoke-fs-16g` does not witness: a volume
+  formatted on a larger disk is **refused** on a smaller one, not served in part. Two boots with
+  the host truncating the image between them. The refusal is asserted by count rather than by a
+  volume failing to come up — that same silence is produced by a bad magic, a version mismatch or
+  an unreadable superblock. `STORAGE_MOUNT_ANY_SIZE=1` is the control, and its marker is that the
+  truncated volume *mounted*.
+- **`make smoke-fs-16g`** — the end-to-end gate for the storage track: a 16 GiB volume formats,
+  mounts, survives a reboot **and a crash**, and holds a file whose offsets are past the old
+  ceiling. Three boots on a sparse image (16 GiB declared, ~130 MiB written); the crash boot is
+  nearly free because the volume is already formatted, so recovery is tested at *this* size
+  rather than trusted from `smoke-meta-crash` at 128 MiB. It asserts positively that the volume
+  is at least `BLOCKS_PER_DISK` blocks and that the file reached triple-indirect, because a gate
+  for a 16 GiB volume that a 128 MiB image satisfies is a gate for nothing.
+
 
 ### Fixed
 

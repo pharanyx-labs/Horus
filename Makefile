@@ -114,7 +114,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
-	FSCK_SHALLOW_REFS \
+	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -508,6 +508,37 @@ FSCKREF_SELFTEST ?= 0
 ifeq ($(FSCKREF_SELFTEST),1)
 CFLAGS  += -DFSCKREF_SELFTEST
 ASFLAGS += -DFSCKREF_SELFTEST
+endif
+
+# BIGVOL_SELFTEST=1 builds the end-to-end gate for the storage track: a 16 GiB
+# volume formats, mounts, survives a reboot, and holds a file whose offsets are
+# past the old 1.00 GiB double-indirect ceiling.
+# WAL_CRASHTEST comes with it: the gate's second boot commits a write and halts
+# before applying it home, so the third can prove the journal recovered it AT
+# THIS VOLUME SIZE rather than at the 128 MiB one smoke-meta-crash uses.
+# SHRINK_SELFTEST=1 builds the witness for "a volume is never served on a disk
+# too small to hold it": two boots, with the HOST shrinking the image between
+# them, because a disk that is smaller than it was is something that happens to a
+# disk rather than something a kernel can do to itself.
+SHRINK_SELFTEST ?= 0
+ifeq ($(SHRINK_SELFTEST),1)
+CFLAGS  += -DSHRINK_SELFTEST
+ASFLAGS += -DSHRINK_SELFTEST
+endif
+
+# STORAGE_MOUNT_ANY_SIZE=1 drops the check, so a superblock claiming more blocks
+# than the device has is mounted and served -- part of a filesystem, presented as
+# whole.
+STORAGE_MOUNT_ANY_SIZE ?= 0
+ifeq ($(STORAGE_MOUNT_ANY_SIZE),1)
+CFLAGS  += -DSTORAGE_MOUNT_ANY_SIZE
+ASFLAGS += -DSTORAGE_MOUNT_ANY_SIZE
+endif
+
+BIGVOL_SELFTEST ?= 0
+ifeq ($(BIGVOL_SELFTEST),1)
+CFLAGS  += -DBIGVOL_SELFTEST -DWAL_CRASHTEST
+ASFLAGS += -DBIGVOL_SELFTEST -DWAL_CRASHTEST
 endif
 
 # FSCK_SHALLOW_REFS=1 restores the pre-2026-08-31 reference walk, which marked
@@ -3516,7 +3547,7 @@ smoke-e820:
 ifeq ($(STORAGE),ata)
 SMOKE_FS_FLAGS = STORAGE_ATA=1
 SMOKE_FS_ENV   = SMOKE_DISK=horus-fs.img
-SMOKE_FS_PREP  = dd if=/dev/zero of=horus-fs.img bs=$(FS_BLOCK_SIZE) count=$(BLOCKS_PER_DISK) status=none
+SMOKE_FS_PREP  = rm -f horus-fs.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) horus-fs.img
 # Sizes the test ATA disk image; MUST match the kernel's volume, so read the
 # authoritative value straight from the C #define rather than duplicating it (a
 # stale copy silently truncates the image below the on-disk layout the kernel
@@ -3570,7 +3601,13 @@ smoke-init-fs:
 # conditional is a definition most of the build cannot see.
 FS_BLOCK_SIZE ?= $(shell grep -oE '#define[[:space:]]+HORUS_BLOCK_SIZE[[:space:]]+[0-9]+' include/block_size.h | grep -oE '[0-9]+')
 
-PERSIST_BLOCKS  ?= $(shell grep -oE '#define[[:space:]]+BLOCKS_PER_DISK[[:space:]]+[0-9]+' src/include/kernel.h | grep -oE '[0-9]+')
+# THE TEST IMAGE'S SIZE, NOT THE KERNEL'S CEILING. This tracked BLOCKS_PER_DISK,
+# which was right while that constant was every volume's size and became wrong the
+# moment the volume started being sized from the disk: at a 16 GiB ceiling it
+# would have every persistence gate allocate 16 GiB. 32768 blocks is 128 MiB --
+# large enough for the workloads these gates run, small enough to create in a
+# blink. smoke-fs-16g is where a genuinely large volume gets exercised.
+PERSIST_BLOCKS  ?= 32768
 PERSIST_TIMEOUT ?= 300
 
 # The crash gates write several hundred journal transactions to an emulated IDE
@@ -3583,7 +3620,7 @@ smoke-fs-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=persist.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f persist.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) persist.img
 	@echo "[persist] boot 1/2 — write sentinel to a fresh encrypted disk"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
 		REQUIRE_MARKER='PERSIST_SELFTEST: WROTE' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
@@ -3619,7 +3656,7 @@ smoke-fs-wal:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f wal.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal.img
 	@echo "[wal] boot 1/2 — commit a write, then crash before applying it"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
 		WAIT_FOR_EXIT=1 \
@@ -3673,7 +3710,7 @@ smoke-fs-wal-flush:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-flush.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f wal-flush.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-flush.img
 	@echo "[wal-flush] every FLUSH CACHE fails with EIO; the journal must refuse to commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush.img \
 		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
@@ -3690,7 +3727,7 @@ smoke-fs-wal-flush-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-flush-control.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f wal-flush-control.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-flush-control.img
 	@echo "[wal-flush-control] barriers compiled out: the refusal must NOT appear"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush-control.img \
 		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
@@ -3714,7 +3751,7 @@ smoke-fs-wal-order:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-order.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f wal-order.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-order.img
 	@rm -f wal-order.trace
 	@echo "[wal-order] tracing IDE commands through one journal commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-order.img \
@@ -3733,7 +3770,7 @@ smoke-fs-wal-order-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-order-control.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f wal-order-control.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-order-control.img
 	@rm -f wal-order-control.trace
 	@echo "[wal-order-control] barriers compiled out: the ordering check must REJECT this"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-order-control.img \
@@ -7106,7 +7143,7 @@ smoke-keyslots:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=keyslots.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@rm -f keyslots.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) keyslots.img
 	@echo "[keyslots] boot 1/2 - format with one password, add a second slot"
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: WROTE' FAIL_MARKER='KEYSLOT_SELFTEST: FAIL' \
@@ -7126,7 +7163,7 @@ smoke-keyslots-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=keyslots-c.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@rm -f keyslots-c.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) keyslots-c.img
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots-c.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: WROTE' \
 		tools/smoke_test.sh boot.iso
@@ -7147,7 +7184,7 @@ smoke-users-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=users.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@rm -f users.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) users.img
 	@echo "[users] boot 1/2 - add an account and set its password"
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
@@ -7167,7 +7204,7 @@ smoke-users-persist-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=users-c.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@rm -f users-c.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) users-c.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-c.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' \
 		tools/smoke_test.sh boot.iso
@@ -7185,7 +7222,7 @@ smoke-users-tamper:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=users-t.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@rm -f users-t.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) users-t.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-t.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
 		tools/smoke_test.sh boot.iso
@@ -7206,7 +7243,7 @@ smoke-storage-noformat:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 boot.iso
-	@dd if=/dev/zero of=noformat.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@rm -f noformat.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) noformat.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat.img \
 		REQUIRE_MARKER='NOFORMAT_SELFTEST: REFUSED' \
 		FAIL_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
@@ -7219,7 +7256,7 @@ smoke-storage-noformat-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1 boot.iso
-	@dd if=/dev/zero of=noformat-c.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@rm -f noformat-c.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) noformat-c.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat-c.img \
 		REQUIRE_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
 		FAIL_MARKER='NOFORMAT_SELFTEST: REFUSED' \
@@ -7291,6 +7328,108 @@ smoke-vdisk-bound-control:
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
 
+# S68's other half: a volume is never served on a disk too small to hold it.
+# Two boots with the HOST shrinking the image between them -- boot 1 formats a
+# 128 MiB volume, the image is truncated to 32 MiB, boot 2 must refuse it.
+#
+# The refusal is asserted by COUNT, not by a volume failing to come up: a mount
+# that fails produces the same silence for a bad magic, a version mismatch or an
+# unreadable superblock, and a witness that cannot tell those apart is not a
+# witness for this.
+SHRINK_ARGS = SHRINK_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+SHRINK_BIG  ?= 32768
+SHRINK_SMALL ?= 8192
+
+.PHONY: smoke-fs-shrink
+smoke-fs-shrink:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS)
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) boot.iso
+	@rm -f shrink.img && truncate -s $$(( $(SHRINK_BIG) * $(FS_BLOCK_SIZE) )) shrink.img
+	@echo "[shrink] boot 1/2 - format a 128 MiB volume"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink.img \
+		REQUIRE_MARKER='SHRINK: boot1 formatted a volume the disk can hold' \
+		FAIL_MARKER='SHRINK: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[shrink] the disk shrinks under the volume"
+	@truncate -s $$(( $(SHRINK_SMALL) * $(FS_BLOCK_SIZE) )) shrink.img
+	@echo "[shrink] boot 2/2 - the truncated volume must be refused"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink.img \
+		REQUIRE_MARKER='SHRINK: PASS a volume larger than its disk was refused' \
+		FAIL_MARKER='SHRINK: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f shrink.img
+	@echo "[shrink] PASS - a truncated volume is refused, not served in part"
+
+# The falsifying arm: the check is gone, so the truncated volume mounts. The
+# marker is what HAPPENED (it mounted), not a refusal that did not arrive.
+.PHONY: smoke-fs-shrink-control
+smoke-fs-shrink-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) STORAGE_MOUNT_ANY_SIZE=1
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) STORAGE_MOUNT_ANY_SIZE=1 boot.iso
+	@rm -f shrink-c.img && truncate -s $$(( $(SHRINK_BIG) * $(FS_BLOCK_SIZE) )) shrink-c.img
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink-c.img \
+		REQUIRE_MARKER='SHRINK: boot1 formatted a volume the disk can hold' \
+		FAIL_MARKER='SHRINK: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@truncate -s $$(( $(SHRINK_SMALL) * $(FS_BLOCK_SIZE) )) shrink-c.img
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink-c.img \
+		REQUIRE_MARKER='SHRINK: FAIL a volume larger than its disk mounted' \
+		FAIL_MARKER='SHRINK: PASS' \
+		tools/smoke_test.sh boot.iso
+	@rm -f shrink-c.img
+	@echo "[shrink] CONTROL PASS - without the check, part of a filesystem is served as whole"
+
+# THE END-TO-END GATE FOR THE STORAGE TRACK. A 16 GiB volume formats, mounts,
+# survives a reboot, and holds a file whose offsets are past the old 1.00 GiB
+# double-indirect ceiling. Everything the other storage gates check in isolation
+# has to hold at once for this to pass.
+#
+# The image is SPARSE: 16 GiB declared, ~130 MiB actually written (the metadata
+# region, the tree, the bitmaps and a handful of data blocks). Creating it with
+# `dd count=N` would write sixteen real gigabytes of zeros before the first boot.
+#
+# THREE BOOTS: format and write, then reboot-and-crash, then replay and verify.
+# The crash boot is nearly free because the volume is already formatted, and
+# format is where a 16 GiB volume spends its minutes -- so testing recovery at
+# THIS size, rather than trusting smoke-meta-crash at 128 MiB, costs about a
+# minute. The journal's targets are absolute block numbers and the metadata block
+# a write touches here is thirty-two thousand blocks further into the region.
+#
+# Boot 1 pays for the format -- zeroing a 128 MiB metadata region and hashing it
+# into the tree, through emulated PIO -- which is why the budget is minutes and
+# not seconds. Boots 2 and 3 mount in the ordinary time, because the mount check
+# is one node against the root rather than a walk of the region: that difference
+# is what the Merkle tree bought and this gate is where it shows.
+BIGVOL_ARGS    = BIGVOL_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+BIGVOL_BLOCKS ?= $(shell grep -oE '#define[[:space:]]+BLOCKS_PER_DISK[[:space:]]+[0-9]+' src/include/kernel.h | grep -oE '[0-9]+')
+BIGVOL_TIMEOUT ?= 900
+
+.PHONY: smoke-fs-16g
+smoke-fs-16g:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(BIGVOL_ARGS)
+	@$(MAKE) --no-print-directory $(BIGVOL_ARGS) boot.iso
+	@rm -f bigvol.img && truncate -s $$(( $(BIGVOL_BLOCKS) * $(FS_BLOCK_SIZE) )) bigvol.img
+	@echo "[16g] boot 1/2 - format 16 GiB and write past the 1 GiB ceiling"
+	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
+		REQUIRE_MARKER='BIGVOL: boot1 formatted 16 GiB and wrote past the 1 GiB ceiling' \
+		FAIL_MARKER='BIGVOL: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[16g] boot 2/3 - mount what boot 1 left, then commit and crash"
+	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		FAIL_MARKER='BIGVOL: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[16g] boot 3/3 - replay, then read everything back"
+	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
+		REQUIRE_MARKER='BIGVOL: PASS' \
+		FAIL_MARKER='BIGVOL: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f bigvol.img
+	@echo "[16g] PASS - 16 GiB volume, reboot and crash survived, offsets past 1 GiB"
+
 # fsck must not free the blocks of a LIVE file. Two boots on one image: boot 1
 # writes a file reaching into the double-indirect tree, boot 2 unlocks -- which
 # runs fsck over it -- and asks the block BITMAP whether those blocks are still
@@ -7303,7 +7442,7 @@ smoke-fsck-refs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(FSCKREF_ARGS)
 	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) boot.iso
-	@dd if=/dev/zero of=fsckref.img bs=$(FS_BLOCK_SIZE) count=$$(($(PERSIST_BLOCKS) + 1)) status=none
+	@rm -f fsckref.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) fsckref.img
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref.img \
 		REQUIRE_MARKER='FSCKREF: boot1 wrote a double-indirect file' \
 		FAIL_MARKER='FSCKREF: FAIL' \
@@ -7323,7 +7462,7 @@ smoke-fsck-refs-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) FSCK_SHALLOW_REFS=1
 	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) FSCK_SHALLOW_REFS=1 boot.iso
-	@dd if=/dev/zero of=fsckref-c.img bs=$(FS_BLOCK_SIZE) count=$$(($(PERSIST_BLOCKS) + 1)) status=none
+	@rm -f fsckref-c.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) fsckref-c.img
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref-c.img \
 		REQUIRE_MARKER='FSCKREF: boot1 wrote a double-indirect file' \
 		tools/smoke_test.sh boot.iso
@@ -7405,7 +7544,7 @@ smoke-meta-crash:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS)
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) boot.iso
-	@dd if=/dev/zero of=meta-crash.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f meta-crash.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash.img
 	@echo "[meta-crash] boot 1/2 - write the working set, commit, crash"
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
@@ -7429,7 +7568,7 @@ smoke-meta-crash-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_NO_WRITEBACK=1
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_NO_WRITEBACK=1 boot.iso
-	@dd if=/dev/zero of=meta-crash-c.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f meta-crash-c.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash-c.img
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		tools/smoke_test.sh boot.iso
@@ -7450,7 +7589,7 @@ smoke-meta-crash-txn-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_WB_OUTSIDE_TXN=1
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_WB_OUTSIDE_TXN=1 boot.iso
-	@dd if=/dev/zero of=meta-crash-t.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f meta-crash-t.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash-t.img
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-t.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		tools/smoke_test.sh boot.iso
@@ -7476,7 +7615,7 @@ smoke-meta-crash-vacuity-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_BASE)
 	@$(MAKE) --no-print-directory $(META_CRASH_BASE) boot.iso
-	@dd if=/dev/zero of=meta-crash-v.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@rm -f meta-crash-v.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash-v.img
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-v.img \
 		REQUIRE_MARKER='METACACHE: FAIL no eviction occurred' \
 		tools/smoke_test.sh boot.iso

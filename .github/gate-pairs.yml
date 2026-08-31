@@ -47,6 +47,7 @@ control_arms:
   smoke-merkle-replay-control: smoke-merkle-replay
   smoke-merkle-parent-bind-control: smoke-merkle-replay
   smoke-fsck-refs-control: smoke-fsck-refs
+  smoke-fs-shrink-control: smoke-fs-shrink
   smoke-vdisk-bound-control: smoke-vdisk-bound
   smoke-storage-noformat-control: smoke-storage-noformat
   smoke-tui-diff-control: smoke-tui
@@ -150,6 +151,8 @@ gates:
   - smoke-meta-crash
   - smoke-merkle-replay
   - smoke-fsck-refs
+  - smoke-fs-16g
+  - smoke-fs-shrink
   - smoke-vdisk-bound
   - smoke-users-persist
   - smoke-users-tamper

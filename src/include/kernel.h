@@ -29,26 +29,29 @@ typedef uint64_t vaddr_t;
  * that accounts survive a reboot (docs/LIMITATIONS.md 2.6). Sized for MAX_USERS
  * records plus the AEAD header; the region is reserved at format time. */
 #define USERS_BLOCKS            16
-/* 32768 blocks x 512 B = 16 MiB volume (~14 MiB usable after metadata/journal/
- * inode-table/bitmap overhead). The DATA allocator uses a multi-block bitmap
- * (storage.c), so the data region is no longer capped at one bitmap block's 4096
- * bits; the inode allocator stays single-block (4096 inodes is ample for this
- * volume). Large enough to hold every ported coreutils binary in /bin at once
- * (~11 x ~450 KiB). The RAM vdisk's backing store moved out of .bss into a
- * physical-pool reservation (see VDISK_BYTES) so the volume can be this large
- * without blowing the __bss_end < USER_PHYS_BASE (16 MiB) ceiling. The per-block
- * crypto metadata is no longer a whole-volume array at all: it is a bounded
- * write-back cache of META_CACHE_LINES on-disk metadata blocks, so its RAM cost
- * is fixed and raising this number costs nothing in .bss.
+/* THE CEILING ON A VOLUME, NOT THE SIZE OF ONE. 4194304 x 4 KiB = 16 GiB, which
+ * is what an ATA disk is allowed to be laid out as; the actual volume is sized
+ * from the disk (IDENTIFY words 60-61, see storage_init), so a small image gets a
+ * small filesystem and the gates do not have to allocate 16 GiB each. Until
+ * 2026-08-31 this WAS every volume's size, because nothing read the disk's, and
+ * the two failure directions were a filesystem running off the end of a smaller
+ * disk and a larger one silently truncated.
  *
- * ITS ROLLBACK MAC IS TWO-LEVEL, NOT LOGARITHMIC, and this comment used to say
- * "hierarchical so the per-write cost does not scale with the volume". It does
- * scale: the top level is HMAC over sb.meta_blocks * 32 bytes, which is
- * proportional to the volume. Two levels made the constant much smaller than
- * re-HMACing the whole array, which is what the change was worth -- but at a
- * 16 GiB volume the top MAC alone would hash 1 MiB on every metadata write.
- * A real Merkle tree is what that needs, and it is not here yet. */
-#define BLOCKS_PER_DISK         32768
+ * WHAT HAD TO GO FIRST, because none of it is optional at this size:
+ *  - the per-block crypto metadata was a whole-volume .bss mirror (128 MiB here);
+ *    it is a bounded write-back cache of META_CACHE_LINES blocks (S65),
+ *  - the rollback MAC hashed a whole-volume array on every metadata write (1 MiB
+ *    here); it is a Merkle tree of fanout 128, four hashes deep (S66),
+ *  - fsck walked the whole inode table at every mount; it runs when the volume
+ *    says it was interrupted (sb.needs_fsck) or the journal replayed,
+ *  - an inode's mapping stopped at double-indirect, capping a file at 1.00 GiB on
+ *    a 16 GiB volume; triple-indirect reaches 512 GiB, so the disk is the bound,
+ *  - the inode bitmap was one block, capping ANY volume at 32768 inodes.
+ *
+ * What still scales with this number is `referenced[]` in storage_fsck_pass, one
+ * bit per block: 512 KiB of .bss here, against the linker's 16 MiB ceiling on the
+ * whole image. The LBA28 _Static_assert in storage.c is the next wall (128 GiB). */
+#define BLOCKS_PER_DISK         4194304
 #define PAGE_SIZE               4096
 
 /* ---- Kernel address translation --------------------------------------------
@@ -373,10 +376,13 @@ extern uint8_t stack_top[];
 #define AUDIT_LOG_SIZE          256
 #define PASS_SALT_LEN           16
 #define PASS_HASH_LEN           32
-/* On-disk inodes are 240 bytes, so only 2 fit in a 512-byte block. (The old
- * `BLOCK_SIZE/128 = 4` overran the block buffer when writing inode 2 or 3.)
- * A _Static_assert next to the struct definition pins this to sizeof. */
-#define INODES_PER_BLOCK        2
+/* Inodes per filesystem block. It was 2 -- chosen when a block was 512 bytes and
+ * an inode had to fit in 256 of them. At 4 KiB that left each inode 2048 bytes of
+ * a 248-byte structure, so an inode table was EIGHT TIMES the size it needed to
+ * be: at a 16 GiB volume that is the difference between 64 MiB and 8 MiB of
+ * table, all of it zeroed at format and walked by fsck. 16 gives each inode 256
+ * bytes, which the _Static_assert below holds it to. */
+#define INODES_PER_BLOCK        16
 uint32_t rust_get_user_page_protection(uint32_t t, uint64_t v);
 bool rust_user_page_is_noexec(uint64_t vaddr);
 int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, const uint8_t *name, size_t nlen);
@@ -1706,6 +1712,29 @@ typedef struct fs_superblock {
     uint64_t merkle_start;
     uint32_t merkle_blocks;
     uint32_t merkle_levels;
+    /* v12: the inode bitmap spans blocks, as the data bitmap already did. It was
+     * ONE block, which capped a volume at BLOCK_SIZE*8 = 32768 inodes however
+     * large the disk -- one inode per 128 blocks at 16 GiB, so a volume that can
+     * hold four million blocks could hold thirty-two thousand files. The cap was
+     * the bitmap, not a judgement about how many files anyone wants. */
+    uint32_t inode_bitmap_blocks;
+    /* v12: set while an operation that spans SEVERAL journal transactions is in
+     * flight, cleared when it finishes. Non-zero at mount means a crash landed
+     * inside one and the volume needs the fsck sweep; zero means every operation
+     * either committed whole or did not happen, which the journal guarantees on
+     * its own.
+     *
+     * WHY IT HAD TO EXIST. fsck walked the entire inode table at EVERY unlock --
+     * 2 MiB of PIO reads at a 16 GiB volume, before the login prompt, on a boot
+     * where nothing was wrong. It could not simply be dropped: the chunked free
+     * introduced with triple-indirect is genuinely multi-transaction, so an
+     * interrupted one leaves exactly the dangling inode fsck repairs. The flag
+     * is the difference between "run the sweep because something might be wrong"
+     * and "run it because something is".
+     *
+     * ANY FUTURE OPERATION THAT SPANS TRANSACTIONS MUST SET IT. That is a rule a
+     * compiler cannot enforce, so it is written here rather than left implied. */
+    uint32_t needs_fsck;
 } fs_superblock_t;
 _Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
                "fs_superblock must fit in one block");
@@ -1745,6 +1774,12 @@ typedef struct on_disk_inode {
     uint64_t direct[12];
     uint64_t indirect;
     uint64_t double_indirect;
+    /* v12. Without it a file stops at 12 + 512 + 512^2 blocks = 1.00 GiB, which
+     * is a strange thing to offer on a 16 GiB volume: the mapping, not the disk,
+     * would be what a user ran into. With it the reach is 512^3 blocks on top --
+     * 512 GiB -- so a file is bounded by the volume, which is the bound anyone
+     * would expect to hit. */
+    uint64_t triple_indirect;
     uint8_t  key_material[32];
     uint8_t  file_key[16];
     uint8_t  file_iv[16];
@@ -2283,6 +2318,10 @@ int ata_init(void);   /* probe primary master; 1 = ATA disk present, 0 = absent 
 int  ata_read(uint32_t lba, void *buf, uint32_t sectors);
 int  ata_write(uint32_t lba, const void *buf, uint32_t sectors);
 int  ata_flush(void);  /* FLUSH CACHE; 0 = on stable media, -1 = NOT durable */
+/* User-addressable 512-byte sectors from IDENTIFY words 60-61 (LBA28, saturating
+ * at 0x0FFFFFFF). 0 means the probe never ran or the drive reported nothing, and
+ * is a refusal rather than a size. */
+uint32_t ata_total_sectors(void);
 void scheduler_init(void);
 void smp_bringup(void);
 void aslr_init_seed(void);
@@ -2602,7 +2641,18 @@ uint64_t meta_cache_dirty_evictions(void);
  * a run whose whole tree stayed resident has not exercised the reload-and-verify
  * path at all. */
 uint64_t merkle_node_evictions(void);
-#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST)
+/* Times the fsck sweep has run this boot. The S67 witness asserts it is
+ * non-zero: the sweep is gated on `journal replayed || needs_fsck` since the
+ * volume grew, and a gate for what fsck does not do says nothing if fsck did not
+ * run. */
+uint64_t storage_fsck_runs(void);
+/* Mount attempts refused because the superblock described more blocks than the
+ * device has (S68). Counted so the witness can assert the refusal positively
+ * rather than inferring it from a volume that failed to come up, which a dozen
+ * other things also produce. */
+uint64_t storage_mount_oversize_refusals(void);
+int      storage_is_mounted(void);
+#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || defined(BIGVOL_SELFTEST)
 /* Storage witness hooks. Selftest builds only -- they expose the allocator's
  * choices and reach the block one past the volume, neither of which a shipping
  * kernel has any business doing. */
@@ -2612,6 +2662,7 @@ void     storage_test_merkle_targets(mounted_fs_t *mfs, uint64_t phys,
 uint32_t storage_test_scratch_get(void);
 void     storage_test_scratch_set(uint32_t phase);
 int      storage_test_block_allocated(mounted_fs_t *mfs, uint64_t phys);
+void     storage_test_arm_fsck(mounted_fs_t *mfs);
 #endif
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);

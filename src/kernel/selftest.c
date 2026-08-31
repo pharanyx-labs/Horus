@@ -2597,7 +2597,20 @@ void bigfile_selftest(void) {
         storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
     }
 
-    static const uint64_t blocks[] = { 0, 11, 12, 75, 76, 200, 1000, 3000 };
+    /* One from every mapping region, so a level that is wired up wrongly shows
+     * as a specific block rather than as "large files are broken":
+     *   0, 11        direct
+     *   12, 75       single-indirect (12 .. 12+511)
+     *   600, 3000    double-indirect (524 .. 262667); 600 rather than the
+     *                  boundary block 524, which the contiguous span below
+     *                  rewrites with stamp-only content and would then fail its
+     *                  body check for a reason that has nothing to do with the
+     *                  mapping
+     *   262668, 700000, 2000000   TRIPLE-indirect, including one deep enough to
+     *                  need a second level-2 block, and one past a 1 GiB file --
+     *                  which is exactly what the old ceiling was. */
+    static const uint64_t blocks[] = { 0, 11, 12, 75, 600, 3000,
+                                       262668, 700000, 2000000 };
     const unsigned N = sizeof(blocks) / sizeof(blocks[0]);
 
     for (unsigned i = 0; i < N; i++) {
@@ -2607,6 +2620,24 @@ void bigfile_selftest(void) {
         for (int j = 0; j < 8; j++)          buf[j] = (uint8_t)(b >> (j * 8));   /* stamp */
         if (storage_write_file_block(mfs, (uint64_t)ino, b, buf) != 0) {
             print("BIGFILE_SELFTEST: FAIL write blk=0x"); print_hex(b); print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+    }
+
+    /* The triple-indirect level must actually be in use, asserted against the
+     * inode rather than inferred from the block numbers -- an off-by-one in the
+     * region arithmetic would otherwise leave every one of those writes landing
+     * in the double-indirect tree and the test passing without touching the
+     * level it was added for. */
+    {
+        on_disk_inode_t chk;
+        if (storage_read_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &chk) != 0 ||
+            chk.triple_indirect == 0) {
+            print("BIGFILE_SELFTEST: FAIL triple-indirect never used\n");
+            for (;;) asm volatile ("hlt");
+        }
+        if (chk.double_indirect == 0) {
+            print("BIGFILE_SELFTEST: FAIL double-indirect never used\n");
             for (;;) asm volatile ("hlt");
         }
     }
@@ -3477,6 +3508,225 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef SHRINK_SELFTEST
+/* A volume is never served on a disk too small to hold it (SECURITY.md S68).
+ *
+ * Now that the device is sized from IDENTIFY rather than from a constant, a
+ * superblock claiming more blocks than the disk reports means the volume was
+ * formatted on a larger disk and this one is a TRUNCATED COPY. Every offset past
+ * the end is simply not there, and the data region's tail with it. Mounting it
+ * would serve part of a filesystem and call it whole.
+ *
+ * Two boots, and the host shrinks the image between them -- the same shape as the
+ * rollback harness, and for the same reason: a disk that is smaller than it was
+ * is something that happens to a disk, not something a kernel can do to itself.
+ *
+ * IT ASSERTS THE REFUSAL, NOT THE ABSENCE OF A MOUNT. A volume that fails to come
+ * up produces the same silence for a dozen reasons -- a bad magic, a version
+ * mismatch, an unreadable superblock -- so the witness counts the refusal that
+ * names this cause. Under STORAGE_MOUNT_ANY_SIZE=1 the marker is equally
+ * positive: the truncated volume MOUNTED.
+ */
+void shrink_selftest(void)
+{
+    print("SHRINK: begin\n");
+
+    /* storage_init has already probed the disk and tried to mount whatever is on
+     * it; the question this gate asks is settled by the time we get here. Look at
+     * the ANSWER first, before doing anything that would change it. */
+    uint64_t refusals = storage_mount_oversize_refusals();
+    int mounted = storage_is_mounted();
+
+    if (refusals > 0) {
+        if (mounted) {
+            /* Refused and yet mounted would mean something mounted it afterwards
+             * -- worth saying out loud rather than reporting a pass. */
+            print("SHRINK: FAIL refused and yet a volume is mounted\n");
+            for (;;) asm volatile ("hlt");
+        }
+        print("SHRINK: PASS a volume larger than its disk was refused\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    if (mounted) {
+        /* Boot 2 of the control arm: the check is gone and the truncated volume
+         * came up. Stated as what HAPPENED, not as a refusal that did not. */
+        print("SHRINK: FAIL a volume larger than its disk mounted\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Neither: a blank disk, which is boot 1. Format it, so that boot 2 has a
+     * volume to be too small for. The format happens at unlock, which is why
+     * this cannot simply read the disk and report. */
+    if (storage_unlock("shrinkpw", 8) != 0) {
+        print("SHRINK: FAIL boot1 could not format a volume\n");
+        for (;;) asm volatile ("hlt");
+    }
+    if (!storage_is_mounted()) {
+        print("SHRINK: FAIL boot1 formatted nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+    print("SHRINK: boot1 formatted a volume the disk can hold\n");
+    for (;;) asm volatile ("hlt");
+}
+#endif /* SHRINK_SELFTEST */
+
+#ifdef BIGVOL_SELFTEST
+/* A 16 GiB volume formats, mounts, survives a reboot, and holds a file whose
+ * offsets are past the old 1.00 GiB ceiling.
+ *
+ * This is the end-to-end gate for the whole storage track. Everything the other
+ * gates check in isolation has to hold at once for it to pass: the metadata cache
+ * (a whole-volume mirror would be 128 MiB of .bss), the Merkle tree (a flat MAC
+ * would hash 1 MiB per write and read the whole region at mount), the
+ * device-derived volume size, triple-indirect, and the inode scaling.
+ *
+ * THREE BOOTS, because the claim is a reboot AND a crash. Boot 1 formats and
+ * writes; boot 2 mounts what boot 1 left, writes one more block and HALTS with
+ * that block committed to the journal but not applied to its home location;
+ * boot 3 mounts, replays, and reads everything back -- the set boot 1 wrote,
+ * across the reboot, and the block boot 2 crashed on, out of the journal.
+ *
+ * The crash boot is nearly free: the volume is already formatted, and format is
+ * where a 16 GiB volume spends its minutes. Doing it at this size rather than
+ * relying on smoke-meta-crash at 128 MiB is the point -- the journal's targets
+ * are absolute block numbers, and the metadata block a write touches on a 16 GiB
+ * volume is thirty-two thousand blocks further into the region.
+ *
+ * IT ASSERTS THE VOLUME IS ACTUALLY LARGE. A gate for a 16 GiB volume that a
+ * 128 MiB image satisfies is a gate for nothing, and the image size lives in the
+ * Makefile where nothing would notice it shrinking.
+ */
+#define BIGVOL_INO       1
+/* One offset from every mapping region, the last three past what a
+ * double-indirect-only inode could reach (262668 blocks, 1.00 GiB). 3000000
+ * blocks is an offset of 11.4 GiB into the file. */
+#define BIGVOL_NBLOCKS   6
+static const uint64_t bigvol_blocks[BIGVOL_NBLOCKS] = {
+    0, 600, 262667, 262668, 700000, 3000000
+};
+/* Written by boot 2 and committed as it crashes; boot 3 must find it. Deep in
+ * the triple-indirect region, so the transaction that carries it also carries
+ * pointer-block writes at three levels. */
+#define BIGVOL_CRASH_BLOCK  2500000ull
+/* Blocks the volume must have for this to be the test it says it is. */
+#define BIGVOL_MIN_BLOCKS  4194304ull
+
+static uint8_t bigvol_byte(uint64_t b, uint32_t i)
+{
+    return (uint8_t)((b * 97u + i * 29u + 0x5Eu) & 0xFFu);
+}
+
+void bigvol_selftest(void)
+{
+    print("BIGVOL: begin\n");
+    if (storage_unlock("bigvolpw", 8) != 0) {
+        print("BIGVOL: FAIL volume did not mount\n"); for (;;) asm volatile ("hlt");
+    }
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    static uint8_t buf[BLOCK_SIZE];
+
+    if (mfs->sb.total_blocks < BIGVOL_MIN_BLOCKS) {
+        print("BIGVOL: FAIL the volume is too small for this to test anything\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    uint32_t phase = storage_test_scratch_get();
+    if (phase == 0xFFFFFFFFu) {
+        print("BIGVOL: FAIL scratch block unreadable\n"); for (;;) asm volatile ("hlt");
+    }
+
+    if (phase == 0) {
+        int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+        if (ino != BIGVOL_INO) {
+            print("BIGVOL: FAIL unexpected inode\n"); for (;;) asm volatile ("hlt");
+        }
+        on_disk_inode_t nd;
+        for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+        nd.type = 1; nd.mode = 0100600; nd.links = 1;
+        storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
+
+        for (unsigned k = 0; k < BIGVOL_NBLOCKS; k++) {
+            uint64_t b = bigvol_blocks[k];
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = bigvol_byte(b, i);
+            if (storage_write_file_block(mfs, BIGVOL_INO, b, buf) != 0) {
+                print("BIGVOL: FAIL boot1 write\n"); for (;;) asm volatile ("hlt");
+            }
+        }
+        on_disk_inode_t chk;
+        if (storage_read_inode(mfs->bd, &mfs->sb, BIGVOL_INO, &chk) != 0 ||
+            chk.triple_indirect == 0) {
+            print("BIGVOL: FAIL the file never reached triple-indirect\n");
+            for (;;) asm volatile ("hlt");
+        }
+        storage_test_scratch_set(1);
+        print("BIGVOL: boot1 formatted 16 GiB and wrote past the 1 GiB ceiling\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    if (phase == 1) {
+        /* The volume boot 1 left, mounted again -- the reboot half. Check one
+         * block came back BEFORE crashing, so boot 3 failing cannot be blamed on
+         * a reboot that had already lost the data. */
+        if (storage_read_file_block(mfs, BIGVOL_INO, bigvol_blocks[0], buf) != 0) {
+            print("BIGVOL: FAIL a block did not survive the reboot\n");
+            return;
+        }
+        storage_test_scratch_set(2);
+
+        /* Now the crash half: commit a write and halt before it is applied
+         * home. journal_commit prints its own marker and stops the machine. */
+        {
+            extern int g_wal_crash_armed;
+            uint64_t b = BIGVOL_CRASH_BLOCK;
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = bigvol_byte(b, i);
+            print("BIGVOL: boot2 survived the reboot; committing then crashing\n");
+            g_wal_crash_armed = 1;
+            storage_write_file_block(mfs, BIGVOL_INO, b, buf);   /* commits, halts */
+        }
+        print("BIGVOL: FAIL no-crash\n");                        /* unreachable */
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Boot 3: the journal has been replayed by storage_unlock. */
+    for (unsigned k = 0; k < BIGVOL_NBLOCKS; k++) {
+        uint64_t b = bigvol_blocks[k];
+        if (storage_read_file_block(mfs, BIGVOL_INO, b, buf) != 0) {
+            print("BIGVOL: FAIL a block did not survive the reboot\n");
+            return;
+        }
+        for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+            if (buf[i] != bigvol_byte(b, i)) {
+                print("BIGVOL: FAIL a block came back with the wrong contents\n");
+                return;
+            }
+        }
+    }
+
+    /* The block boot 2 committed and crashed on, recovered from the journal. */
+    if (storage_read_file_block(mfs, BIGVOL_INO, BIGVOL_CRASH_BLOCK, buf) != 0) {
+        print("BIGVOL: FAIL the committed block did not survive the crash\n");
+        return;
+    }
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        if (buf[i] != bigvol_byte(BIGVOL_CRASH_BLOCK, i)) {
+            print("BIGVOL: FAIL the recovered block came back wrong\n");
+            return;
+        }
+    }
+
+    /* A hole in the triple-indirect region must read as absent, not as another
+     * block's data -- the failure a mis-wired level produces that a written-then-
+     * read test cannot see. */
+    if (storage_read_file_block(mfs, BIGVOL_INO, 1500000, buf) == 0) {
+        print("BIGVOL: FAIL an unwritten hole returned data\n");
+        return;
+    }
+
+    print("BIGVOL: PASS a 16 GiB volume survived a reboot and a crash\n");
+}
+#endif /* BIGVOL_SELFTEST */
+
 #ifdef FSCKREF_SELFTEST
 /* fsck must not free the blocks of a LIVE file.
  *
@@ -3556,12 +3806,25 @@ void fsckref_selftest(void)
             print("FSCKREF: FAIL the working set never reached the double-indirect tree\n");
             for (;;) asm volatile ("hlt");
         }
+        /* Leave the volume as a crash inside a chunked free would: needs_fsck
+         * set. Without this, boot 2's unlock skips the sweep entirely and the
+         * gate passes because fsck never ran -- which is what it did the moment
+         * the sweep was gated, in the same change that gated it. */
+        storage_test_arm_fsck(mfs);
         storage_test_scratch_set(1);
         print("FSCKREF: boot1 wrote a double-indirect file\n");
         for (;;) asm volatile ("hlt");
     }
 
-    /* Boot 2. storage_unlock above already ran fsck over this volume. */
+    /* Boot 2. storage_unlock above should have run fsck over this volume --
+     * ASSERTED, not assumed. The sweep is gated on the volume looking
+     * interrupted, so a run in which it did not fire would sail through every
+     * check below having tested nothing at all. */
+    if (storage_fsck_runs() == 0) {
+        print("FSCKREF: FAIL the fsck sweep never ran - this run tested nothing\n");
+        return;
+    }
+
     unsigned freed = 0;
     uint64_t first_freed = 0;
     for (unsigned k = 0; k < FSCKREF_NBLOCKS; k++) {

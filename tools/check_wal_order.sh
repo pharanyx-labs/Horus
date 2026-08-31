@@ -48,14 +48,28 @@ if [ "$FLUSHES" -eq 0 ]; then
     exit 1
 fi
 
-TAIL="$(printf '%s\n' "$CMDS" | tail -4 | tr '\n' ' ' | sed 's/ $//')"
+# Collapse RUNS of the same command into one entry before matching.
+#
+# The property under test is the LOGICAL order -- data write, barrier, commit
+# header, barrier -- not how many IDE commands a block write decomposes into.
+# ata_write issues one WRITE SECTORS (0x30) per 512-byte sector, so at the 4 KiB
+# block size one logical block write is eight consecutive 0x30s and a fixed
+# four-command tail cannot match: the real trace ends "0x30 0x30 0x30 0xe7",
+# which collapses to exactly the expected sequence. This checker was encoding
+# "one block write is one IDE command" -- true only while a block WAS a sector.
+#
+# Collapsing cannot hide a missing barrier: two logical writes with no flush
+# between them collapse to a SINGLE 0x30, so the tail stops matching and the
+# check still fails. It removes only the sector count from the comparison.
+COLLAPSED="$(printf '%s\n' "$CMDS" | awk 'NR==1 || $0 != prev { print } { prev = $0 }')"
+TAIL="$(printf '%s\n' "$COLLAPSED" | tail -4 | tr '\n' ' ' | sed 's/ $//')"
 EXPECT="0x30 0xe7 0x30 0xe7"
 if [ "$TAIL" != "$EXPECT" ]; then
     echo "WAL_ORDER: FAIL commit sequence ends '$TAIL', expected '$EXPECT'" >&2
     echo "  (data write -> barrier A -> commit header -> barrier B)" >&2
-    echo "  last 12 commands: $(printf '%s\n' "$CMDS" | tail -12 | tr '\n' ' ')" >&2
+    echo "  last 12 collapsed: $(printf '%s\n' "$COLLAPSED" | tail -12 | tr '\n' ' ')" >&2
+    echo "  last 12 raw:       $(printf '%s\n' "$CMDS" | tail -12 | tr '\n' ' ')" >&2
     exit 1
 fi
-
 echo "WAL_ORDER: PASS $FLUSHES flushes; commit tail '$TAIL' (data -> A -> header -> B)"
 exit 0

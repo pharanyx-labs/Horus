@@ -2602,8 +2602,8 @@ uint64_t meta_cache_dirty_evictions(void);
  * a run whose whole tree stayed resident has not exercised the reload-and-verify
  * path at all. */
 uint64_t merkle_node_evictions(void);
-#ifdef MERKLE_SELFTEST
-/* Arm B's harness hooks. Selftest builds only -- they expose the allocator's
+#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST)
+/* Storage witness hooks. Selftest builds only -- they expose the allocator's
  * choices and reach the block one past the volume, neither of which a shipping
  * kernel has any business doing. */
 uint64_t storage_test_phys_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block);
@@ -2611,6 +2611,7 @@ void     storage_test_merkle_targets(mounted_fs_t *mfs, uint64_t phys,
                                      uint64_t *meta_block_out, uint64_t *node_block_out);
 uint32_t storage_test_scratch_get(void);
 void     storage_test_scratch_set(uint32_t phase);
+int      storage_test_block_allocated(mounted_fs_t *mfs, uint64_t phys);
 #endif
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);

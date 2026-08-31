@@ -114,6 +114,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
+	FSCK_SHALLOW_REFS \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -498,6 +499,25 @@ MERKLE_SKIP_PARENT_BIND ?= 0
 ifeq ($(MERKLE_SKIP_PARENT_BIND),1)
 CFLAGS  += -DMERKLE_SKIP_PARENT_BIND
 ASFLAGS += -DMERKLE_SKIP_PARENT_BIND
+endif
+
+# FSCKREF_SELFTEST=1 builds the witness for "fsck does not free a live file's
+# blocks": two boots, the second asking the block BITMAP whether the blocks of a
+# double-indirect file survived the fsck that unlock just ran.
+FSCKREF_SELFTEST ?= 0
+ifeq ($(FSCKREF_SELFTEST),1)
+CFLAGS  += -DFSCKREF_SELFTEST
+ASFLAGS += -DFSCKREF_SELFTEST
+endif
+
+# FSCK_SHALLOW_REFS=1 restores the pre-2026-08-31 reference walk, which marked
+# direct[] and the single-indirect block and stopped -- so every block reachable
+# only through double_indirect was reclaimed at every unlock and handed to the
+# next caller that allocated.
+FSCK_SHALLOW_REFS ?= 0
+ifeq ($(FSCK_SHALLOW_REFS),1)
+CFLAGS  += -DFSCK_SHALLOW_REFS
+ASFLAGS += -DFSCK_SHALLOW_REFS
 endif
 
 META_CRASH_SELFTEST ?= 0
@@ -7270,6 +7290,48 @@ smoke-vdisk-bound-control:
 		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
+
+# fsck must not free the blocks of a LIVE file. Two boots on one image: boot 1
+# writes a file reaching into the double-indirect tree, boot 2 unlocks -- which
+# runs fsck over it -- and asks the block BITMAP whether those blocks are still
+# allocated, then checks the consequence by allocating one and requiring it not
+# to be the file's.
+FSCKREF_ARGS = FSCKREF_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+
+.PHONY: smoke-fsck-refs
+smoke-fsck-refs:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(FSCKREF_ARGS)
+	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) boot.iso
+	@dd if=/dev/zero of=fsckref.img bs=$(FS_BLOCK_SIZE) count=$$(($(PERSIST_BLOCKS) + 1)) status=none
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref.img \
+		REQUIRE_MARKER='FSCKREF: boot1 wrote a double-indirect file' \
+		FAIL_MARKER='FSCKREF: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref.img \
+		REQUIRE_MARKER='FSCKREF: PASS' \
+		FAIL_MARKER='FSCKREF: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f fsckref.img
+	@echo "[fsck-refs] PASS - a live file's deep blocks survived fsck"
+
+# The falsifying arm: the reference walk stops at single-indirect, as it did
+# until 2026-08-31. The marker is POSITIVE and counted -- fsck freed N of M
+# blocks of a live file -- not "no PASS arrived".
+.PHONY: smoke-fsck-refs-control
+smoke-fsck-refs-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) FSCK_SHALLOW_REFS=1
+	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) FSCK_SHALLOW_REFS=1 boot.iso
+	@dd if=/dev/zero of=fsckref-c.img bs=$(FS_BLOCK_SIZE) count=$$(($(PERSIST_BLOCKS) + 1)) status=none
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref-c.img \
+		REQUIRE_MARKER='FSCKREF: boot1 wrote a double-indirect file' \
+		tools/smoke_test.sh boot.iso
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref-c.img \
+		REQUIRE_MARKER="FSCKREF: FAIL a live file's blocks were freed by fsck" \
+		tools/smoke_test.sh boot.iso
+	@rm -f fsckref-c.img
+	@echo "[fsck-refs] CONTROL PASS - a shallow reference walk frees a live file's blocks"
 
 # Arm B: an interior node is trusted only when it verifies against the path to
 # the CURRENT root. Three boots on one image; tools/merkle_replay.sh restores a

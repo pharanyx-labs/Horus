@@ -3477,6 +3477,140 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef FSCKREF_SELFTEST
+/* fsck must not free the blocks of a LIVE file.
+ *
+ * `storage_fsck_pass` reclaims data blocks the bitmap marks allocated but no
+ * live inode references. Until 2026-08-31 it built that reference set from
+ * direct[] and the single-indirect block only, and never walked
+ * `double_indirect` -- so every block reachable only through the
+ * double-indirect tree, and the pointer blocks under it, were reclaimed at
+ * EVERY unlock. A file over 12 + PTRS_PER_BLOCK blocks (2.048 MiB at 4 KiB;
+ * 38 KiB before the block size was raised) lost its blocks to the free list and
+ * the allocator handed them to whatever asked next.
+ *
+ * TWO BOOTS, because fsck runs at unlock and the first boot's unlock happens
+ * before the file exists. Boot 1 writes a file reaching into the double-indirect
+ * region and halts; boot 2 unlocks -- running fsck over that file -- and checks.
+ *
+ * IT ASKS THE BITMAP, NOT A READ-BACK. A freed-but-still-referenced block reads
+ * back perfectly: the inode still points at it and the bytes are untouched. The
+ * corruption appears only when the allocator hands the block to someone else, so
+ * a read-back witness would pass over the defect and fail later, somewhere else,
+ * for a reason nobody would connect to fsck. The bitmap is where the damage
+ * actually is.
+ *
+ * The consequence is checked too, second: allocate a block and require it not to
+ * be one the file already owns. That is the harm the bitmap bit predicts, and
+ * checking both means the marker names the cause rather than the symptom.
+ */
+#define FSCKREF_INO      1
+/* Past 12 direct + PTRS_PER_BLOCK single-indirect entries, so these live in the
+ * double-indirect tree by construction rather than by hope. Spread across two
+ * level-2 blocks so the walk has to follow more than one. */
+#define FSCKREF_NBLOCKS  4
+static const uint64_t fsckref_blocks[FSCKREF_NBLOCKS] = { 600, 700, 1200, 2000 };
+
+static uint8_t fsckref_byte(uint32_t b, uint32_t i)
+{
+    return (uint8_t)((b * 61u + i * 11u + 0x3Cu) & 0xFFu);
+}
+
+void fsckref_selftest(void)
+{
+    print("FSCKREF: begin\n");
+    if (storage_unlock("fsckrefpw", 9) != 0) {
+        print("FSCKREF: FAIL unlock\n"); for (;;) asm volatile ("hlt");
+    }
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    static uint8_t buf[BLOCK_SIZE];
+
+    uint32_t phase = storage_test_scratch_get();
+    if (phase == 0xFFFFFFFFu) {
+        print("FSCKREF: FAIL scratch block unreadable\n"); for (;;) asm volatile ("hlt");
+    }
+
+    if (phase == 0) {
+        int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+        if (ino != FSCKREF_INO) {
+            print("FSCKREF: FAIL unexpected inode\n"); for (;;) asm volatile ("hlt");
+        }
+        on_disk_inode_t nd;
+        for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+        nd.type = 1; nd.mode = 0100600; nd.links = 1;
+        storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
+
+        for (unsigned k = 0; k < FSCKREF_NBLOCKS; k++) {
+            uint64_t b = fsckref_blocks[k];
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = fsckref_byte((uint32_t)b, i);
+            if (storage_write_file_block(mfs, FSCKREF_INO, b, buf) != 0) {
+                print("FSCKREF: FAIL boot1 write\n"); for (;;) asm volatile ("hlt");
+            }
+        }
+        /* The file must be reaching the double-indirect tree, or the run tests
+         * the single-indirect path and says nothing about the defect. Checked
+         * positively, against the inode, rather than assumed from the numbers. */
+        on_disk_inode_t chk;
+        if (storage_read_inode(mfs->bd, &mfs->sb, FSCKREF_INO, &chk) != 0 ||
+            chk.double_indirect == 0) {
+            print("FSCKREF: FAIL the working set never reached the double-indirect tree\n");
+            for (;;) asm volatile ("hlt");
+        }
+        storage_test_scratch_set(1);
+        print("FSCKREF: boot1 wrote a double-indirect file\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Boot 2. storage_unlock above already ran fsck over this volume. */
+    unsigned freed = 0;
+    uint64_t first_freed = 0;
+    for (unsigned k = 0; k < FSCKREF_NBLOCKS; k++) {
+        uint64_t phys = storage_test_phys_block(mfs, FSCKREF_INO, fsckref_blocks[k]);
+        if (phys == 0) {
+            print("FSCKREF: FAIL a live file lost a block pointer entirely\n");
+            return;
+        }
+        int alloc = storage_test_block_allocated(mfs, phys);
+        if (alloc < 0) {
+            print("FSCKREF: FAIL bitmap unreadable\n");
+            return;
+        }
+        if (alloc == 0) { if (!freed) first_freed = phys; freed++; }
+    }
+
+    if (freed) {
+        print("FSCKREF: FAIL fsck freed ");
+        print_decimal((uint64_t)freed);
+        print(" of ");
+        print_decimal((uint64_t)FSCKREF_NBLOCKS);
+        print(" blocks of a live file, first at ");
+        print_decimal(first_freed);
+        print("\n");
+        /* One string, so a shared console cannot split the marker a gate greps
+         * for from the numbers above it. */
+        print("FSCKREF: FAIL a live file's blocks were freed by fsck\n");
+        return;
+    }
+
+    /* The consequence. A block just handed out must not be one this file owns --
+     * which is exactly what happens once the bitmap says free. */
+    int64_t fresh = storage_alloc_block(mfs->bd, &mfs->sb);
+    if (fresh < 0) {
+        print("FSCKREF: FAIL no free block to test the allocator with\n");
+        return;
+    }
+    for (unsigned k = 0; k < FSCKREF_NBLOCKS; k++) {
+        if ((uint64_t)fresh == storage_test_phys_block(mfs, FSCKREF_INO, fsckref_blocks[k])) {
+            print("FSCKREF: FAIL the allocator handed out a live file's block\n");
+            return;
+        }
+    }
+    storage_free_block(mfs->bd, &mfs->sb, (uint64_t)fresh);
+
+    print("FSCKREF: PASS a live file's deep blocks survived fsck\n");
+}
+#endif /* FSCKREF_SELFTEST */
+
 #ifdef MERKLE_SELFTEST
 /* Arm B of docs/design/meta-cache-merkle.md: an interior node is trusted only
  * when it verifies against the path to the CURRENT root.

@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 128 entries, newest first, each explaining what
+The narrative record of how Horus was built: 129 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,53 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Fixed: fsck was freeing the blocks of live files, and had been for months
+
+Found while planning the triple-indirect work, by reading `storage_fsck_pass` to see what a
+third level would have to be added to. There was no second level to add it to.
+
+The function reclaims data blocks the bitmap marks allocated but no live inode references --
+the repair for a crash between allocating a block and linking it into an inode. It builds that
+reference set by walking each live inode, and the walk was `direct[0..11]`, then
+`nd->indirect` and its entries, and then nothing. `nd->double_indirect` is never read. So every
+block reachable only through the double-indirect tree, and the single-indirect blocks under it,
+and the double-indirect block itself, were absent from the reference set -- and the sweep below
+cleared their bitmap bits. At every unlock.
+
+**The threshold is 12 + PTRS_PER_BLOCK blocks.** That is 2.048 MiB at today's 4 KiB block, and
+it was **38 KiB** at 512 bytes, which is where it sat for most of this project's life. Any file
+past it, surviving to a second mount, had its blocks handed back to the allocator.
+
+**Why nothing caught it, and this is the part worth keeping.** A freed-but-still-referenced
+block reads back perfectly. The inode still points at it, the bytes are untouched, the AEAD
+still verifies. Nothing is wrong until the allocator gives that block to somebody else, and then
+the corruption appears in a *different* file, at a *later* time, for a reason nobody would
+connect to fsck. The two gates that could have seen it each miss by one property:
+`smoke-fs-large` writes a double-indirect file and never mounts the volume again, so fsck never
+runs over it; `smoke-fs-persist` mounts twice but writes a file of a few blocks.
+
+**So the witness asks the bitmap, not the file.** Boot 2 resolves each of the file's logical
+blocks to a physical one and reads the data bitmap directly: `FSCKREF: FAIL fsck freed 4 of 4
+blocks of a live file, first at 4396`. Counted, so a partial reproduction stays visible. The
+consequence is checked afterwards rather than instead -- allocate a block, require it not to be
+one the file owns -- so the marker names the cause and the run still demonstrates the harm.
+
+Boot 1 asserts, against the inode, that the file it wrote actually reached the double-indirect
+tree. Without that the gate is one constant away from testing the single-indirect path and
+passing while saying nothing, which is the same shape as a crash gate whose working set fits its
+cache.
+
+**The comment was the reason it looked deliberate.** It read "Data blocks reachable from a live
+inode's direct/single-indirect pointers" -- an accurate description of what the code did, sitting
+above code that was incomplete. A comment that describes the implementation rather than the
+requirement cannot tell you the implementation is wrong.
+
+**Per-level static buffers, not recursion.** Each level of the walk needs a BLOCK_SIZE buffer;
+three nested is 12 KiB against the 16 KiB BSP kernel stack that #270 already overflowed once.
+The buffers are indexed by depth and fsck is not reentrant. `FSCK_MAX_DEPTH` is 3, which is the
+bound the triple-indirect level stage 4 adds will need.
+
 
 ### Changed: a rollback tree, and the difference between a tree and a pile of MACs
 

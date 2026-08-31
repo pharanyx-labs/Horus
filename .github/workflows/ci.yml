@@ -2500,6 +2500,14 @@ jobs:
       # IS checked here, against a node that is not placed under the root.
       - name: Control arm — a node verified without its parent chain
         run: make smoke-merkle-parent-bind-control
+      # fsck reclaims blocks no live inode references. Its reference walk stopped
+      # at single-indirect, so every block reachable only through the
+      # double-indirect tree was reclaimed at every unlock and handed to the next
+      # caller that allocated.
+      - name: fsck does not free the blocks of a live file
+        run: make smoke-fsck-refs
+      - name: Control arm — a shallow reference walk frees a live file's blocks
+        run: make smoke-fsck-refs-control
       # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
       # reservation, so a block past the backing store landed in the free page
       # pool. Diskless, so it runs here only for topical company.

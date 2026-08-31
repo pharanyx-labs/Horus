@@ -1662,9 +1662,12 @@ typedef struct fs_superblock {
     uint8_t  wrapped_key_nonce[12];  /* AEAD nonce for disk_key sealing */
     uint8_t  wrapped_key_ct[32];     /* AEAD ciphertext of disk_key[32] */
     uint8_t  wrapped_key_tag[16];    /* AEAD auth tag; wrong pwd → open fails → locked */
-    uint8_t  meta_hmac[32];          /* HMAC(meta_mac_key, the region's per-block MACs);
-                                       * recomputed on every metadata flush, verified on
-                                       * unlock to detect partial nonce/tag rollback */
+    /* v11: the ROOT OF THE MERKLE TREE over the metadata region, not a flat HMAC
+     * over every per-block MAC. Refreshed on every metadata write (four hashes,
+     * not a megabyte) and verified at unlock against the single top node block.
+     * The field kept its offset and lost its old meaning; the name changed with
+     * it, because "hmac" described a construction that is no longer there. */
+    uint8_t  meta_root[32];
     /* v6: measured-boot TPM sealing (roadmap 2.2). When tpm_mode == 1 the KEK is
      * two-factor — HKDF(password-KEK, tpm_secret) — where tpm_secret is TPM2-sealed
      * under a PolicyPCR(PCR8,PCR9) and released only under a measured-good boot. The
@@ -1695,6 +1698,14 @@ typedef struct fs_superblock {
     uint64_t users_start;
     uint32_t users_blocks;
     uint32_t _users_pad;
+    /* v11: the Merkle node region. Levels are stored contiguously from level 0
+     * (whose hashes are the metadata blocks' MACs) upward, and the per-level
+     * counts are re-derived from meta_blocks rather than stored -- one number
+     * that can disagree with another is one too many, and the derivation is
+     * three lines (merkle_layout). */
+    uint64_t merkle_start;
+    uint32_t merkle_blocks;
+    uint32_t merkle_levels;
 } fs_superblock_t;
 _Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
                "fs_superblock must fit in one block");
@@ -2587,6 +2598,20 @@ uint64_t meta_cache_evictions(void);
  * on every workload in this tree; this counter is what turns that from an
  * argument into a number the gates print on every run. */
 uint64_t meta_cache_dirty_evictions(void);
+/* Evictions from the Merkle node cache. Same job as the metadata counter above:
+ * a run whose whole tree stayed resident has not exercised the reload-and-verify
+ * path at all. */
+uint64_t merkle_node_evictions(void);
+#ifdef MERKLE_SELFTEST
+/* Arm B's harness hooks. Selftest builds only -- they expose the allocator's
+ * choices and reach the block one past the volume, neither of which a shipping
+ * kernel has any business doing. */
+uint64_t storage_test_phys_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block);
+void     storage_test_merkle_targets(mounted_fs_t *mfs, uint64_t phys,
+                                     uint64_t *meta_block_out, uint64_t *node_block_out);
+uint32_t storage_test_scratch_get(void);
+void     storage_test_scratch_set(uint32_t phase);
+#endif
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);
 int  do_rotate_keys(void);
@@ -2880,6 +2905,52 @@ int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
  * arms, not a defect. */
 #ifndef META_CACHE_LINES
 #define META_CACHE_LINES       32
+#endif
+
+/* ---- the Merkle rollback tree (stage 3) ----------------------------------
+ *
+ * WHAT IT REPLACES. The rollback MAC was two-level: one HMAC per metadata block,
+ * held in `g_meta_block_mac[META_BLOCKS_MAX]`, and then one HMAC over ALL of
+ * them stored in the superblock. Both halves scale with the volume -- the array
+ * is 32 bytes per metadata block, 1 MiB at 16 GiB, and the top HMAC hashes every
+ * byte of it ON EVERY METADATA WRITE. Two levels made the constant smaller than
+ * re-hashing the whole region; it never made the cost logarithmic, and a 1 MiB
+ * O(volume) array left in place would have defeated the point of the tree.
+ *
+ * A node block holds MERKLE_FANOUT 32-byte hashes. Level 0's hashes are the
+ * metadata blocks' MACs; level k+1's are the hashes of level k's node blocks;
+ * the top level is one block, whose hash is `sb.meta_root` in the superblock.
+ * At a 16 GiB volume that is 32768 metadata blocks -> 256 -> 2 -> 1, so a write
+ * costs four hashes and four staged block writes instead of hashing 1 MiB, and
+ * unlock verifies ONE node against the root instead of reading the whole region.
+ *
+ * A NODE IS BOUND TO ITS POSITION AND ITS GENERATION THROUGH ITS PARENT, and
+ * that is the whole difference between a tree and a pile of independent MACs.
+ * The hash covers (level, index, bytes), so two nodes cannot be swapped; and it
+ * is checked against the value its PARENT records, up to the root, so a node
+ * that was genuinely valid at an earlier time does not verify now. A node
+ * verified only against its own MAC would accept exactly that replay --
+ * MERKLE_SKIP_PARENT_BIND=1 is the arm for it, and the replayed bytes it uses
+ * are a real past state of the volume rather than a forgery, which is what makes
+ * the arm test the tree rather than the MAC.
+ *
+ * WHAT IT DOES NOT COVER: whole-volume rollback. The root lives in the
+ * superblock it protects, so an attacker who replaces superblock, metadata and
+ * tree together with a consistent earlier snapshot defeats it. See SECURITY.md
+ * S66 and docs/LIMITATIONS.md -- that needs a freshness anchor outside the
+ * volume and is not in scope here. */
+#define MERKLE_FANOUT          (BLOCK_SIZE / 32)   /* 128 at 4 KiB */
+/* The deepest tree BLOCKS_PER_DISK can produce, plus the root. Four levels reach
+ * 128^4 = 268M metadata blocks; the LBA28 ceiling stops the volume long before
+ * that, so this is generous rather than tight, and merkle_levels() asserts
+ * against it rather than trusting the arithmetic. */
+#define MERKLE_MAX_LEVELS      6
+/* Resident node blocks. A verification walks one node per level from the root
+ * down, so the cache must hold a whole path plus the line being loaded, or the
+ * walk evicts its own parent. Asserted in storage.c against MERKLE_MAX_LEVELS
+ * rather than left as a number someone might lower. */
+#ifndef MERKLE_CACHE_LINES
+#define MERKLE_CACHE_LINES     16
 #endif
 int  rust_aead_seal(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t *nonce,
                     const uint8_t *aad, size_t aad_len,

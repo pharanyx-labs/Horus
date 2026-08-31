@@ -44,6 +44,8 @@ control_arms:
   smoke-meta-crash-control: smoke-meta-crash
   smoke-meta-crash-txn-control: smoke-meta-crash
   smoke-meta-crash-vacuity-control: smoke-meta-crash
+  smoke-merkle-replay-control: smoke-merkle-replay
+  smoke-merkle-parent-bind-control: smoke-merkle-replay
   smoke-vdisk-bound-control: smoke-vdisk-bound
   smoke-storage-noformat-control: smoke-storage-noformat
   smoke-tui-diff-control: smoke-tui
@@ -145,6 +147,7 @@ gates:
   - smoke-tui
   - smoke-keyslots
   - smoke-meta-crash
+  - smoke-merkle-replay
   - smoke-vdisk-bound
   - smoke-users-persist
   - smoke-users-tamper

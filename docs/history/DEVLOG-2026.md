@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 127 entries, newest first, each explaining what
+The narrative record of how Horus was built: 128 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,95 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Changed: a rollback tree, and the difference between a tree and a pile of MACs
+
+Stage 3. `sb.meta_hmac` was an HMAC over `g_meta_block_mac[]`, a whole-volume array holding one
+MAC per metadata block. Both halves scale with the disk: 32 bytes per metadata block of .bss,
+and every byte of it hashed ON EVERY METADATA WRITE. At 16 GiB that is 1 MiB of each, plus a
+mount that reads the entire region to rebuild the array. Stage 2 took the metadata mirror out of
+RAM; leaving this one in would have moved the ceiling by nothing.
+
+The tree is fanout 128 (a 4 KiB block of 32-byte hashes). Level 0's hashes are the metadata
+blocks' MACs, level k+1's are the hashes of level k's node blocks, the top block's hash is
+`sb.meta_root`. At a 16 GiB volume that is 32768 -> 256 -> 2 -> 1, so a write costs four hashes
+and four staged block writes, and **unlock verifies one node against the root** rather than
+reading 128 MiB. Everything below the root is verified LAZILY, when a metadata block is first
+loaded into the cache stage 2 built -- which is where the two stages meet, and why they had to
+land in this order.
+
+**What the design doc got right, and it is the whole of Arm B.** "The replayed node must be
+independently valid. If Arm B replays garbage, or a node whose own MAC fails, then the arm
+passes because the MAC check fired -- and it has tested nothing about the tree structure." That
+sentence is what shaped the harness. The tamper restores a genuine past state of TWO blocks: a
+metadata block AND the level-0 node that recorded its hash, both snapshotted from a copy of this
+very image while they were current. Every hash in the pair checks out locally. Nothing is
+forged. The only thing wrong with them is that they are old, and the only structure that can say
+so is the chain to the current root.
+
+Restoring the metadata block ALONE would have proved nothing, and this is the trap the doc was
+pointing at: the block's own leaf hash no longer matches what the node records, so the leaf check
+refuses it -- and a design that MAC'd every block independently would refuse it identically. I
+measured that rather than assuming it. Under `MERKLE_SKIP_PARENT_BIND=1`, the build with the
+chain removed, restoring the block without its node is still refused 6 of 6. So what that arm
+removes is provably the chain and not the check, and `tools/merkle_replay.sh` keeps the
+`MERKLE_RESTORE=meta` knob that measured it even though no gate runs it.
+
+**Two arms, because the rule can be lost in two places.**
+
+- `MERKLE_NODE_TRUST_CACHED=1` sets a node line's `verified` flag where the line is FILLED
+  rather than where it is checked. Residency becomes the trust criterion. This is one edit away
+  from the correct code and it is the edit a performance shortcut makes -- re-checking a node on
+  every cache HIT genuinely is wasteful, the flag exists to skip it, and setting the flag one
+  line too early skips the one check that mattered.
+- `MERKLE_SKIP_PARENT_BIND=1` checks the leaf against the node that records it and never places
+  that node under the root. Forgeries and swaps are still refused; only the question of whether
+  the state is the CURRENT one is gone.
+
+Both serve all 6 rolled-back blocks, and both markers are positive -- the volume handed the
+earlier contents back -- rather than "no refusal arrived", which a boot that never reached the
+read would satisfy.
+
+**The harness needed somewhere to keep a phase counter across three boots, and the answer was
+outside the volume.** A phase file on the filesystem would live in the same subtree the tamper
+rewinds; a reserved block in the layout would put test scaffolding in a format that ships. The
+image is made one block LONGER than the device instead, and the counter lives there -- storage
+the filesystem can never reach and no shipping layout has to know about. The tampering itself is
+done by the host with `dd`, not by the kernel, because that is what a physical attacker with the
+disk actually does.
+
+**The anti-vacuity check is on the tamper, not on the read.** If boot 2 did not actually change
+both target blocks, the restore undoes nothing and boot 3 passes having replayed nothing -- the
+same shape as a crash gate whose working set fits in its cache. So the script `cmp`s both blocks
+between the snapshot and the live image and refuses to reach boot 3 unless both differ.
+
+**A gate that reddens by TIMEOUT is a gate that says nothing.** Falsifying the base gate against
+each defect flag worked -- both went red -- and each took 600 seconds to do it, because boot 3
+was waiting out its budget for a marker the defect build never prints. The run ends "timed out
+without required marker", which is what an infrastructure problem looks like, and it is what a
+real regression in CI would have looked like too. Each target now passes its counterpart's marker
+as FAIL_MARKER, so the base gate stops the moment it sees a FAIL and the arms stop the moment
+they see a PASS: 600 s became 44 s, and the line printed names which way it went.
+
+**A checker's reach, and the two gates it had been missing.** `tools/check_gate_evidence.py`
+counted boot-harness invocations in the MAKEFILE RECIPE, so `smoke-merkle-replay` -- three boots,
+all of them inside `tools/merkle_replay.sh` -- counted as booting once and was never asked how it
+knows those boots ran. That is the exact silence the file exists to refuse, reappearing one level
+of indirection down: the rule was right and its reach was not. Folding in the text of any
+`tools/*.sh` a recipe calls surfaced **two pre-existing gates** that had been booting thirty
+times each, invisibly, for months: `smoke-console-smp-stress` and `smoke-sched-invariants-stress`.
+
+Getting that widening right took three tries and every one of them is a lesson about checkers.
+(1) Expanding every script made EVERY single-boot target look multi-boot, because the boot
+harness itself contains the word the pattern matches and a poll loop of its own -- so the two
+harnesses are excluded from expansion. (2) `smoke-tpm` and `smoke-tpm-tamper` then read as
+two-boot gates because `tools/smoke_tpm.sh` NAMES `run_with_swtpm.sh` in a comment above the one
+line that runs it -- so whole-line comments are stripped before counting. (3) Stripping comments
+made the stress pair invisible AGAIN, because the only reason they had shown up was three
+mentions of `smoke_test.sh` in `stress_boot.sh`'s prose, and the loop pattern spelled the
+Makefile's `$$(seq` and not the shell's `$(seq`. A checker whose first version flags the right
+targets for the wrong reason is a checker that will stop flagging them.
+
 
 ### Changed: the metadata mirror is a bounded cache, and the journal is what makes that safe
 

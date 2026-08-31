@@ -43,11 +43,62 @@ MANIFEST = ROOT / ".github" / "gate-evidence.yml"
 # the rule whose whole job is to refuse silence. So the test is on the number of
 # boot-harness invocations, with the loop forms folded in for the targets that
 # invoke the harness once inside a loop.
-LOOP_RE = re.compile(r"for \w+ in \$\$\(seq|while \[ \$\$\w+ -lt|until \[")
-HARNESS_RE = re.compile(r"smoke_test\.sh|session_test\.py")
+# Both spellings of the same loop. `$$(seq` is what a Makefile recipe writes;
+# `$(seq` is what the same loop looks like inside a tools/*.sh script, and until
+# the script bodies were folded in there was no reason for this pattern to know
+# the difference. tools/stress_boot.sh loops STRESS_RUNS boots that way, so
+# without the second form smoke-console-smp-stress and smoke-sched-invariants-
+# stress read as single-boot gates -- which is the false NEGATIVE that appeared
+# when whole-line comments stopped being counted, and is why this pattern was
+# checked in both directions rather than only against the targets it flagged.
+LOOP_RE = re.compile(r"for \w+ in \$\$?\(seq|while \[ \$\$?\w+ -lt|until \[")
+HARNESS_RE = re.compile(r"smoke_test\.sh|session_test\.py|run_with_swtpm\.sh")
+
+# A RECIPE THAT DELEGATES ITS BOOTS TO A SCRIPT WAS INVISIBLE HERE until
+# 2026-08-31. This file counted boot-harness invocations in the Makefile recipe,
+# so `smoke-merkle-replay` -- three boots, all of them inside
+# tools/merkle_replay.sh -- counted as booting ONCE and was never asked how it
+# knows those boots ran. That is the exact silence the file exists to refuse,
+# reappearing one level of indirection down: the rule was right and its reach was
+# not. So a recipe that calls a tools/*.sh script is read WITH that script's text
+# folded in, and the script's boots count as the target's.
+SCRIPT_RE = re.compile(r"tools/([A-Za-z0-9_.\-]+\.sh)")
+# A BOOT HARNESS IS NEVER EXPANDED, and there are two of them: smoke_test.sh and
+# run_with_swtpm.sh, which advertises the same contract. Each boots ONCE and each
+# polls the serial log in a `while` loop of its own, so folding either in makes
+# every target that calls it look like a multi-boot one -- the rule inverted. The
+# first version of this change did exactly that, and the three swtpm targets were
+# its false positives.
+NOT_EXPANDED = {"smoke_test.sh", "run_with_swtpm.sh"}
+
+
+def strip_comments(text):
+    """Drop whole-line shell comments.
+
+    A script that MENTIONS a boot harness in its header prose is not a script
+    that calls it twice. tools/smoke_tpm.sh names run_with_swtpm.sh in a comment
+    above the one line that runs it, and counting both made smoke-tpm and
+    smoke-tpm-tamper look like two-boot gates.
+    """
+    return "\n".join(l for l in text.split("\n") if not l.lstrip().startswith("#"))
+
+
+def expand_scripts(body, seen=None):
+    """Recipe text with the text of any tools/*.sh script it calls appended."""
+    seen = seen or set()
+    text = body
+    for name in SCRIPT_RE.findall(body):
+        if name in seen or name in NOT_EXPANDED:
+            continue
+        seen.add(name)
+        path = ROOT / "tools" / name
+        if path.exists():
+            text += "\n" + expand_scripts(strip_comments(path.read_text()), seen)
+    return text
 
 
 def boots_more_than_once(body):
+    body = expand_scripts(body)
     return bool(LOOP_RE.search(body)) or len(HARNESS_RE.findall(body)) > 1
 
 

@@ -630,6 +630,32 @@ Falsified by `tools/test_check_invariants.sh`, which the required `invariants` j
 arms now, one per rule, including R7 against a row naming a renamed function and R8 against a
 tree with every mention of a property stripped out.
 
+### 1.12 The rollback tree does not make the volume monotonic
+
+**S66** catches *partial* rollback: a subtree of the metadata region rewound to an earlier
+state while the rest of the volume moves on. Every node hash binds its position and is checked
+against the value its parent records, up to the root, so a node that was genuinely valid at an
+earlier time does not verify now.
+
+**It does not stop whole-volume rollback, and nothing in this tree does.** An attacker with
+physical access who replaces the superblock, the metadata region and the tree **together**
+with a consistent earlier snapshot of all three defeats every check: the root lives in the
+superblock it is meant to protect, so rewinding both is self-consistent by construction. There
+is no forgery to detect and no internal relationship that breaks. Both falsifying arms
+(`MERKLE_NODE_TRUST_CACHED`, `MERKLE_SKIP_PARENT_BIND`) are silent on it, deliberately — they
+are aimed at the partial case, which is what a tree can decide.
+
+Defending this needs a **freshness anchor outside the volume**: a value that increases and that
+the attacker cannot rewind, compared against one stored inside. A TPM NV monotonic counter is
+the usual answer, and this machine already talks to a TPM for the sealed KEK (**S12**), so the
+mechanism is within reach. It is not implemented and no gate asserts it.
+
+This section exists because "we added a Merkle tree" invites the reading that rollback is
+solved. The tree improves the per-write cost from O(volume) to O(log volume) and catches
+partial rollback. Those are the two things it does.
+
+---
+
 ## 2. Correctness limitations
 
 ### 2.0 ~~Spinlock interrupt state is global, and the bug is load-bearing~~ (**FIXED

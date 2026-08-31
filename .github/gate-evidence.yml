@@ -60,6 +60,34 @@ liveness:
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.
 exempt:
+  # The five entries below were added on 2026-08-31, when this file's checker
+  # learned to read the scripts a recipe delegates its boots to. Two of them --
+  # the stress pair -- had been booting thirty times each, invisibly, since long
+  # before that: the rule was right and its reach was not.
+  smoke-merkle-replay: >
+    Three boots inside tools/merkle_replay.sh under `set -euo pipefail`, each
+    with its own REQUIRE_MARKER (and a FAIL_MARKER on boots 1 and 2), so a boot
+    that died fails the run rather than being read as the property holding. It
+    additionally refuses to reach boot 3 unless boot 2 provably CHANGED both
+    blocks the tamper restores -- a restore that undoes nothing would let boot 3
+    pass having replayed nothing, which is this file's defect in the shape the
+    crash gates meet as "the working set fit in the cache".
+  smoke-merkle-replay-control: >
+    Same script and the same three asserted boots; boot 3 requires the positive
+    FAIL marker (the volume served a rolled-back block), so a dead boot reddens
+    the arm rather than being credited with reproducing the defect.
+  smoke-merkle-parent-bind-control: >
+    Same script, same shape, same positive boot-3 marker as the arm above.
+  smoke-console-smp-stress: >
+    tools/stress_boot.sh asserts EVERY run's exit status, classifies each
+    failure as having tripped FAIL_MARKER or having died some other way, prints
+    both counts, and dumps the first failure's serial log to stdout rather than
+    to a file CI throws away. A boot that never happened is a failure, not a
+    silent pass.
+  smoke-sched-invariants-stress: >
+    Same mechanism, with STRESS_GATE=marker so a run that died without tripping
+    the marker is reported separately from one that did -- the distinction this
+    file exists to require, made per run over STRESS_RUNS of them.
   smoke-session-smp-soak: >
     Asserts every run's exit status AND that the run made at least
     SOAK_MIN_CHECKS checks, reporting a run that exits 0 with too few checks as

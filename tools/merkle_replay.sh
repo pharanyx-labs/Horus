@@ -50,7 +50,7 @@ rm -f "$IMG" "$SNAP" "$LOG"-p1.log "$LOG"-p2.log "$LOG"-p3.log
 # ONE BLOCK LONGER THAN THE VOLUME. The extra block carries the harness's phase
 # counter: storage outside the filesystem, so nothing the tampering rewinds can
 # take the phase with it, and nothing in a shipping layout has to reserve it.
-dd if=/dev/zero of="$IMG" bs="$BS" count=$((NBLOCKS + 1)) status=none
+truncate -s $(( NBLOCKS * BS )) "$IMG"
 
 echo "[merkle] boot 1/3 - write set A, report the tamper targets"
 SMOKE_TIMEOUT="$TMO" MARKER_ONLY=1 SMOKE_DISK="$IMG" \

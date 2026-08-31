@@ -121,6 +121,9 @@ int ata_flush(void) {
     return 0;
 }
 
+/* Filled by ata_init from IDENTIFY words 60-61; 0 until then. */
+static uint32_t g_ata_sectors = 0;
+
 static int ata_read_sector(uint32_t lba, uint8_t *buf) {
     spin_lock(&ata_lock);
 
@@ -230,13 +233,33 @@ int ata_init(void) {
         return 0;
     }
 
-    for (int i = 0; i < 256; i++) {
-        (void)inw(ATA_DATA);        /* drain the 256-word IDENTIFY block */
-    }
+    /* KEEP WORDS 60-61: the LBA28 user-addressable sector count. The block was
+     * drained and discarded until 2026-08-31, which meant the kernel had no idea
+     * how large the disk in front of it was -- so the filesystem was laid out
+     * against a COMPILE-TIME constant instead, and every volume was
+     * BLOCKS_PER_DISK blocks whatever the medium held. That is the wrong way
+     * round in both directions: a smaller disk gets a filesystem that runs off
+     * the end of it, and a larger one is truncated to the constant with no way
+     * to say so.
+     *
+     * Words 60-61 are a 32-bit little-endian count and are LBA28: they saturate
+     * at 0x0FFFFFFF. A drive larger than 128 GiB reports the saturated value and
+     * its true size lives in words 100-103 (LBA48), which this driver cannot
+     * address anyway -- see the LBA28 _Static_assert in storage.c. Taking the
+     * saturated value is therefore correct here: it is exactly the largest LBA
+     * this driver can reach. */
+    uint16_t id[256];
+    for (int i = 0; i < 256; i++) id[i] = inw(ATA_DATA);
+    g_ata_sectors = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
 
     kmsg("ata: primary master ready (PIO)");
     return 1;
 }
+
+/* User-addressable 512-byte sectors reported by IDENTIFY, or 0 if the probe
+ * never ran or the drive reported nothing. 0 means "unknown", and every caller
+ * must treat it as a refusal rather than as a size. */
+uint32_t ata_total_sectors(void) { return g_ata_sectors; }
 
 int ata_read(uint32_t lba, void *buf, uint32_t sectors) {
     uint8_t *b = (uint8_t*)buf;

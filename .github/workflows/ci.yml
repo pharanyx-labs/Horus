@@ -2508,6 +2508,14 @@ jobs:
         run: make smoke-fsck-refs
       - name: Control arm — a shallow reference walk frees a live file's blocks
         run: make smoke-fsck-refs-control
+      # The end-to-end gate for the storage track. Two boots on a SPARSE 16 GiB
+      # image (~130 MiB actually written): format, write past the old 1.00 GiB
+      # double-indirect ceiling, reboot, read it back. Boot 1 pays for zeroing a
+      # 128 MiB metadata region and hashing it into the tree through emulated
+      # PIO, hence the minutes-long budget; boot 2 mounts in the ordinary time,
+      # which is the difference the Merkle tree bought.
+      - name: A 16 GiB volume formats, survives a reboot, and holds a file past 1 GiB
+        run: make smoke-fs-16g
       # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
       # reservation, so a block past the backing store landed in the free page
       # pool. Diskless, so it runs here only for topical company.

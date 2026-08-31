@@ -150,6 +150,7 @@ gates:
   - smoke-meta-crash
   - smoke-merkle-replay
   - smoke-fsck-refs
+  - smoke-fs-16g
   - smoke-vdisk-bound
   - smoke-users-persist
   - smoke-users-tamper

@@ -34,13 +34,30 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 }
 
 #define STORAGE_MAGIC   0x48534653
+
+/* The smallest volume worth laying out: superblock, metadata region, TPM blob,
+ * key slots, user table, Merkle nodes, journal, both bitmaps and the inode table
+ * come to roughly forty blocks before a single byte of data. 512 blocks (2 MiB)
+ * leaves a data region that is small but real. storage_format_sealed fails
+ * closed on anything it cannot fit anyway; this exists so a too-small disk is
+ * REPORTED as one rather than surfacing as a format that mysteriously fails. */
+#define STORAGE_MIN_BLOCKS  512u
 /* Which slot opened the volume this boot, and the uid sealed inside it. Set by
  * storage_unlock; read by storage_unlock_as so login can identify the caller
  * from the slot that opened rather than from a name it has not verified. */
 static uint32_t g_unlocked_slot = 0;
 static uint32_t g_unlocked_uid  = 0;
 
-#define STORAGE_VERSION 11  /* v11: the rollback MAC is a MERKLE TREE over the
+#define STORAGE_VERSION 12  /* v12: the volume is sized from the DISK rather than
+                             * from BLOCKS_PER_DISK, and four things changed with
+                             * it, every one of them moving bytes: an inode gained
+                             * triple_indirect (248 bytes, 16 to a block instead
+                             * of 2, so the whole inode table is at different
+                             * offsets); the inode bitmap spans blocks, shifting
+                             * every region after it; the superblock gained
+                             * needs_fsck. A v11 volume read as v12 would find its
+                             * inode table where its block bitmap is.
+                             * v11: the rollback MAC is a MERKLE TREE over the
                              * metadata region, stored in its own block region,
                              * whose root replaces sb.meta_hmac in the
                              * superblock. The two-level construction it replaces
@@ -176,7 +193,22 @@ static int vdisk_flush(struct block_device *bd) {
 static struct block_device g_vdisk_bd = {
     .name = "vdisk0",
 #ifdef VDISK_TOTAL_UNBOUNDED
-    .total_blocks = BLOCKS_PER_DISK,
+    /* THE DEFECT IS "MORE THAN THE BACKING", NOT A PARTICULAR NUMBER.
+     *
+     * This said BLOCKS_PER_DISK, which was the historical value and reproduced
+     * exactly. When BLOCKS_PER_DISK became a 16 GiB ceiling the arm stopped
+     * reproducing -- not because the defect was fixed but because it became
+     * catastrophic: format lays a 16 GiB volume out over a 16 MiB reservation,
+     * the metadata region alone runs a hundred megabytes past the end, and the
+     * boot dies before the probe can say anything. An arm that kills the boot
+     * witnesses nothing.
+     *
+     * Eight times the backing is the same defect at a size the probe survives:
+     * the device advertises blocks it has no memory for, block VDISK_BLOCKS is
+     * accepted, and the bytes land in the free page pool -- which is the claim.
+     * A control arm has to track the shape of its defect, not the constant the
+     * defect happened to be written with. */
+    .total_blocks = VDISK_BLOCKS * 8,
 #else
     .total_blocks = VDISK_BLOCKS,
 #endif
@@ -1012,17 +1044,20 @@ static int derive_journal_mac_key(const uint8_t *disk_key, size_t dk_len,
  * Verifies the header's keyed HMAC and bounds-checks every target, so only a
  * genuine, kernel-authored, intact transaction is ever applied; anything else is
  * discarded (the operation is treated as never having happened). Idempotent. */
-static void journal_recover(struct mounted_fs *mfs)
+/* Returns 1 if a committed transaction was replayed, 0 otherwise. The caller
+ * uses that to decide whether the volume was interrupted mid-operation. */
+static int journal_recover(struct mounted_fs *mfs)
 {
-    if (!mfs || !mfs->mounted || mfs->sb.journal_start == 0) return;
+    int replayed = 0;
+    if (!mfs || !mfs->mounted || mfs->sb.journal_start == 0) return 0;
     uint64_t jstart = mfs->sb.journal_start;
 
     uint8_t hbuf[BLOCK_SIZE];
-    if (raw_block_read(jstart, hbuf) != 0) return;
+    if (raw_block_read(jstart, hbuf) != 0) return 0;
     struct journal_header hdr;
     my_memcpy(&hdr, hbuf, sizeof(hdr));
 
-    if (hdr.magic != JOURNAL_MAGIC) return;                 /* nothing committed */
+    if (hdr.magic != JOURNAL_MAGIC) return 0;               /* nothing committed */
     if (hdr.count == 0 || hdr.count > JOURNAL_DATA_MAX) goto discard;
 
     /* Load the staged data and re-derive the HMAC over exactly what we would
@@ -1053,6 +1088,7 @@ static void journal_recover(struct mounted_fs *mfs)
     for (uint32_t i = 0; i < hdr.count; i++)
         raw_block_write(hdr.target[i], jdata[i]);
     if (hdr.seq >= g_journal_seq) g_journal_seq = hdr.seq + 1;
+    replayed = 1;                    /* the volume was interrupted mid-operation */
 
     /* Same constraint as BARRIER C in journal_commit: the redo must be on stable
      * media before the header authorising it is cleared. Recovery is where this
@@ -1062,12 +1098,13 @@ static void journal_recover(struct mounted_fs *mfs)
      * failure, leave the header alone so the next mount tries again. */
     if (raw_block_flush() != 0) {
         println("WAL: FLUSH FAILED after redo - header left for the next mount");
-        return;
+        return replayed;
     }
 
 discard:
     my_memset(hbuf, 0, BLOCK_SIZE);
     raw_block_write(jstart, hbuf);   /* clear the header either way */
+    return replayed;
 }
 
 /* ---- the Merkle rollback tree ---------------------------------------------
@@ -1480,9 +1517,22 @@ static int atadisk_flush(struct block_device *bd) {
     (void)bd;
     return ata_flush();
 }
+/* SIZED FROM THE DISK AT PROBE TIME, not from a compile-time constant
+ * (SECURITY.md S68).
+ *
+ * `total_blocks` was BLOCKS_PER_DISK, so every ATA volume was laid out as though
+ * the medium held exactly that many blocks whatever it actually held -- wrong in
+ * both directions. A smaller disk got a filesystem whose data region ran off the
+ * end of it, and a larger one was silently truncated to the constant with
+ * nothing said. BLOCKS_PER_DISK is a CEILING (the largest volume this kernel's
+ * fixed-size arrays can describe); the disk decides the rest. storage_init fills
+ * this in from ata_total_sectors() before the device is used.
+ *
+ * It also decouples the gates from the ceiling: raising BLOCKS_PER_DISK no
+ * longer makes every persistence test allocate a volume that size. */
 static struct block_device g_ata_bd = {
     .name = "ata0",
-    .total_blocks = BLOCKS_PER_DISK,
+    .total_blocks = 0,          /* set by storage_init from IDENTIFY */
     .read_block = atadisk_read,
     .write_block = atadisk_write,
     .flush = atadisk_flush,
@@ -1587,6 +1637,29 @@ int storage_init(void) {
      * system still comes up without a login. ata_init()'s probe is bounded, so a
      * floating/absent bus can never hang the boot. */
     if (ata_init()) {
+        /* Fail closed on a disk that reports nothing: laying a filesystem out
+         * against an unknown size is how the old compile-time constant went
+         * wrong, and guessing again here would repeat it with extra steps. */
+        uint32_t sectors = ata_total_sectors();
+        uint64_t blocks  = (uint64_t)sectors / ATA_SECTORS_PER_BLOCK;
+        if (blocks > (uint64_t)BLOCKS_PER_DISK) blocks = (uint64_t)BLOCKS_PER_DISK;
+        if (blocks < STORAGE_MIN_BLOCKS) {
+            kmsg("ata: disk reports too few sectors for a volume; ignoring it");
+            goto no_disk;
+        }
+        g_ata_bd.total_blocks = blocks;
+        {
+            /* Say what size was chosen and why. A volume laid out against the
+             * wrong number is invisible until something reads past the end, so
+             * the number belongs on the wire at boot rather than in a debugger. */
+            uint64_t mib = (blocks * (uint64_t)BLOCK_SIZE) / (1024u * 1024u);
+            kmsg_begin();
+            print("ata: volume sized from the disk: ");
+            print_decimal(blocks);
+            print(" blocks (");
+            print_decimal(mib);
+            print(" MiB)\n");
+        }
         current_bd = &g_ata_bd;
         if (storage_mount(&g_ata_bd) != 0) {
             g_needs_format    = 1;   /* no valid v4 volume yet: seal it at first login */
@@ -1595,6 +1668,7 @@ int storage_init(void) {
         return 0;                    /* unlock deferred to login */
     }
 
+no_disk:
     /* No disk: ephemeral in-RAM virtual disk, formatted and unlocked immediately
      * with a per-boot random password (the vdisk is never persisted, so the
      * password is discarded after unlock and no login is required to use it). Its
@@ -1699,23 +1773,65 @@ void storage_free_block(struct block_device *bd, struct fs_superblock *sb, uint6
     write_block_bitmap_n(sb, bm, bitmap);
 }
 
+/* Does any inode other than `ino` in the same TABLE BLOCK hold a bit? Used to
+ * decide whether that table block has ever been written. */
+static int inode_table_block_in_use(const struct fs_superblock *sb,
+                                    const uint8_t *bm, uint64_t bm_base, uint64_t ino)
+{
+    uint64_t first = (ino / INODES_PER_BLOCK) * INODES_PER_BLOCK;
+    for (uint64_t i = first; i < first + INODES_PER_BLOCK; i++) {
+        if (i == ino || i >= sb->inode_count) continue;
+        if (i < bm_base || i >= bm_base + BITS_PER_BITMAP_BLOCK) continue;
+        if (bitmap_test(bm, i - bm_base)) return 1;
+    }
+    return 0;
+}
+
 int64_t storage_alloc_inode(struct block_device *bd, struct fs_superblock *sb) {
+    (void)bd;
     uint8_t bitmap[BLOCK_SIZE];
-    (void)bd; if (do_block_read(sb->inode_bitmap_start, bitmap) != 0) return -1;
+    uint64_t remaining = sb->inode_count;
+    for (uint64_t bm = 0; remaining > 0; bm++) {
+        uint64_t base = bm * BITS_PER_BITMAP_BLOCK;
+        uint64_t here = remaining < BITS_PER_BITMAP_BLOCK ? remaining : BITS_PER_BITMAP_BLOCK;
+        if (do_block_read(sb->inode_bitmap_start + bm, bitmap) != 0) return -1;
+        int64_t bit = bitmap_find_free(bitmap, here);
+        if (bit >= 0) {
+            uint64_t ino = base + (uint64_t)bit;
 
-    int64_t ino = bitmap_find_free(bitmap, sb->inode_count);
-    if (ino < 0) return -1;
+            /* ZERO THE TABLE BLOCK THE FIRST TIME ANYONE LANDS IN IT, instead of
+             * zeroing the whole table at format. The table is 8 MiB at a 16 GiB
+             * volume and format wrote every byte of it -- to a PIO disk, before
+             * the login prompt -- so that an inode sharing a block with a fresh
+             * one would not read back as garbage off a second-hand disk. That
+             * requirement is real; doing it eagerly is not. The bitmap already
+             * says whether the block has been used: if no OTHER inode in the
+             * group holds a bit, nothing has ever been written there. */
+            if (!inode_table_block_in_use(sb, bitmap, base, ino)) {
+                uint8_t zero[BLOCK_SIZE];
+                my_memset(zero, 0, BLOCK_SIZE);
+                if (do_block_write(sb->inode_table_start + ino / INODES_PER_BLOCK, zero) != 0)
+                    return -1;
+            }
 
-    bitmap_set(bitmap, ino);
-    do_block_write(sb->inode_bitmap_start, bitmap);
-    return ino;
+            bitmap_set(bitmap, bit);
+            if (do_block_write(sb->inode_bitmap_start + bm, bitmap) != 0) return -1;
+            return (int64_t)ino;
+        }
+        remaining -= here;
+    }
+    return -1;   /* no free inode */
 }
 
 void storage_free_inode(struct block_device *bd, struct fs_superblock *sb, uint64_t ino) {
+    (void)bd;
+    if (ino >= sb->inode_count) return;
+    uint64_t bm  = ino / BITS_PER_BITMAP_BLOCK;
+    uint64_t bit = ino % BITS_PER_BITMAP_BLOCK;
     uint8_t bitmap[BLOCK_SIZE];
-    (void)bd; if (do_block_read(sb->inode_bitmap_start, bitmap) != 0) return;
-    bitmap_clear(bitmap, ino);
-    do_block_write(sb->inode_bitmap_start, bitmap);
+    if (do_block_read(sb->inode_bitmap_start + bm, bitmap) != 0) return;
+    bitmap_clear(bitmap, bit);
+    do_block_write(sb->inode_bitmap_start + bm, bitmap);
 }
 
 int storage_read_inode(struct block_device *bd, struct fs_superblock *sb,
@@ -1749,7 +1865,7 @@ int storage_write_inode(struct block_device *bd, struct fs_superblock *sb,
 /* Test hooks shared by the storage witnesses. Guarded by the union of the
  * selftests that need them rather than by one of their names, so a second
  * witness does not have to depend on the first one's flag being set. */
-#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST)
+#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || defined(BIGVOL_SELFTEST)
 #define STORAGE_TEST_HOOKS 1
 #endif
 
@@ -1805,20 +1921,60 @@ void storage_test_merkle_targets(struct mounted_fs *mfs, uint64_t phys,
 /* The harness's phase counter, in the block one past the volume. raw_block_*
  * rather than do_block_*: this is outside the filesystem entirely and must never
  * be staged into a journal transaction that describes it. */
+/* Leave the volume looking as though a crash landed inside a multi-transaction
+ * operation, so the next mount runs the fsck sweep. That is the real trigger --
+ * storage_free_inode_blocks sets exactly this flag and clears it when it
+ * finishes -- so the witness exercises the true path rather than a test-only
+ * one. */
+void storage_test_arm_fsck(struct mounted_fs *mfs)
+{
+    mfs->sb.needs_fsck = 1;
+    raw_block_write(0, &mfs->sb);
+    raw_block_flush();
+}
+
+/* WHERE A MULTI-BOOT HARNESS KEEPS ITS PHASE COUNTER.
+ *
+ * It was the block one past BLOCKS_PER_DISK, which worked only while that
+ * constant was every volume's size. Now the volume is sized from the disk, so
+ * "one past the constant" is somewhere off the end of a small image and the read
+ * fails -- which is how the fsck gate started reporting an unreadable scratch
+ * block the moment the ceiling was raised.
+ *
+ * The TPM blob block instead: reserved unconditionally at format so that the
+ * geometry does not depend on whether a TPM is present, and on a password-only
+ * volume (tpm_mode == 0) it is zeroed and NOTHING EVER READS IT. It is inside
+ * the volume, so it needs no games with the image size; it is not in the
+ * metadata region or the tree, so a rollback tamper does not carry the phase
+ * back with it; and it survives a reboot, which is the whole requirement.
+ *
+ * Refused outright on a sealed volume, where those bytes are the sealed blob. */
+static uint64_t storage_test_scratch_block(const struct mounted_fs *mfs)
+{
+    if (mfs->sb.tpm_mode != 0) return 0;          /* the blob lives there; hands off */
+    return 1 + mfs->sb.meta_blocks;               /* == tpm_blob_block, see format */
+}
+
 uint32_t storage_test_scratch_get(void)
 {
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    uint64_t blk = storage_test_scratch_block(mfs);
+    if (blk == 0) return 0xFFFFFFFFu;
     static uint8_t buf[BLOCK_SIZE];
-    if (raw_block_read((uint64_t)BLOCKS_PER_DISK, buf) != 0) return 0xFFFFFFFFu;
+    if (raw_block_read(blk, buf) != 0) return 0xFFFFFFFFu;
     if (buf[0] != 'P' || buf[1] != 'H') return 0;    /* a fresh image: phase 0 */
     return buf[2];
 }
 
 void storage_test_scratch_set(uint32_t phase)
 {
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    uint64_t blk = storage_test_scratch_block(mfs);
+    if (blk == 0) return;
     static uint8_t buf[BLOCK_SIZE];
     my_memset(buf, 0, BLOCK_SIZE);
     buf[0] = 'P'; buf[1] = 'H'; buf[2] = (uint8_t)phase;
-    raw_block_write((uint64_t)BLOCKS_PER_DISK, buf);
+    raw_block_write(blk, buf);
     raw_block_flush();
 }
 
@@ -2194,30 +2350,37 @@ static int storage_format_sealed(struct block_device *bd,
     uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
 
     /* Geometry is computed from the device size. One bitmap block addresses
-     * BLOCK_SIZE*8 (=4096) bits. The inode count is kept to a single inode-bitmap
-     * block (4096 inodes is ample); the DATA allocator's bitmap spans as many
-     * blocks as the data region needs, so the volume is no longer capped at 4096
-     * data blocks. Layout after the journal:
-     *   inode_bitmap : 1 block
+     * BLOCK_SIZE*8 bits. BOTH bitmaps span as many blocks as they need:
+     *   inode_bitmap : ib_blocks blocks
      *   block_bitmap : bm_blocks blocks
      *   inode_table  : table_blocks blocks
-     *   data         : the rest */
+     *   data         : the rest
+     *
+     * ONE INODE PER 32 BLOCKS, not per 4. At 4 KiB that is one file per 128 KiB
+     * of volume, and it is a trade against FORMAT TIME and fsck's walk rather
+     * than against disk: at 16 GiB, one-per-4 would be a million inodes and a
+     * 16 MiB table, one-per-32 is 131072 and 2 MiB. The old ratio was chosen
+     * when the cap below made it moot -- inodes were clamped to a single bitmap
+     * block, 32768 of them, so a 16 GiB volume would have had one inode per 128
+     * blocks whatever this number said. */
     const uint64_t BITS_PER_BLOCK = (uint64_t)BLOCK_SIZE * 8;
 
-    uint64_t inodes = bd->total_blocks / 4;   /* ~1 inode per 4 blocks */
+    uint64_t inodes = bd->total_blocks / 32;
     if (inodes < 16) inodes = 16;
-    if (inodes > BITS_PER_BLOCK) inodes = BITS_PER_BLOCK;   /* single inode-bitmap block */
     uint64_t table_blocks = (inodes + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK;
     inodes = table_blocks * INODES_PER_BLOCK;
-    sb.inode_count = inodes;
+    uint64_t ib_blocks = (inodes + BITS_PER_BLOCK - 1) / BITS_PER_BLOCK;
+    if (ib_blocks == 0) ib_blocks = 1;
+    sb.inode_count          = inodes;
+    sb.inode_bitmap_blocks  = (uint32_t)ib_blocks;
 
     sb.inode_bitmap_start = after_j;
-    sb.block_bitmap_start = after_j + 1;
+    sb.block_bitmap_start = after_j + ib_blocks;
 
     /* Solve for the data-bitmap span: (bm_blocks + data_blocks) share `avail`,
      * and bm_blocks = ceil(data_blocks / BITS_PER_BLOCK). Iterating converges in a
      * couple of steps (bm_blocks is tiny next to data_blocks). */
-    uint64_t fixed  = after_j + 1 + table_blocks;   /* everything except bitmap + data */
+    uint64_t fixed  = after_j + ib_blocks + table_blocks;   /* everything except bitmap + data */
     if (fixed >= bd->total_blocks) return -1;        /* disk too small */
     uint64_t avail  = bd->total_blocks - fixed;
     uint64_t bm_blocks = (avail + BITS_PER_BLOCK - 1) / BITS_PER_BLOCK;
@@ -2337,11 +2500,19 @@ static int storage_format_sealed(struct block_device *bd,
         bd->write_block(bd, sb.block_bitmap_start + b, zero);
     }
 
-    /* Zero the whole inode table so inodes sharing a block with a freshly used
-     * one read back clean (matters on a garbage ATA disk at first format). */
-    for (uint64_t b = 0; b < table_blocks; b++) {
-        bd->write_block(bd, sb.inode_table_start + b, zero);
+    /* Zero every inode-BITMAP block. The TABLE is not zeroed here: at a 16 GiB
+     * volume it is 2 MiB written to a PIO disk before the login prompt, and the
+     * requirement it served -- an inode sharing a block with a freshly used one
+     * must not read back as garbage off a second-hand disk -- is met instead by
+     * storage_alloc_inode, which zeros a table block the first time any inode in
+     * it is allocated. The bitmap is what says whether that has happened. */
+    for (uint64_t b = 0; b < ib_blocks; b++) {
+        bd->write_block(bd, sb.inode_bitmap_start + b, zero);
     }
+
+    /* Root inode 0 is written directly rather than allocated, so the lazy
+     * zeroing above never runs for its table block. Zero it here. */
+    bd->write_block(bd, sb.inode_table_start, zero);
 
     /* inode 0 (root) is allocated in the inode bitmap. */
     bitmap_set(zero, 0);
@@ -2373,6 +2544,18 @@ int storage_mount(struct block_device *bd) {
      * which is the correct recovery for an incompatible layout. */
     if (sb->magic != STORAGE_MAGIC || sb->version != STORAGE_VERSION) {
         return -2;
+    }
+
+    /* THE VOLUME MUST FIT THE MEDIUM IT IS ON. Now that the device is sized from
+     * IDENTIFY rather than from a constant, a superblock claiming more blocks
+     * than the disk reports means the volume was formatted on a larger disk and
+     * this one is a truncated copy -- every offset past the end reads as a
+     * failure, and the data region's tail simply is not there. Refusing is the
+     * only honest answer; mounting it would serve part of a filesystem and call
+     * it whole. */
+    if (sb->total_blocks > bd->total_blocks) {
+        println("STORAGE: refusing a volume larger than the disk it is on");
+        return -3;
     }
 
     g_mounted_fs.bd       = bd;
@@ -2549,7 +2732,7 @@ int storage_unlock(const char *password, size_t plen)
      * metadata region is loaded and its HMAC checked — so an update that touched
      * a meta sector, the tree nodes above it and the root in the superblock is
      * completed as a unit and they always agree. */
-    journal_recover(mfs);
+    int replayed = journal_recover(mfs);
     /* Recovery may have re-applied a committed transaction that included the
      * superblock (its meta_root). Reload the in-RAM superblock so the root check
      * below compares against the post-recovery value, not the stale mount-time one. */
@@ -2584,7 +2767,31 @@ int storage_unlock(const char *password, size_t plen)
     }
 
     mfs->unlocked = 1;
-    storage_fsck_pass(mfs);
+
+    /* THE SWEEP IS NOT FREE, so it runs when something says it is needed rather
+     * than on every mount. It walked the whole inode table every time -- 2 MiB of
+     * PIO reads at a 16 GiB volume before the login prompt, on a boot where
+     * nothing was wrong.
+     *
+     * Two things say it is needed. A journal REPLAY means the volume was
+     * interrupted mid-transaction. `sb.needs_fsck` means a crash landed inside an
+     * operation that spans SEVERAL transactions -- which the chunked free is, and
+     * which the journal alone cannot make atomic. Neither being set means every
+     * operation either committed whole or did not happen, which is exactly what
+     * the journal guarantees, so there is nothing for the sweep to find. */
+    if (replayed || mfs->sb.needs_fsck) {
+        kmsg_begin();
+        print("storage: running the fsck sweep (");
+        print(replayed ? "journal replayed" : "an interrupted multi-transaction operation");
+        print(")\n");
+        storage_fsck_pass(mfs);
+        if (mfs->sb.needs_fsck) {
+            mfs->sb.needs_fsck = 0;
+            journal_begin();
+            do_block_write(0, &mfs->sb);
+            journal_commit();
+        }
+    }
     return 0;
 }
 
@@ -2706,10 +2913,25 @@ static void fsck_mark_tree(uint8_t *referenced, uint64_t ptr_blk, unsigned depth
     }
 }
 
+/* How many times the sweep has run this boot. The S67 witness asserts this is
+ * non-zero, and that assertion is not decoration: gating the sweep on
+ * `replayed || needs_fsck` made `smoke-fsck-refs` pass WITHOUT RUNNING FSCK AT
+ * ALL -- green for the wrong reason, in the same change that introduced the
+ * gating. A gate for "fsck does not do X" is worthless if fsck did not run. */
+static uint64_t g_fsck_runs;
+uint64_t storage_fsck_runs(void) { return g_fsck_runs; }
+
 static void storage_fsck_pass(struct mounted_fs *mfs)
 {
+    g_fsck_runs++;
+    /* The inode bitmap spans blocks now, so the loop below tracks which one is
+     * resident and writes it back before moving on. Reading only block 0 and
+     * indexing it by inode number -- as this did -- silently tests bit
+     * (ino mod 32768) for every inode past the first block, so an inode at 32768
+     * would be judged by inode 0's bit. */
     uint8_t inode_bitmap[BLOCK_SIZE];
-    if (do_block_read(mfs->sb.inode_bitmap_start, inode_bitmap) != 0) return;
+    uint64_t ib_resident = (uint64_t)-1;
+    int inode_dirty = 0;
 
     /* Data blocks reachable from a live inode's direct/single-indirect pointers,
      * indexed by rel = phys - data_start (matching the block bitmap). Sized to the
@@ -2720,7 +2942,6 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
     const uint64_t data_start  = mfs->sb.data_start;
     const uint64_t block_count = mfs->sb.block_count;
 
-    int inode_dirty = 0;
     uint64_t table_blocks =
         (mfs->sb.inode_count + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK;
 
@@ -2732,7 +2953,17 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
         for (int i = 0; i < INODES_PER_BLOCK; i++) {
             uint64_t ino = tb * (uint64_t)INODES_PER_BLOCK + (uint64_t)i;
             if (ino >= mfs->sb.inode_count) continue;
-            if (!bitmap_test(inode_bitmap, ino)) continue;
+
+            uint64_t ib = ino / BITS_PER_BITMAP_BLOCK;
+            if (ib != ib_resident) {
+                if (inode_dirty && ib_resident != (uint64_t)-1) {
+                    do_block_write(mfs->sb.inode_bitmap_start + ib_resident, inode_bitmap);
+                    inode_dirty = 0;
+                }
+                if (do_block_read(mfs->sb.inode_bitmap_start + ib, inode_bitmap) != 0) continue;
+                ib_resident = ib;
+            }
+            if (!bitmap_test(inode_bitmap, ino % BITS_PER_BITMAP_BLOCK)) continue;
 
             struct on_disk_inode *nd = &slots[i];
             int alive = (nd->type != 0 && nd->links != 0);
@@ -2742,7 +2973,7 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
              * was initialised) or links==0 (freed before the bitmap bit cleared).
              * Its data blocks, if any, are then reclaimed by the block sweep. */
             if (ino != 0 && !alive) {
-                bitmap_clear(inode_bitmap, ino);
+                bitmap_clear(inode_bitmap, ino % BITS_PER_BITMAP_BLOCK);
                 inode_dirty = 1;
                 continue;
             }
@@ -2758,12 +2989,15 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
             if (nd->double_indirect)
                 fsck_mark_tree(referenced, nd->double_indirect, 1,
                                data_start, block_count);
+            if (nd->triple_indirect)
+                fsck_mark_tree(referenced, nd->triple_indirect, 2,
+                               data_start, block_count);
 #endif
         }
     }
 
-    if (inode_dirty)
-        do_block_write(mfs->sb.inode_bitmap_start, inode_bitmap);
+    if (inode_dirty && ib_resident != (uint64_t)-1)
+        do_block_write(mfs->sb.inode_bitmap_start + ib_resident, inode_bitmap);
 
     /* Reclaim data blocks the bitmap marks allocated but no live inode references
      * (crash-orphaned: allocated before the operation that would link them
@@ -3210,111 +3444,106 @@ int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
  * which indexed a 512-byte stack buffer out of bounds for any file past block
  * 12+64; it was never hit because no test wrote a file that large.) */
 
-/* Fetch (and, when allocate!=0, lazily allocate) the physical block backing an
- * inode's logical block. Layout: 12 direct, then one single-indirect block
- * (PTRS_PER_BLOCK entries), then one double-indirect block (PTRS_PER_BLOCK
- * single-indirect blocks x PTRS_PER_BLOCK entries each). Returns the physical
- * block number, or 0 on absent/unallocatable/out-of-range. Pointer (indirect)
- * blocks are stored unencrypted — they hold block numbers, not file data — so
- * they use do_block_read/write directly, matching the single-indirect path. */
-static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
-                                   uint64_t logical_block, int allocate) {
+/* One level of a pointer tree, allocating as it goes when asked.
+ *
+ * WHY A LOOP AND NOT A FOURTH COPY. The single- and double-indirect cases were
+ * written out longhand, and the double case is the single one twice with the
+ * names changed. A third copy for triple-indirect would be the same code a third
+ * time, and the place a transcription slip lands is the level nothing exercises
+ * until a file is a gigabyte long. `depth` is the number of pointer levels below
+ * this block: 0 means its entries are data blocks.
+ *
+ * `*slot` is the inode field (or parent entry) naming this pointer block, read
+ * and written in place, so a newly allocated block is linked by the caller that
+ * asked for it rather than by a separate fix-up step. */
+static uint64_t walk_ptr_tree(struct mounted_fs *mfs, uint64_t *slot,
+                              unsigned depth, uint64_t index, int allocate)
+{
     struct block_device *bd = mfs->bd;
     struct fs_superblock *sb = &mfs->sb;
 
+    uint64_t ptr_blk = *slot;
+    if (ptr_blk == 0) {
+        if (!allocate) return 0;
+        int64_t got = storage_alloc_block(bd, sb);
+        if (got < 0) return 0;
+        ptr_blk = (uint64_t)got;
+        *slot = ptr_blk;
+        uint8_t zero[BLOCK_SIZE];
+        my_memset(zero, 0, BLOCK_SIZE);
+        do_block_write(ptr_blk, zero);
+    }
+
+    /* One BLOCK_SIZE frame per level, and the recursion is bounded by
+     * FSCK_MAX_DEPTH, so the deepest walk is three frames. The BSP kernel stack
+     * is 16 KiB and #270 already overflowed it once, which is why the bound is a
+     * named constant and not an assumption about how deep files get. */
+    if (depth >= FSCK_MAX_DEPTH) return 0;
+    uint8_t blk[BLOCK_SIZE];
+    if (do_block_read(ptr_blk, blk) != 0) return 0;
+    uint64_t *ptrs = (uint64_t *)blk;
+
+    uint64_t span = 1;                          /* entries one slot covers */
+    for (unsigned d = 0; d < depth; d++) span *= PTRS_PER_BLOCK;
+    uint64_t slot_i = index / span;
+    if (slot_i >= PTRS_PER_BLOCK) return 0;
+
+    if (depth == 0) {
+        uint64_t phys = ptrs[slot_i];
+        if (phys == 0 && allocate) {
+            int64_t got = storage_alloc_block(bd, sb);
+            if (got < 0) return 0;
+            phys = (uint64_t)got;
+            ptrs[slot_i] = phys;
+            do_block_write(ptr_blk, blk);
+        }
+        return phys;
+    }
+
+    uint64_t child = ptrs[slot_i];
+    uint64_t before = child;
+    uint64_t phys = walk_ptr_tree(mfs, &child, depth - 1, index % span, allocate);
+    if (child != before) {                      /* the level below was allocated */
+        ptrs[slot_i] = child;
+        do_block_write(ptr_blk, blk);
+    }
+    return phys;
+}
+
+/* Fetch (and, when allocate!=0, lazily allocate) the physical block backing an
+ * inode's logical block. Layout: 12 direct, then single-, double- and
+ * triple-indirect trees of PTRS_PER_BLOCK fan-out each. Returns the physical
+ * block number, or 0 on absent/unallocatable/out-of-range. Pointer blocks are
+ * stored unencrypted -- they hold block numbers, not file data -- so they use
+ * do_block_read/write directly. */
+static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
+                                   uint64_t logical_block, int allocate) {
     if (logical_block < 12) {
         uint64_t phys = inode->direct[logical_block];
         if (phys == 0 && allocate) {
-            phys = storage_alloc_block(bd, sb);
-            if (phys == (uint64_t)-1) return 0;
+            int64_t got = storage_alloc_block(mfs->bd, &mfs->sb);
+            if (got < 0) return 0;
+            phys = (uint64_t)got;
             inode->direct[logical_block] = phys;
         }
         return phys;
     }
-
     logical_block -= 12;
 
-    /* Single-indirect: one pointer block of PTRS_PER_BLOCK data blocks. */
-    if (logical_block < PTRS_PER_BLOCK) {
-        uint64_t indirect_phys = inode->indirect;
-        if (indirect_phys == 0) {
-            if (!allocate) return 0;
-            indirect_phys = storage_alloc_block(bd, sb);
-            if (indirect_phys == (uint64_t)-1) return 0;
-            inode->indirect = indirect_phys;
-            uint8_t zero[BLOCK_SIZE];
-            my_memset(zero, 0, BLOCK_SIZE);
-            do_block_write(indirect_phys, zero);
-        }
-
-        uint8_t indirect_block[BLOCK_SIZE];
-        do_block_read(indirect_phys, indirect_block);
-
-        uint64_t *ptrs = (uint64_t *)indirect_block;
-        uint64_t phys = ptrs[logical_block];
-
-        if (phys == 0 && allocate) {
-            phys = storage_alloc_block(bd, sb);
-            if (phys == (uint64_t)-1) return 0;
-            ptrs[logical_block] = phys;
-            do_block_write(indirect_phys, indirect_block);
-        }
-        return phys;
-    }
-
+    if (logical_block < PTRS_PER_BLOCK)
+        return walk_ptr_tree(mfs, &inode->indirect, 0, logical_block, allocate);
     logical_block -= PTRS_PER_BLOCK;
 
-    /* Double-indirect: a pointer block of PTRS_PER_BLOCK single-indirect blocks,
-     * each mapping PTRS_PER_BLOCK data blocks. */
-    if (logical_block < PTRS_PER_BLOCK * PTRS_PER_BLOCK) {
-        uint64_t dbl_index = logical_block / PTRS_PER_BLOCK;   /* which single-indirect block */
-        uint64_t sng_index = logical_block % PTRS_PER_BLOCK;   /* slot within it */
+    if (logical_block < PTRS_PER_BLOCK * PTRS_PER_BLOCK)
+        return walk_ptr_tree(mfs, &inode->double_indirect, 1, logical_block, allocate);
+    logical_block -= PTRS_PER_BLOCK * PTRS_PER_BLOCK;
 
-        /* Level 1: the double-indirect block (single-indirect block pointers). */
-        uint64_t dbl_phys = inode->double_indirect;
-        if (dbl_phys == 0) {
-            if (!allocate) return 0;
-            dbl_phys = storage_alloc_block(bd, sb);
-            if (dbl_phys == (uint64_t)-1) return 0;
-            inode->double_indirect = dbl_phys;
-            uint8_t zero[BLOCK_SIZE];
-            my_memset(zero, 0, BLOCK_SIZE);
-            do_block_write(dbl_phys, zero);
-        }
-        uint8_t dbl_block[BLOCK_SIZE];
-        do_block_read(dbl_phys, dbl_block);
-        uint64_t *dptrs = (uint64_t *)dbl_block;
+    if (logical_block < PTRS_PER_BLOCK * PTRS_PER_BLOCK * PTRS_PER_BLOCK)
+        return walk_ptr_tree(mfs, &inode->triple_indirect, 2, logical_block, allocate);
 
-        /* Level 2: the single-indirect block for dbl_index. */
-        uint64_t sng_phys = dptrs[dbl_index];
-        if (sng_phys == 0) {
-            if (!allocate) return 0;
-            sng_phys = storage_alloc_block(bd, sb);
-            if (sng_phys == (uint64_t)-1) return 0;
-            dptrs[dbl_index] = sng_phys;
-            do_block_write(dbl_phys, dbl_block);          /* persist the new L2 pointer */
-            uint8_t zero[BLOCK_SIZE];
-            my_memset(zero, 0, BLOCK_SIZE);
-            do_block_write(sng_phys, zero);
-        }
-        uint8_t sng_block[BLOCK_SIZE];
-        do_block_read(sng_phys, sng_block);
-        uint64_t *sptrs = (uint64_t *)sng_block;
-
-        /* Level 3: the data block. */
-        uint64_t phys = sptrs[sng_index];
-        if (phys == 0 && allocate) {
-            phys = storage_alloc_block(bd, sb);
-            if (phys == (uint64_t)-1) return 0;
-            sptrs[sng_index] = phys;
-            do_block_write(sng_phys, sng_block);
-        }
-        return phys;
-    }
-
-    /* Beyond double-indirect (12 + 64 + 64*64 = 4172 blocks): out of range.
-     * The 2 MiB volume can never reach this, so it is a hard ceiling, not a
-     * silent truncation of a reachable file. */
+    /* Beyond triple-indirect: 12 + 512 + 512^2 + 512^3 blocks, half a terabyte at
+     * a 4 KiB block. A hard ceiling, not a silent truncation -- and one no volume
+     * this kernel can address will reach, so a file is bounded by the disk. */
     return 0;
 }
 
@@ -3366,67 +3595,104 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
     return journal_commit();
 }
 
-/* Free every data block an inode references (direct + single-indirect +
- * double-indirect) and release the inode, as one atomic transaction. Backs the
- * FS server's delete path via SYS_FS_INODE_FREE.
+/* Free a pointer tree: every block it names, then the pointer blocks themselves,
+ * deepest first. `depth` is the number of pointer levels below this block.
  *
- * The per-block crypto metadata (nonce/tag) of freed blocks is deliberately left
- * untouched: the blocks are deallocated in the bitmap, and when one is later
- * reallocated storage_encrypt_block overwrites its metadata with a fresh nonce,
- * so the stale entry is harmless. Clearing it here instead would flush one meta
- * block (and the tree above it) per freed block — many non-atomic writes
- * that both overflow the journal and risk the very rollback desync the journal
- * exists to prevent. All the bitmap clears coalesce onto the single block-bitmap
- * sector, so the transaction is only ~3 sectors (block bitmap + inode + inode
- * bitmap). */
+ * Bounded by FSCK_MAX_DEPTH like the other tree walks, and for the same reason:
+ * one BLOCK_SIZE frame per level against a 16 KiB kernel stack. */
+static void free_ptr_tree(struct mounted_fs *mfs, uint64_t ptr_blk, unsigned depth)
+{
+    if (ptr_blk == 0 || depth >= FSCK_MAX_DEPTH) return;
+    uint8_t blk[BLOCK_SIZE];
+    if (do_block_read(ptr_blk, blk) == 0) {
+        uint64_t *ptrs = (uint64_t *)blk;
+        for (unsigned k = 0; k < PTRS_PER_BLOCK; k++) {
+            if (!ptrs[k]) continue;
+            if (depth == 0) storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
+            else            free_ptr_tree(mfs, ptrs[k], depth - 1);
+        }
+    }
+    storage_free_block(mfs->bd, &mfs->sb, ptr_blk);
+}
+
+/* Free every data block an inode references and release the inode.
+ *
+ * THE INODE IS KILLED FIRST, IN A TRANSACTION OF ITS OWN, and the ordering is
+ * what makes the rest safe to do in pieces. Freeing a large file touches more
+ * bitmap blocks than one journal transaction can hold -- at a 16 GiB volume the
+ * data bitmap spans 128 blocks against JOURNAL_DATA_MAX of 16 -- so a single
+ * atomic free is not merely expensive, it OVERFLOWS AND ABORTS, leaving the file
+ * whole and the caller told it was deleted. The old comment reasoned that every
+ * bitmap clear coalesces onto one sector, which was true of a volume with one
+ * bitmap block and stopped being true when the data region grew.
+ *
+ * So: transaction 1 sets links = 0 and writes the inode. From that instant the
+ * file is dead and storage_fsck_pass will finish the job after any crash -- it
+ * already reclaims an inode with links == 0 and sweeps blocks no live inode
+ * references. Then the blocks are freed in batches, each its own transaction,
+ * and a final transaction clears the inode bitmap bit. A crash anywhere after
+ * the first transaction leaves a dead inode and some already-freed blocks, which
+ * is exactly the state fsck is written to repair.
+ *
+ * The other order -- free the blocks, then mark the inode dead -- is the one
+ * that cannot be interrupted safely: a crash midway leaves blocks in the free
+ * list that a LIVE inode still points at, and the next allocation hands one out
+ * twice.
+ *
+ * The per-block crypto metadata of freed blocks is deliberately left untouched:
+ * the block is deallocated, and storage_encrypt_block overwrites its metadata
+ * with a fresh nonce when it is next allocated, so the stale entry is harmless.
+ * Clearing it here would flush one metadata block (and the tree above it) per
+ * freed block. */
 int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
-    journal_begin();
-
     struct on_disk_inode inode;
+
+    /* 1. Kill the inode, and say that a multi-transaction operation is in
+     * flight, in the SAME transaction. A crash after this leaves needs_fsck set
+     * and a dead inode, which is precisely the pair fsck repairs -- and setting
+     * the flag separately would leave a window where the first is true and the
+     * second is not. */
+    journal_begin();
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { journal_abort(); return -1; }
+    struct on_disk_inode dead = inode;
+    dead.size = 0;
+    dead.links = 0;
+    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &dead) != 0) { journal_abort(); return -1; }
+    mfs->sb.needs_fsck = 1;
+    do_block_write(0, &mfs->sb);
+    if (journal_commit() != 0) return -1;
 
-    for (int i = 0; i < 12; i++) {
-        if (inode.direct[i]) {
-            storage_free_block(mfs->bd, &mfs->sb, inode.direct[i]);
-            inode.direct[i] = 0;
-        }
-    }
-    if (inode.indirect) {
-        uint8_t ib[BLOCK_SIZE];
-        if (do_block_read(inode.indirect, ib) == 0) {
-            uint64_t *ptrs = (uint64_t *)ib;
-            for (unsigned k = 0; k < PTRS_PER_BLOCK; k++)
-                if (ptrs[k]) storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
-        }
-        storage_free_block(mfs->bd, &mfs->sb, inode.indirect);
-        inode.indirect = 0;
-    }
+    /* 2. Release the blocks, a transaction at a time. Each batch is bounded by
+     * how many distinct bitmap blocks it may touch, which is what the journal
+     * actually limits -- so the batch size is expressed in bitmap blocks rather
+     * than in data blocks, and a run of blocks sharing one bitmap block costs
+     * one staged write however long it is. */
+    journal_begin();
+    for (int i = 0; i < 12; i++)
+        if (inode.direct[i]) storage_free_block(mfs->bd, &mfs->sb, inode.direct[i]);
+    if (journal_commit() != 0) return -1;
 
-    /* Double-indirect: free every data block via each single-indirect block,
-     * then each single-indirect block, then the double-indirect block itself. */
-    if (inode.double_indirect) {
-        uint8_t db[BLOCK_SIZE];
-        if (do_block_read(inode.double_indirect, db) == 0) {
-            uint64_t *dptrs = (uint64_t *)db;
-            for (unsigned d = 0; d < PTRS_PER_BLOCK; d++) {
-                if (!dptrs[d]) continue;
-                uint8_t sb2[BLOCK_SIZE];
-                if (do_block_read(dptrs[d], sb2) == 0) {
-                    uint64_t *sptrs = (uint64_t *)sb2;
-                    for (unsigned k = 0; k < PTRS_PER_BLOCK; k++)
-                        if (sptrs[k]) storage_free_block(mfs->bd, &mfs->sb, sptrs[k]);
-                }
-                storage_free_block(mfs->bd, &mfs->sb, dptrs[d]);
-            }
-        }
-        storage_free_block(mfs->bd, &mfs->sb, inode.double_indirect);
-        inode.double_indirect = 0;
+    for (unsigned lvl = 0; lvl < 3; lvl++) {
+        uint64_t root = (lvl == 0) ? inode.indirect
+                      : (lvl == 1) ? inode.double_indirect
+                                   : inode.triple_indirect;
+        if (!root) continue;
+        journal_begin();
+        free_ptr_tree(mfs, root, lvl);
+        if (journal_commit() != 0) return -1;
     }
 
+    /* 3. Clear the pointers and release the slot. */
+    journal_begin();
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { journal_abort(); return -1; }
+    for (int i = 0; i < 12; i++) inode.direct[i] = 0;
+    inode.indirect = inode.double_indirect = inode.triple_indirect = 0;
     inode.size = 0;
     inode.links = 0;
     storage_write_inode(mfs->bd, &mfs->sb, ino, &inode);
     storage_free_inode(mfs->bd, &mfs->sb, ino);
+    mfs->sb.needs_fsck = 0;          /* the operation completed; nothing dangling */
+    do_block_write(0, &mfs->sb);
     return journal_commit();
 }
 

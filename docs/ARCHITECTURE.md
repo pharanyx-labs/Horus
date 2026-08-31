@@ -1029,7 +1029,20 @@ the ring-3 FS server never sees a key.
   an attacker replacing superblock, metadata and tree together with a consistent earlier
   snapshot defeats it. That needs a freshness anchor outside the volume (a TPM NV counter)
   and is not implemented — see SECURITY.md and `docs/LIMITATIONS.md`.
-- 128 MiB volume (32768 × 4 KiB blocks), multi-block data allocation bitmap.
+- The volume is sized **from the disk** (ATA IDENTIFY words 60–61), clamped to `BLOCKS_PER_DISK`
+  — a 16 GiB ceiling, not every volume's size (**S68**). Both bitmaps span blocks; the inode
+  table is zeroed a block at a time, the first time an inode in it is allocated, rather than
+  wholly at format.
+- A file's mapping is 12 direct, then single-, double- and triple-indirect trees of
+  `BLOCK_SIZE/8` = 512 fan-out: 512 GiB, so a file is bounded by the volume rather than by the
+  mapping. It stopped at double-indirect (1.00 GiB) until 2026-08-31.
+- `storage_free_inode_blocks` runs as **several** transactions — one atomic free of a large file
+  would touch more bitmap blocks than the journal can hold and abort. It kills the inode first,
+  in a transaction of its own, so a crash anywhere after that leaves the dangling inode fsck is
+  written to repair; the other order leaves freed blocks a live inode still points at.
+- The fsck sweep runs when the journal replayed or `sb.needs_fsck` is set, not at every mount:
+  the walk is the inode table, and at 16 GiB that was megabytes of reads before the login
+  prompt on a boot where nothing was wrong.
 - The per-block crypto metadata (nonce, tag, present) is a **bounded write-back cache** of
   `META_CACHE_LINES` on-disk metadata blocks, not an in-RAM mirror of the volume. A dirty line
   is written back into the journal transaction that dirtied it, before that transaction commits

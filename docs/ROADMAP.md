@@ -1262,6 +1262,34 @@ server, which is what turns the mechanism into a demonstration.
 
 ---
 
+### 2.8 ✅ A volume large enough to install onto *landed 2026-08-31*
+
+Four stages, designed in `docs/design/meta-cache-merkle.md` with **both falsifying arms written
+before the code they guard**, because these stages rewrite the chain between a physical attacker
+and a silently reverted disk.
+
+| stage | what it removed |
+|---|---|
+| 1 (#270) | a 512-byte block, and the 2.04 MiB file cap that came with it |
+| 2 (#273) | the whole-volume in-RAM metadata mirror — 128 MiB of `.bss` at 16 GiB (**S65**) |
+| 3 (#274) | the flat rollback MAC — 1 MiB hashed per write, and the whole region read at mount (**S66**) |
+| 4 | the constant that was every volume's size, the 1.00 GiB file ceiling, the single-block inode bitmap, the single-transaction free, and the fsck walk at every mount (**S68**) |
+
+`BLOCKS_PER_DISK` is 4,194,304 — a **ceiling**, not a size. The volume comes from ATA IDENTIFY,
+so the gates run on 128 MiB images against a 16 GiB-capable kernel and `smoke-fs-16g` is the one
+that allocates a real one, sparsely.
+
+**Two defects were found by reading rather than by a failing gate**, both while doing this work:
+the RAM vdisk advertised eight times the memory it had, writing into the free page pool (#272,
+**S64**), and `fsck` freed the double-indirect blocks of every live file at every unlock (#275,
+**S67**) — reachable by any file over 38 KiB before the block size was raised.
+
+**Not delivered, and stated rather than implied:** the tree catches *partial* rollback. It does
+not make the volume monotonic — the root lives in the superblock it protects. That needs a
+freshness anchor outside the volume (a TPM NV counter); see `docs/LIMITATIONS.md` 1.12.
+
+---
+
 ## Track 3: Assurance and observability
 
 ### 3.1 ◧ Reproducible builds: `kernel.elf` yes, `boot.iso` no
@@ -1556,7 +1584,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 69 properties name a witness that resolves.
+**empty**, all 70 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1595,7 +1623,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 201 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 95 of them control arms that must reproduce a defect |
+| ✅ | 202 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 95 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

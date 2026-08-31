@@ -1555,8 +1555,10 @@ with the library's capabilities.
 | Untyped arena, kernel reserve | 2.5 MiB (`MAX_TASKS` x (8 KiB cspace + 2 KiB TCB)) | `UNTYPED_KERNEL_BYTES` |
 | IPC message | 256 bytes | `IPC_MSG_MAX` |
 | Boot modules | 48 | `MAX_BOOT_MODULES` |
-| Volume | 128 MiB | `BLOCKS_PER_DISK` x `HORUS_BLOCK_SIZE` |
-| File | 1.00 GiB | 12 direct + single + double indirect, at 4 KiB blocks |
+| Volume | 16 GiB **ceiling**; the actual size comes from the disk | `BLOCKS_PER_DISK` x `HORUS_BLOCK_SIZE`, clamped against IDENTIFY |
+| File | 512 GiB, so the **volume** is the bound in practice | 12 direct + single + double + triple indirect, at 4 KiB blocks |
+| Inodes | one per 32 blocks (128 KiB of volume) | `storage_format_sealed`; the inode bitmap spans blocks |
+| Disk the ATA driver can address | 128 GiB | LBA28; `_Static_assert` in `storage.c` |
 | Staged program image | 8 MiB | `LOADER_STAGING_BYTES` |
 
 *This table said "Endpoints 64 / Notifications 64 … These are `.bss` arrays, not dynamically

@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 129 entries, newest first, each explaining what
+The narrative record of how Horus was built: 130 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,101 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Changed: 16 GiB, and the constant that had to stop being the volume's size
+
+Stage 4. `BLOCKS_PER_DISK` went from 32768 to 4194304, which is one number -- and almost none of
+the work was in changing it.
+
+**The thing that had to happen first was making it a CEILING.** It was every ATA volume's size:
+`g_ata_bd.total_blocks = BLOCKS_PER_DISK`, so the filesystem was laid out against a compile-time
+constant and the disk in front of it was never consulted. Wrong in both directions -- a smaller
+disk got a data region running off the end of it, a larger one was truncated silently -- and,
+practically, it meant raising the constant would make every persistence gate allocate a 16 GiB
+image. `ata_init` already read the 256-word IDENTIFY block and threw it away; words 60-61 are
+the LBA28 sector count, so the size was there all along, being drained in a loop that discarded
+it.
+
+With that in place the raise is cheap: the gates keep running on 128 MiB images against a
+16 GiB-capable kernel, and `smoke-fs-16g` is the one gate that allocates a real one. Sparsely --
+`truncate`, not `dd count=N`, which would write sixteen actual gigabytes of zeros first. The
+declared image is 16 GiB; 130 MiB is what lands on the host's disk.
+
+**What a 16 GiB volume actually costs, measured.** Boot 1 of that gate takes about four minutes,
+and essentially all of it is format: zeroing a 128 MiB metadata region and reading it back to
+hash into the tree, through emulated PIO. Boot 2 mounts in the ordinary time, because the mount
+check is one node against the root instead of a walk of the whole region -- that difference is
+exactly what stage 3 bought, and this is the first place it is visible rather than argued.
+
+**Triple-indirect, and why it is a loop.** 12 direct + 512 + 512^2 stops at 1.00 GiB, which is a
+strange thing to offer on a 16 GiB volume: the MAPPING, not the disk, would be what a user ran
+into. Adding 512^3 reaches 512 GiB, so the volume is the bound. The three indirect levels were
+written out longhand and the double case is the single one twice with the names changed; a third
+copy would be the same code a third time, and the place a transcription slip lands is the level
+nothing exercises until a file is a gigabyte long. One `walk_ptr_tree(depth)` instead, bounded
+by FSCK_MAX_DEPTH because each level is a BLOCK_SIZE stack frame and the BSP stack is 16 KiB.
+
+`bigfile_selftest` now writes one block from every region including 2000000 -- an offset of 8 GB
+into a file -- and asserts against the INODE that `triple_indirect` is non-zero. Without that
+assertion an off-by-one in the region arithmetic would leave every one of those writes landing in
+the double-indirect tree and the test passing without touching the level it was added for. It
+also caught a collision immediately: block 524 is the first double-indirect block AND inside the
+contiguous span the test rewrites later with stamp-only content, so the body check failed for a
+reason that had nothing to do with the mapping.
+
+**Three scaling problems that were invisible at 128 MiB.**
+
+1. The inode bitmap was ONE block, so any volume capped at 32768 inodes -- at 16 GiB that is one
+   inode per 128 blocks, and the cap was the bitmap rather than a judgement about how many files
+   anyone wants. It spans blocks now, as the data bitmap already did.
+2. `INODES_PER_BLOCK` was 2, chosen when a block was 512 bytes. At 4 KiB it left each 248-byte
+   inode 2048 bytes, so the table was eight times the size it needed to be -- 64 MiB against
+   8 MiB at 16 GiB, all of it zeroed at format and walked by fsck. 16 now. And the table is no
+   longer zeroed wholly at format: `storage_alloc_inode` zeros a table block the first time an
+   inode in it is allocated, which the bitmap already knows.
+3. `storage_free_inode_blocks` was ONE transaction, on the reasoning -- written down, and correct
+   when it was written -- that every bitmap clear coalesces onto a single sector. That stopped
+   being true when the data region outgrew one bitmap block. At 16 GiB the bitmap spans 128
+   blocks against JOURNAL_DATA_MAX of 16, so freeing a large file would OVERFLOW AND ABORT,
+   leaving the file whole and the caller told it was deleted. It is several transactions now,
+   and the ordering is the part that matters: the inode is killed FIRST, in a transaction of its
+   own, so a crash anywhere afterwards leaves the dangling inode fsck already repairs. The other
+   order -- free the blocks, then mark the inode dead -- cannot be interrupted safely at all: a
+   crash midway leaves blocks in the free list that a LIVE inode still points at, and the next
+   allocation hands one out twice.
+
+**And the fsck sweep, which is the item that bit back.** It ran at every unlock and walked the
+whole inode table; at 16 GiB that is megabytes of PIO reads before the login prompt on a boot
+where nothing is wrong. It cannot simply be dropped, because the chunked free above is genuinely
+multi-transaction and an interrupted one leaves exactly what fsck repairs. So it runs when the
+journal replayed, or when `sb.needs_fsck` -- raised across the free, in the same transaction that
+kills the inode -- says an operation was in flight.
+
+**That change silently defanged the gate landed one PR earlier.** `smoke-fsck-refs` asserts that
+fsck does not free a live file's blocks. With the sweep gated, boot 2 no longer ran fsck at all,
+and the gate passed -- green, in the same change that made it meaningless, for the opposite of
+the reason its name claims. Caught by grepping the boot log for the sweep's own line and finding
+it absent. The witness now asserts `storage_fsck_runs() != 0` and boot 1 arms `needs_fsck` the
+way a crash inside a chunked free would, so the gate exercises the real trigger rather than a
+test-only one.
+
+**A control arm had to follow its defect rather than its constant.**
+`smoke-vdisk-bound-control` sets `total_blocks = BLOCKS_PER_DISK` over a `VDISK_BLOCKS`-sized
+reservation, which reproduced exactly while that constant was 32768. At 4194304 it stopped
+reproducing -- not because the defect was fixed, but because it became catastrophic: format lays
+a 16 GiB volume over a 16 MiB reservation, the metadata region alone runs a hundred megabytes
+past the end, and the boot dies before the probe can say anything. An arm that kills the boot
+witnesses nothing. It advertises eight times the backing now, which is the same defect at a size
+the probe survives.
+
+**One more coupling the raise exposed.** The multi-boot harnesses kept their phase counter in the
+block one past BLOCKS_PER_DISK -- fine while that was the volume's size, and off the end of a
+128 MiB image the moment it was not. It lives in the TPM blob block now: reserved unconditionally
+at format so the geometry does not depend on whether a TPM is present, zeroed and never read on a
+password-only volume, inside the volume so no games with the image size, and outside the metadata
+region so a rollback tamper does not carry the phase back with it. Refused outright when
+`tpm_mode` is 1, where those bytes are the sealed blob.
+
 
 ### Fixed: fsck was freeing the blocks of live files, and had been for months
 

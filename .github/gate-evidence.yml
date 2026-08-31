@@ -85,6 +85,14 @@ exempt:
     that the file it wrote reached the double-indirect tree, against the inode --
     a run whose working set stayed in the single-indirect region would exercise
     the path the defect does not touch and pass while testing nothing.
+  smoke-fs-16g: >
+    Two written-out boots on one sparse image, each asserting its own
+    REQUIRE_MARKER with a FAIL_MARKER set, so a boot that died fails the target
+    rather than being read as the property holding. Boot 1 additionally asserts
+    POSITIVELY that the volume is at least BLOCKS_PER_DISK blocks and that the
+    file reached the triple-indirect tree -- a gate for a 16 GiB volume that a
+    128 MiB image satisfies is a gate for nothing, and the image size lives in
+    the Makefile where nothing else would notice it shrinking.
   smoke-fsck-refs-control: >
     Same shape; boot 2 requires the counted FAIL marker ("fsck freed N of M
     blocks of a live file"), so a dead boot produces no marker and the arm

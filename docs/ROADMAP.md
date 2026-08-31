@@ -1277,7 +1277,7 @@ and a silently reverted disk.
 
 `BLOCKS_PER_DISK` is 4,194,304 — a **ceiling**, not a size. The volume comes from ATA IDENTIFY,
 so the gates run on 128 MiB images against a 16 GiB-capable kernel and `smoke-fs-16g` is the one
-that allocates a real one, sparsely.
+that allocates a real one, sparsely — three boots: format, reboot-and-crash, replay and verify.
 
 **Two defects were found by reading rather than by a failing gate**, both while doing this work:
 the RAM vdisk advertised eight times the memory it had, writing into the free page pool (#272,

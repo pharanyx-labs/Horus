@@ -513,10 +513,13 @@ endif
 # BIGVOL_SELFTEST=1 builds the end-to-end gate for the storage track: a 16 GiB
 # volume formats, mounts, survives a reboot, and holds a file whose offsets are
 # past the old 1.00 GiB double-indirect ceiling.
+# WAL_CRASHTEST comes with it: the gate's second boot commits a write and halts
+# before applying it home, so the third can prove the journal recovered it AT
+# THIS VOLUME SIZE rather than at the 128 MiB one smoke-meta-crash uses.
 BIGVOL_SELFTEST ?= 0
 ifeq ($(BIGVOL_SELFTEST),1)
-CFLAGS  += -DBIGVOL_SELFTEST
-ASFLAGS += -DBIGVOL_SELFTEST
+CFLAGS  += -DBIGVOL_SELFTEST -DWAL_CRASHTEST
+ASFLAGS += -DBIGVOL_SELFTEST -DWAL_CRASHTEST
 endif
 
 # FSCK_SHALLOW_REFS=1 restores the pre-2026-08-31 reference walk, which marked
@@ -7315,11 +7318,18 @@ smoke-vdisk-bound-control:
 # region, the tree, the bitmaps and a handful of data blocks). Creating it with
 # `dd count=N` would write sixteen real gigabytes of zeros before the first boot.
 #
+# THREE BOOTS: format and write, then reboot-and-crash, then replay and verify.
+# The crash boot is nearly free because the volume is already formatted, and
+# format is where a 16 GiB volume spends its minutes -- so testing recovery at
+# THIS size, rather than trusting smoke-meta-crash at 128 MiB, costs about a
+# minute. The journal's targets are absolute block numbers and the metadata block
+# a write touches here is thirty-two thousand blocks further into the region.
+#
 # Boot 1 pays for the format -- zeroing a 128 MiB metadata region and hashing it
 # into the tree, through emulated PIO -- which is why the budget is minutes and
-# not seconds. Boot 2 mounts in the ordinary time, because the mount check is one
-# node against the root rather than a walk of the region: that difference is what
-# the Merkle tree bought and this gate is where it shows.
+# not seconds. Boots 2 and 3 mount in the ordinary time, because the mount check
+# is one node against the root rather than a walk of the region: that difference
+# is what the Merkle tree bought and this gate is where it shows.
 BIGVOL_ARGS    = BIGVOL_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 BIGVOL_BLOCKS ?= $(shell grep -oE '#define[[:space:]]+BLOCKS_PER_DISK[[:space:]]+[0-9]+' src/include/kernel.h | grep -oE '[0-9]+')
 BIGVOL_TIMEOUT ?= 900
@@ -7335,13 +7345,18 @@ smoke-fs-16g:
 		REQUIRE_MARKER='BIGVOL: boot1 formatted 16 GiB and wrote past the 1 GiB ceiling' \
 		FAIL_MARKER='BIGVOL: FAIL' \
 		tools/smoke_test.sh boot.iso
-	@echo "[16g] boot 2/2 - mount the volume boot 1 left and read it back"
+	@echo "[16g] boot 2/3 - mount what boot 1 left, then commit and crash"
+	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		FAIL_MARKER='BIGVOL: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[16g] boot 3/3 - replay, then read everything back"
 	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
 		REQUIRE_MARKER='BIGVOL: PASS' \
 		FAIL_MARKER='BIGVOL: FAIL' \
 		tools/smoke_test.sh boot.iso
 	@rm -f bigvol.img
-	@echo "[16g] PASS - 16 GiB volume, reboot survived, file offsets past 1 GiB"
+	@echo "[16g] PASS - 16 GiB volume, reboot and crash survived, offsets past 1 GiB"
 
 # fsck must not free the blocks of a LIVE file. Two boots on one image: boot 1
 # writes a file reaching into the double-indirect tree, boot 2 unlocks -- which

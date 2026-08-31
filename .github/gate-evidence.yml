@@ -86,7 +86,7 @@ exempt:
     a run whose working set stayed in the single-indirect region would exercise
     the path the defect does not touch and pass while testing nothing.
   smoke-fs-16g: >
-    Two written-out boots on one sparse image, each asserting its own
+    Three written-out boots on one sparse image, each asserting its own
     REQUIRE_MARKER with a FAIL_MARKER set, so a boot that died fails the target
     rather than being read as the property holding. Boot 1 additionally asserts
     POSITIVELY that the volume is at least BLOCKS_PER_DISK blocks and that the

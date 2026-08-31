@@ -60,8 +60,10 @@ in this file.
 ### Added
 
 - **`make smoke-fs-16g`** — the end-to-end gate for the storage track: a 16 GiB volume formats,
-  mounts, survives a reboot and holds a file whose offsets are past the old ceiling. Two boots
-  on a sparse image (16 GiB declared, ~130 MiB written). It asserts positively that the volume
+  mounts, survives a reboot **and a crash**, and holds a file whose offsets are past the old
+  ceiling. Three boots on a sparse image (16 GiB declared, ~130 MiB written); the crash boot is
+  nearly free because the volume is already formatted, so recovery is tested at *this* size
+  rather than trusted from `smoke-meta-crash` at 128 MiB. It asserts positively that the volume
   is at least `BLOCKS_PER_DISK` blocks and that the file reached triple-indirect, because a gate
   for a 16 GiB volume that a 128 MiB image satisfies is a gate for nothing.
 

@@ -3518,8 +3518,17 @@ void storage_noformat_selftest(void)
  * would hash 1 MiB per write and read the whole region at mount), the
  * device-derived volume size, triple-indirect, and the inode scaling.
  *
- * TWO BOOTS, because "survives a reboot" is the claim. Boot 1 formats and writes;
- * boot 2 mounts the volume that boot 1 left and reads it back.
+ * THREE BOOTS, because the claim is a reboot AND a crash. Boot 1 formats and
+ * writes; boot 2 mounts what boot 1 left, writes one more block and HALTS with
+ * that block committed to the journal but not applied to its home location;
+ * boot 3 mounts, replays, and reads everything back -- the set boot 1 wrote,
+ * across the reboot, and the block boot 2 crashed on, out of the journal.
+ *
+ * The crash boot is nearly free: the volume is already formatted, and format is
+ * where a 16 GiB volume spends its minutes. Doing it at this size rather than
+ * relying on smoke-meta-crash at 128 MiB is the point -- the journal's targets
+ * are absolute block numbers, and the metadata block a write touches on a 16 GiB
+ * volume is thirty-two thousand blocks further into the region.
  *
  * IT ASSERTS THE VOLUME IS ACTUALLY LARGE. A gate for a 16 GiB volume that a
  * 128 MiB image satisfies is a gate for nothing, and the image size lives in the
@@ -3533,6 +3542,10 @@ void storage_noformat_selftest(void)
 static const uint64_t bigvol_blocks[BIGVOL_NBLOCKS] = {
     0, 600, 262667, 262668, 700000, 3000000
 };
+/* Written by boot 2 and committed as it crashes; boot 3 must find it. Deep in
+ * the triple-indirect region, so the transaction that carries it also carries
+ * pointer-block writes at three levels. */
+#define BIGVOL_CRASH_BLOCK  2500000ull
 /* Blocks the volume must have for this to be the test it says it is. */
 #define BIGVOL_MIN_BLOCKS  4194304ull
 
@@ -3588,7 +3601,31 @@ void bigvol_selftest(void)
         for (;;) asm volatile ("hlt");
     }
 
-    /* Boot 2: the volume boot 1 left, mounted again. */
+    if (phase == 1) {
+        /* The volume boot 1 left, mounted again -- the reboot half. Check one
+         * block came back BEFORE crashing, so boot 3 failing cannot be blamed on
+         * a reboot that had already lost the data. */
+        if (storage_read_file_block(mfs, BIGVOL_INO, bigvol_blocks[0], buf) != 0) {
+            print("BIGVOL: FAIL a block did not survive the reboot\n");
+            return;
+        }
+        storage_test_scratch_set(2);
+
+        /* Now the crash half: commit a write and halt before it is applied
+         * home. journal_commit prints its own marker and stops the machine. */
+        {
+            extern int g_wal_crash_armed;
+            uint64_t b = BIGVOL_CRASH_BLOCK;
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = bigvol_byte(b, i);
+            print("BIGVOL: boot2 survived the reboot; committing then crashing\n");
+            g_wal_crash_armed = 1;
+            storage_write_file_block(mfs, BIGVOL_INO, b, buf);   /* commits, halts */
+        }
+        print("BIGVOL: FAIL no-crash\n");                        /* unreachable */
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Boot 3: the journal has been replayed by storage_unlock. */
     for (unsigned k = 0; k < BIGVOL_NBLOCKS; k++) {
         uint64_t b = bigvol_blocks[k];
         if (storage_read_file_block(mfs, BIGVOL_INO, b, buf) != 0) {
@@ -3603,6 +3640,18 @@ void bigvol_selftest(void)
         }
     }
 
+    /* The block boot 2 committed and crashed on, recovered from the journal. */
+    if (storage_read_file_block(mfs, BIGVOL_INO, BIGVOL_CRASH_BLOCK, buf) != 0) {
+        print("BIGVOL: FAIL the committed block did not survive the crash\n");
+        return;
+    }
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        if (buf[i] != bigvol_byte(BIGVOL_CRASH_BLOCK, i)) {
+            print("BIGVOL: FAIL the recovered block came back wrong\n");
+            return;
+        }
+    }
+
     /* A hole in the triple-indirect region must read as absent, not as another
      * block's data -- the failure a mis-wired level produces that a written-then-
      * read test cannot see. */
@@ -3611,7 +3660,7 @@ void bigvol_selftest(void)
         return;
     }
 
-    print("BIGVOL: PASS a 16 GiB volume survived a reboot with a file past 1 GiB\n");
+    print("BIGVOL: PASS a 16 GiB volume survived a reboot and a crash\n");
 }
 #endif /* BIGVOL_SELFTEST */
 

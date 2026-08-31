@@ -15,6 +15,19 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Self-test markers are emitted as one write** (`docs/LIMITATIONS.md` 2.6a, now closed). A marker
+  printed as `kput("X: FAIL "); kput(detail);` can be split by another ring-3 task's output landing
+  between the two calls on the shared serial console — and a gate asserting the joined string then
+  times out looking for something that *was* printed, in two pieces. That happened to
+  `smoke-init-provision-control` on 2026-08-31 after three days green. A sweep found ten instances;
+  all are now single writes, six of them sharing a new `kput_marker()` in `libhorus` because the
+  hazard belongs to the console rather than to any one self-test. Verified by re-running the sweep
+  and every gate whose marker changed. **No gate reproduces this**: a witness would have to
+  interleave a second task's output on demand, forcing what only luck produced — the property is
+  enforced structurally instead.
+
 ### Added
 
 - **User accounts survive a reboot** (`SECURITY.md` **S62**, closing `docs/LIMITATIONS.md` 2.6).

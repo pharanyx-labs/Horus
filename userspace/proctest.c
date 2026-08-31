@@ -241,9 +241,17 @@ void _start(void) {
     if (!starts_with(why, "faulted, trap vector 6 at rip=0x")) {
         report("PROC_SELFTEST: FAIL fault-exitinfo-format\n"); sys_exit();
     }
-    report("PROC_SELFTEST: exit-reason renders: ");
-    report(why);
-    report("\n");
+    /* One write: the console is shared, and a marker split by another task's
+     * output is a marker a gate cannot match (docs/LIMITATIONS.md 2.6a). */
+    {
+        char line[160];
+        const char *pfx = "PROC_SELFTEST: exit-reason renders: ";
+        unsigned n = 0;
+        for (const char *c = pfx; *c && n < sizeof(line) - 2; c++) line[n++] = *c;
+        for (const char *c = why; *c && n < sizeof(line) - 2; c++) line[n++] = *c;
+        line[n++] = '\n'; line[n] = 0;
+        report(line);
+    }
     report("PROC_SELFTEST: fault-wait OK\n");
 
     /* --- full argv: spawn "argtest" with a known argument vector and confirm it

@@ -125,3 +125,12 @@ exempt:
     USERS_TAMPER_INJECT=1. Each asserts its own REQUIRE_MARKER (WROTE, then
     TAMPER-REFUSED) with a FAIL_MARKER set, so a dead boot fails rather than
     being read as a refusal.
+  smoke-meta-crash: >
+    Two written-out boots on one image, each asserting its own REQUIRE_MARKER
+    with a FAIL_MARKER set, so a boot that dies fails the target rather than
+    being read as the property holding. Boot 1 must reach
+    "WAL_CRASHTEST: crashed-after-commit" and boot 2 "METACACHE: PASS".
+  smoke-meta-crash-control: >
+    Same shape; boot 2 requires "METACACHE: FAIL block", so a dead boot produces
+    no marker and the arm reddens rather than being credited with reproducing
+    the defect.

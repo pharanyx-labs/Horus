@@ -15,6 +15,32 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/design/meta-cache-merkle.md` and Arm A of it** — the falsifying arms for the bounded
+  metadata cache and Merkle rollback tree, **designed and built before the code they will guard**.
+  `make smoke-meta-crash` asserts that a metadata update in a committed journal transaction is
+  durable across a crash; `META_CRASH_DROP_ONE=1` is its control.
+  Building the arm against the *current* tree found something the design did not predict: its
+  first version could not reproduce at all. Skipping one `flush_meta_block` changes nothing,
+  because at 4 KiB all 64 blocks of the working set share a single meta block and the next flush
+  rewrites it from the complete in-RAM mirror. **A full mirror is self-healing against a lost
+  metadata write, and stage 2 removes that property** — an evicted entry is gone from RAM and no
+  later flush can reconstruct it. That is a cost of the cache, now recorded as one. Had the cache
+  been written first, "skip the flush" would have reproduced and the difference between *skipping
+  a write* and *losing an entry* would never have surfaced.
+  The eviction-count assertion is deferred rather than omitted: today's mirror evicts nothing, so
+  it is reported instead of asserted, because a check that cannot fail reads as coverage.
+
+### Fixed
+
+- **`wal_crashtest` read 3,584 bytes off the end of the kernel stack.** It passed a
+  `uint8_t buf[512]` to `storage_write_file_block`, which does `my_memcpy(temp, buf, BLOCK_SIZE)`
+  — so 3.5 KiB of unrelated stack contents were written into the block. `smoke-fs-wal` passed
+  throughout because it only ever verified the first 16 bytes. The eighth place the 512-byte block
+  was assumed, found while reading the function to model a new harness on it; every other caller
+  of the whole-block APIs was swept and was already correct.
+
 ### Changed
 
 - **The filesystem block size is 4 KiB, not 512 B** (on-disk format **v9**). At 512 the indirect

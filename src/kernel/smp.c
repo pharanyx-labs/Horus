@@ -456,6 +456,12 @@ void smp_bringup(void) {
      * encrypted object store, proving the Phase 2 stack end-to-end
      * (prints FS_SELFTEST: PASS). */
     fs_selftest();
+#elif defined(META_CRASH_SELFTEST)
+    /* Arm A of docs/design/meta-cache-merkle.md: a committed metadata update is
+     * durable across a crash whether or not its cache entry was evicted first.
+     * Built before the cache exists, so that the harness is known-good before
+     * there is anything to blame -- see the comment on meta_crash_selftest. */
+    { extern void meta_crash_selftest(void); meta_crash_selftest(); }
 #elif defined(WAL_CRASHTEST)
     /* Gated: two-boot journal crash-recovery test. Boot 1 commits a write then
      * halts before applying it; boot 2 replays the committed transaction at mount

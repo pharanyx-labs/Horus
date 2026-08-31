@@ -1186,10 +1186,21 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3>Storage the kernel keeps sealed</h3>
             <p>
               Each <code>(inode, block)</code> gets its own AEAD subkey with a fresh nonce per
-              write, under a hierarchical rollback MAC. The encryption happens entirely inside
+              write, under a two-level rollback MAC. The encryption happens entirely inside
               the kernel; the ring-3 filesystem server never holds a key.
             </p>
-            <span class="witness">smoke-fs · RFC test vectors</span>
+            <p>
+              Those nonces used to live in a complete in-RAM mirror of the volume &mdash; which is
+              also why the volume could not grow, since the mirror scales with the disk. It is a
+              bounded cache now, and that trade is worth naming: a full mirror is
+              <em>self-healing</em> against a lost metadata write, because it holds every entry and
+              can regenerate the one that was lost. A bounded cache cannot. So the write-ahead log
+              is now the only thing keeping a block's nonce and its ciphertext in the same atomic
+              unit, and the gate for that has three control arms &mdash; one of them aimed at the
+              gate itself, requiring it to say &ldquo;this run tested nothing&rdquo; when its
+              working set is small enough to fit in the cache.
+            </p>
+            <span class="witness">smoke-fs · smoke-meta-crash · RFC test vectors</span>
           </article>
           <article>
             <h3>A usable userland</h3>
@@ -1363,7 +1374,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 194 test targets, and the troubleshooting
+          Every configuration flag, every one of the 196 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1450,7 +1461,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 
         <p class="note">
           Compile-time ceilings still apply to most of the system: 256 capability slots per
-          task, a 256-byte message, a 16 MiB volume. The number of <em>tasks</em> is no longer
+          task, a 256-byte message, a 128 MiB volume. The number of <em>tasks</em> is no longer
           among them &mdash; it is worked out at boot from the memory the machine actually has.
           <br><br>
           Getting there is a small lesson in taking a codebase's own account of itself on trust.

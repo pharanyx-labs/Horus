@@ -222,6 +222,47 @@ Stated plainly, because a gate's scope is part of its claim:
 
 ---
 
+## 4a. What stage 2 actually shipped, and where this document was wrong
+
+*Added 2026-08-31, after the code. The rest of this document is left as written —
+a design read after the fact is only useful if you can see what it predicted.*
+
+**The cache line is a metadata BLOCK, not an entry.** §2's witness counts the
+working set in data blocks ("`META_CACHE_ENTRIES + N` distinct blocks"), which
+presumes entry granularity. Entry granularity makes every 4 KiB data write pay a
+4 KiB metadata *read*, permanently, because writing one entry back means
+read-modify-writing the block it lives in — and that splice of an on-disk image
+with resident entries is exactly failure mode E3, which block granularity does
+not have at all. So the line is a block, 128 data blocks share one, and the
+harness's working set grew from 64 blocks to 400 with the cache widened down to
+two lines in both arms.
+
+**E1's literal arm does not reproduce, and that is structural.** Durability
+requires the write-back to be inside the transaction that dirtied the line, so
+`journal_commit` flushes; every workload in this tree dirties exactly one line
+per transaction; so a line is always clean by the time anything can evict it.
+`META_CACHE_EVICT_NOWB=1` therefore passes, the eviction write-back is a
+backstop, and the arm is kept without a gate — the call `SPAWN_STAGE_UNSERIALISED`
+got. This is measured rather than argued: every crash-gate boot prints
+`evictions=2 dirty=0`, and a non-zero dirty count is the day that arm becomes
+reachable and should gate.
+
+**What gates instead** is the same failure seen from the two places it can
+actually happen, and the two name different blocks:
+
+| flag | what it removes | boot 2 reports |
+|---|---|---|
+| `META_CACHE_NO_WRITEBACK=1` | the write-back entirely (E1 + E4) | `block 0` — nothing ever reached the disk |
+| `META_CACHE_WB_OUTSIDE_TXN=1` | only its position — the flush moves past the end of `journal_commit` (E2) | `block 399` — the block the crash committed, whose ciphertext the journal replayed and whose nonce was never written |
+
+**§2's vacuity trap needed a third arm, not just a counter.**
+`smoke-meta-crash-vacuity-control` builds the same kernel without the widener, so
+the working set fits the cache and boot 1 must print
+`METACACHE: FAIL no eviction occurred`. The counter says the gate *can* be
+vacuous; this arm shows it *says so*.
+
+---
+
 ## 5. Order of work
 
 1. **Arm A's harness first, against the current code.** It must PASS on today's

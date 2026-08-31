@@ -111,7 +111,9 @@ DEFECT_FLAGS = \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
-	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT META_CRASH_DROP_ONE \
+	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
+	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
+	META_CACHE_TINY \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -421,15 +423,49 @@ endif
 # committed metadata update survives a crash whether or not its cache entry was
 # evicted. Built BEFORE the bounded cache exists, so the harness is proven
 # against the current full mirror first.
-# META_CRASH_DROP_ONE=1 is the falsifying arm for the Arm A harness: one block's
-# crypto metadata never reaches the disk, which is what a bounded cache does when
-# it evicts a dirty entry without writing back (failure mode E1). Present before
-# the cache is, because a harness only ever seen to pass is not yet known to
-# detect anything.
-META_CRASH_DROP_ONE ?= 0
-ifeq ($(META_CRASH_DROP_ONE),1)
-CFLAGS  += -DMETA_CRASH_DROP_ONE
-ASFLAGS += -DMETA_CRASH_DROP_ONE
+# META_CACHE_TINY=1 is NOT a defect. It drops the metadata cache from 32 lines to
+# 2, so a working set of a few hundred blocks provably exceeds it and eviction is
+# forced rather than hoped for. Set in BOTH arms of the crash gates -- that is
+# what makes the pair a measurement (the KSTACK_RACE_WIDEN pattern). It is listed
+# among the defect flags so every boot stamps it, because a number measured on a
+# two-line cache is not a number measured on the shipped one.
+META_CACHE_TINY ?= 0
+ifeq ($(META_CACHE_TINY),1)
+CFLAGS  += -DMETA_CACHE_LINES=2
+ASFLAGS += -DMETA_CACHE_LINES=2
+endif
+
+# META_CACHE_NO_WRITEBACK=1 removes the cache's write-back entirely: journal_commit
+# does not flush dirty lines and eviction drops them. Failure modes E1 and E4 --
+# the metadata updates a committed transaction promised never reach the disk at
+# all. This is Arm A of docs/design/meta-cache-merkle.md.
+META_CACHE_NO_WRITEBACK ?= 0
+ifeq ($(META_CACHE_NO_WRITEBACK),1)
+CFLAGS  += -DMETA_CACHE_NO_WRITEBACK
+ASFLAGS += -DMETA_CACHE_NO_WRITEBACK
+endif
+
+# META_CACHE_WB_OUTSIDE_TXN=1 keeps the write-back but moves it PAST the end of
+# journal_commit, where do_block_write goes straight home. Every value written is
+# still correct; what is gone is the atomicity between a block's nonce and the
+# ciphertext it opens (failure mode E2), so the crash point replays a data block
+# whose metadata was never written.
+META_CACHE_WB_OUTSIDE_TXN ?= 0
+ifeq ($(META_CACHE_WB_OUTSIDE_TXN),1)
+CFLAGS  += -DMETA_CACHE_WB_OUTSIDE_TXN
+ASFLAGS += -DMETA_CACHE_WB_OUTSIDE_TXN
+endif
+
+# META_CACHE_EVICT_NOWB=1 removes ONLY the eviction write-back, leaving the commit
+# flush in place. It has NO GATE and that is deliberate: with the commit flush
+# present, no line is ever dirty by the time anything can evict it, so on every
+# workload in this tree the arm cannot reproduce. Measured, not assumed -- see
+# docs/BUILDING.md. Kept for the day a transaction dirties more lines than the
+# cache holds, which is the only way that path becomes reachable.
+META_CACHE_EVICT_NOWB ?= 0
+ifeq ($(META_CACHE_EVICT_NOWB),1)
+CFLAGS  += -DMETA_CACHE_EVICT_NOWB
+ASFLAGS += -DMETA_CACHE_EVICT_NOWB
 endif
 
 META_CRASH_SELFTEST ?= 0
@@ -3484,6 +3520,12 @@ FS_BLOCK_SIZE ?= $(shell grep -oE '#define[[:space:]]+HORUS_BLOCK_SIZE[[:space:]
 
 PERSIST_BLOCKS  ?= $(shell grep -oE '#define[[:space:]]+BLOCKS_PER_DISK[[:space:]]+[0-9]+' src/include/kernel.h | grep -oE '[0-9]+')
 PERSIST_TIMEOUT ?= 300
+
+# The crash gates write several hundred journal transactions to an emulated IDE
+# disk before they crash, so their budget is sized from what a FAILING run may
+# take rather than from a passing one -- a run that never reaches the crash point
+# must be stopped by the timeout, not scored as a miss.
+META_CRASH_TIMEOUT ?= 600
 .PHONY: smoke-fs-persist
 smoke-fs-persist:
 	@$(MAKE) --no-print-directory clean
@@ -7197,43 +7239,99 @@ smoke-vdisk-bound-control:
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
 
-# Arm A: a metadata update in a committed transaction is durable across a crash.
-# Two boots on one image -- boot 1 writes a working set larger than any cache we
-# would configure and crashes with the last block committed but not applied;
-# boot 2 replays and must read every block back byte-for-byte.
+# Arm A: a metadata update in a committed transaction is durable across a crash,
+# whether or not its cache line was evicted first. Two boots on one image -- boot 1
+# writes a working set that spans more metadata blocks than the cache has lines
+# and crashes with the last block committed but not applied; boot 2 replays and
+# must read every block back byte-for-byte.
+#
+# META_CACHE_TINY=1 is set in EVERY arm below. It is a window widener, not a
+# defect: it drops the cache to two lines so that a few hundred blocks provably
+# exceed it. Both boots also assert meta_cache_evictions() != 0, so a change to
+# either number turns the gate red rather than silently into a no-op.
+META_CRASH_BASE = META_CRASH_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+META_CRASH_ARGS = $(META_CRASH_BASE) META_CACHE_TINY=1
+
 .PHONY: smoke-meta-crash
 smoke-meta-crash:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS)
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) boot.iso
 	@dd if=/dev/zero of=meta-crash.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
 	@echo "[meta-crash] boot 1/2 - write the working set, commit, crash"
-	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
+	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		FAIL_MARKER='METACACHE: FAIL' \
 		tools/smoke_test.sh boot.iso
 	@echo "[meta-crash] boot 2/2 - replay, then verify every block"
-	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
+	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
 		REQUIRE_MARKER='METACACHE: PASS' \
 		FAIL_MARKER='METACACHE: FAIL' \
 		tools/smoke_test.sh boot.iso
 	@rm -f meta-crash.img
 	@echo "[meta-crash] PASS - a committed metadata update survived the crash"
 
-# The falsifying arm: one block's metadata never reaches the disk, so boot 2 must
-# report that block lost rather than passing. Proves the harness detects the
-# failure mode a bounded cache will introduce.
+# Arm A's falsifying arm (failure modes E1 + E4). META_CACHE_NO_WRITEBACK=1 takes
+# the write-back out of the cache entirely: journal_commit does not flush dirty
+# lines and eviction drops them, so the metadata a committed transaction promised
+# never reaches the disk. Boot 2 mounts -- the region and its HMAC still agree,
+# both being the format-time zeros -- and then cannot decrypt anything.
 .PHONY: smoke-meta-crash-control
 smoke-meta-crash-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 META_CRASH_DROP_ONE=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 META_CRASH_DROP_ONE=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_NO_WRITEBACK=1
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_NO_WRITEBACK=1 boot.iso
 	@dd if=/dev/zero of=meta-crash-c.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
-	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
+	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		tools/smoke_test.sh boot.iso
-	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
+	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
 		REQUIRE_MARKER='METACACHE: FAIL block' \
 		tools/smoke_test.sh boot.iso
 	@rm -f meta-crash-c.img
-	@echo "[meta-crash] CONTROL PASS - a dropped metadata write is detected"
+	@echo "[meta-crash] CONTROL PASS - a cache that never writes back loses the committed update"
+
+# Failure mode E2, and it needs its own arm because it is the one that turns a
+# recoverable loss into a lost block. META_CACHE_WB_OUTSIDE_TXN=1 keeps the
+# write-back and moves it PAST the end of journal_commit, where do_block_write
+# goes straight home instead of into the journal. Every value is still correct;
+# what is gone is the atomicity between a block's nonce and its ciphertext, so
+# the crash replays a data block whose metadata write never happened.
+.PHONY: smoke-meta-crash-txn-control
+smoke-meta-crash-txn-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_WB_OUTSIDE_TXN=1
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_WB_OUTSIDE_TXN=1 boot.iso
+	@dd if=/dev/zero of=meta-crash-t.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-t.img \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		tools/smoke_test.sh boot.iso
+	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-t.img \
+		REQUIRE_MARKER='METACACHE: FAIL block' \
+		tools/smoke_test.sh boot.iso
+	@rm -f meta-crash-t.img
+	@echo "[meta-crash] CONTROL PASS - a write-back outside its transaction is not covered by the commit"
+
+# THE ARM ON THE GATE ITSELF, not on the property. smoke-meta-crash is only a
+# test of eviction while the working set exceeds the cache, and nothing about
+# "400 blocks" and "2 lines" says so out loud -- raise the cache, or shrink the
+# set, and every block would still verify, from a cache that never evicted, and
+# the marker would still say PASS. So both boots assert meta_cache_evictions()
+# != 0, and this arm is what shows that assertion can fail: the same build
+# WITHOUT the META_CACHE_TINY widener has 32 lines, the working set fits, and
+# boot 1 must refuse to conclude anything.
+#
+# One boot, because the refusal happens in boot 1 before the crash -- there is
+# nothing for a second boot to read.
+.PHONY: smoke-meta-crash-vacuity-control
+smoke-meta-crash-vacuity-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(META_CRASH_BASE)
+	@$(MAKE) --no-print-directory $(META_CRASH_BASE) boot.iso
+	@dd if=/dev/zero of=meta-crash-v.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-v.img \
+		REQUIRE_MARKER='METACACHE: FAIL no eviction occurred' \
+		tools/smoke_test.sh boot.iso
+	@rm -f meta-crash-v.img
+	@echo "[meta-crash] CONTROL PASS - a run whose working set fits the cache refuses to conclude"
+

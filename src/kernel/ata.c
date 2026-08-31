@@ -31,7 +31,7 @@ static inline void outw(uint16_t port, uint16_t val) {
 /* Serialises access to the ATA PIO port sequence across CPUs. This is a
  * DEDICATED lock, deliberately NOT storage_lock: the crypto layer
  * (storage_encrypt_block) holds storage_lock while flushing per-block metadata,
- * which walks down through flush_meta_block -> do_block_write -> ata_write_sector.
+ * which walks down through the metadata cache -> do_block_write -> ata_write_sector.
  * If the sector ops took storage_lock too, that path would re-acquire a
  * non-recursive spinlock and self-deadlock — the exact hang that made the ATA
  * backend never complete a write end-to-end. The RAM vdisk's block ops take no

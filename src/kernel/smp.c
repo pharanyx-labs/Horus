@@ -456,6 +456,14 @@ void smp_bringup(void) {
      * encrypted object store, proving the Phase 2 stack end-to-end
      * (prints FS_SELFTEST: PASS). */
     fs_selftest();
+#elif defined(VDISK_BOUND_SELFTEST)
+    /* Gated: a block device may not accept a block it has no memory for
+     * (S64). Both directions -- the last in-range block writable, the first
+     * out-of-range block refused -- so the bound is shown to be a bound rather
+     * than a blanket rejection. */
+    { extern void storage_vdisk_bound_selftest(void);
+      storage_vdisk_bound_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(META_CRASH_SELFTEST)
     /* Arm A of docs/design/meta-cache-merkle.md: a committed metadata update is
      * durable across a crash whether or not its cache entry was evicted first.

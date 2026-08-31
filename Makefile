@@ -112,6 +112,7 @@ DEFECT_FLAGS = \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT META_CRASH_DROP_ONE \
+	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
@@ -435,6 +436,24 @@ META_CRASH_SELFTEST ?= 0
 ifeq ($(META_CRASH_SELFTEST),1)
 CFLAGS  += -DMETA_CRASH_SELFTEST -DWAL_CRASHTEST
 ASFLAGS += -DMETA_CRASH_SELFTEST -DWAL_CRASHTEST
+endif
+
+# VDISK_BOUND_SELFTEST=1 proves the RAM vdisk refuses a block it has no backing
+# store for, and still accepts the last one it does (S64).
+VDISK_BOUND_SELFTEST ?= 0
+ifeq ($(VDISK_BOUND_SELFTEST),1)
+CFLAGS  += -DVDISK_BOUND_SELFTEST
+ASFLAGS += -DVDISK_BOUND_SELFTEST
+endif
+
+# VDISK_TOTAL_UNBOUNDED=1 restores the pre-2026-08-31 device: total_blocks =
+# BLOCKS_PER_DISK over a VDISK_BLOCKS-sized reservation, and no second check
+# against the backing store. Blocks past the reservation are then accepted and
+# land in the free page pool.
+VDISK_TOTAL_UNBOUNDED ?= 0
+ifeq ($(VDISK_TOTAL_UNBOUNDED),1)
+CFLAGS  += -DVDISK_TOTAL_UNBOUNDED
+ASFLAGS += -DVDISK_TOTAL_UNBOUNDED
 endif
 
 KEYSLOT_SELFTEST ?= 0
@@ -7150,6 +7169,33 @@ smoke-tui-clamp-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL an out-of-range write reached the buffer' \
 		tools/smoke_test.sh boot.iso
+
+# S64. A block device may not accept a block it has no memory for. Both
+# directions in one boot: the last in-range block must still be writable, so the
+# gate cannot be satisfied by a bound that refuses everything.
+.PHONY: smoke-vdisk-bound
+smoke-vdisk-bound:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1
+	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='VDISKBOUND: PASS last-block-writable out-of-range-refused' \
+		FAIL_MARKER='VDISKBOUND: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# The falsifying arm: the device advertises BLOCKS_PER_DISK over a
+# VDISK_BLOCKS-sized reservation, as it did until 2026-08-31. The marker asserts
+# the bytes were READ BACK out of the free page pool, not merely that no refusal
+# arrived -- an assertion of absence is satisfied by a run that never got there.
+.PHONY: smoke-vdisk-bound-control
+smoke-vdisk-bound-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 VDISK_TOTAL_UNBOUNDED=1
+	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 VDISK_TOTAL_UNBOUNDED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
+		tools/smoke_test.sh boot.iso
+	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
 
 # Arm A: a metadata update in a committed transaction is durable across a crash.
 # Two boots on one image -- boot 1 writes a working set larger than any cache we

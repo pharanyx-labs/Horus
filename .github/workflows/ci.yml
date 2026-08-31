@@ -2477,6 +2477,13 @@ jobs:
         run: make smoke-meta-crash
       - name: Control arm — a metadata entry lost as an eviction would lose it
         run: make smoke-meta-crash-control
+      # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
+      # reservation, so a block past the backing store landed in the free page
+      # pool. Diskless, so it runs here only for topical company.
+      - name: A block device refuses a block it has no memory for
+        run: make smoke-vdisk-bound
+      - name: Control arm — a write past the backing store reaches the page pool
+        run: make smoke-vdisk-bound-control
       # S61. Two boots on one image: both passwords must open the volume after a
       # power cycle, and revoking one must revoke that one only. Runs here rather
       # than in a job of its own so no new required context is created.

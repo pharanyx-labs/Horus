@@ -42,6 +42,7 @@ control_arms:
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
   smoke-meta-crash-control: smoke-meta-crash
+  smoke-vdisk-bound-control: smoke-vdisk-bound
   smoke-storage-noformat-control: smoke-storage-noformat
   smoke-tui-diff-control: smoke-tui
   smoke-tui-clamp-control: smoke-tui
@@ -142,6 +143,7 @@ gates:
   - smoke-tui
   - smoke-keyslots
   - smoke-meta-crash
+  - smoke-vdisk-bound
   - smoke-users-persist
   - smoke-users-tamper
   - smoke-storage-noformat

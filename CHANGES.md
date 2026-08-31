@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 125 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 126 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,22 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Fixed
+
+- **The RAM vdisk advertised more blocks than it had memory for** (**S64**). `g_vdisk_bd`
+  reported `BLOCKS_PER_DISK` (32768) while its backing store was a `VDISK_BLOCKS` (4096)
+  reservation in the physical pool, and both transport bounds tested the advertised number.
+  Blocks 4096 and above were accepted and written 4 KiB at a time into the **free page pool**
+  that begins immediately after the reservation — reachable from ring 3 by writing enough file
+  data on any diskless boot, which is every CI boot. The two constants were one number until
+  `VDISK_BLOCKS` was introduced with the 4 KiB block size, so that a larger block would not turn
+  the RAM disk into 128 MiB of reservation as a side effect; the device's size was left behind.
+  The transport now bounds against `vd->block_count` as well, which is a property of the memory
+  that exists rather than of a field someone can set wrong. `make smoke-vdisk-bound` requires
+  both that the last in-range block is still writable and that the first out-of-range block is
+  refused; `VDISK_TOTAL_UNBOUNDED=1` is the control arm, and its marker is the pattern read back
+  **out of the page pool** rather than an absent refusal.
 
 ### Added
 

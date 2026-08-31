@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 125 entries, newest first, each explaining what
+The narrative record of how Horus was built: 126 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,42 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Fixed: the RAM disk said it was eight times larger than the memory behind it
+
+Found while reading `storage.c` for the metadata cache, not by a failing gate, and it had been
+live since the 4 KiB block size landed the day before.
+
+`g_vdisk_bd.total_blocks` was `BLOCKS_PER_DISK` -- 32768 -- and `vdisk_read`/`vdisk_write` both
+bounded against exactly that field. The backing store is `g_vdisk_backing`, a `VDISK_BYTES`
+reservation in the physical pool: `VDISK_BLOCKS` (4096) blocks, 16 MiB. So block 4096 was
+accepted, and `vd->data + block * BLOCK_SIZE` addressed the first frame of the FREE PAGE POOL,
+which begins immediately after the reservation. Blocks 4096..32767 covered 112 MiB of pool past
+the end of it.
+
+**Why the two numbers came apart.** They were one expression until 2026-08-31. `VDISK_BLOCKS`
+exists precisely because raising `BLOCK_SIZE` to 4 KiB would otherwise have made the RAM disk
+128 MiB of physical-pool reservation as a side effect of a constant change -- the comment on it
+says so. What that split did not carry with it was the device's advertised size, and nothing
+related the two but prose. There is now a `_Static_assert(VDISK_BLOCKS <= BLOCKS_PER_DISK)` for
+the relationship that does remain, and the transport bounds against `vd->block_count` as well
+as `total_blocks`: the first is a property of memory that exists, the second is a field a
+caller can set wrong, and the defect was the second disagreeing with the first.
+
+**Reachability.** `storage_format_sealed` lays the filesystem out against `bd->total_blocks`, so
+on a diskless boot the volume's data region genuinely extended past the reservation and ring 3
+reached it by writing files. No gate had ever written that much, which is why it was silent.
+
+**What the arm had to be careful about.** The obvious control arm -- "is the out-of-range write
+refused?" -- asserts an absence, and this tree has been caught by that shape twice. So the probe
+writes a known pattern to block `VDISK_BLOCKS`, then **reads it back from
+`g_vdisk_backing + VDISK_BYTES`** and reports having found it there. That is a positive claim
+about where the bytes went, not an inference from a missing message, and it restores what it
+displaced so the boot survives to print it. The base gate needs the other direction as well and
+gets it in the same boot: the last in-range block must still be writable and read back, because
+a bound that refuses everything satisfies a refusal test (`KSP_GUARD_ALWAYS`, four months of this
+file ago). Falsified both ways -- `make smoke-vdisk-bound VDISK_TOTAL_UNBOUNDED=1` goes red on
+the control's own marker.
 
 ### Changed: 512 was not a constant, it was an assumption in six places
 

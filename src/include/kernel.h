@@ -136,6 +136,13 @@ extern uint8_t *loader_staging;                               /* set at boot -> 
 #define VDISK_BLOCKS            4096
 #define VDISK_BYTES             ((uint64_t)VDISK_BLOCKS * BLOCK_SIZE)
 #define VDISK_PAGES             (VDISK_BYTES / PAGE_SIZE)
+/* The crypto-metadata array describes at most BLOCKS_PER_DISK blocks, so a RAM
+ * disk larger than that would have blocks no metadata entry can name -- writes
+ * to them would encrypt into nothing. Asserted rather than assumed because the
+ * two constants were decoupled on 2026-08-31 and the relationship between them
+ * survived only as prose. */
+_Static_assert(VDISK_BLOCKS <= BLOCKS_PER_DISK,
+               "the RAM vdisk must fit inside the crypto-metadata array's ceiling");
 extern uint8_t *g_vdisk_backing;                             /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES) */
 
 /* The untyped-memory arena: the RAM every retypable kernel object is carved out

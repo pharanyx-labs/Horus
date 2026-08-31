@@ -40,7 +40,18 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 static uint32_t g_unlocked_slot = 0;
 static uint32_t g_unlocked_uid  = 0;
 
-#define STORAGE_VERSION 9   /* v9: BLOCK_SIZE is 4 KiB, not 512 B. THE BUMP IS
+#define STORAGE_VERSION 10  /* v10: the crypto-metadata region is sized from the
+                             * DEVICE (sb.meta_blocks = ceil(total_blocks /
+                             * META_ENTRIES_PER_BLOCK)) instead of from
+                             * BLOCKS_PER_DISK, and the top-level metadata HMAC
+                             * covers sb.meta_blocks block MACs instead of a
+                             * fixed-size array. Both change bytes a v9 volume
+                             * has in different places, and the second changes
+                             * the HMAC PREIMAGE -- so a v9 volume read as v10
+                             * would fail its integrity check and be reported as
+                             * partial metadata rollback, which is a far worse
+                             * thing to tell someone than "unsupported version".
+                             * v9: BLOCK_SIZE is 4 KiB, not 512 B. THE BUMP IS
                              * LOAD-BEARING, not bookkeeping: a v8 volume's
                              * blocks are 512 bytes, and without a version change
                              * it would pass the `version != STORAGE_VERSION`
@@ -187,10 +198,10 @@ static void intent_append(uint32_t kind, uint64_t a0, uint64_t a1, uint32_t gen)
 
 /* Per-physical-block AEAD metadata: nonce (12), tag (16), present flag (1),
  * and 3 bytes of padding to reach exactly META_ENTRY_SIZE=32 bytes.  Packing
- * to 32 bytes lets META_ENTRIES_PER_BLOCK=16 entries fit one 512-byte sector
- * cleanly, making the on-disk metadata region exactly META_BLOCKS_COUNT=64
- * sectors.  The region is written to disk on every encrypt/free so it survives
- * across reboots; a missing or corrupt entry causes AEAD to fail closed
+ * to 32 bytes lets META_ENTRIES_PER_BLOCK of them fill one filesystem block
+ * exactly, so the on-disk region is a flat array of sb.meta_blocks blocks.  It is
+ * written back inside the journal transaction that changed it, so it survives a
+ * reboot AND a crash; a missing or corrupt entry causes AEAD to fail closed
  * (buffer zeroed, -1 returned) rather than ever decrypting wrongly. */
 struct block_crypto_meta {
     uint8_t nonce[AEAD_NONCE_LEN];   /* 12 */
@@ -200,24 +211,117 @@ struct block_crypto_meta {
 };
 _Static_assert(sizeof(struct block_crypto_meta) == META_ENTRY_SIZE,
                "block_crypto_meta must be META_ENTRY_SIZE bytes");
-static struct block_crypto_meta g_block_meta[BLOCKS_PER_DISK];
+/* Every member is a uint8_t, so the struct's alignment is 1 and a pointer to it
+ * may be taken at any offset inside a cache line's raw image. Asserted rather
+ * than assumed, because that is the only reason meta_entry_in() is allowed to
+ * exist and a padding member of a wider type would silently break it. */
+_Static_assert(_Alignof(struct block_crypto_meta) == 1,
+               "block_crypto_meta must be byte-aligned to overlay a raw block image");
 
-/* Per-meta-block MAC cache (in RAM, derived from g_block_meta — never persisted).
+/* ---- the bounded metadata cache (stage 2, docs/design/meta-cache-merkle.md) --
+ *
+ * WHAT THIS REPLACED, AND WHAT THAT COST. Until 2026-08-31 this was
+ * `g_block_meta[BLOCKS_PER_DISK]`, a COMPLETE in-RAM mirror of the on-disk
+ * nonce/tag region: 32 bytes per block of the largest volume the kernel could
+ * describe, whether or not the volume in front of it was that large. 1 MiB of
+ * .bss at a 128 MiB volume, and 128 MiB at the 16 GiB volume this work exists to
+ * reach -- against a linker budget of 16 MiB for the whole image's .bss. The
+ * mirror was not merely large, it was the reason the volume size could not grow.
+ *
+ * A line holds ONE metadata block, byte for byte as it lives on the platter.
+ * Keeping the raw image rather than a decoded array is deliberate: the write-back
+ * is then a memcpy-free `do_block_write` of the line, the MAC input IS the line,
+ * and there is no serialisation step that could disagree with the on-disk layout.
+ *
+ * THE PROPERTY THIS STRUCTURE HAS TO CARRY (SECURITY.md S65). A dirty line is
+ * written back INTO THE JOURNAL TRANSACTION THAT DIRTIED IT, before that
+ * transaction commits. journal_commit flushes; journal_abort discards. Two
+ * consequences, both of which are the point:
+ *
+ *   - no line is ever dirty across a commit, so a crash cannot lose a metadata
+ *     update that a committed transaction promised (failure modes E1/E4), and
+ *   - the metadata write is inside the same atomic unit as the ciphertext and
+ *     the inode it belongs to (failure mode E2), so a crash leaves the file
+ *     wholly before or wholly after -- never with a data block the journal
+ *     replayed and a nonce it did not.
+ *
+ * WHY THE JOURNAL IS NOW LOAD-BEARING IN A WAY IT WAS NOT. A complete mirror is
+ * SELF-HEALING against a lost metadata write: it holds every entry, so the next
+ * flush of that block regenerates the lost one from RAM. That was a real
+ * property of the old design, it was written down nowhere, and a bounded cache
+ * removes it -- once a line leaves RAM, the only copy is the one on disk. The
+ * journal is what makes that safe, and META_CACHE_NO_WRITEBACK=1 is the arm that
+ * shows it (docs/BUILDING.md).
+ *
+ * Eviction also writes a dirty line back. On every workload in this tree that
+ * path is UNREACHABLE -- each transaction dirties one line and commits it, so a
+ * line is clean by the time anything can evict it -- and it is kept as a backstop
+ * for the day a transaction dirties more lines than the cache holds.
+ * META_CACHE_EVICT_NOWB=1 removes it; that arm is measured and deliberately does
+ * NOT gate, for the same reason SPAWN_STAGE_UNSERIALISED does not: a control arm
+ * that cannot fail cannot gate. */
+#define META_BLK_NONE  ((uint64_t)-1)
+
+struct meta_cache_line {
+    uint64_t meta_blk;              /* index into the region, or META_BLK_NONE */
+    uint32_t stamp;                 /* LRU clock reading at last use */
+    uint8_t  dirty;
+    uint8_t  _pad[3];
+    uint8_t  img[BLOCK_SIZE];       /* the block, exactly as it lives on disk */
+};
+static struct meta_cache_line g_meta_cache[META_CACHE_LINES];
+static uint32_t g_meta_clock;
+/* Evictions of an OCCUPIED line, since boot. Arm A asserts this is non-zero:
+ * a working set that fits in the cache never evicts, so a run that verified
+ * every block without evicting has tested nothing about eviction, and growing
+ * the cache later would silently turn that gate into a no-op. */
+static uint64_t g_meta_evictions;
+/* Of those, how many were DIRTY. The eviction write-back below is believed
+ * unreachable -- a transaction dirties one line and journal_commit writes it
+ * back before anything can evict it -- and this counter is what makes that a
+ * MEASUREMENT rather than an argument. Every crash-gate boot prints it; it has
+ * been 0 in every run, which is why META_CACHE_EVICT_NOWB=1 does not gate. If
+ * it ever prints non-zero, that arm has become reachable and should. */
+static uint64_t g_meta_dirty_evictions;
+
+static struct block_crypto_meta *meta_entry_in(struct meta_cache_line *l, uint64_t phys)
+{
+    return (struct block_crypto_meta *)
+           (l->img + (phys % META_ENTRIES_PER_BLOCK) * META_ENTRY_SIZE);
+}
+
+uint64_t meta_cache_evictions(void)       { return g_meta_evictions; }
+uint64_t meta_cache_dirty_evictions(void) { return g_meta_dirty_evictions; }
+
+/* Per-meta-block MAC (in RAM, derived from the region on disk — never persisted).
  * g_meta_block_mac[b] binds meta block b's META_ENTRIES_PER_BLOCK crypto entries
  * AND its index b, so a physical attacker cannot roll one meta sector back or swap
- * two of them without changing it. sb.meta_hmac is then the MAC over all of these
- * in order, which additionally detects reorder or truncation of the whole region.
- * This two-level construction lets a single block write refresh just one block MAC
- * plus the small top MAC (META_BLOCKS_COUNT * 32 bytes), instead of re-HMACing the
- * entire volume-sized metadata array on every write — so the per-write cost stays
- * small as the volume grows. The stored sb.meta_hmac is unchanged (still one
- * 32-byte value verified at unlock): only how it is computed changed. */
-static uint8_t g_meta_block_mac[META_BLOCKS_COUNT][32];
+ * two of them without changing it. sb.meta_hmac is then the MAC over the first
+ * sb.meta_blocks of these in order, which additionally detects reorder or
+ * truncation of the whole region. This two-level construction lets a single block
+ * write refresh just one block MAC plus the top MAC, instead of re-HMACing the
+ * entire region on every write.
+ *
+ * IT IS STILL O(VOLUME), AND THAT IS THE NEXT PIECE OF WORK, NOT AN OVERSIGHT.
+ * The array is sized by META_BLOCKS_MAX and the top MAC hashes sb.meta_blocks * 32
+ * bytes of it, so at a 16 GiB volume it would be 1 MiB of .bss hashed on every
+ * metadata write. Stage 3 of docs/design/meta-cache-merkle.md replaces both this
+ * array and sb.meta_hmac with a Merkle tree of fanout BLOCK_SIZE/32; leaving a
+ * 1 MiB O(volume) array behind would defeat the point of the tree, so the two
+ * must land before BLOCKS_PER_DISK is raised. */
+static uint8_t g_meta_block_mac[META_BLOCKS_MAX][32];
 
 /* forward declarations — defined after do_block_read/do_block_write */
-static void flush_meta_block(uint64_t phys);
-static void load_meta_region(struct mounted_fs *mfs);
-static void update_meta_block_mac(uint64_t meta_blk);
+static struct meta_cache_line *meta_cache_get(uint64_t meta_blk);
+static int  meta_cache_flush_line(struct meta_cache_line *l);
+static int  meta_cache_flush_all(void);
+static void meta_cache_drop_dirty(void);
+static void meta_cache_reset(void);
+static void update_meta_block_mac(uint64_t meta_blk, const uint8_t *img);
+/* Is a journal transaction open? The transaction state is declared further down
+ * with the journal itself; the crypto layer above needs to know whether there is
+ * a commit coming that will write its dirty line back for it. */
+static int journal_txn_open(void);
 static int  derive_kek(const char *password, size_t plen,
                        const uint8_t *kek_salt, uint8_t *kek32);
 static void storage_fsck_pass(struct mounted_fs *mfs);
@@ -304,14 +408,36 @@ int storage_encrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf
         return -1;
     }
 
-    for (int i = 0; i < AEAD_NONCE_LEN; i++) g_block_meta[phys].nonce[i] = nonce[i];
-    for (int i = 0; i < AEAD_TAG_LEN; i++)   g_block_meta[phys].tag[i]   = tag[i];
-    g_block_meta[phys].present = 1;
-    /* Persist nonce+tag to disk immediately so they survive a reboot.
-     * Written before the caller writes the ciphertext block: a crash between
-     * here and the data write leaves new-meta / old-ciphertext, which the
-     * AEAD rejects (fail-closed), never silently serving stale plaintext. */
-    flush_meta_block(phys);
+    /* Record nonce+tag in the resident line for this block's metadata block and
+     * mark it dirty. The WRITE-BACK belongs to journal_commit, which stages it
+     * into the very transaction that dirtied it -- so the nonce, the ciphertext,
+     * the inode and the bitmap all commit as one unit and a crash leaves the file
+     * wholly before or wholly after.
+     *
+     * This used to flush here, immediately, and the comment justified doing so by
+     * the ordering it produced: a crash between the metadata write and the data
+     * write left new-meta / old-ciphertext, which the AEAD rejects. That is
+     * fail-closed but it is still a LOST BLOCK, and it was only ever the best
+     * available answer because the flush was outside the caller's transaction in
+     * spirit even though do_block_write staged it. Committing them together
+     * removes the window rather than making it safe to land in. */
+    struct meta_cache_line *l = meta_cache_get(phys / META_ENTRIES_PER_BLOCK);
+    if (!l) { spin_unlock(&storage_lock); return -1; }
+    struct block_crypto_meta *e = meta_entry_in(l, phys);
+    for (int i = 0; i < AEAD_NONCE_LEN; i++) e->nonce[i] = nonce[i];
+    for (int i = 0; i < AEAD_TAG_LEN; i++)   e->tag[i]   = tag[i];
+    e->present = 1;
+    for (int i = 0; i < 3; i++) e->_pad[i] = 0;   /* the MAC covers these bytes */
+    l->dirty = 1;
+
+    /* No transaction owns this update, so there is no commit to defer to and a
+     * dirty line would sit in RAM with nothing coming to write it. Fail closed on
+     * the write rather than report success for a nonce that is not on the disk:
+     * the caller is about to store ciphertext only this nonce can open. */
+    if (!journal_txn_open() && meta_cache_flush_line(l) != 0) {
+        spin_unlock(&storage_lock);
+        return -1;
+    }
     spin_unlock(&storage_lock);
     return 0;
 }
@@ -329,13 +455,20 @@ int storage_decrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf
     uint8_t nonce[AEAD_NONCE_LEN], tag[AEAD_TAG_LEN], aad[16];
 
     spin_lock(&storage_lock);
-    if (!g_block_meta[phys].present) {
+    struct meta_cache_line *l = meta_cache_get(phys / META_ENTRIES_PER_BLOCK);
+    if (!l) {                       /* region unreadable — fail closed */
         spin_unlock(&storage_lock);
         secure_zero(buf, BLOCK_SIZE);
         return -1;
     }
-    for (int i = 0; i < AEAD_NONCE_LEN; i++) nonce[i] = g_block_meta[phys].nonce[i];
-    for (int i = 0; i < AEAD_TAG_LEN; i++)   tag[i]   = g_block_meta[phys].tag[i];
+    const struct block_crypto_meta *e = meta_entry_in(l, phys);
+    if (!e->present) {
+        spin_unlock(&storage_lock);
+        secure_zero(buf, BLOCK_SIZE);
+        return -1;
+    }
+    for (int i = 0; i < AEAD_NONCE_LEN; i++) nonce[i] = e->nonce[i];
+    for (int i = 0; i < AEAD_TAG_LEN; i++)   tag[i]   = e->tag[i];
 
     int rc = storage_derive_block_keys(ino, block, mfs->volume_key,
                                        sizeof(mfs->volume_key), enc_key, mac_key);
@@ -500,12 +633,20 @@ static int do_block_write(uint64_t block, const void *buf) {
     return raw_block_write(block, buf);
 }
 
+static int journal_txn_open(void) { return g_txn.active; }
+
 static void journal_begin(void) {
     g_txn.active = 1; g_txn.overflow = 0; g_txn.n = 0;
 }
 
 static void journal_abort(void) {
     g_txn.active = 0; g_txn.overflow = 0; g_txn.n = 0;   /* discard staged writes; home untouched */
+    /* The metadata this transaction dirtied belongs to an operation that did not
+     * happen, so it must not survive into the next one. Dropping the lines rather
+     * than reverting them is what makes that safe without keeping an undo copy:
+     * the next lookup reloads from disk, which still holds the pre-transaction
+     * image because home was never touched. */
+    meta_cache_drop_dirty();
 }
 
 static int journal_compute_hmac(const uint8_t *mac_key, uint64_t seq, uint32_t count,
@@ -523,16 +664,13 @@ static int journal_compute_hmac(const uint8_t *mac_key, uint64_t seq, uint32_t c
  * is durable but before the home apply, to exercise redo recovery on next boot.
  * storage_fresh_format lets the two-boot test tell boot 1 (formatted a fresh
  * disk) from boot 2 (mounted the existing one). */
-#ifdef META_CRASH_DROP_ONE
-int g_meta_drop_armed = 0;
-/* Counted, not addressed. The self-test writes LOGICAL blocks of an inode and
- * does not know which physical block the allocator hands out, so targeting a
- * physical number would be a guess that might fall outside the working set --
- * an arm that silently does not reproduce. Dropping the Nth flush is inside the
- * set by construction. */
-int g_meta_drop_after = 0;
-static int g_meta_flushes = 0;
-#endif
+/* META_CRASH_DROP_ONE was the STAND-IN arm: it cleared one in-RAM entry and
+ * skipped its write, to model what a bounded cache would do before there was
+ * one. There is a cache now, so the arms act on the cache itself --
+ * META_CACHE_NO_WRITEBACK, META_CACHE_WB_OUTSIDE_TXN, META_CACHE_EVICT_NOWB --
+ * and the stand-in is gone rather than kept beside them. Two arms for one
+ * failure mode, one of which can no longer reach the code that fails, is how a
+ * gate ends up testing something other than what its name says. */
 
 #ifdef WAL_CRASHTEST
 int g_wal_crash_armed = 0;
@@ -546,6 +684,28 @@ static int journal_commit(void) {
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted || mfs->sb.journal_start == 0) { journal_abort(); return -1; }
     if (g_txn.overflow) { journal_abort(); return -1; }
+
+    /* Write back every dirty metadata line INTO THIS TRANSACTION, before any of
+     * it is staged to the journal. This is the whole of the cache's durability
+     * contract (S65): after this returns, no line is dirty, so a crash cannot
+     * lose a metadata update that the commit below is about to promise.
+     *
+     * It runs before the `g_txn.n == 0` test on purpose -- flushing STAGES
+     * writes, so a transaction that had staged nothing of its own can still have
+     * something to commit afterwards, and testing first would drop it.
+     *
+     * META_CACHE_NO_WRITEBACK=1 removes it (and the eviction write-back with it),
+     * which is Arm A: the dirty lines then never reach the disk at all and boot 2
+     * cannot decrypt the blocks boot 1 wrote.
+     * META_CACHE_WB_OUTSIDE_TXN=1 moves it past the end of this function instead,
+     * where do_block_write goes straight home -- the metadata escapes the
+     * transaction that owns it, and the crash point between the commit header and
+     * the home apply then replays a ciphertext block whose nonce was never
+     * written (failure mode E2). */
+#if !defined(META_CACHE_NO_WRITEBACK) && !defined(META_CACHE_WB_OUTSIDE_TXN)
+    if (meta_cache_flush_all() != 0) { journal_abort(); return -1; }
+#endif
+
     if (g_txn.n == 0)   { g_txn.active = 0; return 0; }
 
     uint32_t count = (uint32_t)g_txn.n;
@@ -642,6 +802,9 @@ static int journal_commit(void) {
         println("WAL: FLUSH FAILED after home apply - header left for replay");
         g_journal_seq++;
         g_txn.active = 0; g_txn.n = 0;
+        /* No cache flush here even under META_CACHE_WB_OUTSIDE_TXN: the lines
+         * were flushed into this transaction at the top and are already clean.
+         * The arm's whole effect is where the flush happens, not how often. */
         return 0;
     }
 
@@ -656,6 +819,13 @@ static int journal_commit(void) {
 
     g_journal_seq++;
     g_txn.active = 0; g_txn.n = 0;
+#ifdef META_CACHE_WB_OUTSIDE_TXN
+    /* The defect (E2): the transaction is closed, so do_block_write below goes
+     * straight home rather than into the journal. Every value written is correct
+     * and every check still runs -- what is gone is the ATOMICITY between the
+     * metadata and the data it describes. */
+    meta_cache_flush_all();
+#endif
     return 0;
 }
 
@@ -667,78 +837,126 @@ int storage_block_write(uint64_t block, const void *buf) {
     return raw_block_write(block, buf);
 }
 
-/* Serialize and write the metadata sector that covers physical block `phys`.
- * Called while holding storage_lock (single-CPU ring-0, so a blocking ATA
- * write inside the lock is safe — the timer never preempts ring 0). */
-static void flush_meta_block(uint64_t phys)
+/* ---- metadata cache operations -------------------------------------------
+ *
+ * Called with storage_lock held on the encrypt/decrypt paths, and without it
+ * from journal_commit -- the same serialisation g_jscratch relies on, which is
+ * that ring-0 storage work is not preempted and the journal's own g_txn is a
+ * single global with no lock of its own. Stated rather than implied, because
+ * these buffers are static and that is the only thing making them safe.
+ */
+
+/* Write one line home and refresh the integrity chain over it. `do_block_write`
+ * stages into the open transaction when there is one, which is what puts the
+ * metadata update inside the same atomic unit as the data it describes. */
+static int meta_cache_flush_line(struct meta_cache_line *l)
 {
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted || mfs->sb.meta_start == 0) return;
-    if (phys >= BLOCKS_PER_DISK) return;
-
-#ifdef META_CRASH_DROP_ONE
-    /* FALSIFYING ARM for the Arm A harness (docs/design/meta-cache-merkle.md).
-     *
-     * Drops the crypto metadata for one block on its way to the disk, which is
-     * exactly what a bounded cache does when it evicts a dirty entry without
-     * writing it back -- failure mode E1, the thing Arm A exists to catch. It is
-     * here BEFORE the cache is, because a harness that has only ever been seen
-     * to pass is not yet known to detect anything.
-     *
-     * The block is chosen in the middle of the working set on purpose: at the
-     * start it might be mistaken for a mount failure, and at the end for the
-     * committed-but-unapplied block the journal replays. */
-    if (g_meta_drop_armed && ++g_meta_flushes == g_meta_drop_after) {
-        /* LOSE the entry, do not merely skip writing it.
-         *
-         * The first version of this arm just returned early, and it could not
-         * reproduce: at 4 KiB there are META_ENTRIES_PER_BLOCK (128) entries per
-         * meta block, so the whole 64-block working set lives in ONE of them,
-         * and the very next flush rewrote that block from the complete in-RAM
-         * mirror -- entry included. A full mirror is SELF-HEALING against a lost
-         * flush, which is exactly the property a bounded cache removes: an
-         * evicted entry is gone from RAM and nothing can rewrite it.
-         *
-         * So the injection clears the in-RAM entry as well. Subsequent flushes
-         * then propagate the cleared entry to disk, which is what eviction
-         * without write-back actually leaves behind (failure mode E1). */
-        g_block_meta[phys].present = 0;
-        for (int i = 0; i < AEAD_NONCE_LEN; i++) g_block_meta[phys].nonce[i] = 0;
-        for (int i = 0; i < AEAD_TAG_LEN;   i++) g_block_meta[phys].tag[i]   = 0;
-        return;
-    }
-#endif
-
-    uint64_t meta_blk = phys / META_ENTRIES_PER_BLOCK;
-    uint64_t base     = meta_blk * META_ENTRIES_PER_BLOCK;
-
-    uint8_t buf[BLOCK_SIZE];
-    for (uint64_t i = 0; i < META_ENTRIES_PER_BLOCK; i++) {
-        my_memcpy(buf + i * META_ENTRY_SIZE,
-                  &g_block_meta[base + i],
-                  META_ENTRY_SIZE);
-    }
-    do_block_write(mfs->sb.meta_start + meta_blk, buf);
-    /* Keep the superblock's meta_hmac in sync so mount can verify integrity —
-     * refreshing only this block's MAC and the top MAC, not the whole region. */
-    update_meta_block_mac(meta_blk);
+    if (!mfs || !mfs->mounted || mfs->sb.meta_start == 0) return -1;
+    if (l->meta_blk == META_BLK_NONE) return 0;
+    if (do_block_write(mfs->sb.meta_start + l->meta_blk, l->img) != 0) return -1;
+    l->dirty = 0;
+    update_meta_block_mac(l->meta_blk, l->img);
+    return 0;
 }
 
-/* Read the entire metadata region from disk into g_block_meta on mount. */
-static void load_meta_region(struct mounted_fs *mfs)
+static int meta_cache_flush_all(void)
 {
-    if (!mfs || mfs->sb.meta_start == 0) return;
-    for (uint64_t i = 0; i < META_BLOCKS_COUNT; i++) {
-        uint8_t buf[BLOCK_SIZE];
-        if (do_block_read(mfs->sb.meta_start + i, buf) != 0) continue;
-        uint64_t base = i * META_ENTRIES_PER_BLOCK;
-        for (uint64_t j = 0; j < META_ENTRIES_PER_BLOCK; j++) {
-            if (base + j >= BLOCKS_PER_DISK) break;
-            my_memcpy(&g_block_meta[base + j],
-                      buf + j * META_ENTRY_SIZE,
-                      META_ENTRY_SIZE);
+    int rc = 0;
+    for (unsigned i = 0; i < META_CACHE_LINES; i++) {
+        struct meta_cache_line *l = &g_meta_cache[i];
+        if (l->meta_blk != META_BLK_NONE && l->dirty)
+            if (meta_cache_flush_line(l) != 0) rc = -1;
+    }
+    return rc;
+}
+
+/* Discard lines belonging to a transaction that did not happen (journal_abort).
+ * Dropping rather than reverting is safe precisely because home was never
+ * touched: the on-disk image is still the pre-transaction one. */
+static void meta_cache_drop_dirty(void)
+{
+    for (unsigned i = 0; i < META_CACHE_LINES; i++) {
+        if (g_meta_cache[i].dirty) {
+            g_meta_cache[i].meta_blk = META_BLK_NONE;
+            g_meta_cache[i].dirty    = 0;
         }
     }
+}
+
+/* Forget everything, without writing anything back. For format and for a failed
+ * unlock, where the lines describe a volume that is either about to be
+ * overwritten or has just been refused -- writing them back would be writing one
+ * volume's metadata onto another's. */
+static void meta_cache_reset(void)
+{
+    for (unsigned i = 0; i < META_CACHE_LINES; i++) {
+        g_meta_cache[i].meta_blk = META_BLK_NONE;
+        g_meta_cache[i].dirty    = 0;
+        g_meta_cache[i].stamp    = 0;
+    }
+    g_meta_clock = 0;
+}
+
+/* The resident line for metadata block `meta_blk`, loading it on a miss and
+ * evicting the least recently used line to make room. NULL means the metadata
+ * for this block is not available, and every caller treats that as a refusal --
+ * there is no path that proceeds without an entry.
+ *
+ * LRU by a monotonic stamp rather than a clock hand, because the cache is small
+ * enough that a linear scan is far cheaper than the 4 KiB disk read a wrong
+ * eviction costs, and exact LRU is one line of code where an approximation is
+ * several. */
+static struct meta_cache_line *meta_cache_get(uint64_t meta_blk)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || mfs->sb.meta_start == 0) return NULL;
+    if (meta_blk >= mfs->sb.meta_blocks) return NULL;
+
+    struct meta_cache_line *victim = NULL;
+    for (unsigned i = 0; i < META_CACHE_LINES; i++) {
+        struct meta_cache_line *l = &g_meta_cache[i];
+        if (l->meta_blk == meta_blk) { l->stamp = ++g_meta_clock; return l; }
+    }
+    /* Miss. Prefer an empty line; otherwise the oldest. */
+    for (unsigned i = 0; i < META_CACHE_LINES; i++) {
+        if (g_meta_cache[i].meta_blk == META_BLK_NONE) { victim = &g_meta_cache[i]; break; }
+    }
+    if (!victim) {
+        victim = &g_meta_cache[0];
+        for (unsigned i = 1; i < META_CACHE_LINES; i++)
+            if (g_meta_cache[i].stamp < victim->stamp) victim = &g_meta_cache[i];
+
+        if (victim->dirty) {
+            g_meta_dirty_evictions++;
+#ifndef META_CACHE_EVICT_NOWB
+#ifndef META_CACHE_NO_WRITEBACK
+            /* Unreachable on every workload in this tree: a transaction dirties
+             * one line and journal_commit writes it back before anything can
+             * evict it. Kept because "no caller reaches it today" is a statement
+             * about callers, not about the structure, and a cache that silently
+             * drops a dirty line is the failure this whole stage is about. */
+            if (meta_cache_flush_line(victim) != 0) return NULL;
+#endif
+#endif
+        }
+        g_meta_evictions++;
+    }
+
+    victim->meta_blk = meta_blk;
+    victim->dirty    = 0;
+    victim->stamp    = ++g_meta_clock;
+    if (do_block_read(mfs->sb.meta_start + meta_blk, victim->img) != 0) {
+        /* FAIL CLOSED, and note what the alternative would do. Leaving the line
+         * installed with whatever bytes the failed read left in it makes an
+         * unreadable metadata block look like "every block in it is absent" --
+         * and the first write to any block it covers would then flush that
+         * fiction back OVER the real region, destroying 128 blocks' nonces to
+         * repair one failed read. Drop the line; the caller refuses. */
+        victim->meta_blk = META_BLK_NONE;
+        return NULL;
+    }
+    return victim;
 }
 
 /* Derive the HMAC key for the metadata region:
@@ -833,44 +1051,71 @@ discard:
     raw_block_write(jstart, hbuf);   /* clear the header either way */
 }
 
-/* MAC of one meta block: HMAC(mac_key, meta_blk_index || the block's entries).
- * The index is bound so two meta blocks cannot be swapped undetected. */
-static int compute_block_mac(uint64_t meta_blk, const uint8_t *mac_key, uint8_t out32[32])
+/* MAC of one meta block: HMAC(mac_key, meta_blk_index || the block's bytes).
+ * The index is bound so two meta blocks cannot be swapped undetected.
+ *
+ * `img` is the block exactly as it lives on disk, which is also exactly what a
+ * cache line holds -- so the MAC input and the thing written are the same bytes
+ * and cannot drift apart. The preimage buffer is static rather than a 4 KiB
+ * stack frame: this now runs underneath journal_commit, which already carries a
+ * BLOCK_SIZE header buffer, and the BSP kernel stack is 16 KiB. */
+static uint8_t g_mac_pre[8 + BLOCK_SIZE];   /* same serialisation as g_jscratch */
+
+static int compute_block_mac(uint64_t meta_blk, const uint8_t *mac_key,
+                             const uint8_t *img, uint8_t out32[32])
 {
-    uint8_t pre[8 + BLOCK_SIZE];
-    for (int i = 0; i < 8; i++) pre[i] = (uint8_t)(meta_blk >> (i * 8));
-    my_memcpy(pre + 8,
-              (const uint8_t *)&g_block_meta[meta_blk * META_ENTRIES_PER_BLOCK],
-              META_ENTRIES_PER_BLOCK * META_ENTRY_SIZE);
-    return rust_hmac_sha256(mac_key, 32, pre, sizeof(pre), out32);
+    for (int i = 0; i < 8; i++) g_mac_pre[i] = (uint8_t)(meta_blk >> (i * 8));
+    my_memcpy(g_mac_pre + 8, img, BLOCK_SIZE);
+    return rust_hmac_sha256(mac_key, 32, g_mac_pre, sizeof(g_mac_pre), out32);
 }
 
-/* Full recompute: every per-block MAC (from the current g_block_meta) and then the
- * top-level HMAC over all of them → out32. Used at format and at unlock, where the
- * whole metadata region is (re)loaded — a once-per-boot cost, not per-write. */
-static int compute_meta_hmac(const uint8_t *mac_key, uint8_t *out32)
+/* Full recompute: every per-block MAC, read from the REGION ON DISK, then the
+ * top-level HMAC over the first sb->meta_blocks of them → out32. Used at format
+ * and at unlock — a once-per-boot cost, not a per-write one.
+ *
+ * Reading the region rather than an in-RAM mirror is what lets the mirror go.
+ * It is also why format and unlock can no longer disagree: both call this, both
+ * read the same bytes off the same device, and there is no second code path
+ * computing the same value from a different source. A format that computed the
+ * HMAC over an assumed all-zero array while the region on disk was something
+ * else would brick the volume at its first mount, and this is the shape of bug
+ * the two-level MAC has already produced once.
+ *
+ * Takes bd and sb explicitly because format runs before anything is mounted. */
+static int compute_meta_hmac(struct block_device *bd, const struct fs_superblock *sb,
+                             const uint8_t *mac_key, uint8_t *out32)
 {
-    for (uint64_t b = 0; b < META_BLOCKS_COUNT; b++)
-        if (compute_block_mac(b, mac_key, g_meta_block_mac[b]) != 0) return -1;
+    if (sb->meta_blocks == 0 || sb->meta_blocks > META_BLOCKS_MAX) return -1;
+    static uint8_t img[BLOCK_SIZE];
+    for (uint64_t b = 0; b < sb->meta_blocks; b++) {
+        if (bd->read_block(bd, sb->meta_start + b, img) != 0) return -1;
+        if (compute_block_mac(b, mac_key, img, g_meta_block_mac[b]) != 0) return -1;
+    }
     return rust_hmac_sha256(mac_key, 32,
-                            (const uint8_t *)g_meta_block_mac, sizeof(g_meta_block_mac),
+                            (const uint8_t *)g_meta_block_mac,
+                            (size_t)sb->meta_blocks * 32,
                             out32);
 }
 
-/* Hot path (called after every metadata-sector write): exactly one meta block
- * changed, so refresh just its MAC and then the top-level MAC over all block MACs,
- * store it in the in-memory superblock, and flush the superblock (block 0). The
- * per-write cost is one 512-byte block MAC + one HMAC over META_BLOCKS_COUNT*32
- * bytes, independent of how large the volume's data region is. */
-static void update_meta_block_mac(uint64_t meta_blk)
+/* Hot path (called after every metadata-block write): exactly one meta block
+ * changed, so refresh just its MAC and then the top-level MAC over the block
+ * MACs, store it in the in-memory superblock, and stage the superblock (block 0).
+ *
+ * THE PER-WRITE COST STILL SCALES WITH THE VOLUME, and this comment used to say
+ * otherwise. The top MAC hashes sb.meta_blocks * 32 bytes, which is proportional
+ * to the disk: 8 KiB at a 128 MiB volume and 1 MiB at 16 GiB. Two levels made
+ * the constant much smaller than re-HMACing the whole region, which is what that
+ * change was worth -- the logarithm is what stage 3's Merkle tree is for. */
+static void update_meta_block_mac(uint64_t meta_blk, const uint8_t *img)
 {
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted) return;
-    if (meta_blk >= META_BLOCKS_COUNT) return;
-    if (compute_block_mac(meta_blk, mfs->meta_mac_key, g_meta_block_mac[meta_blk]) != 0) return;
+    if (meta_blk >= mfs->sb.meta_blocks) return;
+    if (compute_block_mac(meta_blk, mfs->meta_mac_key, img, g_meta_block_mac[meta_blk]) != 0) return;
     uint8_t tag[32];
     if (rust_hmac_sha256(mfs->meta_mac_key, 32,
-                         (const uint8_t *)g_meta_block_mac, sizeof(g_meta_block_mac),
+                         (const uint8_t *)g_meta_block_mac,
+                         (size_t)mfs->sb.meta_blocks * 32,
                          tag) != 0) return;
     my_memcpy(mfs->sb.meta_hmac, tag, 32);
     do_block_write(0, &mfs->sb);   /* superblock is always block 0 */
@@ -892,10 +1137,28 @@ static void update_meta_block_mac(uint64_t meta_blk)
 _Static_assert(BLOCK_SIZE % 512u == 0,
                "BLOCK_SIZE must be a whole number of 512-byte ATA sectors");
 
+/* THE LBA28 WALL, asserted rather than discovered on somebody's disk.
+ *
+ * ata_read_sector selects the drive with `0xE0 | ((lba >> 24) & 0x0F)`, which is
+ * LBA28: 2^28 sectors, 128 GiB at 512 bytes each. Past that the top bits are
+ * silently DROPPED and the transfer lands at lba mod 2^28 -- a read of the wrong
+ * block that succeeds, which the AEAD then rejects, so the symptom would be a
+ * volume that decrypts nothing above 128 GiB rather than an error naming the
+ * cause. ata_read also takes a uint32_t lba, so the same value must fit there.
+ *
+ * At 16 GiB (BLOCKS_PER_DISK = 4194304) this is 33,554,432 sectors, comfortably
+ * inside it. The assertion is here so that the NEXT raise of BLOCKS_PER_DISK
+ * fails the build instead of the disk. An LBA48 driver (0x24/0x34 with the
+ * 0xEA flush) is what lifts it. */
+_Static_assert((uint64_t)BLOCKS_PER_DISK * ATA_SECTORS_PER_BLOCK <= 0x10000000ULL,
+               "the ATA driver is LBA28: the volume must fit in 2^28 sectors (128 GiB)");
+_Static_assert((uint64_t)BLOCKS_PER_DISK * ATA_SECTORS_PER_BLOCK <= 0xFFFFFFFFULL,
+               "the LBA passed to ata_read/ata_write is a uint32_t");
+
 /* ATA-backed block device (persistent). The per-block crypto metadata (nonce/tag)
- * is persisted: storage_encrypt_block flushes each updated meta sector
- * (flush_meta_block) and storage_unlock reloads the region (load_meta_region)
- * and verifies its HMAC, so files survive a reboot — proven by
+ * is persisted: storage_encrypt_block dirties a resident metadata line and
+ * journal_commit writes it back inside the owning transaction, and storage_unlock
+ * verifies the region's HMAC against the disk, so files survive a reboot — proven by
  * `make smoke-fs-persist`. Compiled unconditionally; storage_init() selects it
  * at runtime when a disk is actually present. */
 static int atadisk_read(struct block_device *bd, uint64_t block, void *buf) {
@@ -1478,15 +1741,22 @@ static int storage_format_sealed(struct block_device *bd,
     sb.total_blocks = bd->total_blocks;
     sb.block_size = BLOCK_SIZE;
 
-    /* Block 0: superblock.  Blocks 1..META_BLOCKS_COUNT: crypto metadata region.
+    /* Block 0: superblock.  Blocks 1..sb.meta_blocks: crypto metadata region.
      * All other regions are shifted past it so the metadata lives at a fixed,
      * known offset regardless of disk geometry. */
     sb.meta_start         = 1;
-    sb.meta_blocks        = META_BLOCKS_COUNT;
+    /* SIZED FROM THE DEVICE, not from BLOCKS_PER_DISK. The region needs one entry
+     * per block this volume actually has; reserving META_BLOCKS_MAX instead gave a
+     * 4096-block RAM disk a 256-block region, and at a 16 GiB BLOCKS_PER_DISK it
+     * would ask a 16 MiB RAM disk for 32768 blocks and fail the "disk too small"
+     * check below -- so a diskless boot would not come up. */
+    sb.meta_blocks        = (uint32_t)((bd->total_blocks + META_ENTRIES_PER_BLOCK - 1)
+                                       / META_ENTRIES_PER_BLOCK);
+    if (sb.meta_blocks > META_BLOCKS_MAX) return -1;   /* device past this kernel's ceiling */
     /* v6: one block reserved right after the metadata region for the TPM sealed
      * blob (used only in tpm_mode; zeroed otherwise). Kept in the layout
      * unconditionally so geometry does not depend on whether a TPM is present. */
-    uint64_t tpm_blob_block = 1 + META_BLOCKS_COUNT;
+    uint64_t tpm_blob_block = 1 + sb.meta_blocks;
     /* v7: the key-slot region follows the TPM blob block, for the same reason
      * that block exists -- eight wraps do not fit in a 512-byte superblock. */
     sb.keyslot_start      = tpm_blob_block + 1;
@@ -1587,30 +1857,40 @@ static int storage_format_sealed(struct block_device *bd,
         secure_zero(slots, sizeof(slots));
     }
 
-    /* Compute the initial metadata HMAC over an all-zeros g_block_meta[] so
-     * the first storage_unlock after format passes the verify step cleanly. */
-    my_memset(g_block_meta, 0, sizeof(g_block_meta));
+    uint8_t zero[BLOCK_SIZE];
+    my_memset(zero, 0, BLOCK_SIZE);
+
+    /* Zero the crypto metadata region so every block starts with present=0.
+     * THIS MUST HAPPEN BEFORE THE HMAC BELOW, and the ordering is the reason the
+     * two can no longer disagree: compute_meta_hmac reads the region off the
+     * device, so it hashes the bytes that are actually there rather than an
+     * assumption about them. The old code hashed an all-zero in-RAM array and
+     * wrote the region afterwards; the two happened to agree, and a volume whose
+     * format left one byte of the region unwritten would have been bricked at its
+     * first mount by a check that could not say why. */
+    for (uint64_t m = 0; m < sb.meta_blocks; m++) {
+        bd->write_block(bd, sb.meta_start + m, zero);
+    }
+
+    /* Nothing resident describes this volume yet, and anything resident describes
+     * a different one. */
+    meta_cache_reset();
+
     {
         uint8_t fmt_mac_key[32];
         if (derive_meta_mac_key(disk_key, sizeof(disk_key),
                                 sb.volume_key_salt, sizeof(sb.volume_key_salt),
-                                fmt_mac_key) == 0) {
-            compute_meta_hmac(fmt_mac_key, sb.meta_hmac);
-            secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
+                                fmt_mac_key) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -1;
         }
+        int rc = compute_meta_hmac(bd, &sb, fmt_mac_key, sb.meta_hmac);
+        secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
+        if (rc != 0) { secure_zero(disk_key, sizeof(disk_key)); return -1; }
     }
     secure_zero(disk_key, sizeof(disk_key));
 
     bd->write_block(bd, 0, &sb);
-
-    uint8_t zero[BLOCK_SIZE];
-    my_memset(zero, 0, BLOCK_SIZE);
-
-    /* Zero the crypto metadata region so every block starts with present=0;
-     * load_meta_region reads it back on mount and initialises g_block_meta. */
-    for (uint64_t m = 0; m < META_BLOCKS_COUNT; m++) {
-        bd->write_block(bd, sb.meta_start + m, zero);
-    }
 
     /* v6: clear the reserved TPM blob block on a password-mode volume. In TPM mode
      * format_seal_tpm already wrote the sealed blob there — must not wipe it. */
@@ -1848,11 +2128,16 @@ int storage_unlock(const char *password, size_t plen)
         if (raw_block_read(0, sbbuf) == 0) my_memcpy(&mfs->sb, sbbuf, sizeof(mfs->sb));
     }
 
-    /* Step 5 — Load metadata region and verify HMAC (detects nonce/tag rollback). */
-    load_meta_region(mfs);
+    /* Step 5 — Verify the metadata region's HMAC against the disk (detects
+     * nonce/tag rollback). Nothing is loaded into RAM here any more: the region
+     * used to be read wholesale into a BLOCKS_PER_DISK-sized mirror, which is the
+     * O(volume) cost the bounded cache exists to remove. The lines fill in on
+     * demand, and this check reads the region once to establish that what they
+     * will be filled from is authentic. */
+    meta_cache_reset();          /* nothing resident may describe an earlier mount */
     {
         uint8_t computed[32];
-        if (compute_meta_hmac(mfs->meta_mac_key, computed) != 0) {
+        if (compute_meta_hmac(mfs->bd, &mfs->sb, mfs->meta_mac_key, computed) != 0) {
             secure_zero(mfs->disk_key,      sizeof(mfs->disk_key));
             secure_zero(mfs->volume_key,    sizeof(mfs->volume_key));
             secure_zero(mfs->meta_mac_key,  sizeof(mfs->meta_mac_key));
@@ -1866,7 +2151,7 @@ int storage_unlock(const char *password, size_t plen)
             secure_zero(mfs->disk_key,      sizeof(mfs->disk_key));
             secure_zero(mfs->volume_key,    sizeof(mfs->volume_key));
             secure_zero(mfs->meta_mac_key,  sizeof(mfs->meta_mac_key));
-            my_memset(g_block_meta, 0, sizeof(g_block_meta));
+            meta_cache_reset();
             return -9;   /* partial metadata rollback detected */
         }
     }

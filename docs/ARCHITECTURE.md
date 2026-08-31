@@ -1014,10 +1014,23 @@ the ring-3 FS server never sees a key.
 
 - Per-`(inode, block)` AEAD subkeys derived from the volume key, with a fresh nonce per
   write.
-- A hierarchical rollback MAC over block metadata, so the per-write cost does not scale with
-  volume size.
-- 16 MiB volume (32768 × 512 B blocks), multi-block data allocation bitmap.
-- Backing store is either an ATA disk or a RAM vdisk reserved in the physical pool.
+- A two-level rollback MAC over block metadata: one MAC per metadata block, then
+  `sb.meta_hmac` over those. **The per-write cost still scales with the volume** — the top
+  level hashes `sb.meta_blocks × 32` bytes — and this list claimed otherwise until 2026-08-31.
+  Two levels made the constant much smaller; the logarithm needs a Merkle tree, which is
+  stage 3 of `docs/design/meta-cache-merkle.md` and is not here yet.
+- 128 MiB volume (32768 × 4 KiB blocks), multi-block data allocation bitmap.
+- The per-block crypto metadata (nonce, tag, present) is a **bounded write-back cache** of
+  `META_CACHE_LINES` on-disk metadata blocks, not an in-RAM mirror of the volume. A dirty line
+  is written back into the journal transaction that dirtied it, before that transaction commits
+  (**S65**); `journal_commit` flushes and `journal_abort` discards. The mirror it replaced was
+  *self-healing* against a lost metadata write — it held every entry, so the next flush
+  regenerated the lost one — and a bounded cache removes that, which is why the journal is now
+  load-bearing for metadata durability rather than merely convenient.
+- The metadata region is sized from the **device** (`sb.meta_blocks`), not from
+  `BLOCKS_PER_DISK`. Only fixed-size arrays may be sized from the latter.
+- Backing store is either an ATA disk or a RAM vdisk reserved in the physical pool. A block
+  device accepts only blocks it has memory for (**S64**).
 
 Authority is one capability, checked in one place: the dispatch table requires a
 `CAP_ENCRYPTED_STORAGE` carrying `READ|WRITE` at `CAPSLOT_AUDIT` (slot 7) before the handler

@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 126 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 127 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,45 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **The per-block crypto metadata is a bounded write-back cache, not a whole-volume mirror**
+  (**S65**, stage 2 of `docs/design/meta-cache-merkle.md`). `g_block_meta[BLOCKS_PER_DISK]`
+  held 32 bytes per block of the largest volume the kernel could describe, whether or not the
+  volume in front of it was that large: 1 MiB of `.bss` at 128 MiB, and 128 MiB at the 16 GiB
+  volume this work exists to reach — against a 16 MiB budget for the whole image's `.bss`. It
+  is now `META_CACHE_LINES` (32) lines of one on-disk metadata block each, 128 KiB resident
+  regardless of volume size, and `storage_unlock` no longer reads the whole region into RAM.
+  The rule the structure carries: **a dirty line is written back into the journal transaction
+  that dirtied it, before that transaction commits** — `journal_commit` flushes,
+  `journal_abort` discards, eviction writes back as a backstop. So no line is ever dirty across
+  a commit, and a block's nonce commits in the same atomic unit as the ciphertext it opens.
+  A complete mirror was *self-healing* against a lost metadata write and a bounded cache is
+  not, so the journal is now the only thing making metadata durable; that is a cost of the
+  change, recorded as one. Falsified three ways, including an arm on the gate itself
+  (`smoke-meta-crash-vacuity-control`) which requires the gate to refuse to conclude when its
+  working set fits the cache.
+- **The metadata region is sized from the device**, not from `BLOCKS_PER_DISK`
+  (`sb.meta_blocks = ceil(total_blocks / META_ENTRIES_PER_BLOCK)`), and the top-level metadata
+  HMAC covers `sb.meta_blocks` block MACs rather than a fixed-size array. Both change the
+  on-disk layout and the second changes the HMAC *preimage*, so **the format version is v10**:
+  a v9 volume read as v10 would fail its integrity check and be reported as partial metadata
+  rollback, which is a far worse thing to tell someone than "unsupported version". Sizing from
+  `BLOCKS_PER_DISK` reserved 256 metadata blocks on a 4096-block RAM disk, and at 16 GiB it
+  would ask a 16 MiB RAM disk for 32768 of them and fail format outright.
+- **`storage_format_sealed` zeroes the metadata region before hashing it**, and
+  `compute_meta_hmac` reads the region off the device rather than an in-RAM array — so format
+  and unlock compute the same value over the same bytes by construction, instead of over two
+  sources that happen to agree.
+
+### Added
+
+- **A compile-time LBA28 ceiling on the volume.** The ATA driver selects the drive with
+  `0xE0 | (lba >> 24)`, so past 2^28 sectors (128 GiB) the top bits are silently dropped and a
+  read lands at `lba mod 2^28` — a wrong block that succeeds, which the AEAD then rejects, so
+  the symptom would be a volume that decrypts nothing rather than an error naming the cause.
+  `_Static_assert` now fails the build instead of the disk.
 
 ### Fixed
 
@@ -36,7 +75,10 @@ in this file.
 - **`docs/design/meta-cache-merkle.md` and Arm A of it** — the falsifying arms for the bounded
   metadata cache and Merkle rollback tree, **designed and built before the code they will guard**.
   `make smoke-meta-crash` asserts that a metadata update in a committed journal transaction is
-  durable across a crash; `META_CRASH_DROP_ONE=1` is its control.
+  durable across a crash. Its control was `META_CRASH_DROP_ONE=1`, a stand-in that cleared one
+  in-RAM entry and skipped its write to model what a bounded cache would do before there was one;
+  the cache landed in the same release, so the arms act on the cache itself and the stand-in is
+  gone (see *Changed*).
   Building the arm against the *current* tree found something the design did not predict: its
   first version could not reproduce at all. Skipping one `flush_meta_block` changes nothing,
   because at 4 KiB all 64 blocks of the working set share a single meta block and the next flush
@@ -45,8 +87,10 @@ in this file.
   later flush can reconstruct it. That is a cost of the cache, now recorded as one. Had the cache
   been written first, "skip the flush" would have reproduced and the difference between *skipping
   a write* and *losing an entry* would never have surfaced.
-  The eviction-count assertion is deferred rather than omitted: today's mirror evicts nothing, so
-  it is reported instead of asserted, because a check that cannot fail reads as coverage.
+  The eviction-count assertion was deferred rather than omitted — the mirror evicted nothing, so
+  it was reported instead of asserted, because a check that cannot fail reads as coverage. It is
+  gating as of the cache landing, and `smoke-meta-crash-vacuity-control` is the arm showing it can
+  fail.
 
 ### Fixed
 

@@ -36,13 +36,15 @@ typedef uint64_t vaddr_t;
  * volume). Large enough to hold every ported coreutils binary in /bin at once
  * (~11 x ~450 KiB). The RAM vdisk's backing store moved out of .bss into a
  * physical-pool reservation (see VDISK_BYTES) so the volume can be this large
- * without blowing the __bss_end < USER_PHYS_BASE (16 MiB) ceiling; the per-block
- * crypto-meta array (g_block_meta) is ~1 MiB of .bss.
+ * without blowing the __bss_end < USER_PHYS_BASE (16 MiB) ceiling. The per-block
+ * crypto metadata is no longer a whole-volume array at all: it is a bounded
+ * write-back cache of META_CACHE_LINES on-disk metadata blocks, so its RAM cost
+ * is fixed and raising this number costs nothing in .bss.
  *
  * ITS ROLLBACK MAC IS TWO-LEVEL, NOT LOGARITHMIC, and this comment used to say
  * "hierarchical so the per-write cost does not scale with the volume". It does
- * scale: the top level is HMAC over META_BLOCKS_COUNT * 32 bytes, which is
- * proportional to the volume. Two levels made the constant ~16x smaller than
+ * scale: the top level is HMAC over sb.meta_blocks * 32 bytes, which is
+ * proportional to the volume. Two levels made the constant much smaller than
  * re-HMACing the whole array, which is what the change was worth -- but at a
  * 16 GiB volume the top MAC alone would hash 1 MiB on every metadata write.
  * A real Merkle tree is what that needs, and it is not here yet. */
@@ -1660,7 +1662,7 @@ typedef struct fs_superblock {
     uint8_t  wrapped_key_nonce[12];  /* AEAD nonce for disk_key sealing */
     uint8_t  wrapped_key_ct[32];     /* AEAD ciphertext of disk_key[32] */
     uint8_t  wrapped_key_tag[16];    /* AEAD auth tag; wrong pwd → open fails → locked */
-    uint8_t  meta_hmac[32];          /* HMAC-SHA256(meta_mac_key, g_block_meta[]);
+    uint8_t  meta_hmac[32];          /* HMAC(meta_mac_key, the region's per-block MACs);
                                        * recomputed on every metadata flush, verified on
                                        * unlock to detect partial nonce/tag rollback */
     /* v6: measured-boot TPM sealing (roadmap 2.2). When tpm_mode == 1 the KEK is
@@ -2575,6 +2577,16 @@ int  storage_free_inode_blocks(mounted_fs_t *mfs, uint64_t ino);
 int  storage_derive_block_keys(uint64_t ino, uint64_t block,
                                const uint8_t *vol_key, size_t vol_key_len,
                                uint8_t *enc_key32, uint8_t *mac_key32);
+/* Evictions of an occupied metadata cache line since boot. The crash gates
+ * assert this is non-zero: a working set that fits in the cache never evicts, so
+ * a run that verified every block without evicting has tested nothing about
+ * eviction -- and growing the cache would otherwise turn that gate into a no-op
+ * with nothing to say so. */
+uint64_t meta_cache_evictions(void);
+/* How many of those were DIRTY. The eviction write-back is believed unreachable
+ * on every workload in this tree; this counter is what turns that from an
+ * argument into a number the gates print on every run. */
+uint64_t meta_cache_dirty_evictions(void);
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);
 int  do_rotate_keys(void);
@@ -2827,13 +2839,48 @@ int  rust_hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
 #define AEAD_NONCE_LEN 12
 #define AEAD_TAG_LEN   16
 
-/* Crypto metadata region: one 32-byte slot per physical block (nonce+tag+present+3pad).
- * 16 slots fit in one 512-byte sector → 64 sectors cover all BLOCKS_PER_DISK=1024 slots.
- * These constants drive both the on-disk layout (storage_format) and the in-memory
- * flush granularity (storage_encrypt_block). */
+/* Crypto metadata region: one META_ENTRY_SIZE slot per physical block
+ * (nonce + tag + present + 3 pad). META_ENTRIES_PER_BLOCK of them fill one
+ * filesystem block exactly, so the region is a flat array of blocks indexed by
+ * `phys / META_ENTRIES_PER_BLOCK`. These constants drive the on-disk layout
+ * (storage_format_sealed) and the cache granularity (storage.c). */
 #define META_ENTRY_SIZE        32   /* must equal sizeof(struct block_crypto_meta) — asserted in storage.c */
 #define META_ENTRIES_PER_BLOCK (BLOCK_SIZE / META_ENTRY_SIZE)
-#define META_BLOCKS_COUNT      (BLOCKS_PER_DISK / META_ENTRIES_PER_BLOCK)
+
+/* THE CEILING, NOT ANY PARTICULAR VOLUME'S REGION SIZE.
+ *
+ * How many metadata blocks the LARGEST volume this kernel can describe would
+ * need. A given volume's region is `sb.meta_blocks`, derived from the device at
+ * format time, and the two are not the same number: using this where that was
+ * meant reserved 256 metadata blocks on a 4096-block RAM disk, and at a 16 GiB
+ * BLOCKS_PER_DISK it would reserve 32768 blocks -- eight times the whole RAM
+ * disk -- so format would fail on the "disk too small" check and a diskless boot
+ * would not come up at all. Only fixed-size ARRAYS may be sized from this.
+ * Everything that walks a real volume's region reads sb.meta_blocks. */
+#define META_BLOCKS_MAX        ((BLOCKS_PER_DISK + META_ENTRIES_PER_BLOCK - 1) \
+                                / META_ENTRIES_PER_BLOCK)
+
+/* Resident metadata cache lines. ONE LINE HOLDS ONE ON-DISK METADATA BLOCK --
+ * its bytes exactly as they live on the platter -- so the resident cost is
+ * META_CACHE_LINES * BLOCK_SIZE and does NOT scale with the volume. That is the
+ * whole point: `g_block_meta[BLOCKS_PER_DISK]` was a complete in-RAM mirror,
+ * 1 MiB at a 128 MiB volume and 128 MiB at a 16 GiB one, which is a .bss array
+ * eight times the size of the linker's entire budget.
+ *
+ * The line is a whole metadata block rather than a single entry for two reasons.
+ * The block is the unit the disk and the MAC both work in, so writing a line
+ * back needs no read-modify-write and no splice of an on-disk image with
+ * resident entries -- an entry-granular cache pays a 4 KiB READ on every 4 KiB
+ * write, permanently. And 128 consecutive data blocks share one line, so a
+ * sequential write of a large file walks the region with one line resident.
+ *
+ * At 32 lines the cache is 128 KiB and covers 4096 blocks (16 MiB of data) at a
+ * time. META_CACHE_TINY=1 drops it to 2 for the crash gates, which need a
+ * working set that provably exceeds it; that is a window widener, set in BOTH
+ * arms, not a defect. */
+#ifndef META_CACHE_LINES
+#define META_CACHE_LINES       32
+#endif
 int  rust_aead_seal(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t *nonce,
                     const uint8_t *aad, size_t aad_len,
                     uint8_t *buf, size_t len, uint8_t *tag_out);

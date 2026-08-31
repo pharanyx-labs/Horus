@@ -134,3 +134,10 @@ exempt:
     Same shape; boot 2 requires "METACACHE: FAIL block", so a dead boot produces
     no marker and the arm reddens rather than being credited with reproducing
     the defect.
+  smoke-meta-crash-txn-control: >
+    Same shape as smoke-meta-crash-control: two written-out boots on one image,
+    boot 1 requiring "WAL_CRASHTEST: crashed-after-commit" and boot 2
+    "METACACHE: FAIL block", so a boot that died produces no marker and the arm
+    reddens rather than being credited with reproducing the defect. The block it
+    names differs from that arm's -- 399, the block the crash committed, against
+    0 -- which is what distinguishes E2 from E1/E4.

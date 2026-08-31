@@ -2475,8 +2475,19 @@ jobs:
       # gives it something to catch.
       - name: A committed metadata update survives a crash
         run: make smoke-meta-crash
-      - name: Control arm — a metadata entry lost as an eviction would lose it
+      - name: Control arm — a cache that never writes back loses the committed update
         run: make smoke-meta-crash-control
+      # Failure mode E2 needs its own arm: it is the one that turns a recoverable
+      # loss into a lost block. The write-back is kept and moved past the end of
+      # journal_commit, so the crash replays a data block whose nonce was never
+      # written.
+      - name: Control arm — a write-back that escapes its journal transaction
+        run: make smoke-meta-crash-txn-control
+      # The arm on the GATE rather than on the property: without the widener the
+      # working set fits the cache, nothing evicts, and the gate must refuse to
+      # conclude instead of passing.
+      - name: Control arm — a run whose working set fits the cache tests nothing
+        run: make smoke-meta-crash-vacuity-control
       # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
       # reservation, so a block past the backing store landed in the free page
       # pool. Diskless, so it runs here only for topical company.

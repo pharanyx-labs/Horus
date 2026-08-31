@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 126 entries, newest first, each explaining what
+The narrative record of how Horus was built: 127 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,93 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Changed: the metadata mirror is a bounded cache, and the journal is what makes that safe
+
+Stage 2 of `docs/design/meta-cache-merkle.md`. `g_block_meta[BLOCKS_PER_DISK]` was a complete
+in-RAM mirror of the on-disk nonce/tag region: 32 bytes per block of the LARGEST volume the
+kernel could describe, whether or not the volume in front of it was that large. 1 MiB of .bss at
+128 MiB, and 128 MiB at the 16 GiB volume this work exists to reach -- against a linker budget of
+16 MiB for the whole image's .bss. It is now 32 lines of one metadata block each, 128 KiB
+resident whatever the volume is, and `storage_unlock` no longer reads the region into RAM at all.
+
+**The design decision that took the longest, and the reasoning that settled it.** The line could
+be a single 32-byte ENTRY keyed by physical block, or a whole 4 KiB METADATA BLOCK. Entry
+granularity is what the design doc's Arm A assumes -- "boot 1 writes META_CACHE_ENTRIES + N
+distinct blocks" is counted in data blocks, and at 128 entries per metadata block a 64-block
+working set fits in one of them, so a block-granular cache would never evict and the eviction
+assertion could not be satisfied at all. What decided it against entry granularity is the WRITE
+path: writing one entry back means read-modify-writing the metadata block it lives in, so every
+4 KiB data write pays a 4 KiB metadata READ, permanently, and the splice of an on-disk image with
+resident entries is a whole class of aliasing bug (failure mode E3) that block granularity does
+not have. A line is a block; 128 consecutive data blocks share one; a sequential write of a large
+file walks the region with one line resident. The harness's working set grew from 64 blocks to
+400 instead, and both arms build with `META_CACHE_TINY=1`, which drops the cache to two lines --
+a widener set in both arms, the `KSTACK_RACE_WIDEN` pattern, not a defect.
+
+**What I expected the arms to be, and what they had to become.** The design doc names E1 -- "a
+dirty line is evicted without write-back" -- as Arm A's defect, and `META_CACHE_EVICT_NOWB=1` is
+the obvious injection. It does not reproduce, and the reason is structural rather than accidental:
+durability requires the write-back to happen inside the transaction that dirtied the line, so
+`journal_commit` flushes; every workload in this tree dirties exactly ONE line per transaction;
+so a line is always clean by the time anything can evict it. The eviction write-back is a
+BACKSTOP, and its arm cannot fail.
+
+That is not an argument to leave in a comment, so it is a number instead. `g_meta_dirty_evictions`
+counts evictions of a dirty line, every crash-gate boot prints it beside the eviction count, and
+it reads `evictions=2 dirty=0` in both boots of every run. `META_CACHE_EVICT_NOWB=1` therefore
+gets the treatment `SPAWN_STAGE_UNSERIALISED` got -- kept, documented, no gate -- and if that
+counter is ever non-zero the arm has become reachable and should gate.
+
+The two arms that DO reproduce are the ones the failure modes actually describe, and they name
+**different blocks**, which is what shows they fail independently:
+
+- `META_CACHE_NO_WRITEBACK=1` removes the write-back entirely. Nothing ever reaches the disk;
+  boot 2 mounts -- the region and its HMAC still agree, both being the format-time zeros -- and
+  then fails on `METACACHE: FAIL block 0`.
+- `META_CACHE_WB_OUTSIDE_TXN=1` keeps the write-back and moves it PAST the end of
+  `journal_commit`, where `do_block_write` goes straight home. Every value written is correct;
+  what is gone is the atomicity. Boot 2 fails on `METACACHE: FAIL block 399` -- precisely the
+  block the crash committed, whose ciphertext the journal replayed and whose nonce was never
+  written. That is E2 in one line of output, and it is why E2 earns its own arm: it is the mode
+  that turns a recoverable loss into a lost block.
+
+**The arm on the gate, not on the property.** `smoke-meta-crash` is only a test of eviction while
+the working set exceeds the cache, and nothing about "400 blocks" and "2 lines" says so out loud.
+Raise the cache or shrink the set and every block still verifies, from a cache that never evicted,
+and the marker still says PASS -- the gate becomes a no-op with nothing to say so. So both boots
+assert `meta_cache_evictions() != 0`, and `smoke-meta-crash-vacuity-control` builds the same
+kernel WITHOUT the widener and requires boot 1 to print
+`METACACHE: FAIL no eviction occurred - this run tested nothing`. That assertion has been the
+deferred half of this harness since it was written; it is gating now, and it has been shown to
+fail rather than merely to exist.
+
+**Two things the change forced that were not on the list.** The metadata region was sized from
+`BLOCKS_PER_DISK` rather than from the device, which gave a 4096-block RAM disk a 256-block
+region -- and at 16 GiB would ask that RAM disk for 32768 blocks, more than the whole disk, so
+format would fail its own "disk too small" check and a diskless boot would not come up. It is
+`ceil(total_blocks / META_ENTRIES_PER_BLOCK)` now, and only fixed-size ARRAYS may still be sized
+from the ceiling (renamed `META_BLOCKS_MAX` so the distinction is in the name). And
+`storage_format_sealed` computed the initial HMAC over an assumed all-zero in-RAM array and wrote
+the region afterwards; `compute_meta_hmac` now reads the region off the device, so the zeroing had
+to move ahead of it. The two happened to agree before. A format that left one byte of the region
+unwritten would have bricked the volume at its first mount, with a check that could not say why.
+
+Both change the on-disk format, and the second changes the HMAC PREIMAGE, so the version is v10.
+A v9 volume read as v10 would fail its integrity check and be reported as partial metadata
+rollback -- a far worse thing to tell someone than "unsupported version".
+
+**Measured.** Boot 1 and boot 2 each: 2 evictions, 0 of them dirty. Boot 1 takes 58 s against an
+emulated IDE disk for 400 journal transactions, which is what sized the working set: 800 blocks
+would have bought 5 evictions instead of 2 and cost seven more minutes across the four arms. If a
+future layout change drops the count to 0 the gate goes RED on the vacuity assertion rather than
+silently green, so the safe direction is the one the number drifts in.
+
+Storage sweep, all green after the change: smoke, smoke-fs, smoke-fs-large, smoke-fs-conc,
+smoke-fs-perms, smoke-fs-wal, smoke-fs-wal-flush, smoke-fs-wal-order, smoke-fs-persist,
+smoke-keyslots, smoke-users-persist, smoke-storage-noformat, smoke-tpm-seal, smoke-vfs,
+smoke-init-fs, smoke-modules.
+
 
 ### Fixed: the RAM disk said it was eight times larger than the memory behind it
 

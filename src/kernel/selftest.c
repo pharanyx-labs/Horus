@@ -3482,21 +3482,25 @@ void storage_noformat_selftest(void)
  * committed journal transaction is durable, whether or not its cache entry was
  * evicted before the crash.
  *
- * BUILT BEFORE THE CACHE EXISTS, and that is the point of the ordering. Today
- * g_block_meta is a complete in-RAM mirror that evicts nothing, so this harness
- * must PASS on the current tree -- which is what proves the harness itself
- * works before there is a cache to blame anything on. When stage 2 lands, the
- * eviction assertion below becomes gating and META_CACHE_EVICT_NOWB=1 is the
- * arm that must make it fail.
- *
- * The working set is deliberately larger than any cache we would plausibly
- * configure, so eviction is forced rather than hoped for.
+ * BUILT BEFORE THE CACHE EXISTED, and that is what the ordering bought. On the
+ * old complete in-RAM mirror this harness passed while evicting nothing, which
+ * is what proved the harness worked before there was a cache to blame; the
+ * eviction assertion was reported rather than asserted for exactly as long as it
+ * could not fail. Both halves are gating now.
  *
  * Two boots on one disk, reusing the WAL_CRASHTEST mechanism: boot 1 writes
  * META_CRASH_BLOCKS distinct blocks and crashes with the last one committed but
  * not applied; boot 2 replays and must read every one of them back intact.
+ *
+ * THE WORKING SET MUST EXCEED THE CACHE OR THE RUN TESTS NOTHING, and 400 blocks
+ * against the shipped META_CACHE_LINES=32 (4096 blocks resident) would not. So
+ * both arms build with META_CACHE_TINY=1, which drops the cache to two lines --
+ * a window widener set in BOTH arms, the KSTACK_RACE_WIDEN pattern, not a
+ * defect. 400 blocks then span four metadata blocks against two lines, and the
+ * assertion below is what stops that from silently becoming untrue if either
+ * number is ever changed.
  */
-#define META_CRASH_BLOCKS  64
+#define META_CRASH_BLOCKS  400
 #define META_CRASH_INO     1
 
 /* Byte i of block b is a function of both, so a block served from the wrong
@@ -3527,18 +3531,9 @@ void meta_crash_selftest(void)
         nd.type = 1; nd.mode = 0100600; nd.links = 1;
         storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
 
-#ifdef META_CRASH_DROP_ONE
-        /* Arm the drop against a block in the MIDDLE of the working set: at the
-         * start a failure reads as a mount problem, at the end as the
-         * committed-but-unapplied block the journal replays. */
-        {
-            extern int g_meta_drop_armed, g_meta_drop_after;
-            g_meta_drop_after = META_CRASH_BLOCKS / 2;   /* middle of the set */
-            g_meta_drop_armed = 1;
-        }
-#endif
         /* All but the last block written normally: each one dirties a distinct
-         * metadata entry, which is what forces eviction once a cache exists. */
+         * metadata entry, and the set spans more metadata blocks than the cache
+         * has lines, which is what forces eviction. */
         for (uint32_t b = 0; b < META_CRASH_BLOCKS - 1; b++) {
             for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = meta_crash_byte(b, i);
             if (storage_write_file_block(mfs, (uint64_t)ino, b, buf) != 0) {
@@ -3547,6 +3542,23 @@ void meta_crash_selftest(void)
             }
         }
 
+        /* Assert the eviction here as well as in boot 2, because this is the
+         * boot whose WRITES the property is about. Boot 2's evictions are the
+         * read path's, and a run where only reads evicted would say nothing
+         * about a dirty line surviving a crash. */
+        if (meta_cache_evictions() == 0) {
+            print("METACACHE: FAIL no eviction occurred - this run tested nothing\n");
+            for (;;) asm volatile ("hlt");
+        }
+        /* Evidence, not a gate marker, so it may span several writes. The
+         * dirty count is the measurement behind "the eviction write-back is
+         * unreachable, so its arm does not gate": it has been 0 in every run,
+         * and a non-zero here is the day that stops being true. */
+        print("METACACHE: boot1 evictions=");
+        print_decimal(meta_cache_evictions());
+        print(" dirty=");
+        print_decimal(meta_cache_dirty_evictions());
+        print("\n");
         print("METACACHE: boot1 wrote the working set; committing then crashing\n");
         {
             uint32_t b = META_CRASH_BLOCKS - 1;
@@ -3575,14 +3587,20 @@ void meta_crash_selftest(void)
         }
     }
 
-    /* The eviction assertion, DEFERRED until stage 2 exists. Reported rather
-     * than asserted, because today's full mirror evicts nothing and a check
-     * that cannot fail is worse than an absent one -- it reads as coverage.
-     * When the cache lands this becomes:
-     *     if (meta_cache_evictions() == 0) -> FAIL "this run tested nothing"
-     * and without it, growing the cache later would silently turn this gate
-     * into a no-op with nothing to say so. */
-    print("METACACHE: evictions=unavailable (no cache in this build)\n");
+    /* The eviction assertion, GATING since the cache landed. Without it, growing
+     * the cache -- or shrinking the working set -- would silently turn this gate
+     * into a no-op: every block would verify, from a cache that never evicted,
+     * and the marker would still say PASS. The difference between "the blocks
+     * verified" and "the blocks verified DESPITE eviction" is this line. */
+    if (meta_cache_evictions() == 0) {
+        print("METACACHE: FAIL no eviction occurred - this run tested nothing\n");
+        return;
+    }
+    print("METACACHE: boot2 evictions=");
+    print_decimal(meta_cache_evictions());
+    print(" dirty=");
+    print_decimal(meta_cache_dirty_evictions());
+    print("\n");
     print("METACACHE: PASS all blocks verified after crash\n");
 }
 #endif /* META_CRASH_SELFTEST */

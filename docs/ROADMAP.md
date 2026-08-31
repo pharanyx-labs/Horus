@@ -1312,10 +1312,14 @@ named subset rather than "run everything".
 
 **Still open, and what each needs:**
 
-- **Type confusion at lookup.** `rust_cap_lookup` does not check `typ`; the C `cap_lookup`
-  does, against a caller-supplied expected type. Proving "lookup refuses a type-mismatched
-  capability" means moving that test into the Rust side or modelling the C one, a change to
-  the FFI contract, not a new harness, so it belongs in its own commit.
+- **Type confusion at lookup.** ~~`rust_cap_lookup` does not check `typ`; the C `cap_lookup`
+  does, against a caller-supplied expected type.~~ **The C side did not, and this entry was
+  wrong when written**: `cap_lookup` took `(slot, required_rights)` and had no type parameter at
+  all, so the test lived in each of its ~40 callers. Since 2026-08-31 it does take one
+  (**S60**), which is the FFI-contract half this entry called for — on the C side. What remains
+  is the Rust half: `rust_cap_lookup` still resolves without a type, so the Kani harness
+  "lookup refuses a type-mismatched capability" needs the expected type pushed through the FFI
+  boundary before it can be stated.
 - **IPC authority implies a held endpoint capability naming that endpoint.** 0.1 landed, so
   this is now expressible; it needs a model of `ipc_ep_from_slot` on the Rust side.
 - **The TLA+ specifications (`cap_algebra.tla`, `paging_isolation.tla`) are still only
@@ -1552,7 +1556,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 61 properties name a witness that resolves.
+**empty**, all 62 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1591,7 +1595,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 179 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 82 of them control arms that must reproduce a defect |
+| ✅ | 180 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 83 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

@@ -55,8 +55,8 @@ static const struct io_device *iodev_from_slot(uint32_t slot, uint32_t need_righ
     if (out_index) *out_index = IODEV_PLATFORM;
     return iodev_get(IODEV_PLATFORM);
 #else
-    struct capability *c = cap_lookup(slot, need_rights);
-    if (!c || c->type != CAP_IO_DEVICE) return 0;
+    struct capability *c = cap_lookup(slot, CAP_IO_DEVICE, need_rights);
+    if (!c) return 0;
     const struct io_device *d = iodev_get(c->object);
     if (!d) return 0;
     if (out_index) *out_index = c->object;
@@ -379,8 +379,8 @@ void h_dma_addr(struct interrupt_frame64 *r) {
     }
 #endif
 
-    struct capability *c = cap_lookup((uint32_t)r->rcx, CAP_RIGHT_READ);
-    if (!c || c->type != CAP_FRAME) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    struct capability *c = cap_lookup((uint32_t)r->rcx, CAP_FRAME, CAP_RIGHT_READ);
+    if (!c) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     /* The same resolver SYS_MAP_FRAME uses, and for the same reason: a
      * CAP_FRAME's object is an INDEX into the frame table, never an address
@@ -556,8 +556,8 @@ void h_shlib_info(struct interrupt_frame64 *r) {
     if (!shlib_active()) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
 #ifndef SHLIB_INFO_UNGATED
-    struct capability *c = cap_lookup((uint32_t)r->rbx, CAP_RIGHT_READ);
-    if (!c || c->type != CAP_FRAME) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    struct capability *c = cap_lookup((uint32_t)r->rbx, CAP_FRAME, CAP_RIGHT_READ);
+    if (!c) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 #ifndef SHLIB_INFO_TYPE_ONLY
     if (!shlib_owns_frame((uint32_t)c->object)) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;

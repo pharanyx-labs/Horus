@@ -823,8 +823,8 @@ _Static_assert(UNTYPED_USER_BYTES > (uint64_t)MAX_FRAME_PAGES * PAGE_SIZE,
 
 /* Resolve an untyped capability slot to the region index it names. */
 static int untyped_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out) {
-    struct capability *c = cap_lookup(slot, need_rights);
-    if (!c || c->type != CAP_UNTYPED) return -1;
+    struct capability *c = cap_lookup(slot, CAP_UNTYPED, need_rights);
+    if (!c) return -1;
     if (c->object >= MAX_UNTYPED)     return -1;
     if (!untypeds[c->object].in_use)  return -1;
     /* UNTYPED_KERNEL is not delegable by construction (no capability is ever

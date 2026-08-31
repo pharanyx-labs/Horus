@@ -110,7 +110,8 @@ DEFECT_FLAGS = \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
-	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CSPACE_KEEP_ON_TEARDOWN \
+	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
+	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED
 
@@ -1914,6 +1915,22 @@ CFLAGS  += -DCAP_LOOKUP_ROOT_FALLBACK
 ASFLAGS += -DCAP_LOOKUP_ROOT_FALLBACK
 endif
 
+# CAP_LOOKUP_TYPE_UNCHECKED=1 restores the pre-2026-08-31 resolver: cap_lookup
+# returns whatever the slot holds and leaves the TYPE to its ~40 callers. Note
+# what this arm does and does not claim. Every live caller checked, so the flag
+# reintroduces no exploitable hole on its own; what it removes is the single
+# place the rule now lives. The dispatch table's own `c->type != d->ctype` test
+# was folded into the resolver in the same change, so under this flag a
+# syscall's declared type stops being enforced at all and captest's wrong-type
+# refusals -- which have passed since long before this work -- start failing.
+# That is the point: it shows the enforcement really did move, rather than
+# being duplicated and the old copy left doing the work.
+CAP_LOOKUP_TYPE_UNCHECKED ?= 0
+ifeq ($(CAP_LOOKUP_TYPE_UNCHECKED),1)
+CFLAGS  += -DCAP_LOOKUP_TYPE_UNCHECKED
+ASFLAGS += -DCAP_LOOKUP_TYPE_UNCHECKED
+endif
+
 # CAP_LOOKUP_RANGE_FALLBACK=1 restores only the OUT-OF-RANGE half of that `else`:
 # the caller keeps its cspace, and a slot past the end of it resolves against the
 # root cnode. Separate because the witness stops at its first failure, so the arm
@@ -2955,6 +2972,24 @@ smoke-captest-split-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 UNTYPED_SPLIT_FREE_BYTES=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL split-did-not-charge-the-parent' \
+		tools/smoke_test.sh boot.iso
+
+# The falsifying arm for the typed resolver (S60). CAP_LOOKUP_TYPE_UNCHECKED=1
+# restores the pre-2026-08-31 cap_lookup, which returned whatever the slot held
+# and left the type to its callers -- and, because the dispatch table's own
+# `c->type != d->ctype` test was folded into the resolver in the same change,
+# removes the syscall gate's type enforcement with it. captest then authorises an
+# endpoint RECEIVE with a CAP_NOTIFICATION: type confusion, named on the wire.
+#
+# What this arm does NOT claim: every live caller checked its own type before
+# this change, so the flag reintroduces no hole that was ever open. It shows the
+# rule now lives in ONE place by removing that place.
+smoke-captest-lookup-type-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_TYPE_UNCHECKED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_TYPE_UNCHECKED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL notification-cap-authorised-endpoint-recv' \
 		tools/smoke_test.sh boot.iso
 
 # init provisions a server on an endpoint it MADE, not one it was handed

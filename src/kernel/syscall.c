@@ -53,12 +53,12 @@ void syscall_handler64(void)
  * check -- so every caller must, and the five call sites in this tree that did
  * not were found by looking for exactly that. */
 static void h_get_line(struct interrupt_frame64 *r) {
-    struct capability *c = cap_lookup(CAPSLOT_CONSOLE, CAP_RIGHT_READ);
-    if (!c || c->type != CAP_CONSOLE) {
+    struct capability *c = cap_lookup(CAPSLOT_CONSOLE, CAP_CONSOLE, CAP_RIGHT_READ);
+    if (!c) {
 #ifdef GETLINE_SLOT3_FALLBACK
         /* CONTROL ARM: the pre-2026-08-24 fallback, untyped, on the slot every
          * task is born holding. captest reaches the console read under it. */
-        c = cap_lookup(3, CAP_RIGHT_READ);
+        c = cap_lookup(3, CAP_ANYTYPE, CAP_RIGHT_READ);
         if (!c)
 #endif
         { r->rax = (uint32_t)SYS_ERR_PERM; return; }
@@ -350,8 +350,9 @@ static void h_write(struct interrupt_frame64 *r) {
      * `smoke-klog-forge-control` sets it and REQUIRES the FAIL marker. */
     int may_klog = 1;
 #else
-    struct capability *logc = cap_lookup(CAPSLOT_KERNEL_LOG, CAP_RIGHT_WRITE);
-    int may_klog = (logc && logc->type == CAP_KERNEL_LOG);
+    struct capability *logc = cap_lookup(CAPSLOT_KERNEL_LOG, CAP_KERNEL_LOG,
+                                         CAP_RIGHT_WRITE);
+    int may_klog = (logc != NULL);
 #endif
 
     print_from_user(kbuf, may_klog);
@@ -393,7 +394,7 @@ static void h_read(struct interrupt_frame64 *r) {
          * table will land when one exists, and a reviewer arriving then should
          * find the reason this door was shut rather than an empty else. */
 #ifdef RAMFS_SLOT3_GATE
-        struct capability *c = cap_lookup(3, CAP_RIGHT_READ);
+        struct capability *c = cap_lookup(3, CAP_ANYTYPE, CAP_RIGHT_READ);
         if (!c) { r->rax = -1; return; }
         char kbuf[256];
         size_t to_read = len > 255 ? 255 : len;
@@ -478,8 +479,8 @@ static int task_kill_authorized(int target) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= g_max_tasks) return 0;
 
-    struct capability *admin = cap_lookup(6, CAP_RIGHT_ALL);
-    if (admin && admin->type == CAP_USER) return 1;
+    struct capability *admin = cap_lookup(CAPSLOT_USER, CAP_USER, CAP_RIGHT_ALL);
+    if (admin) return 1;
 
     capability_t *cs = tasks[cur].cspace;
     if (!cs) return 0;
@@ -638,8 +639,8 @@ static void h_task_info(struct interrupt_frame64 *r) {
      *
      * A task may still read its OWN info with no capability at all -- that is
      * the `tid != get_current_task()` test below, unchanged. */
-    struct capability *c = cap_lookup(CAPSLOT_DEBUG, CAP_RIGHT_READ);
-    int is_privileged = (c && c->type == CAP_DEBUG);
+    struct capability *c = cap_lookup(CAPSLOT_DEBUG, CAP_DEBUG, CAP_RIGHT_READ);
+    int is_privileged = (c != NULL);
 #ifdef TASKINFO_WIDE_AUTHORITY
     /* CONTROL ARM: the pre-2026-08-24 acceptance set. CAP_USER or CAP_AUDIT also
      * answer "may I see the process list", which is the bundling this narrowing
@@ -647,12 +648,12 @@ static void h_task_info(struct interrupt_frame64 *r) {
      * -- the arm is aimed at the SHELL, which holds CAP_USER for useradd and
      * would regain introspection through it. */
     if (!is_privileged) {
-        c = cap_lookup(6, CAP_RIGHT_ALL);
-        if (c && c->type == CAP_USER) is_privileged = 1;
+        c = cap_lookup(CAPSLOT_USER, CAP_USER, CAP_RIGHT_ALL);
+        if (c) is_privileged = 1;
     }
     if (!is_privileged) {
-        c = cap_lookup(CAPSLOT_AUDIT, CAP_RIGHT_READ);
-        if (c && c->type == CAP_AUDIT) is_privileged = 1;
+        c = cap_lookup(CAPSLOT_AUDIT, CAP_AUDIT, CAP_RIGHT_READ);
+        if (c) is_privileged = 1;
     }
 #endif
     /* No root promotion (finding I-1). Cross-task introspection requires a
@@ -930,7 +931,9 @@ static void h_cap_grant(struct interrupt_frame64 *r) {
     /* The source must be a live capability the caller actually holds (checked
      * again authoritatively under cap_lock inside cap_grant_into; this gives the
      * caller a specific NOENT for a missing source). */
-    struct capability *src = cap_lookup(src_slot, 0);
+    /* CAP_ANYTYPE: a grant may delegate a capability of ANY type, so the source
+     * slot's type is not a gate here -- only that it is occupied. */
+    struct capability *src = cap_lookup(src_slot, CAP_ANYTYPE, 0);
     if (!src || src->type == CAP_NULL) {
         r->rax = (uint32_t)SYS_ERR_NOENT; return;
     }
@@ -1647,8 +1650,16 @@ void syscall_handler(struct interrupt_frame64 *r) {
     } else if (d->slot != SC_NONE) {
         /* Central capability gate: a syscall cannot run without its declared
          * capability. Handlers no longer repeat this check. */
-        struct capability *c = cap_lookup(d->slot, d->rights);
-        if (!c || (d->ctype != SC_ANYTYPE && (int)c->type != d->ctype)) {
+        /* The dispatch table's DECLARED type now flows into the resolver rather
+         * than being re-tested after it: two expressions of one rule were two
+         * things to drift. SC_ANYTYPE is the table's wildcard and CAP_ANYTYPE is
+         * the resolver's; they mean the same thing and are spelled differently
+         * only because one is a table column and the other a capability type. */
+        struct capability *c = cap_lookup(
+            d->slot,
+            d->ctype == SC_ANYTYPE ? CAP_ANYTYPE : (uint32_t)d->ctype,
+            d->rights);
+        if (!c) {
             r->rax = (uint32_t)SYS_ERR_PERM;
         } else {
             syscov_note(num);

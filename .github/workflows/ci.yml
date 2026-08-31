@@ -447,6 +447,12 @@ jobs:
       # parent's watermark advancing, so the split mints memory instead.
       - name: Control arm — a split that does not charge the parent
         run: make smoke-captest-split-control
+      # The resolver now carries the type, so removing it removes the syscall
+      # gate's type enforcement too: captest authorises an endpoint RECEIVE with
+      # a CAP_NOTIFICATION. Every live caller checked before this change, so the
+      # arm shows the rule moved into one place rather than that a hole existed.
+      - name: Control arm — a lookup that returns whatever the slot holds
+        run: make smoke-captest-lookup-type-control
       # cap_lookup is the function every capability gate in this kernel resolves
       # through, and it used to end in an unconditional fallback to the
       # PRIMORDIAL root cnode -- reached both by a task with no cspace and by one

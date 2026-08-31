@@ -82,8 +82,8 @@ static void show_topic_help(const char *topic) {
 
 #ifdef DEBUG_SHELL
 static bool has_console_cap(void) {
-    struct capability *c = cap_lookup(8, 0);
-    return (c && c->type == CAP_CONSOLE);
+    struct capability *c = cap_lookup(CAPSLOT_CONSOLE, CAP_CONSOLE, 0);
+    return c != NULL;
 }
 #endif
 
@@ -203,7 +203,7 @@ int process_user_command(const char *cmd) {
         return 0;
     }
     if (action == 48) {
-        struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE);
+        struct capability *c = cap_lookup(CAPSLOT_FRAME, CAP_FRAME, CAP_RIGHT_WRITE);
         if (!c) return -1;
         clear_screen();
         return 0;
@@ -310,7 +310,8 @@ int process_user_command(const char *cmd) {
     }
 
     if (cmd[0] == 'l' && cmd[1] == 'o' && cmd[2] == 'a' && cmd[3] == 'd' && cmd[4] == 0) {
-        struct capability *c = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
+        struct capability *c = cap_lookup(CAPSLOT_FRAME, CAP_FRAME,
+                                          CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
         if (!c) {
             println("Permission denied (need FRAME cap slot 3)");
             return -1;

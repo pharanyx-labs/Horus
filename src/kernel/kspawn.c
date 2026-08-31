@@ -349,13 +349,16 @@ static int spawn_untyped_region(uint32_t *out_index)
      * The lookup succeeds for everybody, so the check cannot fail and any task
      * can spawn -- and the child is charged to the kernel reserve rather than to
      * the caller. See make smoke-proc-spawn-decoy-control. */
-    struct capability *d = cap_lookup(3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
+    /* CAP_ANYTYPE: the decoy gate this arm restores never tested the type
+     * either -- that is half of why it could not fail. */
+    struct capability *d = cap_lookup(3, CAP_ANYTYPE,
+                                      CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
     if (!d) return SYS_ERR_PERM;
     *out_index = UNTYPED_KERNEL;
     return 0;
 #else
-    struct capability *c = cap_lookup(CAPSLOT_UNTYPED, CAP_RIGHT_WRITE);
-    if (!c || c->type != CAP_UNTYPED) return SYS_ERR_PERM;
+    struct capability *c = cap_lookup(CAPSLOT_UNTYPED, CAP_UNTYPED, CAP_RIGHT_WRITE);
+    if (!c) return SYS_ERR_PERM;
     if (c->object >= MAX_UNTYPED)     return SYS_ERR_PERM;
     *out_index = (uint32_t)c->object;
     return 0;
@@ -414,8 +417,9 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
     build_child_argv(new_id);
 
     uint32_t cap6_serial = 0;
-    struct capability *creator_admin = cap_lookup(6, CAP_RIGHT_ALL);
-    if (creator_admin && creator_admin->type == CAP_USER) {
+    struct capability *creator_admin = cap_lookup(CAPSLOT_USER, CAP_USER,
+                                                  CAP_RIGHT_ALL);
+    if (creator_admin) {
         cap6_serial = cap_alloc_fresh_serial();
     }
     spin_lock(&cap_lock);
@@ -585,8 +589,9 @@ int do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index) {
      * exactly what happened on the first attempt, and cost a `printf` with no
      * output in smoke-modules. */
     if (pid > 0) {
-        struct capability *con = cap_lookup(CAPSLOT_CONSOLE_EP, CAP_RIGHT_WRITE);
-        if (con && con->type == CAP_ENDPOINT) {
+        struct capability *con = cap_lookup(CAPSLOT_CONSOLE_EP, CAP_ENDPOINT,
+                                            CAP_RIGHT_WRITE);
+        if (con) {
             cap_grant_into(pid, CAPSLOT_CONSOLE_EP, CAPSLOT_CONSOLE_EP,
                            CAP_RIGHT_WRITE);
         }

@@ -1139,6 +1139,25 @@ struct boot_module_info {
  * capability algebra treats the type opaquely, so this is a C-side type only. */
 #define CAP_PIPE                13
 
+/* The wildcard EXPECTED type for cap_lookup(). Not a capability type: no
+ * capability ever holds it, and nothing may be minted with it.
+ *
+ * Until 2026-08-31 cap_lookup took only (slot, rights) and returned whatever
+ * the slot held, so the TYPE was checked -- when it was checked -- by each of
+ * its ~40 callers afterwards. Every live caller did check, and this change
+ * fixes no live defect; what it removes is the requirement to REMEMBER. The
+ * type is now part of the contract and a mismatch is refused inside the
+ * resolver, which is the difference between a property that holds and a
+ * property that holds by construction (CLAUDE.md, principle 1).
+ *
+ * A caller passing CAP_ANYTYPE is opting out and MUST say why in a comment
+ * beside it. There are only four legitimate reasons in this tree: minting or
+ * transferring FROM a source slot (any type may be delegated), enumerating a
+ * cspace, re-resolving a slot whose type a snapshot already fixed, and the two
+ * deliberately non-authorising TOCTOU snapshots in the IPC path. A fifth use
+ * is a defect until argued otherwise. */
+#define CAP_ANYTYPE             0xFFFFFFFFu
+
 /* Authority that used to be ambient `uid == 0` (audit finding I-1).
  *
  * Nine syscall handlers gated on the caller's uid rather than on a held
@@ -2165,7 +2184,11 @@ void flush_selftest(void);
 void paging_init(void);
 
 void cap_init(void);
-capability_t *cap_lookup(uint32_t slot, uint32_t required_rights);
+/* Resolve `slot` in the CURRENT task's cspace, refusing unless the capability
+ * is of `expected_type` and carries every bit in `required_rights`. Pass
+ * CAP_ANYTYPE to skip the type test, with a comment saying why. */
+capability_t *cap_lookup(uint32_t slot, uint32_t expected_type,
+                         uint32_t required_rights);
 bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
 bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint32_t badge);
 /* Install a freshly-minted capability of `type` naming `object` into the CURRENT

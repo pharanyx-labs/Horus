@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 120 entries, newest first, each explaining what
+The narrative record of how Horus was built: 121 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,54 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Changed: the capability resolver now carries the type, and the audit that preceded it found nothing
+
+`cap_lookup` is the function every capability gate in the kernel resolves through, and until
+2026-08-31 it took `(slot, required_rights)` and returned whatever the slot held. The TYPE was
+checked afterwards, by each of its ~40 callers, which means it was checked by everyone
+remembering to.
+
+**The audit found no live defect, and that is worth recording as carefully as a finding would
+be.** Of 40 call sites, 12 had no type test within six lines. Every one turned out to be
+harmless: three were inside comments quoting removed code, three were self-tests asserting a
+cspace-less task resolves nothing at all, three sat inside control-arm `#ifdef`s
+(`SPAWN_SLOT3_DECOY_GATE`, `GETLINE_SLOT3_FALLBACK`, `RAMFS_SLOT3_GATE`) that never ship, and the
+rest were `cap_revalidate`, whose snapshot already fixes identity, and the grant path, where any
+type may legitimately be delegated. The three that looked most alarming — live-looking lookups on
+cspace slot 3, the [C-1] decoy every task holds — were all control arms. **No hole was open.**
+
+So this change fixes nothing and hardens the same property by construction instead. The type is
+now an argument, a mismatch is refused inside the resolver, and forgetting is no longer possible.
+That is principle 1 in CLAUDE.md, and the reason to do it on a clean audit rather than after a
+finding.
+
+Two things came out of it that were not the point.
+
+The dispatch table carried its own copy of the rule — `d->ctype != SC_ANYTYPE && c->type !=
+d->ctype`, immediately after the lookup — and it is now passed INTO the lookup instead. Two
+expressions of one rule are two things to drift, and this repository has spent the week finding
+exactly that shape.
+
+`docs/ROADMAP.md` 3.5 asserted that "the C `cap_lookup` does [check the type], against a
+caller-supplied expected type", and gave that as the reason the Kani harness for type confusion
+would need an FFI change. There was no such parameter. The entry described a resolver that did
+not exist, which is why it read as blocked on work that had not been scoped. Corrected in the
+same commit; the Rust half of it is still genuinely open.
+
+**The witness required care, because there is no new refusal to witness.** captest's wrong-type
+checks passed before this change and pass after it, so a green captest says nothing on its own.
+What the control arm shows is that the enforcement MOVED: with `CAP_LOOKUP_TYPE_UNCHECKED=1` the
+resolver stops testing, the dispatch table no longer has its own copy to fall back on, and
+captest reports `FAIL notification-cap-authorised-endpoint-recv` — a `CAP_NOTIFICATION`
+authorising an endpoint receive, type confusion named on the wire. Base green, arm red, measured
+2026-08-31. An arm that reproduced a hole would be claiming something untrue; this one claims
+only that the rule now lives in one place, by deleting that place.
+
+`CAP_ANYTYPE` is the opt-out and is deliberately awkward: five uses, each with a comment giving
+the reason, and the header says a sixth is a defect until argued otherwise.
 
 ---
 

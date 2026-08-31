@@ -79,8 +79,8 @@ void h_block_write(struct interrupt_frame64 *r) {
  * the per-call endpoint-slot lookup stays here. */
 void h_register_fs_server(struct interrupt_frame64 *r) {
     uint32_t ep_slot = r->rbx;
-    struct capability *ep = cap_lookup(ep_slot, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
-    if (!ep || ep->type != CAP_ENDPOINT) {
+    struct capability *ep = cap_lookup(ep_slot, CAP_ENDPOINT, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
+    if (!ep) {
         r->rax = -2;
         return;
     }

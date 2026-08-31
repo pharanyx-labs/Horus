@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 121 entries, newest first, each explaining what
+The narrative record of how Horus was built: 122 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,64 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: several passwords for one volume, and a revocation that actually revokes
+
+`docs/LIMITATIONS.md` 2.6 carried a second limitation under the account-persistence one: only one
+password could unlock a volume, because `disk_key` was wrapped exactly once under a KEK derived
+from one password and the superblock's single `kek_salt`. A second user's login called
+`storage_unlock` and threw the answer away. The entry called it orthogonal, pre-existing, and its
+own change. It is now done, and it turned out to be the enabling half of the other item rather
+than a detour.
+
+**The design keeps the cryptography identical.** Eight slots, each an independent AEAD wrap under
+its own Argon2id salt, using the same `derive_kek` and the same seal/open as the single wrap they
+replace. Only the NUMBER of wraps is new. That was a deliberate constraint: 5.4 records unaudited
+from-scratch crypto as the largest real risk in this tree, and inventing a construction here would
+have added to it for no gain.
+
+**The uid is sealed inside the slot, not stored beside it.** A slot that opens therefore says WHO
+opened it, and a stolen disk shows how many slots are active and nothing about whose they are.
+That is what turns 2.6's ordering problem — hashes live in the encrypted store, so login must
+become unlock-then-identify — from a workaround into a property: the slot supplies the identity.
+
+Two consequences are forced rather than chosen, and both are written down where someone will meet
+them. Revocation is by slot INDEX, because locating a user's slot by uid would require that
+user's password; whoever adds a slot must remember its index. And the last active slot cannot be
+removed: a volume with no slots is not deleted, it is unreachable, which is worse precisely
+because it looks like it worked.
+
+Timing is stated rather than claimed away. A wrong password costs one derivation per active slot;
+a right one stops at the slot that opens. LUKS has the same property. Making it constant-time
+means always deriving all eight to hide an index from an observer who, in the login case, is the
+person supplying the password.
+
+**The witness is two boots on one disk, and boot 1 does more than set up.** It requires the newly
+added password to open the volume *in the boot that added it* — without that check, a boot-2
+failure cannot be told from "never worked", and the test would report the wrong defect. Boot 2
+requires both passwords to survive, revokes one, and requires the revoked one refused and the
+other untouched.
+
+**The control arm exists because the obvious check is the wrong one.** `KEYSLOT_REMOVE_NOOP=1`
+clears a slot's `active` flag and leaves the wrap openable, so the slot COUNT drops exactly as it
+should while the revoked password still unlocks the volume. A count-based assertion passes under
+that defect and witnesses nothing. The marker is therefore the password itself:
+`revoked-password-still-opens-the-volume`.
+
+**Two false greens on the way, both mine, both from trusting an exit code.** The first build check
+after adding the selftest reported OK while reusing a stale `selftest.o`; the code did not compile
+at all, because this kernel has no `kprintf`. A clean rebuild is what the check should have been.
+Then the first run of both arms failed with `rc=2` and NO marker — and that shape is what said
+"this never ran" rather than "this disagreed", pointing at the build instead of at the keyslot
+logic. The gate-evidence work earlier in the week is why the summary recorded the marker
+separately from the exit code at all.
+
+And one small trap worth recording: `SECURITY.md` is a markdown table, so writing
+`disk_key[32] || uid[4]` in a cell adds two column boundaries and silently reshapes the row. The
+invariants checker read the wrong column as the witness and reported the property unwitnessed.
+Escaping the pipes fixed it; the failure looked like a missing witness rather than a typo.
 
 ---
 

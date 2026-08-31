@@ -3291,3 +3291,91 @@ void cspace_release_selftest(void)
     print("CSPACE_RELEASE_SELFTEST: PASS a dead task holds no capability, its cspace bytes stay with the slot, and the slot is reusable\n");
 }
 #endif
+
+#ifdef KEYSLOT_SELFTEST
+/* Roadmap: several passwords open one volume, and revoking one revokes exactly
+ * that one (docs/LIMITATIONS.md 2.6's "related limitation, orthogonal and
+ * pre-existing").
+ *
+ * TWO BOOTS ON ONE DISK, because the property is about what survives a power
+ * cycle. Phase is read off the disk rather than counted in RAM: boot 1 meets a
+ * blank disk (storage_unlock formats it), boot 2 meets a volume that already has
+ * two slots. Nothing needs a boot counter.
+ *
+ * The checks probe the PASSWORD, never the slot count. A revocation that cleared
+ * the active flag and left the wrap openable would pass a count-based test and
+ * fail this one -- which is exactly what KEYSLOT_REMOVE_NOOP=1 makes it do.
+ */
+#define KS_PW_A "keyslot-alpha"
+#define KS_PW_B "keyslot-bravo"
+#define KS_PW_C "keyslot-charlie"
+#define KS_UID_B 1000u
+
+static void ks_fail(const char *what)
+{
+    print("KEYSLOT_SELFTEST: FAIL ");
+    print(what);
+    print("\n");
+}
+
+void keyslot_selftest(void)
+{
+    if (storage_unlock(KS_PW_A, sizeof(KS_PW_A) - 1) != 0) {
+        ks_fail("format-or-unlock-with-A"); return;
+    }
+    int n = storage_keyslot_count();
+    uint32_t uid = 0, idx = 0;
+
+    if (n == 1) {
+        /* Boot 1: the volume was just formatted, so slot 0 is A's. Add B. */
+        uint32_t added = 0;
+        if (storage_keyslot_add(KS_PW_B, sizeof(KS_PW_B) - 1, KS_UID_B, &added) != 0) {
+            ks_fail("add-slot-for-B"); return;
+        }
+        if (storage_keyslot_count() != 2) { ks_fail("count-after-add"); return; }
+        /* B must open it NOW, before any reboot -- otherwise boot 2's failure
+         * could mean "never worked" rather than "did not survive". */
+        if (storage_keyslot_probe(KS_PW_B, sizeof(KS_PW_B) - 1, &uid, &idx) != 0) {
+            ks_fail("B-does-not-open-in-the-boot-that-added-it"); return;
+        }
+        if (uid != KS_UID_B) { ks_fail("B-opened-with-the-wrong-uid"); return; }
+        if (storage_keyslot_probe(KS_PW_C, sizeof(KS_PW_C) - 1, &uid, &idx) == 0) {
+            ks_fail("an-unregistered-password-opened-the-volume"); return;
+        }
+        print("KEYSLOT_SELFTEST: WROTE two slots\n");
+        return;
+    }
+
+    if (n != 2) {
+        print("KEYSLOT_SELFTEST: FAIL unexpected slot count ");
+        print_decimal(n);
+        print("\n");
+        return;
+    }
+
+    /* Boot 2: both passwords must still open the volume across the reboot. */
+    if (storage_keyslot_probe(KS_PW_B, sizeof(KS_PW_B) - 1, &uid, &idx) != 0) {
+        ks_fail("B-did-not-survive-the-reboot"); return;
+    }
+    if (uid != KS_UID_B) { ks_fail("B-uid-did-not-survive-the-reboot"); return; }
+    if (storage_keyslot_probe(KS_PW_A, sizeof(KS_PW_A) - 1, NULL, NULL) != 0) {
+        ks_fail("A-did-not-survive-the-reboot"); return;
+    }
+
+    /* Revoke B, and require that it revoked B and ONLY B. */
+    if (storage_keyslot_remove(idx) != 0) { ks_fail("remove-B"); return; }
+    if (storage_keyslot_probe(KS_PW_B, sizeof(KS_PW_B) - 1, NULL, NULL) == 0) {
+        ks_fail("revoked-password-still-opens-the-volume"); return;
+    }
+    if (storage_keyslot_probe(KS_PW_A, sizeof(KS_PW_A) - 1, NULL, NULL) != 0) {
+        ks_fail("revoking-B-also-revoked-A"); return;
+    }
+
+    /* The last remaining slot must be un-removable: a volume whose every slot is
+     * gone is not deleted, it is unreachable, which looks like success. */
+    if (storage_keyslot_remove(storage_unlocked_slot()) == 0) {
+        ks_fail("the-last-slot-was-removable"); return;
+    }
+    print("KEYSLOT_SELFTEST: PASS\n");
+}
+#endif

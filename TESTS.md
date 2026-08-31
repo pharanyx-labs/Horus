@@ -750,6 +750,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-fs` | Basic file operations over the encrypted object store. |
 | `smoke-init-fs` | `init` provisions the filesystem at boot. |
 | `smoke-fs-perms` | POSIX rwx is enforced against the **kernel-attested** uid/gid, not a client-supplied one. |
+| `smoke-keyslots` | **S61.** Several passwords open one volume, and revoking one revokes exactly that one. **Two boots on one disk image**, because the property is about surviving a power cycle: boot 1 meets a blank disk, formats it under password A (slot 0, uid 0), adds a slot for B (uid 1000), and requires B to open the volume **in the boot that added it** — without that, a boot-2 failure could not be told from "never worked". Boot 2 requires both A and B to still open it, revokes B, then requires B refused and A untouched, and finally requires the last remaining slot to be **un-removable**. Phase is read off the disk (a blank disk is boot 1, two slots is boot 2), so no boot counter is needed. |
+| `smoke-keyslots-control` | Control arm for **S61**. `KEYSLOT_REMOVE_NOOP=1` makes `storage_keyslot_remove` report success and leave the wrap openable, so a revoked password still unlocks the volume. **The marker is the PASSWORD, not the slot count** (`KEYSLOT_SELFTEST: FAIL revoked-password-still-opens-the-volume`): the count drops either way, so a count-based check passes under the defect and witnesses nothing. Measured 2026-08-31: base arm two boots green, control arm red with the marker. |
 | `smoke-fs-persist` | Data survives a reboot (two-boot test). |
 | `smoke-fs-wal` | The write-ahead journal recovers a crash-interrupted write (two-boot test). Proves the **redo logic**; says nothing about durability, which is what the two gates below are for. Boot 1 ends via a QMP quit and a confirmed process exit, not a signal (**[I-11]**, fixed 2026-08-16, see below). |
 | `smoke-fs-wal-flush` | Every `FLUSH CACHE` fails with `EIO` (`blkdebug`), and the journal must **refuse to commit** and say so. Proves the barrier is both *issued* and *checked*. Falsified by `WAL_NO_FLUSH=1`: `make smoke-fs-wal-flush-control`. |
@@ -1719,7 +1721,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 62 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 63 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

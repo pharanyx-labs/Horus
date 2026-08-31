@@ -984,11 +984,16 @@ The cost of the chosen design is an ordering change: `verify_password` currently
 (`storage_unlock` authenticates, since the AEAD unwrap of `disk_key` fails on a wrong password)
 but it interacts with the single-password limitation immediately below.
 
-**A related limitation, orthogonal and pre-existing:** only one password can unlock the volume.
-The KEK derives from a password plus `kek_salt`, fixed when the volume was formatted, so a
-second user's login calls `storage_unlock` and its return value is discarded
-(`src/kernel/kusers.c`). Multi-user volume access needs LUKS-style keyslots and is its own
-change.
+**~~A related limitation, orthogonal and pre-existing: only one password can unlock the
+volume.~~ FIXED 2026-08-31 (`SECURITY.md` S61).** The volume key is now wrapped once per key
+slot — up to `HORUS_KEYSLOTS` (8) independent wraps of `disk_key[32] \|\| uid[4]`, each under a
+KEK derived from its own password and its own salt — so several passwords open one volume and
+revoking one revokes exactly that one. The uid is sealed *inside* the slot, so a slot that opens
+says who opened it; that is what supplies the identity the ordering change above needs, rather
+than it having to be worked around. Two consequences are forced rather than chosen: revocation is
+by slot index, because finding a slot by uid would require that user's password; and the last
+active slot cannot be removed, because a volume with no slots is unreachable rather than deleted.
+Witness `make smoke-keyslots` (two boots on one image), falsified by `KEYSLOT_REMOVE_NOOP=1`.
 
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 

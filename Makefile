@@ -114,7 +114,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
-	FSCK_SHALLOW_REFS \
+	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -516,6 +516,25 @@ endif
 # WAL_CRASHTEST comes with it: the gate's second boot commits a write and halts
 # before applying it home, so the third can prove the journal recovered it AT
 # THIS VOLUME SIZE rather than at the 128 MiB one smoke-meta-crash uses.
+# SHRINK_SELFTEST=1 builds the witness for "a volume is never served on a disk
+# too small to hold it": two boots, with the HOST shrinking the image between
+# them, because a disk that is smaller than it was is something that happens to a
+# disk rather than something a kernel can do to itself.
+SHRINK_SELFTEST ?= 0
+ifeq ($(SHRINK_SELFTEST),1)
+CFLAGS  += -DSHRINK_SELFTEST
+ASFLAGS += -DSHRINK_SELFTEST
+endif
+
+# STORAGE_MOUNT_ANY_SIZE=1 drops the check, so a superblock claiming more blocks
+# than the device has is mounted and served -- part of a filesystem, presented as
+# whole.
+STORAGE_MOUNT_ANY_SIZE ?= 0
+ifeq ($(STORAGE_MOUNT_ANY_SIZE),1)
+CFLAGS  += -DSTORAGE_MOUNT_ANY_SIZE
+ASFLAGS += -DSTORAGE_MOUNT_ANY_SIZE
+endif
+
 BIGVOL_SELFTEST ?= 0
 ifeq ($(BIGVOL_SELFTEST),1)
 CFLAGS  += -DBIGVOL_SELFTEST -DWAL_CRASHTEST
@@ -7308,6 +7327,59 @@ smoke-vdisk-bound-control:
 		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
+
+# S68's other half: a volume is never served on a disk too small to hold it.
+# Two boots with the HOST shrinking the image between them -- boot 1 formats a
+# 128 MiB volume, the image is truncated to 32 MiB, boot 2 must refuse it.
+#
+# The refusal is asserted by COUNT, not by a volume failing to come up: a mount
+# that fails produces the same silence for a bad magic, a version mismatch or an
+# unreadable superblock, and a witness that cannot tell those apart is not a
+# witness for this.
+SHRINK_ARGS = SHRINK_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+SHRINK_BIG  ?= 32768
+SHRINK_SMALL ?= 8192
+
+.PHONY: smoke-fs-shrink
+smoke-fs-shrink:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS)
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) boot.iso
+	@rm -f shrink.img && truncate -s $$(( $(SHRINK_BIG) * $(FS_BLOCK_SIZE) )) shrink.img
+	@echo "[shrink] boot 1/2 - format a 128 MiB volume"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink.img \
+		REQUIRE_MARKER='SHRINK: boot1 formatted a volume the disk can hold' \
+		FAIL_MARKER='SHRINK: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[shrink] the disk shrinks under the volume"
+	@truncate -s $$(( $(SHRINK_SMALL) * $(FS_BLOCK_SIZE) )) shrink.img
+	@echo "[shrink] boot 2/2 - the truncated volume must be refused"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink.img \
+		REQUIRE_MARKER='SHRINK: PASS a volume larger than its disk was refused' \
+		FAIL_MARKER='SHRINK: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f shrink.img
+	@echo "[shrink] PASS - a truncated volume is refused, not served in part"
+
+# The falsifying arm: the check is gone, so the truncated volume mounts. The
+# marker is what HAPPENED (it mounted), not a refusal that did not arrive.
+.PHONY: smoke-fs-shrink-control
+smoke-fs-shrink-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) STORAGE_MOUNT_ANY_SIZE=1
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) STORAGE_MOUNT_ANY_SIZE=1 boot.iso
+	@rm -f shrink-c.img && truncate -s $$(( $(SHRINK_BIG) * $(FS_BLOCK_SIZE) )) shrink-c.img
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink-c.img \
+		REQUIRE_MARKER='SHRINK: boot1 formatted a volume the disk can hold' \
+		FAIL_MARKER='SHRINK: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@truncate -s $$(( $(SHRINK_SMALL) * $(FS_BLOCK_SIZE) )) shrink-c.img
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink-c.img \
+		REQUIRE_MARKER='SHRINK: FAIL a volume larger than its disk mounted' \
+		FAIL_MARKER='SHRINK: PASS' \
+		tools/smoke_test.sh boot.iso
+	@rm -f shrink-c.img
+	@echo "[shrink] CONTROL PASS - without the check, part of a filesystem is served as whole"
 
 # THE END-TO-END GATE FOR THE STORAGE TRACK. A 16 GiB volume formats, mounts,
 # survives a reboot, and holds a file whose offsets are past the old 1.00 GiB

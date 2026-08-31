@@ -3508,6 +3508,69 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef SHRINK_SELFTEST
+/* A volume is never served on a disk too small to hold it (SECURITY.md S68).
+ *
+ * Now that the device is sized from IDENTIFY rather than from a constant, a
+ * superblock claiming more blocks than the disk reports means the volume was
+ * formatted on a larger disk and this one is a TRUNCATED COPY. Every offset past
+ * the end is simply not there, and the data region's tail with it. Mounting it
+ * would serve part of a filesystem and call it whole.
+ *
+ * Two boots, and the host shrinks the image between them -- the same shape as the
+ * rollback harness, and for the same reason: a disk that is smaller than it was
+ * is something that happens to a disk, not something a kernel can do to itself.
+ *
+ * IT ASSERTS THE REFUSAL, NOT THE ABSENCE OF A MOUNT. A volume that fails to come
+ * up produces the same silence for a dozen reasons -- a bad magic, a version
+ * mismatch, an unreadable superblock -- so the witness counts the refusal that
+ * names this cause. Under STORAGE_MOUNT_ANY_SIZE=1 the marker is equally
+ * positive: the truncated volume MOUNTED.
+ */
+void shrink_selftest(void)
+{
+    print("SHRINK: begin\n");
+
+    /* storage_init has already probed the disk and tried to mount whatever is on
+     * it; the question this gate asks is settled by the time we get here. Look at
+     * the ANSWER first, before doing anything that would change it. */
+    uint64_t refusals = storage_mount_oversize_refusals();
+    int mounted = storage_is_mounted();
+
+    if (refusals > 0) {
+        if (mounted) {
+            /* Refused and yet mounted would mean something mounted it afterwards
+             * -- worth saying out loud rather than reporting a pass. */
+            print("SHRINK: FAIL refused and yet a volume is mounted\n");
+            for (;;) asm volatile ("hlt");
+        }
+        print("SHRINK: PASS a volume larger than its disk was refused\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    if (mounted) {
+        /* Boot 2 of the control arm: the check is gone and the truncated volume
+         * came up. Stated as what HAPPENED, not as a refusal that did not. */
+        print("SHRINK: FAIL a volume larger than its disk mounted\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Neither: a blank disk, which is boot 1. Format it, so that boot 2 has a
+     * volume to be too small for. The format happens at unlock, which is why
+     * this cannot simply read the disk and report. */
+    if (storage_unlock("shrinkpw", 8) != 0) {
+        print("SHRINK: FAIL boot1 could not format a volume\n");
+        for (;;) asm volatile ("hlt");
+    }
+    if (!storage_is_mounted()) {
+        print("SHRINK: FAIL boot1 formatted nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+    print("SHRINK: boot1 formatted a volume the disk can hold\n");
+    for (;;) asm volatile ("hlt");
+}
+#endif /* SHRINK_SELFTEST */
+
 #ifdef BIGVOL_SELFTEST
 /* A 16 GiB volume formats, mounts, survives a reboot, and holds a file whose
  * offsets are past the old 1.00 GiB ceiling.

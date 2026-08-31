@@ -93,6 +93,18 @@ exempt:
     file reached the triple-indirect tree -- a gate for a 16 GiB volume that a
     128 MiB image satisfies is a gate for nothing, and the image size lives in
     the Makefile where nothing else would notice it shrinking.
+  smoke-fs-shrink: >
+    Two written-out boots on one image, the host truncating it between them, each
+    asserting its own REQUIRE_MARKER with a FAIL_MARKER set so a boot that died
+    fails the target rather than being read as the property holding. Boot 1
+    asserts POSITIVELY that it formatted a volume -- an empty disk would give
+    boot 2 nothing to be too small for, and the gate would pass having tested
+    nothing. Boot 2's refusal is asserted by COUNT rather than by a volume
+    failing to come up, which a bad magic or a version mismatch also produce.
+  smoke-fs-shrink-control: >
+    Same two boots and the same truncation; boot 2 requires the positive marker
+    that the truncated volume MOUNTED, so a dead boot reddens the arm rather than
+    being credited with reproducing the defect.
   smoke-fsck-refs-control: >
     Same shape; boot 2 requires the counted FAIL marker ("fsck freed N of M
     blocks of a live file"), so a dead boot produces no marker and the arm

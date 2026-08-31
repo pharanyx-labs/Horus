@@ -2646,6 +2646,12 @@ uint64_t merkle_node_evictions(void);
  * volume grew, and a gate for what fsck does not do says nothing if fsck did not
  * run. */
 uint64_t storage_fsck_runs(void);
+/* Mount attempts refused because the superblock described more blocks than the
+ * device has (S68). Counted so the witness can assert the refusal positively
+ * rather than inferring it from a volume that failed to come up, which a dozen
+ * other things also produce. */
+uint64_t storage_mount_oversize_refusals(void);
+int      storage_is_mounted(void);
 #if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || defined(BIGVOL_SELFTEST)
 /* Storage witness hooks. Selftest builds only -- they expose the allocator's
  * choices and reach the block one past the volume, neither of which a shipping

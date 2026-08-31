@@ -2516,6 +2516,14 @@ jobs:
       # which is the difference the Merkle tree bought.
       - name: A 16 GiB volume formats, survives a reboot, and holds a file past 1 GiB
         run: make smoke-fs-16g
+      # S68's other half. Now that the device is sized from IDENTIFY, a superblock
+      # claiming more blocks than the disk has means a truncated copy — serving it
+      # would present part of a filesystem as whole. The host shrinks the image
+      # between the two boots.
+      - name: A volume is never served on a disk too small to hold it
+        run: make smoke-fs-shrink
+      - name: Control arm — part of a filesystem served as whole
+        run: make smoke-fs-shrink-control
       # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
       # reservation, so a block past the backing store landed in the free page
       # pool. Diskless, so it runs here only for topical company.

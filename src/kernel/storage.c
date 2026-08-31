@@ -2528,7 +2528,19 @@ static int storage_format_sealed(struct block_device *bd,
     return 0;
 }
 
+/* Mount attempts refused because the superblock described more blocks than the
+ * device has. Exposed so the witness can assert the refusal POSITIVELY rather
+ * than inferring it from a volume that failed to come up, which a dozen other
+ * things also produce. */
+static uint64_t g_mount_oversize_refusals;
+uint64_t storage_mount_oversize_refusals(void) { return g_mount_oversize_refusals; }
+
 static struct mounted_fs g_mounted_fs;
+
+/* Whether a volume is mounted right now. Under STORAGE_MOUNT_ANY_SIZE=1 the
+ * truncated volume mounts, and that is the defect stated as something that
+ * happened rather than as a refusal that did not. */
+int storage_is_mounted(void) { return g_mounted_fs.mounted; }
 
 int storage_mount(struct block_device *bd) {
     uint8_t block_buf[BLOCK_SIZE];
@@ -2553,10 +2565,13 @@ int storage_mount(struct block_device *bd) {
      * failure, and the data region's tail simply is not there. Refusing is the
      * only honest answer; mounting it would serve part of a filesystem and call
      * it whole. */
+#ifndef STORAGE_MOUNT_ANY_SIZE
     if (sb->total_blocks > bd->total_blocks) {
         println("STORAGE: refusing a volume larger than the disk it is on");
+        g_mount_oversize_refusals++;
         return -3;
     }
+#endif
 
     g_mounted_fs.bd       = bd;
     g_mounted_fs.sb       = *sb;

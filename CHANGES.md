@@ -65,6 +65,12 @@ in this file.
 
 ### Added
 
+- **`make smoke-fs-shrink`** — S68's other half, which `smoke-fs-16g` does not witness: a volume
+  formatted on a larger disk is **refused** on a smaller one, not served in part. Two boots with
+  the host truncating the image between them. The refusal is asserted by count rather than by a
+  volume failing to come up — that same silence is produced by a bad magic, a version mismatch or
+  an unreadable superblock. `STORAGE_MOUNT_ANY_SIZE=1` is the control, and its marker is that the
+  truncated volume *mounted*.
 - **`make smoke-fs-16g`** — the end-to-end gate for the storage track: a 16 GiB volume formats,
   mounts, survives a reboot **and a crash**, and holds a file whose offsets are past the old
   ceiling. Three boots on a sparse image (16 GiB declared, ~130 MiB written); the crash boot is

@@ -121,8 +121,8 @@ static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender) {
  * block of the dispatch table, which is why finding [C-1] was a defect here
  * rather than in any individual handler. */
 int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
-    struct capability *c = cap_lookup(slot, need_rights);
-    if (!c || c->type != CAP_ENDPOINT) return -1;
+    struct capability *c = cap_lookup(slot, CAP_ENDPOINT, need_rights);
+    if (!c) return -1;
     if (c->object >= EP_INDEX_MAX)     return -1;
     /* The index may name a RETYPED endpoint (roadmap 0.3), so bounds-checking it
      * is no longer sufficient — a retyped object can be destroyed while a stale
@@ -139,8 +139,8 @@ int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
  * same way (finding C-2), which let any task forge IRQ delivery to a ring-3
  * driver, since SYS_IRQ_REGISTER routes hardware interrupts to these slots. */
 int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot) {
-    struct capability *c = cap_lookup(slot, need_rights);
-    if (!c || c->type != CAP_NOTIFICATION)  return -1;
+    struct capability *c = cap_lookup(slot, CAP_NOTIFICATION, need_rights);
+    if (!c)  return -1;
     if (c->object >= NOTIF_INDEX_MAX)       return -1;
     if (!notification_by_index((uint32_t)c->object)) return -1;   /* see ipc_ep_from_slot */
     if (out_slot) *out_slot = (uint32_t)c->object;
@@ -343,7 +343,12 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * additive: if the caller has no such cap at entry we don't newly reject
      * (preserves the in-kernel shell caller); we only abort a send whose
      * authorizing cap was revoked/replaced mid-spin (lookup/use TOCTOU). */
-    cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_RIGHT_WRITE));
+    /* CAP_ANYTYPE, and deliberately: this snapshot is NOT an authority test.
+     * It exists to detect a revoke of the authorising slot mid-spin, and the
+     * comment above records that a caller holding nothing here is not newly
+     * rejected. Demanding a type would turn a TOCTOU detector into a gate and
+     * change who may send. */
+    cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_ANYTYPE, CAP_RIGHT_WRITE));
 
     /* If a task is blocking in SYS_IPC_CALL waiting for a reply on this
      * endpoint, deliver directly: copy from the sender's userspace into a
@@ -496,7 +501,12 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
 
     /* See sys_ipc_send: snapshot the authorizing read capability and revalidate
      * it after the yield loop so a revoke mid-spin aborts the receive. */
-    cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_RIGHT_READ));
+    /* CAP_ANYTYPE, and deliberately: this snapshot is NOT an authority test.
+     * It exists to detect a revoke of the authorising slot mid-spin, and the
+     * comment above records that a caller holding nothing here is not newly
+     * rejected. Demanding a type would turn a TOCTOU detector into a gate and
+     * change who may send. */
+    cap_snapshot_t auth = cap_snapshot(cap_lookup(3, CAP_ANYTYPE, CAP_RIGHT_READ));
 
     /* Non-blocking (see sys_ipc_send): no message yet -> caller polls from ring
      * 3 and is timer-preempted, rather than spinning on the broken cooperative
@@ -934,8 +944,8 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
      * caller, cannot be retargeted, and is consumed below, so replying twice or
      * replying to a client this task never received from are both unrepresentable
      * rather than merely refused. */
-    struct capability *rc_cap = cap_lookup(CAPSLOT_REPLY, CAP_RIGHT_WRITE);
-    if (!rc_cap || rc_cap->type != CAP_REPLY) {
+    struct capability *rc_cap = cap_lookup(CAPSLOT_REPLY, CAP_REPLY, CAP_RIGHT_WRITE);
+    if (!rc_cap) {
         /* No outstanding request. Distinct from "client gone": this task has no
          * right to answer anybody, which is a caller error worth reporting. */
         r->rax = (uint32_t)SYS_ERR_PERM; return;

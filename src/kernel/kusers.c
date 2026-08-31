@@ -231,8 +231,8 @@ void users_init(void) {
  * a capability sits — but that is a separate change (audit H-6) and widening it
  * here would mean touching every CAPSLOT_* consumer at once. */
 static int current_user_is_admin(void) {
-    struct capability *c = cap_lookup(CAPSLOT_USER, CAP_RIGHT_ALL);
-    return (c && c->type == CAP_USER) ? 1 : 0;
+    struct capability *c = cap_lookup(CAPSLOT_USER, CAP_USER, CAP_RIGHT_ALL);
+    return c != NULL;
 }
 
 int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial_password) {

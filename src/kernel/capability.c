@@ -623,7 +623,8 @@ const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
  * pointer obtained before the revoke.
  *
  * `SECURITY.md` **S55**. */
-struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
+struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
+                              uint32_t required_rights) {
     if (slot >= CNODE_SIZE) return NULL;
 
     int cur = get_current_task();
@@ -671,6 +672,18 @@ struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
 
     struct capability *p = rust_cap_lookup(cspace, cspace_sz, slot, required_rights);
     if (p && !capability_validate_generation(p)) return NULL;
+#ifndef CAP_LOOKUP_TYPE_UNCHECKED
+    /* The type test the callers used to carry. It is here rather than there so
+     * that forgetting it is not possible; see CAP_ANYTYPE in kernel.h for the
+     * four cases that legitimately opt out. */
+    if (p && expected_type != CAP_ANYTYPE && p->type != expected_type) return NULL;
+#else
+    /* CONTROL ARM -- never ship. Restores the pre-2026-08-31 resolver, which
+     * returned whatever the slot held and left the type to the caller. captest
+     * then resolves a CAP_FRAME through a lookup that asked for CAP_ENDPOINT.
+     * See make smoke-captest-lookup-type-control. */
+    (void)expected_type;
+#endif
     return p;
 }
 
@@ -705,9 +718,13 @@ struct capability *cap_lookup(uint32_t slot, uint32_t required_rights) {
  */
 #ifdef CAP_LOOKUP_ASSERT_HANG
 void kassert_cap(struct capability *c){if(!c){for(;;){}}}
-struct capability *kcap_lookup(uint32_t slot,uint32_t r){struct capability *c=cap_lookup(slot,r);kassert_cap(c);return c;}
+/* CAP_ANYTYPE: this helper predates the typed resolver and survives only inside
+ * the control arm below, which exists to reproduce its halting assert. Giving it
+ * a type would change what the arm reproduces. */
+struct capability *kcap_lookup(uint32_t slot,uint32_t r){struct capability *c=cap_lookup(slot,CAP_ANYTYPE,r);kassert_cap(c);return c;}
 #else
-struct capability *kcap_lookup(uint32_t slot,uint32_t r){return cap_lookup(slot,r);}
+/* CAP_ANYTYPE: as above -- callers of this shim pass their own type test. */
+struct capability *kcap_lookup(uint32_t slot,uint32_t r){return cap_lookup(slot,CAP_ANYTYPE,r);}
 #endif
 
 /*
@@ -740,7 +757,11 @@ cap_snapshot_t cap_snapshot(const struct capability *c) {
 struct capability *cap_revalidate(uint32_t slot, uint32_t required_rights,
                                   const cap_snapshot_t *snap) {
     if (!snap || !snap->valid) return NULL;
-    struct capability *p = cap_lookup(slot, required_rights);
+    /* CAP_ANYTYPE: the snapshot already fixes this capability's identity. A
+     * type change cannot happen without a re-mint, a re-mint changes the
+     * serial, and the serial is compared below -- so testing the type here
+     * would be a second check of something already established, not a gate. */
+    struct capability *p = cap_lookup(slot, CAP_ANYTYPE, required_rights);
     if (!p) return NULL;
     /* Identity must be unchanged: a revoke nulls these, a re-mint changes the
      * serial, and a lineage revocation bumps the generation. */
@@ -1372,6 +1393,6 @@ bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {
 }
 
 bool has_encrypted_storage_cap(void) {
-    struct capability *c = cap_lookup(9, 0);
-    return (c && c->type == CAP_ENCRYPTED_STORAGE);
+    struct capability *c = cap_lookup(CAPSLOT_STORAGE, CAP_ENCRYPTED_STORAGE, 0);
+    return c != NULL;
 }

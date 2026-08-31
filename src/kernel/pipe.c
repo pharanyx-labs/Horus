@@ -184,8 +184,8 @@ void h_pipe_read(struct interrupt_frame64 *r) {
     uint32_t slot = (uint32_t)r->rbx;
     void    *buf  = (void *)(addr_t)r->rcx;
     uint32_t len  = (uint32_t)r->rdx;
-    struct capability *c = cap_lookup(slot, CAP_RIGHT_READ);
-    if (!c || c->type != CAP_PIPE) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
+    struct capability *c = cap_lookup(slot, CAP_PIPE, CAP_RIGHT_READ);
+    if (!c) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
     r->rax = (uint64_t)(uint32_t)pipe_read((int)c->object, (uint8_t *)buf, len);
 }
 
@@ -193,8 +193,8 @@ void h_pipe_write(struct interrupt_frame64 *r) {
     uint32_t slot = (uint32_t)r->rbx;
     const void *buf = (const void *)(addr_t)r->rcx;
     uint32_t len  = (uint32_t)r->rdx;
-    struct capability *c = cap_lookup(slot, CAP_RIGHT_WRITE);
-    if (!c || c->type != CAP_PIPE) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
+    struct capability *c = cap_lookup(slot, CAP_PIPE, CAP_RIGHT_WRITE);
+    if (!c) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
     r->rax = (uint64_t)(uint32_t)pipe_write((int)c->object, (const uint8_t *)buf, len);
 }
 

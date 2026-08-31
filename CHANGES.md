@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 120 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 121 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,22 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **`cap_lookup` takes the expected capability type** (`SECURITY.md` **S60**). It took
+  `(slot, required_rights)` and returned whatever the slot held; the type was checked afterwards
+  by each of ~40 callers. An audit of all 40 found **every live caller did check** — the ones that
+  did not are comments, self-tests, and code inside control-arm `#ifdef`s that never ship — so
+  this closes no hole that was ever open. What it removes is the requirement to remember, which
+  is the difference between a property that holds and one that holds by construction. The
+  dispatch table's own `c->type != d->ctype` test was folded into the same call, so a syscall's
+  declared type is enforced where the capability is resolved rather than beside it. `CAP_ANYTYPE`
+  is the explicit opt-out; there are five uses and each carries a comment saying why.
+  Falsified by `CAP_LOOKUP_TYPE_UNCHECKED=1`: captest reports
+  `FAIL notification-cap-authorised-endpoint-recv`, a `CAP_NOTIFICATION` authorising an endpoint
+  receive. `docs/ROADMAP.md` 3.5 asserted the C `cap_lookup` already checked the type "against a
+  caller-supplied expected type"; it had no type parameter at all, and that entry is corrected.
 
 ### Added
 

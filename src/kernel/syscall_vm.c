@@ -206,8 +206,8 @@ static int map_one_frame_object(uint32_t slot, uint64_t vaddr, uint32_t rights,
      * the type test is what stops a CAP_ENDPOINT or a CAP_TCB standing in for a
      * frame. Both are required -- C-1 was a live capability of the wrong type
      * satisfying a gate that only asked for liveness. */
-    capability_t *cap = cap_lookup(slot, frame_required_rights(rights));
-    if (!cap || cap->type != CAP_FRAME) return SYS_ERR_PERM;
+    capability_t *cap = cap_lookup(slot, CAP_FRAME, frame_required_rights(rights));
+    if (!cap) return SYS_ERR_PERM;
 
     cap_snapshot_t snap = cap_snapshot(cap);
     uint32_t have  = cap->rights;
@@ -322,8 +322,8 @@ void h_unmap_frame(struct interrupt_frame64 *r) {
      * authority from the caller's own address space and can only ever reduce
      * what it can reach, so requiring WRITE would refuse a read-only sharer the
      * ability to let go of a page. */
-    capability_t *cap = cap_lookup(slot, 0);
-    if (!cap || cap->type != CAP_FRAME) {
+    capability_t *cap = cap_lookup(slot, CAP_FRAME, 0);
+    if (!cap) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
     uint64_t phys  = frame_phys_by_index((uint32_t)cap->object);
@@ -487,8 +487,8 @@ void h_map_region(struct interrupt_frame64 *r) {
      * dislikes by asking to map a region across it. frametest's
      * region-rollback-ate-blocker check fails under it. */
     for (uint32_t i = 0; i < count; i++) {
-        capability_t *rc_cap = cap_lookup(first + i, 0);
-        uint64_t rc_phys = (rc_cap && rc_cap->type == CAP_FRAME)
+        capability_t *rc_cap = cap_lookup(first + i, CAP_FRAME, 0);
+        uint64_t rc_phys = rc_cap
                                ? frame_phys_by_index((uint32_t)rc_cap->object) : 0;
         if (rc_phys)
             (void)user_unmap_frame_page((uint32_t)cur,
@@ -587,8 +587,8 @@ void h_frame_pages(struct interrupt_frame64 *r) {
     /* Liveness AND type, both. C-1 was a live capability of the wrong type
      * satisfying a gate that only asked for the first, and a CAP_TCB's `object`
      * is a task id -- a small integer that would index the frame table happily. */
-    capability_t *cap = cap_lookup(slot, 0);
-    if (!cap || cap->type != CAP_FRAME) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    capability_t *cap = cap_lookup(slot, CAP_FRAME, 0);
+    if (!cap) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
 
     uint32_t pages = frame_pages_by_index((uint32_t)cap->object);
     if (pages == 0 || pages > MAX_FRAME_PAGES) {

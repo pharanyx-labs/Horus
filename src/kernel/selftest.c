@@ -3133,7 +3133,10 @@ void caplookup_selftest(void)
     tasks[scratch].cspace_size = 0;
     tasks[scratch].state       = 0;          /* never schedulable */
     set_current_task(scratch);
-    struct capability *c1 = cap_lookup(PRIMORDIAL_SLOT, 0);
+    /* CAP_ANYTYPE: this asserts a cspace-less task resolves NOTHING. Naming a
+     * type would let the check pass because the type mismatched, which is a
+     * different reason and would not witness the cspace rule at all. */
+    struct capability *c1 = cap_lookup(PRIMORDIAL_SLOT, CAP_ANYTYPE, 0);
     set_current_task(saved_cur);
 
     if (c1 != (struct capability *)0) {
@@ -3157,7 +3160,7 @@ void caplookup_selftest(void)
     tasks[scratch].cspace      = tiny;
     tasks[scratch].cspace_size = PRIMORDIAL_SLOT;   /* the probe slot is PAST the end */
     set_current_task(scratch);
-    struct capability *c2 = cap_lookup(PRIMORDIAL_SLOT, 0);
+    struct capability *c2 = cap_lookup(PRIMORDIAL_SLOT, CAP_ANYTYPE, 0);
     set_current_task(saved_cur);
 
     tasks[scratch].cspace      = saved_cspace;
@@ -3176,7 +3179,7 @@ void caplookup_selftest(void)
      * the root cnode -- the rule caller_has_authority() already encodes for the
      * mutating operations -- so asking as task 0 must SUCCEED. */
     set_current_task(0);
-    struct capability *c3 = cap_lookup(PRIMORDIAL_SLOT, 0);
+    struct capability *c3 = cap_lookup(PRIMORDIAL_SLOT, CAP_ANYTYPE, 0);
     set_current_task(saved_cur);
     if (c3 == (struct capability *)0) {
         print("CAPLOOKUP_SELFTEST: FAIL task 0 can no longer reach the root cnode\n");

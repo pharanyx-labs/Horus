@@ -3311,11 +3311,21 @@ void cspace_release_selftest(void)
 #define KS_PW_C "keyslot-charlie"
 #define KS_UID_B 1000u
 
+/* ONE write. The prefix and the detail used to be two print() calls, and the
+ * serial console is shared with every ring-3 task -- so another task's output
+ * could land between them and split the very string the control arm asserts on.
+ * That happened to smoke-init-provision-control on 2026-08-31 and cost a CI run;
+ * the same shape is present in eight other selftests and is recorded in
+ * docs/LIMITATIONS.md. */
 static void ks_fail(const char *what)
 {
-    print("KEYSLOT_SELFTEST: FAIL ");
-    print(what);
-    print("\n");
+    char line[128];
+    const char *pfx = "KEYSLOT_SELFTEST: FAIL ";
+    unsigned n = 0;
+    for (const char *c = pfx;  *c && n < sizeof(line) - 2; c++) line[n++] = *c;
+    for (const char *c = what; *c && n < sizeof(line) - 2; c++) line[n++] = *c;
+    line[n++] = '\n'; line[n] = 0;
+    print(line);
 }
 
 void keyslot_selftest(void)

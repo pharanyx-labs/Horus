@@ -246,13 +246,20 @@ static void init_provision_probe(void) {
         /* NAME THE STEP. launch_dev_server returns a distinct negative per stage
          * (-1 retype, -2 mint, -3 spawn, -4 grant, -5 resume) and a failure that
          * did not say which is a failure that costs a bisect to read. */
-        report("INIT_PROVISION: FAIL provisioning stopped at step ");
-        report(srv == -1 ? "1 (retype the endpoint)\n"
-             : srv == -2 ? "2 (mint the client copy)\n"
-             : srv == -3 ? "3 (spawn dev_server)\n"
-             : srv == -4 ? "4 (grant the listen right)\n"
-             : srv == -5 ? "5 (resume the server)\n"
-                         : "unknown\n");
+        /* ONE write, not two. This was `report("...stopped at step ")` followed
+         * by a second report() with the number -- and the serial console is
+         * shared with every other ring-3 task, so fs_server's banner could land
+         * between them and split the marker the gate asserts on. It did, on
+         * 2026-08-31, producing "stopped at step [fs_server] userspace FS server
+         * starting" and a gate that timed out looking for a contiguous string
+         * that had been emitted in two pieces. A marker asserted as one string
+         * must be written as one string. */
+        report(srv == -1 ? "INIT_PROVISION: FAIL provisioning stopped at step 1 (retype the endpoint)\n"
+             : srv == -2 ? "INIT_PROVISION: FAIL provisioning stopped at step 2 (mint the client copy)\n"
+             : srv == -3 ? "INIT_PROVISION: FAIL provisioning stopped at step 3 (spawn dev_server)\n"
+             : srv == -4 ? "INIT_PROVISION: FAIL provisioning stopped at step 4 (grant the listen right)\n"
+             : srv == -5 ? "INIT_PROVISION: FAIL provisioning stopped at step 5 (resume the server)\n"
+                         : "INIT_PROVISION: FAIL provisioning stopped at step unknown\n");
         return;
     }
 

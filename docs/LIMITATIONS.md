@@ -1006,6 +1006,25 @@ by slot index, because finding a slot by uid would require that user's password;
 active slot cannot be removed, because a volume with no slots is unreachable rather than deleted.
 Witness `make smoke-keyslots` (two boots on one image), falsified by `KEYSLOT_REMOVE_NOOP=1`.
 
+### 2.6a Self-test markers are emitted in two writes, on a shared console
+
+*Added 2026-08-31.*
+
+Several self-tests print a marker as a prefix and then a detail — `report("X: FAIL ")` followed by
+`report(name)` — while the serial console is shared with every other ring-3 task. Another task's
+output can land between the two writes and split the exact string a gate asserts on. It is not
+hypothetical: `smoke-init-provision-control` failed on 2026-08-31 with
+`INIT_PROVISION: FAIL provisioning stopped at step [fs_server] userspace FS server starting`,
+and the gate timed out looking for a contiguous `stopped at step 1` that had been emitted in two
+pieces. The arm had passed since it was written, on timing luck.
+
+`userspace/init.c` and the keyslot self-test now emit their markers in one write. **Eight remain**
+(`libhorustest.c`, `proctest.c`, `passwdprobe.c`, `frametest.c`, `framepeer.c`, `vfstest.c`,
+`recvblocksrv.c`, and two in `src/kernel/selftest.c`'s aspace test). They are racy in the same way
+and have not yet been observed failing, which is a statement about how busy the console is when
+each runs rather than about their correctness. Fixing them is mechanical and belongs in one focused
+change, not scattered through unrelated work.
+
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 
 *Added 2026-08-22 with roadmap 2.4.*

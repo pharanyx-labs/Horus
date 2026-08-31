@@ -3379,3 +3379,33 @@ void keyslot_selftest(void)
     print("KEYSLOT_SELFTEST: PASS\n");
 }
 #endif
+
+#ifdef STORAGE_NOFORMAT_SELFTEST
+/* A login is not consent to format a disk.
+ *
+ * THIS EXISTS BECAUSE THE OBVIOUS TEST DOES NOT WORK. The first version of this
+ * gate booted a blank ATA image and required the refusal message on the serial
+ * console. It never appeared -- the boot reaches `horus login:` and stops, so
+ * nothing calls storage_unlock and nothing refuses. Worse, the CONTROL arm
+ * passed anyway: it required the refusal marker to be ABSENT, and it is absent
+ * in both arms when neither attempts a login. A pair in which neither arm
+ * exercises the path, one of them green.
+ *
+ * So the unlock is driven directly, and both arms report which branch was taken
+ * rather than one reporting the absence of a message.
+ */
+void storage_noformat_selftest(void)
+{
+    const char *pw = "whatever-was-typed";
+    int rc = storage_unlock(pw, kstrlen(pw));
+    if (rc == -6) {
+        print("NOFORMAT_SELFTEST: REFUSED\n");
+    } else if (rc == 0) {
+        print("NOFORMAT_SELFTEST: FORMATTED\n");
+    } else {
+        print("NOFORMAT_SELFTEST: OTHER rc=");
+        print_decimal(rc);
+        print("\n");
+    }
+}
+#endif

@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 122 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 123 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,37 @@ in this file.
 ## [Unreleased]
 
 ### Added
+
+- **User accounts survive a reboot** (`SECURITY.md` **S62**, closing `docs/LIMITATIONS.md` 2.6).
+  The table is sealed under HKDF(`disk_key`, "horus-users-v1") and written **through the
+  write-ahead log**, so a crash leaves it wholly before or wholly after. Storage was never the
+  whole obstacle: account hashes mixed in `kernel_pepper`, sixteen fresh random bytes per boot, so
+  a hash from one boot could not verify in the next *whatever it was stored in*. That is gone;
+  encryption at rest does the job instead, and unlike the superseded proposal to seal the pepper
+  it also works on a machine with no TPM. Login inverted to unlock-then-identify, with the
+  identity supplied by the key slot that opened (**S61**). A table that is **present and does not
+  authenticate** refuses every login rather than being reseeded — reseeding restores the
+  compiled-in `root` password, which is a downgrade, not a recovery.
+  Witnessed by `make smoke-users-persist` (two boots, and boot 2 requires a wrong password to
+  still be refused), falsified by `USERS_PEPPER_PER_BOOT=1`, with `make smoke-users-tamper` as the
+  adversarial arm.
+- **A login is not consent to format a disk** (`SECURITY.md` **S63**). Meeting an unformatted ATA
+  volume at the login prompt ran `storage_format_sealed` on the strength of whatever was typed, so
+  a mistyped password on an unrecognised disk destroyed it and became key slot 0, silently.
+  Formatting is now deliberate — `storage_authorize_format()`, which an installer calls and a
+  login never does. The ephemeral vdisk is unaffected and a diskless boot still comes up
+  unattended. `STORAGE_AUTOFORMAT=1` restores the old behaviour for the twelve test targets that
+  boot a deliberately blank image, and is the control arm.
+
+### Fixed
+
+- **The first version of the user-table save bypassed the journal** and could lose every account.
+  It wrote thirteen blocks with the raw `bd->write_block`, so a crash part-way left a new header
+  over partly-old ciphertext; the AEAD tag then failed, and the caller treated *any* load failure
+  as "no table yet" and reseeded the compiled-in accounts. A power cut during `useradd` silently
+  rolled the machine back to `root`/`user`. Found by review before merge, not by a gate — the
+  witness could not see it, because it never crashes mid-save.
+
 
 - **LUKS-style key slots: several passwords open one volume** (`SECURITY.md` **S61**, on-disk
   format v7). The volume key was wrapped exactly once, so exactly one password could ever open a

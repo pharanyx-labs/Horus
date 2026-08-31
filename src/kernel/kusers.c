@@ -10,6 +10,104 @@ static uint32_t next_uid = 1000;
 
 uint8_t kernel_pepper[16];
 
+/* THE PEPPER IS NOT USED FOR ACCOUNT HASHES ANY MORE (SECURITY.md S62), and that is what makes
+ * accounts able to survive a reboot at all.
+ *
+ * kernel_pepper is fresh random bytes every boot. It fed strong_password_hash
+ * both when a password was set and when it was verified, so a hash from one boot
+ * could never verify in the next -- WHATEVER it was stored in. docs/LIMITATIONS.md
+ * 2.6 calls that reason 3, and calls it the one that shapes the fix: persisting
+ * the table is not sufficient, or even meaningful, while the hash is boot-local.
+ *
+ * What replaces it is not a second secret but the volume: the table is sealed
+ * under a key derived from disk_key (storage_users_save), which is itself sealed
+ * under the TPM policy where there is a TPM. Encryption at rest is doing the job
+ * the pepper was being asked to do, and unlike the pepper it also works on a
+ * machine with no TPM -- the common case, and the reason an earlier revision of
+ * 2.6 that proposed TPM-sealing the pepper was superseded.
+ *
+ * The per-user random salt stays, and is what stops one rainbow table covering
+ * every account. kernel_pepper itself stays too: audit_chain_start still keys
+ * the audit chain from it, which is per-boot on purpose. */
+static const uint8_t account_pepper[16] = { 0 };
+
+/* Has the on-disk table been consulted this boot? Set once, either by a
+ * successful load or by seeding a volume that has none yet. */
+static int g_users_restored = 0;
+
+/* Set when the on-disk table is PRESENT but does not authenticate. Distinct from
+ * "no table yet", and the distinction is the whole point: treating a bad tag as
+ * an empty volume reseeds the compiled-in root/user accounts, which hands anyone
+ * who can scribble on the region a downgrade to a known password. While this is
+ * set every login is refused -- an account database that fails its own integrity
+ * check is not a thing to guess around, and a machine that will not log anyone in
+ * is a better outcome than one that logs in the wrong person. */
+static int g_users_tampered = 0;
+
+/* Write the table back. Silent when there is no volume: a diskless or
+ * unformatted machine keeps the compiled-in accounts and loses them at
+ * power-off, which is the documented fallback rather than a failure -- a
+ * research prototype has to boot on a machine with no disk. */
+void users_persist(void)
+{
+    if (storage_users_save(users, sizeof(users)) == 0) g_users_restored = 1;
+}
+
+/* UNLOCK, THEN IDENTIFY.
+ *
+ * The table lives inside the volume, so it cannot be consulted until the volume
+ * opens -- which inverts the order docs/LIMITATIONS.md 2.6 describes: the
+ * password is offered to the storage layer FIRST, and only then is the caller
+ * identified against the table that unlocking made readable. That is sound
+ * because storage_unlock authenticates: it succeeds only if the offered password
+ * opens a key slot, which is an AEAD unwrap and fails closed on a wrong one.
+ *
+ * A wrong password simply leaves the volume shut and the table unrestored, and
+ * the caller then fails verify_password against whatever is in RAM -- the same
+ * refusal it would have got before, reached a different way.
+ */
+static void users_unlock_and_restore(const char *pw, size_t len)
+{
+    if (g_users_restored) return;
+    if (storage_unlock(pw, len) != 0) return;      /* no volume, or wrong password */
+
+    int rc = storage_users_load(users, sizeof(users));
+    if (rc == -3) {
+        /* Present and unauthentic. Do NOT reseed and do NOT write: preserve the
+         * region so an operator can look at it, and refuse logins meanwhile. */
+        g_users_tampered = 1;
+        print("USERS: the on-disk account table failed its integrity check; "
+              "logins refused\n");
+        audit_log(AUDIT_AUTH, 0, 0, "user table integrity failure");
+        return;
+    }
+    if (rc == 0) {
+        g_users_restored = 1;
+        /* Rebuild the RAM-only bookkeeping the table does not carry. */
+        user_count = 0;
+        next_uid   = 1000;
+        for (int i = 0; i < MAX_USERS; i++) {
+            if (!users[i].valid) continue;
+            user_count++;
+            if (users[i].uid >= next_uid) next_uid = users[i].uid + 1;
+        }
+    } else {
+        /* rc == -2: the volume opened and carries no table yet, so this is its
+         * first boot. Seed it from what users_init put in RAM so the NEXT boot
+         * has something to load. Only -2 reaches here; a failed tag was handled
+         * above and never reseeds. */
+        users_persist();
+    }
+}
+#ifdef USERS_PEPPER_PER_BOOT
+/* CONTROL ARM -- never ship. Restores the per-boot pepper in account hashes, so
+ * a password set in one boot cannot verify in the next however faithfully the
+ * table was stored. See make smoke-users-persist-control. */
+#define ACCOUNT_PEPPER kernel_pepper
+#else
+#define ACCOUNT_PEPPER account_pepper
+#endif
+
 static void generate_salt(uint8_t *salt, size_t len) {
     /* Per-password random salt drawn from the central CSPRNG (RDRAND/TSC-jitter
      * seeded), replacing the old predictable LCG-over-ticks generator. */
@@ -62,7 +160,7 @@ int set_user_password(uint32_t uid, const char *new_password) {
     for (int i = 0; i < MAX_USERS; i++) {
         if (users[i].valid && users[i].uid == uid) {
             generate_salt(users[i].salt, PASS_SALT_LEN);
-            strong_password_hash(new_password, users[i].salt, kernel_pepper,
+            strong_password_hash(new_password, users[i].salt, ACCOUNT_PEPPER,
                                  users[i].pass_hash);
             return 0;
         }
@@ -94,7 +192,7 @@ static int verify_user_password(const char *name, const char *password) {
     const uint8_t *salt   = u ? u->salt      : dummy_salt;
     const uint8_t *expect = u ? u->pass_hash : computed;
 
-    strong_password_hash(password, salt, kernel_pepper, computed);
+    strong_password_hash(password, salt, ACCOUNT_PEPPER, computed);
     int eq = rust_ct_eq(computed, expect, PASS_HASH_LEN);
     return (u && eq) ? 1 : 0;
 }
@@ -278,6 +376,7 @@ int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial
             /* No persist call: the account lives until reboot. The audit entry
              * below is the only durable record that it was ever created. */
             audit_log(AUDIT_USER_MGMT, uid, 0, "useradd");
+            users_persist();
             return 0;
         }
     }
@@ -292,6 +391,7 @@ int do_userdel(uint32_t uid) {
         if (users[i].valid && users[i].uid == uid) {
             users[i].valid = 0;
             user_count--;
+            users_persist();
             return 0;
         }
     }
@@ -306,6 +406,7 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
 
     int rc = set_user_password(target_uid, new_password);
     if (rc != 0) return rc;
+    users_persist();
 
     /* If the user is changing their own password, re-wrap disk_key with the
      * new KEK so storage_unlock(new_password) succeeds on the next boot.
@@ -353,12 +454,27 @@ void h_auth(struct interrupt_frame64 *r) {
     /* Global anti-spray cooldown: refuse all auth attempts kernel-wide
      * while it is active, so cycling usernames cannot dodge per-account
      * lockout. Policy + arithmetic live in rust/src/auth.rs. */
+    /* An unauthentic account table refuses every login, before any password is
+     * looked at. See g_users_tampered. */
+    if (g_users_tampered) {
+        secure_zero(uname, sizeof(uname));
+        secure_zero(upass, sizeof(upass));
+        r->rax = (uint32_t)SYS_ERR_AUTH;
+        return;
+    }
+
     if (rust_auth_global_locked(now)) {
         secure_zero(uname, sizeof(uname));
         secure_zero(upass, sizeof(upass));
         r->rax = (uint32_t)SYS_ERR_AUTH;
         return;
     }
+
+    /* Open the volume with this password first, so the table consulted below is
+     * the PERSISTED one rather than the compiled-in defaults users_init seeded.
+     * No-op after the first successful login of a boot, and a no-op on a machine
+     * with no volume -- see users_unlock_and_restore. */
+    users_unlock_and_restore(upass, kstrlen(upass));
 
     struct user_account *u = find_user_by_name(uname);
     if (u && rust_auth_is_locked(u->auth_lockout_until, now)) {
@@ -669,3 +785,91 @@ void h_rotate_keys(struct interrupt_frame64 *r) {
 /* FS ops (38-45): authority is the per-call dir/file capability, checked inside
  * the sys_fs_* helpers (slot is an argument, so not table-expressible). */
 
+
+#ifdef USERS_PERSIST_SELFTEST
+/* Accounts survive a reboot (docs/LIMITATIONS.md 2.6).
+ *
+ * TWO BOOTS ON ONE DISK. Phase is read off the volume: boot 1 finds no such
+ * account and creates one, boot 2 finds it and checks its password still
+ * verifies. No boot counter, and nothing in RAM decides which phase it is.
+ *
+ * BOTH DIRECTIONS ON BOOT 2, because "the password verifies" alone is satisfied
+ * by a kernel that accepts everything -- which is exactly what a table restored
+ * as all-zero salts and hashes could look like. The wrong password must be
+ * refused by the same restored record.
+ */
+#define UPS_ROOT_PW  "rootpass"
+#define UPS_NAME     "persisted"
+#define UPS_PW       "persist-correct-horse"
+#define UPS_WRONG_PW "persist-wrong-horse"
+
+void users_persist_selftest(void)
+{
+#ifdef USERS_TAMPER_INJECT
+    /* Boot 2 under the tamper arm: scribble on the sealed table before it is
+     * read, as an attacker with disk access would. The table is PRESENT and
+     * unauthentic -- the case that must never be mistaken for "no table yet",
+     * because reseeding there restores the compiled-in root password. */
+    {
+        struct user_account *pre = find_user_by_name(UPS_NAME);
+        (void)pre;
+        if (storage_users_corrupt_for_test() != 0) {
+            print("USERS_SELFTEST: FAIL could-not-inject-tamper\n"); return;
+        }
+        users_unlock_and_restore(UPS_ROOT_PW, kstrlen(UPS_ROOT_PW));
+        if (!g_users_tampered) {
+            print("USERS_SELFTEST: FAIL tampered-table-was-accepted\n"); return;
+        }
+        if (find_user_by_name(UPS_NAME)) {
+            print("USERS_SELFTEST: FAIL tampered-table-still-restored-an-account\n"); return;
+        }
+        print("USERS_SELFTEST: TAMPER-REFUSED\n");
+        return;
+    }
+#endif
+    users_unlock_and_restore(UPS_ROOT_PW, kstrlen(UPS_ROOT_PW));
+
+    struct user_account *u = find_user_by_name(UPS_NAME);
+    if (!u) {
+        /* Boot 1 -- create the account and push the table to disk. */
+        int slot = -1;
+        for (int i = 0; i < MAX_USERS; i++) if (!users[i].valid) { slot = i; break; }
+        if (slot < 0) { print("USERS_SELFTEST: FAIL no-free-user-slot\n"); return; }
+        users[slot].uid = 4242;
+        users[slot].gid = 4242;
+        kstrcpy(users[slot].name,  UPS_NAME);
+        kstrcpy(users[slot].home,  "/");
+        kstrcpy(users[slot].shell, "/bin/shell");
+        users[slot].auth_fail_count = 0;
+        users[slot].auth_lockout_until = 0;
+        users[slot].keyslot = KEYSLOT_NONE;
+        users[slot].valid = 1;
+        user_count++;
+        if (set_user_password(4242, UPS_PW) != 0) {
+            print("USERS_SELFTEST: FAIL set-password\n"); return;
+        }
+        /* It must verify NOW, in the boot that set it -- otherwise a boot-2
+         * failure cannot be told from "never worked". */
+        if (!verify_password(UPS_NAME, UPS_PW)) {
+            print("USERS_SELFTEST: FAIL password-does-not-verify-in-the-boot-that-set-it\n");
+            return;
+        }
+        users_persist();
+        if (!g_users_restored) { print("USERS_SELFTEST: FAIL table-not-written\n"); return; }
+        print("USERS_SELFTEST: WROTE\n");
+        return;
+    }
+
+    /* Boot 2 -- the account came back off the disk. */
+    if (u->uid != 4242) { print("USERS_SELFTEST: FAIL restored-uid-wrong\n"); return; }
+    if (!verify_password(UPS_NAME, UPS_PW)) {
+        print("USERS_SELFTEST: FAIL hash-did-not-survive-the-reboot\n");
+        return;
+    }
+    if (verify_password(UPS_NAME, UPS_WRONG_PW)) {
+        print("USERS_SELFTEST: FAIL wrong-password-accepted\n");
+        return;
+    }
+    print("USERS_SELFTEST: PASS\n");
+}
+#endif

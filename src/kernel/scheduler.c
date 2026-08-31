@@ -491,6 +491,18 @@ void scheduler_init(void) {
     tasks[0].gid = 0;
 
     users_init();
+#ifdef USERS_PERSIST_SELFTEST
+    /* IMMEDIATELY after users_init, and that placement is load-bearing. The
+     * first version of this hook sat in main.c before scheduler_init, which is
+     * where users_init is called from -- so at test time kernel_pepper had never
+     * been randomised and was all zeros on every boot. The base arm still
+     * measured the right thing (the fixed build peppers with a constant either
+     * way), but the CONTROL arm was neutralised: USERS_PEPPER_PER_BOOT swaps in
+     * a pepper that was, at that moment, also zeros, so the defect could not
+     * reproduce and the arm passed. A control arm that cannot fail is not an
+     * arm; it found its own test's defect by refusing to go red. */
+    users_persist_selftest();
+#endif
 
     /* Endpoints and notifications start with NO waiter. -1 is the documented
      * "nobody" sentinel for all three of these fields; 0 is a real task id (the

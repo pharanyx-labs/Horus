@@ -2468,6 +2468,24 @@ jobs:
       # drops either way, so a count-based check passes under the defect.
       - name: Control arm — a revocation that reports success and revokes nothing
         run: make smoke-keyslots-control
+      # S62. Two boots: an account added and given a password in one must still
+      # verify in the next, and a wrong password must still be refused.
+      - name: An account outlives a power cycle
+        run: make smoke-users-persist
+      # The defect is a property of the HASH, not the storage: a per-boot pepper
+      # defeats a faithfully stored table.
+      - name: Control arm — a per-boot pepper in account hashes
+        run: make smoke-users-persist-control
+      # The adversarial half: a table that is present and unauthentic must refuse
+      # logins, never be mistaken for an empty volume and reseeded with the
+      # compiled-in root password.
+      - name: A tampered account table refuses logins instead of reseeding
+        run: make smoke-users-tamper
+      # S63. A login is not consent to format a disk.
+      - name: A login does not format an unrecognised volume
+        run: make smoke-storage-noformat
+      - name: Control arm — the pre-2026-08-31 format-on-login
+        run: make smoke-storage-noformat-control
 
   smoke-fs-wal:
     name: QEMU filesystem journal crash-recovery self-test (two-boot, headless)

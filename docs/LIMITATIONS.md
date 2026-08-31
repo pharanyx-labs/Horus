@@ -936,10 +936,21 @@ would have needed a cross-task *observability* capability to learn about its **o
 capability that names the object is the entitlement to know how big it is, so the authority is
 that capability.
 
-### 2.6 User accounts do not survive a reboot
+### 2.6 ~~User accounts do not survive a reboot~~ (**FIXED 2026-08-31**, `SECURITY.md` S62)
 
-*Restated 2026-08-22. This section previously read "`ramfs_write` ignores position, so the user
-database has never persisted", which was true and was only one of three reasons.*
+*Restated 2026-08-22; closed 2026-08-31. This section previously read "`ramfs_write` ignores
+position, so the user database has never persisted", which was true and was only one of three
+reasons.*
+
+**Closed as designed.** The table is sealed under a key derived from `disk_key` and written
+through the write-ahead log, so a crash leaves it wholly before or wholly after; the pepper is
+gone from account hashes, which is what reason 3 below said had to happen before storage could
+matter at all; and the ordering inverted to unlock-then-identify, with the identity supplied by
+the key slot that opened (S61) rather than worked around. A table that is present and does not
+authenticate refuses every login rather than being reseeded — reseeding would restore the
+compiled-in `root` password, which is a downgrade rather than a recovery. The account below is
+kept because it is the reasoning the fix was derived from, and because reason 3 is the part a
+reader will otherwise rediscover the hard way.
 
 `users_init` seeds `root` and `user` from compile-time constants on every boot. `useradd`,
 `userdel` and `passwd` take effect immediately and are gone at the next power cycle. The audit

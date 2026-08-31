@@ -21,6 +21,11 @@ typedef uint64_t vaddr_t;
  * wrong password takes to reject. */
 #define HORUS_KEYSLOTS          8
 #define KEYSLOT_BLOCKS          2
+
+/* The user table lives on disk, sealed under a key derived from disk_key, so
+ * that accounts survive a reboot (docs/LIMITATIONS.md 2.6). Sized for MAX_USERS
+ * records plus the AEAD header; the region is reserved at format time. */
+#define USERS_BLOCKS            16
 /* 32768 blocks x 512 B = 16 MiB volume (~14 MiB usable after metadata/journal/
  * inode-table/bitmap overhead). The DATA allocator uses a multi-block bitmap
  * (storage.c), so the data region is no longer capped at one bitmap block's 4096
@@ -1258,7 +1263,13 @@ typedef struct user_account {
     uint8_t  pass_hash[32];   
     char     home[64];
     char     shell[32];
+    /* Which key slot this account's password opens (SECURITY.md S61). Recorded
+     * because a slot cannot be found by uid -- the uid is sealed inside it, so
+     * locating one would need the password. KEYSLOT_NONE for an account with no
+     * slot of its own, which is every account on a volume-less boot. */
+    uint32_t keyslot;
 } user_account_t;
+#define KEYSLOT_NONE            0xFFFFFFFFu
 
 
 typedef struct audit_event {
@@ -1631,6 +1642,13 @@ typedef struct fs_superblock {
     uint64_t keyslot_start;          /* first block of the key-slot region */
     uint32_t keyslot_blocks;         /* blocks in it (KEYSLOT_BLOCKS) */
     uint32_t _keyslot_pad;
+    /* v8: the user table, sealed under a key derived from disk_key. Accounts
+     * used to be seeded from compile-time constants on every boot and lost at
+     * power-off; the hashes could not have survived anyway, because they were
+     * peppered with a per-boot secret (docs/LIMITATIONS.md 2.6 reason 3). */
+    uint64_t users_start;
+    uint32_t users_blocks;
+    uint32_t _users_pad;
 } fs_superblock_t;
 _Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
                "fs_superblock must fit in one block");
@@ -2469,6 +2487,24 @@ int  storage_keyslot_remove(uint32_t idx);
 int  storage_keyslot_count(void);
 uint32_t storage_unlocked_uid(void);
 uint32_t storage_unlocked_slot(void);
+/* Persist / restore the user table. The buffer is sealed under
+ * HKDF(disk_key, "horus-users-v1"), so it is confidential and tamper-evident at
+ * rest under the volume key that is already sealed to the TPM policy -- which is
+ * what lets the password hashes inside it stop depending on a per-boot pepper.
+ * Both require the volume unlocked. */
+void storage_authorize_format(void);
+#ifdef STORAGE_NOFORMAT_SELFTEST
+void storage_noformat_selftest(void);
+#endif
+int  storage_users_save(const void *buf, uint32_t len);
+int  storage_users_load(void *buf, uint32_t len);
+void users_persist(void);
+#ifdef USERS_TAMPER_INJECT
+int  storage_users_corrupt_for_test(void);
+#endif
+#ifdef USERS_PERSIST_SELFTEST
+void users_persist_selftest(void);
+#endif
 #ifdef KEYSLOT_SELFTEST
 int  storage_keyslot_probe(const char *password, size_t plen,
                            uint32_t *uid_out, uint32_t *idx_out);

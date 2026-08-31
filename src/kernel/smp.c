@@ -464,6 +464,13 @@ void smp_bringup(void) {
     { extern void storage_vdisk_bound_selftest(void);
       storage_vdisk_bound_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(FSCKREF_SELFTEST)
+    /* Gated: fsck must not free the blocks of a LIVE file. Two boots -- boot 1
+     * writes a file reaching into the double-indirect tree, boot 2 unlocks
+     * (running fsck over it) and asks the BITMAP whether those blocks are still
+     * allocated. */
+    { extern void fsckref_selftest(void); fsckref_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(MERKLE_SELFTEST)
     /* Arm B of docs/design/meta-cache-merkle.md: an interior node is trusted only
      * when it verifies against the path to the CURRENT root. Three boots on one

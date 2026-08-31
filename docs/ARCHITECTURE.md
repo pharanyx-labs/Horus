@@ -1041,6 +1041,11 @@ the ring-3 FS server never sees a key.
   `BLOCKS_PER_DISK`. Only fixed-size arrays may be sized from the latter.
 - Backing store is either an ATA disk or a RAM vdisk reserved in the physical pool. A block
   device accepts only blocks it has memory for (**S64**).
+- `storage_fsck_pass` reclaims blocks the bitmap marks allocated but no live inode references,
+  and its reference walk descends **every** level of the mapping (**S67**). Until 2026-08-31 it
+  stopped at single-indirect, so a live file's double-indirect blocks were freed at every
+  unlock — and read back correctly until the allocator collided with them, which is why nothing
+  caught it.
 
 Authority is one capability, checked in one place: the dispatch table requires a
 `CAP_ENCRYPTED_STORAGE` carrying `READ|WRITE` at `CAPSLOT_AUDIT` (slot 7) before the handler

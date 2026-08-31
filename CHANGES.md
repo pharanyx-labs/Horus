@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 128 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 129 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,23 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Fixed
+
+- **`fsck` freed the blocks of live files** (**S67**). `storage_fsck_pass` reclaims data blocks
+  the bitmap marks allocated but no live inode references — the repair for a crash between
+  allocating a block and linking it. It built that reference set from `direct[]` and the
+  single-indirect block **and stopped**, never walking `double_indirect`, so every block
+  reachable only through the double-indirect tree, and the pointer blocks under it, were marked
+  free **at every unlock** and handed to the next caller that allocated. Reachable by any file
+  over 12 + `PTRS_PER_BLOCK` blocks — 2.048 MiB at 4 KiB, and **38 KiB before the block size
+  was raised**, so it was reachable by ordinary files for most of this project's life. Nothing
+  caught it because the file keeps reading correctly until the allocator collides with it:
+  `smoke-fs-large` writes a double-indirect file but never mounts the volume again, and
+  `smoke-fs-persist` re-mounts but writes a small one. The comment above the walk said
+  "direct/single-indirect pointers" — an accurate description of incomplete code, which is why
+  it read as deliberate. The walk now descends every level, with per-level static buffers rather
+  than 4 KiB stack frames (three nested would be 12 KiB against a 16 KiB BSP stack).
 
 ### Changed
 

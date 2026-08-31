@@ -78,6 +78,17 @@ exempt:
     the arm rather than being credited with reproducing the defect.
   smoke-merkle-parent-bind-control: >
     Same script, same shape, same positive boot-3 marker as the arm above.
+  smoke-fsck-refs: >
+    Two written-out boots on one image, each asserting its own REQUIRE_MARKER
+    with a FAIL_MARKER set, so a boot that died fails the target rather than
+    being read as the property holding. Boot 1 additionally asserts POSITIVELY
+    that the file it wrote reached the double-indirect tree, against the inode --
+    a run whose working set stayed in the single-indirect region would exercise
+    the path the defect does not touch and pass while testing nothing.
+  smoke-fsck-refs-control: >
+    Same shape; boot 2 requires the counted FAIL marker ("fsck freed N of M
+    blocks of a live file"), so a dead boot produces no marker and the arm
+    reddens rather than being credited with reproducing the defect.
   smoke-console-smp-stress: >
     tools/stress_boot.sh asserts EVERY run's exit status, classifies each
     failure as having tripped FAIL_MARKER or having died some other way, prints

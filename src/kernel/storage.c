@@ -1489,75 +1489,6 @@ static struct block_device g_ata_bd = {
     .private = 0,
 };
 
-#ifdef MERKLE_SELFTEST
-static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
-                                   uint64_t logical_block, int allocate);
-/* ---- Arm B's harness (docs/design/meta-cache-merkle.md §3) ------------------
- *
- * The property: an interior node is trusted only when it verifies against the
- * path to the CURRENT root. A node that was valid at an earlier time is not
- * valid now.
- *
- * WHAT MAKES THE ARM WORTH ANYTHING is that the replayed bytes are
- * INDEPENDENTLY VALID. If the harness replayed garbage, or a node whose own hash
- * did not check out, the refusal would come from the hash and the run would have
- * tested nothing about the tree -- a set of independent MACs would pass it too.
- * So the harness restores a genuine past state of this volume: a metadata block
- * AND the level-0 node that recorded it, both snapshotted while they were
- * current and correct. Nothing is forged; the only thing wrong with them is that
- * they are old.
- *
- * The tampering is done by the HOST between boots (`cp` and `dd` in the
- * Makefile), not by the kernel, because that is what a physical attacker with
- * the disk actually does. The kernel's only jobs are to say which two blocks to
- * snapshot and to carry a phase counter across the reboots.
- *
- * THE PHASE COUNTER lives in the block one past the end of the volume. The image
- * is deliberately one block longer than the device, so this is storage the
- * filesystem can never reach and the harness never has to reserve anything in a
- * layout that ships. It also means the phase survives a tamper that rewinds
- * filesystem state, which a phase file would not. */
-
-/* Physical block backing (ino, block), so the harness can name the metadata
- * block that describes it. Selftest builds only: it exposes the allocator's
- * choices, which nothing in a shipping kernel has any business asking. */
-uint64_t storage_test_phys_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block)
-{
-    struct on_disk_inode inode;
-    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return 0;
-    return get_physical_block(mfs, &inode, block, 0);
-}
-
-/* The two disk blocks that together are a consistent past state of one
- * metadata block: the block itself, and the level-0 node that records its hash. */
-void storage_test_merkle_targets(struct mounted_fs *mfs, uint64_t phys,
-                                 uint64_t *meta_block_out, uint64_t *node_block_out)
-{
-    uint64_t meta_blk = phys / META_ENTRIES_PER_BLOCK;
-    *meta_block_out = mfs->sb.meta_start + meta_blk;
-    *node_block_out = merkle_level_base(&mfs->sb, 0) + meta_blk / MERKLE_FANOUT;
-}
-
-/* The harness's phase counter, in the block one past the volume. raw_block_*
- * rather than do_block_*: this is outside the filesystem entirely and must never
- * be staged into a journal transaction that describes it. */
-uint32_t storage_test_scratch_get(void)
-{
-    static uint8_t buf[BLOCK_SIZE];
-    if (raw_block_read((uint64_t)BLOCKS_PER_DISK, buf) != 0) return 0xFFFFFFFFu;
-    if (buf[0] != 'P' || buf[1] != 'H') return 0;    /* a fresh image: phase 0 */
-    return buf[2];
-}
-
-void storage_test_scratch_set(uint32_t phase)
-{
-    static uint8_t buf[BLOCK_SIZE];
-    my_memset(buf, 0, BLOCK_SIZE);
-    buf[0] = 'P'; buf[1] = 'H'; buf[2] = (uint8_t)phase;
-    raw_block_write((uint64_t)BLOCKS_PER_DISK, buf);
-    raw_block_flush();
-}
-#endif /* MERKLE_SELFTEST */
 
 #ifdef VDISK_BOUND_SELFTEST
 /* A block device may not accept a block it has no memory for (SECURITY.md S64).
@@ -1719,6 +1650,18 @@ static int64_t bitmap_find_free(const uint8_t *bitmap, uint64_t max_bits) {
  * blocks [n*BITS_PER_BITMAP_BLOCK, (n+1)*BITS_PER_BITMAP_BLOCK). */
 #define BITS_PER_BITMAP_BLOCK   ((uint64_t)BLOCK_SIZE * 8)
 
+/* Pointers in one indirect block. Defined here rather than beside
+ * get_physical_block because storage_fsck_pass needs it several hundred lines
+ * earlier, and a second open-coded BLOCK_SIZE/sizeof(uint64_t) is how one
+ * constant becomes eight places that each believe it. */
+#define PTRS_PER_BLOCK   (BLOCK_SIZE / (uint64_t)sizeof(uint64_t))
+
+/* Levels of pointer block the reference walk may descend: single-indirect,
+ * double-indirect, and the triple-indirect level stage 4 adds. Sizes the walk's
+ * per-level buffers, so it is a bound on recursion depth and not merely
+ * documentation. */
+#define FSCK_MAX_DEPTH   3
+
 static int read_block_bitmap_n(const struct fs_superblock *sb, uint64_t bm_idx, uint8_t *buf) {
     return do_block_read(sb->block_bitmap_start + bm_idx, buf);
 }
@@ -1802,6 +1745,99 @@ int storage_write_inode(struct block_device *bd, struct fs_superblock *sb,
     my_memcpy(buf + offset, inode, sizeof(struct on_disk_inode));
     return do_block_write(block, buf);
 }
+
+/* Test hooks shared by the storage witnesses. Guarded by the union of the
+ * selftests that need them rather than by one of their names, so a second
+ * witness does not have to depend on the first one's flag being set. */
+#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST)
+#define STORAGE_TEST_HOOKS 1
+#endif
+
+#ifdef STORAGE_TEST_HOOKS
+static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
+                                   uint64_t logical_block, int allocate);
+/* ---- Arm B's harness (docs/design/meta-cache-merkle.md §3) ------------------
+ *
+ * The property: an interior node is trusted only when it verifies against the
+ * path to the CURRENT root. A node that was valid at an earlier time is not
+ * valid now.
+ *
+ * WHAT MAKES THE ARM WORTH ANYTHING is that the replayed bytes are
+ * INDEPENDENTLY VALID. If the harness replayed garbage, or a node whose own hash
+ * did not check out, the refusal would come from the hash and the run would have
+ * tested nothing about the tree -- a set of independent MACs would pass it too.
+ * So the harness restores a genuine past state of this volume: a metadata block
+ * AND the level-0 node that recorded it, both snapshotted while they were
+ * current and correct. Nothing is forged; the only thing wrong with them is that
+ * they are old.
+ *
+ * The tampering is done by the HOST between boots (`cp` and `dd` in the
+ * Makefile), not by the kernel, because that is what a physical attacker with
+ * the disk actually does. The kernel's only jobs are to say which two blocks to
+ * snapshot and to carry a phase counter across the reboots.
+ *
+ * THE PHASE COUNTER lives in the block one past the end of the volume. The image
+ * is deliberately one block longer than the device, so this is storage the
+ * filesystem can never reach and the harness never has to reserve anything in a
+ * layout that ships. It also means the phase survives a tamper that rewinds
+ * filesystem state, which a phase file would not. */
+
+/* Physical block backing (ino, block), so the harness can name the metadata
+ * block that describes it. Selftest builds only: it exposes the allocator's
+ * choices, which nothing in a shipping kernel has any business asking. */
+uint64_t storage_test_phys_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block)
+{
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return 0;
+    return get_physical_block(mfs, &inode, block, 0);
+}
+
+/* The two disk blocks that together are a consistent past state of one
+ * metadata block: the block itself, and the level-0 node that records its hash. */
+void storage_test_merkle_targets(struct mounted_fs *mfs, uint64_t phys,
+                                 uint64_t *meta_block_out, uint64_t *node_block_out)
+{
+    uint64_t meta_blk = phys / META_ENTRIES_PER_BLOCK;
+    *meta_block_out = mfs->sb.meta_start + meta_blk;
+    *node_block_out = merkle_level_base(&mfs->sb, 0) + meta_blk / MERKLE_FANOUT;
+}
+
+/* The harness's phase counter, in the block one past the volume. raw_block_*
+ * rather than do_block_*: this is outside the filesystem entirely and must never
+ * be staged into a journal transaction that describes it. */
+uint32_t storage_test_scratch_get(void)
+{
+    static uint8_t buf[BLOCK_SIZE];
+    if (raw_block_read((uint64_t)BLOCKS_PER_DISK, buf) != 0) return 0xFFFFFFFFu;
+    if (buf[0] != 'P' || buf[1] != 'H') return 0;    /* a fresh image: phase 0 */
+    return buf[2];
+}
+
+void storage_test_scratch_set(uint32_t phase)
+{
+    static uint8_t buf[BLOCK_SIZE];
+    my_memset(buf, 0, BLOCK_SIZE);
+    buf[0] = 'P'; buf[1] = 'H'; buf[2] = (uint8_t)phase;
+    raw_block_write((uint64_t)BLOCKS_PER_DISK, buf);
+    raw_block_flush();
+}
+
+/* Is this physical block marked allocated in the data bitmap? The fsck witness
+ * asks the bitmap DIRECTLY rather than inferring from a later allocation,
+ * because a freed-but-still-referenced block reads back perfectly well until
+ * something else is given it -- so a read-back test would pass over the defect
+ * and only fail once the allocator happened to collide. */
+int storage_test_block_allocated(struct mounted_fs *mfs, uint64_t phys)
+{
+    if (phys < mfs->sb.data_start) return -1;
+    uint64_t rel = phys - mfs->sb.data_start;
+    if (rel >= mfs->sb.block_count) return -1;
+    static uint8_t bm[BLOCK_SIZE];
+    if (do_block_read(mfs->sb.block_bitmap_start + rel / BITS_PER_BITMAP_BLOCK, bm) != 0)
+        return -1;
+    return bitmap_test(bm, rel % BITS_PER_BITMAP_BLOCK) ? 1 : 0;
+}
+#endif /* STORAGE_TEST_HOOKS */
 
 int storage_dir_lookup(struct mounted_fs *mfs, uint64_t dir_ino, const char *name, uint64_t *out_ino) {
     struct on_disk_inode dir;
@@ -2619,6 +2655,57 @@ void storage_tpm_kek_selftest(void)
  * Reads one inode table block per iteration (INODES_PER_BLOCK inodes each) to
  * avoid re-reading the same sector for every inode.  Writes the updated bitmap
  * only when at least one slot was reclaimed (dirty flag). */
+/* ---- the reference walk (SECURITY.md S67) ------------------------------------
+ *
+ * fsck does not free the blocks of a live file.
+ *
+ * WHAT WAS WRONG WITH IT. It marked direct[0..11] and the single-indirect block
+ * and its entries, and stopped -- so every block reachable only through
+ * `double_indirect`, and the pointer blocks under it, was left UNMARKED and the
+ * sweep below cleared its bitmap bit. A live file larger than 12 + PTRS_PER_BLOCK
+ * blocks (2.048 MiB at 4 KiB; 38 KiB before the block size was raised) had its
+ * blocks marked free at every unlock, and the allocator then handed them to the
+ * next file that asked. The file kept reading correctly until that happened,
+ * which is why nothing caught it: `smoke-fs-large` writes a double-indirect file
+ * but never mounts the volume again, and `smoke-fs-persist` re-mounts but writes
+ * a small one.
+ *
+ * The comment above it said "direct/single-indirect pointers", which is an
+ * accurate description of incomplete code and therefore reads as deliberate.
+ *
+ * PER-LEVEL STATIC BUFFERS, NOT RECURSION ON THE STACK. Each level needs a
+ * BLOCK_SIZE buffer, and three of them nested is 12 KiB against a 16 KiB BSP
+ * kernel stack -- the stack that multiboot.S sizes and that #270 already
+ * overflowed once. The buffers are indexed by depth; fsck is not reentrant. */
+static uint8_t g_fsck_ptr_buf[FSCK_MAX_DEPTH][BLOCK_SIZE];
+
+static void fsck_mark(uint8_t *referenced, uint64_t p,
+                      uint64_t data_start, uint64_t block_count)
+{
+    if (p >= data_start && p < data_start + block_count)
+        bitmap_set(referenced, p - data_start);
+}
+
+/* Mark a pointer block and everything it names. `depth` counts the levels of
+ * pointer block BELOW this one: 0 means its entries are data blocks. */
+static void fsck_mark_tree(uint8_t *referenced, uint64_t ptr_blk, unsigned depth,
+                           uint64_t data_start, uint64_t block_count)
+{
+    if (ptr_blk < data_start || ptr_blk >= data_start + block_count) return;
+    if (depth >= FSCK_MAX_DEPTH) return;             /* cannot happen; fail closed */
+    bitmap_set(referenced, ptr_blk - data_start);    /* the pointer block itself */
+
+    uint8_t *blk = g_fsck_ptr_buf[depth];
+    if (do_block_read(ptr_blk, blk) != 0) return;
+    uint64_t *ptrs = (uint64_t *)blk;
+    for (unsigned k = 0; k < PTRS_PER_BLOCK; k++) {
+        if (!ptrs[k]) continue;
+        if (depth == 0) fsck_mark(referenced, ptrs[k], data_start, block_count);
+        else            fsck_mark_tree(referenced, ptrs[k], depth - 1,
+                                       data_start, block_count);
+    }
+}
+
 static void storage_fsck_pass(struct mounted_fs *mfs)
 {
     uint8_t inode_bitmap[BLOCK_SIZE];
@@ -2660,24 +2747,18 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
                 continue;
             }
 
-            /* Live inode (including root): mark every data block it references. */
-            for (int d = 0; d < 12; d++) {
-                uint64_t p = nd->direct[d];
-                if (p >= data_start && p < data_start + block_count)
-                    bitmap_set(referenced, p - data_start);
-            }
-            if (nd->indirect >= data_start && nd->indirect < data_start + block_count) {
-                bitmap_set(referenced, nd->indirect - data_start);
-                uint8_t ib[BLOCK_SIZE];
-                if (do_block_read(nd->indirect, ib) == 0) {
-                    uint64_t *ptrs = (uint64_t *)ib;
-                    for (unsigned k = 0; k < BLOCK_SIZE / sizeof(uint64_t); k++) {
-                        uint64_t p = ptrs[k];
-                        if (p >= data_start && p < data_start + block_count)
-                            bitmap_set(referenced, p - data_start);
-                    }
-                }
-            }
+            /* Live inode (including root): mark every data block it references,
+             * through EVERY level of the mapping. A level missed here is a live
+             * file's blocks handed to the next caller that allocates. */
+            for (int d = 0; d < 12; d++)
+                fsck_mark(referenced, nd->direct[d], data_start, block_count);
+            if (nd->indirect)
+                fsck_mark_tree(referenced, nd->indirect, 0, data_start, block_count);
+#ifndef FSCK_SHALLOW_REFS
+            if (nd->double_indirect)
+                fsck_mark_tree(referenced, nd->double_indirect, 1,
+                               data_start, block_count);
+#endif
         }
     }
 
@@ -3128,7 +3209,6 @@ int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
  * is 64 — NOT 1024. (An earlier single-indirect implementation used 1024 here,
  * which indexed a 512-byte stack buffer out of bounds for any file past block
  * 12+64; it was never hit because no test wrote a file that large.) */
-#define PTRS_PER_BLOCK   (BLOCK_SIZE / (uint64_t)sizeof(uint64_t))
 
 /* Fetch (and, when allocate!=0, lazily allocate) the physical block backing an
  * inode's logical block. Layout: 12 direct, then one single-indirect block

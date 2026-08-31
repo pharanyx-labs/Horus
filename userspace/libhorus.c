@@ -58,6 +58,29 @@ void kput(const char *s) {
     sys_write(1, s, uslen(s));
 }
 
+/* Emit a two-part marker as ONE write.
+ *
+ * The serial console is shared with every other ring-3 task, so a marker printed
+ * as `kput("X: FAIL "); kput(detail);` can be split by another task's output
+ * landing between the two calls. A gate asserting the joined string then times
+ * out looking for something that WAS printed, in two pieces. That happened to
+ * smoke-init-provision-control on 2026-08-31 after three days green
+ * (docs/LIMITATIONS.md 2.6a); it is a property of the console, not of any one
+ * self-test, so the join belongs here rather than being re-implemented in each.
+ *
+ * Bounded and truncating: a marker longer than the buffer is cut rather than
+ * overflowing, because a truncated marker fails its gate loudly while a smashed
+ * stack does something else. */
+void kput_marker(const char *prefix, const char *detail) {
+    char line[192];
+    unsigned n = 0;
+    for (const char *c = prefix; c && *c && n < sizeof(line) - 2; c++) line[n++] = *c;
+    for (const char *c = detail; c && *c && n < sizeof(line) - 2; c++) line[n++] = *c;
+    line[n++] = '\n';
+    line[n]   = 0;
+    kput(line);
+}
+
 void kputln(const char *s) {
     /* Two writes rather than one buffered line. A buffer here would need a
      * bound, and the callers' strings are already bounded by their own

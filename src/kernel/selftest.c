@@ -112,6 +112,21 @@ void spawn_owner_selftest(void) {
  * consume; every one after it must be free-neutral. Asserting on the pool count
  * rather than on the code path means a reclaim that frees only *some* of the
  * tree still fails — which a "did we call free" check would not catch. */
+/* One write. The prefix, the name and the reason used to be three print() calls
+ * on a console shared with every ring-3 task, so another task's output could
+ * split the string a gate asserts on -- see docs/LIMITATIONS.md 2.6a. */
+static void aspace_fail(const char *name, const char *why)
+{
+    char line[160];
+    const char *pfx = "ASPACE_SELFTEST: FAIL ";
+    unsigned n = 0;
+    for (const char *c = pfx;  *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    for (const char *c = name; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    for (const char *c = why;  *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    line[n] = 0;
+    print(line);
+}
+
 void aspace_selftest(void) {
     const int slot = g_max_tasks - 1;   /* never spawned into during a normal boot */
 
@@ -239,18 +254,15 @@ void aspace_selftest(void) {
     for (unsigned i = 0; i < sizeof(reach) / sizeof(reach[0]); i++) {
         int rc = user_map_fresh_page_for_test(cr3, reach[i].va, uflags);
         if ((rc == 0) != (reach[i].want_ok != 0)) {
-            print("ASPACE_SELFTEST: FAIL ");
-            print(reach[i].name);
-            print(reach[i].want_ok ? " should map but did not\n"
-                                   : " mapped but must be refused\n");
+            aspace_fail(reach[i].name,
+                        reach[i].want_ok ? " should map but did not\n"
+                                         : " mapped but must be refused\n");
             return;
         }
         /* A map that reported success must actually resolve — the page-table
          * path is what is under test, so take the CPU's own view of it. */
         if (reach[i].want_ok && !(user_lookup_pte(cr3, reach[i].va) & 1)) {
-            print("ASPACE_SELFTEST: FAIL ");
-            print(reach[i].name);
-            print(" mapped but does not resolve\n");
+            aspace_fail(reach[i].name, " mapped but does not resolve\n");
             return;
         }
     }

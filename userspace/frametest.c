@@ -88,9 +88,7 @@ static int failures;
 
 static void check(int ok, const char *what) {
     if (ok) { checks++; return; }
-    kput("FRAMETEST: FAIL ");
-    kput(what);
-    kput("\n");
+    kput_marker("FRAMETEST: FAIL ", what);
     failures++;
 }
 

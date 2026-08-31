@@ -49,9 +49,7 @@ static int failures;
 
 static void check(int ok, const char *what) {
     if (ok) { checks++; return; }
-    kput("PASSWDPROBE: FAIL ");
-    kput(what);
-    kput("\n");
+    kput_marker("PASSWDPROBE: FAIL ", what);
     failures++;
 }
 

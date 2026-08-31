@@ -37,9 +37,7 @@
 
 
 static void fail(const char *what) {
-    kput("RECVBLOCK_SELFTEST: FAIL ");
-    kput(what);
-    kput("\n");
+    kput_marker("RECVBLOCK_SELFTEST: FAIL ", what);
     sys_exit();
 }
 

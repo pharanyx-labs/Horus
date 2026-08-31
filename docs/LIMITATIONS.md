@@ -1006,7 +1006,7 @@ by slot index, because finding a slot by uid would require that user's password;
 active slot cannot be removed, because a volume with no slots is unreachable rather than deleted.
 Witness `make smoke-keyslots` (two boots on one image), falsified by `KEYSLOT_REMOVE_NOOP=1`.
 
-### 2.6a Self-test markers are emitted in two writes, on a shared console
+### 2.6a ~~Self-test markers are emitted in two writes, on a shared console~~ (**FIXED 2026-08-31**)
 
 *Added 2026-08-31.*
 
@@ -1018,12 +1018,19 @@ hypothetical: `smoke-init-provision-control` failed on 2026-08-31 with
 and the gate timed out looking for a contiguous `stopped at step 1` that had been emitted in two
 pieces. The arm had passed since it was written, on timing luck.
 
-`userspace/init.c` and the keyslot self-test now emit their markers in one write. **Eight remain**
-(`libhorustest.c`, `proctest.c`, `passwdprobe.c`, `frametest.c`, `framepeer.c`, `vfstest.c`,
-`recvblocksrv.c`, and two in `src/kernel/selftest.c`'s aspace test). They are racy in the same way
-and have not yet been observed failing, which is a statement about how busy the console is when
-each runs rather than about their correctness. Fixing them is mechanical and belongs in one focused
-change, not scattered through unrelated work.
+**All ten are now single writes.** Six of the seven userspace cases share one `kput_marker()` in
+`libhorus`, because the hazard is a property of the console rather than of any individual
+self-test; the kernel's aspace test and `proctest` join locally, having no access to that helper.
+Verified by re-running the sweep that found them (none remain) and by re-running every gate whose
+marker changed: `smoke-libhorus`, `smoke-passwd-probe`, `smoke-vfs`, `smoke-frame`,
+`smoke-recvblock`, `smoke-proc`, `smoke-aspace`.
+
+**No gate reproduces this.** A witness would have to interleave another task's output between two
+writes on demand, which means either injecting a scheduler yield into the print path or
+constructing a second task that prints at exactly the wrong moment. The nine unfixed ones were
+green for months, so a control arm built this way would have to force what only luck produced.
+The property is enforced structurally instead: markers are now built as one string, and there is
+one obvious place to write that is not.
 
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 

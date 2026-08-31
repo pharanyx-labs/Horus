@@ -33,9 +33,7 @@ static int failures;
 
 static void check(int ok, const char *what) {
     if (ok) { checks++; return; }
-    kput("VFSTEST: FAIL ");
-    kput(what);
-    kput("\n");
+    kput_marker("VFSTEST: FAIL ", what);
     failures++;
 }
 

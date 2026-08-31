@@ -84,6 +84,9 @@ void ustrncpy(char *d, const char *s, unsigned n);
 void kput(const char *s);
 
 /* kput followed by a newline, as a single logical line. */
+/* Emit `prefix` and `detail` as one write, newline-terminated. Use this for any
+ * marker a gate asserts on as a single string -- see the definition. */
+void kput_marker(const char *prefix, const char *detail);
 void kputln(const char *s);
 
 /* Write a signed decimal. Handles INT_MIN by accumulating into unsigned, which

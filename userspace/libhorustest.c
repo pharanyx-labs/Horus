@@ -35,9 +35,7 @@ static int failures;
 
 static void check(int ok, const char *what) {
     if (ok) return;
-    kput("LIBHORUS_SELFTEST: FAIL ");
-    kput(what);
-    kput("\n");
+    kput_marker("LIBHORUS_SELFTEST: FAIL ", what);
     failures++;
 }
 

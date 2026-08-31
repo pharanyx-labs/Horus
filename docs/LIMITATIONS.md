@@ -1778,6 +1778,27 @@ blocks until woken or killed.
 
 ---
 
+### 3.5 The block allocator rescans the bitmap from the start on every allocation
+
+`storage_alloc_block` reads bitmap block 0, then 1, then 2, until it finds a clear bit. On a
+mostly-empty volume that is one block read. On a nearly-full 16 GiB volume the data bitmap spans
+**128 blocks**, so an allocation near the end of a fill can read all of them — and a sequential
+write allocating N blocks does that N times.
+
+It is O(volume) work on a hot path, and it is the one whole-volume walk the storage work did
+*not* remove. It was invisible at 128 MiB, where the bitmap is one block and the loop reads it
+once. The fix is a rotating start hint: begin the scan where the last allocation succeeded and
+wrap, which cannot be wrong (the hint is only a starting offset and the scan still covers
+everything) and turns a sequential fill back into one read per bitmap block.
+
+**It is written down rather than fixed because it is unmeasured.** Nothing in this tree fills a
+16 GiB volume, so there is no number here to improve on and no gate that would notice a
+regression — and this project's own rule is that a change justified by an argument rather than a
+measurement is how a gate ends up testing something other than what its name says. The work is
+the workload that makes it visible, and then the hint.
+
+---
+
 ## 4. Functionality that does not exist
 
 - **Networking.** No drivers, no stack, no sockets.

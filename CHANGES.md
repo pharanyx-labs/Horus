@@ -57,6 +57,12 @@ in this file.
   bitmap spans blocks — a v11 volume read as v12 would find its inode table where its block
   bitmap is.
 
+  *Recorded, not fixed:* `storage_alloc_block` rescans the data bitmap from block 0 on every
+  allocation, which at a nearly-full 16 GiB volume is up to 128 block reads per allocation. It
+  was invisible at 128 MiB, where the bitmap is one block. `docs/LIMITATIONS.md` 3.5 says what
+  the fix is and why it is not in this change: nothing in this tree fills a 16 GiB volume, so
+  there is no measurement to improve on and no gate that would notice a regression.
+
 ### Added
 
 - **`make smoke-fs-16g`** — the end-to-end gate for the storage track: a 16 GiB volume formats,

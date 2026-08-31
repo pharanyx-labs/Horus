@@ -56,6 +56,27 @@ others: an #elif arm inserted inside another branch, so it would only have run u
 LIBHORUS_SELFTEST; a first-occurrence string replace that appended tuitest.bin to
 SHLIBC_SELFTEST_DEP instead of PIE_TEST_BINS; and two #ifdef guards that needed widening.
 
+**CodeQL found a high-severity bug in it, and the honest response was not to invent a witness.**
+`tui_field` read `s[i] && i < width` -- dereference, then bound -- so a caller passing a
+non-terminated buffer of exactly `width` bytes, which is what a fixed form field IS, had s[width]
+read one byte past the end before the condition short-circuited. In a library whose header claims
+safety by construction, the one place it reads caller memory had the test on the wrong side of the
+`&&`.
+
+The self-test could not have caught it: every string it passes is NUL-terminated well inside the
+width, so the over-read never happened. And had it happened, nothing would have shown -- the byte
+fed only the loop condition, so the rendered output is identical either way. It is a pure
+memory-safety fault, invisible without a sanitiser. So no control arm was manufactured for it. A
+check now pins the BEHAVIOUR (exactly `width` cells from a non-terminated buffer) so a later
+change cannot alter the semantics unnoticed, and the test says in its own comment that this does
+not detect the over-read. The gate for that class is CodeQL, which runs on every pull request and
+is what caught it. Claiming otherwise would be a test that cannot fail with a security label on
+it.
+
+Twice in one day a tool caught something the testing structurally could not: review found the
+un-journalled user-table write, and CodeQL found this. Both were in code written that hour and
+believed correct at the time.
+
 **And the first run failed while every check passed.** TUI_SELFTEST: begin reached serial and
 nothing followed. console_server owns the hardware in that build, so a ring-3 kput goes to a
 kernel console that is no longer the wire: the markers were written and inaudible. consoletest has

@@ -108,6 +108,26 @@ void _start(void)
     tui_field(6, 0, 5, "ab", TUI_A_NORMAL);
     check(tui_test_cell(6, 2) == ' ', "a short field did not pad");
 
+    /* A buffer of exactly `width` bytes with NO terminator -- a fixed field in a
+     * form, which is what this function is for. CodeQL flagged the original
+     * `s[i] && i < width` here as cpp/offset-use-before-range-check: it read
+     * s[width] before the bound short-circuited.
+     *
+     * THIS CHECK DOES NOT DETECT THAT OVER-READ, and saying so matters. The byte
+     * read past the end only fed the loop condition, so the rendered output was
+     * identical either way; the fault was memory safety, invisible without a
+     * sanitiser. What this pins is the BEHAVIOUR -- exactly `width` cells from a
+     * non-terminated buffer -- so a later change cannot alter the semantics
+     * unnoticed. The gate for the over-read itself is CodeQL, which runs on
+     * every pull request and is what caught it. */
+    {
+        static const char exact[5] = { 'v', 'w', 'x', 'y', 'z' };   /* no NUL */
+        tui_field(7, 0, 5, exact, TUI_A_NORMAL);
+        check(tui_test_cell(7, 0) == 'v', "a non-terminated field lost its first cell");
+        check(tui_test_cell(7, 4) == 'z', "a non-terminated field lost its last cell");
+        check(tui_test_cell(7, 5) == ' ', "a non-terminated field overran its width");
+    }
+
     /* --- 6. the key decoder ---------------------------------------------
      * Fed exact bytes rather than whatever a terminal sends, so the arrows and
      * the truncation cases are deterministic. */

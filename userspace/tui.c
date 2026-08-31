@@ -211,14 +211,26 @@ void tui_putc(int row, int col, char ch, uint8_t attr)
 void tui_text(int row, int col, const char *s, uint8_t attr)
 {
     if (!s) return;
-    for (int i = 0; s[i]; i++) tui_putc(row, col + i, s[i], attr);
+    /* Bounded by the screen as well as by the terminator: tui_putc discards
+     * anything off-screen anyway, so a runaway string can only waste time --
+     * but a loop with two ways to stop is one fewer thing to reason about. */
+    for (int i = 0; i < CON_COLS && s[i]; i++) tui_putc(row, col + i, s[i], attr);
 }
 
 void tui_field(int row, int col, int width, const char *s, uint8_t attr)
 {
     if (width <= 0) return;
     int i = 0;
-    if (s) for (; s[i] && i < width; i++) tui_putc(row, col + i, s[i], attr);
+    /* THE BOUND COMES FIRST, and the order is the whole point.
+     *
+     * This read `s[i] && i < width`, which dereferences before it checks --
+     * so a caller passing a buffer of exactly `width` bytes with no terminator
+     * (a fixed field in a form, say, which is precisely what this function is
+     * for) had s[width] read one byte past the end before the bound
+     * short-circuited. CodeQL caught it as cpp/offset-use-before-range-check on
+     * the pull request that introduced it; nothing in the self-test would have,
+     * because every string it passes is NUL-terminated well inside the width. */
+    if (s) for (; i < width && s[i]; i++) tui_putc(row, col + i, s[i], attr);
     for (; i < width; i++) tui_putc(row, col + i, ' ', attr);
 }
 

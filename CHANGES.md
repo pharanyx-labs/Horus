@@ -33,6 +33,13 @@ in this file.
   Witnessed by `make smoke-tui`, which asserts what a screen **cannot show** — the byte count
   handed to the console — and falsified two ways: `TUI_NO_DAMAGE_DIFF=1` (a repaint draws the same
   picture; only the count differs) and `TUI_CLAMP_OFF=1` (the memory-safety half).
+  **CodeQL found a high-severity defect in the first version** and is credited rather than
+  quietly fixed: `tui_field` read `s[i] && i < width`, dereferencing before the bound, so a
+  non-terminated buffer of exactly `width` bytes — a fixed form field, which is what the function
+  is for — was read one byte past its end. The self-test could not have caught it (every string it
+  passes is terminated well inside the width) and neither could any runtime check, since the byte
+  fed only the loop condition and the rendered output was identical. A behaviour check now pins the
+  semantics; the gate for the over-read itself is CodeQL, on every pull request.
 
 ### Fixed
 

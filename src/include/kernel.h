@@ -12,7 +12,10 @@ typedef uint64_t paddr_t;
 typedef uint64_t vaddr_t;
 
 
-#define BLOCK_SIZE              512
+#include "block_size.h"
+/* The one definition lives in include/block_size.h, which ring 3 includes too:
+ * SYS_FBLOCK_READ returns a whole block, so this size is part of the ABI. */
+#define BLOCK_SIZE              HORUS_BLOCK_SIZE
 
 /* Key slots: how many passwords may open one volume, and the region they live
  * in. Eight is a prototype's answer, not a protocol limit -- the cost of a slot
@@ -34,8 +37,15 @@ typedef uint64_t vaddr_t;
  * (~11 x ~450 KiB). The RAM vdisk's backing store moved out of .bss into a
  * physical-pool reservation (see VDISK_BYTES) so the volume can be this large
  * without blowing the __bss_end < USER_PHYS_BASE (16 MiB) ceiling; the per-block
- * crypto-meta array (g_block_meta) is ~1 MiB of .bss, and its rollback MAC is now
- * hierarchical so the per-write cost does not scale with the volume. */
+ * crypto-meta array (g_block_meta) is ~1 MiB of .bss.
+ *
+ * ITS ROLLBACK MAC IS TWO-LEVEL, NOT LOGARITHMIC, and this comment used to say
+ * "hierarchical so the per-write cost does not scale with the volume". It does
+ * scale: the top level is HMAC over META_BLOCKS_COUNT * 32 bytes, which is
+ * proportional to the volume. Two levels made the constant ~16x smaller than
+ * re-HMACing the whole array, which is what the change was worth -- but at a
+ * 16 GiB volume the top MAC alone would hash 1 MiB on every metadata write.
+ * A real Merkle tree is what that needs, and it is not here yet. */
 #define BLOCKS_PER_DISK         32768
 #define PAGE_SIZE               4096
 
@@ -118,7 +128,13 @@ extern uint8_t *loader_staging;                               /* set at boot -> 
  * pool, right after the staging region, and reached through PHYS_KVA. Reserved
  * unconditionally (a fixed pool location is simplest); an ATA boot just never
  * touches it. Costs pool frames, not .bss. */
-#define VDISK_BYTES             ((uint64_t)BLOCKS_PER_DISK * BLOCK_SIZE)
+/* The RAM vdisk is a per-boot scratch volume, so it is sized independently of
+ * BLOCKS_PER_DISK -- which bounds the LARGEST volume the crypto-metadata array
+ * can describe, not the size of this one. They were the same expression while
+ * both were 16 MiB; raising BLOCK_SIZE to 4 KiB would otherwise have made the
+ * RAM disk 128 MiB of physical-pool reservation as a side effect. */
+#define VDISK_BLOCKS            4096
+#define VDISK_BYTES             ((uint64_t)VDISK_BLOCKS * BLOCK_SIZE)
 #define VDISK_PAGES             (VDISK_BYTES / PAGE_SIZE)
 extern uint8_t *g_vdisk_backing;                             /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES) */
 
@@ -293,7 +309,28 @@ extern uint8_t stack_top[];
  * 1 MiB; only .bss extends memsz past that), and it bounds a crafted ELF header
  * claiming a huge p_memsz from asking the premap to allocate the whole pool. */
 #define USER_IMAGE_MAX_PAGES     4096
-#define KERNEL_STACK_SIZE 32768
+/* 64 KiB, raised from 32 KiB on 2026-08-31 alongside the 4 KiB block size.
+ *
+ * MEASURED, NOT GUESSED. Every filesystem function holding a `uint8_t
+ * buf[BLOCK_SIZE]` local grew its frame eightfold. From -fstack-usage on
+ * storage.c: the largest single frame went from 2,048 to 12,464 bytes
+ * (storage_unlock), and chains compound -- storage_free_inode_blocks (8,512)
+ * calls get_physical_block (8,288), so 16.8 KiB is reachable in two frames
+ * before anything else, on a stack that also takes interrupts. 32 KiB was no
+ * longer a comfortable margin; it was most of one call chain.
+ *
+ * The cheap fixes were rejected. Making those buffers static is a data race:
+ * storage_lock is held around block I/O, not around whole operations like
+ * storage_dir_add, so two CPUs can be inside one concurrently. A buffer pool
+ * adds an allocation discipline and a new failure mode to security-critical
+ * code. Doubling the stack is the smallest reviewable change, and since the
+ * stacks left `.bss` it costs 32 KiB per LIVE task charged to its spawner
+ * rather than 8 MiB of image; the only `.bss` growth is ap_idle_stacks, from
+ * 288 KiB to 544 KiB.
+ *
+ * A guard page still sits below every one of these, so an overflow faults
+ * rather than corrupting a neighbour -- which is the backstop, not the plan. */
+#define KERNEL_STACK_SIZE 65536
 #define MAX_USERS               32
 /* USER_HEAP_HIGH_BASE=1 moves every heap above the 4 GiB line, which is what
  * makes finding [I-2] reachable instead of latent (roadmap 1.5). 8 GiB is chosen

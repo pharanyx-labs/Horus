@@ -3388,7 +3388,7 @@ smoke-e820:
 ifeq ($(STORAGE),ata)
 SMOKE_FS_FLAGS = STORAGE_ATA=1
 SMOKE_FS_ENV   = SMOKE_DISK=horus-fs.img
-SMOKE_FS_PREP  = dd if=/dev/zero of=horus-fs.img bs=512 count=$(BLOCKS_PER_DISK) status=none
+SMOKE_FS_PREP  = dd if=/dev/zero of=horus-fs.img bs=$(FS_BLOCK_SIZE) count=$(BLOCKS_PER_DISK) status=none
 # Sizes the test ATA disk image; MUST match the kernel's volume, so read the
 # authoritative value straight from the C #define rather than duplicating it (a
 # stale copy silently truncates the image below the on-disk layout the kernel
@@ -3429,6 +3429,19 @@ smoke-init-fs:
 # so allow a generous timeout.
 # Same as BLOCKS_PER_DISK above: sized from the kernel's C #define so the two-boot
 # persistent-disk images are never smaller than the volume the kernel formats.
+# The filesystem block size, read from the one header that defines it.
+#
+# AT TOP LEVEL, and that is not incidental. The dd invocations below size an
+# image in FS BLOCKS, so `bs=` must track the block size -- they used a literal
+# 512, which silently made every test image an eighth of its intended size the
+# moment the block size changed (PERSIST_SELFTEST: FAIL create). The first fix
+# put this declaration next to its first user, which happens to sit inside
+# `ifeq ($(STORAGE),ata)`: it then expanded to nothing for every target that does
+# not set STORAGE, and dd failed with "invalid number: ''". Same trap as the
+# USERSPACE_CFLAGS one CLAUDE.md records -- a definition inside another flag's
+# conditional is a definition most of the build cannot see.
+FS_BLOCK_SIZE ?= $(shell grep -oE '#define[[:space:]]+HORUS_BLOCK_SIZE[[:space:]]+[0-9]+' include/block_size.h | grep -oE '[0-9]+')
+
 PERSIST_BLOCKS  ?= $(shell grep -oE '#define[[:space:]]+BLOCKS_PER_DISK[[:space:]]+[0-9]+' src/include/kernel.h | grep -oE '[0-9]+')
 PERSIST_TIMEOUT ?= 300
 .PHONY: smoke-fs-persist
@@ -3436,7 +3449,7 @@ smoke-fs-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=persist.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@dd if=/dev/zero of=persist.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
 	@echo "[persist] boot 1/2 — write sentinel to a fresh encrypted disk"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
 		REQUIRE_MARKER='PERSIST_SELFTEST: WROTE' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
@@ -3472,7 +3485,7 @@ smoke-fs-wal:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@dd if=/dev/zero of=wal.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal] boot 1/2 — commit a write, then crash before applying it"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
 		WAIT_FOR_EXIT=1 \
@@ -3526,7 +3539,7 @@ smoke-fs-wal-flush:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-flush.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@dd if=/dev/zero of=wal-flush.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush] every FLUSH CACHE fails with EIO; the journal must refuse to commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush.img \
 		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
@@ -3543,7 +3556,7 @@ smoke-fs-wal-flush-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-flush-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@dd if=/dev/zero of=wal-flush-control.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush-control] barriers compiled out: the refusal must NOT appear"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush-control.img \
 		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
@@ -3567,7 +3580,7 @@ smoke-fs-wal-order:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-order.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@dd if=/dev/zero of=wal-order.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
 	@rm -f wal-order.trace
 	@echo "[wal-order] tracing IDE commands through one journal commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-order.img \
@@ -3586,7 +3599,7 @@ smoke-fs-wal-order-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=wal-order-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
+	@dd if=/dev/zero of=wal-order-control.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
 	@rm -f wal-order-control.trace
 	@echo "[wal-order-control] barriers compiled out: the ordering check must REJECT this"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-order-control.img \
@@ -6959,7 +6972,7 @@ smoke-keyslots:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=keyslots.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@dd if=/dev/zero of=keyslots.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@echo "[keyslots] boot 1/2 - format with one password, add a second slot"
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: WROTE' FAIL_MARKER='KEYSLOT_SELFTEST: FAIL' \
@@ -6979,7 +6992,7 @@ smoke-keyslots-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=keyslots-c.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@dd if=/dev/zero of=keyslots-c.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots-c.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: WROTE' \
 		tools/smoke_test.sh boot.iso
@@ -7000,7 +7013,7 @@ smoke-users-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=users.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@dd if=/dev/zero of=users.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@echo "[users] boot 1/2 - add an account and set its password"
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
@@ -7020,7 +7033,7 @@ smoke-users-persist-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=users-c.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@dd if=/dev/zero of=users-c.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-c.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' \
 		tools/smoke_test.sh boot.iso
@@ -7038,7 +7051,7 @@ smoke-users-tamper:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
-	@dd if=/dev/zero of=users-t.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@dd if=/dev/zero of=users-t.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-t.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
 		tools/smoke_test.sh boot.iso
@@ -7059,7 +7072,7 @@ smoke-storage-noformat:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 boot.iso
-	@dd if=/dev/zero of=noformat.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@dd if=/dev/zero of=noformat.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat.img \
 		REQUIRE_MARKER='NOFORMAT_SELFTEST: REFUSED' \
 		FAIL_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
@@ -7072,7 +7085,7 @@ smoke-storage-noformat-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1 boot.iso
-	@dd if=/dev/zero of=noformat-c.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@dd if=/dev/zero of=noformat-c.img bs=$(FS_BLOCK_SIZE) count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat-c.img \
 		REQUIRE_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
 		FAIL_MARKER='NOFORMAT_SELFTEST: REFUSED' \

@@ -7,7 +7,7 @@
  * FREE, SYS_FBLOCK_READ/WRITE, SYS_FS_STAT), keeping every AEAD key in the TCB.
  *
  * Directories are ordinary file inodes whose data is an array of `fs_dirent`
- * records (16 per 512-byte block); the root directory is inode 0. Clients reach
+ * records (BLK/32 per block); the root directory is inode 0. Clients reach
  * the server over IPC (endpoint slot 4) using the protocol in <fs_proto.h>.
  *
  * Access control: this server is the filesystem reference monitor. Every request
@@ -26,7 +26,11 @@
 #include "fs_proto.h"
 #include "libhorus.h"
 
-#define BLK        512u
+#include "block_size.h"
+/* NOT a private constant: the kernel hands back HORUS_BLOCK_SIZE bytes from
+ * SYS_FBLOCK_READ, so a local guess here is a buffer overrun waiting for the
+ * kernel to change. It did, on 2026-08-31. */
+#define BLK        HORUS_BLOCK_SIZE
 #define DIRENTS_PER_BLK (BLK / sizeof(struct fs_dirent))   /* 16 */
 
 /* Console output goes through SYS_WRITE (fd 1); SYS_PRINT is not dispatched. */

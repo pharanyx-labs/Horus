@@ -167,7 +167,7 @@ _Static_assert(MAX_CPUS == 4,
  * no assertion at all, so changing it on one side alone would hand every AP a
  * stack overlapping its neighbour's -- silently, and at bringup, before anything
  * can report. Pinned now, in the same shape as the MAX_CPUS assert above. */
-_Static_assert(AP_IDLE_STACK_SIZE == 0x9000UL,
+_Static_assert(AP_IDLE_STACK_SIZE == 0x11000UL,
                "AP_IDLE_STACK_SIZE changed: update the literal in "
                "src/boot/ap_trampoline.S to match");
 

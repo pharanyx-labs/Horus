@@ -431,16 +431,18 @@ bss_head_anchor:
 
 /* The BSP's kernel stack (RSP0 for the boot CPU, and the stack kernel_main and
  * all early init run on). It sits above a page-aligned guard page unmapped by
- * kern_fixed_stack_guards_init() at boot; the stack is 16 KiB and boot-time use
- * stays near the top, so unmapping the guard far below the live rsp is safe. An
- * overflow now faults on the guard instead of running into whatever .bss
- * precedes it. */
+ * kern_fixed_stack_guards_init() at boot; an overflow faults on the guard
+ * instead of running into whatever .bss precedes it -- which is what happened on
+ * the first boot after the filesystem block size went to 4 KiB, and is why the
+ * size now comes from BSP_STACK_SIZE in kernel_vma.h rather than a literal
+ * here. Boot-time use stays near the top, so unmapping the guard far below the
+ * live rsp is safe. */
 .align 4096
 .global bsp_stack_guard
 bsp_stack_guard:
     .space 4096
 stack_bottom:
-    .space 16384
+    .space BSP_STACK_SIZE
 .global stack_top
 stack_top:
 

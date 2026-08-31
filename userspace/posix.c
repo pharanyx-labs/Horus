@@ -25,6 +25,7 @@
 #include "../include/console_proto.h"
 #include <sys/termios.h>
 #include "fs_proto.h"
+#include "block_size.h"
 #include "libhorus.h"   /* hvfs: the mount table and the one path walker */
 
 /* ----- internal helpers ----------------------------------------------- */
@@ -676,8 +677,8 @@ int posix_fstat(int fd, posix_stat_t *st) {
     st->uid     = rp.uid;
     st->gid     = rp.gid;
     st->links   = rp.links ? rp.links : 1u;
-    st->blksize = 512;
-    st->blocks  = (rp.size + 511u) / 512u;
+    st->blksize = HORUS_BLOCK_SIZE;
+    st->blocks  = (rp.size + (HORUS_BLOCK_SIZE - 1u)) / HORUS_BLOCK_SIZE;
     return 0;
 }
 
@@ -703,8 +704,8 @@ int posix_stat(const char *path, posix_stat_t *st) {
     st->uid     = rp.uid;
     st->gid     = rp.gid;
     st->links   = rp.links ? rp.links : 1u;
-    st->blksize = 512;
-    st->blocks  = (rp.size + 511u) / 512u;
+    st->blksize = HORUS_BLOCK_SIZE;
+    st->blocks  = (rp.size + (HORUS_BLOCK_SIZE - 1u)) / HORUS_BLOCK_SIZE;
     return 0;
 }
 

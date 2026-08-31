@@ -19,6 +19,7 @@
  */
 
 #include "../include/syscall.h"
+#include "block_size.h"
 
 /* ---- minimal output -------------------------------------------------- */
 
@@ -135,7 +136,11 @@ void _start(void) {
     /* Slot 7 (CAP_BLOCK_DEV) was never granted, so the raw block-device
      * syscalls must refuse. This is the core "no ambient authority" property:
      * being ring 3 is not enough, you must present the capability. */
-    unsigned char blk[512];
+    /* Static and block-sized: the call must be REFUSED before any copy, so the
+     * size is not load-bearing today -- but if that refusal ever regressed, a
+     * 512-byte buffer taking a whole block would make the test itself the
+     * overflow. */
+    static unsigned char blk[HORUS_BLOCK_SIZE];
     check(sys_block_read(0, blk, sizeof(blk)) < 0, "block-read-allowed-without-cap");
     check(sys_block_write(0, blk, sizeof(blk)) < 0, "block-write-allowed-without-cap");
 

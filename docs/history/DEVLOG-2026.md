@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 122 entries, newest first, each explaining what
+The narrative record of how Horus was built: 123 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,73 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: accounts that outlive a power cycle, and three tests that were wrong first
+
+docs/LIMITATIONS.md 2.6 had been open since the mechanism that claimed to persist accounts was
+deleted as code that had never run. Its own analysis named three reasons, and said reason 3 was
+the one that shaped any fix: `kernel_pepper` is fresh random bytes every boot and fed
+`strong_password_hash` at both set and verify time, so a hash from one boot could not verify in
+the next WHATEVER it was stored in. Persisting the table was never sufficient, or even meaningful,
+on its own. That analysis was correct and the fix follows it exactly: the pepper is gone from
+account hashes, and the table is sealed under a key derived from disk_key instead. Encryption at
+rest does the job the pepper was being asked to do, and unlike the superseded proposal to
+TPM-seal the pepper it works on a machine with no TPM.
+
+The ordering inverted as 2.6 predicted -- the table cannot be read until the volume opens, so
+login became unlock-then-identify. What 2.6 could not predict is that the identity would come for
+free: the key slots added the same day seal the uid INSIDE the slot, so the slot that opens says
+who opened it. The thing 2.6 called an orthogonal, pre-existing limitation turned out to be the
+enabling half.
+
+**A defect I wrote and review caught, not a gate.** The first save wrote thirteen blocks with the
+raw bd->write_block, bypassing do_block_write and therefore the write-ahead log. A crash part-way
+left a new header over partly-old ciphertext, the tag failed, and the caller treated ANY load
+failure as "no table yet" and reseeded the compiled-in accounts. A power cut during useradd
+silently rolled every account back to root/user. The function's own comment claimed the opposite
+-- "a tag failure is NOT silently treated as no accounts yet" -- which was aspirational; the
+caller did exactly what the comment said it did not. Fixed by staging the whole table in one
+journal transaction (a _Static_assert now proves it fits: 13 blocks against JOURNAL_DATA_MAX 16)
+and by distinguishing -2 "none written" from -3 "tag failed". A present-but-unauthentic table now
+refuses every login, because reseeding there restores a known root password: a downgrade dressed
+as recovery.
+
+**THREE TESTS WERE WRONG BEFORE THE CODE WAS**, and the pattern is one thing said three ways.
+
+The keyslot selftest reported a clean build while the compiler had reused a stale object file and
+never seen the new code. Both its arms then failed with rc=2 and NO marker -- and that shape,
+which the gate-evidence work earlier in the week put there, is what said "never ran" rather than
+"disagreed" and pointed at the build instead of the logic.
+
+The pepper control arm passed when it should have reddened. The selftest was hooked in main.c
+before scheduler_init, which is where users_init is called from -- so at test time kernel_pepper
+had never been randomised and was all zeros in both boots. USERS_PEPPER_PER_BOOT swapped in a
+pepper that was, at that moment, also zeros. The base arm was unaffected and genuinely green, so
+with only a base arm this would have shipped as a witness that proved nothing about the pepper.
+A control arm found its own test's defect by refusing to go red.
+
+The format-refusal pair could not fail at all. The base required the refusal message on the
+serial console; the boot reaches `horus login:` and stops, so nothing ever called storage_unlock
+and nothing refused. The CONTROL arm passed anyway -- it required that message to be ABSENT, and
+it is absent in both arms when neither attempts a login. A pair in which neither arm exercises
+the path, one of them green. Rewritten so both arms drive the unlock directly and each asserts
+which branch was taken, positively: REFUSED against FORMATTED.
+
+**The lesson those three share is worth stating on its own: a gate that asserts a marker is
+ABSENT is satisfied by a run that never reached the code.** That is the same defect as the
+vacuous PASS found in smoke-exec-reenter this week, and as the stale-object build, and it has now
+cost three separate arms in one day. The remedy is always the same -- assert something positive
+that only the intended path can produce.
+
+**And a login is no longer consent to format a disk.** Meeting an unformatted ATA volume at the
+login prompt ran storage_format_sealed on the strength of whatever had been typed: a mistyped
+password on a machine whose disk the kernel did not recognise destroyed it, made it key slot 0,
+and said nothing. Recognising a volume is not the same as owning it, and failing to recognise one
+is not grounds for destroying it. The ephemeral vdisk never reaches that path -- it is formatted
+inside storage_init with a per-boot throwaway key -- so a diskless boot still comes up unattended,
+which is the exemption that makes the refusal safe to ship.
 
 ---
 

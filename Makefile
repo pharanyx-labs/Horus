@@ -111,7 +111,7 @@ DEFECT_FLAGS = \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
-	KEYSLOT_REMOVE_NOOP \
+	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED
@@ -346,6 +346,52 @@ endif
 # storage_keyslot_probe, which is selftest-only because storage_unlock is
 # idempotent and a second password therefore cannot be tested in a boot where a
 # first has already opened the volume.
+# USERS_PERSIST_SELFTEST=1 builds the two-boot accounts witness: a user added and
+# given a password in one boot must still verify in the next, and a wrong
+# password must still be refused by the same restored record.
+USERS_PERSIST_SELFTEST ?= 0
+ifeq ($(USERS_PERSIST_SELFTEST),1)
+CFLAGS  += -DUSERS_PERSIST_SELFTEST
+ASFLAGS += -DUSERS_PERSIST_SELFTEST
+endif
+
+# USERS_PEPPER_PER_BOOT=1 is the falsifying arm: account hashes are peppered with
+# the per-boot kernel_pepper again, so a hash set in one boot cannot verify in
+# the next HOWEVER faithfully the table was stored. It is the defect
+# docs/LIMITATIONS.md 2.6 calls reason 3, and the reason persisting the table was
+# never sufficient on its own.
+# USERS_TAMPER_INJECT=1 corrupts the sealed user table before it is read, which
+# is the adversarial half of the persistence work: a table that is PRESENT and
+# does not authenticate must refuse logins, never be mistaken for an empty volume
+# and reseeded with the compiled-in root password.
+# STORAGE_AUTOFORMAT=1 restores the pre-2026-08-31 behaviour: meeting an
+# unformatted ATA volume at the login prompt formats it on the strength of the
+# password typed. Test targets that boot a deliberately blank image set it; the
+# shipping kernel does not, and refuses instead.
+STORAGE_NOFORMAT_SELFTEST ?= 0
+ifeq ($(STORAGE_NOFORMAT_SELFTEST),1)
+CFLAGS  += -DSTORAGE_NOFORMAT_SELFTEST
+ASFLAGS += -DSTORAGE_NOFORMAT_SELFTEST
+endif
+
+STORAGE_AUTOFORMAT ?= 0
+ifeq ($(STORAGE_AUTOFORMAT),1)
+CFLAGS  += -DSTORAGE_AUTOFORMAT
+ASFLAGS += -DSTORAGE_AUTOFORMAT
+endif
+
+USERS_TAMPER_INJECT ?= 0
+ifeq ($(USERS_TAMPER_INJECT),1)
+CFLAGS  += -DUSERS_TAMPER_INJECT
+ASFLAGS += -DUSERS_TAMPER_INJECT
+endif
+
+USERS_PEPPER_PER_BOOT ?= 0
+ifeq ($(USERS_PEPPER_PER_BOOT),1)
+CFLAGS  += -DUSERS_PEPPER_PER_BOOT
+ASFLAGS += -DUSERS_PEPPER_PER_BOOT
+endif
+
 KEYSLOT_SELFTEST ?= 0
 ifeq ($(KEYSLOT_SELFTEST),1)
 CFLAGS  += -DKEYSLOT_SELFTEST
@@ -3287,8 +3333,8 @@ smoke-tsd:
 # the login prompt as normal and asserts the marker along the way).
 smoke-e820:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory E820_SELFTEST=1
-	@$(MAKE) --no-print-directory E820_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory E820_SELFTEST=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory E820_SELFTEST=1 boot.iso STORAGE_AUTOFORMAT=1
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='E820_SELFTEST: PASS' \
 		FAIL_MARKER='E820_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
@@ -3345,8 +3391,8 @@ PERSIST_TIMEOUT ?= 300
 .PHONY: smoke-fs-persist
 smoke-fs-persist:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000
-	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso
+	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=persist.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[persist] boot 1/2 — write sentinel to a fresh encrypted disk"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
@@ -3381,8 +3427,8 @@ smoke-fs-perms:
 .PHONY: smoke-fs-wal
 smoke-fs-wal:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=wal.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal] boot 1/2 — commit a write, then crash before applying it"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
@@ -3435,8 +3481,8 @@ check-gating:
 .PHONY: smoke-fs-wal-flush
 smoke-fs-wal-flush:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=wal-flush.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush] every FLUSH CACHE fails with EIO; the journal must refuse to commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush.img \
@@ -3452,8 +3498,8 @@ smoke-fs-wal-flush:
 .PHONY: smoke-fs-wal-flush-control
 smoke-fs-wal-flush-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=wal-flush-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@echo "[wal-flush-control] barriers compiled out: the refusal must NOT appear"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush-control.img \
@@ -3476,8 +3522,8 @@ smoke-fs-wal-flush-control:
 .PHONY: smoke-fs-wal-order
 smoke-fs-wal-order:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=wal-order.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@rm -f wal-order.trace
 	@echo "[wal-order] tracing IDE commands through one journal commit"
@@ -3495,8 +3541,8 @@ smoke-fs-wal-order:
 .PHONY: smoke-fs-wal-order-control
 smoke-fs-wal-order-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=wal-order-control.img bs=512 count=$(PERSIST_BLOCKS) status=none
 	@rm -f wal-order-control.trace
 	@echo "[wal-order-control] barriers compiled out: the ordering check must REJECT this"
@@ -6868,8 +6914,8 @@ KEYSLOT_TIMEOUT    ?= 300
 .PHONY: smoke-keyslots
 smoke-keyslots:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1
-	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 boot.iso
+	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=keyslots.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@echo "[keyslots] boot 1/2 - format with one password, add a second slot"
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots.img \
@@ -6888,8 +6934,8 @@ smoke-keyslots:
 .PHONY: smoke-keyslots-control
 smoke-keyslots-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1
-	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 boot.iso
+	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 boot.iso STORAGE_AUTOFORMAT=1
 	@dd if=/dev/zero of=keyslots-c.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots-c.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: WROTE' \
@@ -6899,3 +6945,94 @@ smoke-keyslots-control:
 		tools/smoke_test.sh boot.iso
 	@rm -f keyslots-c.img
 	@echo "[keyslots] CONTROL PASS - a no-op revocation leaves the password working"
+
+USERS_PERSIST_TIMEOUT ?= 300
+
+# Accounts survive a reboot (docs/LIMITATIONS.md 2.6, S62). TWO BOOTS on ONE
+# disk image: boot 1 adds an account and sets its password, boot 2 requires the
+# password to still verify AND a wrong one to still be refused -- the second half
+# because "it verifies" alone is satisfied by a kernel that accepts everything.
+.PHONY: smoke-users-persist
+smoke-users-persist:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
+	@dd if=/dev/zero of=users.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@echo "[users] boot 1/2 - add an account and set its password"
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users.img \
+		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[users] boot 2/2 - the password verifies, and a wrong one does not"
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users.img \
+		REQUIRE_MARKER='USERS_SELFTEST: PASS' FAIL_MARKER='USERS_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f users.img
+	@echo "[users] PASS - an account outlived a power cycle"
+
+# The falsifying arm. Account hashes are peppered per boot again, so the stored
+# table is faithful and the hash in it still cannot verify -- which is the point
+# 2.6 reason 3 makes: persisting the table was never the whole fix.
+.PHONY: smoke-users-persist-control
+smoke-users-persist-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 boot.iso STORAGE_AUTOFORMAT=1
+	@dd if=/dev/zero of=users-c.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-c.img \
+		REQUIRE_MARKER='USERS_SELFTEST: WROTE' \
+		tools/smoke_test.sh boot.iso
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-c.img \
+		REQUIRE_MARKER='USERS_SELFTEST: FAIL hash-did-not-survive-the-reboot' \
+		tools/smoke_test.sh boot.iso
+	@rm -f users-c.img
+	@echo "[users] CONTROL PASS - a per-boot pepper defeats a faithfully stored table"
+
+# The tamper arm: an account table that is present and unauthentic refuses logins
+# rather than being reseeded from the compiled-in defaults. Boot 1 writes a real
+# table; boot 2 corrupts it on the platter before reading and requires refusal.
+.PHONY: smoke-users-tamper
+smoke-users-tamper:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
+	@dd if=/dev/zero of=users-t.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-t.img \
+		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_TAMPER_INJECT=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_TAMPER_INJECT=1 boot.iso STORAGE_AUTOFORMAT=1
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-t.img \
+		REQUIRE_MARKER='USERS_SELFTEST: TAMPER-REFUSED' FAIL_MARKER='USERS_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f users-t.img
+	@echo "[users] TAMPER PASS - a corrupted table refuses logins instead of reseeding"
+
+# A login is not consent to format a disk. Boot a blank ATA image with the
+# shipping default and require the refusal; the control arm sets
+# STORAGE_AUTOFORMAT=1 and requires the boot to proceed WITHOUT it, which is what
+# shows the refusal is the thing making the difference.
+.PHONY: smoke-storage-noformat
+smoke-storage-noformat:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 boot.iso
+	@dd if=/dev/zero of=noformat.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat.img \
+		REQUIRE_MARKER='NOFORMAT_SELFTEST: REFUSED' \
+		FAIL_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
+		tools/smoke_test.sh boot.iso
+	@rm -f noformat.img
+	@echo "[noformat] PASS - a login did not format an unrecognised disk"
+
+.PHONY: smoke-storage-noformat-control
+smoke-storage-noformat-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@dd if=/dev/zero of=noformat-c.img bs=512 count=$(KEYSLOT_BLOCKS_IMG) status=none
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat-c.img \
+		REQUIRE_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
+		FAIL_MARKER='NOFORMAT_SELFTEST: REFUSED' \
+		tools/smoke_test.sh boot.iso
+	@rm -f noformat-c.img
+	@echo "[noformat] CONTROL PASS - with the flag a login formats the disk, as it used to"

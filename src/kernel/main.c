@@ -525,6 +525,11 @@ void kernel_main(uint32_t mb_info) {
     storage_init();
 #endif
 #endif
+#ifdef STORAGE_NOFORMAT_SELFTEST
+    /* After storage_init, so a blank ATA disk has been probed and g_needs_format
+     * decided; the selftest then drives the unlock the login prompt never does. */
+    storage_noformat_selftest();
+#endif
 #ifdef KEYSLOT_SELFTEST
     /* After storage_init so a device is registered; before scheduler_init so the
      * whole test runs on the boot CPU with nothing else touching the volume. */

@@ -111,3 +111,17 @@ exempt:
     asserted through REQUIRE_MARKER. The second boot requires the FAIL marker, so
     a boot that died produces no marker and the arm goes red rather than being
     credited with reproducing the defect.
+  smoke-users-persist: >
+    Two written-out boots, each invoking tools/smoke_test.sh with a REQUIRE_MARKER
+    and a FAIL_MARKER and no captured-but-unasserted rc, so a boot that dies fails
+    the target. The markers differ per boot (WROTE then PASS), so a boot that ran
+    the wrong phase fails too.
+  smoke-users-persist-control: >
+    Same shape; the second boot requires the FAIL marker, so a boot that died
+    produces no marker and the arm goes red rather than being credited with
+    reproducing the defect.
+  smoke-users-tamper: >
+    Two written-out boots against one image, the second rebuilt with
+    USERS_TAMPER_INJECT=1. Each asserts its own REQUIRE_MARKER (WROTE, then
+    TAMPER-REFUSED) with a FAIL_MARKER set, so a dead boot fails rather than
+    being read as a refusal.

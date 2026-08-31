@@ -936,10 +936,21 @@ would have needed a cross-task *observability* capability to learn about its **o
 capability that names the object is the entitlement to know how big it is, so the authority is
 that capability.
 
-### 2.6 User accounts do not survive a reboot
+### 2.6 ~~User accounts do not survive a reboot~~ (**FIXED 2026-08-31**, `SECURITY.md` S62)
 
-*Restated 2026-08-22. This section previously read "`ramfs_write` ignores position, so the user
-database has never persisted", which was true and was only one of three reasons.*
+*Restated 2026-08-22; closed 2026-08-31. This section previously read "`ramfs_write` ignores
+position, so the user database has never persisted", which was true and was only one of three
+reasons.*
+
+**Closed as designed.** The table is sealed under a key derived from `disk_key` and written
+through the write-ahead log, so a crash leaves it wholly before or wholly after; the pepper is
+gone from account hashes, which is what reason 3 below said had to happen before storage could
+matter at all; and the ordering inverted to unlock-then-identify, with the identity supplied by
+the key slot that opened (S61) rather than worked around. A table that is present and does not
+authenticate refuses every login rather than being reseeded — reseeding would restore the
+compiled-in `root` password, which is a downgrade rather than a recovery. The account below is
+kept because it is the reasoning the fix was derived from, and because reason 3 is the part a
+reader will otherwise rediscover the hard way.
 
 `users_init` seeds `root` and `user` from compile-time constants on every boot. `useradd`,
 `userdel` and `passwd` take effect immediately and are gone at the next power cycle. The audit
@@ -994,6 +1005,25 @@ than it having to be worked around. Two consequences are forced rather than chos
 by slot index, because finding a slot by uid would require that user's password; and the last
 active slot cannot be removed, because a volume with no slots is unreachable rather than deleted.
 Witness `make smoke-keyslots` (two boots on one image), falsified by `KEYSLOT_REMOVE_NOOP=1`.
+
+### 2.6a Self-test markers are emitted in two writes, on a shared console
+
+*Added 2026-08-31.*
+
+Several self-tests print a marker as a prefix and then a detail — `report("X: FAIL ")` followed by
+`report(name)` — while the serial console is shared with every other ring-3 task. Another task's
+output can land between the two writes and split the exact string a gate asserts on. It is not
+hypothetical: `smoke-init-provision-control` failed on 2026-08-31 with
+`INIT_PROVISION: FAIL provisioning stopped at step [fs_server] userspace FS server starting`,
+and the gate timed out looking for a contiguous `stopped at step 1` that had been emitted in two
+pieces. The arm had passed since it was written, on timing luck.
+
+`userspace/init.c` and the keyslot self-test now emit their markers in one write. **Eight remain**
+(`libhorustest.c`, `proctest.c`, `passwdprobe.c`, `frametest.c`, `framepeer.c`, `vfstest.c`,
+`recvblocksrv.c`, and two in `src/kernel/selftest.c`'s aspace test). They are racy in the same way
+and have not yet been observed failing, which is a statement about how busy the console is when
+each runs rather than about their correctness. Fixing them is mechanical and belongs in one focused
+change, not scattered through unrelated work.
 
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 

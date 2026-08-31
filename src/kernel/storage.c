@@ -40,7 +40,9 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 static uint32_t g_unlocked_slot = 0;
 static uint32_t g_unlocked_uid  = 0;
 
-#define STORAGE_VERSION 7   /* v7: LUKS-style key slots -- up to HORUS_KEYSLOTS passwords
+#define STORAGE_VERSION 8   /* v8: the user table is sealed on disk, so accounts
+                             * survive a reboot (docs/LIMITATIONS.md 2.6).
+                             * v7: LUKS-style key slots -- up to HORUS_KEYSLOTS passwords
                              * open one volume, each wrapping disk_key||uid in its own slot.
                              * A v6 volume is refused at mount, as every earlier version
                              * already was: the check is `version != STORAGE_VERSION`, so
@@ -60,6 +62,9 @@ uint8_t *g_vdisk_backing = 0;
  * then storage_unlock() (called at first login) formats+seals with the user's
  * password so disk_key is never committed to disk without a KEK. */
 static int                  g_needs_format    = 0;
+/* Deliberate authorisation to format a blank volume. An installer sets this;
+ * a login does not. See storage_unlock. */
+static int                  g_format_authorized = 0;
 static struct block_device *g_needs_format_bd = NULL;
 
 /* Set for the lifetime of a boot that runs on the ephemeral in-RAM vdisk (see
@@ -1300,8 +1305,11 @@ static int storage_format_sealed(struct block_device *bd,
      * that block exists -- eight wraps do not fit in a 512-byte superblock. */
     sb.keyslot_start      = tpm_blob_block + 1;
     sb.keyslot_blocks     = KEYSLOT_BLOCKS;
-    /* Write-ahead redo log sits right after the key slots. */
-    sb.journal_start      = sb.keyslot_start + KEYSLOT_BLOCKS;
+    /* v8: the sealed user table follows the key slots. */
+    sb.users_start        = sb.keyslot_start + KEYSLOT_BLOCKS;
+    sb.users_blocks       = USERS_BLOCKS;
+    /* Write-ahead redo log sits right after the user table. */
+    sb.journal_start      = sb.users_start + USERS_BLOCKS;
     sb.journal_blocks     = JOURNAL_BLOCKS;
     uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
 
@@ -1487,9 +1495,40 @@ struct mounted_fs *storage_get_mounted_fs(void) {
 /* Called at first successful login.  If no valid v4 disk exists (g_needs_format)
  * formats and seals one with the user's password first; then unwraps disk_key,
  * derives volume_key + meta_mac_key, and verifies the metadata HMAC. */
+/* An installer's explicit "yes, format this disk". Nothing else calls it. */
+void storage_authorize_format(void) { g_format_authorized = 1; }
+
 int storage_unlock(const char *password, size_t plen)
 {
     if (g_needs_format) {
+#ifndef STORAGE_AUTOFORMAT
+        /* A LOGIN IS NOT CONSENT TO FORMAT A DISK (SECURITY.md S63).
+         *
+         * Until 2026-08-31 meeting an unformatted ATA volume at the login prompt
+         * ran storage_format_sealed on the strength of whatever had been typed:
+         * a mistyped password on a machine whose disk the kernel did not
+         * recognise formatted it and became key slot 0. The volume was not
+         * readable afterwards by the password its owner actually used, and
+         * nothing said a format had happened.
+         *
+         * Recognising a volume is not the same as owning it, and neither is
+         * failing to recognise one grounds for destroying it. Formatting is now
+         * a deliberate act -- storage_authorize_format(), which an installer
+         * calls and a login never does.
+         *
+         * THE EPHEMERAL VDISK IS NOT AFFECTED: it is formatted and unlocked
+         * inside storage_init with a per-boot throwaway key and never reaches
+         * g_needs_format at all, so a diskless boot still comes up.
+         *
+         * STORAGE_AUTOFORMAT=1 restores the old behaviour for the test targets
+         * that boot a deliberately blank image, and is the control arm for
+         * make smoke-storage-noformat. */
+        if (!g_format_authorized) {
+            print("STORAGE: refusing to format an unrecognised volume at login; "
+                  "no format was authorised\n");
+            return -6;
+        }
+#endif
         if (storage_format_sealed(g_needs_format_bd, password, plen) != 0) return -1;
         if (storage_mount(g_needs_format_bd) != 0) return -1;
         g_needs_format    = 0;
@@ -1837,6 +1876,155 @@ int storage_keyslot_probe(const char *password, size_t plen,
     if (uid_out) *uid_out = uid;
     if (idx_out) *idx_out = (uint32_t)found;
     return 0;
+}
+#endif
+
+/* ---- the sealed user table (docs/LIMITATIONS.md 2.6) --------------------
+ *
+ * Sealed under HKDF(disk_key, "horus-users-v1") -- a key the volume already
+ * protects, rather than a second secret to look after. That is the whole reason
+ * the account hashes inside can stop being peppered per boot: encryption at rest
+ * is doing the job the pepper was being asked to do, and unlike the pepper it
+ * works on a machine with no TPM.
+ *
+ * Layout: [12-byte nonce][16-byte tag][4-byte length][ciphertext...] from
+ * sb->users_start, over sb->users_blocks blocks.
+ */
+/* The whole table must fit ONE journal transaction, or the write cannot be
+ * atomic and a crash tears it. Checked at compile time rather than discovered at
+ * runtime: journal_commit does fail closed on overflow, but a save that can
+ * never succeed is a worse thing to learn from a running machine. */
+_Static_assert(1 + (MAX_USERS * sizeof(user_account_t) - (BLOCK_SIZE - 32)
+                    + BLOCK_SIZE - 1) / BLOCK_SIZE <= JOURNAL_DATA_MAX,
+               "the user table must fit in one journal transaction");
+
+static int users_key(const struct mounted_fs *mfs, uint8_t *key64)
+{
+    const char *label = "horus-users-v1";
+    uint8_t info[14]; size_t n = 0;
+    for (const char *c = label; *c; c++) info[n++] = (uint8_t)*c;
+    return rust_hkdf_sha256(mfs->disk_key, 32,
+                            mfs->sb.volume_key_salt, sizeof(mfs->sb.volume_key_salt),
+                            info, n, key64, 64);
+}
+
+int storage_users_save(const void *buf, uint32_t len)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted || !mfs->unlocked) return -1;
+    if (mfs->sb.users_start == 0 || len == 0)  return -1;
+    if (32 + len > mfs->sb.users_blocks * BLOCK_SIZE) return -1;
+
+    uint8_t key[64];
+    if (users_key(mfs, key) != 0) return -2;
+
+    static uint8_t ct[USERS_BLOCKS * BLOCK_SIZE];
+    secure_zero(ct, sizeof(ct));
+    my_memcpy(ct, buf, len);
+
+    uint8_t nonce[12], tag[16];
+    secure_random_bytes(nonce, sizeof(nonce));
+    if (rust_aead_seal(key, key + 32, nonce,
+                       mfs->sb.volume_key_salt, sizeof(mfs->sb.volume_key_salt),
+                       ct, len, tag) != 0) {
+        secure_zero(key, sizeof(key)); secure_zero(ct, sizeof(ct)); return -3;
+    }
+    secure_zero(key, sizeof(key));
+
+    /* THROUGH THE JOURNAL, not around it.
+     *
+     * The first version of this function wrote all thirteen blocks with
+     * bd->write_block -- the RAW path, which bypasses do_block_write and so
+     * bypasses the write-ahead log entirely. A crash part-way left a new header
+     * over partly-old ciphertext, the AEAD tag then failed, and the caller
+     * treated that as "no table yet" and reseeded the compiled-in accounts. A
+     * power cut during useradd silently rolled every account back to root/user.
+     *
+     * Staging them in one transaction makes the save atomic in the way the rest
+     * of this filesystem already is: a crash leaves the table wholly before or
+     * wholly after, and journal_recover redoes a committed-but-unapplied write.
+     */
+    uint8_t blk[BLOCK_SIZE];
+    journal_begin();
+    secure_zero(blk, sizeof(blk));
+    my_memcpy(blk, nonce, 12);
+    my_memcpy(blk + 12, tag, 16);
+    blk[28] = (uint8_t)(len & 0xFF);        blk[29] = (uint8_t)((len >> 8) & 0xFF);
+    blk[30] = (uint8_t)((len >> 16) & 0xFF); blk[31] = (uint8_t)((len >> 24) & 0xFF);
+    uint32_t first = (BLOCK_SIZE - 32) < len ? (BLOCK_SIZE - 32) : len;
+    my_memcpy(blk + 32, ct, first);
+    if (do_block_write(mfs->sb.users_start, blk) != 0) {
+        journal_abort(); secure_zero(ct, sizeof(ct)); return -4;
+    }
+    uint32_t done = first;
+    for (uint32_t i = 1; i < mfs->sb.users_blocks && done < len; i++) {
+        secure_zero(blk, sizeof(blk));
+        uint32_t n = (len - done) < BLOCK_SIZE ? (len - done) : BLOCK_SIZE;
+        my_memcpy(blk, ct + done, n);
+        if (do_block_write(mfs->sb.users_start + i, blk) != 0) {
+            journal_abort(); secure_zero(ct, sizeof(ct)); return -4;
+        }
+        done += n;
+    }
+    secure_zero(ct, sizeof(ct));
+    return journal_commit() == 0 ? 0 : -5;
+}
+
+/* Returns 0 and fills `buf` when a sealed table is present and authentic;
+ * negative when there is none, or when the tag does not verify. A tag failure
+ * is NOT silently treated as "no accounts yet": that would let anyone who can
+ * scribble on the region roll the machine back to its compiled-in defaults. */
+int storage_users_load(void *buf, uint32_t len)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted || !mfs->unlocked) return -1;
+    if (mfs->sb.users_start == 0 || len == 0)  return -1;
+    if (32 + len > mfs->sb.users_blocks * BLOCK_SIZE) return -1;
+
+    uint8_t blk[BLOCK_SIZE];
+    if (do_block_read(mfs->sb.users_start, blk) != 0) return -1;
+    uint8_t nonce[12], tag[16];
+    my_memcpy(nonce, blk, 12);
+    my_memcpy(tag,   blk + 12, 16);
+    uint32_t stored = (uint32_t)blk[28] | ((uint32_t)blk[29] << 8) |
+                      ((uint32_t)blk[30] << 16) | ((uint32_t)blk[31] << 24);
+    if (stored == 0 || stored != len) return -2;   /* none written yet */
+
+    static uint8_t ct[USERS_BLOCKS * BLOCK_SIZE];
+    secure_zero(ct, sizeof(ct));
+    uint32_t first = (BLOCK_SIZE - 32) < len ? (BLOCK_SIZE - 32) : len;
+    my_memcpy(ct, blk + 32, first);
+    uint32_t done = first;
+    for (uint32_t i = 1; i < mfs->sb.users_blocks && done < len; i++) {
+        if (do_block_read(mfs->sb.users_start + i, blk) != 0) return -1;
+        uint32_t n = (len - done) < BLOCK_SIZE ? (len - done) : BLOCK_SIZE;
+        my_memcpy(ct + done, blk, n);
+        done += n;
+    }
+
+    uint8_t key[64];
+    if (users_key(mfs, key) != 0) return -2;
+    int rc = rust_aead_open(key, key + 32, nonce,
+                            mfs->sb.volume_key_salt, sizeof(mfs->sb.volume_key_salt),
+                            ct, len, tag);
+    secure_zero(key, sizeof(key));
+    if (rc != 0) { secure_zero(ct, sizeof(ct)); return -3; }
+    my_memcpy(buf, ct, len);
+    secure_zero(ct, sizeof(ct));
+    return 0;
+}
+
+#ifdef USERS_TAMPER_INJECT
+/* Flip a byte of the sealed user table, as an attacker with disk access would.
+ * Test-only; writes raw so the corruption is on the platter rather than staged. */
+int storage_users_corrupt_for_test(void)
+{
+    struct mounted_fs *mfs = &g_mounted_fs;
+    if (!mfs->mounted || mfs->sb.users_start == 0) return -1;
+    uint8_t blk[BLOCK_SIZE];
+    if (raw_block_read(mfs->sb.users_start, blk) != 0) return -1;
+    blk[40] ^= 0xFF;                      /* inside the ciphertext, past the header */
+    return raw_block_write(mfs->sb.users_start, blk);
 }
 #endif
 

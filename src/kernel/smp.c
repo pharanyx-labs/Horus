@@ -464,6 +464,12 @@ void smp_bringup(void) {
     { extern void storage_vdisk_bound_selftest(void);
       storage_vdisk_bound_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(MERKLE_SELFTEST)
+    /* Arm B of docs/design/meta-cache-merkle.md: an interior node is trusted only
+     * when it verifies against the path to the CURRENT root. Three boots on one
+     * image, with the host restoring a genuine past state between them. */
+    { extern void merkle_selftest(void); merkle_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(META_CRASH_SELFTEST)
     /* Arm A of docs/design/meta-cache-merkle.md: a committed metadata update is
      * durable across a crash whether or not its cache entry was evicted first.

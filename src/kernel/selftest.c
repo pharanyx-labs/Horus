@@ -3477,6 +3477,157 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef MERKLE_SELFTEST
+/* Arm B of docs/design/meta-cache-merkle.md: an interior node is trusted only
+ * when it verifies against the path to the CURRENT root.
+ *
+ * Three boots on one ATA image, with the HOST doing the tampering between them
+ * (see `make smoke-merkle-replay`), because a physical attacker with the disk is
+ * exactly what the property is about:
+ *
+ *   phase 1  write set A; report the two blocks that together are a consistent
+ *            state of the metadata describing it -- the metadata block, and the
+ *            level-0 node recording its hash.
+ *            [host: copy the whole image aside]
+ *   phase 2  write set B into the SAME metadata block, so that block, its leaf,
+ *            the node above it and every ancestor up to the root are rewritten.
+ *            [host: restore those two blocks from the copy]
+ *   phase 3  read a set-A block back. It must be REFUSED.
+ *
+ * WHY THE RESTORED BYTES ARE THE POINT. They are a genuine past state of this
+ * volume: correctly encrypted, correctly MAC'd, correctly indexed, produced by
+ * this kernel with this key. Nothing about them is forged, and a design that
+ * MAC'd each block independently would accept them without complaint. The only
+ * thing wrong with them is that they are old, and the only structure that can
+ * say so is the chain from the root -- which is why the arm restores the node
+ * TOGETHER WITH the block it records. Restoring the block alone would be caught
+ * by the leaf hash and would prove nothing about the tree.
+ *
+ * The superblock is NOT restored, so the root and the level-1 node above the
+ * tampered one are current. That is what makes the mount succeed and the failure
+ * land where the property is, rather than as a volume that would not open --
+ * which the design doc asks to be reported separately, and is, below.
+ */
+#define MERKLE_INO       1
+#define MERKLE_SET_A     0      /* file blocks 0..5  */
+#define MERKLE_SET_B     6      /* file blocks 6..11 -- same metadata block */
+#define MERKLE_SET_N     6
+
+static uint8_t merkle_byte(uint32_t b, uint32_t i)
+{
+    return (uint8_t)((b * 131u + i * 17u + 0xA5u) & 0xFFu);
+}
+
+void merkle_selftest(void)
+{
+    print("MERKLE: begin\n");
+    if (storage_unlock("merklepw", 8) != 0) {
+        print("MERKLE: FAIL volume did not mount\n");
+        for (;;) asm volatile ("hlt");
+    }
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    static uint8_t buf[BLOCK_SIZE];
+
+    uint32_t phase = storage_test_scratch_get();
+    if (phase == 0xFFFFFFFFu) {
+        print("MERKLE: FAIL scratch block unreadable\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    if (phase == 0) {
+        int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+        if (ino != MERKLE_INO) {
+            print("MERKLE: FAIL unexpected inode\n"); for (;;) asm volatile ("hlt");
+        }
+        on_disk_inode_t nd;
+        for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+        nd.type = 1; nd.mode = 0100600; nd.links = 1;
+        storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
+
+        for (uint32_t k = 0; k < MERKLE_SET_N; k++) {
+            uint32_t b = MERKLE_SET_A + k;
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = merkle_byte(b, i);
+            if (storage_write_file_block(mfs, MERKLE_INO, b, buf) != 0) {
+                print("MERKLE: FAIL phase1 write\n"); for (;;) asm volatile ("hlt");
+            }
+        }
+
+        uint64_t phys = storage_test_phys_block(mfs, MERKLE_INO, MERKLE_SET_A);
+        uint64_t metab = 0, nodeb = 0;
+        storage_test_merkle_targets(mfs, phys, &metab, &nodeb);
+        /* Two numbers the host needs; not a marker a gate asserts on, so it may
+         * span several writes. The Makefile greps them out. */
+        print("MERKLE: snapshot meta_block=");
+        print_decimal(metab);
+        print(" node_block=");
+        print_decimal(nodeb);
+        print("\n");
+        storage_test_scratch_set(1);
+        print("MERKLE: phase1 complete\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    if (phase == 1) {
+        for (uint32_t k = 0; k < MERKLE_SET_N; k++) {
+            uint32_t b = MERKLE_SET_B + k;
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = merkle_byte(b, i);
+            if (storage_write_file_block(mfs, MERKLE_INO, b, buf) != 0) {
+                print("MERKLE: FAIL phase2 write\n"); for (;;) asm volatile ("hlt");
+            }
+        }
+        /* The set-A blocks must still read back HERE, before any tampering. An
+         * arm whose third boot refuses a block that was already unreadable in
+         * its second would be witnessing a broken write, not a refused replay. */
+        for (uint32_t k = 0; k < MERKLE_SET_N; k++) {
+            if (storage_read_file_block(mfs, MERKLE_INO, MERKLE_SET_A + k, buf) != 0) {
+                print("MERKLE: FAIL phase2 lost a set-A block before any tampering\n");
+                for (;;) asm volatile ("hlt");
+            }
+        }
+        storage_test_scratch_set(2);
+        print("MERKLE: phase2 complete\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Phase 3. The mount above already succeeded, so the root and everything
+     * between it and the tampered node are current -- the refusal below, if it
+     * comes, comes from the node and not from a volume that would not open. */
+    int served = 0, refused = 0, rolled_back = 0;
+    for (uint32_t k = 0; k < MERKLE_SET_N; k++) {
+        uint32_t b = MERKLE_SET_A + k;
+        if (storage_read_file_block(mfs, MERKLE_INO, b, buf) != 0) { refused++; continue; }
+        served++;
+        int same = 1;
+        for (uint32_t i = 0; i < BLOCK_SIZE; i++)
+            if (buf[i] != merkle_byte(b, i)) { same = 0; break; }
+        if (same) rolled_back++;
+    }
+
+    print("MERKLE: phase3 served=");
+    print_decimal((uint64_t)served);
+    print(" refused=");
+    print_decimal((uint64_t)refused);
+    print(" rolled_back=");
+    print_decimal((uint64_t)rolled_back);
+    print(" node_evictions=");
+    print_decimal(merkle_node_evictions());
+    print("\n");
+
+    if (rolled_back > 0) {
+        /* POSITIVE: the volume did not merely fail to refuse, it handed back the
+         * earlier contents. An arm asserting that no refusal arrived would be
+         * satisfied by a run that never reached the read at all. */
+        print("MERKLE: FAIL stale node accepted - subtree served a rolled-back block\n");
+        return;
+    }
+    if (served > 0) {
+        print("MERKLE: FAIL stale node accepted - subtree served a block it should have refused\n");
+        return;
+    }
+    print("MERKLE: PASS stale node refused\n");
+}
+#endif /* MERKLE_SELFTEST */
+
 #ifdef META_CRASH_SELFTEST
 /* Arm A of docs/design/meta-cache-merkle.md: a metadata update belonging to a
  * committed journal transaction is durable, whether or not its cache entry was

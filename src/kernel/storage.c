@@ -40,7 +40,17 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 static uint32_t g_unlocked_slot = 0;
 static uint32_t g_unlocked_uid  = 0;
 
-#define STORAGE_VERSION 10  /* v10: the crypto-metadata region is sized from the
+#define STORAGE_VERSION 11  /* v11: the rollback MAC is a MERKLE TREE over the
+                             * metadata region, stored in its own block region,
+                             * whose root replaces sb.meta_hmac in the
+                             * superblock. The two-level construction it replaces
+                             * hashed sb.meta_blocks * 32 bytes on every metadata
+                             * write and held the same bytes in a whole-volume
+                             * .bss array -- 1 MiB at 16 GiB, both of them. New
+                             * region, new superblock field meaning, new
+                             * preimages; nothing about a v10 volume can be read
+                             * as a v11 one.
+                             * v10: the crypto-metadata region is sized from the
                              * DEVICE (sb.meta_blocks = ceil(total_blocks /
                              * META_ENTRIES_PER_BLOCK)) instead of from
                              * BLOCKS_PER_DISK, and the top-level metadata HMAC
@@ -293,31 +303,17 @@ static struct block_crypto_meta *meta_entry_in(struct meta_cache_line *l, uint64
 uint64_t meta_cache_evictions(void)       { return g_meta_evictions; }
 uint64_t meta_cache_dirty_evictions(void) { return g_meta_dirty_evictions; }
 
-/* Per-meta-block MAC (in RAM, derived from the region on disk — never persisted).
- * g_meta_block_mac[b] binds meta block b's META_ENTRIES_PER_BLOCK crypto entries
- * AND its index b, so a physical attacker cannot roll one meta sector back or swap
- * two of them without changing it. sb.meta_hmac is then the MAC over the first
- * sb.meta_blocks of these in order, which additionally detects reorder or
- * truncation of the whole region. This two-level construction lets a single block
- * write refresh just one block MAC plus the top MAC, instead of re-HMACing the
- * entire region on every write.
- *
- * IT IS STILL O(VOLUME), AND THAT IS THE NEXT PIECE OF WORK, NOT AN OVERSIGHT.
- * The array is sized by META_BLOCKS_MAX and the top MAC hashes sb.meta_blocks * 32
- * bytes of it, so at a 16 GiB volume it would be 1 MiB of .bss hashed on every
- * metadata write. Stage 3 of docs/design/meta-cache-merkle.md replaces both this
- * array and sb.meta_hmac with a Merkle tree of fanout BLOCK_SIZE/32; leaving a
- * 1 MiB O(volume) array behind would defeat the point of the tree, so the two
- * must land before BLOCKS_PER_DISK is raised. */
-static uint8_t g_meta_block_mac[META_BLOCKS_MAX][32];
-
 /* forward declarations — defined after do_block_read/do_block_write */
 static struct meta_cache_line *meta_cache_get(uint64_t meta_blk);
 static int  meta_cache_flush_line(struct meta_cache_line *l);
 static int  meta_cache_flush_all(void);
 static void meta_cache_drop_dirty(void);
 static void meta_cache_reset(void);
-static void update_meta_block_mac(uint64_t meta_blk, const uint8_t *img);
+static int  merkle_verify_leaf(uint64_t meta_blk, const uint8_t *img);
+static int  merkle_update_leaf(uint64_t meta_blk, const uint8_t *img);
+static int  merkle_flush_all(void);
+static void merkle_drop_dirty(void);
+static void merkle_cache_reset(void);
 /* Is a journal transaction open? The transaction state is declared further down
  * with the journal itself; the crypto layer above needs to know whether there is
  * a commit coming that will write its dirty line back for it. */
@@ -532,9 +528,9 @@ static int raw_block_flush(void) {
 /* ---- Write-ahead redo log (journal) --------------------------------------- *
  * A multi-block filesystem update (allocate a data block -> update the bitmap ->
  * link it in the inode -> write the per-block crypto metadata + its superblock
- * meta_hmac -> write the ciphertext) touches up to a handful of separate
+ * rollback tree -> write the ciphertext) touches up to a handful of separate
  * sectors. A crash partway through used to leave the volume inconsistent — and,
- * worst of all, could desync the metadata region from sb.meta_hmac, which makes
+ * worst of all, could desync the metadata region from its rollback root, which makes
  * storage_unlock refuse to mount (a whole-volume brick).
  *
  * The journal makes each such update atomic. journal_begin() opens a
@@ -647,6 +643,11 @@ static void journal_abort(void) {
      * the next lookup reloads from disk, which still holds the pre-transaction
      * image because home was never touched. */
     meta_cache_drop_dirty();
+    /* The tree nodes those lines carried up to the root belong to the same
+     * operation and go the same way. Dropping rather than reverting is safe for
+     * the same reason: home was never touched, so the on-disk nodes are still
+     * the pre-transaction ones. */
+    merkle_drop_dirty();
 }
 
 static int journal_compute_hmac(const uint8_t *mac_key, uint64_t seq, uint32_t count,
@@ -704,6 +705,11 @@ static int journal_commit(void) {
      * written (failure mode E2). */
 #if !defined(META_CACHE_NO_WRITEBACK) && !defined(META_CACHE_WB_OUTSIDE_TXN)
     if (meta_cache_flush_all() != 0) { journal_abort(); return -1; }
+    /* The tree nodes the flush above dirtied travel in the same transaction. A
+     * node written outside it would leave the root promising a metadata block
+     * that a crash rolled back -- the same class of tear the journal exists to
+     * prevent, one layer up. */
+    if (merkle_flush_all() != 0)    { journal_abort(); return -1; }
 #endif
 
     if (g_txn.n == 0)   { g_txn.active = 0; return 0; }
@@ -825,6 +831,7 @@ static int journal_commit(void) {
      * and every check still runs -- what is gone is the ATOMICITY between the
      * metadata and the data it describes. */
     meta_cache_flush_all();
+    merkle_flush_all();
 #endif
     return 0;
 }
@@ -856,8 +863,10 @@ static int meta_cache_flush_line(struct meta_cache_line *l)
     if (l->meta_blk == META_BLK_NONE) return 0;
     if (do_block_write(mfs->sb.meta_start + l->meta_blk, l->img) != 0) return -1;
     l->dirty = 0;
-    update_meta_block_mac(l->meta_blk, l->img);
-    return 0;
+    /* Carry the new content up to the root. Failing here is NOT advisory: the
+     * block is written and the tree would then disagree with it, which at the
+     * next mount is indistinguishable from an attacker having rewound it. */
+    return merkle_update_leaf(l->meta_blk, l->img);
 }
 
 static int meta_cache_flush_all(void)
@@ -956,6 +965,16 @@ static struct meta_cache_line *meta_cache_get(uint64_t meta_blk)
         victim->meta_blk = META_BLK_NONE;
         return NULL;
     }
+    /* THE INTEGRATION POINT. A metadata block is trusted only when its content
+     * hashes to the leaf the tree records for it, on the path from the root --
+     * so a block rewound to a genuine earlier state of this volume is refused
+     * here, and nothing downstream ever sees the stale nonces. Verified on LOAD
+     * rather than at mount, which is what makes the unlock check O(1) instead of
+     * a walk of the whole region. */
+    if (merkle_verify_leaf(meta_blk, victim->img) != 0) {
+        victim->meta_blk = META_BLK_NONE;
+        return NULL;
+    }
     return victim;
 }
 
@@ -989,7 +1008,7 @@ static int derive_journal_mac_key(const uint8_t *disk_key, size_t dk_len,
 
 /* Replay any committed transaction left in the journal by a crash. Run at mount,
  * BEFORE the metadata region is loaded and its HMAC verified, so a transaction
- * that updated a meta sector and sb.meta_hmac together is completed atomically.
+ * that updated a meta sector and the tree above it is completed atomically.
  * Verifies the header's keyed HMAC and bounds-checks every target, so only a
  * genuine, kernel-authored, intact transaction is ever applied; anything else is
  * discarded (the operation is treated as never having happened). Idempotent. */
@@ -1021,7 +1040,7 @@ static void journal_recover(struct mounted_fs *mfs)
 
     /* Every target must land in the filesystem body. Block 0 (the superblock) is
      * allowed because update_meta_block_mac stages it as part of a txn to keep
-     * sb.meta_hmac in sync, and a valid journal HMAC proves the kernel authored the
+     * sb.meta_root in sync, and a valid journal HMAC proves the kernel authored the
      * transaction. But never inside the journal region, and never past the disk.
      * Fail closed on any out-of-range target. */
     for (uint32_t i = 0; i < hdr.count; i++) {
@@ -1051,74 +1070,360 @@ discard:
     raw_block_write(jstart, hbuf);   /* clear the header either way */
 }
 
-/* MAC of one meta block: HMAC(mac_key, meta_blk_index || the block's bytes).
- * The index is bound so two meta blocks cannot be swapped undetected.
+/* ---- the Merkle rollback tree ---------------------------------------------
  *
- * `img` is the block exactly as it lives on disk, which is also exactly what a
- * cache line holds -- so the MAC input and the thing written are the same bytes
- * and cannot drift apart. The preimage buffer is static rather than a 4 KiB
- * stack frame: this now runs underneath journal_commit, which already carries a
- * BLOCK_SIZE header buffer, and the BSP kernel stack is 16 KiB. */
+ * Level 0's hashes are the metadata blocks' MACs; level k+1's are the hashes of
+ * level k's node blocks; the top level is one block whose hash is sb.meta_root.
+ *
+ * WHAT MAKES IT A TREE RATHER THAN A PILE OF MACS. Every hash covers
+ * (domain-separation tag, level, index, bytes) AND is checked against the value
+ * its PARENT records, transitively up to the root. Position binding alone stops
+ * two nodes being swapped; the parent chain is what stops a node that was
+ * genuinely valid at an EARLIER time from verifying now, and that is the whole
+ * attack -- a physical attacker rewinding part of the region writes bytes this
+ * volume really did produce, so nothing about them is forged.
+ * MERKLE_SKIP_PARENT_BIND=1 checks a metadata block against its own MAC and
+ * skips the chain, which accepts exactly that replay and is the arm for it.
+ *
+ * Verification walks TOP-DOWN, from the root, rather than bottom-up from the
+ * node wanted. Bottom-up needs the parent before it can judge the child and so
+ * recurses; top-down is a loop, and more importantly it makes "verified" mean
+ * "there is a path from the root to this node" by construction rather than by
+ * an argument about the order of calls.
+ */
+
 static uint8_t g_mac_pre[8 + BLOCK_SIZE];   /* same serialisation as g_jscratch */
 
-static int compute_block_mac(uint64_t meta_blk, const uint8_t *mac_key,
-                             const uint8_t *img, uint8_t out32[32])
+/* Per-level node-block counts, level 0 first, ending at the level with exactly
+ * one block. Derived rather than stored: two numbers that can disagree are one
+ * too many, and this is the derivation both format and mount use. Returns the
+ * number of levels, or 0 if the volume is outside what the tree can describe. */
+static uint32_t merkle_layout(uint64_t meta_blocks, uint64_t *counts)
 {
-    for (int i = 0; i < 8; i++) g_mac_pre[i] = (uint8_t)(meta_blk >> (i * 8));
+    if (meta_blocks == 0) return 0;
+    uint32_t levels = 0;
+    uint64_t n = (meta_blocks + MERKLE_FANOUT - 1) / MERKLE_FANOUT;
+    for (;;) {
+        if (levels >= MERKLE_MAX_LEVELS) return 0;
+        counts[levels++] = n;
+        if (n == 1) break;
+        n = (n + MERKLE_FANOUT - 1) / MERKLE_FANOUT;
+    }
+    return levels;
+}
+
+/* First block of `level` within the node region. Levels are contiguous from 0. */
+static uint64_t merkle_level_base(const struct fs_superblock *sb, uint32_t level)
+{
+    uint64_t counts[MERKLE_MAX_LEVELS];
+    uint32_t levels = merkle_layout(sb->meta_blocks, counts);
+    uint64_t base = sb->merkle_start;
+    for (uint32_t l = 0; l < level && l < levels; l++) base += counts[l];
+    return base;
+}
+
+/* The hash recorded for one node or leaf. The tag and the (level, index) pair
+ * are inside the preimage, so a node cannot be reused at another position and a
+ * leaf's hash can never collide with an interior node's. Level 0 here means "a
+ * metadata block"; level k+1 means "a node block of level k". */
+static int merkle_hash(uint32_t level, uint64_t index, const uint8_t *mac_key,
+                       const uint8_t *img, uint8_t out32[32])
+{
+    g_mac_pre[0] = 'M'; g_mac_pre[1] = 'K'; g_mac_pre[2] = 'L';
+    g_mac_pre[3] = (uint8_t)level;
+    for (int i = 0; i < 4; i++) g_mac_pre[4 + i] = (uint8_t)(index >> (i * 8));
     my_memcpy(g_mac_pre + 8, img, BLOCK_SIZE);
     return rust_hmac_sha256(mac_key, 32, g_mac_pre, sizeof(g_mac_pre), out32);
 }
 
-/* Full recompute: every per-block MAC, read from the REGION ON DISK, then the
- * top-level HMAC over the first sb->meta_blocks of them → out32. Used at format
- * and at unlock — a once-per-boot cost, not a per-write one.
- *
- * Reading the region rather than an in-RAM mirror is what lets the mirror go.
- * It is also why format and unlock can no longer disagree: both call this, both
- * read the same bytes off the same device, and there is no second code path
- * computing the same value from a different source. A format that computed the
- * HMAC over an assumed all-zero array while the region on disk was something
- * else would brick the volume at its first mount, and this is the shape of bug
- * the two-level MAC has already produced once.
- *
- * Takes bd and sb explicitly because format runs before anything is mounted. */
-static int compute_meta_hmac(struct block_device *bd, const struct fs_superblock *sb,
-                             const uint8_t *mac_key, uint8_t *out32)
+#define MERKLE_IDX_NONE ((uint64_t)-1)
+
+struct merkle_line {
+    uint32_t level;                 /* node-block level: 0 is the lowest */
+    uint64_t index;                 /* or MERKLE_IDX_NONE when the line is free */
+    uint32_t stamp;
+    uint8_t  dirty;
+    uint8_t  verified;              /* a path from the root reached this content */
+    uint8_t  _pad[2];
+    uint8_t  img[BLOCK_SIZE];
+};
+static struct merkle_line g_merkle_cache[MERKLE_CACHE_LINES];
+static uint32_t g_merkle_clock;
+static uint64_t g_merkle_evictions;
+
+/* A verification walks one node per level and must hold every ancestor it has
+ * already checked, or the walk evicts its own parent and the "verified" flag
+ * stops meaning anything. */
+_Static_assert(MERKLE_CACHE_LINES >= MERKLE_MAX_LEVELS + 2,
+               "the node cache must hold a whole root-to-leaf path plus the line being loaded");
+
+uint64_t merkle_node_evictions(void) { return g_merkle_evictions; }
+
+static void merkle_cache_reset(void)
 {
-    if (sb->meta_blocks == 0 || sb->meta_blocks > META_BLOCKS_MAX) return -1;
-    static uint8_t img[BLOCK_SIZE];
-    for (uint64_t b = 0; b < sb->meta_blocks; b++) {
-        if (bd->read_block(bd, sb->meta_start + b, img) != 0) return -1;
-        if (compute_block_mac(b, mac_key, img, g_meta_block_mac[b]) != 0) return -1;
+    for (unsigned i = 0; i < MERKLE_CACHE_LINES; i++) {
+        g_merkle_cache[i].index    = MERKLE_IDX_NONE;
+        g_merkle_cache[i].dirty    = 0;
+        g_merkle_cache[i].verified = 0;
+        g_merkle_cache[i].stamp    = 0;
     }
-    return rust_hmac_sha256(mac_key, 32,
-                            (const uint8_t *)g_meta_block_mac,
-                            (size_t)sb->meta_blocks * 32,
-                            out32);
+    g_merkle_clock = 0;
 }
 
-/* Hot path (called after every metadata-block write): exactly one meta block
- * changed, so refresh just its MAC and then the top-level MAC over the block
- * MACs, store it in the in-memory superblock, and stage the superblock (block 0).
- *
- * THE PER-WRITE COST STILL SCALES WITH THE VOLUME, and this comment used to say
- * otherwise. The top MAC hashes sb.meta_blocks * 32 bytes, which is proportional
- * to the disk: 8 KiB at a 128 MiB volume and 1 MiB at 16 GiB. Two levels made
- * the constant much smaller than re-HMACing the whole region, which is what that
- * change was worth -- the logarithm is what stage 3's Merkle tree is for. */
-static void update_meta_block_mac(uint64_t meta_blk, const uint8_t *img)
+static int merkle_flush_line(struct merkle_line *l)
 {
     struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) return;
-    if (meta_blk >= mfs->sb.meta_blocks) return;
-    if (compute_block_mac(meta_blk, mfs->meta_mac_key, img, g_meta_block_mac[meta_blk]) != 0) return;
-    uint8_t tag[32];
-    if (rust_hmac_sha256(mfs->meta_mac_key, 32,
-                         (const uint8_t *)g_meta_block_mac,
-                         (size_t)mfs->sb.meta_blocks * 32,
-                         tag) != 0) return;
-    my_memcpy(mfs->sb.meta_hmac, tag, 32);
-    do_block_write(0, &mfs->sb);   /* superblock is always block 0 */
+    if (!mfs || !mfs->mounted || mfs->sb.merkle_start == 0) return -1;
+    if (l->index == MERKLE_IDX_NONE) return 0;
+    if (do_block_write(merkle_level_base(&mfs->sb, l->level) + l->index, l->img) != 0) return -1;
+    l->dirty = 0;
+    return 0;
+}
+
+static int merkle_flush_all(void)
+{
+    int rc = 0;
+    for (unsigned i = 0; i < MERKLE_CACHE_LINES; i++)
+        if (g_merkle_cache[i].index != MERKLE_IDX_NONE && g_merkle_cache[i].dirty)
+            if (merkle_flush_line(&g_merkle_cache[i]) != 0) rc = -1;
+    return rc;
+}
+
+static void merkle_drop_dirty(void)
+{
+    for (unsigned i = 0; i < MERKLE_CACHE_LINES; i++)
+        if (g_merkle_cache[i].dirty) {
+            g_merkle_cache[i].index    = MERKLE_IDX_NONE;
+            g_merkle_cache[i].dirty    = 0;
+            g_merkle_cache[i].verified = 0;
+        }
+}
+
+/* A resident line for (level, index), NOT yet verified. Pinning: a line whose
+ * stamp is the current clock reading cannot be chosen as a victim, which is how
+ * the top-down walk keeps the ancestors it has already checked. */
+static struct merkle_line *merkle_line_for(uint32_t level, uint64_t index, int *was_resident)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || mfs->sb.merkle_start == 0) return NULL;
+
+    for (unsigned i = 0; i < MERKLE_CACHE_LINES; i++) {
+        struct merkle_line *l = &g_merkle_cache[i];
+        if (l->index == index && l->level == level && l->index != MERKLE_IDX_NONE) {
+            l->stamp = ++g_merkle_clock;
+            if (was_resident) *was_resident = 1;
+            return l;
+        }
+    }
+    if (was_resident) *was_resident = 0;
+
+    struct merkle_line *victim = NULL;
+    for (unsigned i = 0; i < MERKLE_CACHE_LINES; i++)
+        if (g_merkle_cache[i].index == MERKLE_IDX_NONE) { victim = &g_merkle_cache[i]; break; }
+    if (!victim) {
+        victim = &g_merkle_cache[0];
+        for (unsigned i = 1; i < MERKLE_CACHE_LINES; i++)
+            if (g_merkle_cache[i].stamp < victim->stamp) victim = &g_merkle_cache[i];
+        if (victim->dirty && merkle_flush_line(victim) != 0) return NULL;
+        g_merkle_evictions++;
+    }
+
+    victim->level    = level;
+    victim->index    = index;
+    victim->dirty    = 0;
+    victim->verified = 0;
+    victim->stamp    = ++g_merkle_clock;
+    if (do_block_read(merkle_level_base(&mfs->sb, level) + index, victim->img) != 0) {
+        victim->index = MERKLE_IDX_NONE;    /* fail closed; never a zero-filled node */
+        return NULL;
+    }
+#ifdef MERKLE_NODE_TRUST_CACHED
+    /* THE DEFECT (R1). `verified` becomes a RESIDENCY flag: a node is trusted
+     * because it is in the cache, not because a path from the root reached it.
+     *
+     * This is one edit away from the correct code and it is the edit a
+     * performance shortcut makes. Re-checking a node on every cache HIT is
+     * genuinely wasteful, so the flag exists to skip it -- and setting the flag
+     * where the line is filled, rather than where it is checked, skips the one
+     * check that mattered. A node that is merely present then satisfies the
+     * whole tree, and a replayed node -- bytes this volume really did produce,
+     * at an earlier time -- is served as current. */
+    victim->verified = 1;
+#endif
+    return victim;
+}
+
+/* A node block, verified against the path from the root. NULL means refused, and
+ * every caller treats it as such -- there is no path that proceeds on a node it
+ * could not place under the root.
+ *
+ * MERKLE_NODE_TRUST_CACHED=1 returns a resident line without ever having checked
+ * it, so RESIDENCY becomes the trust criterion instead of the path. That is the
+ * natural performance shortcut and it is precisely what lets a replay succeed. */
+static struct merkle_line *merkle_node(uint32_t level, uint64_t index)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || mfs->sb.merkle_start == 0) return NULL;
+
+    uint64_t counts[MERKLE_MAX_LEVELS];
+    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    if (levels == 0 || level >= levels || index >= counts[level]) return NULL;
+
+    /* Each ancestor's index, from the node wanted up to the top. */
+    const uint32_t top = levels - 1;
+    uint64_t path[MERKLE_MAX_LEVELS];
+    path[level] = index;
+    for (uint32_t l = level + 1; l <= top; l++) path[l] = path[l - 1] / MERKLE_FANOUT;
+
+    struct merkle_line *parent = NULL;
+    for (uint32_t l = top + 1; l-- > level; ) {
+        struct merkle_line *line = merkle_line_for(l, path[l], NULL);
+        if (!line) return NULL;
+
+        /* Skipping the check on a line already placed under the root is the
+         * whole value of the flag; MERKLE_NODE_TRUST_CACHED=1 is what happens
+         * when the flag is set where the line is FILLED instead. */
+        if (!line->verified) {
+            uint8_t want[32];
+            if (merkle_hash(l + 1, path[l], mfs->meta_mac_key, line->img, want) != 0) return NULL;
+            const uint8_t *have = (l == top)
+                ? mfs->sb.meta_root
+                : parent->img + (path[l] % MERKLE_FANOUT) * 32;
+            int bad = 0;
+            for (int i = 0; i < 32; i++) bad |= (want[i] ^ have[i]);
+            if (bad) return NULL;                   /* stale or forged: refuse */
+            line->verified = 1;
+        }
+        parent = line;
+        if (l == level) return line;
+    }
+    return NULL;                                    /* unreachable: level <= top */
+}
+
+/* The leaf hash for one metadata block, checked against level 0 of the tree.
+ * Returns 0 when `img` is the CURRENT authentic content of metadata block
+ * `meta_blk`, -1 otherwise. */
+static int merkle_verify_leaf(uint64_t meta_blk, const uint8_t *img)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) return -1;
+
+    uint8_t want[32];
+    if (merkle_hash(0, meta_blk, mfs->meta_mac_key, img, want) != 0) return -1;
+
+#ifdef MERKLE_SKIP_PARENT_BIND
+    /* THE DEFECT: the leaf is checked against the level-0 node that records it,
+     * and THAT NODE IS NOT PLACED UNDER THE ROOT. What survives is real: every
+     * byte still has to have been produced by this volume with this key, the
+     * index is still bound, so a forgery is still refused and two blocks still
+     * cannot be swapped. What is gone is the only thing that distinguishes a
+     * Merkle tree from a set of independent MACs -- the question of whether this
+     * state is the CURRENT one. A genuine earlier state of the block, restored
+     * together with the node that recorded it, then passes.
+     *
+     * Deliberately NOT `return 0`: an arm that checks nothing would also pass
+     * under a forgery, and would then be witnessing "the check is absent" rather
+     * than "the chain is absent" -- a weaker claim about a different rule. */
+    struct merkle_line *l0 = merkle_line_for(0, meta_blk / MERKLE_FANOUT, NULL);
+    if (!l0) return -1;
+#else
+    struct merkle_line *l0 = merkle_node(0, meta_blk / MERKLE_FANOUT);
+    if (!l0) return -1;
+#endif
+    const uint8_t *have = l0->img + (meta_blk % MERKLE_FANOUT) * 32;
+    int bad = 0;
+    for (int i = 0; i < 32; i++) bad |= (want[i] ^ have[i]);
+    return bad ? -1 : 0;
+}
+
+/* Record a new content hash for metadata block `meta_blk` and carry the change
+ * up to the root. One hash and one staged write per level -- four of each at a
+ * 16 GiB volume, against the megabyte the flat construction hashed. */
+static int merkle_update_leaf(uint64_t meta_blk, const uint8_t *img)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || mfs->sb.merkle_start == 0) return -1;
+
+    uint64_t counts[MERKLE_MAX_LEVELS];
+    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    if (levels == 0) return -1;
+
+    uint8_t h[32];
+    if (merkle_hash(0, meta_blk, mfs->meta_mac_key, img, h) != 0) return -1;
+
+    uint64_t idx = meta_blk;
+    for (uint32_t l = 0; l < levels; l++) {
+        uint64_t node_idx = idx / MERKLE_FANOUT;
+        struct merkle_line *line = merkle_node(l, node_idx);
+        if (!line) return -1;
+        my_memcpy(line->img + (idx % MERKLE_FANOUT) * 32, h, 32);
+        line->dirty = 1;
+        /* The line's content just changed, so its own recorded hash must too --
+         * and it stays `verified` because we are the ones who changed it and we
+         * are about to record the new hash in its parent. */
+        if (merkle_hash(l + 1, node_idx, mfs->meta_mac_key, line->img, h) != 0) return -1;
+        idx = node_idx;
+    }
+
+    my_memcpy(mfs->sb.meta_root, h, 32);
+    do_block_write(0, &mfs->sb);        /* superblock is always block 0 */
+    return 0;
+}
+
+/* Build the whole tree over a region whose content is already on the device.
+ * Used at format, where the region is freshly zeroed. Reads each metadata block
+ * back rather than assuming its content, so format and mount hash the same bytes
+ * -- the assumption is what made the old construction able to brick a volume
+ * whose format left one byte unwritten. */
+static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
+                        const uint8_t *mac_key)
+{
+    uint64_t counts[MERKLE_MAX_LEVELS];
+    uint32_t levels = merkle_layout(sb->meta_blocks, counts);
+    if (levels == 0) return -1;
+
+    static uint8_t img[BLOCK_SIZE];
+    static uint8_t node[BLOCK_SIZE];
+    uint8_t h[32];
+
+    uint64_t base = sb->merkle_start;
+    for (uint32_t l = 0; l < levels; l++) {
+        uint64_t children = (l == 0) ? sb->meta_blocks : counts[l - 1];
+        uint64_t child_base = (l == 0) ? sb->meta_start : base - counts[l - 1];
+        for (uint64_t n = 0; n < counts[l]; n++) {
+            my_memset(node, 0, BLOCK_SIZE);
+            for (uint64_t k = 0; k < MERKLE_FANOUT; k++) {
+                uint64_t child = n * MERKLE_FANOUT + k;
+                if (child >= children) break;       /* a short top node: zeros */
+                if (bd->read_block(bd, child_base + child, img) != 0) return -1;
+                if (merkle_hash(l, child, mac_key, img, h) != 0) return -1;
+                my_memcpy(node + k * 32, h, 32);
+            }
+            if (bd->write_block(bd, base + n, node) != 0) return -1;
+        }
+        base += counts[l];
+    }
+
+    /* The root is the hash of the single top node block, which merkle_build has
+     * just written -- read it back for the same reason the leaves are read back. */
+    if (bd->read_block(bd, base - 1, node) != 0) return -1;
+    if (merkle_hash(levels, 0, mac_key, node, sb->meta_root) != 0) return -1;
+    return 0;
+}
+
+/* Verify the tree's top node against the root recorded in the superblock. That
+ * is the WHOLE of the unlock-time check now, and it is O(1): everything below is
+ * verified lazily, on the path from the root, when a metadata block is first
+ * loaded. The old check read the entire region and hashed every byte of it at
+ * every mount, which is the cost that stopped the volume growing. */
+static int merkle_verify_root(void)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) return -1;
+    uint64_t counts[MERKLE_MAX_LEVELS];
+    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    if (levels == 0) return -1;
+    return merkle_node(levels - 1, 0) ? 0 : -1;
 }
 
 /* How many LBA sectors make one filesystem block. An ATA sector is 512 bytes by
@@ -1183,6 +1488,76 @@ static struct block_device g_ata_bd = {
     .flush = atadisk_flush,
     .private = 0,
 };
+
+#ifdef MERKLE_SELFTEST
+static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
+                                   uint64_t logical_block, int allocate);
+/* ---- Arm B's harness (docs/design/meta-cache-merkle.md §3) ------------------
+ *
+ * The property: an interior node is trusted only when it verifies against the
+ * path to the CURRENT root. A node that was valid at an earlier time is not
+ * valid now.
+ *
+ * WHAT MAKES THE ARM WORTH ANYTHING is that the replayed bytes are
+ * INDEPENDENTLY VALID. If the harness replayed garbage, or a node whose own hash
+ * did not check out, the refusal would come from the hash and the run would have
+ * tested nothing about the tree -- a set of independent MACs would pass it too.
+ * So the harness restores a genuine past state of this volume: a metadata block
+ * AND the level-0 node that recorded it, both snapshotted while they were
+ * current and correct. Nothing is forged; the only thing wrong with them is that
+ * they are old.
+ *
+ * The tampering is done by the HOST between boots (`cp` and `dd` in the
+ * Makefile), not by the kernel, because that is what a physical attacker with
+ * the disk actually does. The kernel's only jobs are to say which two blocks to
+ * snapshot and to carry a phase counter across the reboots.
+ *
+ * THE PHASE COUNTER lives in the block one past the end of the volume. The image
+ * is deliberately one block longer than the device, so this is storage the
+ * filesystem can never reach and the harness never has to reserve anything in a
+ * layout that ships. It also means the phase survives a tamper that rewinds
+ * filesystem state, which a phase file would not. */
+
+/* Physical block backing (ino, block), so the harness can name the metadata
+ * block that describes it. Selftest builds only: it exposes the allocator's
+ * choices, which nothing in a shipping kernel has any business asking. */
+uint64_t storage_test_phys_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block)
+{
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return 0;
+    return get_physical_block(mfs, &inode, block, 0);
+}
+
+/* The two disk blocks that together are a consistent past state of one
+ * metadata block: the block itself, and the level-0 node that records its hash. */
+void storage_test_merkle_targets(struct mounted_fs *mfs, uint64_t phys,
+                                 uint64_t *meta_block_out, uint64_t *node_block_out)
+{
+    uint64_t meta_blk = phys / META_ENTRIES_PER_BLOCK;
+    *meta_block_out = mfs->sb.meta_start + meta_blk;
+    *node_block_out = merkle_level_base(&mfs->sb, 0) + meta_blk / MERKLE_FANOUT;
+}
+
+/* The harness's phase counter, in the block one past the volume. raw_block_*
+ * rather than do_block_*: this is outside the filesystem entirely and must never
+ * be staged into a journal transaction that describes it. */
+uint32_t storage_test_scratch_get(void)
+{
+    static uint8_t buf[BLOCK_SIZE];
+    if (raw_block_read((uint64_t)BLOCKS_PER_DISK, buf) != 0) return 0xFFFFFFFFu;
+    if (buf[0] != 'P' || buf[1] != 'H') return 0;    /* a fresh image: phase 0 */
+    return buf[2];
+}
+
+void storage_test_scratch_set(uint32_t phase)
+{
+    static uint8_t buf[BLOCK_SIZE];
+    my_memset(buf, 0, BLOCK_SIZE);
+    buf[0] = 'P'; buf[1] = 'H'; buf[2] = (uint8_t)phase;
+    raw_block_write((uint64_t)BLOCKS_PER_DISK, buf);
+    raw_block_flush();
+}
+#endif /* MERKLE_SELFTEST */
 
 #ifdef VDISK_BOUND_SELFTEST
 /* A block device may not accept a block it has no memory for (SECURITY.md S64).
@@ -1764,8 +2139,21 @@ static int storage_format_sealed(struct block_device *bd,
     /* v8: the sealed user table follows the key slots. */
     sb.users_start        = sb.keyslot_start + KEYSLOT_BLOCKS;
     sb.users_blocks       = USERS_BLOCKS;
-    /* Write-ahead redo log sits right after the user table. */
-    sb.journal_start      = sb.users_start + USERS_BLOCKS;
+    /* v11: the Merkle node region follows the user table. Sized from the
+     * metadata region, which is itself sized from the device -- so a bigger disk
+     * buys a deeper tree rather than a bigger constant anywhere in RAM. */
+    {
+        uint64_t counts[MERKLE_MAX_LEVELS];
+        uint32_t levels = merkle_layout(sb.meta_blocks, counts);
+        if (levels == 0) return -1;      /* past what the tree can describe */
+        uint64_t total = 0;
+        for (uint32_t l = 0; l < levels; l++) total += counts[l];
+        sb.merkle_start  = sb.users_start + USERS_BLOCKS;
+        sb.merkle_blocks = (uint32_t)total;
+        sb.merkle_levels = levels;
+    }
+    /* Write-ahead redo log sits right after the tree. */
+    sb.journal_start      = sb.merkle_start + sb.merkle_blocks;
     sb.journal_blocks     = JOURNAL_BLOCKS;
     uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
 
@@ -1862,7 +2250,7 @@ static int storage_format_sealed(struct block_device *bd,
 
     /* Zero the crypto metadata region so every block starts with present=0.
      * THIS MUST HAPPEN BEFORE THE HMAC BELOW, and the ordering is the reason the
-     * two can no longer disagree: compute_meta_hmac reads the region off the
+     * two can no longer disagree: merkle_build reads the region off the
      * device, so it hashes the bytes that are actually there rather than an
      * assumption about them. The old code hashed an all-zero in-RAM array and
      * wrote the region afterwards; the two happened to agree, and a volume whose
@@ -1875,6 +2263,7 @@ static int storage_format_sealed(struct block_device *bd,
     /* Nothing resident describes this volume yet, and anything resident describes
      * a different one. */
     meta_cache_reset();
+    merkle_cache_reset();
 
     {
         uint8_t fmt_mac_key[32];
@@ -1884,7 +2273,12 @@ static int storage_format_sealed(struct block_device *bd,
             secure_zero(disk_key, sizeof(disk_key));
             return -1;
         }
-        int rc = compute_meta_hmac(bd, &sb, fmt_mac_key, sb.meta_hmac);
+        /* Builds the whole tree over the region just zeroed and leaves its root
+         * in sb.meta_root. Reads each block back rather than assuming its
+         * content, for the reason the zeroing moved above this in the first
+         * place: format and mount must hash the same bytes, not two sources that
+         * happen to agree. */
+        int rc = merkle_build(bd, &sb, fmt_mac_key);
         secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
         if (rc != 0) { secure_zero(disk_key, sizeof(disk_key)); return -1; }
     }
@@ -2117,43 +2511,40 @@ int storage_unlock(const char *password, size_t plen)
 
     /* Replay any committed transaction a crash left in the journal BEFORE the
      * metadata region is loaded and its HMAC checked — so an update that touched
-     * a meta sector and sb.meta_hmac together is completed as a unit and the two
-     * always agree. */
+     * a meta sector, the tree nodes above it and the root in the superblock is
+     * completed as a unit and they always agree. */
     journal_recover(mfs);
     /* Recovery may have re-applied a committed transaction that included the
-     * superblock (its meta_hmac). Reload the in-RAM superblock so the HMAC check
+     * superblock (its meta_root). Reload the in-RAM superblock so the root check
      * below compares against the post-recovery value, not the stale mount-time one. */
     {
         uint8_t sbbuf[BLOCK_SIZE];
         if (raw_block_read(0, sbbuf) == 0) my_memcpy(&mfs->sb, sbbuf, sizeof(mfs->sb));
     }
 
-    /* Step 5 — Verify the metadata region's HMAC against the disk (detects
-     * nonce/tag rollback). Nothing is loaded into RAM here any more: the region
-     * used to be read wholesale into a BLOCKS_PER_DISK-sized mirror, which is the
-     * O(volume) cost the bounded cache exists to remove. The lines fill in on
-     * demand, and this check reads the region once to establish that what they
-     * will be filled from is authentic. */
+    /* Step 5 — Establish the root of the rollback tree, and nothing more.
+     *
+     * THIS IS O(1) NOW, and that is the change that lets a volume be large. The
+     * check used to read the ENTIRE metadata region and hash every byte of it at
+     * every mount -- at a 16 GiB volume that is 128 MiB of reads before the login
+     * prompt. It reads one node block and compares one hash. Everything below the
+     * root is verified LAZILY, on the path from the root, when a metadata block is
+     * first loaded into the cache (see meta_cache_get), so nothing is trusted that
+     * has not been placed under this root -- the verification did not get weaker,
+     * it moved to the point of use.
+     *
+     * What that does change is WHEN a rollback is reported: a rewound block is
+     * refused at the read that touches it rather than at mount. The volume still
+     * never serves it. */
     meta_cache_reset();          /* nothing resident may describe an earlier mount */
-    {
-        uint8_t computed[32];
-        if (compute_meta_hmac(mfs->bd, &mfs->sb, mfs->meta_mac_key, computed) != 0) {
-            secure_zero(mfs->disk_key,      sizeof(mfs->disk_key));
-            secure_zero(mfs->volume_key,    sizeof(mfs->volume_key));
-            secure_zero(mfs->meta_mac_key,  sizeof(mfs->meta_mac_key));
-            return -8;
-        }
-        int bad = 0;
-        for (int i = 0; i < 32; i++)
-            bad |= (computed[i] ^ mfs->sb.meta_hmac[i]);
-        secure_zero(computed, sizeof(computed));
-        if (bad) {
-            secure_zero(mfs->disk_key,      sizeof(mfs->disk_key));
-            secure_zero(mfs->volume_key,    sizeof(mfs->volume_key));
-            secure_zero(mfs->meta_mac_key,  sizeof(mfs->meta_mac_key));
-            meta_cache_reset();
-            return -9;   /* partial metadata rollback detected */
-        }
+    merkle_cache_reset();
+    if (merkle_verify_root() != 0) {
+        secure_zero(mfs->disk_key,      sizeof(mfs->disk_key));
+        secure_zero(mfs->volume_key,    sizeof(mfs->volume_key));
+        secure_zero(mfs->meta_mac_key,  sizeof(mfs->meta_mac_key));
+        meta_cache_reset();
+        merkle_cache_reset();
+        return -9;   /* the tree does not stand under its own root */
     }
 
     mfs->unlocked = 1;
@@ -2868,10 +3259,10 @@ int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block
 
 int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, const void *buf) {
     /* One atomic transaction: the data-block allocation (block bitmap), the inode
-     * link, the per-block crypto metadata (+ its superblock meta_hmac), and the
+     * link, the per-block crypto metadata (+ the rollback tree above it), and the
      * ciphertext all commit together or not at all. A crash therefore leaves the
      * file either fully before or fully after this write — never with a dangling
-     * block or a meta_hmac that no longer matches the metadata region. */
+     * block or a rollback root that no longer matches the metadata region. */
     journal_begin();
 
     struct on_disk_inode inode;
@@ -2903,8 +3294,8 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
  * untouched: the blocks are deallocated in the bitmap, and when one is later
  * reallocated storage_encrypt_block overwrites its metadata with a fresh nonce,
  * so the stale entry is harmless. Clearing it here instead would flush one meta
- * sector (and its superblock meta_hmac) per freed block — many non-atomic writes
- * that both overflow the journal and risk the very meta_hmac desync the journal
+ * block (and the tree above it) per freed block — many non-atomic writes
+ * that both overflow the journal and risk the very rollback desync the journal
  * exists to prevent. All the bitmap clears coalesce onto the single block-bitmap
  * sector, so the transaction is only ~3 sectors (block bitmap + inode + inode
  * bitmap). */

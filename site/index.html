@@ -1186,21 +1186,27 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3>Storage the kernel keeps sealed</h3>
             <p>
               Each <code>(inode, block)</code> gets its own AEAD subkey with a fresh nonce per
-              write, under a two-level rollback MAC. The encryption happens entirely inside
+              write, under a Merkle rollback tree. The encryption happens entirely inside
               the kernel; the ring-3 filesystem server never holds a key.
             </p>
             <p>
-              Those nonces used to live in a complete in-RAM mirror of the volume &mdash; which is
-              also why the volume could not grow, since the mirror scales with the disk. It is a
-              bounded cache now, and that trade is worth naming: a full mirror is
-              <em>self-healing</em> against a lost metadata write, because it holds every entry and
-              can regenerate the one that was lost. A bounded cache cannot. So the write-ahead log
-              is now the only thing keeping a block's nonce and its ciphertext in the same atomic
-              unit, and the gate for that has three control arms &mdash; one of them aimed at the
-              gate itself, requiring it to say &ldquo;this run tested nothing&rdquo; when its
-              working set is small enough to fit in the cache.
+              Those nonces used to live in a complete in-RAM mirror of the volume, under a flat
+              MAC recomputed over every one of them on each write &mdash; which is also why the
+              volume could not grow, since both scale with the disk. They live in a bounded cache
+              now, under a Merkle tree: a write touches four hashes instead of a megabyte, and
+              mounting checks one node instead of reading the whole region.
             </p>
-            <span class="witness">smoke-fs · smoke-meta-crash · RFC test vectors</span>
+            <p>
+              Two things are worth naming about that. A full mirror is <em>self-healing</em>
+              against a lost metadata write, because it holds every entry and can regenerate the
+              one that was lost; a bounded cache cannot, so the write-ahead log is now the only
+              thing keeping a block's nonce and its ciphertext in the same atomic unit. And the
+              tree catches <em>partial</em> rollback &mdash; a subtree rewound while the rest of
+              the volume moves on &mdash; but it does not make the volume monotonic. The root
+              lives in the superblock it protects, so an attacker who replaces superblock,
+              metadata and tree together with a consistent earlier snapshot defeats it. That
+              needs a freshness anchor outside the volume, and there isn't one yet.</p>
+            <span class="witness">smoke-fs · smoke-meta-crash · smoke-merkle-replay</span>
           </article>
           <article>
             <h3>A usable userland</h3>
@@ -1374,7 +1380,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 196 test targets, and the troubleshooting
+          Every configuration flag, every one of the 199 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1492,7 +1498,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 104 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 105 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

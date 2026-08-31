@@ -113,7 +113,7 @@ DEFECT_FLAGS = \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
-	META_CACHE_TINY \
+	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -466,6 +466,38 @@ META_CACHE_EVICT_NOWB ?= 0
 ifeq ($(META_CACHE_EVICT_NOWB),1)
 CFLAGS  += -DMETA_CACHE_EVICT_NOWB
 ASFLAGS += -DMETA_CACHE_EVICT_NOWB
+endif
+
+# MERKLE_SELFTEST=1 builds Arm B of docs/design/meta-cache-merkle.md: three boots
+# on one image, with the HOST restoring a genuine past state of one metadata
+# block and the level-0 node that recorded it between boots 2 and 3.
+MERKLE_SELFTEST ?= 0
+ifeq ($(MERKLE_SELFTEST),1)
+CFLAGS  += -DMERKLE_SELFTEST
+ASFLAGS += -DMERKLE_SELFTEST
+endif
+
+# MERKLE_NODE_TRUST_CACHED=1 sets a node line's `verified` flag where the line is
+# FILLED rather than where it is checked, so residency in the node cache becomes
+# the trust criterion instead of a path from the root (failure mode R1). That is
+# the natural performance shortcut, and it is exactly what lets a replay succeed.
+MERKLE_NODE_TRUST_CACHED ?= 0
+ifeq ($(MERKLE_NODE_TRUST_CACHED),1)
+CFLAGS  += -DMERKLE_NODE_TRUST_CACHED
+ASFLAGS += -DMERKLE_NODE_TRUST_CACHED
+endif
+
+# MERKLE_SKIP_PARENT_BIND=1 checks a metadata block's hash against the level-0
+# node that records it and does NOT place that node under the root. Forgeries and
+# swaps are still refused -- what is gone is the question of whether the state is
+# the CURRENT one, which is the only thing separating a Merkle tree from a set of
+# independent MACs. A second arm because the witness returns at its first
+# failure, so the arm above never reaches this rule (the smoke-cap-lookup-range
+# lesson).
+MERKLE_SKIP_PARENT_BIND ?= 0
+ifeq ($(MERKLE_SKIP_PARENT_BIND),1)
+CFLAGS  += -DMERKLE_SKIP_PARENT_BIND
+ASFLAGS += -DMERKLE_SKIP_PARENT_BIND
 endif
 
 META_CRASH_SELFTEST ?= 0
@@ -7238,6 +7270,60 @@ smoke-vdisk-bound-control:
 		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
+
+# Arm B: an interior node is trusted only when it verifies against the path to
+# the CURRENT root. Three boots on one image; tools/merkle_replay.sh restores a
+# genuine past state of one metadata block AND the level-0 node that recorded it
+# between boots 2 and 3, and refuses to run boot 3 unless boot 2 actually changed
+# both -- a restore that undoes nothing would let boot 3 pass having replayed
+# nothing at all.
+MERKLE_ARGS = MERKLE_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+MERKLE_ENV  = MERKLE_BS=$(FS_BLOCK_SIZE) MERKLE_BLOCKS=$(PERSIST_BLOCKS) \
+              MERKLE_TIMEOUT=$(META_CRASH_TIMEOUT)
+
+.PHONY: smoke-merkle-replay
+smoke-merkle-replay:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS)
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) boot.iso
+	@$(MERKLE_ENV) MERKLE_IMG=merkle.img \
+		MERKLE_EXPECT='MERKLE: PASS stale node refused' \
+		MERKLE_OPPOSITE='MERKLE: FAIL' \
+		tools/merkle_replay.sh boot.iso
+	@echo "[merkle] PASS - a node that was valid earlier is not valid now"
+
+# Arm B's falsifying arm (failure mode R1). The node line's `verified` flag is
+# set where the line is FILLED rather than where it is checked, so residency in
+# the cache becomes the trust criterion. The marker is POSITIVE -- the volume
+# handed back the earlier contents -- rather than "no refusal arrived", which a
+# run that never reached the read would satisfy.
+.PHONY: smoke-merkle-replay-control
+smoke-merkle-replay-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_NODE_TRUST_CACHED=1
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_NODE_TRUST_CACHED=1 boot.iso
+	@$(MERKLE_ENV) MERKLE_IMG=merkle-c.img \
+		MERKLE_EXPECT='MERKLE: FAIL stale node accepted - subtree served a rolled-back block' \
+		MERKLE_OPPOSITE='MERKLE: PASS' \
+		tools/merkle_replay.sh boot.iso
+	@echo "[merkle] CONTROL PASS - a node trusted for being resident serves a rollback"
+
+# The second arm, because the witness returns at its first failure and the arm
+# above never reaches this rule. The leaf IS checked against the node recording
+# it, and that node is not placed under the root: forgeries and swaps are still
+# refused, and only the question of whether the state is the CURRENT one is gone.
+# That is the whole difference between a Merkle tree and a set of independent
+# MACs, and it needs its own arm to be shown to fire.
+.PHONY: smoke-merkle-parent-bind-control
+smoke-merkle-parent-bind-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_SKIP_PARENT_BIND=1
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_SKIP_PARENT_BIND=1 boot.iso
+	@$(MERKLE_ENV) MERKLE_IMG=merkle-p.img \
+		MERKLE_EXPECT='MERKLE: FAIL stale node accepted - subtree served a rolled-back block' \
+		MERKLE_OPPOSITE='MERKLE: PASS' \
+		tools/merkle_replay.sh boot.iso
+	@echo "[merkle] CONTROL PASS - a node verified without its parent chain serves a rollback"
 
 # Arm A: a metadata update in a committed transaction is durable across a crash,
 # whether or not its cache line was evicted first. Two boots on one image -- boot 1

@@ -2488,6 +2488,18 @@ jobs:
       # conclude instead of passing.
       - name: Control arm — a run whose working set fits the cache tests nothing
         run: make smoke-meta-crash-vacuity-control
+      # S66, Arm B. Three boots on one image, with the HOST restoring a genuine
+      # past state of one metadata block and the level-0 node that recorded it
+      # between boots 2 and 3 — bytes this volume really did produce, so the
+      # refusal cannot come from a hash that failed.
+      - name: A node that was valid earlier is not valid now
+        run: make smoke-merkle-replay
+      - name: Control arm — a node trusted for being resident serves a rollback
+        run: make smoke-merkle-replay-control
+      # A second arm because the witness returns at its first failure: the leaf
+      # IS checked here, against a node that is not placed under the root.
+      - name: Control arm — a node verified without its parent chain
+        run: make smoke-merkle-parent-bind-control
       # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
       # reservation, so a block past the backing store landed in the free page
       # pool. Diskless, so it runs here only for topical company.

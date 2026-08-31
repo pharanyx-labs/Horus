@@ -1014,11 +1014,21 @@ the ring-3 FS server never sees a key.
 
 - Per-`(inode, block)` AEAD subkeys derived from the volume key, with a fresh nonce per
   write.
-- A two-level rollback MAC over block metadata: one MAC per metadata block, then
-  `sb.meta_hmac` over those. **The per-write cost still scales with the volume** — the top
-  level hashes `sb.meta_blocks × 32` bytes — and this list claimed otherwise until 2026-08-31.
-  Two levels made the constant much smaller; the logarithm needs a Merkle tree, which is
-  stage 3 of `docs/design/meta-cache-merkle.md` and is not here yet.
+- A **Merkle rollback tree** over block metadata, fanout `BLOCK_SIZE/32` = 128. Level 0's
+  hashes are the metadata blocks' MACs; level k+1's are the hashes of level k's node blocks;
+  the top block's hash is `sb.meta_root`. A metadata write costs one hash and one staged
+  block write per level — four of each at a 16 GiB volume — and unlock verifies **one node**
+  against the root rather than reading the whole region. Everything below the root is
+  verified lazily, on the path from the root, when a metadata block is first loaded.
+- Every node hash covers (tag, level, index, bytes) **and** is checked against the value its
+  parent records, up to the root (**S66**). Position binding alone stops two nodes being
+  swapped; the parent chain is what stops a node that was genuinely valid at an *earlier*
+  time from verifying now, which is the attack — a physical attacker rewinding part of the
+  region writes bytes this volume really did produce.
+- **It does not make the volume monotonic.** The root lives in the superblock it protects, so
+  an attacker replacing superblock, metadata and tree together with a consistent earlier
+  snapshot defeats it. That needs a freshness anchor outside the volume (a TPM NV counter)
+  and is not implemented — see SECURITY.md and `docs/LIMITATIONS.md`.
 - 128 MiB volume (32768 × 4 KiB blocks), multi-block data allocation bitmap.
 - The per-block crypto metadata (nonce, tag, present) is a **bounded write-back cache** of
   `META_CACHE_LINES` on-disk metadata blocks, not an in-RAM mirror of the volume. A dirty line

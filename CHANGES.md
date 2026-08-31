@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 127 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 128 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -17,6 +17,33 @@ in this file.
 
 ### Changed
 
+- **The rollback MAC is a Merkle tree** (**S66**, stage 3 of
+  `docs/design/meta-cache-merkle.md`). It was `sb.meta_hmac` over a whole-volume array of
+  per-metadata-block MACs: 32 bytes per metadata block held in `.bss`, and every byte of it
+  hashed on **every metadata write**. At 16 GiB that is 1 MiB of `.bss` and 1 MiB hashed per
+  write, plus a mount that read the entire region — which is what stopped the volume growing,
+  and leaving it in place would have defeated the point of the cache that landed beside it.
+  Level 0's hashes are now the metadata blocks' MACs, level k+1's are the hashes of level k's
+  node blocks (fanout `BLOCK_SIZE/32` = 128), and the top block's hash is `sb.meta_root`. A
+  write costs one hash and one staged block write per level — four of each at 16 GiB — and
+  **unlock verifies one node against the root** instead of reading the region; everything
+  below is verified lazily, on the path from the root, when a metadata block is first loaded.
+  Every hash covers (tag, level, index, bytes) **and** is checked against the value its parent
+  records, up to the root: position binding alone would still accept a node that was genuinely
+  valid at an *earlier* time, which is the attack. Falsified from both places the rule can be
+  lost — `MERKLE_NODE_TRUST_CACHED=1` makes residency the trust criterion,
+  `MERKLE_SKIP_PARENT_BIND=1` checks the leaf against a node never placed under the root — and
+  both markers are positive: the volume served 6 of 6 rolled-back blocks.
+  **Format version v11.**
+- **`tools/check_gate_evidence.py` reads the scripts a recipe delegates its boots to.** It
+  counted boot-harness invocations in the Makefile recipe only, so a gate whose boots live in
+  a `tools/*.sh` script counted as booting once and was never asked how it knows those boots
+  ran — the exact silence the checker exists to refuse, one level of indirection down. Closing
+  it surfaced **two pre-existing gates** that had been booting thirty times each, invisibly:
+  `smoke-console-smp-stress` and `smoke-sched-invariants-stress`. Falsified in both directions:
+  the first version made every single-boot target look multi-boot (the boot harnesses are
+  excluded now), and stripping comments then made the stress pair invisible again (the loop
+  pattern learned the shell spelling as well as the Makefile one).
 - **The per-block crypto metadata is a bounded write-back cache, not a whole-volume mirror**
   (**S65**, stage 2 of `docs/design/meta-cache-merkle.md`). `g_block_meta[BLOCKS_PER_DISK]`
   held 32 bytes per block of the largest volume the kernel could describe, whether or not the

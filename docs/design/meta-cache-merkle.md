@@ -263,6 +263,37 @@ vacuous; this arm shows it *says so*.
 
 ---
 
+## 4b. What stage 3 actually shipped
+
+*Added 2026-08-31, after the code.*
+
+**§3's subtlety was the design, not a footnote.** "The replayed node must be
+independently valid" is what shaped the whole harness: the tamper restores a
+metadata block **and the level-0 node that recorded its hash**, both snapshotted
+from a copy of this very image while they were current. Restoring the block alone
+is refused by the leaf hash, and a design that MAC'd every block independently
+would refuse it identically — so that version of the arm would have tested
+nothing. Measured rather than argued: under `MERKLE_SKIP_PARENT_BIND=1`, the
+build with the chain removed, restoring the block without its node is *still*
+refused, 6 of 6.
+
+**The tampering is done by the host**, with `dd` between boots, because that is
+what a physical attacker with the disk does. The kernel's only jobs are to report
+which two blocks to snapshot and to carry a phase counter across three boots —
+and the counter lives in the block one past the end of the volume, so the tamper
+cannot rewind it and no shipping layout has to reserve anything.
+
+**The anti-vacuity check is on the tamper, not on the read.** If boot 2 did not
+change both target blocks the restore undoes nothing and boot 3 passes having
+replayed nothing, which is §2's trap in a different costume. The harness `cmp`s
+both blocks and refuses to reach boot 3 unless both differ.
+
+**§4's first bullet is now `SECURITY.md`'s own row and `docs/LIMITATIONS.md` 1.12**,
+because a scope limit that lives only in a design document is one nobody reading
+the security claims will find.
+
+---
+
 ## 5. Order of work
 
 1. **Arm A's harness first, against the current code.** It must PASS on today's

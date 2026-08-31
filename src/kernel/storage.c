@@ -93,9 +93,31 @@ static int g_vdisk_high_entropy_kek = 0;
  * the sealed path over the vdisk deterministically. */
 static int g_tpm_force_seal = 0;
 
+/* THE BOUND IS THE BACKING STORE, NOT THE ADVERTISED GEOMETRY.
+ *
+ * These two used to be the same number and stopped being one on 2026-08-31.
+ * `g_vdisk_bd.total_blocks` was BLOCKS_PER_DISK -- the ceiling on the LARGEST
+ * volume the crypto-metadata array can describe -- while the backing store is a
+ * VDISK_BLOCKS-sized reservation in the physical pool. Raising BLOCK_SIZE to
+ * 4 KiB was what split them: VDISK_BLOCKS was introduced precisely so the RAM
+ * disk would not become 128 MiB of pool reservation as a side effect, and the
+ * device's advertised size was left behind. A 32768-block device over a
+ * 4096-block reservation accepts block 4096 and writes 4 KiB into the FREE PAGE
+ * POOL that begins immediately after it -- reachable from ring 3 by writing
+ * enough file data on any diskless boot, which is every CI boot.
+ *
+ * So the check tests `vd->block_count`, which is a property of the memory that
+ * actually exists, as well as the geometry the device advertises. Both, not
+ * either: `total_blocks` is what the filesystem lays itself out against, so a
+ * device claiming more than it has is still a defect worth failing on, and
+ * `block_count` is the one that cannot be wrong by construction. Falsified by
+ * VDISK_TOTAL_UNBOUNDED=1 (make smoke-vdisk-bound-control). */
 static int vdisk_read(struct block_device *bd, uint64_t block, void *buf) {
     struct virtual_disk *vd = (struct virtual_disk *)bd->private;
     if (block >= bd->total_blocks) return -1;
+#ifndef VDISK_TOTAL_UNBOUNDED
+    if (block >= vd->block_count) return -1;
+#endif
 
     uint8_t *src = vd->data + (block * BLOCK_SIZE);
     uint8_t *d = buf;
@@ -106,6 +128,9 @@ static int vdisk_read(struct block_device *bd, uint64_t block, void *buf) {
 static int vdisk_write(struct block_device *bd, uint64_t block, const void *buf) {
     struct virtual_disk *vd = (struct virtual_disk *)bd->private;
     if (block >= bd->total_blocks) return -1;
+#ifndef VDISK_TOTAL_UNBOUNDED
+    if (block >= vd->block_count) return -1;   /* see vdisk_read */
+#endif
 
     uint8_t *dst = vd->data + (block * BLOCK_SIZE);
     const uint8_t *s = buf;
@@ -125,9 +150,15 @@ static int vdisk_flush(struct block_device *bd) {
     return 0;
 }
 
+/* VDISK_BLOCKS, not BLOCKS_PER_DISK: this device is exactly as large as the
+ * reservation behind it. See vdisk_read for what the two being confused cost. */
 static struct block_device g_vdisk_bd = {
     .name = "vdisk0",
+#ifdef VDISK_TOTAL_UNBOUNDED
     .total_blocks = BLOCKS_PER_DISK,
+#else
+    .total_blocks = VDISK_BLOCKS,
+#endif
     .read_block = vdisk_read,
     .write_block = vdisk_write,
     .flush = vdisk_flush,
@@ -890,6 +921,92 @@ static struct block_device g_ata_bd = {
     .private = 0,
 };
 
+#ifdef VDISK_BOUND_SELFTEST
+/* A block device may not accept a block it has no memory for (SECURITY.md S64).
+ *
+ * Two directions, because an inject-and-look arm on its own measures false
+ * negatives only and a bound that rejects everything satisfies all of them
+ * (the KSP_GUARD_ALWAYS lesson):
+ *
+ *   1. the LAST in-range block is writable and reads back  -- the bound is not
+ *      simply refusing the device's own extent, and
+ *   2. the first out-of-range block is REFUSED.
+ *
+ * Under VDISK_TOTAL_UNBOUNDED=1 the second write is accepted and the bytes land
+ * in the free page pool that begins immediately after the reservation, which the
+ * probe shows POSITIVELY by reading them back from there rather than by noting
+ * that no refusal arrived. An assertion of absence is satisfied by a run that
+ * never reached the code.
+ *
+ * Runs on the ephemeral RAM vdisk, which is what a diskless boot uses, and
+ * restores whatever it displaced so the boot survives to print. */
+void storage_vdisk_bound_selftest(void)
+{
+    if (!g_vdisk_backing || current_bd != &g_vdisk_bd) {
+        print("VDISKBOUND: FAIL not running on the RAM vdisk\n");
+        return;
+    }
+
+    static uint8_t pattern[BLOCK_SIZE];
+    static uint8_t saved[BLOCK_SIZE];
+    static uint8_t readback[BLOCK_SIZE];
+    for (size_t i = 0; i < BLOCK_SIZE; i++) pattern[i] = (uint8_t)(0xC3u ^ (i & 0xFFu));
+
+    /* 1. The last block the backing store actually holds. */
+    const uint64_t last = (uint64_t)VDISK_BLOCKS - 1;
+    if (g_vdisk_bd.read_block(&g_vdisk_bd, last, saved) != 0) {
+        print("VDISKBOUND: FAIL the last in-range block could not be read\n");
+        return;
+    }
+    if (g_vdisk_bd.write_block(&g_vdisk_bd, last, pattern) != 0) {
+        print("VDISKBOUND: FAIL the last in-range block was refused\n");
+        return;
+    }
+    if (g_vdisk_bd.read_block(&g_vdisk_bd, last, readback) != 0) {
+        print("VDISKBOUND: FAIL the last in-range block could not be read back\n");
+        return;
+    }
+    for (size_t i = 0; i < BLOCK_SIZE; i++) {
+        if (readback[i] != pattern[i]) {
+            print("VDISKBOUND: FAIL the last in-range block did not read back\n");
+            return;
+        }
+    }
+    g_vdisk_bd.write_block(&g_vdisk_bd, last, saved);   /* put the volume back */
+
+    /* 2. One block past the backing store. The bytes it WOULD write start at
+     * g_vdisk_backing + VDISK_BYTES, which is the first frame of the free page
+     * pool -- so the arm can read them back from there and say so, rather than
+     * inferring reach from a missing refusal. */
+    uint8_t *past = g_vdisk_backing + VDISK_BYTES;
+    for (size_t i = 0; i < BLOCK_SIZE; i++) saved[i] = past[i];
+
+    int rc = g_vdisk_bd.write_block(&g_vdisk_bd, (uint64_t)VDISK_BLOCKS, pattern);
+    if (rc == 0) {
+        int landed = 1;
+        for (size_t i = 0; i < BLOCK_SIZE; i++)
+            if (past[i] != pattern[i]) { landed = 0; break; }
+        for (size_t i = 0; i < BLOCK_SIZE; i++) past[i] = saved[i];   /* undo it */
+        if (landed)
+            print("VDISKBOUND: FAIL a write past the backing store reached the free page pool\n");
+        else
+            print("VDISKBOUND: FAIL a write past the backing store was accepted\n");
+        return;
+    }
+
+    /* The advertised geometry is what storage_format_sealed lays the filesystem
+     * out against, so a device claiming more than it holds is a defect even
+     * where the transport refuses the write. Checked here rather than left to
+     * the transport, because the two were the same number until 2026-08-31. */
+    if (g_vdisk_bd.total_blocks != (uint64_t)VDISK_BLOCKS) {
+        print("VDISKBOUND: FAIL the device advertises more blocks than it holds\n");
+        return;
+    }
+
+    print("VDISKBOUND: PASS last-block-writable out-of-range-refused\n");
+}
+#endif /* VDISK_BOUND_SELFTEST */
+
 int storage_init(void) {
     /* Persistent by default: probe for an ATA disk. If one is attached, use the
      * encrypted ATA store — it comes up mounted-but-locked and disk_key is only
@@ -920,7 +1037,7 @@ int storage_init(void) {
     g_vdisk_high_entropy_kek = 1;
     g_vdisk.data        = g_vdisk_backing;
     g_vdisk.size        = VDISK_BYTES;
-    g_vdisk.block_count = BLOCKS_PER_DISK;
+    g_vdisk.block_count = VDISK_BLOCKS;
     my_memset(g_vdisk.data, 0, g_vdisk.size);
     current_bd = &g_vdisk_bd;
 
@@ -1777,7 +1894,7 @@ void storage_tpm_kek_selftest(void)
     g_tpm_force_seal         = 1;   /* force TPM sealing at format */
     g_vdisk.data        = g_vdisk_backing;
     g_vdisk.size        = VDISK_BYTES;
-    g_vdisk.block_count = BLOCKS_PER_DISK;
+    g_vdisk.block_count = VDISK_BLOCKS;
     my_memset(g_vdisk.data, 0, g_vdisk.size);
 
     const char *pw = "kek-selftest-password";

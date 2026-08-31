@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 123 entries, newest first, each explaining what
+The narrative record of how Horus was built: 124 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,53 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: a TUI that is 300 lines because the substrate was already there
+
+The installer needs a screen, and the reflex answer is to port ncurses. That would have been
+wrong here twice over: terminfo and a compiled terminal database are a large unaudited addition to
+a tree whose whole argument is a small auditable TCB, and Horus talks to exactly one kind of
+terminal -- a VT/ANSI console on a serial line, at a fixed 80x24 that console_proto.h explains.
+Targeting only that removes the database and most of the library with it.
+
+**The substrate turned out to already exist**, which shaped everything. console_proto.h has
+CON_OP_READ_RAW, CON_OP_WRITE_RAW and CON_OP_WINSZ, and its comment says outright that they are
+there so "a curses program running on Horus drives it by passing escape sequences through
+verbatim". So the TUI needed no kernel change and no new syscall: every operation is a request on
+the console endpoint the caller already holds. A task that can print can draw, and a task that
+cannot, cannot. That is the safest shape a feature can have -- it cannot grant what it does not
+touch.
+
+READ_RAW returning "the whole immediately-available burst (so ESC-[-A arrives together)" also
+removed the hang risk from the key decoder. It decodes from a buffer rather than reading again
+mid-sequence, so a truncated escape yields ESC instead of waiting for bytes that are not coming.
+
+The self-test is the part worth reading. **Every property here is invisible on a terminal**: a
+correct damage diff and a full repaint draw the identical picture, and so do a bounds check and
+its absence -- right up until the latter corrupts something. So the assertions are on the BYTE
+COUNT handed to the console and on the library's own cells, both of which a control arm can move
+and a screen cannot show. That is also why there are two arms rather than one:
+TUI_NO_DAMAGE_DIFF=1 for the diff, TUI_CLAMP_OFF=1 for the bounds check, each with its own marker.
+
+**Five wiring mistakes, all caught by building rather than by assuming**, and one of them was the
+trap this repository already documents. USERSPACE_CFLAGS is assigned with `=` at line ~2400, so
+the three `+=` lines placed beside the flags' own ifeq near line 400 were silently discarded --
+the flags were set, the build succeeded, and not one -D reached the compiler. SYSCALL_PTR_TRUNC32's
+comment records exactly this, which is why the fix sits beside it now. Verified by asking make
+whether each -D actually appears on the compile line rather than trusting a green build. The
+others: an #elif arm inserted inside another branch, so it would only have run under
+LIBHORUS_SELFTEST; a first-occurrence string replace that appended tuitest.bin to
+SHLIBC_SELFTEST_DEP instead of PIE_TEST_BINS; and two #ifdef guards that needed widening.
+
+**And the first run failed while every check passed.** TUI_SELFTEST: begin reached serial and
+nothing followed. console_server owns the hardware in that build, so a ring-3 kput goes to a
+kernel console that is no longer the wire: the markers were written and inaudible. consoletest has
+the same shape for the same reason, which is what pointed at it. The tell was the shape of the
+failure again -- a timeout with the setup marker present and no verdict either way, rather than a
+FAIL naming a check. Markers now go through CON_OP_WRITE, one request each, which makes them
+atomic at the protocol level and satisfies 2.6a for free.
 
 ---
 

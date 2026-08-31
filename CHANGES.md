@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 123 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 124 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,25 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Added
+
+- **A small full-screen TUI in `libhorus`** (`include/tui.h`, `userspace/tui.c`), groundwork for an
+  installer. About 300 lines against ncurses' tens of thousands, and **it adds nothing to the
+  attack surface**: every operation is a `CON_OP_WRITE_RAW` / `CON_OP_READ_RAW` / `CON_OP_WINSZ`
+  request on the console endpoint the calling task already holds, so there is no new syscall, no
+  kernel change, and no privilege a task with the console capability did not already have.
+  Deliberately without: allocation (two static 24×80 cell buffers — a TUI that cannot allocate
+  cannot fail to allocate), varargs (no format string to get wrong), and any unbounded wait on
+  input. One bounds check that every drawing call funnels through; the geometry the server reports
+  is clamped rather than believed, since the buffers are what bound every write; control characters
+  are replaced rather than emitted, because a stray `\n` would move the cursor out from under the
+  diff; and a truncated escape sequence yields `TUI_KEY_ESC` rather than waiting for bytes that are
+  not coming. `tui.o` is a third `libhorus.a` member so a program that never draws does not carry
+  the 3840 bytes of buffers.
+  Witnessed by `make smoke-tui`, which asserts what a screen **cannot show** — the byte count
+  handed to the console — and falsified two ways: `TUI_NO_DAMAGE_DIFF=1` (a repaint draws the same
+  picture; only the count differs) and `TUI_CLAMP_OFF=1` (the memory-safety half).
 
 ### Fixed
 

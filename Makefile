@@ -112,6 +112,7 @@ DEFECT_FLAGS = \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
+	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED
@@ -390,6 +391,29 @@ USERS_PEPPER_PER_BOOT ?= 0
 ifeq ($(USERS_PEPPER_PER_BOOT),1)
 CFLAGS  += -DUSERS_PEPPER_PER_BOOT
 ASFLAGS += -DUSERS_PEPPER_PER_BOOT
+endif
+
+# TUI_SELFTEST=1 embeds a ring-3 task that exercises the TUI's contracts against
+# its own buffers -- damage diffing, coordinate clamping, field truncation and
+# the key decoder -- without needing a terminal to look at.
+TUI_SELFTEST ?= 0
+ifeq ($(TUI_SELFTEST),1)
+CFLAGS  += -DTUI_SELFTEST
+ASFLAGS += -DTUI_SELFTEST
+TUI_SELFTEST_DEP = userspace/tuitest.bin
+endif
+
+# TUI_NO_DAMAGE_DIFF=1 makes tui_flush repaint every cell instead of only the
+# changed ones. The screen still looks right, which is the point: only a byte
+# count can tell the difference.
+TUI_NO_DAMAGE_DIFF ?= 0
+ifeq ($(TUI_NO_DAMAGE_DIFF),1)
+endif
+
+# TUI_CLAMP_OFF=1 removes the single bounds check every drawing call goes
+# through, so an out-of-range write lands outside the cell buffer.
+TUI_CLAMP_OFF ?= 0
+ifeq ($(TUI_CLAMP_OFF),1)
 endif
 
 KEYSLOT_SELFTEST ?= 0
@@ -2225,7 +2249,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2390,6 +2414,21 @@ endif
 # assigned with `=` just above, so setting it beside the other control-arm flags
 # would be overwritten -- and it must not sit inside another flag's ifeq, which
 # is where it was first written and where it silently never fired.
+# The TUI arms, applied HERE for the same reason as issue #176's below:
+# USERSPACE_CFLAGS is assigned with `=` further up this file, so a `+=` placed
+# beside the flag's own ifeq (line ~400) is silently discarded. That is the trap
+# SYSCALL_PTR_TRUNC32's comment records, and this hit it on the first attempt --
+# the flags were set, the build succeeded, and not one -D reached the compiler.
+ifeq ($(TUI_SELFTEST),1)
+USERSPACE_CFLAGS += -DTUI_SELFTEST
+endif
+ifeq ($(TUI_NO_DAMAGE_DIFF),1)
+USERSPACE_CFLAGS += -DTUI_NO_DAMAGE_DIFF
+endif
+ifeq ($(TUI_CLAMP_OFF),1)
+USERSPACE_CFLAGS += -DTUI_CLAMP_OFF
+endif
+
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
 USERSPACE_CFLAGS += -DSYSCALL_PTR_TRUNC32
 endif
@@ -2544,7 +2583,11 @@ MALLOC_OBJ = userspace/malloc.o
 # framepeer) must not carry the mount table and the walker. Two members means
 # ld extracts each only when something references it.
 LIBHORUS_LIB = userspace/libhorus.a
-LIBHORUS_OBJS = userspace/libhorus.o userspace/hvfs.o
+# tui.o is a THIRD member for the same reason hvfs.o is a second one: it carries
+# 3840 bytes of .bss for the front/back cell buffers, and a program that never
+# draws a screen (captest, framepeer, every non-interactive self-test) must not
+# pay for them. ld extracts a member only when something references it.
+LIBHORUS_OBJS = userspace/libhorus.o userspace/hvfs.o userspace/tui.o
 $(LIBHORUS_LIB): $(LIBHORUS_OBJS)
 	$(AR) rcs $@ $(LIBHORUS_OBJS)
 
@@ -2925,7 +2968,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7036,3 +7079,40 @@ smoke-storage-noformat-control:
 		tools/smoke_test.sh boot.iso
 	@rm -f noformat-c.img
 	@echo "[noformat] CONTROL PASS - with the flag a login formats the disk, as it used to"
+
+# libhorus's TUI, asserted against its own buffers rather than a screen. Every
+# property here is invisible on a terminal: a correct damage diff and a full
+# repaint draw the same picture, and so do a bounds check and its absence.
+.PHONY: smoke-tui
+smoke-tui:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: PASS' FAIL_MARKER='TUITEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Damage diffing is what makes a full-screen UI usable over a serial line, and
+# it cannot be seen: the screen looks identical either way. TUI_NO_DAMAGE_DIFF=1
+# repaints every cell, and only the byte count for a one-cell change tells them
+# apart -- which is what the self-test asserts on.
+.PHONY: smoke-tui-diff-control
+smoke-tui-diff-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_DAMAGE_DIFF=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_DAMAGE_DIFF=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL a one-cell change repainted the screen' \
+		tools/smoke_test.sh boot.iso
+
+# The memory-safety half. Every drawing call funnels through one bounds check;
+# TUI_CLAMP_OFF=1 removes it, so a write one row past the end lands in the
+# buffers and the next flush notices.
+.PHONY: smoke-tui-clamp-control
+smoke-tui-clamp-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_CLAMP_OFF=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_CLAMP_OFF=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL an out-of-range write reached the buffer' \
+		tools/smoke_test.sh boot.iso

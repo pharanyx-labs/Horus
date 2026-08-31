@@ -1670,6 +1670,16 @@ jobs:
       # capability denial is indistinguishable from a hang.
       - name: Control arm — a permanent refusal must not be retried
         run: make smoke-libhorus-retry-control
+      # The TUI is the other half of libhorus's ring-3 runtime, and its
+      # properties are ones a screen cannot show: a correct damage diff and a
+      # full repaint draw the same picture, and so do a bounds check and its
+      # absence. The self-test asserts on the byte count handed to the console.
+      - name: The TUI draws minimally and refuses out-of-range writes
+        run: make smoke-tui
+      - name: Control arm — a flush that repaints instead of diffing
+        run: make smoke-tui-diff-control
+      - name: Control arm — drawing with the bounds check removed
+        run: make smoke-tui-clamp-control
       # The termination half: strncpy's semantics leave the buffer unterminated
       # exactly when the source did not fit.
       - name: Control arm — ustrncpy must always terminate

@@ -532,6 +532,14 @@ void smp_bringup(void) {
      * the registered badge (IRQ_SELFTEST: PASS). Third driver-privilege-separation
      * job; see docs/design/console-server.md. */
     irq_selftest();
+#elif defined(TUI_SELFTEST)
+    /* Gated: console_server plus a client that drives libhorus's TUI against its
+     * own buffers. Asserts what a screen cannot show -- that a one-cell change
+     * costs a handful of bytes rather than a repaint, that an out-of-range write
+     * is discarded, and that a truncated escape sequence yields a key instead of
+     * a wait. TUITEST: PASS. Falsified by TUI_NO_DAMAGE_DIFF=1 and
+     * TUI_CLAMP_OFF=1. */
+    { extern void tui_selftest(void); tui_selftest(); }
 #elif defined(CONSOLE_SELFTEST)
     /* Gated: stand up the ring-3 console_server (owns the console hardware via the
      * J2/J3 mechanisms) and a client that drives it over IPC; the server emits the

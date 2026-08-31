@@ -825,6 +825,19 @@ embedded_consoletest_bin_start:
 embedded_consoletest_bin_end:
 #endif
 
+#ifdef TUI_SELFTEST
+/* The TUI conformance client. It needs the console endpoint (unlike
+ * libhorustest, which is endowed with nothing on purpose), because every TUI
+ * operation is a request to console_server -- that being the whole point: the
+ * library adds no privilege of its own. */
+.align 16
+.global embedded_tuitest_bin_start
+embedded_tuitest_bin_start:
+.incbin "userspace/tuitest.bin"
+.global embedded_tuitest_bin_end
+embedded_tuitest_bin_end:
+#endif
+
 #ifdef LIBHORUS_SELFTEST
 /* libhorus conformance suite: one ring-3 task asserting the shared userspace
  * runtime's own contracts, including that ipc_call_retry refuses rather than

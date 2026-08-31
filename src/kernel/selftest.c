@@ -2054,6 +2054,44 @@ void console_selftest(void) {
 }
 #endif /* CONSOLE_SELFTEST */
 
+#ifdef TUI_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- TUI conformance self-test (TUI_SELFTEST builds only) -------------------
+ *
+ * Modelled on console_selftest: bring up console_server, then a client that
+ * drives it. The client is endowed with the console endpoint and NOTHING else,
+ * which is the claim the TUI makes about itself -- every operation is a request
+ * on a capability the caller already holds, so a task that can print can draw
+ * and a task that cannot, cannot.
+ *
+ * Entry into ring 3 does not return. */
+void tui_selftest(void) {
+    extern uint8_t embedded_console_server_bin_start[], embedded_console_server_bin_end[];
+    extern uint8_t embedded_tuitest_bin_start[], embedded_tuitest_bin_end[];
+
+    print("TUI_SELFTEST: begin\n");
+
+    int srv = fs_spawn_embedded(embedded_console_server_bin_start,
+                                embedded_console_server_bin_end, "console_server");
+    if (srv <= 0) { print("TUI_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
+    tasks[srv].uid = 0;
+    cap_install_from_root(srv, CAPSLOT_CONSOLE_EP, 11, CON_EP_REQ);   /* listen */
+    if (cap_install_from_root(srv, 10, 10, IODEV_PLATFORM) != 0) {
+        print("TUI_SELFTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+
+    int cli = fs_spawn_embedded(embedded_tuitest_bin_start,
+                                embedded_tuitest_bin_end, "tuitest");
+    if (cli <= 0) { print("TUI_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+    tasks[cli].uid = 0;
+    cap_install_from_root(cli, CAPSLOT_CONSOLE_EP, 12, CON_EP_REQ);   /* client */
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(srv);
+}
+#endif /* TUI_SELFTEST */
+
 #ifdef LIBHORUS_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- libhorus conformance self-test (LIBHORUS_SELFTEST builds only) ---------
@@ -2377,7 +2415,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

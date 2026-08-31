@@ -42,6 +42,8 @@ control_arms:
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
   smoke-storage-noformat-control: smoke-storage-noformat
+  smoke-tui-diff-control: smoke-tui
+  smoke-tui-clamp-control: smoke-tui
   smoke-cap-lookup-control: smoke-cap-lookup
   smoke-cap-lookup-range-control: smoke-cap-lookup
   smoke-cspace-release-control: smoke-cspace-release
@@ -136,6 +138,7 @@ gates:
   - smoke-coreutils-shell
   - smoke-cow
   - smoke-cpu
+  - smoke-tui
   - smoke-keyslots
   - smoke-users-persist
   - smoke-users-tamper

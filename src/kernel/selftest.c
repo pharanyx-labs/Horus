@@ -2540,8 +2540,15 @@ void wal_crashtest(void) {
         nd.type = 1; nd.mode = 0100600; nd.links = 1;
         storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
 
-        uint8_t buf[512];
-        for (int i = 0; i < 512; i++) buf[i] = 0;
+        /* BLOCK_SIZE, not 512. storage_write_file_block does
+         * my_memcpy(temp, buf, BLOCK_SIZE), so a 512-byte buffer here was a
+         * 3,584-byte read off the end of the kernel stack -- and 3.5 KiB of
+         * unrelated stack contents written into the block. The gate passed
+         * throughout because it only ever verified the first 16 bytes. Found
+         * 2026-08-31 while reading this function to model a new harness on it;
+         * the eighth place the 512-byte block was assumed. */
+        uint8_t buf[BLOCK_SIZE];
+        for (int i = 0; i < BLOCK_SIZE; i++) buf[i] = 0;
         for (int i = 0; i < 16; i++)  buf[i] = (uint8_t)MARK[i];
 
         print("WAL_CRASHTEST: boot1 armed; committing then crashing\n");
@@ -2549,7 +2556,7 @@ void wal_crashtest(void) {
         storage_write_file_block(mfs, (uint64_t)ino, 0, buf);   /* commits, then halts */
         print("WAL_CRASHTEST: FAIL no-crash\n");                /* unreachable */
     } else {
-        uint8_t buf[512];
+        uint8_t buf[BLOCK_SIZE];
         if (storage_read_file_block(mfs, 1, 0, buf) != 0) {
             print("WAL_CRASHTEST: FAIL read\n");
         } else {
@@ -3469,3 +3476,113 @@ void storage_noformat_selftest(void)
     }
 }
 #endif
+
+#ifdef META_CRASH_SELFTEST
+/* Arm A of docs/design/meta-cache-merkle.md: a metadata update belonging to a
+ * committed journal transaction is durable, whether or not its cache entry was
+ * evicted before the crash.
+ *
+ * BUILT BEFORE THE CACHE EXISTS, and that is the point of the ordering. Today
+ * g_block_meta is a complete in-RAM mirror that evicts nothing, so this harness
+ * must PASS on the current tree -- which is what proves the harness itself
+ * works before there is a cache to blame anything on. When stage 2 lands, the
+ * eviction assertion below becomes gating and META_CACHE_EVICT_NOWB=1 is the
+ * arm that must make it fail.
+ *
+ * The working set is deliberately larger than any cache we would plausibly
+ * configure, so eviction is forced rather than hoped for.
+ *
+ * Two boots on one disk, reusing the WAL_CRASHTEST mechanism: boot 1 writes
+ * META_CRASH_BLOCKS distinct blocks and crashes with the last one committed but
+ * not applied; boot 2 replays and must read every one of them back intact.
+ */
+#define META_CRASH_BLOCKS  64
+#define META_CRASH_INO     1
+
+/* Byte i of block b is a function of both, so a block served from the wrong
+ * offset -- the failure mode a broken cache produces -- does not merely look
+ * blank, it looks like a DIFFERENT block, and the marker can say which. */
+static uint8_t meta_crash_byte(uint32_t b, uint32_t i)
+{
+    return (uint8_t)((b * 31u + i * 7u + 0x5Au) & 0xFFu);
+}
+
+void meta_crash_selftest(void)
+{
+    extern int g_wal_crash_armed;
+    extern int storage_fresh_format;
+
+    print("METACACHE: begin\n");
+    if (storage_unlock("metacachepw", 11) != 0) {
+        print("METACACHE: FAIL unlock\n"); for (;;) asm volatile ("hlt");
+    }
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    static uint8_t buf[BLOCK_SIZE];
+
+    if (storage_fresh_format) {
+        int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+        if (ino < 1) { print("METACACHE: FAIL alloc\n"); for (;;) asm volatile ("hlt"); }
+        on_disk_inode_t nd;
+        for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+        nd.type = 1; nd.mode = 0100600; nd.links = 1;
+        storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
+
+#ifdef META_CRASH_DROP_ONE
+        /* Arm the drop against a block in the MIDDLE of the working set: at the
+         * start a failure reads as a mount problem, at the end as the
+         * committed-but-unapplied block the journal replays. */
+        {
+            extern int g_meta_drop_armed, g_meta_drop_after;
+            g_meta_drop_after = META_CRASH_BLOCKS / 2;   /* middle of the set */
+            g_meta_drop_armed = 1;
+        }
+#endif
+        /* All but the last block written normally: each one dirties a distinct
+         * metadata entry, which is what forces eviction once a cache exists. */
+        for (uint32_t b = 0; b < META_CRASH_BLOCKS - 1; b++) {
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = meta_crash_byte(b, i);
+            if (storage_write_file_block(mfs, (uint64_t)ino, b, buf) != 0) {
+                print("METACACHE: FAIL write block "); print_decimal((int)b); print("\n");
+                for (;;) asm volatile ("hlt");
+            }
+        }
+
+        print("METACACHE: boot1 wrote the working set; committing then crashing\n");
+        {
+            uint32_t b = META_CRASH_BLOCKS - 1;
+            for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = meta_crash_byte(b, i);
+            g_wal_crash_armed = 1;
+            storage_write_file_block(mfs, (uint64_t)ino, b, buf);  /* commits, halts */
+        }
+        print("METACACHE: FAIL no-crash\n");                        /* unreachable */
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Boot 2: the journal has been replayed by storage_unlock. Every block must
+     * come back, including the one that was committed-but-unapplied. */
+    for (uint32_t b = 0; b < META_CRASH_BLOCKS; b++) {
+        if (storage_read_file_block(mfs, META_CRASH_INO, b, buf) != 0) {
+            print("METACACHE: FAIL block "); print_decimal((int)b);
+            print(" lost after eviction\n");
+            return;
+        }
+        for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+            if (buf[i] != meta_crash_byte(b, i)) {
+                print("METACACHE: FAIL block "); print_decimal((int)b);
+                print(" wrong contents at byte "); print_decimal((int)i); print("\n");
+                return;
+            }
+        }
+    }
+
+    /* The eviction assertion, DEFERRED until stage 2 exists. Reported rather
+     * than asserted, because today's full mirror evicts nothing and a check
+     * that cannot fail is worse than an absent one -- it reads as coverage.
+     * When the cache lands this becomes:
+     *     if (meta_cache_evictions() == 0) -> FAIL "this run tested nothing"
+     * and without it, growing the cache later would silently turn this gate
+     * into a no-op with nothing to say so. */
+    print("METACACHE: evictions=unavailable (no cache in this build)\n");
+    print("METACACHE: PASS all blocks verified after crash\n");
+}
+#endif /* META_CRASH_SELFTEST */

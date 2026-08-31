@@ -111,7 +111,7 @@ DEFECT_FLAGS = \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
-	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
+	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT META_CRASH_DROP_ONE \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
@@ -414,6 +414,27 @@ endif
 # through, so an out-of-range write lands outside the cell buffer.
 TUI_CLAMP_OFF ?= 0
 ifeq ($(TUI_CLAMP_OFF),1)
+endif
+
+# META_CRASH_SELFTEST=1 builds Arm A of docs/design/meta-cache-merkle.md: a
+# committed metadata update survives a crash whether or not its cache entry was
+# evicted. Built BEFORE the bounded cache exists, so the harness is proven
+# against the current full mirror first.
+# META_CRASH_DROP_ONE=1 is the falsifying arm for the Arm A harness: one block's
+# crypto metadata never reaches the disk, which is what a bounded cache does when
+# it evicts a dirty entry without writing back (failure mode E1). Present before
+# the cache is, because a harness only ever seen to pass is not yet known to
+# detect anything.
+META_CRASH_DROP_ONE ?= 0
+ifeq ($(META_CRASH_DROP_ONE),1)
+CFLAGS  += -DMETA_CRASH_DROP_ONE
+ASFLAGS += -DMETA_CRASH_DROP_ONE
+endif
+
+META_CRASH_SELFTEST ?= 0
+ifeq ($(META_CRASH_SELFTEST),1)
+CFLAGS  += -DMETA_CRASH_SELFTEST -DWAL_CRASHTEST
+ASFLAGS += -DMETA_CRASH_SELFTEST -DWAL_CRASHTEST
 endif
 
 KEYSLOT_SELFTEST ?= 0
@@ -7129,3 +7150,44 @@ smoke-tui-clamp-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL an out-of-range write reached the buffer' \
 		tools/smoke_test.sh boot.iso
+
+# Arm A: a metadata update in a committed transaction is durable across a crash.
+# Two boots on one image -- boot 1 writes a working set larger than any cache we
+# would configure and crashes with the last block committed but not applied;
+# boot 2 replays and must read every block back byte-for-byte.
+.PHONY: smoke-meta-crash
+smoke-meta-crash:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@dd if=/dev/zero of=meta-crash.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@echo "[meta-crash] boot 1/2 - write the working set, commit, crash"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		FAIL_MARKER='METACACHE: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[meta-crash] boot 2/2 - replay, then verify every block"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
+		REQUIRE_MARKER='METACACHE: PASS' \
+		FAIL_MARKER='METACACHE: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f meta-crash.img
+	@echo "[meta-crash] PASS - a committed metadata update survived the crash"
+
+# The falsifying arm: one block's metadata never reaches the disk, so boot 2 must
+# report that block lost rather than passing. Proves the harness detects the
+# failure mode a bounded cache will introduce.
+.PHONY: smoke-meta-crash-control
+smoke-meta-crash-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 META_CRASH_DROP_ONE=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory META_CRASH_SELFTEST=1 META_CRASH_DROP_ONE=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@dd if=/dev/zero of=meta-crash-c.img bs=$(FS_BLOCK_SIZE) count=$(PERSIST_BLOCKS) status=none
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
+		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
+		tools/smoke_test.sh boot.iso
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
+		REQUIRE_MARKER='METACACHE: FAIL block' \
+		tools/smoke_test.sh boot.iso
+	@rm -f meta-crash-c.img
+	@echo "[meta-crash] CONTROL PASS - a dropped metadata write is detected"

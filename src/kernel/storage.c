@@ -492,6 +492,17 @@ static int journal_compute_hmac(const uint8_t *mac_key, uint64_t seq, uint32_t c
  * is durable but before the home apply, to exercise redo recovery on next boot.
  * storage_fresh_format lets the two-boot test tell boot 1 (formatted a fresh
  * disk) from boot 2 (mounted the existing one). */
+#ifdef META_CRASH_DROP_ONE
+int g_meta_drop_armed = 0;
+/* Counted, not addressed. The self-test writes LOGICAL blocks of an inode and
+ * does not know which physical block the allocator hands out, so targeting a
+ * physical number would be a guess that might fall outside the working set --
+ * an arm that silently does not reproduce. Dropping the Nth flush is inside the
+ * set by construction. */
+int g_meta_drop_after = 0;
+static int g_meta_flushes = 0;
+#endif
+
 #ifdef WAL_CRASHTEST
 int g_wal_crash_armed = 0;
 int storage_fresh_format = 0;
@@ -633,6 +644,39 @@ static void flush_meta_block(uint64_t phys)
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted || mfs->sb.meta_start == 0) return;
     if (phys >= BLOCKS_PER_DISK) return;
+
+#ifdef META_CRASH_DROP_ONE
+    /* FALSIFYING ARM for the Arm A harness (docs/design/meta-cache-merkle.md).
+     *
+     * Drops the crypto metadata for one block on its way to the disk, which is
+     * exactly what a bounded cache does when it evicts a dirty entry without
+     * writing it back -- failure mode E1, the thing Arm A exists to catch. It is
+     * here BEFORE the cache is, because a harness that has only ever been seen
+     * to pass is not yet known to detect anything.
+     *
+     * The block is chosen in the middle of the working set on purpose: at the
+     * start it might be mistaken for a mount failure, and at the end for the
+     * committed-but-unapplied block the journal replays. */
+    if (g_meta_drop_armed && ++g_meta_flushes == g_meta_drop_after) {
+        /* LOSE the entry, do not merely skip writing it.
+         *
+         * The first version of this arm just returned early, and it could not
+         * reproduce: at 4 KiB there are META_ENTRIES_PER_BLOCK (128) entries per
+         * meta block, so the whole 64-block working set lives in ONE of them,
+         * and the very next flush rewrote that block from the complete in-RAM
+         * mirror -- entry included. A full mirror is SELF-HEALING against a lost
+         * flush, which is exactly the property a bounded cache removes: an
+         * evicted entry is gone from RAM and nothing can rewrite it.
+         *
+         * So the injection clears the in-RAM entry as well. Subsequent flushes
+         * then propagate the cleared entry to disk, which is what eviction
+         * without write-back actually leaves behind (failure mode E1). */
+        g_block_meta[phys].present = 0;
+        for (int i = 0; i < AEAD_NONCE_LEN; i++) g_block_meta[phys].nonce[i] = 0;
+        for (int i = 0; i < AEAD_TAG_LEN;   i++) g_block_meta[phys].tag[i]   = 0;
+        return;
+    }
+#endif
 
     uint64_t meta_blk = phys / META_ENTRIES_PER_BLOCK;
     uint64_t base     = meta_blk * META_ENTRIES_PER_BLOCK;

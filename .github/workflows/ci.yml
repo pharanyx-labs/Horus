@@ -2469,6 +2469,14 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot twice against one ATA image and assert an encrypted file survives a reboot
         run: make smoke-fs-persist
+      # Arm A of docs/design/meta-cache-merkle.md, built before the bounded
+      # metadata cache it will guard: a committed metadata update is durable
+      # across a crash. Gating now, so the harness is known-good before stage 2
+      # gives it something to catch.
+      - name: A committed metadata update survives a crash
+        run: make smoke-meta-crash
+      - name: Control arm — a metadata entry lost as an eviction would lose it
+        run: make smoke-meta-crash-control
       # S61. Two boots on one image: both passwords must open the volume after a
       # power cycle, and revoking one must revoke that one only. Runs here rather
       # than in a job of its own so no new required context is created.

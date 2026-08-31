@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 124 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 125 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,26 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **The filesystem block size is 4 KiB, not 512 B** (on-disk format **v9**). At 512 the indirect
+  fan-out was `BLOCK_SIZE/8` = 64 pointers, capping a file at **2.04 MiB**; at 4 KiB it is 512 and
+  the same double-indirect structure reaches **1.00 GiB**. Every per-block table — crypto metadata,
+  bitmaps, MAC input — shrinks eightfold, and the maximum volume goes from 16 MiB to 128 MiB with
+  no extra kernel memory. Groundwork for a volume large enough to install onto; the metadata cache
+  and a real Merkle tree are what 16 GiB needs next.
+  **The version bump is load-bearing**: a v8 volume's blocks are 512 bytes, and without it the
+  superblock check would pass and the volume be reinterpreted at 4 KiB — every offset wrong by 8×,
+  on a real disk.
+  **512 was not a constant in this tree, it was an assumption, written down in six independent
+  places** — `kernel.h`, the BSP stack in `multiboot.S`, the `ap_trampoline.S` literal,
+  `fs_server.c`'s own `#define BLK 512u` across a syscall ABI, fourteen `bs=512` in the Makefile,
+  and finally `atadisk_read`, which passed a filesystem block number to `ata_read` as an LBA and
+  asked for one sector. Each failed differently: a boot fault into a guard page, a tripped
+  `_Static_assert`, whole blocks read into a 512-byte buffer, test images an eighth of their size,
+  and a scrambled on-disk address space. The size now lives once in `include/block_size.h`, which
+  both rings and the build system read.
 
 ### Added
 

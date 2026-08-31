@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 124 entries, newest first, each explaining what
+The narrative record of how Horus was built: 125 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,59 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Changed: 512 was not a constant, it was an assumption in six places
+
+The filesystem block size went from 512 bytes to 4 KiB, groundwork for a volume big enough to
+install onto. The change itself is one number. Finding every place that had independently written
+that number down took six failures, and the shape of them is the point.
+
+At 512 the indirect fan-out is BLOCK_SIZE/8 = 64 pointers, so a file was capped at 2.04 MiB no
+matter how large the volume; at 4 KiB the fan-out is 512 and the same double-indirect structure
+reaches 1.00 GiB. Every per-block table -- crypto metadata, bitmaps, MAC input -- is eight times
+smaller, which is what makes the metadata cache and Merkle tree that 16 GiB needs tractable.
+
+**Where 512 was hiding.**
+
+1. `kernel.h`, the definition everyone knows about.
+2. `multiboot.S`, the BSP kernel stack, a bare `.space 16384`. Raising KERNEL_STACK_SIZE did NOT
+   touch it -- that constant sizes per-task stacks, and kernel_main runs storage_init on a
+   different one. Every gate failed identically, including plain `smoke`. The stack overflowed
+   into bsp_stack_guard and faulted at a nameable address; `nm` put it squarely inside the guard
+   page, so the guard turned a silent neighbour-corruption into a one-line diagnosis.
+3. `ap_trampoline.S`, which strides the AP idle-stack array by a literal. A _Static_assert
+   existed for exactly this and caught it within a minute of the stack change. The size now comes
+   from BSP_STACK_SIZE in kernel_vma.h, single-sourced -- strictly better than the assert next
+   door, which is only needed because its value IS duplicated.
+4. `userspace/fs_server.c`: `#define BLK 512u`. Two independent definitions of one number on
+   opposite sides of a syscall ABI. SYS_FBLOCK_READ returns a whole block, so the size is part of
+   that ABI -- and the server was reading 4 KiB into a 512-byte buffer. It had done nothing wrong;
+   it believed a constant nobody had told it about.
+5. The Makefile: fourteen `bs=512` in dd invocations whose `count=` already derived from the
+   header. Half a coupling is worse than none, because it looks maintained. Every test image was
+   an eighth of its intended size.
+6. `atadisk_read`, and this was the real one: it passed the filesystem block number to ata_read as
+   an LBA and asked for ONE sector, on the stated assumption that "a block is one 512-byte LBA
+   sector, so the mapping is 1:1". At 4 KiB a block is eight sectors, so every read fetched 512
+   bytes from an eighth of the intended offset into a 4096-byte buffer.
+
+**The failure pattern named the layer three runs before I read it.** The four failing gates were
+exactly the ATA-backed ones -- persist, wal, keyslots, users-persist -- while every RAM-disk gate
+passed, because vdisk_read scales by block * BLOCK_SIZE and was always correct. That partition
+identified the block device without opening it. I went to the Makefile first because the previous
+failure had been there, which is availability bias rather than evidence; the dd sizing was a real
+second bug, but it was hiding behind the same symptom rather than causing it.
+
+**The version bump is load-bearing.** STORAGE_VERSION 8 -> 9 is not bookkeeping: a v8 volume's
+blocks are 512 bytes, and without the bump it would pass the `version != STORAGE_VERSION` check
+and be reinterpreted at 4 KiB, every offset wrong by a factor of eight, on somebody's real disk.
+The refusal is what makes that "unsupported" instead of "corrupted".
+
+The size now lives once, in include/block_size.h, read by the kernel, by ring 3, and by the build
+system. Which is worth more than the diff suggests: the header exists because six places proved
+they would otherwise each keep their own answer.
 
 ---
 

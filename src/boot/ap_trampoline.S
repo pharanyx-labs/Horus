@@ -50,7 +50,7 @@
  * PAGE_SIZE + KERNEL_STACK_SIZE = 0x1000 + 0x8000. A _Static_assert there pins
  * this literal; if it fires, change this line. Each slot is [guard page][stack]
  * and the stack top is base + (apic_id + 1) * this value. */
-#define AP_IDLE_STACK_SIZE 0x9000
+#define AP_IDLE_STACK_SIZE 0x11000   /* 4 KiB guard + KERNEL_STACK_SIZE (64 KiB) */
 #define LAPIC_BASE         0xFEE00000
 #define LAPIC_ID_REG       0x20
 #define COM1               0x3F8

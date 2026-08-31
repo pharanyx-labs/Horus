@@ -40,7 +40,15 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 static uint32_t g_unlocked_slot = 0;
 static uint32_t g_unlocked_uid  = 0;
 
-#define STORAGE_VERSION 8   /* v8: the user table is sealed on disk, so accounts
+#define STORAGE_VERSION 9   /* v9: BLOCK_SIZE is 4 KiB, not 512 B. THE BUMP IS
+                             * LOAD-BEARING, not bookkeeping: a v8 volume's
+                             * blocks are 512 bytes, and without a version change
+                             * it would pass the `version != STORAGE_VERSION`
+                             * check and be reinterpreted at 4 KiB -- every
+                             * offset wrong by 8x, on somebody's real disk. The
+                             * refusal is what turns that into "unsupported"
+                             * instead of "corrupted".
+                             * v8: the user table is sealed on disk, so accounts
                              * survive a reboot (docs/LIMITATIONS.md 2.6).
                              * v7: LUKS-style key slots -- up to HORUS_KEYSLOTS passwords
                              * open one volume, each wrapping disk_key||uid in its own slot.
@@ -793,8 +801,23 @@ static void update_meta_block_mac(uint64_t meta_blk)
     do_block_write(0, &mfs->sb);   /* superblock is always block 0 */
 }
 
-/* ATA-backed block device (persistent). A block is one 512-byte LBA sector
- * (BLOCK_SIZE), so the mapping is 1:1. The per-block crypto metadata (nonce/tag)
+/* How many LBA sectors make one filesystem block. An ATA sector is 512 bytes by
+ * definition; BLOCK_SIZE is the filesystem's unit and is 4 KiB, so the mapping
+ * is 8:1 and NOT the 1:1 this file assumed until 2026-08-31.
+ *
+ * That assumption was the last of six places the 512-byte block was written
+ * down, and the most consequential: atadisk_read passed the FS block number
+ * straight to ata_read as an LBA and asked for one sector, so every read
+ * fetched 512 bytes from an eighth of the intended offset into a 4096-byte
+ * buffer. The RAM vdisk scales by block * BLOCK_SIZE and was always correct,
+ * which is exactly why the four failing gates were precisely the ATA-backed
+ * ones (persist, wal, keyslots, users-persist) while every RAM-disk gate
+ * passed -- a signature worth reading before reaching for a debugger. */
+#define ATA_SECTORS_PER_BLOCK  (BLOCK_SIZE / 512u)
+_Static_assert(BLOCK_SIZE % 512u == 0,
+               "BLOCK_SIZE must be a whole number of 512-byte ATA sectors");
+
+/* ATA-backed block device (persistent). The per-block crypto metadata (nonce/tag)
  * is persisted: storage_encrypt_block flushes each updated meta sector
  * (flush_meta_block) and storage_unlock reloads the region (load_meta_region)
  * and verifies its HMAC, so files survive a reboot — proven by
@@ -802,11 +825,13 @@ static void update_meta_block_mac(uint64_t meta_blk)
  * at runtime when a disk is actually present. */
 static int atadisk_read(struct block_device *bd, uint64_t block, void *buf) {
     (void)bd;
-    return ata_read((uint32_t)block, buf, 1);
+    return ata_read((uint32_t)(block * ATA_SECTORS_PER_BLOCK), buf,
+                    ATA_SECTORS_PER_BLOCK);
 }
 static int atadisk_write(struct block_device *bd, uint64_t block, const void *buf) {
     (void)bd;
-    return ata_write((uint32_t)block, buf, 1);
+    return ata_write((uint32_t)(block * ATA_SECTORS_PER_BLOCK), buf,
+                     ATA_SECTORS_PER_BLOCK);
 }
 static int atadisk_flush(struct block_device *bd) {
     (void)bd;

@@ -1375,12 +1375,13 @@ static inline int sys_boot_module_read(uint32_t index, uint32_t offset, void *bu
 }
 
 /* Read logical `block` of `ino` (decrypt-and-verify in the kernel) into `buf`
- * (must hold BLOCK_SIZE=512 bytes). Returns bytes read (512) or a negative. */
+ * (must hold HORUS_BLOCK_SIZE bytes -- see include/block_size.h; the size is
+ * part of this ABI). Returns bytes read (one block) or a negative. */
 static inline int sys_fblock_read(uint32_t ino, uint32_t block, void *buf) {
     return syscall(SYS_FBLOCK_READ, ino, block, (uint64_t)(uintptr_t)buf);
 }
 
-/* Write `len` (<=512) bytes to logical `block` of `ino` (kernel encrypts with a
+/* Write `len` (<= HORUS_BLOCK_SIZE) bytes to logical `block` of `ino` (kernel encrypts with a
  * fresh nonce); short writes are zero-padded to a full block. Returns len. */
 static inline int sys_fblock_write(uint32_t ino, uint32_t block, const void *buf, uint32_t len) {
     return (int)syscall6(SYS_FBLOCK_WRITE, ino, block, (uint64_t)(uintptr_t)buf, len, 0, 0);

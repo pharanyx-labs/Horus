@@ -88,8 +88,9 @@
 #define FS_NAME_MAX   32   /* directory entry name field (NUL-terminated) */
 #define FS_IO_MAX    176   /* max data payload per request/response */
 
-/* Directory entry as stored in a directory inode's data blocks (32 bytes, so
- * 16 fit per 512-byte block). ino == 0 marks a free slot. */
+/* Directory entry as stored in a directory inode's data blocks (32 bytes; the
+ * count per block is HORUS_BLOCK_SIZE/32, derived rather than written down --
+ * fs_server computes DIRENTS_PER_BLK from it). ino == 0 marks a free slot. */
 #define FS_DIRENT_NAME 24
 struct fs_dirent {
     uint32_t ino;

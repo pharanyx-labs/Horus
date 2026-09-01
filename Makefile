@@ -115,6 +115,7 @@ DEFECT_FLAGS = \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
+	ROLLBACK_ANCHOR_IGNORE \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -525,6 +526,28 @@ endif
 # bitmap spans enough blocks for a scan to exist at all.
 # ATA_READY_SELFTEST=1 checks, over all 256 status bytes, that the driver
 # transfers a sector only when the drive says it is ready.
+# ROLLBACK_SELFTEST=1 builds the whole-volume rollback witness: three boots with
+# the host restoring an ENTIRE earlier disk image between the second and third.
+ROLLBACK_SELFTEST ?= 0
+ifeq ($(ROLLBACK_SELFTEST),1)
+CFLAGS  += -DROLLBACK_SELFTEST
+ASFLAGS += -DROLLBACK_SELFTEST
+endif
+
+# ROLLBACK_ANCHOR_IGNORE=1 drops the comparison against the TPM NV counter, so a
+# volume older than the machine mounts and serves its stale contents.
+ROLLBACK_ANCHOR_IGNORE ?= 0
+ifeq ($(ROLLBACK_ANCHOR_IGNORE),1)
+CFLAGS  += -DROLLBACK_ANCHOR_IGNORE
+ASFLAGS += -DROLLBACK_ANCHOR_IGNORE
+endif
+
+NVCOUNTER_SELFTEST ?= 0
+ifeq ($(NVCOUNTER_SELFTEST),1)
+CFLAGS  += -DNVCOUNTER_SELFTEST
+ASFLAGS += -DNVCOUNTER_SELFTEST
+endif
+
 ATA_READY_SELFTEST ?= 0
 ifeq ($(ATA_READY_SELFTEST),1)
 CFLAGS  += -DATA_READY_SELFTEST
@@ -7364,6 +7387,60 @@ smoke-vdisk-bound-control:
 		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
+
+# The anchor itself, before anything is built on it: the TPM NV counter
+# provisions, reads, is idempotent to re-provision, and only ever goes UP. A
+# counter that could be made to repeat a value would let a rolled-back volume
+# match, which is the whole attack -- so this is checked directly rather than
+# inferred from smoke-rollback passing.
+#
+# No control arm: there is no policy of ours to remove here. The property is the
+# TPM's, and the arm for OUR use of it is smoke-rollback-control.
+.PHONY: smoke-nvcounter
+smoke-nvcounter:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NVCOUNTER_SELFTEST=1
+	@$(MAKE) --no-print-directory NVCOUNTER_SELFTEST=1 boot.iso
+	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) \
+		REQUIRE_MARKER='NVCOUNTER: PASS the counter provisions, reads, and only goes up' \
+		FAIL_MARKER='NVCOUNTER: FAIL' \
+		tools/run_with_swtpm.sh boot.iso
+
+# S70: a WHOLE-VOLUME rollback is refused -- the attack the Merkle tree cannot
+# see, because its root lives in the superblock it protects.
+#
+# Three boots with a KEPT TPM state directory, and the host restoring the entire
+# earlier image between the second and third. It refuses to run boot 3 unless
+# boot 2 both changed the image and ADVANCED THE GENERATION, since that is the
+# quantity the refusal is about.
+ROLLBACK_ARGS    = ROLLBACK_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+ROLLBACK_ENV     = ROLLBACK_BS=$(FS_BLOCK_SIZE) ROLLBACK_BLOCKS=$(PERSIST_BLOCKS) \
+                   ROLLBACK_TIMEOUT=$(PERSIST_TIMEOUT)
+
+.PHONY: smoke-rollback
+smoke-rollback:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS)
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) boot.iso
+	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback.img \
+		ROLLBACK_EXPECT='ROLLBACK: PASS a rolled-back volume was refused' \
+		ROLLBACK_OPPOSITE='ROLLBACK: found era' \
+		tools/rollback_replay.sh boot.iso
+	@echo "[rollback] PASS - a volume older than the machine is refused"
+
+# The falsifying arm: the comparison against the NV counter is gone, so the
+# rolled-back volume mounts. The marker is what HAPPENED -- it served era 1's
+# contents, from before the state that was current when the disk was taken.
+.PHONY: smoke-rollback-control
+smoke-rollback-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) ROLLBACK_ANCHOR_IGNORE=1
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) ROLLBACK_ANCHOR_IGNORE=1 boot.iso
+	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback-c.img \
+		ROLLBACK_EXPECT='ROLLBACK: found era 1 and wrote era 2' \
+		ROLLBACK_OPPOSITE='ROLLBACK: PASS' \
+		tools/rollback_replay.sh boot.iso
+	@echo "[rollback] CONTROL PASS - without the anchor an old volume mounts and serves stale data"
 
 # A sector transfer happens only when the drive says it is ready (S69).
 #

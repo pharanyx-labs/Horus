@@ -51,17 +51,49 @@ swtpm_available() {
 # That is what a two-boot sealing test needs -- the same TPM across a reboot, so
 # a secret sealed in boot 1 can be unsealed in boot 2. Without: a throwaway
 # directory, removed by swtpm_stop.
+# A FAILED SETUP MUST SAY SO. Both calls below discarded stdout AND stderr AND
+# their exit status, so a swtpm_setup that did not produce a state file left the
+# emulator to start on an empty directory -- QEMU then reports
+# "tpm-emulator: TPM result for CMD_INIT: 0x9 operation failed" and the guest
+# never boots, which reaches the harness as a ZERO-LENGTH SERIAL LOG. That is
+# indistinguishable from a kernel hanging before its first print, and it sent one
+# investigation to the wrong layer entirely (the cause was a relative --tpmstate
+# path, which swtpm_setup and swtpm do not agree about).
+#
+# So: keep the output, and check both the status and the artifact. A setup that
+# reports success without leaving a tpm2-00.permall is the same problem wearing a
+# zero exit code.
+_swtpm_setup_into() {
+    _dir="$1"
+    if ! _out="$(swtpm_setup --tpm2 --tpmstate "$_dir" --overwrite 2>&1)"; then
+        echo "SWTPM FAIL: swtpm_setup failed for '$_dir'" >&2
+        printf '%s\n' "$_out" >&2
+        return 1
+    fi
+    if [ ! -f "$_dir/tpm2-00.permall" ]; then
+        echo "SWTPM FAIL: swtpm_setup reported success but left no state in '$_dir'" >&2
+        printf '%s\n' "$_out" >&2
+        return 1
+    fi
+    return 0
+}
+
 swtpm_start() {
     _keep="${1:-}"
     if [ -n "$_keep" ]; then
+        # ABSOLUTE, because swtpm_setup and swtpm resolve a relative --tpmstate
+        # differently and the disagreement is silent.
+        case "$_keep" in
+            /*) : ;;
+            *)  _keep="$(cd "$(dirname "$_keep")" 2>/dev/null && pwd)/$(basename "$_keep")" ;;
+        esac
         SWTPM_DIR="$_keep"; mkdir -p "$SWTPM_DIR"; SWTPM_OWN_STATE=0
         # Only initialise once: re-running swtpm_setup --overwrite would discard
         # exactly the state a two-boot test is trying to carry across.
-        [ -f "$SWTPM_DIR/tpm2-00.permall" ] || \
-            swtpm_setup --tpm2 --tpmstate "$SWTPM_DIR" --overwrite >/dev/null 2>&1
+        [ -f "$SWTPM_DIR/tpm2-00.permall" ] || _swtpm_setup_into "$SWTPM_DIR" || return 1
     else
         SWTPM_DIR="$(mktemp -d)"; SWTPM_OWN_STATE=1
-        swtpm_setup --tpm2 --tpmstate "$SWTPM_DIR" --overwrite >/dev/null 2>&1
+        _swtpm_setup_into "$SWTPM_DIR" || return 1
     fi
 
     SWTPM_SOCK="$SWTPM_DIR/swtpm-sock"

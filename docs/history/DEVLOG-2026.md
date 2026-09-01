@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 133 entries, newest first, each explaining what
+The narrative record of how Horus was built: 134 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -19,6 +19,98 @@ which is exactly what a historical record should do and exactly why it is not au
 
 ---
 
+### Added: the anchor the Merkle tree could not be
+
+The tree shipped with a scope limit written into four documents: it catches PARTIAL rollback, and
+it does not make the volume monotonic, because its root lives in the superblock it is meant to
+protect. Rewind superblock, metadata region and tree together and every check inside the disk
+passes -- every byte really was produced by this volume with this key. Nothing on the disk can
+tell "this volume" from "this volume, last week". This entry is about building the thing that can.
+
+**The mechanism.** A TPM NV monotonic counter. `sb.rollback_gen` is the counter value the volume
+was last written at, and unlock refuses a volume whose generation is behind the counter.
+
+**The part that makes it work rather than decorative** is that the generation is BOUND INTO THE
+MERKLE ROOT'S PREIMAGE. Without that the field is unauthenticated and the attack is one byte
+wider: take the old superblock, write the current counter value into it, keep everything else.
+With it, changing the generation changes the root that verifies, and the attacker would need the
+meta MAC key -- which needs the password, or the TPM-sealed factor.
+
+**Monotonicity is the only property required of the counter, and it is worth being explicit that
+secrecy is not.** The NV index is defined AUTHWRITE/AUTHREAD with an empty nvAuth, so anyone who
+can talk to the TPM can read it and advance it. Neither helps them: `TPM_NT_COUNTER` cannot be
+decreased by anyone including the owner, and a re-created index starts above every value any
+counter on that TPM has ever held, so undefining it does not rewind it. What an attacker with TPM
+access gets is denial of service -- a volume that will not mount -- and they had that anyway.
+
+**The ordering, which is the difference between a security property and a bricked disk.** The
+superblock's new generation is written FIRST and the counter is raised to meet it. A crash between
+them leaves `gen == counter + 1`, and that is the ONLY state above the counter that can exist,
+because the generation is only ever written one ahead -- so it is the current volume, not an old
+one, and the next boot accepts it and completes the increment. The opposite order leaves the
+volume behind its own anchor after a power cut, which is indistinguishable from a rollback: the
+machine would refuse to mount its own disk, forever, because the lights went out at the wrong
+microsecond.
+
+**Three wrong turns, and the first is the one worth remembering.**
+
+1. The NV commands failed with a TIS state-machine error (-5: "the TPM wanted more bytes than I
+   sent"). I decoded the 45-byte NV_DefineSpace command byte by byte against the TPM 2.0
+   structures. It was correct. What settled it in one try was a three-line probe asking whether
+   the TPM answered a PCR_Read AT ALL at that point in the boot -- it did not. `tpm_transact` does
+   not request locality; every other caller in that file brackets its own run of commands with
+   `tpm_request_locality()`/`tpm_release_locality()`, and mine did not. WHEN A DEVICE STOPS
+   ANSWERING, ASK WHETHER IT IS ANSWERING ANYTHING BEFORE ASKING WHETHER IT LIKED WHAT YOU SAID.
+2. The gate booted with no disk: `run_with_swtpm.sh` never handled `SMOKE_DISK` -- it is a
+   different harness from `smoke_test.sh` and only the latter attaches a drive. The volume was the
+   ephemeral RAM vdisk, which is deliberately unanchored, so the selftest correctly reported that
+   it had tested nothing. It now honours the same variable with the same cache mode, because two
+   harnesses that disagree about caching in a multi-boot durability test is a trap waiting to be
+   sprung.
+3. It worked from /tmp and failed in the repo. `swtpm_setup` and `swtpm` do not agree about a
+   RELATIVE state directory: the setup step failed silently (its output is discarded), the
+   emulator started on an empty state dir, and QEMU reported "TPM result for CMD_INIT: 0x9
+   operation failed" -- which reaches the harness as a ZERO-LENGTH SERIAL LOG, indistinguishable
+   from a kernel that hung before its first print. The path is absolute now. The harness also
+   passes SERIAL_OUT so a failed boot leaves its serial log behind, which it did not before: I
+   spent a round looking at the guest for a problem that was in the emulator's startup.
+
+**The witness restores an entire disk image**, because that is the attack rather than a model of
+it. Three boots with a kept TPM state directory; the host images the disk after boot 1, boot 2
+moves the volume on, the host puts the image back, boot 3 must refuse. Before boot 3 the harness
+asserts POSITIVELY that boot 2 both changed the image and advanced the generation -- a restore
+that replays nothing, or an anchor that is not moving, would let boot 3 pass having tested
+nothing.
+
+**And one thing the witness cannot do, which is the attack restating itself.** A rolled-back boot
+cannot identify itself from inside the guest. The restored volume is byte-identical to a volume
+that legitimately reached that state, so era 1 looks the same to boot 2 (which should see it) and
+to a rolled-back boot 3 (which should not). The first version of the selftest tried to detect
+"stale data" from inside and could not -- it also wrote before reading, so it was reading its own
+bytes back. The guest reports what it found; the harness, which knows which boot this is, supplies
+the context. Under `ROLLBACK_ANCHOR_IGNORE=1` boot 3 reports `found era 1`, and a current volume
+holds era 2.
+
+**A fourth wrong turn, found by CI rather than by me, and it is the most reusable.** The gate
+passed four times locally and failed on the first CI run: boot 2 timed out waiting to find era 1.
+Boot 1 had printed its marker and been killed FOUR SECONDS IN -- because the marker was printed
+BEFORE the write the next boot depends on. The harness ends a boot the moment it sees the marker
+it is waiting for, which is exactly what makes these two-boot gates fast and deterministic, and it
+means A MARKER A LATER BOOT DEPENDS ON MUST BE EMITTED ONLY ONCE THE STATE IT DEPENDS ON IS
+DURABLE. `journal_commit` already guarantees that on return, so the fix was to move one print
+below the write. This tree has a rule about markers being written as ONE STRING; this is the same
+rule in the other axis, about WHEN.
+
+Worth noting what the failure looked like: not a wrong answer, but boot 2 honestly reporting that
+the volume was empty -- which is what boot 1 actually left. Nothing was broken except the order of
+two lines.
+
+**What it does not cover** is in `docs/LIMITATIONS.md` 1.12 rather than here, and it is not
+formality: unanchored volumes on TPM-less machines have exactly the protection they had before,
+the granularity is one boot rather than one transaction (an NV write per filesystem transaction
+would cost milliseconds and finite endurance), and an anchored volume cannot be moved to another
+machine because that machine's counter never issued its generation. The last one is correct
+behaviour against the threat and an obstacle to legitimate migration at the same time.
 ### Fixed: the flake had a cause, and the instrument named it
 
 `smoke-meta-crash` reddened `main` on 2026-09-01, passed on re-run, and could not be reproduced in

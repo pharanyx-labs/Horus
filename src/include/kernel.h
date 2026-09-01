@@ -1735,6 +1735,27 @@ typedef struct fs_superblock {
      * ANY FUTURE OPERATION THAT SPANS TRANSACTIONS MUST SET IT. That is a rule a
      * compiler cannot enforce, so it is written here rather than left implied. */
     uint32_t needs_fsck;
+    /* v13: the freshness anchor against WHOLE-VOLUME rollback (S70).
+     *
+     * The Merkle tree catches a subtree rewound while the rest of the volume
+     * moves on. It cannot catch superblock, metadata and tree being replaced
+     * TOGETHER with a consistent earlier snapshot, because every internal
+     * relationship holds -- the root lives in the superblock it protects, so
+     * rewinding both is self-consistent by construction. Nothing inside the
+     * volume can tell "this volume" from "this volume, last week".
+     *
+     * So the anchor is outside it. `rollback_gen` is the TPM NV counter value
+     * this volume was last written at, and it is BOUND INTO THE ROOT MAC -- an
+     * attacker can copy an old superblock but cannot edit the generation in it
+     * without a key they do not have. A volume whose generation is behind the
+     * counter is refused.
+     *
+     * `rollback_anchored` records whether the volume was formatted with an
+     * anchor at all. A volume formatted on a machine with no TPM has none, and
+     * says so rather than pretending: see docs/LIMITATIONS.md. */
+    uint64_t rollback_gen;
+    uint32_t rollback_anchored;
+    uint32_t _rollback_pad;
 } fs_superblock_t;
 _Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
                "fs_superblock must fit in one block");

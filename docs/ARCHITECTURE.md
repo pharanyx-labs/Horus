@@ -1025,10 +1025,15 @@ the ring-3 FS server never sees a key.
   swapped; the parent chain is what stops a node that was genuinely valid at an *earlier*
   time from verifying now, which is the attack — a physical attacker rewinding part of the
   region writes bytes this volume really did produce.
-- **It does not make the volume monotonic.** The root lives in the superblock it protects, so
-  an attacker replacing superblock, metadata and tree together with a consistent earlier
-  snapshot defeats it. That needs a freshness anchor outside the volume (a TPM NV counter)
-  and is not implemented — see SECURITY.md and `docs/LIMITATIONS.md`.
+- **The tree alone does not make the volume monotonic**, because its root lives in the superblock
+  it protects — an attacker replacing superblock, metadata and tree together with a consistent
+  earlier snapshot defeats every check inside the disk. The anchor is outside it: `sb.rollback_gen`
+  is a **TPM NV monotonic counter** value, bound into the root's preimage so it cannot be edited,
+  and unlock refuses a volume whose generation is behind the counter (**S70**). The generation is
+  written before the counter is raised to meet it, so a crash between them is recoverable rather
+  than bricking. Only volumes formatted on a machine with a TPM are anchored, and
+  `sb.rollback_anchored` says which kind a volume is; the granularity is one boot. See
+  `docs/LIMITATIONS.md` 1.12 for what that still leaves.
 - The volume is sized **from the disk** (ATA IDENTIFY words 60–61), clamped to `BLOCKS_PER_DISK`
   — a 16 GiB ceiling, not every volume's size (**S68**). Both bitmaps span blocks; the inode
   table is zeroed a block at a time, the first time an inode in it is allocated, rather than

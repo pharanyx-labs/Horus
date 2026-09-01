@@ -630,29 +630,39 @@ Falsified by `tools/test_check_invariants.sh`, which the required `invariants` j
 arms now, one per rule, including R7 against a row naming a renamed function and R8 against a
 tree with every mention of a property stripped out.
 
-### 1.12 The rollback tree does not make the volume monotonic
+### 1.12 ~~The rollback tree does not make the volume monotonic~~ (**ANCHORED 2026-09-01**, `SECURITY.md` S70)
 
-**S66** catches *partial* rollback: a subtree of the metadata region rewound to an earlier
-state while the rest of the volume moves on. Every node hash binds its position and is checked
-against the value its parent records, up to the root, so a node that was genuinely valid at an
-earlier time does not verify now.
+**S66**'s tree catches *partial* rollback: a subtree of the metadata region rewound while the rest
+of the volume moves on. It could not catch the whole volume being replaced with a consistent
+earlier snapshot, because every internal relationship holds and the root lives in the superblock
+it is meant to protect — nothing inside the disk can tell "this volume" from "this volume, last
+week".
 
-**It does not stop whole-volume rollback, and nothing in this tree does.** An attacker with
-physical access who replaces the superblock, the metadata region and the tree **together**
-with a consistent earlier snapshot of all three defeats every check: the root lives in the
-superblock it is meant to protect, so rewinding both is self-consistent by construction. There
-is no forgery to detect and no internal relationship that breaks. Both falsifying arms
-(`MERKLE_NODE_TRUST_CACHED`, `MERKLE_SKIP_PARENT_BIND`) are silent on it, deliberately — they
-are aimed at the partial case, which is what a tree can decide.
+There is an anchor outside it now: a **TPM NV monotonic counter**. `sb.rollback_gen` records the
+counter value the volume was last written at, bound into the Merkle root's preimage so it cannot
+be edited, and unlock refuses a volume whose generation is behind the counter. `make
+smoke-rollback` restores an entire earlier disk image between boots and requires the refusal;
+`ROLLBACK_ANCHOR_IGNORE=1` is the arm.
 
-Defending this needs a **freshness anchor outside the volume**: a value that increases and that
-the attacker cannot rewind, compared against one stored inside. A TPM NV monotonic counter is
-the usual answer, and this machine already talks to a TPM for the sealed KEK (**S12**), so the
-mechanism is within reach. It is not implemented and no gate asserts it.
+**What is still true, and it is a real limit, not a formality:**
 
-This section exists because "we added a Merkle tree" invites the reading that rollback is
-solved. The tree improves the per-write cost from O(volume) to O(log volume) and catches
-partial rollback. Those are the two things it does.
+- **Only volumes formatted on a machine with a TPM are anchored.** `sb.rollback_anchored` records
+  which kind a volume is, so a reader is never guessing — but an unanchored volume has exactly the
+  protection it had before, which is the tree and no more. `ROLLBACK_ANCHOR_REQUIRED` does not
+  exist yet; a policy that refuses to mount an unanchored volume is the obvious next step and is
+  not built.
+- **The granularity is one boot.** The counter advances once per unlock, so a rollback to any
+  state from a *previous* boot is refused and a rollback to an earlier point *within the current
+  boot session* is not. Closing that would mean a TPM NV write per filesystem transaction — NV
+  writes are milliseconds and the endurance is finite, so it would cost more than it buys.
+- **An attacker who can talk to the TPM can deny service.** Advancing the counter, or undefining
+  the index, leaves the volume refusing to mount. Neither lets them roll it back: making an old
+  volume look current needs a root MAC they cannot forge, and a re-created counter index starts
+  above every value any counter on that TPM has held.
+- **It is bound to the machine, not to the disk.** Moving an anchored volume to another machine
+  presents a generation that machine's counter has never issued, and it is refused. That is the
+  correct behaviour for the threat being defended against and it is also, straightforwardly, an
+  obstacle to legitimate disk migration. There is no export path.
 
 ---
 

@@ -632,6 +632,26 @@ jobs:
         env:
           SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
         run: make smoke-tpm-seal
+      # S70. The anchor itself first: the NV counter provisions, reads, and only
+      # ever goes up. A counter that could repeat a value would let a rolled-back
+      # volume match, so it is checked directly rather than inferred from the
+      # rollback gate passing.
+      - name: The TPM NV rollback counter provisions, reads, and only goes up
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-nvcounter
+      # Then the property. Three boots with a kept TPM state directory and the
+      # host restoring the ENTIRE earlier image between the second and third --
+      # the attack the Merkle tree cannot see, because its root lives in the
+      # superblock it protects.
+      - name: A whole-volume rollback is refused
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-rollback
+      - name: Control arm — without the anchor an old volume mounts and serves stale data
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-rollback-control
 
   smoke-coreutils-shell:
     name: QEMU GNU coreutils via the shell (head / wc / seq on real files)

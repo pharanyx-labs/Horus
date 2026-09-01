@@ -464,6 +464,15 @@ void smp_bringup(void) {
     { extern void storage_vdisk_bound_selftest(void);
       storage_vdisk_bound_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(ROLLBACK_SELFTEST)
+    /* Gated: a whole-volume rollback is refused (S70) -- the attack the Merkle
+     * tree cannot see, because its root lives in the superblock it protects. */
+    { extern void rollback_selftest(void); rollback_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
+#elif defined(NVCOUNTER_SELFTEST)
+    /* Gated: the TPM NV counter provisions, reads, and only goes up (S70). */
+    { extern void nvcounter_selftest(void); nvcounter_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(ATA_READY_SELFTEST)
     /* Gated: a sector transfer happens only when the drive says it is ready
      * (S69), checked over all 256 status bytes because the ones that matter are

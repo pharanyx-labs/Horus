@@ -1777,6 +1777,36 @@ jobs:
       - name: Control arm — the confirmation read and not compared
         run: make smoke-installer-refuse-control
 
+  store-locked:
+    name: "A sealed volume answers nothing, and the next boot finishes the install (S74)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Its own job rather than two more steps in `installer`: each arm is a
+      # clean rebuild plus two boots, and the installer job's 45 minutes is
+      # already spent on three of those.
+      #
+      # The power-off at the login prompt is the experiment. fs_server copies the
+      # base system in when the volume unlocks, so an install nobody logs into
+      # leaves that copy unfinished, and finishing it is the NEXT boot's job.
+      # That is the only boot on which S74 is observable, and one every real
+      # install passes through.
+      - name: A sealed store defers provisioning, and the next boot completes it
+        run: make smoke-installer-provision
+      # The arm. STORE_LOCKED_UNCHECKED=1 and nothing else, so both arms drive
+      # the same install and differ only in what the store says about a volume
+      # nobody has opened. Its marker is POSITIVE -- the branch fs_server took --
+      # and the empty /bin is the consequence checked after it.
+      - name: Control arm — a sealed store that answers leaves /bin empty for good
+        run: make smoke-installer-provision-control
+
   vfs:
     name: "Two filesystem servers, two mounts, one namespace (2.4)"
     runs-on: ubuntu-latest

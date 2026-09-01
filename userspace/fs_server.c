@@ -605,8 +605,24 @@ void _start(void) {
      * below (post-login, once, idempotent). Then notify init we are ready. */
     int provisioned = 0;
     {
+        /* THE ANSWER TO THIS STAT IS THE WHOLE BRANCH, so it is reported rather
+         * than merely taken. Until 2026-09-01 the store answered it on a SEALED
+         * volume too (**S74**), so this ran its copy against a locked store, every
+         * module's data write failed inside the AEAD, and `provisioned` was set
+         * anyway -- which disabled the post-login fallback below for the rest of
+         * the boot. A machine installed and powered off before the copy finished
+         * then had an empty /bin on that disk forever. The syscall is fixed; the
+         * marker stays because "which branch did this boot take" is not otherwise
+         * observable, and the two arms of smoke-installer-provision are exactly
+         * this line's two values. */
         struct fs_stat root_st;
-        if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
+        if (sys_fs_stat(0, &root_st) == 0) {
+            kputln("FS_STORE: open at startup; provisioning now");
+            provision_boot_modules();
+            provisioned = 1;
+        } else {
+            kputln("FS_STORE: sealed at startup; provisioning deferred until unlock");
+        }
     }
     /* Always signal, even if there was nothing to provision or the store is still
      * locked, so init never waits forever. The badge accumulates whether it fires
@@ -621,7 +637,11 @@ void _start(void) {
          * inode fails while locked). On the RAM disk this already ran above. */
         if (!provisioned) {
             struct fs_stat root_st;
-            if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
+            if (sys_fs_stat(0, &root_st) == 0) {
+                kputln("FS_STORE: unlocked; provisioning now");
+                provision_boot_modules();
+                provisioned = 1;
+            }
         }
         /* Sleep until a request arrives (roadmap 1.3), but only once the volume
          * has been provisioned.

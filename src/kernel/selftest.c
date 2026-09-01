@@ -3577,6 +3577,27 @@ void ata_ready_selftest(void)
         print("ATAREADY: FAIL the accepted set is the wrong size\n");
         return;
     }
+    /* The other predicate: which statuses mean nobody is driving the bus. Exactly
+     * two -- all-ones and all-zero. Getting this wrong in the direction of
+     * matching MORE would abandon a working but slow drive on its first busy
+     * read, which is the failure the spin bound exists to avoid and which no
+     * emulator would ever show us. */
+    unsigned absent = 0;
+    int bad_absent = -1;
+    for (unsigned st = 0; st < 256; st++) {
+        int want = (st == 0xFF || st == 0x00);
+        int got  = ata_test_bus_absent((uint8_t)st);
+        if (got) absent++;
+        if (got != want && bad_absent < 0) bad_absent = (int)st;
+    }
+    print("ATAREADY: ");
+    print_decimal((uint64_t)absent);
+    print(" of 256 statuses read as an absent bus\n");
+    if (bad_absent >= 0 || absent != 2) {
+        print("ATAREADY: FAIL a status was misread as an absent bus\n");
+        return;
+    }
+
     print("ATAREADY: PASS only a ready drive is transferred against\n");
 }
 #endif /* ATA_READY_SELFTEST */

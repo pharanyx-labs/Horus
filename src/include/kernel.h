@@ -2327,6 +2327,7 @@ uint32_t ata_total_sectors(void);
 uint64_t ata_transfer_refusals(void);
 #ifdef ATA_READY_SELFTEST
 int      ata_test_transfer_ready(uint8_t status);
+int      ata_test_bus_absent(uint8_t status);
 #endif
 void scheduler_init(void);
 void smp_bringup(void);

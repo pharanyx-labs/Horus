@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 132 entries, newest first, each explaining what
+The narrative record of how Horus was built: 133 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,53 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Fixed: the flake had a cause, and the instrument named it
+
+`smoke-meta-crash` reddened `main` on 2026-09-01, passed on re-run, and could not be reproduced in
+eight local runs. The entry below describes finding a fail-open hole in the ATA transport while
+looking for it, and says plainly that it was NOT established as the cause. It was the cause. This
+is how that got settled, and the answer is not "I thought about it harder".
+
+The fail-closed change added a line to the driver: a refused transfer says so on the wire, with
+the LBA and the status. The gate gained a diagnosis line naming the block, the physical block, the
+ATA refusal count and the eviction count. Neither fixed anything. Both were there so that the next
+occurrence would be legible instead of a mystery.
+
+The next occurrence was two hours later, on a pull request, and it read:
+
+    ata: refusing a write the drive is not ready for (lba 2303, status 0xD0) - failing closed
+    METACACHE: FAIL write block 66
+
+0xD0 is BSY set, DRQ clear, eleven seconds into the boot. The drive was not wedged and the command
+was not malformed: `ata_wait_busy()` gave up while the drive was still working, because the host
+had descheduled the emulator. Before the fail-closed change, that same event pushed 256 words at a
+busy drive and returned SUCCESS -- a write that never happened -- which is exactly the "block N
+lost after eviction" the first flake reported.
+
+**The bound was 2e6 spins, and its comment said "QEMU and real drives clear BSY almost
+immediately, so the cap is never reached in practice".** That sentence was true of every machine
+anyone had run it on and false of a loaded CI runner. It is the same shape as the fsck comment
+from the day before -- an accurate description of the implementation standing in for a statement
+about the requirement.
+
+**What the bound was actually for.** Not how long a drive may take: how not to hang the boot on a
+bus with nothing on it. A floating bus reads 0xFF forever, which has BSY set. Once that case is
+detected directly -- `ata_bus_absent()`, all-ones or all-zero, exiting on the first read -- the
+count is free to be what ATA-8 allows, and it now matches the flush path's for the reason that one
+is large. A diskless boot still reports "primary master not present" at 0.026 s.
+
+`ata_bus_absent` is tested as a pure function over all 256 bytes beside `ata_transfer_ready`, and
+the direction that matters is the one an emulator will never show: matching MORE statuses than the
+two would abandon a working but slow drive on its first busy read, which is the failure being
+fixed here.
+
+**The lesson is about instruments, not about ATA.** Three changes were made without knowing the
+cause: make the failure loud, make the gate say which of five things went wrong, and keep the
+evidence. None of them was a fix, and all of them are the reason the next occurrence took ten
+minutes instead of a week. Writing "not established" in the previous entry rather than claiming
+the fix was the honest position at the time, and it is what made this entry possible.
+
 
 ### Fixed: the disk driver reported reads that did not happen
 

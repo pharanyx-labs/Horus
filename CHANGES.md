@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 132 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 133 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,28 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Fixed
+
+- **The ATA busy-wait gave up on a slow drive, not just a wedged one.** `ata_wait_busy()`'s bound
+  was 2,000,000 spins, "sized for a PIO sector", with a comment saying drives clear BSY almost
+  immediately so the cap is never reached in practice. Measured on 2026-09-01: `smoke-meta-crash`
+  refused a write at LBA 2303 with **status 0xD0 — BSY set, DRQ clear — eleven seconds into a
+  boot** on a CI runner. The drive was not wedged; the host had descheduled the emulator.
+  **This is the cause of the `smoke-meta-crash` flake** that reddened `main` earlier the same day
+  and could not be reproduced locally in eight runs. Before the fail-closed change (**S69**) the
+  same event pushed 256 words at a busy drive and returned *success* — a write that never
+  happened, surfacing later as `block N lost after eviction`. That change turned a silent
+  corruption into a loud refusal; this one stops the refusal being wrong.
+  The bound was never about how long a *drive* may take — it was about not hanging the boot on a
+  bus with nothing on it. That job now belongs to `ata_bus_absent()`, which exits on the first
+  read for all-ones or all-zero, so the count can be what ATA-8 actually allows. A diskless boot
+  still reports "primary master not present" at 0.026 s.
+  `ata_bus_absent` is a pure function tested over all 256 status bytes alongside
+  `ata_transfer_ready`: exactly two are read as an absent bus. Getting it wrong in the direction
+  of matching *more* would abandon a working but slow drive on its first busy read — the very
+  failure being fixed, and one no emulator would ever show us.
+
 
 ### Fixed
 

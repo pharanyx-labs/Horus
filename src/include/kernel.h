@@ -2322,6 +2322,12 @@ int  ata_flush(void);  /* FLUSH CACHE; 0 = on stable media, -1 = NOT durable */
  * at 0x0FFFFFFF). 0 means the probe never ran or the drive reported nothing, and
  * is a refusal rather than a size. */
 uint32_t ata_total_sectors(void);
+/* Sector transfers the driver refused because the drive was not ready. A read
+ * that did not happen must never be reported as one that did (S69). */
+uint64_t ata_transfer_refusals(void);
+#ifdef ATA_READY_SELFTEST
+int      ata_test_transfer_ready(uint8_t status);
+#endif
 void scheduler_init(void);
 void smp_bringup(void);
 void aslr_init_seed(void);
@@ -2658,7 +2664,8 @@ uint64_t storage_alloc_bitmap_reads(void);
 uint64_t storage_mount_oversize_refusals(void);
 int      storage_is_mounted(void);
 #if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || \
-    defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST)
+    defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST) || \
+    defined(META_CRASH_SELFTEST)
 /* Storage witness hooks. Selftest builds only -- they expose the allocator's
  * choices and reach the block one past the volume, neither of which a shipping
  * kernel has any business doing. */

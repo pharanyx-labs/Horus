@@ -114,7 +114,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
-	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT \
+	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -523,6 +523,24 @@ endif
 # ALLOCHINT_SELFTEST=1 measures what a block allocation costs on a volume that is
 # mostly full: bitmap reads over a fixed number of allocations, on an image whose
 # bitmap spans enough blocks for a scan to exist at all.
+# ATA_READY_SELFTEST=1 checks, over all 256 status bytes, that the driver
+# transfers a sector only when the drive says it is ready.
+ATA_READY_SELFTEST ?= 0
+ifeq ($(ATA_READY_SELFTEST),1)
+CFLAGS  += -DATA_READY_SELFTEST
+ASFLAGS += -DATA_READY_SELFTEST
+endif
+
+# ATA_READY_ERR_ONLY=1 restores the pre-2026-09-01 rule: ERR alone decides. That
+# accepts a status with BSY still set (the wait timed out) or DRQ never asserted
+# (the drive has no data), so the driver transfers 256 words against a drive that
+# said nothing and reports success.
+ATA_READY_ERR_ONLY ?= 0
+ifeq ($(ATA_READY_ERR_ONLY),1)
+CFLAGS  += -DATA_READY_ERR_ONLY
+ASFLAGS += -DATA_READY_ERR_ONLY
+endif
+
 ALLOCHINT_SELFTEST ?= 0
 ifeq ($(ALLOCHINT_SELFTEST),1)
 CFLAGS  += -DALLOCHINT_SELFTEST
@@ -7346,6 +7364,37 @@ smoke-vdisk-bound-control:
 		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
+
+# A sector transfer happens only when the drive says it is ready (S69).
+#
+# Checked as a PURE FUNCTION of the status byte, over all 256 of them, because
+# the statuses that matter are the ones a working QEMU never produces: BSY still
+# set after the wait gave up, DRQ never asserted, DF raised. An integration test
+# can only exercise what the emulator chooses to generate and would pass over
+# every case the rule exists for. One boot, no disk needed.
+.PHONY: smoke-ata-ready
+smoke-ata-ready:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1
+	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='ATAREADY: PASS only a ready drive is transferred against' \
+		FAIL_MARKER='ATAREADY: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# The falsifying arm: ERR alone decides, as it did until 2026-09-01. The marker
+# names the first status wrongly accepted and why -- a transfer that WOULD have
+# gone ahead, rather than a rule that failed to fire.
+.PHONY: smoke-ata-ready-control
+smoke-ata-ready-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 ATA_READY_ERR_ONLY=1
+	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 ATA_READY_ERR_ONLY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='ATAREADY: FAIL a transfer was allowed against a drive that was not ready' \
+		FAIL_MARKER='ATAREADY: PASS' \
+		tools/smoke_test.sh boot.iso
+	@echo "[ata-ready] CONTROL PASS - ERR alone lets a transfer proceed against a drive that is not ready"
 
 # A block allocation does not rescan the whole data bitmap.
 #

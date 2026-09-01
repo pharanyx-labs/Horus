@@ -3508,6 +3508,79 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef ATA_READY_SELFTEST
+/* A sector transfer happens only when the drive says it is ready (S69).
+ *
+ * WHY THIS IS A PURE-FUNCTION TEST AND NOT A BOOT TEST. The statuses that matter
+ * are the ones a working emulator never produces: BSY still set when the wait
+ * gave up, DRQ never asserted, DF raised. An integration test can only exercise
+ * what QEMU chooses to generate, so it would pass over every case the rule
+ * exists for. The decision is factored out as a function of the status byte and
+ * checked here against all 256 of them -- the same reason
+ * sched_domain_switch_would_flush is a pure function.
+ *
+ * The rule: transfer only when DRQ is set and BSY, ERR and DF are all clear.
+ * DRQ is the point of it. ERR says the drive refused; DRQ says the drive HAS the
+ * data. Only the second is evidence that reading the data port means anything,
+ * and it was the bit nobody checked -- so a wait that timed out left BSY set,
+ * ERR clear, and the driver read 256 words of whatever the bus returned and
+ * handed it back as a sector, reporting success.
+ */
+#define ATA_ST_ERR_B  0x01u
+#define ATA_ST_DRQ_B  0x08u
+#define ATA_ST_DF_B   0x20u
+#define ATA_ST_BSY_B  0x80u
+
+void ata_ready_selftest(void)
+{
+    print("ATAREADY: begin\n");
+
+    unsigned accepted = 0;
+    int first_bad = -1;
+    const char *why = "";
+
+    for (unsigned st = 0; st < 256; st++) {
+        int want = !(st & ATA_ST_BSY_B) && !(st & ATA_ST_ERR_B) &&
+                   !(st & ATA_ST_DF_B)  &&  (st & ATA_ST_DRQ_B);
+        int got  = ata_test_transfer_ready((uint8_t)st);
+        if (got) accepted++;
+        if (got != want && first_bad < 0) {
+            first_bad = (int)st;
+            if (got && (st & ATA_ST_BSY_B))      why = "the drive was still busy";
+            else if (got && !(st & ATA_ST_DRQ_B)) why = "the drive never said it had data";
+            else if (got && (st & ATA_ST_DF_B))   why = "the drive reported a fault";
+            else if (got)                          why = "the drive reported an error";
+            else                                   why = "a ready drive was refused";
+        }
+    }
+
+    print("ATAREADY: ");
+    print_decimal((uint64_t)accepted);
+    print(" of 256 statuses accepted\n");
+
+    if (first_bad >= 0) {
+        print("ATAREADY: status ");
+        print_hex((uint64_t)(unsigned)first_bad);   /* print_hex adds the 0x */
+        print(" - ");
+        print(why);
+        print("\n");
+        /* One string, so a shared console cannot split the marker from its
+         * detail. Positive: it says a transfer WOULD have gone ahead. */
+        print("ATAREADY: FAIL a transfer was allowed against a drive that was not ready\n");
+        return;
+    }
+
+    /* Exactly the 16 statuses with DRQ set and BSY, ERR and DF clear. Asserted as
+     * a NUMBER as well as a classification: a predicate that accepted nothing
+     * would also disagree with no case above if the loop were ever inverted. */
+    if (accepted != 16) {
+        print("ATAREADY: FAIL the accepted set is the wrong size\n");
+        return;
+    }
+    print("ATAREADY: PASS only a ready drive is transferred against\n");
+}
+#endif /* ATA_READY_SELFTEST */
+
 #ifdef ALLOCHINT_SELFTEST
 /* What a block allocation costs on a volume that is mostly full.
  *
@@ -4247,6 +4320,25 @@ void meta_crash_selftest(void)
      * come back, including the one that was committed-but-unapplied. */
     for (uint32_t b = 0; b < META_CRASH_BLOCKS; b++) {
         if (storage_read_file_block(mfs, META_CRASH_INO, b, buf) != 0) {
+            /* DIAGNOSIS BEFORE THE MARKER. "block N lost" covers five distinct
+             * causes -- no mapping, an unreadable metadata block, a metadata
+             * block the tree rejects, a cleared present flag, a failed AEAD --
+             * and this gate reddened once in CI on 2026-09-01 with no way to
+             * tell them apart. The lines below are evidence, not a marker, so
+             * they may span several writes; the marker itself stays one string.
+             *
+             * ata_refusals is the decisive one. A non-zero count means the
+             * transport refused a transfer the drive was not ready for, which is
+             * a slow host rather than a defect in the filesystem above it. */
+            print("METACACHE: diag block=");
+            print_decimal((int)b);
+            print(" phys=");
+            print_decimal(storage_test_phys_block(mfs, META_CRASH_INO, b));
+            print(" ata_refusals=");
+            print_decimal(ata_transfer_refusals());
+            print(" evictions=");
+            print_decimal(meta_cache_evictions());
+            print("\n");
             print("METACACHE: FAIL block "); print_decimal((int)b);
             print(" lost after eviction\n");
             return;

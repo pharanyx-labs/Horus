@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 131 entries, newest first, each explaining what
+The narrative record of how Horus was built: 132 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,55 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Fixed: the disk driver reported reads that did not happen
+
+`smoke-meta-crash` went red on main -- `METACACHE: FAIL block 130 lost after eviction` -- and
+passed on re-run. Roughly one run in thirty, and 8 out of 8 locally. This entry is about what
+looking for the cause turned up, which is not the same thing as the cause.
+
+**The gate could not say what went wrong, and that was the first problem.** "block N lost" is
+printed when `storage_read_file_block` returns non-zero, and that has five distinct causes: no
+mapping, a metadata block that would not read, one the tree rejected, a cleared present flag, a
+failed AEAD. Nothing in the log separated them. The failure path now prints `phys=`,
+`ata_refusals=` and `evictions=` first, so the next occurrence names itself.
+
+**Then the driver.** `ata_wait_busy()` returned void. Its comment said:
+
+> On timeout the caller's status check sees BSY/0xFF/ERR and treats the device as absent or the
+> operation as failed.
+
+That is true of `ata_init`, which tests for 0xFF and 0x00 explicitly. It is FALSE of
+`ata_read_sector`, which tested `status & 0x01` -- ERR. BSY is 0x80. So a wait that reached its
+2e6-iteration bound left BSY set, ERR clear, DRQ unexamined, and the function went on to read 256
+words from the data port of a drive that had not said it had any -- and returned 0. A read that
+did not happen, reported as a read that did.
+
+`ata_write_sector` was the same shape three times over: three unchecked waits, no DRQ test before
+pushing 256 words, and no DF test after.
+
+**Why that is worse than it sounds.** The AEAD catches a garbage DATA block: wrong bytes, tag
+fails, fail closed. But bitmaps, inode tables and indirect blocks are not authenticated by
+anything. A garbage inode-table read is walked by `storage_fsck_pass`, which decides from it which
+blocks are still referenced. A garbage indirect block yields physical block numbers that point
+anywhere. The Merkle tree covers the crypto-metadata region and nothing else, and this is the
+layer beneath all of it.
+
+**The witness is a pure function, and that is the whole design of it.** The statuses that matter
+are the ones a working QEMU never produces -- BSY still set after the wait gave up, DRQ never
+asserted, DF raised. An integration test can only exercise what the emulator chooses to generate,
+so it would pass over every case the rule exists for. So the decision is factored out as
+`ata_transfer_ready(uint8_t)` and checked against all 256 bytes: exactly the 16 with DRQ set and
+BSY, ERR and DF clear are accepted. `ATA_READY_ERR_ONLY=1` restores the old rule and accepts 128
+of 256, the first being 0x00 -- a drive that said nothing at all. The scheduler factors
+`sched_domain_switch_would_flush` out for the same reason and it is the pattern to copy.
+
+**What is NOT established.** That this was the cause of the CI failure. The re-run passed, I could
+not reproduce it in 8 runs locally, and a fail-open transport is consistent with the symptom
+without being proven to have produced it. Writing it up as "fixed the flake" would be claiming a
+measurement I do not have. It is a real defect found while looking, the gate is now able to tell
+me if it recurs for this reason, and that is the honest state of it.
+
 
 ### Changed: the allocator's rescan, measured before it was fixed
 

@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 131 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 132 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,34 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Fixed
+
+- **The ATA transport reported reads that did not happen as reads that did** (**S69**).
+  `ata_wait_busy()` returned `void`, and its comment said that "on timeout the caller's status
+  check sees BSY/0xFF/ERR and treats the operation as failed" — true of the probe, which tests
+  `0xFF` and `0x00` explicitly, and **false of the sector paths**. BSY is `0x80`; `ata_read_sector`
+  tested only `0x01` (ERR). A wait that reached its bound therefore left BSY set, ERR clear, and
+  **DRQ never checked at all** — so the driver read 256 words out of a drive that had not said it
+  had any and returned them **as success**. `ata_write_sector` pushed 256 words the same way, and
+  neither path tested DF. The AEAD would catch a garbage *data* block, but bitmaps, inode tables
+  and indirect blocks are **not authenticated**: a garbage inode-table read is acted on by
+  `storage_fsck_pass`, and a garbage indirect block yields wrong physical block numbers. Every
+  wait's return is now checked, the rule is one predicate (`ata_transfer_ready`), and a refusal is
+  reported on the wire and counted.
+  Found while investigating a `smoke-meta-crash` failure on `main`. **It is not established that
+  this was the cause of that failure** — the re-run passed, so the flake is roughly 1 in 30 and
+  unexplained. This is a fail-open defect that is *consistent* with the symptom and worth fixing
+  on its own terms.
+
+### Changed
+
+- **`smoke-meta-crash` names the cause when it fails.** `block N lost after eviction` covers five
+  distinct causes — no mapping, an unreadable metadata block, one the tree rejects, a cleared
+  present flag, a failed AEAD — and none was distinguishable from the log when it reddened. It now
+  prints `phys=`, `ata_refusals=` and `evictions=` before the marker. A non-zero `ata_refusals`
+  means the transport refused a transfer, not that the filesystem lost anything.
+
 
 ### Changed
 

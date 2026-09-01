@@ -39,14 +39,89 @@ static inline void outw(uint16_t port, uint16_t val) {
  * ata_lock (never the reverse), so no deadlock. */
 static spinlock_t ata_lock = { 0 };
 
-static void ata_wait_busy(void) {
-    /* Bounded so an absent/floating bus (status stuck at 0xFF with BSY set) can
-     * never hang the boot-time probe — the shipped kernel now probes for a disk
-     * on every boot. On timeout the caller's status check sees BSY/0xFF/ERR and
-     * treats the device as absent or the operation as failed. QEMU and real
-     * drives clear BSY almost immediately, so the cap is never reached in
-     * practice. */
-    for (uint32_t i = 0; i < 2000000u && (inb(ATA_STATUS) & 0x80); i++) { }
+/* Wait for BSY to clear (SECURITY.md S69). 0 = clear, -1 = the bound was reached.
+ *
+ * THE RETURN VALUE IS NEW, AND SO IS EVERY CALLER CHECKING IT. This returned
+ * void, and its comment said "on timeout the caller's status check sees
+ * BSY/0xFF/ERR and treats the device as absent or the operation as failed."
+ * That is true of the probe, which tests for 0xFF and 0x00 explicitly, and it
+ * was FALSE of the sector paths: BSY is 0x80 and ata_read_sector tested only
+ * 0x01 (ERR). A wait that timed out therefore left BSY set, ERR clear, and the
+ * driver went on to read 256 words out of a drive that had not said it had any
+ * — returning garbage, and returning it as SUCCESS.
+ *
+ * Bounded rather than infinite for the original reason: an absent or floating
+ * bus reads 0xFF, which has BSY set forever, and the shipped kernel probes for a
+ * disk on every boot. An unbounded wait turns "no disk" into "hang at mount". */
+static int ata_wait_busy(void) {
+    for (uint32_t i = 0; i < 2000000u; i++) {
+        if (!(inb(ATA_STATUS) & 0x80)) return 0;
+    }
+    return -1;
+}
+
+/* ATA status bits this driver reasons about. */
+#define ATA_ST_ERR  0x01
+#define ATA_ST_DRQ  0x08
+#define ATA_ST_DF   0x20
+#define ATA_ST_BSY  0x80
+
+/* May a sector be transferred against this status?
+ *
+ * Factored out as a PURE FUNCTION of the byte, and tested as one
+ * (make smoke-ata-ready), because the interesting cases are the ones a working
+ * QEMU never produces: BSY still set, DRQ never asserted, DF raised. An
+ * integration test can only exercise the statuses the emulator chooses to
+ * generate, so the policy is checked here against all 256 instead. The scheduler
+ * factors sched_domain_switch_would_flush out for the same reason.
+ *
+ * DRQ IS THE POINT. ERR says the drive refused; DRQ says the drive has data.
+ * Only the second is evidence that reading the data port means anything, and it
+ * was the bit nobody checked. */
+static int ata_transfer_ready(uint8_t status)
+{
+#ifdef ATA_READY_ERR_ONLY
+    /* The pre-2026-09-01 rule: ERR alone. Accepts BSY-still-set and
+     * DRQ-never-asserted, which is a transfer against a drive that has not said
+     * it has anything to transfer. */
+    return (status & ATA_ST_ERR) ? 0 : 1;
+#else
+    if (status & ATA_ST_BSY) return 0;              /* still working */
+    if (status & (ATA_ST_ERR | ATA_ST_DF)) return 0; /* refused, or faulted */
+    if (!(status & ATA_ST_DRQ)) return 0;           /* nothing to transfer */
+    return 1;
+#endif
+}
+
+#ifdef ATA_READY_SELFTEST
+/* The predicate, reachable from the witness. Selftest builds only: nothing in a
+ * shipping kernel has any business asking the driver to classify a status byte
+ * it did not read from the drive. */
+int ata_test_transfer_ready(uint8_t status) { return ata_transfer_ready(status); }
+#endif
+
+/* Say so, once per boot, rather than failing silently. A refused transfer that
+ * nothing reports presents as a block that is mysteriously corrupt, somewhere
+ * else, later. */
+static int g_ata_refusal_reported;
+static uint64_t g_ata_refusals;
+uint64_t ata_transfer_refusals(void) { return g_ata_refusals; }
+
+static int ata_refuse(const char *what, uint32_t lba, uint8_t status)
+{
+    g_ata_refusals++;
+    if (!g_ata_refusal_reported) {
+        g_ata_refusal_reported = 1;
+        kmsg_begin();
+        print("ata: refusing a ");
+        print(what);
+        print(" the drive is not ready for (lba ");
+        print_decimal(lba);
+        print(", status ");
+        print_hex(status);              /* print_hex adds the 0x */
+        print(") - failing closed\n");
+    }
+    return -1;
 }
 
 static void ata_400ns_delay(void) {
@@ -127,7 +202,10 @@ static uint32_t g_ata_sectors = 0;
 static int ata_read_sector(uint32_t lba, uint8_t *buf) {
     spin_lock(&ata_lock);
 
-    ata_wait_busy();
+    if (ata_wait_busy() != 0) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("read", lba, inb(ATA_STATUS));
+    }
     ata_400ns_delay();
 
     outb(ATA_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
@@ -137,11 +215,20 @@ static int ata_read_sector(uint32_t lba, uint8_t *buf) {
     outb(ATA_LBA_HIGH, (lba >> 16) & 0xFF);
     outb(ATA_COMMAND, ATA_CMD_READ);
 
-    ata_wait_busy();
+    if (ata_wait_busy() != 0) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("read", lba, inb(ATA_STATUS));
+    }
     ata_400ns_delay();
 
+    /* The drive must say it HAS the data before the data port is read. Without
+     * this the loop below runs against whatever the bus happens to return and
+     * hands it back as a sector. */
     uint8_t status = inb(ATA_STATUS);
-    if (status & 0x01) { spin_unlock(&ata_lock); return -1; }
+    if (!ata_transfer_ready(status)) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("read", lba, status);
+    }
 
     for (int i = 0; i < 256; i++) {
         uint16_t data = inw(ATA_DATA);
@@ -155,7 +242,10 @@ static int ata_read_sector(uint32_t lba, uint8_t *buf) {
 static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     spin_lock(&ata_lock);
 
-    ata_wait_busy();
+    if (ata_wait_busy() != 0) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("write", lba, inb(ATA_STATUS));
+    }
     ata_400ns_delay();
 
     outb(ATA_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
@@ -165,19 +255,39 @@ static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     outb(ATA_LBA_HIGH, (lba >> 16) & 0xFF);
     outb(ATA_COMMAND, ATA_CMD_WRITE);
 
-    ata_wait_busy();
+    if (ata_wait_busy() != 0) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("write", lba, inb(ATA_STATUS));
+    }
     ata_400ns_delay();
+
+    /* The drive must be ASKING for the data before it is pushed. Writing 256
+     * words at a drive that has not raised DRQ is a write that did not happen,
+     * and the status check afterwards will not necessarily say so. */
+    uint8_t status = inb(ATA_STATUS);
+    if (!ata_transfer_ready(status)) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("write", lba, status);
+    }
 
     for (int i = 0; i < 256; i++) {
         uint16_t data = (buf[i*2 + 1] << 8) | buf[i*2 + 0];
         outw(ATA_DATA, data);
     }
 
-    ata_wait_busy();
+    if (ata_wait_busy() != 0) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("write", lba, inb(ATA_STATUS));
+    }
     ata_400ns_delay();
 
-    uint8_t status = inb(ATA_STATUS);
-    if (status & 0x01) { spin_unlock(&ata_lock); return -1; }
+    /* DF as well as ERR: a device fault is the drive saying the write did not
+     * land, and it was not tested for. */
+    status = inb(ATA_STATUS);
+    if (status & (ATA_ST_ERR | ATA_ST_DF)) {
+        spin_unlock(&ata_lock);
+        return ata_refuse("write", lba, status);
+    }
 
     spin_unlock(&ata_lock);
     return 0;

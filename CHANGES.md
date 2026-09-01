@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 130 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 131 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,28 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **The block allocator starts where the last allocation succeeded, not at bitmap block 0.**
+  `storage_alloc_block` scanned the data bitmap from the beginning every time, so a volume whose
+  first N bitmap blocks are full cost N+1 reads *per allocation* and writing a file of M blocks
+  cost M×(N+1) reads of pure search. **Measured on a 2 GiB volume with 15 of its 16 bitmap blocks
+  full: 512 bitmap reads for 32 allocations, against 47 with the hint.** The hint is a starting
+  point and never a bound — the scan still wraps over every block, so the set of allocations that
+  succeed is exactly the set that succeeded before, and a stale hint costs one wasted read rather
+  than a block the allocator fails to find. It is not pulled back to a freed block, deliberately:
+  doing so turns delete-then-allocate into a rescan of everything in between, and the wrap finds
+  that space anyway one pass later.
+  This was recorded as an open limitation when the 16 GiB work landed, *because it was
+  unmeasured* — there was no number to improve on and no gate that would notice a regression. The
+  gate is the workload that makes it visible: `make smoke-alloc-hint`, which also asserts the
+  scan still **wraps** (fill the volume, free one block behind the hint, require the next
+  allocation to return exactly it), because a gate measuring cost alone would pass a fix that was
+  fast because it gave up early. `docs/LIMITATIONS.md` 3.5 is now closed.
+- `storage_alloc_block` also **checks the bitmap write it was ignoring**. A block whose allocated
+  bit did not reach the disk is a block the next caller is handed as well.
+
 
 ### Changed
 

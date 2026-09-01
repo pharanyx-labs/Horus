@@ -114,7 +114,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
-	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE \
+	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
@@ -520,6 +520,25 @@ endif
 # too small to hold it": two boots, with the HOST shrinking the image between
 # them, because a disk that is smaller than it was is something that happens to a
 # disk rather than something a kernel can do to itself.
+# ALLOCHINT_SELFTEST=1 measures what a block allocation costs on a volume that is
+# mostly full: bitmap reads over a fixed number of allocations, on an image whose
+# bitmap spans enough blocks for a scan to exist at all.
+ALLOCHINT_SELFTEST ?= 0
+ifeq ($(ALLOCHINT_SELFTEST),1)
+CFLAGS  += -DALLOCHINT_SELFTEST
+ASFLAGS += -DALLOCHINT_SELFTEST
+endif
+
+# ALLOC_NO_HINT=1 restores the pre-2026-09-01 allocator: every scan starts at
+# bitmap block 0, so a volume whose first N bitmap blocks are full costs N+1 reads
+# per allocation. Measured at 512 reads for 32 allocations against 47 with the
+# hint, on a 2 GiB volume with 15 of 16 bitmap blocks full.
+ALLOC_NO_HINT ?= 0
+ifeq ($(ALLOC_NO_HINT),1)
+CFLAGS  += -DALLOC_NO_HINT
+ASFLAGS += -DALLOC_NO_HINT
+endif
+
 SHRINK_SELFTEST ?= 0
 ifeq ($(SHRINK_SELFTEST),1)
 CFLAGS  += -DSHRINK_SELFTEST
@@ -7327,6 +7346,53 @@ smoke-vdisk-bound-control:
 		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
 		tools/smoke_test.sh boot.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
+
+# A block allocation does not rescan the whole data bitmap.
+#
+# ONE BOOT, and a 2 GiB image, because the bitmap has to span enough blocks for a
+# scan to exist: one bitmap block covers BLOCK_SIZE*8 = 32768 blocks, so at
+# 128 MiB there IS no second block to scan and the gate would measure nothing.
+# That is why the cost went unnoticed until the volume grew rather than when the
+# allocator was written.
+#
+# The workload writes the bitmap directly rather than allocating two million
+# blocks to reach the same state -- the bytes are identical, only the hours are
+# skipped -- and then makes real allocations out of what is left. The gate
+# asserts BOTH halves: the read count, and that the scan still wraps and finds
+# free space behind the hint. Without the second, a "fix" that made the allocator
+# fast by giving up early would pass.
+ALLOCHINT_ARGS    = ALLOCHINT_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+ALLOCHINT_BLOCKS ?= 524288
+ALLOCHINT_TIMEOUT ?= 400
+
+.PHONY: smoke-alloc-hint
+smoke-alloc-hint:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS)
+	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) boot.iso
+	@rm -f allochint.img && truncate -s $$(( $(ALLOCHINT_BLOCKS) * $(FS_BLOCK_SIZE) )) allochint.img
+	@SMOKE_TIMEOUT=$(ALLOCHINT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=allochint.img \
+		REQUIRE_MARKER='ALLOCHINT: PASS' \
+		FAIL_MARKER='ALLOCHINT: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@rm -f allochint.img
+	@echo "[alloc-hint] PASS - an allocation does not rescan the bitmap, and the scan still wraps"
+
+# The falsifying arm: every scan starts at bitmap block 0 again. The marker is
+# the COUNT -- 512 reads where the budget is 79 -- so a partial regression is
+# visible as a number rather than rounded to "it failed".
+.PHONY: smoke-alloc-hint-control
+smoke-alloc-hint-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) ALLOC_NO_HINT=1
+	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) ALLOC_NO_HINT=1 boot.iso
+	@rm -f allochint-c.img && truncate -s $$(( $(ALLOCHINT_BLOCKS) * $(FS_BLOCK_SIZE) )) allochint-c.img
+	@SMOKE_TIMEOUT=$(ALLOCHINT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=allochint-c.img \
+		REQUIRE_MARKER='ALLOCHINT: FAIL every allocation rescans the bitmap from the start' \
+		FAIL_MARKER='ALLOCHINT: PASS' \
+		tools/smoke_test.sh boot.iso
+	@rm -f allochint-c.img
+	@echo "[alloc-hint] CONTROL PASS - without the hint every allocation rescans from block 0"
 
 # S68's other half: a volume is never served on a disk too small to hold it.
 # Two boots with the HOST shrinking the image between them -- boot 1 formats a

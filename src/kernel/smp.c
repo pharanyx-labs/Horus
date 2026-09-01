@@ -464,6 +464,12 @@ void smp_bringup(void) {
     { extern void storage_vdisk_bound_selftest(void);
       storage_vdisk_bound_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(ALLOCHINT_SELFTEST)
+    /* Gated: a block allocation does not rescan the whole data bitmap. Counts
+     * bitmap reads over a fixed number of allocations on a volume whose bitmap
+     * spans enough blocks for a scan to exist at all. */
+    { extern void allochint_selftest(void); allochint_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(SHRINK_SELFTEST)
     /* Gated: a volume is never served on a disk too small to hold it (S68). */
     { extern void shrink_selftest(void); shrink_selftest();

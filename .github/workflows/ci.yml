@@ -2524,6 +2524,15 @@ jobs:
         run: make smoke-fs-shrink
       - name: Control arm — part of a filesystem served as whole
         run: make smoke-fs-shrink-control
+      # The allocator scans the data bitmap for a free bit, and where it starts
+      # decides the cost: from block 0 every time, a mostly-full volume costs a
+      # scan of the whole bitmap PER ALLOCATION. One boot on a 2 GiB image,
+      # because at 128 MiB the bitmap is one block and there is no scan to
+      # measure — which is why this went unnoticed until the volume grew.
+      - name: A block allocation does not rescan the whole data bitmap
+        run: make smoke-alloc-hint
+      - name: Control arm — every allocation rescans from bitmap block 0
+        run: make smoke-alloc-hint-control
       # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
       # reservation, so a block past the backing store landed in the free page
       # pool. Diskless, so it runs here only for topical company.

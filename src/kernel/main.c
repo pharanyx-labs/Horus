@@ -102,10 +102,30 @@ static void assert_higher_half(void) {
      * boots with the injected constant, which briefly read as a reproduction of
      * the defect being hunted. .build-flags now forces the rebuild; this line is
      * the independent check on it, because a build system can be wrong too. */
-    kmsg_begin();
-    print("DEFECT FLAGS: ");
-    print(DEFECT_FLAGS_STR);
-    print("\n");
+    /* ONE WRITE. Six gates assert `DEFECT FLAGS: <value>` as a contiguous
+     * string (smoke-defect-flags and its rebuild arms), and three writes give
+     * anything printing concurrently -- an AP coming up, a driver probing -- a
+     * place to land in the middle of the one line that says which kernel this
+     * is. `kmsg_begin()` is a timestamp prefix, not a lock, so it does not close
+     * that window; it only opens the line.
+     *
+     * Boot-time and mostly single-CPU, so this is the less reachable of the two
+     * instances the 2026-09-01 checker found -- but "less reachable" is what
+     * captest's marker was until a second writer joined its image, so it is
+     * fixed on the same argument rather than left as the one exception the rule
+     * would then need. */
+    {
+        char line[128];
+        unsigned n = 0;
+        const char *pfx = "DEFECT FLAGS: ";
+        const char *val = DEFECT_FLAGS_STR;
+        while (*pfx && n < sizeof(line) - 2) line[n++] = *pfx++;
+        while (*val && n < sizeof(line) - 2) line[n++] = *val++;
+        line[n++] = '\n';
+        line[n]   = 0;
+        kmsg_begin();
+        print(line);
+    }
 }
 
 /* ---- Multiboot2 memory map -> physical pool size --------------------------

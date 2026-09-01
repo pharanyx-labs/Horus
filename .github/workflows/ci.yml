@@ -3187,6 +3187,21 @@ jobs:
       # user buffer or a driver reading the wrong MMIO range.
       - name: Every ABI struct is identical in both headers
         run: python3 tools/check_abi_structs.py
+      # Third instance of the same class in the same job: a property two places
+      # must agree on, with nothing comparing them. Here the two places are the
+      # marker a gate asserts and the writes that emit it. docs/LIMITATIONS.md
+      # 2.6a was recorded as CLOSED on 2026-08-31 on the strength of a hand
+      # sweep -- and the sweep missed captest (a private out(), no libhorus.h)
+      # and the kernel's DEFECT FLAGS line. The captest one reddened CI on
+      # 2026-09-01, one day after auditprobe became a second writer in that
+      # image: the marker was printed, in two pieces, and the gate timed out
+      # looking for it contiguous. A split marker fails a gate the way a broken
+      # runner does, which is why it must be caught statically rather than
+      # swept again.
+      - name: Every gate-asserted marker is emitted in one write
+        run: python3 tools/check_split_markers.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_split_markers.sh
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier
